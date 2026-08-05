@@ -1093,7 +1093,9 @@ QWidget *MainWindow::buildMirrorNodesTab()
         "Nodes across the network that keep a live mirror of this repository. "
         "Each node serves clones and browsing from its own copy; the commit and "
         "sync time show how fresh that copy is. An underlined value doesn't match "
-        "the source of truth \xE2\x80\x94 that node is serving different data.");
+        "the source of truth \xE2\x80\x94 that node is serving different data. "
+        "Double-click a Health result (or select it and press Enter) to draft a "
+        "troubleshooting prompt.");
     blurb->setObjectName("statusLine");
     blurb->setWordWrap(true);
     layout->addWidget(blurb);
@@ -1209,6 +1211,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     // node's profile, matching the tab's arrow-key navigation (adhoc #183).
     connect(m_mirrorNodesTable, &QTableWidget::itemActivated, this,
             [this](QTableWidgetItem *item) {
+                if (item && item->column() == MirrorNodeColHealth) {
+                    draftMirrorNodeDiagnosticsPrompt(item);
+                    return;
+                }
                 QTableWidgetItem *it =
                     item ? m_mirrorNodesTable->item(item->row(), MirrorNodeColNode)
                          : nullptr;
@@ -1220,6 +1226,26 @@ QWidget *MainWindow::buildMirrorNodesTab()
             });
     layout->addWidget(m_mirrorNodesTable, 1);
     return page;
+}
+
+void MainWindow::draftMirrorNodeDiagnosticsPrompt(QTableWidgetItem *healthItem)
+{
+    if (!healthItem || !m_issueQuickAdd)
+        return;
+    const QString prompt =
+        healthItem->data(kMirrorDiagnosticPromptRole).toString().trimmed();
+    if (prompt.isEmpty())
+        return;
+    // Preserve anything half-written in the composer's Up-arrow history before
+    // replacing it with the diagnostic handoff.
+    recordQuickAddHistory(m_issueQuickAdd->toPlainText());
+    m_issueQuickAdd->setPlainText(prompt);
+    m_issueQuickAdd->moveCursor(QTextCursor::End);
+    m_issueQuickAdd->setFocus();
+    setRepoDetailNotice(QStringLiteral(
+        "Drafted the mirror-node diagnostic report in the composer — review it, "
+        "then send it to an agent."));
+    logSystem(QStringLiteral("Drafted a mirror-node diagnostic troubleshooting prompt."));
 }
 
 void MainWindow::requestMirrorNodesRefresh()
@@ -2801,10 +2827,18 @@ void MainWindow::loadMirrorNodesPanel()
         // Health: the node's own self-check findings, pushed with its heartbeat
         // (adhoc #27) — the disk trend, log errors and link flapping the three
         // gauges beside it can't show. Hover for the findings.
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColHealth,
+        auto *healthItem =
             makeNodeHealthCell(node.diagnostics, node.diagnosticsMs,
-                               QDateTime::currentMSecsSinceEpoch()));
+                               QDateTime::currentMSecsSinceEpoch());
+        healthItem->setData(
+            kMirrorDiagnosticPromptRole,
+            mirrorDiagnosticPrompt(source, nodeLabel, node.id, ownerDisplay,
+                                   node.platform, node.version, node.diagnostics,
+                                   node.diagnosticsMs));
+        healthItem->setToolTip(
+            healthItem->toolTip() +
+            QStringLiteral("\n\nDouble-click or press Enter to draft a troubleshooting prompt."));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColHealth, healthItem);
 
         // CPU / RAM / disk usage bars (hover for the underlying figures). The
         // telemetry is per-node, advertised in the node's heartbeats; peers that
@@ -3079,9 +3113,19 @@ void MainWindow::loadMirrorNodesPanel()
                                 QStringLiteral("discussion")));
             // Health: self-diagnostics ride the live heartbeat, not the signed
             // catalog record, so an offline/catalog-only row has none to show.
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColHealth,
-                makeNodeHealthCell({}, 0, 0));
+            // Activating it still drafts a useful "restore reporting" prompt.
+            const QString catPlatform = m.value("platform").toString();
+            const QString catVersion = m.value("version").toString();
+            const QString catId = m.value("id").toString();
+            auto *healthItem = makeNodeHealthCell({}, 0, 0);
+            healthItem->setData(
+                kMirrorDiagnosticPromptRole,
+                mirrorDiagnosticPrompt(source, nodeName, catId, ownerUser,
+                                       catPlatform, catVersion, {}, 0));
+            healthItem->setToolTip(
+                healthItem->toolTip() +
+                QStringLiteral("\n\nDouble-click or press Enter to draft a troubleshooting prompt."));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColHealth, healthItem);
 
             // CPU / RAM / disk: a node that opted into public host telemetry
             // signs it into its catalog record (headless mirrors renew it every
@@ -3104,19 +3148,16 @@ void MainWindow::loadMirrorNodesPanel()
                     QStringLiteral("Disk"),
                     qint64(m.value(QStringLiteral("diskUsedBytes")).toDouble()),
                     qint64(m.value(QStringLiteral("diskTotalBytes")).toDouble())));
-            const QString catPlatform = m.value("platform").toString();
             m_mirrorNodesTable->setItem(
                 row, MirrorNodeColPlatform,
                 new QTableWidgetItem(catPlatform.isEmpty()
                                          ? QString::fromUtf8("\xE2\x80\x94")
                                          : catPlatform));
-            const QString catVersion = m.value("version").toString();
             m_mirrorNodesTable->setItem(
                 row, MirrorNodeColVersion,
                 new QTableWidgetItem(catVersion.isEmpty()
                                          ? QString::fromUtf8("\xE2\x80\x94")
                                          : catVersion));
-            const QString catId = m.value("id").toString();
             auto *catIdItem = new QTableWidgetItem(
                 catId.isEmpty()
                     ? QString::fromUtf8("\xE2\x80\x94")
@@ -4603,5 +4644,27 @@ QString MainWindow::testMirrorNodeCellToolTip(const QString &nodeName, int colum
         return item ? item->toolTip() : QString();
     }
     return QString();
+}
+
+bool MainWindow::testDraftMirrorNodeDiagnostics(const QString &nodeName)
+{
+    if (!m_mirrorNodesTable)
+        return false;
+    for (int row = 0; row < m_mirrorNodesTable->rowCount(); ++row) {
+        const QTableWidgetItem *name =
+            m_mirrorNodesTable->item(row, MirrorNodeColNode);
+        if (!name || !name->text().startsWith(nodeName))
+            continue;
+        QTableWidgetItem *health =
+            m_mirrorNodesTable->item(row, MirrorNodeColHealth);
+        if (!health)
+            return false;
+        const QString expected =
+            health->data(kMirrorDiagnosticPromptRole).toString().trimmed();
+        draftMirrorNodeDiagnosticsPrompt(health);
+        return m_issueQuickAdd && !expected.isEmpty() &&
+               m_issueQuickAdd->toPlainText() == expected;
+    }
+    return false;
 }
 #endif
