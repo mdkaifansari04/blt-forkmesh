@@ -141,12 +141,14 @@ def test_node_deletion_immediately_reflows_surviving_cabinets():
     assert "if (matches.length) relayoutNetworkNodes();" in block
 
 
-def test_live_node_layout_reanchors_after_pool_or_obstacle_changes():
+def test_member_growth_no_longer_reanchors_nodes_around_roster_benches():
     assert "function relayoutNetworkNodes()" in SCENE
     member_start = SCENE.index("function updateMemberLounge(")
     member_end = SCENE.index("\n  }\n", member_start)
-    assert "previousSeatRadius" in SCENE[member_start:member_end]
-    assert "relayoutNetworkNodes();" in SCENE[member_start:member_end]
+    lounge = SCENE[member_start:member_end]
+    assert "previousSeatRadius" not in lounge
+    assert "relayoutNetworkNodes();" not in lounge
+    assert "memberCirclePosition(index, interiorMembers.length)" in lounge
 
 
 def test_reward_circle_slots_follow_a_relocated_pool():
