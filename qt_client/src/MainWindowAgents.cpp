@@ -7159,6 +7159,10 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
         completeOrgTaskForSession(id, QStringLiteral("The work has been merged."));
     if (changed) {
         refreshAgentTable();
+        // The prompt picker ranks models by merged sessions, so surface a
+        // verified merge immediately instead of waiting for the next composer
+        // selection or app restart to rebuild its counts.
+        refreshQuickAddAgentModelSelector();
         if (m_selectedAgentSessionId > 0)
             showAgentSession(m_selectedAgentSessionId);
     } else
@@ -7340,6 +7344,7 @@ void MainWindow::markAgentSessionsLanded(const QList<int> &sessionIds, bool refr
         if (!m_agentTableRefreshing)
             m_agentDiffRefreshPending = true;
         refreshAgentTable();
+        refreshQuickAddAgentModelSelector();
         if (m_selectedAgentSessionId > 0)
             showAgentSession(m_selectedAgentSessionId);
     }
