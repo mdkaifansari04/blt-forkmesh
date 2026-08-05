@@ -10,7 +10,7 @@
   "identityKey": "/var/lib/forkmesh/.local/share/ForkMesh/ForkMesh/identity/ed25519.pem",
   "catalogUrl": "https://forkmesh.com/api/repositories",
   "publishOwner": "mirror9",
-  "version": "0.7.15",
+  "version": "0.7.16",
   "intakeProgram": "/usr/local/bin/forkmesh",
   "intakeOwner": "forkmesh",
   "intakeRepository": "forkmesh",
