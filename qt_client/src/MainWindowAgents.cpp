@@ -10226,7 +10226,21 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // agent I restarted mid-task shows as done". Re-queue it instead, so it
         // gets another resume attempt like initAgents()'s recovery (issue #242).
         if (AgentSession *as = findAgentSession(sid)) {
-            if (as->status == AgentStatus::Running ||
+            // A one-shot transport can exit just after emitting its final
+            // `result`, before the subprocess-drain poll runs. That is a clean
+            // completion, not a crash: don't turn the already-finished session
+            // back into Queued/Working.
+            const bool completedResult = m_agentCompletionChecks.contains(sid);
+            if (completedResult) {
+                m_agentCompletionChecks.remove(sid);
+                if (as->status == AgentStatus::Running) {
+                    as->status = AgentStatus::Success;
+                    as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                    as->lastError.clear();
+                    m_agentStore->saveSession(*as);
+                    updateAgentStatusCell(sid);
+                }
+            } else if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
                 // Only re-queue a process that actually got somewhere (crash mid-turn);
                 // one that never produced a session id at all (bad install, expired
