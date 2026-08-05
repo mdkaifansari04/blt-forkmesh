@@ -5232,6 +5232,37 @@ int main(int argc, char *argv[])
         check(webBaseOid != webHeadOid,
               "browser pull fixture resolves distinct immutable commits");
 
+        // Path lookup is on the hot read path: readPull() calls pullDir()
+        // repeatedly for every PR. Once the metadata worktree exists, asking
+        // for it must be a cached/file-only operation and must not spawn git.
+        // Put a marker executable first on PATH to make that guarantee exact
+        // rather than relying on a timing threshold.
+        {
+            QTemporaryDir fakeGitDir;
+            const QString marker = fakeGitDir.filePath(QStringLiteral("called"));
+            const QString fakeGit = fakeGitDir.filePath(QStringLiteral("git"));
+            check(writeTestFile(
+                      fakeGit,
+                      QStringLiteral("#!/bin/sh\nprintf called >> '%1'\nexit 99\n")
+                          .arg(marker)
+                          .toUtf8()),
+                  "write metadata lookup git-spawn sentinel");
+            check(QFile::setPermissions(
+                      fakeGit, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                   QFileDevice::ExeOwner),
+                  "make metadata lookup git-spawn sentinel executable");
+            const QByteArray originalPath = qgetenv("PATH");
+            qputenv("PATH", fakeGitDir.path().toUtf8());
+            const QString expectedMeta = pulls.metaWorkTree();
+            bool stable = !expectedMeta.isEmpty();
+            for (int i = 0; i < 100; ++i)
+                stable = stable && pulls.metaWorkTree() == expectedMeta;
+            qputenv("PATH", originalPath);
+            check(stable, "repeated PR metadata path lookup stays stable");
+            check(!QFileInfo::exists(marker),
+                  "repeated PR metadata path lookup starts no git subprocess");
+        }
+
         // A remote node files a review event via the inbox; it must append+commit.
         PullEvent remoteReview;
         remoteReview.type = "review";

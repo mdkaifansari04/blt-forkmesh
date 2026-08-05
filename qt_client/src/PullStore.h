@@ -341,6 +341,13 @@ private:
     const ForkMeshIdentity *m_identity;
     QString m_authorName;
 
+    // Resolving the PR metadata worktree is lazy because constructing a store
+    // must not create a linked worktree. Once resolved, however, it is stable
+    // for the life of this store. readPull() asks for pullDir() several times
+    // per PR, so resolving it afresh there turns one list refresh into hundreds
+    // of identical git subprocesses.
+    mutable QString m_metaWorkTreeCache;
+
     // In-progress conflict-resolution state, carried from startConflictMerge to
     // finishConflictMerge/abortConflictMerge. The resolution is committed onto
     // m_amBranch (started from m_amBase); m_amRestoreRef is the branch/commit to
