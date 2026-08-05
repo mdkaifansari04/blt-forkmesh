@@ -2729,6 +2729,9 @@ private:
                                   const AgentDiffStat &stat,
                                   const QString &signature);
     void refreshAgentStatusPill(int sessionId); // in-place detail-header pill update
+    void showAgentMetaPopup(); // open the detail metadata from hover or click
+    void toggleAgentMetaPopup(); // click handler for the detail metadata popup
+    void hideAgentMetaPopupIfPointerAway(); // preserve the popup while entering it
     void animateRunningAgentIcons();           // spins running rows' Status glyph
     // Pulse a session's night-rider light so the agents-list activity column
     // sweeps while its raw output is streaming; onScannerTick drives the frames.
