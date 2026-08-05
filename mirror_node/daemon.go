@@ -19,21 +19,22 @@ import (
 )
 
 type Daemon struct {
-	config        Config
-	gateway       GatewayConfig
-	identity      *Identity
-	supervisor    *Supervisor
-	intake        *IntakeBridge
-	startedAt     time.Time
-	mu            sync.RWMutex
-	lastSyncAt    time.Time
-	lastSyncOK    bool
-	lastSyncErr   string
-	lastPublishAt time.Time
-	syncCount     int64
-	repoStates    map[string]string
-	syncRequests  chan struct{}
-	server        *http.Server
+	config         Config
+	gateway        GatewayConfig
+	identity       *Identity
+	supervisor     *Supervisor
+	intake         *IntakeBridge
+	startedAt      time.Time
+	mu             sync.RWMutex
+	lastSyncAt     time.Time
+	lastSyncOK     bool
+	lastSyncErr    string
+	lastPublishAt  time.Time
+	lastEndpointAt time.Time
+	syncCount      int64
+	repoStates     map[string]string
+	syncRequests   chan struct{}
+	server         *http.Server
 }
 
 type RuntimeStats struct {
@@ -43,21 +44,24 @@ type RuntimeStats struct {
 }
 
 type Status struct {
-	OK            bool              `json:"ok"`
-	Ready         bool              `json:"ready"`
-	Node          string            `json:"node"`
-	Version       string            `json:"version"`
-	UptimeSeconds int64             `json:"uptimeSeconds"`
-	Processes     map[string]bool   `json:"processes"`
-	Restarts      map[string]int64  `json:"restarts"`
-	Repositories  map[string]string `json:"repositories"`
-	LastSyncAt    string            `json:"lastSyncAt,omitempty"`
-	LastSyncOK    bool              `json:"lastSyncOk"`
-	LastSyncError string            `json:"lastSyncError,omitempty"`
-	LastPublishAt string            `json:"lastPublishAt,omitempty"`
-	SyncCount     int64             `json:"syncCount"`
-	Runtime       RuntimeStats      `json:"runtime"`
+	OK             bool              `json:"ok"`
+	Ready          bool              `json:"ready"`
+	Node           string            `json:"node"`
+	Version        string            `json:"version"`
+	UptimeSeconds  int64             `json:"uptimeSeconds"`
+	Processes      map[string]bool   `json:"processes"`
+	Restarts       map[string]int64  `json:"restarts"`
+	Repositories   map[string]string `json:"repositories"`
+	LastSyncAt     string            `json:"lastSyncAt,omitempty"`
+	LastSyncOK     bool              `json:"lastSyncOk"`
+	LastSyncError  string            `json:"lastSyncError,omitempty"`
+	LastPublishAt  string            `json:"lastPublishAt,omitempty"`
+	LastEndpointAt string            `json:"lastEndpointAt,omitempty"`
+	SyncCount      int64             `json:"syncCount"`
+	Runtime        RuntimeStats      `json:"runtime"`
 }
+
+const endpointRenewInterval = 4 * time.Minute
 
 func NewDaemon(cfg Config) (*Daemon, error) {
 	gateway, _, err := loadGatewayConfig(cfg.GatewayConfig)
@@ -211,6 +215,7 @@ func (d *Daemon) syncOnce(parent context.Context) {
 	}
 	if !d.config.DisableCatalog {
 		publisher := &CatalogPublisher{URL: d.config.CatalogURL, Owner: d.config.PublishOwner, Node: d.gateway.Node.Name, Version: d.config.Version, Identity: d.identity}
+		published := false
 		for _, repo := range d.gateway.Repositories {
 			if repo.Owner != d.config.PublishOwner {
 				continue
@@ -218,8 +223,33 @@ func (d *Daemon) syncOnce(parent context.Context) {
 			if err := publisher.Publish(ctx, repo, states[repositoryKey(repo)]); err != nil {
 				failures = append(failures, "catalog "+repositoryKey(repo)+": "+err.Error())
 			} else {
+				published = true
 				d.mu.Lock()
 				d.lastPublishAt = time.Now()
+				d.mu.Unlock()
+			}
+		}
+		d.mu.RLock()
+		lastEndpointAt := d.lastEndpointAt
+		d.mu.RUnlock()
+		running, _ := d.supervisor.Snapshot()
+		publicServing := running["gateway"] &&
+			(d.config.DisableCloudflared || running["cloudflared"])
+		if published && publicServing &&
+			(lastEndpointAt.IsZero() || time.Since(lastEndpointAt) >= endpointRenewInterval) {
+			endpoint := &EndpointPublisher{
+				CatalogURL: d.config.CatalogURL,
+				Node:       d.gateway.Node.Name,
+				BaseURL:    d.gateway.PublicOrigin,
+				Version:    d.config.Version,
+				Identity:   d.identity,
+			}
+			active, err := endpoint.Publish(ctx)
+			if err != nil {
+				failures = append(failures, "endpoint lease: "+err.Error())
+			} else if active {
+				d.mu.Lock()
+				d.lastEndpointAt = time.Now()
 				d.mu.Unlock()
 			}
 		}
@@ -298,6 +328,9 @@ func (d *Daemon) status() Status {
 	}
 	if !d.lastPublishAt.IsZero() {
 		status.LastPublishAt = d.lastPublishAt.UTC().Format(time.RFC3339)
+	}
+	if !d.lastEndpointAt.IsZero() {
+		status.LastEndpointAt = d.lastEndpointAt.UTC().Format(time.RFC3339)
 	}
 	return status
 }
