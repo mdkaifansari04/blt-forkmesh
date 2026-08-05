@@ -186,7 +186,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
           ),
         ),
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(48),
+          preferredSize: const Size.fromHeight(60),
           child: ColoredBox(
             color: FmTheme.bgRaised(context),
             child: TabBar(
@@ -224,11 +224,26 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
                 Tab(text: 'Pulls'),
                 Tab(text: 'Discussions'),
                 Tab(text: 'Commits'),
-                Tab(text: 'Mirrors'),
+                Tab(
+                  child: _RepoDetailTabLabel(
+                    label: 'Mirrors',
+                    caption: 'replicas',
+                  ),
+                ),
                 Tab(text: 'Releases'),
                 Tab(text: 'About'),
-                Tab(text: 'Actions'),
-                Tab(text: 'Agents'),
+                Tab(
+                  child: _RepoDetailTabLabel(
+                    label: 'Actions',
+                    caption: 'workflows',
+                  ),
+                ),
+                Tab(
+                  child: _RepoDetailTabLabel(
+                    label: 'Agents',
+                    caption: 'sessions',
+                  ),
+                ),
                 Tab(text: 'Worktrees'),
               ],
             ),
@@ -252,6 +267,34 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
           _WorktreesTab(api: api, repo: repo),
         ],
       ),
+    );
+  }
+}
+
+class _RepoDetailTabLabel extends StatelessWidget {
+  const _RepoDetailTabLabel({required this.label, required this.caption});
+
+  final String label;
+  final String caption;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(label),
+        Text(
+          caption,
+          style: TextStyle(
+            color: FmTheme.textTertiary(context),
+            fontSize: 9,
+            fontWeight: FontWeight.w500,
+            letterSpacing: 0.2,
+            height: 1,
+          ),
+        ),
+      ],
     );
   }
 }
