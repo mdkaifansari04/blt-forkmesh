@@ -25970,7 +25970,34 @@ class ForkMeshWorld extends HTMLElement {
       } else if (shape.type === "text") {
         context.font = `600 ${fontSize}px "ForkMesh Favorit", sans-serif`;
         context.textBaseline = "top";
-        context.fillText(shape.text, shape.x, shape.y);
+        const lineHeight = Math.max(1, Math.round(fontSize * 1.2));
+        const maxWidth = Math.max(1, Math.round(shape.width || shot.width));
+        const maxHeight = Math.max(1, Math.round(shape.height || shot.height));
+        const lines = (() => {
+          const wrapped = [];
+          const parts = String(shape.text || "").split(/\r?\n/);
+          for (const part of parts) {
+            const words = part.length === 0 ? [""] : part.split(/\s+/);
+            let current = "";
+            for (const word of words) {
+              const next = current ? `${current} ${word}` : word;
+              if (context.measureText(next).width <= maxWidth) {
+                current = next;
+                continue;
+              }
+              wrapped.push(current);
+              current = word;
+            }
+            wrapped.push(current);
+          }
+          return wrapped;
+        })();
+        let y = shape.y;
+        for (const line of lines) {
+          if (y - shape.y + lineHeight > maxHeight) break;
+          context.fillText(line, shape.x, y);
+          y += lineHeight;
+        }
       }
     };
     const redraw = (preview) => {
@@ -25992,27 +26019,58 @@ class ForkMeshWorld extends HTMLElement {
       stage.querySelector(".world-shot-text-input")?.remove();
       const bounds = canvas.getBoundingClientRect();
       const stageBounds = stage.getBoundingClientRect();
-      const input = document.createElement("input");
-      input.type = "text";
+      const input = document.createElement("textarea");
+      const defaultWidth = Math.max(
+        160,
+        Math.min(320, bounds.width * 0.45),
+      );
+      const defaultHeight = Math.max(72, Math.min(180, bounds.height * 0.24));
+      const stageScaleX = canvas.width / Math.max(1, bounds.width);
+      const stageScaleY = canvas.height / Math.max(1, bounds.height);
       input.className = "world-shot-text-input";
-      input.placeholder = "Type, then press Enter";
+      input.placeholder = "Type, use Enter for a new line, Ctrl/Cmd+Enter to place";
       input.style.left = `${
         bounds.left - stageBounds.left + (point.x / canvas.width) * bounds.width
       }px`;
       input.style.top = `${
         bounds.top - stageBounds.top + (point.y / canvas.height) * bounds.height
       }px`;
+      input.style.width = `${Math.round(defaultWidth)}px`;
+      input.style.height = `${Math.round(defaultHeight)}px`;
       input.style.color = color;
       const commit = () => {
-        const text = input.value.trim();
+        const text = input.value.replace(/\r/g, "").trim();
         input.remove();
         if (!text) return;
-        shapes.push({ type: "text", x: point.x, y: point.y, text, color });
+        const width = Math.max(
+          20,
+          Math.min(
+            Math.max(1, Math.round(input.offsetWidth * stageScaleX)),
+            shot.width - Math.max(0, point.x),
+          ),
+        );
+        const height = Math.max(
+          30,
+          Math.min(
+            Math.max(1, Math.round(input.offsetHeight * stageScaleY)),
+            shot.height - Math.max(0, point.y),
+          ),
+        );
+        shapes.push({
+          type: "text",
+          x: point.x,
+          y: point.y,
+          text,
+          color,
+          width,
+          height,
+        });
         redraw();
       };
       input.addEventListener("keydown", (event) => {
         event.stopPropagation();
-        if (event.code === "Enter") commit();
+        if (event.code === "Enter" && (event.metaKey || event.ctrlKey))
+          commit();
         else if (event.code === "Escape") input.remove();
       });
       input.addEventListener("blur", commit);
