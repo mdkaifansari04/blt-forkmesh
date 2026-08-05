@@ -40,10 +40,11 @@ def test_landing_header_links_to_pricing_page():
     assert "/pricing /pricing.html 200" in REDIRECTS
 
 
-def test_pricing_page_uses_tailwind_cdn_and_shared_branding():
+def test_pricing_page_uses_local_tailwind_and_shared_branding():
     PRICING_HTML = _pricing_html()
 
-    assert "https://cdn.tailwindcss.com" in PRICING_HTML
+    assert '<link rel="stylesheet" href="/tailwind.css" />' in PRICING_HTML
+    assert "https://cdn.tailwindcss.com" not in PRICING_HTML
     assert '<div data-forkmesh-header="simple"></div>' in PRICING_HTML
     assert "<title>ForkMesh Pricing - Coding Reimagined for Teams</title>" in PRICING_HTML
 

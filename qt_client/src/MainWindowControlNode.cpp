@@ -1283,6 +1283,9 @@ void MainWindow::startControlNodeServing()
 
 void MainWindow::maybeAutoStartDirectMirrorServices()
 {
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     QSettings settings;
     if (!settings
              .value(QStringLiteral("control/autoStartMirrorServices"), true)
@@ -1659,6 +1662,12 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
 
 void MainWindow::startDirectMirrorServices()
 {
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE")) {
+        appendControlNodeOutput(QStringLiteral(
+            "Direct mirror services are managed by forkmesh-mirror-node.\n"));
+        return;
+    }
     QSettings serviceSettings;
     m_directMirrorHostname =
         serviceSettings

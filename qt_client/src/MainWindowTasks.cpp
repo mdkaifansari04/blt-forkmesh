@@ -918,6 +918,9 @@ void MainWindow::restoreOrganizationTaskBadge()
 // with no private catalog) deliberately leaves the restored badge alone.
 void MainWindow::refreshOrganizationTaskBadge()
 {
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     if (m_organizationTasksLoading)
         return;
     if (m_organizationTasksStatus && m_organizationTasksTable) {

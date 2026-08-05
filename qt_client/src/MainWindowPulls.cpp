@@ -2347,7 +2347,8 @@ void MainWindow::renderPullDiff()
         QString(diffSplitPref() ? QLatin1Char('s') : QLatin1Char('u')) +
         QLatin1Char('\x1f') + styleSheet + QLatin1Char('\x1f') +
         viewedKeys.join(QLatin1Char('\x1e')) + QLatin1Char('\x1f') + notesKey +
-        QLatin1Char('\x1f') + fullPatch;
+        QLatin1Char('\x1f') + QString::number(fullPatch.size()) +
+        QLatin1Char(':') + QString::number(qHash(fullPatch));
     if (!m_pullDiffSourceKey.isEmpty() && sourceKey == m_pullDiffSourceKey &&
         !m_pullDiffRenderKey.isEmpty())
         return;
@@ -8281,6 +8282,13 @@ void MainWindow::performRelaySync()
     // securely materialize public issue leases for repos it currently serves.
     // Run that independent intake on the same push/fallback cadence.
     pollMirrorIssueInboxes();
+    // The service-managed mirror companion is intentionally not a chat/user
+    // session.  It only drains the three signed mirror-intake endpoints; asking
+    // for the account-owned /api/sync feed both wastes work and produces an
+    // expected 401 for node-only identities.
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     const QString account = m_accountName.isEmpty()
         ? QSettings().value(kAccountNameSetting).toString().trimmed()
         : m_accountName;
