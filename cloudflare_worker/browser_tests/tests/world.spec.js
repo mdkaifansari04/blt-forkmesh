@@ -9258,7 +9258,7 @@ test("the Members Center shows its roster inside and places arrivals at its door
   expect(reloaded.leftKnee).toBeCloseTo(0, 5);
 });
 
-test("enclosed districts keep their inside walls and open exits visible", async ({
+test("the open node yard swaps boxes for detail while enclosures keep exits visible", async ({
   page,
 }) => {
   await prepareWorldPage(page, "visible-enclosure-exits");
@@ -9280,18 +9280,58 @@ test("enclosed districts keep their inside walls and open exits visible", async 
     );
   };
 
-  await visit("forkmesh-node-district", "nodes");
-  const nodes = await page.locator("forkmesh-world").evaluate((shell) => {
-    const cover = shell.world.scene.getObjectByName(
-      "forkmesh-node-opaque-cover",
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(60, 0.38, 0);
+  });
+  await page.waitForFunction(() =>
+    document.querySelector("forkmesh-world")?.world?.scene?.userData
+      ?.nodeDetailLevel === "boxes",
+  );
+  const farNodes = await page.locator("forkmesh-world").evaluate((shell) => {
+    const boxes = shell.world.scene.getObjectByName("forkmesh-node-box-lod");
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-node-interior",
     );
     return {
-      visible: cover.visible,
-      insideFacing: cover.material.side === 2,
-      doorOpen: cover.userData.doorOpen,
+      cover: shell.world.scene.getObjectByName("forkmesh-node-opaque-cover"),
+      boxesVisible: boxes.visible,
+      boxInstances: boxes.count,
+      detailedVisible: interior.visible,
+      panelTargetVisible: shell.world.scene.getObjectByName(
+        "mirror-server-front-panel",
+      )?.visible,
+      activeEnclosure: shell.world.scene.userData.activeEnclosureScene,
     };
   });
-  expect(nodes).toEqual({ visible: true, insideFacing: true, doorOpen: true });
+  expect(farNodes.cover).toBeUndefined();
+  expect(farNodes.boxesVisible).toBe(true);
+  expect(farNodes.boxInstances).toBeGreaterThan(0);
+  expect(farNodes.detailedVisible).toBe(false);
+  expect(farNodes.panelTargetVisible).toBe(false);
+  expect(farNodes.activeEnclosure).toBe("");
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(0, 0.38, 0);
+  });
+  await page.waitForFunction(() =>
+    document.querySelector("forkmesh-world")?.world?.scene?.userData
+      ?.nodeDetailLevel === "detailed",
+  );
+  const nearNodes = await page.locator("forkmesh-world").evaluate((shell) => ({
+    boxesVisible: shell.world.scene.getObjectByName("forkmesh-node-box-lod")
+      .visible,
+    detailedVisible: shell.world.scene.getObjectByName(
+      "forkmesh-node-interior",
+    ).visible,
+    panelTargetVisible: shell.world.scene.getObjectByName(
+      "mirror-server-front-panel",
+    ).visible,
+  }));
+  expect(nearNodes).toEqual({
+    boxesVisible: false,
+    detailedVisible: true,
+    panelTargetVisible: true,
+  });
 
   await visit("forkmesh-leaderboard-district", "leaderboards");
   const leaderboards = await page.locator("forkmesh-world").evaluate((shell) => {

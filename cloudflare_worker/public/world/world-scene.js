@@ -94,12 +94,15 @@ const LEADERBOARD_COVER_ROOF_HEIGHT = 9.5;
 const LEADERBOARD_COVER_APOTHEM = DISTRICT_GROUND_RADIUS + 0.6;
 const LEADERBOARD_DOOR_WIDTH = 8;
 const LEADERBOARD_DOOR_HEIGHT = 7.5;
-const NODE_COVER_SIDES = 10;
-const NODE_COVER_APOTHEM = 28.5;
-const NODE_COVER_WALL_HEIGHT = 16;
-const NODE_COVER_ROOF_HEIGHT = 7;
-const NODE_DOOR_WIDTH = 8;
-const NODE_DOOR_HEIGHT = 7.5;
+// The mirror-node yard is open to the rest of the World. Its rich pool and
+// cabinet displays are only useful on approach, while distant cabinets need
+// just enough silhouette to keep the live node ring legible. Hysteresis keeps
+// the two representations from flickering when a visitor walks along the
+// boundary.
+const NODE_DETAIL_ENTER_DISTANCE = 42;
+const NODE_DETAIL_EXIT_DISTANCE = 50;
+const NODE_PLAZA_MAX_RADIUS = 28;
+const NODE_LOD_MAX_INSTANCES = 64;
 const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
@@ -448,36 +451,6 @@ function leaderboardDoorCrossingIsClear(previous, current) {
   return (
     Number.isFinite(crossingZ) &&
     Math.abs(crossingZ) <= LEADERBOARD_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS
-  );
-}
-
-function nodeCoverContainsWorldPoint(x, z, margin = 0) {
-  const localX = Number(z);
-  const localZ = -Number(x);
-  const limit = NODE_COVER_APOTHEM - Number(margin || 0);
-  if (!Number.isFinite(localX) || !Number.isFinite(localZ) || limit <= 0) {
-    return false;
-  }
-  for (let index = 0; index < NODE_COVER_SIDES; index += 1) {
-    const angle = (index / NODE_COVER_SIDES) * Math.PI * 2;
-    if (localX * Math.cos(angle) + localZ * Math.sin(angle) > limit) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function nodeDoorCrossingIsClear(previous, current) {
-  const travelZ = Number(current?.z) - Number(previous?.z);
-  if (!Number.isFinite(travelZ) || Math.abs(travelZ) < 1e-6) return false;
-  const crossing = (NODE_COVER_APOTHEM - Number(previous?.z)) / travelZ;
-  if (!Number.isFinite(crossing) || crossing < 0 || crossing > 1) return false;
-  const crossingX =
-    Number(previous?.x) +
-    (Number(current?.x) - Number(previous?.x)) * crossing;
-  return (
-    Number.isFinite(crossingX) &&
-    Math.abs(crossingX) <= NODE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS
   );
 }
 
@@ -8086,6 +8059,27 @@ function createMirrorServerCabinet(THREE, node, id) {
   return group;
 }
 
+function createMirrorNodeBoxLod(THREE) {
+  // Every distant cabinet reuses this one geometry/material pair and is drawn
+  // by one InstancedMesh. At range the node yard therefore costs one mesh and
+  // exposes no panels, text textures, rails, lights, or animated detail.
+  const boxes = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(2.24, 3.28, 1.42),
+    makeMaterial(THREE, "#ffffff", {
+      metalness: 0.58,
+      roughness: 0.48,
+    }),
+    NODE_LOD_MAX_INSTANCES,
+  );
+  boxes.name = "forkmesh-node-box-lod";
+  boxes.count = 0;
+  boxes.castShadow = false;
+  boxes.receiveShadow = false;
+  boxes.userData.nodeBoxLod = true;
+  boxes.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  return boxes;
+}
+
 function createAgentRobot(THREE, bot, id) {
   const group = new THREE.Group();
   group.name = `verified-agent-object:${id}`;
@@ -9139,22 +9133,6 @@ function createLeaderboardOpaqueCover(THREE) {
   });
 }
 
-function createNodeOpaqueCover(THREE) {
-  const cover = createOpaqueDistrictCover(THREE, {
-    name: "forkmesh-node-opaque-cover",
-    interactiveKind: "node-cover",
-    sides: NODE_COVER_SIDES,
-    wallHeight: NODE_COVER_WALL_HEIGHT,
-    roofHeight: NODE_COVER_ROOF_HEIGHT,
-    apothem: NODE_COVER_APOTHEM,
-    doorWidth: NODE_DOOR_WIDTH,
-    doorHeight: NODE_DOOR_HEIGHT,
-    color: "#172d3d",
-  });
-  cover.rotation.y = -Math.PI / 2;
-  return cover;
-}
-
 function setOpaqueCoverDoorOpen(cover, open) {
   const amount = open ? 1 : 0;
   (cover?.userData?.doorPanels || []).forEach((panel) => {
@@ -9821,6 +9799,7 @@ function createFountain(THREE, position, interactive, animated) {
   });
   setShadows(group);
   animated.push((time) => {
+    if (!group.parent?.visible) return;
     sun.rotation.y = time * 0.00045;
     sun.rotation.x = Math.sin(time * 0.0004) * 0.12;
     sun.position.y = sun.userData.baseY + Math.sin(time * 0.0012) * 0.16;
@@ -19902,16 +19881,21 @@ export function createWorldScene({
   nodeInterior.name = "forkmesh-node-interior";
   nodeInterior.visible = false;
   nodeInterior.userData.nodeInterior = true;
-  const nodeCover = createNodeOpaqueCover(THREE);
+  const nodeBoxLod = createMirrorNodeBoxLod(THREE);
+  const nodeBoxLodTransform = new THREE.Object3D();
+  const nodeBoxLodOnlineColor = new THREE.Color("#264e40");
+  const nodeBoxLodOfflineColor = new THREE.Color("#454d49");
   const fountainLandmark = landmarkObjects.get("fountain");
   if (fountainLandmark) nodeInterior.add(fountainLandmark);
-  nodeDistrict.add(nodeInterior, nodeCover);
+  nodeDistrict.add(nodeInterior, nodeBoxLod);
   nodeDistrict.userData.nodeInterior = nodeInterior;
-  nodeDistrict.userData.nodeCover = nodeCover;
+  nodeDistrict.userData.nodeBoxLod = nodeBoxLod;
   world.add(nodeDistrict);
-  interactive.push(nodeCover);
   registerWorldElement(
-    "node-district", "Mirror node hall", "Districts", nodeDistrict,
+    "node-district", "Mirror node yard", "Districts", nodeDistrict,
+  );
+  registerWorldElement(
+    "node-cabinets", "Mirror node cabinets", "Infrastructure", nodeBoxLod,
   );
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
 
@@ -19937,7 +19921,7 @@ export function createWorldScene({
   registerWorldElement("player-avatar", "Your avatar", "Avatars & bots", player);
   let repositoryDomeOccupied = false;
   let leaderboardCircleOccupied = false;
-  let nodeCoverOccupied = false;
+  let nodeDetailVisible = false;
   let membersYurtOccupied = false;
   let officeSceneMode = "town";
   let beachSceneActive = false;
@@ -20156,21 +20140,35 @@ export function createWorldScene({
     return occupied;
   }
 
-  function updateNodeCoverOccupancy(force = false) {
-    const margin = nodeCoverOccupied
-      ? -OFFICE_AVATAR_RADIUS
-      : OFFICE_AVATAR_RADIUS;
-    const occupied = nodeCoverContainsWorldPoint(
-      player.position.x,
-      player.position.z,
-      margin,
-    );
-    if (!force && occupied === nodeCoverOccupied) return occupied;
-    nodeCoverOccupied = occupied;
-    world.userData.nodeCoverOccupied = occupied;
-    nodeInterior.visible = occupied;
-    nodeCover.visible = true;
-    return occupied;
+  function updateNodeDetailLevel(force = false) {
+    const distance = Math.hypot(player.position.x, player.position.z);
+    world.userData.nodeDetailDistance = distance;
+    const boundary = nodeDetailVisible
+      ? NODE_DETAIL_EXIT_DISTANCE
+      : NODE_DETAIL_ENTER_DISTANCE;
+    const detailed = distance <= boundary;
+    if (!force && detailed === nodeDetailVisible) return detailed;
+    nodeDetailVisible = detailed;
+    world.userData.nodeDetailLevel = detailed ? "detailed" : "boxes";
+    nodeInterior.visible = detailed;
+    // Raycaster targets are stored as individual meshes and Three.js does not
+    // reject them merely because an ancestor is hidden. Park their own
+    // visibility while the coarse LOD is active so an invisible cabinet panel
+    // or fountain control cannot still be clicked from across the World.
+    nodeInterior.traverse((child) => {
+      if (!child.userData?.interactive && !child.userData?.nodeCabinet) return;
+      if (detailed) {
+        if (!Object.hasOwn(child.userData, "nodeLodVisible")) return;
+        child.visible = child.userData.nodeLodVisible;
+        delete child.userData.nodeLodVisible;
+        return;
+      }
+      if (Object.hasOwn(child.userData, "nodeLodVisible")) return;
+      child.userData.nodeLodVisible = child.visible;
+      child.visible = false;
+    });
+    nodeBoxLod.visible = !detailed && nodeBoxLod.count > 0;
+    return detailed;
   }
 
   function updateMembersYurtOccupancy(force = false) {
@@ -20193,11 +20191,6 @@ export function createWorldScene({
   }
 
   function syncEnclosureDoors() {
-    setOpaqueCoverDoorOpen(
-      nodeCover,
-      nodeCoverOccupied ||
-        Math.hypot(player.position.x, player.position.z - NODE_COVER_APOTHEM) < 7,
-    );
     setOpaqueCoverDoorOpen(
       leaderboardCover,
       leaderboardCircleOccupied ||
@@ -20234,7 +20227,6 @@ export function createWorldScene({
   }
 
   function enclosureSceneRoots(mode) {
-    if (mode === "nodes") return [nodeDistrict];
     if (mode === "leaderboards") return [leaderboardDistrict];
     if (mode === "repositories") {
       return [
@@ -20253,15 +20245,13 @@ export function createWorldScene({
       ? "beach"
       : officeSceneMode !== "town"
       ? "office"
-      : nodeCoverOccupied
-        ? "nodes"
-        : leaderboardCircleOccupied
-          ? "leaderboards"
-          : repositoryDomeOccupied
-            ? "repositories"
-            : membersYurtOccupied
-              ? "members"
-              : "";
+      : leaderboardCircleOccupied
+        ? "leaderboards"
+        : repositoryDomeOccupied
+          ? "repositories"
+          : membersYurtOccupied
+            ? "members"
+            : "";
     if (force || next !== activeEnclosureScene) {
       enclosureHiddenWorldRoots.forEach((visible, root) => {
         root.visible = visible;
@@ -20335,7 +20325,7 @@ export function createWorldScene({
   registerCompactDistrictRoot("beach", beachScene);
   updateRepositoryDomeOccupancy(true);
   updateLeaderboardCircleOccupancy(true);
-  updateNodeCoverOccupancy(true);
+  updateNodeDetailLevel(true);
   syncEnclosureSceneVisibility(true);
   // The camera used to start at CAMERA_OFFSET relative to the world origin
   // even though the avatar starts elsewhere. It then spent the first visible
@@ -24843,24 +24833,6 @@ export function createWorldScene({
     return true;
   }
 
-  function constrainNodeCover(previousPosition) {
-    if (officeSceneMode !== "town" || !previousPosition) return false;
-    const wasInside = nodeCoverContainsWorldPoint(
-      previousPosition.x,
-      previousPosition.z,
-    );
-    const isInside = nodeCoverContainsWorldPoint(
-      player.position.x,
-      player.position.z,
-    );
-    if (wasInside === isInside) return false;
-    if (nodeDoorCrossingIsClear(previousPosition, player.position)) return false;
-    player.position.x = previousPosition.x;
-    player.position.z = previousPosition.z;
-    cancelDash();
-    return true;
-  }
-
   function constrainMembersYurt(previousPosition) {
     if (officeSceneMode !== "town" || !previousPosition) return false;
     const wasInside = Math.hypot(
@@ -27977,7 +27949,6 @@ export function createWorldScene({
       cancelDash();
     }
     if (!superJumping) {
-      constrainNodeCover(previousHorizontalPosition);
       constrainMembersYurt(previousHorizontalPosition);
       constrainRepositoryDome(previousHorizontalPosition);
       constrainLeaderboardCover(previousHorizontalPosition);
@@ -30343,7 +30314,7 @@ export function createWorldScene({
         0,
       );
       const plazaRadius = Math.min(
-        NODE_COVER_APOTHEM - 0.5,
+        NODE_PLAZA_MAX_RADIUS,
         Math.max(14, farthestRadius + 3.2),
       );
       nodeYardConcrete.scale.set(plazaRadius, 1, plazaRadius);
@@ -30414,6 +30385,17 @@ export function createWorldScene({
         routingX - slot.x,
         routingZ - slot.z,
       );
+      nodeBoxLodTransform.position.set(slot.x, 2.02, slot.z);
+      nodeBoxLodTransform.rotation.set(0, cabinet.rotation.y, 0);
+      nodeBoxLodTransform.scale.set(1, 1, 1);
+      nodeBoxLodTransform.updateMatrix();
+      nodeBoxLod.setMatrixAt(nodeIndex, nodeBoxLodTransform.matrix);
+      nodeBoxLod.setColorAt(
+        nodeIndex,
+        mirrorNodeIsOnline(node)
+          ? nodeBoxLodOnlineColor
+          : nodeBoxLodOfflineColor,
+      );
       if (focusFollowsCabinet) {
         cameraFocus.copy(cabinet.position);
         cameraFocus.y += 1.65;
@@ -30454,6 +30436,15 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+    nodeBoxLod.count = Math.min(usableNodes.length, NODE_LOD_MAX_INSTANCES);
+    nodeBoxLod.instanceMatrix.needsUpdate = true;
+    if (nodeBoxLod.instanceColor) nodeBoxLod.instanceColor.needsUpdate = true;
+    nodeBoxLod.computeBoundingBox?.();
+    nodeBoxLod.computeBoundingSphere?.();
+    // A catalog refresh can add new interactive panels while the detailed
+    // root is already far away. Reapply the active LOD so those new meshes are
+    // parked before the next raycast.
+    updateNodeDetailLevel(true);
     // The cabinets standing in the ring are exactly what the tally counts.
     setRewardPoolMirrorCount(
       usableNodes.length,
@@ -35382,7 +35373,7 @@ export function createWorldScene({
     }
     updateRepositoryDomeOccupancy();
     updateLeaderboardCircleOccupancy();
-    updateNodeCoverOccupancy();
+    updateNodeDetailLevel();
     updateMembersYurtOccupancy();
     syncEnclosureDoors();
     syncEnclosureSceneVisibility();
@@ -35468,7 +35459,7 @@ export function createWorldScene({
       // reads the same in a screenshot as it does live. Only degraded and
       // healing nodes carry a sweep, and it turns rather than fades, so the
       // colour itself stays legible in a still frame.
-      if (worldElementEnabled("node-cabinets")) {
+      if (nodeDetailVisible && worldElementEnabled("node-cabinets")) {
         nodeInfrastructure.forEach((cabinet) => {
           const sweep = cabinet.userData?.beaconSweep;
           if (sweep) sweep.rotation.y = time * 0.0038;

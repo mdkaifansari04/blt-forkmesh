@@ -5232,6 +5232,37 @@ int main(int argc, char *argv[])
         check(webBaseOid != webHeadOid,
               "browser pull fixture resolves distinct immutable commits");
 
+        // Path lookup is on the hot read path: readPull() calls pullDir()
+        // repeatedly for every PR. Once the metadata worktree exists, asking
+        // for it must be a cached/file-only operation and must not spawn git.
+        // Put a marker executable first on PATH to make that guarantee exact
+        // rather than relying on a timing threshold.
+        {
+            QTemporaryDir fakeGitDir;
+            const QString marker = fakeGitDir.filePath(QStringLiteral("called"));
+            const QString fakeGit = fakeGitDir.filePath(QStringLiteral("git"));
+            check(writeTestFile(
+                      fakeGit,
+                      QStringLiteral("#!/bin/sh\nprintf called >> '%1'\nexit 99\n")
+                          .arg(marker)
+                          .toUtf8()),
+                  "write metadata lookup git-spawn sentinel");
+            check(QFile::setPermissions(
+                      fakeGit, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                   QFileDevice::ExeOwner),
+                  "make metadata lookup git-spawn sentinel executable");
+            const QByteArray originalPath = qgetenv("PATH");
+            qputenv("PATH", fakeGitDir.path().toUtf8());
+            const QString expectedMeta = pulls.metaWorkTree();
+            bool stable = !expectedMeta.isEmpty();
+            for (int i = 0; i < 100; ++i)
+                stable = stable && pulls.metaWorkTree() == expectedMeta;
+            qputenv("PATH", originalPath);
+            check(stable, "repeated PR metadata path lookup stays stable");
+            check(!QFileInfo::exists(marker),
+                  "repeated PR metadata path lookup starts no git subprocess");
+        }
+
         // A remote node files a review event via the inbox; it must append+commit.
         PullEvent remoteReview;
         remoteReview.type = "review";
@@ -7139,6 +7170,10 @@ int main(int argc, char *argv[])
         // by these tickets, so a lost or double-retired one leaves a spinner
         // running forever (or hides work that is still going).
         QStringList seen;
+        forkmesh::BackgroundActivity::setListener(nullptr);
+        const quint64 startup = forkmesh::BackgroundActivity::begin(
+            QStringLiteral("startup"), QStringLiteral("already running"),
+            forkmesh::ActionTelemetry::Execution::Worker);
         forkmesh::BackgroundActivity::setListener(
             [&seen](quint64 id, const QString &kind, const QString &detail,
                     forkmesh::ActionTelemetry::Execution execution,
@@ -7156,6 +7191,10 @@ int main(int argc, char *argv[])
                                 .arg(id)
                                 .arg(kind, detail, lane));
             });
+        check(seen == QStringList({
+                  QStringLiteral("+:%1:startup:already running:worker")
+                      .arg(startup)}),
+              "attaching a listener replays work that started before the footer");
         const quint64 first =
             forkmesh::BackgroundActivity::begin(QStringLiteral("git"),
                                                 QStringLiteral("git log"));
@@ -7165,26 +7204,30 @@ int main(int argc, char *argv[])
               "each background ticket gets its own non-zero id");
         forkmesh::BackgroundActivity::end(first);
         forkmesh::BackgroundActivity::end(second);
+        forkmesh::BackgroundActivity::end(startup);
         forkmesh::BackgroundActivity::end(0); // no-op guard for untracked work
         check(seen == QStringList({
+                  QStringLiteral("+:%1:startup:already running:worker")
+                      .arg(startup),
                   QStringLiteral("+:%1:git:git log:async").arg(first),
                   QStringLiteral("+:%1:net::async").arg(second),
                   QStringLiteral("-:%1:::async").arg(first),
-                  QStringLiteral("-:%1:::async").arg(second)}),
+                  QStringLiteral("-:%1:::async").arg(second),
+                  QStringLiteral("-:%1:::worker").arg(startup)}),
               "every begin/end pair reaches the listener exactly once, in order");
 
         {
             const forkmesh::BackgroundScope scope(QStringLiteral("scan"));
-            check(seen.size() == 5 && seen.last().startsWith(QLatin1Char('+')),
+            check(seen.size() == 7 && seen.last().startsWith(QLatin1Char('+')),
                   "a background scope opens its ticket on construction");
         }
-        check(seen.size() == 6 && seen.last().startsWith(QLatin1Char('-')),
+        check(seen.size() == 8 && seen.last().startsWith(QLatin1Char('-')),
               "a background scope retires its ticket when it unwinds");
 
         forkmesh::BackgroundActivity::setListener(nullptr);
         forkmesh::BackgroundActivity::end(
             forkmesh::BackgroundActivity::begin(QStringLiteral("git")));
-        check(seen.size() == 6,
+        check(seen.size() == 8,
               "a detached bus drops announcements instead of calling a dead "
               "listener");
     }

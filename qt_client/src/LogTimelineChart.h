@@ -21,6 +21,7 @@ public:
 
     void setEntries(QVector<LogTimelineEntry> entries);
     void appendEntry(const LogTimelineEntry &entry);
+    void removeEntry(qint64 timestampMs, const QString &category);
     void setCategoryFilter(const QString &category, const QColor &accent);
     void setRange(qint64 fromMs, qint64 toMs);
     void resetZoom();
