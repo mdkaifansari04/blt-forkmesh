@@ -4977,6 +4977,7 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
         if (rateLimits.value(QStringLiteral("secondary")).isNull())
             chart->setRemaining(/*weekly=*/true, -1, QString());
     }
+    refreshAgentAccountUsageMenu(QStringLiteral("codex"));
     refreshAgentLimitLabel();
 }
 
@@ -5230,10 +5231,16 @@ void MainWindow::applyClaudeUsageResponse(const QJsonObject &root)
         QStringLiteral("seven_day_fable"),
         QStringLiteral("seven_day_fable_5"),
         QStringLiteral("seven_day_fable5")};
-    for (const QString &key : explicitFableKeys)
-        if (apply(key, TokenUsageMiniChart::Fable))
-            return;
+    bool fableApplied = false;
+    for (const QString &key : explicitFableKeys) {
+        if (apply(key, TokenUsageMiniChart::Fable)) {
+            fableApplied = true;
+            break;
+        }
+    }
     for (auto it = root.constBegin(); it != root.constEnd(); ++it) {
+        if (fableApplied)
+            break;
         const QJsonObject details = it.value().toObject();
         const QString metadata =
             (it.key() + QLatin1Char(' ') +
@@ -5241,15 +5248,23 @@ void MainWindow::applyClaudeUsageResponse(const QJsonObject &root)
              details.value(QStringLiteral("model_name")).toString() + QLatin1Char(' ') +
              details.value(QStringLiteral("label")).toString()).toLower();
         if (metadata.contains(QStringLiteral("fable")) &&
-            apply(it.key(), TokenUsageMiniChart::Fable))
-            return;
+            apply(it.key(), TokenUsageMiniChart::Fable)) {
+            fableApplied = true;
+            break;
+        }
     }
     const QStringList legacyPremiumKeys = {
         QStringLiteral("seven_day_premium"),
         QStringLiteral("seven_day_opus")};
-    for (const QString &key : legacyPremiumKeys)
-        if (apply(key, TokenUsageMiniChart::Fable))
-            return;
+    if (!fableApplied) {
+        for (const QString &key : legacyPremiumKeys) {
+            if (apply(key, TokenUsageMiniChart::Fable)) {
+                fableApplied = true;
+                break;
+            }
+        }
+    }
+    refreshAgentAccountUsageMenu(QStringLiteral("claude-code"));
 }
 
 void MainWindow::refreshClaudeCodeUsage(bool fromHover)

@@ -910,6 +910,30 @@ int main(int argc, char *argv[])
                       QStringLiteral("Fable: 58%")),
               QStringLiteral("selecting an account activates its provider config "
                              "root and cached limits"));
+
+        window.testShowAgentAccountMenu(QStringLiteral("claude-code"));
+        QApplication::processEvents();
+        accountMenu = window.findChild<QMenu *>(
+            QStringLiteral("claudeAccountUsageMenu"));
+        bool hasEditAction = false;
+        if (accountMenu) {
+            for (QAction *action : accountMenu->actions()) {
+                if (action->objectName() ==
+                    QStringLiteral("agentAccountEdit_%1").arg(profileId))
+                    hasEditAction = true;
+            }
+        }
+        check(hasEditAction,
+              QStringLiteral("account menu offers editing for saved accounts"));
+        check(window.testRenameAgentAccount(QStringLiteral("claude-code"),
+                                            profileId,
+                                            QStringLiteral("Work Claude")) &&
+                  forkmesh::ui::activeAgentAccount(
+                      QStringLiteral("claude-code")).label ==
+                      QStringLiteral("Work Claude"),
+              QStringLiteral("editing an account persists its label"));
+        if (accountMenu)
+            accountMenu->close();
         window.testSelectAgentAccount(QStringLiteral("claude-code"),
                                       QStringLiteral("default"));
     }
