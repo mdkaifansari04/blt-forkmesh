@@ -1067,6 +1067,11 @@ QStringList MainWindow::mentionCandidateNames() const
 
 void MainWindow::refreshRepositoryList()
 {
+    // A service-managed mirror companion has no visible repository UI.  In
+    // particular, directory and status callbacks must not reconstruct the
+    // repo switcher and implicitly select/open a repository every minute.
+    if (qEnvironmentVariableIsSet("FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     // Re-entrancy guard (adhoc #247): the periodic m_homeStatsTimer fires this once
     // a minute, which can land inside another heavy refresh's GitKeepAlive pump.
     // Running the per-repo git reads (mirror head/commit/size) plus
