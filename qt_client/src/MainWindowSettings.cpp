@@ -618,8 +618,8 @@ QWidget *MainWindow::buildSettingsSection()
     actionAlertCombo->addItem("Action pings: off", QStringLiteral("none"));
     actionAlertCombo->setToolTip(
         "Desktop notifications for .forkmesh/ workflows: pop one for every run "
-        "(start and finish), only when a run fails, or never. The in-app "
-        "Pings page logs every run regardless.");
+        "(start and finish, except manually stopped runs), only when a run "
+        "fails, or never. The in-app Pings page logs every run regardless.");
     {
         const int idx = actionAlertCombo->findData(actionAlertMode());
         actionAlertCombo->setCurrentIndex(idx < 0 ? 0 : idx);
