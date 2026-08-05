@@ -119,13 +119,15 @@ QString userSiteOnlyPackage()
 struct RunResult {
     bool signalOk = false;
     bool finished = false;
+    bool terminalRefreshCompleted = false;
     ActionRun persisted;
     QString log;
 };
 
 RunResult runWorkflow(const QString &repository, const QString &commit,
                       const QString &content, ActionStore *store,
-                      int runId, const ActionSandboxLimits &limits)
+                      int runId, const ActionSandboxLimits &limits,
+                      bool reenterOnTerminalStatus = false)
 {
     ActionRun run;
     run.id = runId;
@@ -150,6 +152,21 @@ RunResult runWorkflow(const QString &repository, const QString &commit,
     runner.setSandboxLimitsForTesting(limits);
     QEventLoop loop;
     RunResult result;
+    QObject::connect(
+        &runner, &ActionRunner::statusChanged, &loop,
+        [&](int id, const QString &status) {
+            if (!reenterOnTerminalStatus || id != runId ||
+                status == ActionStatus::Running)
+                return;
+            // Pull-check refreshes use a nested event loop for their Git probe.
+            // Exercise that same re-entrancy while the finished QProcess is
+            // pending deleteLater(); its destructor may dispatch final socket
+            // notifications before the outer event loop resumes.
+            QEventLoop refresh;
+            QTimer::singleShot(0, &refresh, &QEventLoop::quit);
+            refresh.exec();
+            result.terminalRefreshCompleted = true;
+        });
     QObject::connect(
         &runner, &ActionRunner::finished, &loop,
         [&](int id, bool ok) {
@@ -617,6 +634,23 @@ int main(int argc, char **argv)
                                     QDir::Dirs | QDir::NoDotAndDotDot)
                   .isEmpty(),
               "a finished run removes its own disposable tree");
+
+        const QString reentrantWorkflow = QStringLiteral(
+            "name: Reentrant completion\non: push\nsteps:\n"
+            "  - name: failing merge check\n"
+            "    run: printf 'final process output\\n'; exit 9\n");
+        check(writeFile(workflowPath, reentrantWorkflow.toUtf8()),
+              "reentrant completion workflow fixture is written");
+        const QString reentrantCommit =
+            commitAll(repository, QStringLiteral("reentrant completion workflow"));
+        const RunResult reentrant =
+            runWorkflow(repository, reentrantCommit, reentrantWorkflow,
+                        &store, 109, limits, true);
+        check(reentrant.finished && !reentrant.signalOk &&
+                  reentrant.persisted.status == ActionStatus::Failed &&
+                  reentrant.terminalRefreshCompleted &&
+                  reentrant.log.contains(QStringLiteral("final process output")),
+              "terminal pull-check refresh cannot outlive the finished process");
         QDir(liveTree).removeRecursively();
     }
 
