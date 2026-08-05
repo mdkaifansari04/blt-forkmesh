@@ -809,6 +809,18 @@ public:
     int testAgentDotCount() const;
     void testSetAgentSessionStatus(int sessionId, const QString &status);
     void testRemoveAgentSession(int sessionId);
+    // A transport can disappear while the persisted session is still marked
+    // Running.  Queue it without launching a real CLI so the UI test can prove
+    // that Continue (and a follow-up prompt) recovers this detached state.
+    bool testQueueDetachedRunningAgentSession(int sessionId)
+    {
+        continueAgentSession(sessionId, /*deferRefresh=*/true);
+        const AgentSession *session = findAgentSession(sessionId);
+        const bool queued = session && session->status == AgentStatus::Queued &&
+                            m_agentQueue.contains(sessionId);
+        m_agentQueue.removeAll(sessionId);
+        return queued;
+    }
     // Live search: type into the top bar the way a user does (textChanged drives
     // the whole feature), persist a line of a session's transcript, force the
     // debounced transcript scan to run now, and read the filtered list back.
