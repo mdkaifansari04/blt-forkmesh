@@ -38288,6 +38288,7 @@ def _org_agent_info_projection(value):
         "provider": 40,
         "model": 120,
         "mode": 80,
+        "strength": 32,
         "status": 32,
         "branchName": 240,
         "baseRef": 64,
