@@ -4489,8 +4489,6 @@ inline QVector<QPair<QString, QString>> cloudflareAiFallbackModels()
          QStringLiteral("Llama 4 Scout 17B")},
         {QStringLiteral("@cf/google/gemma-4-26b-a4b-it"),
          QStringLiteral("Gemma 4 26B")},
-        {QStringLiteral("@cf/zai-org/glm-4.7-flash"),
-         QStringLiteral("GLM 4.7 Flash")},
         {QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast"),
          QStringLiteral("Llama 3.1 8B (fast)")},
     };
