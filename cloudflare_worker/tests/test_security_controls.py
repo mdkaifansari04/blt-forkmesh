@@ -212,7 +212,10 @@ def test_schema_and_worker_keep_sensitive_planes_out_of_generic_admin():
 def test_worker_has_no_wallet_signing_or_transaction_submission_imports():
     worker = (SRC / "entry.py").read_text(encoding="utf-8")
     solana = (SRC / "solana.py").read_text(encoding="utf-8")
-    import_block = worker.split("from solana import (", 1)[1].split(")", 1)[0]
+    import_block = worker[
+        worker.index('_solana = _LazyModule("solana")'):
+        worker.index("MAX_ROOM_NAME =", worker.index('_solana ='))
+    ]
     for forbidden in (
         "_solana_sign_message", "_solana_transfer_message",
         "_solana_send_transaction", "_solana_latest_blockhash", "_shortvec",

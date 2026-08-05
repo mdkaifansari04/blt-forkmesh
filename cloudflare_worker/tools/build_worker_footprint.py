@@ -16,37 +16,53 @@ PUBLIC = ROOT / "public"
 VENDORED = ROOT / "python_modules"
 OUTPUT = PUBLIC / "world" / "worker-footprint.js"
 # Python Workers parse and execute global scope during deployment validation.
-# Keep optional route domains out of that path; entry.py loads each through its
-# _LazyModule proxy on the first request which uses it.
+# Keep optional route/build domains out of that path. entry.py reaches them
+# through a _LazyModule proxy, a request-local import, or another deferred
+# module only after the route which needs them runs.
 LAZY_MODULES = {
     "activitypub.py",
     "activitypub_threads.py",
     "badges.py",
     "blog_feed.py",
+    "catalog.py",
     "chat_channels_api.py",
     "chat_direct_messages_api.py",
     "community_ads_api.py",
+    "community_ads.py",
     "contributions.py",
+    "dashboard_bundle.py",
+    "dashboard_shell.py",
     "discord_rate.py",
     "edge_routing.py",
+    "events.py",
     "fediverse_digest.py",
     "fediverse_mentions_api.py",
+    "git_http.py",
+    "notes.py",
     "og_card.py",
     "organization_discord.py",
+    "organization_succession.py",
     "organization_succession_api.py",
+    "polar_integration.py",
     "pull_badge.py",
+    "releases.py",
     "mirrors.py",
     "repository_imports.py",
     "reward_policy.py",
     "security_controls.py",
     "security_scan_ingest.py",
+    "solana.py",
     "ssh_keys.py",
     "schema.py",
+    "static_routes.py",
+    "urls.py",
     "world.py",
     "world_build_board.py",
+    "world_community.py",
     "world_community_api.py",
     "world_element_store.py",
     "world_events_api.py",
+    "world_events.py",
     "world_infrastructure.py",
     "world_link_kiosk.py",
     "world_office_tasks.py",
@@ -81,7 +97,7 @@ WORKER_LIMITS = {
     "startupTimeMs": 1000,
     # Source bytes are not a heap measurement, but this reproducible ceiling
     # catches regressions that would make Python's startup validation unsafe.
-    "startupSourceBytesSoft": 2_500_000,
+    "startupSourceBytesSoft": 2_300_000,
     "dynamicRequestsFreeDaily": 100_000,
 }
 STATIC_LIMITS = {
