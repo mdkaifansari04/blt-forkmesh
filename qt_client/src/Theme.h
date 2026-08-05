@@ -650,7 +650,7 @@ QPushButton#memberDeleteButton:hover {
 }
 #issueQuickAdd {
     background-color: #0d1117; border: 1px solid #30363d;
-    border-radius: 6px; padding: 8px 10px; font-size: 13px;
+    border-radius: 6px; padding: 4px 10px; font-size: 13px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
 #promptWrapper {
@@ -2055,7 +2055,7 @@ QPushButton#memberDeleteButton:hover {
 }
 #issueQuickAdd {
     background-color: #ffffff; border: 1px solid #d0d7de;
-    border-radius: 6px; padding: 8px 10px; font-size: 13px;
+    border-radius: 6px; padding: 4px 10px; font-size: 13px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
 #promptWrapper {
