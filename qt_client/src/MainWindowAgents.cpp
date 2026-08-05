@@ -24,6 +24,8 @@
 #include <QFrame>
 #include <QShowEvent>
 
+#include <algorithm>
+
 using namespace forkmesh::ui;
 
 // ---- Agents ---------------------------------------------------------------
@@ -384,6 +386,58 @@ void summarizeAgentNumstat(const QByteArray &numstat, AgentDiffStat *stat)
     stat->removed = removed;
 }
 
+// Return the paths touched by commits that are genuinely unique to the agent
+// side.  `base..branch` is not sufficient after main is rewritten: every commit
+// from the former main lineage then appears branch-only, which made a two-file
+// task claim tens or hundreds of unrelated files.  Git's cherry comparison
+// removes patch-equivalent base commits even when their object ids changed.
+void parseAgentOwnedLog(const QByteArray &output, QSet<QString> *paths,
+                        QStringList *commits = nullptr)
+{
+    if (!paths)
+        return;
+    for (const QString &raw : QString::fromUtf8(output).split(
+             QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QString line = raw.trimmed();
+        if (line.isEmpty())
+            continue;
+        if (line.startsWith(QChar(0x1e))) {
+            if (commits)
+                commits->append(line.mid(1));
+            continue;
+        }
+        paths->insert(line);
+    }
+}
+
+bool readAgentOwnedPaths(const QString &gitDir, const QString &base,
+                         const QString &branch, QSet<QString> *paths)
+{
+    if (!paths || gitDir.isEmpty() || base.isEmpty() || branch.isEmpty())
+        return false;
+    QByteArray out;
+    if (!runGitCapture(
+            gitDir,
+            {QStringLiteral("log"), QStringLiteral("--no-merges"),
+             QStringLiteral("--cherry-pick"), QStringLiteral("--right-only"),
+             QStringLiteral("--format=%x1e%h %s"),
+             QStringLiteral("--name-only"),
+             base + QStringLiteral("...") + branch},
+            &out, nullptr))
+        return false;
+    parseAgentOwnedLog(out, paths);
+    return true;
+}
+
+QStringList literalPathspecs(const QSet<QString> &paths)
+{
+    QStringList sorted = paths.values();
+    std::sort(sorted.begin(), sorted.end());
+    for (QString &path : sorted)
+        path.prepend(QStringLiteral(":(literal)"));
+    return sorted;
+}
+
 QString backgroundDefaultBranch(const QString &gitDir, QString configured,
                                 QString checkedOut)
 {
@@ -461,11 +515,34 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
         // a small branch claim dozens of unrelated files.
         QByteArray liveDiff;
         QString liveError;
-        if (runGitCapture(gitDir,
-                          {QStringLiteral("diff"), QStringLiteral("--numstat"),
-                           base + QStringLiteral("...") + session.branchName},
-                          &liveDiff, &liveError))
+        QSet<QString> ownedPaths;
+        const bool ownedPathsOk =
+            readAgentOwnedPaths(gitDir, base, session.branchName, &ownedPaths);
+        if (ownedPathsOk) {
+            // A live branch is authoritative over an old stored patch.  Limit
+            // the net comparison to files touched by the branch's unique task
+            // commits so rewritten/merged base history cannot leak into the
+            // agent badge.
+            stat.files = 0;
+            stat.added = 0;
+            stat.removed = 0;
+            if (!ownedPaths.isEmpty()) {
+                QStringList diffArgs{QStringLiteral("diff"),
+                                     QStringLiteral("--numstat"), base,
+                                     session.branchName, QStringLiteral("--")};
+                diffArgs.append(literalPathspecs(ownedPaths));
+                if (runGitCapture(gitDir, diffArgs, &liveDiff, &liveError))
+                    summarizeAgentNumstat(liveDiff, &stat);
+            }
+        } else if (runGitCapture(
+                       gitDir,
+                       {QStringLiteral("diff"), QStringLiteral("--numstat"),
+                        base + QStringLiteral("...") + session.branchName},
+                       &liveDiff, &liveError)) {
+            // Preserve a useful fallback for unusual repositories whose refs
+            // cannot be cherry-compared (for example, shallow clones).
             summarizeAgentNumstat(liveDiff, &stat);
+        }
         QByteArray counts;
         if (runGitCapture(gitDir,
                           {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
@@ -1877,6 +1954,20 @@ private:
 };
 
 } // namespace
+
+#ifdef FORKMESH_WINDOW_TESTS
+QStringList MainWindow::testAgentOwnedDiffPaths(const QString &gitDir,
+                                                const QString &base,
+                                                const QString &branch) const
+{
+    QSet<QString> paths;
+    if (!readAgentOwnedPaths(gitDir, base, branch, &paths))
+        return {};
+    QStringList sorted = paths.values();
+    std::sort(sorted.begin(), sorted.end());
+    return sorted;
+}
+#endif
 
 QWidget *MainWindow::buildAgentsTab()
 {
@@ -12304,29 +12395,45 @@ void MainWindow::scheduleAgentFilesDiff(int sessionId)
             // subprocesses; render once, when the last one lands. A late result
             // for a session the user has since clicked away from is dropped.
             auto probe = std::make_shared<AgentDiffProbe>();
-            probe->pending = base.isEmpty() ? 2 : 4; // ahead/behind need a base
-            const auto finish = [this, sid, probe] {
+            // Status contributes uncommitted paths; the cherry-aware log
+            // contributes paths owned by patch-unique task commits.  Wait for
+            // those (and the behind count) before starting the one path-limited
+            // diff, otherwise a rewritten main can make an agent appear to own
+            // every file from the former base lineage.
+            probe->pending = base.isEmpty() ? 1 : 3;
+            const auto inputsDone = [this, sid, dir, base, probe] {
                 if (--probe->pending > 0)
                     return;
-                // A failed diff read (worktree vanished mid-run) keeps the last
-                // rendered view rather than blanking it, matching the old path.
-                if (probe->patchOk && sid == m_selectedAgentSessionId)
-                    renderAgentDiff(sid, *probe);
+                QSet<QString> visiblePaths = probe->ownedPaths;
+                visiblePaths.unite(probe->uncommitted);
+                if (!base.isEmpty() && visiblePaths.isEmpty()) {
+                    probe->patchOk = true;
+                    probe->patch.clear();
+                    if (sid == m_selectedAgentSessionId)
+                        renderAgentDiff(sid, *probe);
+                    return;
+                }
+                QStringList args{QStringLiteral("diff")};
+                if (!base.isEmpty()) {
+                    args << base << QStringLiteral("--");
+                    args.append(literalPathspecs(visiblePaths));
+                }
+                runGitDetached(
+                    dir, args,
+                    [this, sid, probe](bool ok, const QByteArray &out) {
+                        probe->patchOk = ok;
+                        if (ok)
+                            probe->patch = out;
+                        // A failed diff read (worktree vanished mid-run) keeps
+                        // the last rendered view rather than blanking it.
+                        if (ok && sid == m_selectedAgentSessionId)
+                            renderAgentDiff(sid, *probe);
+                    });
             };
-            QStringList args{QStringLiteral("diff")};
-            if (!base.isEmpty())
-                args << base;
-            runGitDetached(dir, args,
-                           [probe, finish](bool ok, const QByteArray &out) {
-                               probe->patchOk = ok;
-                               if (ok)
-                                   probe->patch = out;
-                               finish();
-                           });
             // One `status --porcelain` covers what used to be two reads (tracked
             // edits vs HEAD + untracked files): the ● "uncommitted" markers.
             runGitDetached(dir, {QStringLiteral("status"), QStringLiteral("--porcelain")},
-                           [probe, finish](bool ok, const QByteArray &out) {
+                           [probe, inputsDone](bool ok, const QByteArray &out) {
                                if (ok)
                                    for (QString line : QString::fromUtf8(out).split(
                                             QLatin1Char('\n'), Qt::SkipEmptyParts)) {
@@ -12340,29 +12447,34 @@ void MainWindow::scheduleAgentFilesDiff(int sessionId)
                                            p = p.mid(1, p.size() - 2);
                                        probe->uncommitted.insert(p.trimmed());
                                    }
-                               finish();
+                               inputsDone();
                            });
             if (!base.isEmpty()) {
-                // The commits this branch adds (list + count in one read)…
+                // Collect only patch-unique non-merge commits and the paths
+                // they own. This stays accurate when main is rebased/recreated
+                // and its equivalent commits acquire different object ids.
                 runGitDetached(dir,
-                               {QStringLiteral("log"), QStringLiteral("--format=%h %s"),
-                                base + QStringLiteral("..HEAD")},
-                               [probe, finish](bool ok, const QByteArray &out) {
+                               {QStringLiteral("log"), QStringLiteral("--no-merges"),
+                                QStringLiteral("--cherry-pick"),
+                                QStringLiteral("--right-only"),
+                                QStringLiteral("--format=%x1e%h %s"),
+                                QStringLiteral("--name-only"),
+                                base + QStringLiteral("...HEAD")},
+                               [probe, inputsDone](bool ok, const QByteArray &out) {
                                    if (ok)
-                                       probe->commitLines =
-                                           QString::fromUtf8(out).split(
-                                               QLatin1Char('\n'), Qt::SkipEmptyParts);
-                                   finish();
+                                       parseAgentOwnedLog(out, &probe->ownedPaths,
+                                                          &probe->commitLines);
+                                   inputsDone();
                                });
                 // …and how far it trails the base branch's live tip.
                 runGitDetached(dir,
                                {QStringLiteral("rev-list"), QStringLiteral("--count"),
                                 QStringLiteral("HEAD..") + base},
-                               [probe, finish](bool ok, const QByteArray &out) {
+                               [probe, inputsDone](bool ok, const QByteArray &out) {
                                    if (ok)
                                        probe->behind =
                                            QString::fromUtf8(out).trimmed().toInt();
-                                   finish();
+                                   inputsDone();
                                });
             }
         });
