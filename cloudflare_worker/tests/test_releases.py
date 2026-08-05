@@ -36,13 +36,17 @@ def _load(*names):
         RELEASES.read_text(encoding="utf-8"), filename=str(RELEASES))
     wanted = set(names)
     body = []
+    selected = set()
     for node in list(urls_tree.body) + list(releases_tree.body) + list(tree.body):
         if isinstance(node, ast.FunctionDef) and node.name in wanted:
             body.append(node)
+            selected.add(node.name)
         elif isinstance(node, ast.Assign):
             targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
-            if targets & wanted:
+            matched = (targets & wanted) - selected
+            if matched:
                 body.append(node)
+                selected.update(matched)
     module = ast.fix_missing_locations(ast.Module(body=body, type_ignores=[]))
     namespace = {"re": __import__("re")}
     exec(compile(module, str(ENTRY), "exec"), namespace)
