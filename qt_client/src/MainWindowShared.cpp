@@ -319,8 +319,33 @@ namespace {
 // "content omitted" placeholders or an ever-growing rich-text document.
 constexpr qsizetype kDiffFirstPaintChars = 12'000;
 constexpr qsizetype kDiffStreamBatchChars = 12'000;
-constexpr qsizetype kDiffFragmentChars = 12'000;
-constexpr qsizetype kDiffPageChars = 180'000;
+constexpr qsizetype kDiffMaxSourceChars = 2 * 1024 * 1024;
+constexpr qsizetype kDiffMaxFileBlockChars = 180 * 1024;
+constexpr qsizetype kDiffMaxDocumentChars = 1024 * 1024;
+
+// QTextDocument is not virtualized: inserting another row can relayout the
+// entire table already above it. Multi-megabyte generated HTML therefore gets
+// progressively *slower* even when it arrives in event-loop-sized batches. Keep
+// each file body and the complete rich-text body bounded. Headers/anchors remain
+// for every file, and a clear placeholder points readers to the full patch.
+QString responsiveDiffBlock(const QString &block, bool headerOnly)
+{
+    if (!headerOnly && block.size() <= kDiffMaxFileBlockChars)
+        return block;
+    // Keep the anchor and file header, but never feed one generated file's
+    // multi-megabyte table into QTextDocument. It is not virtualized: even a
+    // 12k streamed append relayouts everything above it, and diagnostics caught
+    // single appends between 176M and 189M characters taking two minutes.
+    int body = block.indexOf(QStringLiteral("<table"));
+    if (body < 0)
+        body = block.indexOf(QStringLiteral("<pre"));
+    QString prefix = body > 0 ? block.left(body) : QString();
+    return prefix +
+           QStringLiteral(
+               "<div class='diffomitted'>Diff content omitted from this preview "
+               "to keep the app responsive. The complete patch remains attached "
+               "to the open pull request.</div></div>");
+}
 
 // Split rendered diff HTML into its self-contained per-file blocks. Each file's
 // block begins with its `<a name="file-N"></a>` anchor (see diffFileHeaderHtml)
@@ -338,7 +363,9 @@ QStringList splitDiffFileBlocks(const QString &html)
         blocks.append(html.left(pos)); // preamble before the first file (if any)
     while (pos >= 0) {
         const int next = html.indexOf(marker, pos + marker.size());
-        blocks.append(html.mid(pos, next < 0 ? -1 : next - pos));
+        QString block = html.mid(pos, next < 0 ? -1 : next - pos);
+        block = responsiveDiffBlock(block, false);
+        blocks.append(std::move(block));
         pos = next;
     }
     return blocks;
@@ -618,11 +645,35 @@ void renderDiffPage(QTextEdit *view, int page)
     state.pending.clear();
     const int gen = state.gen;
 
-    QStringList blocks = state.pages.at(state.page);
-    const QString nav = diffPaginationHtml(state.page, int(state.pages.size()));
-    if (!nav.isEmpty()) {
-        blocks.first().prepend(nav);
-        blocks.last().append(nav);
+    QString first = html;
+    // Always split anchored diffs, even when there is only one file: a single
+    // generated lockfile/API snapshot was the worst multi-megabyte stall in the
+    // diagnostics log, and the old `blocks.size() > 1` condition bypassed all
+    // progressive/bounded handling for exactly that case.
+    QStringList blocks = splitDiffFileBlocks(html);
+    if (!(blocks.size() == 1 && blocks.first() == html)) {
+        qsizetype retained = 0;
+        bool documentCapped = false;
+        for (int i = 0; i < blocks.size(); ++i) {
+            if (retained + blocks.at(i).size() > kDiffMaxDocumentChars) {
+                blocks[i] = responsiveDiffBlock(blocks.at(i), true);
+                documentCapped = true;
+            }
+            retained += blocks.at(i).size();
+            if (retained > kDiffMaxDocumentChars + kDiffMaxFileBlockChars) {
+                blocks.erase(blocks.begin() + i + 1, blocks.end());
+                break;
+            }
+        }
+        Q_UNUSED(documentCapped);
+        first.clear();
+        // Same no-overshoot rule as the streamed batches: the first paint used
+        // to take one block too many and lay out up to ~130k chars in one turn.
+        while (!blocks.isEmpty() &&
+               (first.isEmpty() ||
+                first.size() + blocks.first().size() <= kDiffFirstPaintChars))
+            first += blocks.takeFirst();
+        state.pending = blocks;
     }
     QString first;
     while (!blocks.isEmpty() &&
@@ -1090,6 +1141,50 @@ QString diffImageCellHtml(const QString &label, const QString &path,
              QString::fromLatin1(bytes.toBase64()), caption);
 }
 
+// `git show <ref>:<path>` for an image blob, memoised. A commit-ish ref names
+// immutable content, so the answer never changes — yet the agent-diff view
+// re-renders on every transcript burst while an agent streams, and each render
+// used to re-spawn this read for every image in the patch. On the GUI thread
+// runGitCapture pumps the event loop, so those repeats showed up as one 13.4 s
+// "git show main:…/forkmesh.png (not backgrounded)" wait with the whole diff
+// render nested inside it. Guarded by a mutex because the renderers now also run
+// on worker threads (see MainWindow::renderAgentDiff).
+//
+// `ref` is often a branch name (or HEAD), which does move, so entries expire:
+// a preview can lag a just-moved base branch by at most kBlobTtlMs, which is far
+// below the interval at which anyone notices an image changed and far above the
+// re-render rate that made this expensive.
+QByteArray diffImageBlob(const QString &dir, const QString &ref, const QString &path)
+{
+    constexpr qint64 kBlobTtlMs = 30'000;
+    struct CachedBlob {
+        QByteArray bytes;
+        qint64 readAtMs = 0;
+    };
+    const QString key = dir + QLatin1Char('\n') + ref + QLatin1Char('\n') + path;
+    static QMutex mutex;
+    static QHash<QString, CachedBlob> cache;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    {
+        QMutexLocker locker(&mutex);
+        const auto hit = cache.constFind(key);
+        if (hit != cache.constEnd() && now - hit->readAtMs < kBlobTtlMs)
+            return hit->bytes;
+    }
+    QByteArray bytes;
+    if (!runGitCapture(dir, {QStringLiteral("show"), ref + QLatin1Char(':') + path},
+                       &bytes, nullptr))
+        bytes.clear();
+    QMutexLocker locker(&mutex);
+    // Bound the cache: a long session browsing many refs must not accumulate
+    // every blob it ever previewed. Previews are capped at 512 KiB each, so this
+    // ceiling keeps the whole cache to a few tens of megabytes at worst.
+    if (cache.size() > 64)
+        cache.clear();
+    cache.insert(key, CachedBlob{bytes, now});
+    return bytes;
+}
+
 QString diffImagePreviewHtml(const QString &dir, const QString &base,
                              const QString &head, const DiffFileEntry &f)
 {
@@ -1108,8 +1203,8 @@ QString diffImagePreviewHtml(const QString &dir, const QString &base,
     QByteArray oldBytes;
     if (f.status != QLatin1String("added") && !dir.isEmpty()) {
         const QString oldRef = base.isEmpty() ? QStringLiteral("HEAD") : base;
-        if (!runGitCapture(dir, {"show", oldRef + ":" + path}, &oldBytes, nullptr) ||
-            oldBytes.size() > kMaxInlineImageBytes)
+        oldBytes = diffImageBlob(dir, oldRef, path);
+        if (oldBytes.size() > kMaxInlineImageBytes)
             oldBytes.clear();
     }
     QByteArray newBytes;
@@ -1121,7 +1216,7 @@ QString diffImagePreviewHtml(const QString &dir, const QString &base,
                     newBytes = file.readAll();
             }
         } else {
-            runGitCapture(dir, {"show", head + ":" + path}, &newBytes, nullptr);
+            newBytes = diffImageBlob(dir, head, path);
         }
         if (newBytes.size() > kMaxInlineImageBytes)
             newBytes.clear();
@@ -1857,18 +1952,50 @@ void applyDiffSearchHighlights(QTextBrowser *diff,
                                         .arg(matches.size()));
 }
 
-// Dispatch to the split or unified renderer based on the current preference.
+// Dispatch to the split or unified renderer. Neither reads GUI state, so this
+// half is safe to run on a worker thread as long as the split/unified preference
+// (a QSettings read) is resolved by the caller — that is what the *Split
+// overload is for.
+QString renderDiffHtmlSplit(bool split, const QString &patch,
+                            QList<DiffFileEntry> &files, const QString &dir,
+                            const QString &base, const QString &head,
+                            const QString &anchorFile,
+                            const QHash<QString, QString> &lineNotes,
+                            const QSet<QString> &viewedFiles)
+{
+    QString boundedPatch = patch;
+    const bool sourceCapped = patch.size() > kDiffMaxSourceChars;
+    if (sourceCapped) {
+        qsizetype end = patch.lastIndexOf(QStringLiteral("\ndiff --git "),
+                                          kDiffMaxSourceChars);
+        if (end < kDiffMaxSourceChars / 2)
+            end = patch.lastIndexOf(QLatin1Char('\n'), kDiffMaxSourceChars);
+        if (end < 0)
+            end = kDiffMaxSourceChars;
+        boundedPatch = patch.left(end);
+    }
+    QString html =
+        split ? renderSplitDiffHtml(boundedPatch, files, dir, base, head,
+                                    anchorFile, lineNotes, viewedFiles)
+              : renderUnifiedDiffHtml(boundedPatch, files, dir, base, head,
+                                      anchorFile, lineNotes, viewedFiles);
+    if (sourceCapped) {
+        html += QStringLiteral(
+            "<div class='diffomitted'>Additional diff content omitted from this "
+            "preview to keep the app responsive. The complete patch remains "
+            "attached to the open pull request.</div>");
+    }
+    return html;
+}
+
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QString &dir, const QString &base, const QString &head,
                        const QString &anchorFile,
                        const QHash<QString, QString> &lineNotes,
                        const QSet<QString> &viewedFiles)
 {
-    return diffSplitPref()
-               ? renderSplitDiffHtml(patch, files, dir, base, head, anchorFile,
-                                     lineNotes, viewedFiles)
-               : renderUnifiedDiffHtml(patch, files, dir, base, head, anchorFile,
-                                       lineNotes, viewedFiles);
+    return renderDiffHtmlSplit(diffSplitPref(), patch, files, dir, base, head,
+                               anchorFile, lineNotes, viewedFiles);
 }
 
 // Theme-aware stylesheet for the diff HTML produced by the renderers above,

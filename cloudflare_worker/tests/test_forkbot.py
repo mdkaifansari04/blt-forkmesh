@@ -4,6 +4,7 @@
 import ast
 import asyncio
 import base64
+import hashlib
 import json
 import re
 import tomllib
@@ -22,6 +23,12 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 CATALOG_TEXT = CATALOG.read_text(encoding="utf-8")
 CHAT_TEXT = (PUBLIC / "chat.js").read_text(encoding="utf-8")
 DASHBOARD_CHAT_TEXT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
+CHAT_HTML_TEXT = (PUBLIC / "chat.html").read_text(encoding="utf-8")
+CHAT_CSS_TEXT = (PUBLIC / "chat.css").read_text(encoding="utf-8")
+DASHBOARD_TEXT = (PUBLIC / "dashboard.js").read_text(encoding="utf-8")
+DASHBOARD_HOME_TEXT = (
+    PUBLIC / "dashboard" / "partials" / "views" / "home.html"
+).read_text(encoding="utf-8")
 WRANGLER_DATA = tomllib.loads(WRANGLER.read_text(encoding="utf-8"))
 
 FUNCS = {
@@ -65,6 +72,15 @@ FUNCS = {
     "_forkbot_json_object_from_text",
     "_forkbot_clean_ai_issue_fields",
     "_forkbot_run_ai",
+    "_forkbot_ai_default_model",
+    "_forkbot_ai_model_options",
+    "_forkbot_resolve_ai_model",
+    "_forkbot_ai_model_not_found_error",
+    "_forkbot_ai_fallback_models",
+    "forkbot_models_handler",
+    "ai_ask_handler",
+    "_ai_ask_rate_check",
+    "valid_node_name",
     "_forkbot_ai_issue_fields",
     "_forkbot_ai_interpret",
     "_forkbot_next_issue_number",
@@ -82,6 +98,15 @@ CONSTANTS = {
     "FORKBOT_DEFAULT_REPO",
     "FORKBOT_MAX_COMMAND",
     "FORKBOT_AI_DEFAULT_MODEL",
+    "FORKBOT_AI_MODEL_CHOICES",
+    "AI_ASK_MAX_PROMPT",
+    "AI_ASK_MAX_REPLY",
+    "AI_ASK_MAX_TOKENS",
+    "AI_ASK_RATE_WINDOW_MS",
+    "AI_ASK_MAX_PER_WINDOW",
+    "AI_ASK_SYSTEM_PROMPT",
+    "LOGIN_MAX_SKEW_MS",
+    "NODE_NAME_RE",
     "FORKBOT_CONTEXT_MAX_MESSAGES",
     "FORKBOT_CONTEXT_MAX_CHARS",
     "FORKBOT_LIST_DEFAULT",
@@ -195,11 +220,15 @@ def _issue_blobs(records):
 
 
 def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
-                   org_node=""):
+                   org_node="", signature_ok=True, signed_model=None,
+                   ai_ask_used=0):
+    # signed_model: the model id the caller's signature actually covers, so a
+    # test can prove /api/ai/ask verifies the client's own pick rather than a
+    # server-resolved substitute.
     # org_node: the account backing forkmesh/forkmesh when that public name is
     # an organization alias ("" = a plain node name that resolves to itself).
     calls = {"inserted": [], "contributors": [], "side_effects": [],
-             "hostNotifies": [], "rekeyed": []}
+             "hostNotifies": [], "rekeyed": [], "aiAskRate": [], "signed": []}
 
     class _Env:
         AI = ai
@@ -215,7 +244,16 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
     # catalog record's issueMaxNumber the first time a repo is used.
     seq = {}
 
+    # Per-account Workers AI window for POST /api/ai/ask. ai_ask_used seeds how
+    # many prompts this account already spent in the current window.
+    ask_window = {"count": ai_ask_used, "start": int(_Date.now())}
+
     async def d1_first(_env, sql, *args):
+        if "INSERT INTO ai_ask_rate" in sql:
+            ask_window["count"] += 1
+            calls["aiAskRate"].append(args[0])
+            return {"count": ask_window["count"],
+                    "window_start_ts": ask_window["start"]}
         if "SELECT COUNT(*) AS c FROM issue_inbox" in sql:
             return {"c": 0}
         if "WHERE repo_bi=? AND submitter_bi=?" in sql:
@@ -283,8 +321,20 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
     async def write_error_log(*_args, **_kwargs):
         return None
 
+    async def verify_owner_signature(_env, owner, sig, canonical):
+        text = canonical.decode()
+        calls["signed"].append((owner, sig, text))
+        if signed_model is not None:
+            return text.split("\n")[3] == signed_model
+        return bool(signature_ok)
+
+    async def sha256_hex(text):
+        return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+
     runtime = {
         "_is_admin": is_admin,
+        "_verify_owner_signature": verify_owner_signature,
+        "sha256_hex": sha256_hex,
         "Date": _Date,
         "json_response": _json_response,
         "ensure_schema": ensure_schema,
@@ -501,7 +551,7 @@ def test_forkbot_uses_workers_ai_for_issue_title_and_body_when_available():
     ))
 
     assert response["status"] == 201
-    assert ai.model == "@cf/meta/llama-3.1-8b-instruct"
+    assert ai.model == ns["FORKBOT_AI_DEFAULT_MODEL"]
     assert ai.payload["messages"][0]["role"] == "system"
     assert calls["inserted"][0][1]["titleIfNew"] == "Make logs searchable"
     # No sender in the request -> the footer still credits ForkBot/the source.
@@ -655,8 +705,464 @@ def test_forkbot_attributed_body_credits_source_and_requester():
 def test_forkbot_route_and_workers_ai_binding_are_configured():
     assert '"/api/forkbot/chat"' in ENTRY_TEXT
     assert "return await forkbot_chat_handler(self.env, request)" in ENTRY_TEXT
+    assert '"/api/forkbot/models"' in ENTRY_TEXT
+    assert "return await forkbot_models_handler(self.env, request)" in ENTRY_TEXT
     assert WRANGLER_DATA["ai"]["binding"] == "AI"
     assert WRANGLER_DATA["vars"]["FORKBOT_AI_MODEL"].startswith("@cf/")
+
+
+def test_forkbot_model_catalog_lists_the_deployed_default():
+    # Every pickable id is a Workers AI model id, and the model wrangler.toml
+    # actually deploys is one of them (else the picker's "default" option would
+    # be a model the relay never uses).
+    ns = _load_forkbot()
+    ids = [entry[0] for entry in ns["FORKBOT_AI_MODEL_CHOICES"]]
+    assert ids
+    assert all(model_id.startswith("@cf/") for model_id in ids)
+    assert len(set(ids)) == len(ids)
+    assert WRANGLER_DATA["vars"]["FORKBOT_AI_MODEL"] in ids
+    assert ns["FORKBOT_AI_DEFAULT_MODEL"] == \
+        WRANGLER_DATA["vars"]["FORKBOT_AI_MODEL"]
+    assert set(ids) == {
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "@cf/meta/llama-4-scout-17b-16e-instruct",
+        "@cf/google/gemma-4-26b-a4b-it",
+        "@cf/zai-org/glm-4.7-flash",
+        "@cf/meta/llama-3.1-8b-instruct-fast",
+    }
+    # Cloudflare retired both of these on 2026-05-30. Keep an explicit guard
+    # so the server and offline desktop picker cannot accidentally reintroduce
+    # an id that looks valid but no longer answers.
+    assert "@cf/meta/llama-3.1-8b-instruct" not in ids
+    assert "@cf/google/gemma-3-12b-it" not in ids
+
+
+def test_forkbot_model_options_put_the_configured_default_first():
+    ns = _load_forkbot()
+    options = ns["_forkbot_ai_model_options"](
+        type("E", (), {"FORKBOT_AI_MODEL":
+                       "@cf/meta/llama-3.1-8b-instruct-fast"})())
+    assert options[0]["id"] == "@cf/meta/llama-3.1-8b-instruct-fast"
+    assert options[0]["default"] is True
+    assert [option["default"] for option in options[1:]] == \
+        [False] * (len(options) - 1)
+    # A self-hosted relay pointing at its own model still gets a selectable
+    # default option for it rather than a picker that cannot choose it.
+    custom = ns["_forkbot_ai_model_options"](
+        type("E", (), {"FORKBOT_AI_MODEL": "@cf/self/hosted-model"})())
+    assert custom[0]["id"] == "@cf/self/hosted-model"
+    assert custom[0]["default"] is True
+    assert len(custom) == len(ns["FORKBOT_AI_MODEL_CHOICES"]) + 1
+
+
+def test_forkbot_resolves_only_allowlisted_model_picks():
+    ns = _load_forkbot()
+    env = type("E", (), {"FORKBOT_AI_MODEL": ""})()
+    resolve = ns["_forkbot_resolve_ai_model"]
+    default = ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert resolve(env, "@cf/meta/llama-4-scout-17b-16e-instruct") == \
+        "@cf/meta/llama-4-scout-17b-16e-instruct"
+    # Empty, unknown, and non-string picks all fall back to the default rather
+    # than erroring: a stale browser pick must not turn ForkBot off, and an
+    # unlisted id must never reach env.AI.run (it bills whatever it is handed).
+    assert resolve(env, "") == default
+    assert resolve(env, "@cf/expensive/not-offered") == default
+    assert resolve(env, None) == default
+    assert resolve(env, 17) == default
+
+
+def test_forkbot_models_endpoint_lists_picks_for_the_composer():
+    _env, _calls, ns = _env_and_calls()
+    request = _Request({})
+    request.method = "GET"
+    response = asyncio.run(ns["forkbot_models_handler"](
+        type("E", (), {"FORKBOT_AI_MODEL": ""})(), request))
+    assert response["status"] == 200
+    assert response["data"]["provider"] == "cloudflare-workers-ai"
+    assert response["data"]["default"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    first = response["data"]["models"][0]
+    assert first["id"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert first["label"] and first["description"]
+
+    request.method = "POST"
+    assert asyncio.run(ns["forkbot_models_handler"](
+        type("E", (), {"FORKBOT_AI_MODEL": ""})(), request))["status"] == 405
+
+
+def test_forkbot_chat_sends_the_prompt_to_the_picked_model():
+    class _AI:
+        async def run(self, model, payload):
+            self.model = model
+            self.payload = payload
+            return {"response": json.dumps(
+                {"title": "Cache clone refs", "body": "Refs re-read per clone."})}
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(ai=ai)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot create an issue to cache clone refs",
+        "model": "@cf/meta/llama-4-scout-17b-16e-instruct",
+    })))
+    assert response["status"] == 201
+    assert ai.model == "@cf/meta/llama-4-scout-17b-16e-instruct"
+    # The reply names the model that answered, so the composer can show it.
+    assert response["data"]["model"] == "@cf/meta/llama-4-scout-17b-16e-instruct"
+    assert calls["inserted"][0][1]["titleIfNew"] == "Cache clone refs"
+
+    # An unlisted pick is ignored in favor of the deployment default.
+    ai2 = _AI()
+    env2, _calls2, ns2 = _env_and_calls(ai=ai2)
+    asyncio.run(ns2["forkbot_chat_handler"](env2, _Request({
+        "message": "forkbot create an issue to cache clone refs",
+        "model": "@cf/somebody/expensive-model",
+    })))
+    assert ai2.model == ns2["FORKBOT_AI_DEFAULT_MODEL"]
+
+
+def _ask_request(body, method="POST"):
+    request = _Request(body)
+    request.method = method
+    return request
+
+
+def _signed_ask_body(ns, prompt, model, account="jett", ts=None):
+    return {
+        "nodeName": account,
+        "prompt": prompt,
+        "model": model,
+        "ts": str(ts if ts is not None else _Date.now()),
+        "sig": "sig-" + account,
+    }
+
+
+def test_ai_ask_sends_the_prompt_to_the_picked_model():
+    class _AI:
+        async def run(self, model, payload):
+            self.model = model
+            self.payload = payload
+            return {"response": "Rebase onto main, then force-push the branch."}
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(ai=ai)
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "how do I redo this branch?",
+                         "@cf/meta/llama-4-scout-17b-16e-instruct"))))
+
+    assert response["status"] == 200
+    assert response["data"]["model"] == "@cf/meta/llama-4-scout-17b-16e-instruct"
+    assert response["data"]["reply"] == (
+        "Rebase onto main, then force-push the branch.")
+    assert ai.model == "@cf/meta/llama-4-scout-17b-16e-instruct"
+    # A plain answer, not ForkBot's JSON-mode issue schema, and bounded output.
+    assert "response_format" not in ai.payload
+    assert ai.payload["max_tokens"] == ns["AI_ASK_MAX_TOKENS"]
+    assert ai.payload["messages"][0]["content"] == ns["AI_ASK_SYSTEM_PROMPT"]
+    # The signature covers the account, timestamp, model and a digest of the
+    # prompt, so it cannot be replayed with different text or a costlier model.
+    _owner, _sig, canonical = calls["signed"][0]
+    lines = canonical.split("\n")
+    assert lines[0] == "forkmesh-ai-ask-v1"
+    assert lines[1] == "jett"
+    assert lines[3] == "@cf/meta/llama-4-scout-17b-16e-instruct"
+    assert lines[4] == hashlib.sha256(
+        b"how do I redo this branch?").hexdigest()
+    # Every answered prompt is counted against this account's window.
+    assert calls["aiAskRate"] == ["bi:jett"]
+
+
+def test_ai_ask_dispatches_to_every_published_model():
+    ns = _load_forkbot()
+    for model_id, _label, _description in ns["FORKBOT_AI_MODEL_CHOICES"]:
+        class _AI:
+            async def run(self, model, payload):
+                self.model = model
+                self.payload = payload
+                return {"response": "answer from " + model}
+
+        ai = _AI()
+        env, _calls, loaded = _env_and_calls(ai=ai)
+        response = asyncio.run(loaded["ai_ask_handler"](
+            env,
+            _ask_request(_signed_ask_body(
+                loaded, "identify yourself", model_id)),
+        ))
+        assert response["status"] == 200, model_id
+        assert response["data"]["model"] == model_id
+        assert response["data"]["reply"] == "answer from " + model_id
+        assert ai.model == model_id
+        assert ai.payload["messages"][1] == {
+            "role": "user", "content": "identify yourself"}
+
+
+def test_ai_ask_reads_current_chat_completion_response_shapes():
+    responses = {
+        "@cf/zai-org/glm-4.7-flash": {
+            "choices": [{"message": {"content": "GLM answered."}}]},
+        "@cf/google/gemma-4-26b-a4b-it": {
+            "choices": [{"message": {"content": [
+                {"type": "text", "text": "Gemma "},
+                {"type": "text", "text": "answered."},
+            ]}}]},
+    }
+
+    class _AI:
+        async def run(self, model, _payload):
+            return responses[model]
+
+    for model_id, expected in (
+        ("@cf/zai-org/glm-4.7-flash", "GLM answered."),
+        ("@cf/google/gemma-4-26b-a4b-it", "Gemma answered."),
+    ):
+        env, _calls, ns = _env_and_calls(ai=_AI())
+        response = asyncio.run(ns["ai_ask_handler"](
+            env,
+            _ask_request(_signed_ask_body(ns, "hello", model_id)),
+        ))
+        assert response["status"] == 200
+        assert response["data"]["model"] == model_id
+        assert response["data"]["reply"] == expected
+
+
+def test_ai_ask_falls_back_without_running_an_unpublished_model():
+    class _AI:
+        async def run(self, model, _payload):
+            self.model = model
+            return {"response": "Answered by the published default."}
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(ai=ai)
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "why is build flaky?",
+                         "@cf/ghost/llama-999"))))
+    assert response["status"] == 200
+    assert response["data"]["model"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert ai.model == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert ai.model != "@cf/ghost/llama-999"
+    assert calls["aiAskRate"] == ["bi:jett"]
+
+
+def test_ai_ask_reports_all_published_models_missing():
+    class _AI:
+        async def run(self, _model, _payload):
+            raise RuntimeError("5007: No such model or task")
+
+    env, calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "why is build flaky?",
+                         "@cf/meta/llama-4-scout-17b-16e-instruct"))))
+    assert response["status"] == 502
+    assert response["data"]["error"] == "model_not_found"
+    assert calls["aiAskRate"] == ["bi:jett"]
+
+
+def test_ai_ask_retries_with_fallback_model_on_model_not_found():
+    class _AI:
+        def __init__(self):
+            self.models = []
+
+        async def run(self, model, payload):
+            self.models.append(model)
+            if model == "@cf/meta/llama-4-scout-17b-16e-instruct":
+                raise RuntimeError("The AI model was not found.")
+            return {"response": "Use fallback model response."}
+
+    env, calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "how do I redo this branch?",
+                         "@cf/meta/llama-4-scout-17b-16e-instruct"))))
+
+    assert response["status"] == 200
+    assert response["data"]["model"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert response["data"]["reply"] == "Use fallback model response."
+    assert env.AI.models == [
+        "@cf/meta/llama-4-scout-17b-16e-instruct",
+        ns["FORKBOT_AI_DEFAULT_MODEL"],
+    ]
+    # Every answered prompt is counted against this account's window.
+    assert calls["aiAskRate"] == ["bi:jett"]
+
+
+def test_ai_ask_answers_a_pick_this_relay_does_not_allowlist():
+    # The desktop signs the model IT picked. When that id is not in this
+    # relay's allowlist the prompt still has to be answered by the default
+    # model: verifying the *resolved* id instead turned every unknown pick
+    # into a bogus 401 "not authorized to sign for the account".
+    class _AI:
+        async def run(self, model, _payload):
+            self.model = model
+            return {"response": "Answered by the default model."}
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(
+        ai=ai, signed_model="@cf/newer/model-this-relay-never-heard-of")
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "how do I redo this branch?",
+                         "@cf/newer/model-this-relay-never-heard-of"))))
+
+    assert response["status"] == 200
+    assert response["data"]["model"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert ai.model == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    # The verified signature covers exactly the string the client sent.
+    assert calls["signed"][0][2].split("\n")[3] == (
+        "@cf/newer/model-this-relay-never-heard-of")
+    # An allowlisted pick keeps verifying against a relay-resolved id too, so
+    # older clients that signed whatever the relay handed them still work.
+    resolved_env, _resolved_calls, resolved_ns = _env_and_calls(
+        ai=_AI(), signed_model=None)
+    assert asyncio.run(resolved_ns["ai_ask_handler"](
+        resolved_env, _ask_request(_signed_ask_body(
+            resolved_ns, "hello", "@cf/google/gemma-4-26b-a4b-it"))
+    ))["status"] == 200
+
+
+def test_ai_ask_reports_model_not_found_apart_from_other_failures():
+    # Every candidate rejected as "no such model" is the one failure the person
+    # at the composer can act on, so it must not read as "the model did not
+    # answer" (nor as the relay missing the endpoint entirely).
+    class _AI:
+        async def run(self, _model, _payload):
+            raise RuntimeError("5007: No such model or task")
+
+    env, _calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "why is the build red?", ""))))
+    assert response["status"] == 502
+    assert response["data"]["error"] == "model_not_found"
+
+    # The desktop maps that error to its own wording, and keeps a bare 404
+    # (a relay that predates /api/ai/ask) out of the model-not-found story.
+    chat = (ROOT.parent / "qt_client" / "src" / "MainWindowChat.cpp").read_text(
+        encoding="utf-8")
+    assert 'error == QLatin1String("model_not_found")' in chat
+    assert "this relay does not answer AI prompts " in chat
+
+
+def test_ai_ask_refuses_unsigned_stale_and_unverified_callers():
+    env, calls, ns = _env_and_calls(ai=object())
+    # No signature at all.
+    unsigned = _signed_ask_body(ns, "hello", "")
+    unsigned.pop("sig")
+    assert asyncio.run(ns["ai_ask_handler"](
+        env, _ask_request(unsigned)))["status"] == 401
+    # A signature from outside the skew window.
+    stale = _signed_ask_body(ns, "hello", "",
+                             ts=_Date.now() - ns["LOGIN_MAX_SKEW_MS"] - 1)
+    assert asyncio.run(ns["ai_ask_handler"](
+        env, _ask_request(stale)))["data"]["error"] == "stale_signature"
+    # GET is not an answer path, and an empty prompt is not a question.
+    assert asyncio.run(ns["ai_ask_handler"](
+        env, _ask_request(_signed_ask_body(ns, "hi", ""), method="GET")
+    ))["status"] == 405
+    blank = _signed_ask_body(ns, "   ", "")
+    assert asyncio.run(ns["ai_ask_handler"](
+        env, _ask_request(blank)))["data"]["error"] == "prompt_required"
+    # Nothing billed a Workers AI call on any of these paths.
+    assert calls["aiAskRate"] == []
+
+    # A key that is not trusted for the claimed account is rejected, so the
+    # relay never answers (and never bills) for a self-asserted node name.
+    bad_env, bad_calls, bad_ns = _env_and_calls(ai=object(), signature_ok=False)
+    denied = asyncio.run(bad_ns["ai_ask_handler"](
+        bad_env, _ask_request(_signed_ask_body(bad_ns, "hello", ""))))
+    assert denied["status"] == 401
+    assert denied["data"]["error"] == "unauthorized"
+    assert bad_calls["aiAskRate"] == []
+
+
+def test_ai_ask_holds_a_per_account_hourly_window():
+    class _AI:
+        async def run(self, _model, _payload):
+            return {"response": "ok"}
+
+    env, _calls, ns = _env_and_calls(
+        ai=_AI(), ai_ask_used=ns_max_per_window_seed())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "one more", ""))))
+    assert response["status"] == 429
+    assert response["data"]["error"] == "rate_limited"
+    assert response["data"]["retryAfterMs"] > 0
+
+
+def ns_max_per_window_seed():
+    # The window is already full, so the next prompt is the one over the line.
+    return _load_forkbot()["AI_ASK_MAX_PER_WINDOW"]
+
+
+def test_ai_ask_reports_an_unusable_model_instead_of_an_empty_answer():
+    class _AI:
+        async def run(self, _model, _payload):
+            raise RuntimeError("model unavailable")
+
+    env, _calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "why is the build red?", ""))))
+    assert response["status"] == 502
+    assert response["data"]["error"] == "ai_unavailable"
+    assert response["data"]["model"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+
+
+def test_ai_ask_route_and_rate_table_are_wired():
+    assert '"/api/ai/ask"' in ENTRY_TEXT
+    assert "return await ai_ask_handler(self.env, request)" in ENTRY_TEXT
+    schema = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS ai_ask_rate" in schema
+
+
+def test_qt_composer_picks_a_cloudflare_model_for_the_prompt():
+    qt = ROOT.parent / "qt_client" / "src"
+    internal = (qt / "MainWindowInternal.h").read_text(encoding="utf-8")
+    chat = (qt / "MainWindowChat.cpp").read_text(encoding="utf-8")
+    issues = (qt / "MainWindowIssues.cpp").read_text(encoding="utf-8")
+    # The composer's combined agent+model menu carries the Workers AI models as
+    # their own group, and the provider survives a restart.
+    assert 'kCloudflareAiProvider = QStringLiteral("cloudflare-ai")' in internal
+    assert "agentIsCloudflareAiProvider(value)" in internal
+    assert "populateCloudflareAiModelCombo" in internal
+    assert "populateCloudflareAiModelCombo(&cloudflareModels)" in chat
+    assert "addItem(QStringLiteral(\"CF AI\")" in chat
+    # The relay owns the allowlist, so the picker asks it and caches the answer.
+    assert '"/api/forkbot/models"' in chat
+    assert "kCloudflareAiModelsCacheSetting" in chat
+    # Sending signs the account, model and prompt digest, and posts to the ask
+    # endpoint — never to an agent session.
+    assert '"/api/ai/ask"' in chat
+    assert "forkmesh-ai-ask-v1" in chat
+    assert "QCryptographicHash::Sha256" in chat
+    assert "responseModel" in chat and "answeringModel" in chat
+    assert "Cloudflare AI fell back from %1 to %2" in chat
+    # The quick-add submit path answers instead of starting an agent.
+    assert "agentIsCloudflareAiProvider(quickAddProvider)" in issues
+    assert "if (!sendPromptToCloudflareAi(title, model))" in issues
+    # Every static fallback id is one the relay's allowlist actually offers.
+    ns = _load_forkbot()
+    allowed = {entry[0] for entry in ns["FORKBOT_AI_MODEL_CHOICES"]}
+    fallback = re.findall(r'QStringLiteral\("(@cf/[^"]+)"\)', internal)
+    assert fallback
+    assert set(fallback) == allowed
+
+
+def test_web_composers_offer_the_cloudflare_model_picker():
+    # Public chat composer: options come from the relay (so deploying a new
+    # model needs no site rebuild) and the pick persists per browser.
+    assert 'const FORKBOT_MODELS_ENDPOINT = "/api/forkbot/models";' in CHAT_TEXT
+    assert 'const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";' in CHAT_TEXT
+    assert "async function loadForkbotModels()" in CHAT_TEXT
+    assert "model: forkbotModel()," in CHAT_TEXT
+    assert "forkbotModelSelect?.value" in CHAT_TEXT
+    assert 'id="chat-forkbot-model"' in CHAT_HTML_TEXT
+    assert ".chat-forkbot-model {" in CHAT_CSS_TEXT
+    # Dashboard chat shares the same stored pick.
+    assert 'const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";' in \
+        DASHBOARD_CHAT_TEXT
+    assert "model: forkbotModel()," in DASHBOARD_CHAT_TEXT
+    # Dashboard home ForkBot composer: same key, its own picker.
+    assert 'const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";' in \
+        DASHBOARD_TEXT
+    assert "async function loadHomeForkbotModels()" in DASHBOARD_TEXT
+    assert "model: forkbotModelPick()," in DASHBOARD_TEXT
+    assert '$("[data-home-agent-model]")?.value' in DASHBOARD_TEXT
+    assert "data-home-agent-model" in DASHBOARD_HOME_TEXT
+    assert "data-home-agent-model" in DASHBOARD_TEXT
 
 
 def test_web_chats_forward_mentions_and_broadcast_bot_replies():
@@ -665,10 +1171,17 @@ def test_web_chats_forward_mentions_and_broadcast_bot_replies():
         assert "FORKBOT_MENTION_RE" in script
         assert "async function maybeAskForkbot(text)" in script
         assert "fetch(FORKBOT_ENDPOINT" in script
-        assert 'sender: "forkbot"' in script
-        assert 'senderId: FORKBOT_SENDER_ID' in script
-        assert "broadcastForkbotMessage(data.botMessage)" in script
-        assert "maybeAskForkbot(clipped)" in script
+        assert "FORKBOT_SENDER_ID" in script
+        assert (
+            'sender: "forkbot"' in script and
+            "senderId: FORKBOT_SENDER_ID" in script and
+            "broadcastForkbotMessage(data.botMessage)" in script
+        ) or (
+            "sender = FORKBOT_SENDER_ID" in script and
+            "senderId: botName" in script and
+            "broadcastBotMessage(data.botMessage)" in script
+        )
+        assert script.count("maybeAskForkbot(") >= 2
         # Recent conversation is buffered and forwarded so ForkBot has context.
         assert "rememberContext(" in script
         assert "context" in script

@@ -31,6 +31,12 @@ PRIVATE_ACCESS_MIGRATION = (
 )
 WRANGLER = ROOT / "cloudflare_worker" / "wrangler.toml"
 
+SRC = ROOT / "cloudflare_worker" / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+import edge_routing as routing  # noqa: E402
+
 
 def _function_source(name):
     source = ENTRY.read_text(encoding="utf-8")
@@ -337,7 +343,10 @@ def test_repository_metadata_cache_round_trips_through_global_kv():
 
 def test_registration_is_signed_account_bound_and_manifest_verified():
     handler = _function_source("https_mirror_endpoint_handler")
-    assert "_owner_signing_pubkeys" in handler
+    assert "_claimed_node_signing_pubkeys" in handler
+    claimed_keys = _function_source("_claimed_node_signing_pubkeys")
+    assert "_owner_signing_pubkeys" in claimed_keys
+    assert "SELECT pubkey FROM nodes WHERE node_bi=? AND user_bi IS NOT NULL" in claimed_keys
     assert "ed25519_verify" in handler
     assert "_https_mirror_manifest_ok" in handler
     assert "_https_mirror_cloudflare_dns_ok" in handler
@@ -506,6 +515,126 @@ def test_flagship_health_accepts_recent_source_pin_during_mirror_convergence():
     assert matches(previous, frozenset({current, previous})) is True
     assert matches("a" * 64, frozenset({current, previous})) is False
     assert matches("not-a-digest", frozenset({current, previous})) is False
+
+
+def test_flagship_quorum_requires_two_fresh_group_mirrors():
+    now = 1_700_000_000_000
+    required = {"git-info-refs", "git-upload-pack", "tree", "blob", "raw"}
+    agreed = "a" * 64
+    rows = [
+        {
+            "node_name": "mirror9",
+            "checked_at": now,
+            "forkmesh_refs_sha256": agreed,
+            "forkmesh_operations_json": json.dumps(sorted(required)),
+        },
+        {
+            "node_name": "mirror10",
+            "checked_at": now,
+            "forkmesh_refs_sha256": agreed,
+            "forkmesh_operations_json": json.dumps(sorted(required)),
+        },
+        {
+            "node_name": "outside",
+            "checked_at": now,
+            "forkmesh_refs_sha256": "b" * 64,
+            "forkmesh_operations_json": json.dumps(sorted(required)),
+        },
+    ]
+
+    async def d1_all(_env, sql, *params):
+        assert "healthy=1" in sql
+        assert params == (now - 600_000,)
+        return rows
+
+    namespace = {
+        "Date": type("D", (), {"now": staticmethod(lambda: now)}),
+        "MAX_NODE_NAME": 80,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
+        "d1_all": d1_all,
+        "https_routing": SimpleNamespace(ENDPOINT_STALE_MS=600_000),
+        "HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS": required,
+        "json": json,
+        "re": re,
+    }
+    exec(_function_source("_https_mirror_flagship_quorum"), namespace)
+    result = asyncio.run(namespace["_https_mirror_flagship_quorum"](
+        object(), {"mirror9", "mirror10", "outside"}, now=now))
+    assert result["pins"] == frozenset({agreed})
+    assert result["nodes"] == frozenset({"mirror9", "mirror10"})
+
+    # Removing either agreeing member dissolves the quorum; an outsider cannot
+    # take its place unless it is explicitly in this repository's mirror group.
+    result = asyncio.run(namespace["_https_mirror_flagship_quorum"](
+        object(), {"mirror9"}, now=now))
+    assert result["pins"] == frozenset()
+
+
+def test_flagship_candidate_ring_survives_mirror_add_and_remove():
+    now = 1_700_000_000_000
+    state = {"cursor": 0, "nodes": ["mirror2", "mirror9", "mirror10"]}
+
+    def endpoint(node, latency):
+        return {
+            "node_name": node,
+            "base_url": "https://%s.example.test" % node,
+            "public_key": "public-key",
+            "registration_sig": "registration",
+            "issued_at": 1,
+            "checked_at": now,
+            "latency_ms": latency,
+            "region": "US",
+            "healthy": 1,
+            "integrity": "ok",
+            "abuse_blocked": 0,
+            "forkmesh_refs_sha256": "a" * 64,
+        }
+
+    latencies = {"mirror2": 10, "mirror9": 20, "mirror10": 30, "mirror13": 40}
+
+    async def d1_all(_env, _sql, *_params):
+        return [endpoint(node, latencies[node]) for node in state["nodes"]]
+
+    async def d1_first(_env, sql, *_params):
+        assert "edge_route_cursor" in sql
+        return {"cursor": state["cursor"]}
+
+    namespace = {
+        "d1_all": d1_all,
+        "d1_first": d1_first,
+        "Date": type("D", (), {"now": staticmethod(lambda: now)}),
+        "https_routing": routing,
+    }
+    exec(_function_source("_https_mirror_endpoint_projection"), namespace)
+    exec(_function_source("_https_mirror_candidates"), namespace)
+    candidates = namespace["_https_mirror_candidates"]
+
+    context = {
+        "repoBi": "flagship-bi",
+        "nodes": set(state["nodes"]),
+        "roundRobinAll": True,
+    }
+
+    served = []
+    for cursor in range(3):
+        state["cursor"] = cursor
+        served.append(asyncio.run(candidates(
+            object(), context, "US"))[0]["node"])
+    assert served == ["mirror2", "mirror9", "mirror10"]
+
+    state["nodes"] = ["mirror9", "mirror10"]
+    context["nodes"] = set(state["nodes"])
+    state["cursor"] = 5  # stale cursor from the larger ring
+    assert asyncio.run(candidates(
+        object(), context, "US"))[0]["node"] == "mirror10"
+
+    state["nodes"].append("mirror13")
+    context["nodes"] = set(state["nodes"])
+    state["cursor"] = 2
+    assert asyncio.run(candidates(
+        object(), context, "US"))[0]["node"] == "mirror13"
 
 
 def test_flagship_accepted_pins_include_bounded_source_history():

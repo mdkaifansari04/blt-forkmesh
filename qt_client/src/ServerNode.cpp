@@ -104,8 +104,16 @@ const QSet<QByteArray> &blockedChatTermHashes()
 bool isBlockedChatRun(const QString &value)
 {
     static const QSet<qsizetype> blockedLengths = {4, 5, 6, 7, 12};
+    // These three patterns must be static: constructing a QRegularExpression
+    // JIT-compiles it, and this runs once per *word* of every inbound chat frame
+    // — a `history` frame with a room's backlog recompiled them hundreds of
+    // times inside one readyRead and froze the GUI thread for ~550 ms
+    // (pcre2_jit_compile_16 was the top frame in the stall report).
+    static const QRegularExpression marks(QStringLiteral("\\p{M}+"));
+    static const QRegularExpression nonLetters(QStringLiteral("[^a-z]+"));
+    static const QRegularExpression repeats(QStringLiteral("(.)\\1+"));
     QString normalized = value.normalized(QString::NormalizationForm_D).toLower();
-    normalized.remove(QRegularExpression(QStringLiteral("\\p{M}+")));
+    normalized.remove(marks);
     normalized.replace(QLatin1Char('0'), QLatin1Char('o'));
     normalized.replace(QLatin1Char('1'), QLatin1Char('i'));
     normalized.replace(QLatin1Char('3'), QLatin1Char('e'));
@@ -114,10 +122,9 @@ bool isBlockedChatRun(const QString &value)
     normalized.replace(QLatin1Char('7'), QLatin1Char('t'));
     normalized.replace(QLatin1Char('8'), QLatin1Char('b'));
     normalized.replace(QLatin1Char('9'), QLatin1Char('g'));
-    normalized.remove(QRegularExpression(QStringLiteral("[^a-z]+")));
+    normalized.remove(nonLetters);
     QSet<QString> forms{normalized};
-    forms.insert(QString(normalized).replace(
-        QRegularExpression(QStringLiteral("(.)\\1+")), QStringLiteral("\\1")));
+    forms.insert(QString(normalized).replace(repeats, QStringLiteral("\\1")));
     for (const QString &form : std::as_const(forms)) {
         if (!blockedLengths.contains(form.size()))
             continue;

@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "oNP35iOMiLYO5lq_k4jZBdzLvsqAGATI0bZ1R8TqlEQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785756343,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "oNP35iOMiLYO5lq_k4jZBdzLvsqAGATI0bZ1R8TqlEQ",
+            "authorName": "jett",
+            "body": "🎉 Great news! Your issue report has been accepted.\n\nYour SOL bounty has been reserved and is waiting for you.\n\nTo claim your reward:\n\n1. Log in to your ForkMesh account.\n2. Add your Solana wallet to your profile.\n3. Your bounty will be ready to claim.\n\nThanks for contributing and helping improve the ecosystem! 🚀",
+            "id": "open-web-1785756343",
+            "sig": "zEKwXy5kOLO5TLReEt0tDfYmEjyHdkdoPaIVadcbMVnFGEBAvoPfQC2LtCiMxZPZWHD2DPLnbAI6bGQ5w6WJBw",
+            "title": "Issue bounty",
+            "ts": 1785756343,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 573,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Issue bounty",
+    "updatedAt": 1785756343,
+    "votes": 0
+}

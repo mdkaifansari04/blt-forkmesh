@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "6y-dvBu_MYjTpLHeED8BJhF7JEkdMZtEUN4yHAlp_84",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785568583,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "6y-dvBu_MYjTpLHeED8BJhF7JEkdMZtEUN4yHAlp_84",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1785568583",
+            "sig": "OTJG7rLd7vbEBmqJJMZPxM3ZYn3S62ktjUd3PeZoQQ4KUPlWP7SQxLTc8EL6P7ZaOK5gCZKK2RFkCsOyvpdTBA",
+            "title": "when it says fresh code landed on forkmesh show the user / commit message and other details in the toast / bubble",
+            "ts": 1785568583,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 567,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "when it says fresh code landed on forkmesh show the user / commit message and other details in the toast / bubble",
+    "updatedAt": 1785568583,
+    "votes": 0
+}

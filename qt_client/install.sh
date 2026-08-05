@@ -18,6 +18,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 BIN="$BUILD_DIR/forkmesh"
+MIRROR_NODE_SOURCE="$SCRIPT_DIR/../mirror_node"
+USER_BIN_DIR="$HOME/.local/bin"
+MIRROR_NODE_BIN="$USER_BIN_DIR/forkmesh-mirror-node"
 
 # Run a command under a hard time limit when coreutils `timeout` is available, so
 # a wedged desktop tool (a slow `gtk-update-icon-cache -f` regen, an ImageMagick
@@ -47,6 +50,7 @@ uninstall() {
     find "$ICON_BASE" -name "$DESKTOP_ID.png" -delete 2>/dev/null || true
     rm -f "$DATA_HOME/icons/$DESKTOP_ID.png"
     rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/$DESKTOP_ID.desktop"
+    rm -f "$MIRROR_NODE_BIN"
     refresh_caches
 
     # With --purge, also erase every byte of user data so a reinstall starts
@@ -108,6 +112,33 @@ if [[ ! -x "$BIN" ]]; then
     cmake --build "$BUILD_DIR" --target forkmesh -j"$(nproc 2>/dev/null || echo 4)"
 fi
 [[ -x "$BIN" ]] || { echo "error: build did not produce $BIN" >&2; exit 1; }
+
+# The Qt client manages a tiny Go mirror-node supervisor for every source-of-
+# truth desktop. Install it beside the user's other local executables so the
+# card and companion window can start it without root privileges. Release
+# bundles may ship a prebuilt binary; source installs build the pinned module.
+echo "Installing the Go mirror-node supervisor…"
+mkdir -p "$USER_BIN_DIR"
+if [[ -x "$MIRROR_NODE_SOURCE/forkmesh-mirror-node" ]]; then
+    install -m 0755 "$MIRROR_NODE_SOURCE/forkmesh-mirror-node" "$MIRROR_NODE_BIN"
+elif command -v go >/dev/null 2>&1; then
+    MIRROR_NODE_TMP="$(mktemp "$USER_BIN_DIR/.forkmesh-mirror-node.XXXXXX")"
+    trap 'rm -f "${MIRROR_NODE_TMP:-}"' EXIT
+    (
+        cd "$MIRROR_NODE_SOURCE"
+        go build -trimpath -ldflags="-s -w" \
+            -o "$MIRROR_NODE_TMP" ./cmd/forkmesh-mirror-node
+    )
+    chmod 0755 "$MIRROR_NODE_TMP"
+    mv -f "$MIRROR_NODE_TMP" "$MIRROR_NODE_BIN"
+    MIRROR_NODE_TMP=""
+    trap - EXIT
+else
+    echo "error: Go is required to install forkmesh-mirror-node from source." >&2
+    echo "Install Go, or place a prebuilt forkmesh-mirror-node in $MIRROR_NODE_SOURCE." >&2
+    exit 1
+fi
+echo "  mirror node: $MIRROR_NODE_BIN"
 
 # --- 2. Install the icon into the hicolor theme -----------------------------
 # The icon name "forkmesh" is what the .desktop Icon= key and the Wayland app-id

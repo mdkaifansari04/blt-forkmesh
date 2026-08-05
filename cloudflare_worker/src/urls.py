@@ -169,6 +169,10 @@ DISCORD_OAUTH_CALLBACK_RE = re.compile(
     r"^/api/integrations/discord/callback$")
 MAILTRAP_WEBHOOK_RE = re.compile(
     r"^/api/integrations/mailtrap/webhook/?$")
+# Account checkout/portal actions and the public signed webhook share one
+# explicit integration namespace so they cannot be swallowed by ACCOUNTS_RE.
+POLAR_INTEGRATION_RE = re.compile(
+    r"^/api/integrations/polar/(account|checkout|portal|webhook)/?$")
 BOT_SESSION_RE = re.compile(r"^/api/bot/session$")
 # Organization-only, non-custodial succession. The optional action is parsed by
 # the isolated API module; the general ORG_RE cannot swallow this subresource.

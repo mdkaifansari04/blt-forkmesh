@@ -83,19 +83,21 @@ inline QString viewsLabel(const QJsonObject &cloud)
                        : counted;
 }
 
-// The full row: title, then a status line, then the sharing line. `stamp` is
-// the caller's already-formatted "edited …" text (empty to omit it) so this
-// stays independent of the local time zone.
+// The full row: title, then a compact status line, then the sharing line.
+// `stamp` is the caller's already-formatted "edited …" text (empty to omit it)
+// so this stays independent of the local time zone.
 inline QStringList lines(const QJsonObject &note, const QJsonObject &cloud,
                          const QString &mode, bool synced,
                          const QString &stamp = QString())
 {
-    QStringList status{storageLabel(mode),
-                       visibilityLabel(note, cloud, mode, synced)};
+    QStringList status{
+        QStringLiteral("Storage: %1").arg(storageLabel(mode)),
+        QStringLiteral("Visibility: %1").arg(
+            visibilityLabel(note, cloud, mode, synced))};
     const QString views = viewsLabel(cloud);
     if (!views.isEmpty())
-        status << views;
-    status << QStringLiteral("v%1").arg(
+        status << QStringLiteral("Views: %1").arg(views);
+    status << QStringLiteral("Rev %1").arg(
         qMax(1, note.value(QLatin1String("version")).toInt(1)));
     if (!stamp.isEmpty())
         status << stamp;

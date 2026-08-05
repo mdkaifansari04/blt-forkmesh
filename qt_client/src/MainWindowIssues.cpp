@@ -3922,6 +3922,7 @@ void MainWindow::updateIssueActionState()
         m_issueListNewButton->setEnabled(writable || issuesRepoIndex() >= 0);
     if (m_issueSyncButton)
         m_issueSyncButton->setEnabled(writable);
+    refreshPendingInboxBadges();
     if (m_issueTitleEditButton)
         m_issueTitleEditButton->setEnabled(writable && haveIssue);
     if (m_issueTitleEditor)
@@ -4344,11 +4345,12 @@ void MainWindow::quickAddIssue()
     if (!m_issueQuickAdd)
         return;
     const QString title = m_issueQuickAdd->toPlainText().trimmed();
-    if (title.isEmpty())
+    if (title.isEmpty() && m_quickAddImages.isEmpty())
         return;
     // Remember this prompt so Up can recall it later (adhoc #200). Recording here,
     // before the field is cleared, covers every send path below.
-    recordQuickAddHistory(title);
+    if (!title.isEmpty())
+        recordQuickAddHistory(title);
 
     // "No issue" mode (issue #299): don't create an issue at all — hand the typed
     // text straight to a coding agent as its prompt, like the Agents-tab composer.
@@ -4359,6 +4361,28 @@ void MainWindow::quickAddIssue()
         m_quickAddAgentProvider
             ? m_quickAddAgentProvider->currentData().toString()
             : QStringLiteral("claude-code");
+    // Cloudflare AI is neither an agent nor an issue: the picked Workers AI model
+    // answers the prompt on the relay and the reply is shown (adhoc #1407). It
+    // has no checkout, so it must be handled before the agent hand-off below.
+    if (agentIsCloudflareAiProvider(quickAddProvider)) {
+        if (title.isEmpty())
+            return;
+        const QString model = selectedModelComboValue(m_quickAddClaudeModel);
+        // Workers AI text models take no images here, so say what was dropped
+        // instead of silently discarding the attachments.
+        if (!m_quickAddImages.isEmpty())
+            logSystem(QStringLiteral("Cloudflare AI answers text only; %1 "
+                                     "attached image(s) were not sent.")
+                          .arg(m_quickAddImages.size()));
+        // Keep an unsent prompt in the composer when authentication is missing
+        // or another Workers AI request is still in flight. The old void path
+        // cleared it even though no request had started.
+        if (!sendPromptToCloudflareAi(title, model))
+            return;
+        m_issueQuickAdd->clear();
+        clearQuickAddImages();
+        return;
+    }
     if (quickAddProvider != QLatin1String("manual")) {
         const QString provider = quickAddProvider;
         const QString model = (provider == QLatin1String("claude-code") ||
@@ -4366,6 +4390,7 @@ void MainWindow::quickAddIssue()
                                   ? selectedModelComboValue(m_quickAddClaudeModel)
                                   : QString();
         const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
+        const QStringList images = m_quickAddImages;
         // Hand any attached images to the agent the same way the new-agent
         // composer does: an "Attached image: <path>" line per file (issue #79).
         QString prompt = title;
@@ -4379,7 +4404,6 @@ void MainWindow::quickAddIssue()
         if (agentSessionId > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
-            showPromptBubble(title, agentSessionId);
             // No issue exists in this mode (that's the point of it), so saying
             // "no issue created" is just noise — show what actually happened
             // instead: which agent, model, and permission mode picked up the
@@ -4394,14 +4418,22 @@ void MainWindow::quickAddIssue()
                 details.isEmpty()
                     ? QString()
                     : QStringLiteral(" (%1)").arg(details.join(QStringLiteral(", ")));
-            setIssueInlineNotice(
+            const QString startedMessage =
                 QStringLiteral("Started a %1 agent on your prompt%2.")
-                    .arg(agentProviderName(provider), suffix));
+                    .arg(agentProviderName(provider), suffix);
+            // Keep the durable log entry, but fold the confirmation into the
+            // prompt bubble so one send does not produce two stacked cards.
+            logSystem(startedMessage);
+            showPromptBubble(prompt, agentSessionId, startedMessage, images);
         }
         return;
     }
 
     IssueStore store = issueStoreForCurrentRepo();
+    if (title.isEmpty()) {
+        flashMessage(QStringLiteral("Add prompt text before creating an issue."), true);
+        return;
+    }
     if (!store.canWrite()) {
         // Mirror node: send the new issue to the source of truth's inbox. The
         // agent hand-off below needs a local issue, so it stays owner-only.
@@ -4410,12 +4442,13 @@ void MainWindow::quickAddIssue()
             return;
         }
         QPointer<QPlainTextEdit> quickAddGuard(m_issueQuickAdd);
+        const QStringList images = m_quickAddImages;
         quickAddGuard->setEnabled(false);
         // Any queued images ride along as the new issue's attachments, same as
         // the canWrite path below (issue #79).
         const bool started = submitNewIssueToInbox(
             title, QString(), {}, QString(), 0, {}, m_quickAddImages, {},
-            [this, quickAddGuard, title](bool ok, const QString &) {
+            [this, quickAddGuard, title, images](bool ok, const QString &) {
                 // submitNewIssueToInbox already flashes the failure toast; on
                 // success, clear the box now that the maintainer actually has
                 // it — clearing it up front (the old behavior) lost the draft
@@ -4426,7 +4459,7 @@ void MainWindow::quickAddIssue()
                 if (ok) {
                     quickAddGuard->clear();
                     clearQuickAddImages();
-                    showPromptBubble(title);
+                    showPromptBubble(title, -1, QString(), images);
                     setIssueInlineNotice("Your signed issue was sent to the "
                                          "maintainer's inbox. It appears once "
                                          "they sync it.");
@@ -4448,9 +4481,10 @@ void MainWindow::quickAddIssue()
                              true);
         return;
     }
+    const QStringList images = m_quickAddImages;
     m_issueQuickAdd->clear();
     clearQuickAddImages();
-    showPromptBubble(title);
+    showPromptBubble(title, -1, QString(), images);
     m_currentIssueNumber = number;
     appendCreatedIssue(store, created);
     propagateRepoUpdate(issuesRepoIndex());
@@ -5285,6 +5319,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         obj == m_topMessageContainer || obj == m_topMessage ||
         obj == m_topMessageScroll || obj == m_topMessageActions ||
         obj == m_topMessageMeta || obj == m_topMessageTypeBadge ||
+        obj == m_topMessageActionOutput ||
         obj == m_topMessageCopy ||
         obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
         (m_topMessageScroll && obj == m_topMessageScroll->viewport());
@@ -5312,6 +5347,13 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             }
         }
     }
+    // The collapsed prompt leaves only the account avatar at the footer's
+    // lower-right corner. Hovering that launcher should restore the composer
+    // immediately, so the prompt can be reopened without a second click.
+    if (obj == m_userAvatarNavButton && event->type() == QEvent::Enter &&
+        m_promptOverlayCollapsed) {
+        setPromptOverlayCollapsed(false);
+    }
     // Ctrl + mouse wheel over any registered diff viewer zooms its text size,
     // mirroring the +/- buttons (issue #254). Consume so the view doesn't scroll.
     if (event->type() == QEvent::Wheel &&
@@ -5334,11 +5376,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (event->type() == QEvent::Resize && m_scmDiff &&
         obj == m_scmDiff->viewport())
         layoutScmStickyHeader();
-    // The Git prompt is a lower-right overlay while that workspace is open, so
-    // follow the detail pane rather than reserving height beneath the graph.
+    // The Git prompt is a lower-left overlay while that workspace is open, so
+    // follow the workspace rather than reserving height beneath the graph.
     if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
         obj == m_commitsStack)
         positionGitPromptOverlay();
+    if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
+        obj == m_globalOverlayHost)
+        positionGlobalFooterOverlays();
     // Keep the floating "Log" button pinned to the live-log strip's bottom-right
     // corner as the strip resizes (adhoc #137). Don't consume — the strip still
     // needs the resize.
@@ -8096,27 +8141,29 @@ void MainWindow::syncIssuesInbox()
     const int idx = issuesRepoIndex();
     if (idx < 0)
         return;
-    drainIssuesInboxFor(m_repositories.at(idx), /*interactive=*/true);
+    showPendingInbox(m_repositories.at(idx), QStringLiteral("issues"));
 }
 
-void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
+void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
+                                     bool forceMirrorIntake)
 {
     // The source of truth writes into its normal working copy. A public mirror
-    // with no checkout uses a short-lived linked worktree below, commits onto
-    // the served branch, and acknowledges with ?mirror=1 — a real drain: the
-    // merged submission now lives in the repo itself and propagates across the
-    // mirror mesh, so the relay deletes the row instead of holding it pending
-    // for the source of truth.
+    // uses a short-lived linked worktree below even when it also keeps a normal
+    // browsing checkout, commits onto the served branch, and acknowledges with
+    // ?mirror=1 — a real drain: the merged submission now lives in the repo
+    // itself and propagates across the mirror mesh, so the relay deletes the
+    // row instead of holding it pending for the source of truth.
     const RepositoryRecord writable = writableRecordFor(repo);
     bool ownerIntake = false;
     {
         IssueStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
                          m_userName);
-        ownerIntake = probe.canWrite();
+        ownerIntake = !forceMirrorIntake && probe.canWrite();
     }
     const QString mirrorPath = repo.mirrorPath.trimmed();
     const bool mirrorIntake =
-        !ownerIntake && !repo.previewOnly && !repo.isPrivate &&
+        (forceMirrorIntake || !ownerIntake) && !repo.previewOnly &&
+        !repo.isPrivate &&
         repo.publishToNetwork && !mirrorPath.isEmpty() &&
         QDir(mirrorPath).exists();
     if (!ownerIntake && !mirrorIntake)
@@ -8130,7 +8177,18 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
     const QString signer = mirrorIntake
         ? accountOwner().trimmed().toLower()
         : repoSegment(repo.owner, QStringLiteral("owner"));
-    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
+    // Authorization for a PUBLIC owner is the relay's call: it verifies this
+    // device against that owner's currently trusted keys (organization
+    // owner/admin membership included) and 401s otherwise, exactly as
+    // signedInboxQuery() documents. hasOwnerSigningCapability(signer) instead
+    // demands signer == session account, which can only ever produce FALSE
+    // NEGATIVES — and did: for a repo whose public owner is not the session
+    // account name this returned early on every tick, so the queue had no path
+    // to this node at all while the website showed "+N pending" forever. Mirror
+    // intake genuinely does speak as the account, so it keeps the strict check.
+    const bool canSign = mirrorIntake ? hasOwnerSigningCapability(signer)
+                                      : hasOwnerSigningCapability();
+    if (signer.isEmpty() || !canSign)
         return;
 
     QUrl url = issuesApiUrl(repo);
@@ -8174,6 +8232,27 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(backoffKey,
                                       QDateTime::currentMSecsSinceEpoch());
+            const int status =
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt();
+            // A rejected drain is the difference between "nothing is queued"
+            // and "everything is queued and unreachable". Say so once per repo
+            // instead of only backing off: this failure mode is invisible on an
+            // auto-poll, which is how a full inbox stayed stuck behind a silent
+            // early return in the first place.
+            if (status == 401 || status == 403) {
+                static QSet<QString> s_inboxAuthWarned;
+                if (!s_inboxAuthWarned.contains(backoffKey)) {
+                    s_inboxAuthWarned.insert(backoffKey);
+                    logSystem(QStringLiteral(
+                                  "The relay rejected this node's signed issue "
+                                  "drain for %1/%2 as \"%3\" (HTTP %4), so "
+                                  "web-filed issues can't sync down. Re-link "
+                                  "this node to the account that owns %2.")
+                                  .arg(repo.owner, repo.name, signer)
+                                  .arg(status));
+                }
+            }
             if (interactive)
                 setIssueInlineNotice("Could not reach the inbox: " +
                                          reply->errorString(),
@@ -8254,6 +8333,12 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
 
 void MainWindow::pollMirrorIssueInboxes()
 {
+    // Browsing a public mirror on a desktop does not make the signed-in user a
+    // registered mirror endpoint. Sending ?mirror=1 from those sessions caused
+    // the repeated HTTP/2 "Host requires authentication" warnings. Only a
+    // provisioned headless node may compete for mirror intake leases.
+    if (!m_headless)
+        return;
     if (!m_networkAccess || !hasOwnerSigningCapability(accountOwner()))
         return;
     QSet<QString> seen;
@@ -8262,20 +8347,21 @@ void MainWindow::pollMirrorIssueInboxes()
             repo.mirrorPath.trimmed().isEmpty() ||
             !QDir(repo.mirrorPath).exists())
             continue;
-        const RepositoryRecord writable = writableRecordFor(repo);
-        IssueStore probe(writable.localPath, writable.mirrorPath,
-                         &m_profileIdentity, m_userName);
-        if (probe.canWrite())
-            continue;
         const QString key =
             repo.owner.trimmed().toLower() + QLatin1Char('/') +
             repo.name.trimmed().toLower();
         if (seen.contains(key))
             continue;
         seen.insert(key);
-        drainIssuesInboxFor(repo, /*interactive=*/false);
-        drainPullsInboxFor(repo, /*interactive=*/false);
-        drainDiscussionsInboxFor(repo, /*interactive=*/false);
+        // A browsing checkout does not make a peer the source of truth. Force
+        // the signed mirror path here so mirrors with a writable cache can
+        // compete for and permanently materialize relay leases.
+        drainIssuesInboxFor(repo, /*interactive=*/false,
+                            /*forceMirrorIntake=*/true);
+        drainPullsInboxFor(repo, /*interactive=*/false,
+                           /*forceMirrorIntake=*/true);
+        drainDiscussionsInboxFor(repo, /*interactive=*/false,
+                                 /*forceMirrorIntake=*/true);
     }
 }
 

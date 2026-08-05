@@ -7,6 +7,7 @@
 
 #include "ControlNode.h"
 #include "ForkMeshVersion.h"
+#include "LogTimelineChart.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "NodeDiagnostics.h"
@@ -23,6 +24,7 @@
 #include "KebabHeaderView.h"
 
 #include <QDoubleSpinBox>
+#include <QSpinBox>
 
 using namespace forkmesh::ui;
 
@@ -281,6 +283,252 @@ QWidget *MainWindow::buildSettingsSection()
         "default for headless installs.");
     connect(autoUpdateCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kAutoUpdateSetting, enabled);
+    });
+
+    // Boot-scoped KVM workspace. The Qt desktop remains on the host so native
+    // display, keychain and notifications keep working; every coding-agent CLI
+    // and its subprocesses run in a Lima QEMU/KVM guest. Only the directory
+    // ForkMesh was launched from, linked Git metadata required by that checkout,
+    // and a dedicated temporary worktree root are mounted writable.
+    auto *vmLabel = new QLabel("KVM WORKSPACE");
+    vmLabel->setObjectName("sectionLabel");
+    auto *vmHint = new QLabel(
+        "Run ForkMesh coding work behind a separate Linux kernel. The guest "
+        "receives the directory this process was launched from, while host "
+        "HOME, desktop sockets, SSH agents and unrelated environment variables "
+        "stay outside the VM.");
+    vmHint->setObjectName("modeHint");
+    vmHint->setWordWrap(true);
+
+    auto *vmCheck =
+        new QCheckBox("Run coding agents in an isolated KVM virtual machine");
+    vmCheck->setObjectName("kvmWorkspaceCheck");
+    vmCheck->setChecked(
+        QSettings().value(forkmesh::vm::kEnabledSetting, false).toBool());
+    vmCheck->setToolTip(
+        "Linux only. Uses Lima's QEMU driver with /dev/kvm and a deterministic "
+        "per-directory guest. Changing this setting requires a ForkMesh restart.");
+
+    auto *vmStatus = new QLabel;
+    vmStatus->setObjectName("kvmWorkspaceStatus");
+    vmStatus->setWordWrap(true);
+    vmStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *vmPrepareButton = new QPushButton("Prepare / start VM");
+    vmPrepareButton->setObjectName("ghostButton");
+    vmPrepareButton->setCursor(Qt::PointingHandCursor);
+    vmPrepareButton->setToolTip(
+        "Create this directory's minimal Lima QEMU instance, or start it if it "
+        "already exists. The first image download can take several minutes.");
+    auto *vmShellButton = new QPushButton("Open VM shell…");
+    vmShellButton->setObjectName("ghostButton");
+    vmShellButton->setCursor(Qt::PointingHandCursor);
+    vmShellButton->setToolTip(
+        "Open a terminal inside the guest to install and sign in to Claude Code, "
+        "Codex, or another configured agent. Host login files are not mounted.");
+    auto *vmRestartButton = new QPushButton("Restart ForkMesh now");
+    vmRestartButton->setObjectName("primaryButton");
+    vmRestartButton->setCursor(Qt::PointingHandCursor);
+    vmRestartButton->setToolTip(
+        "Relaunch without rebuilding so the saved KVM setting becomes active.");
+
+    auto *vmButtonRow = new QHBoxLayout;
+    vmButtonRow->setContentsMargins(0, 0, 0, 0);
+    vmButtonRow->addWidget(vmPrepareButton);
+    vmButtonRow->addWidget(vmShellButton);
+    vmButtonRow->addWidget(vmRestartButton);
+    vmButtonRow->addStretch();
+
+    const auto refreshVmStatus =
+        [vmCheck, vmStatus, vmPrepareButton, vmShellButton, vmRestartButton]() {
+            const bool desired =
+                QSettings()
+                    .value(forkmesh::vm::kEnabledSetting, false)
+                    .toBool();
+            const bool restartRequired = desired != forkmesh::vm::active();
+            const QString unavailable = forkmesh::vm::availabilityError();
+            QString text;
+            if (!unavailable.isEmpty()) {
+                text = unavailable;
+            } else if (desired) {
+                text = QStringLiteral(
+                           "%1 KVM instance: %2\nWorkspace: %3")
+                           .arg(forkmesh::vm::active()
+                                    ? QStringLiteral("Active.")
+                                    : QStringLiteral("Enabled for next launch."),
+                                forkmesh::vm::instanceName(),
+                                QDir::toNativeSeparators(
+                                    forkmesh::vm::workspaceRoot()));
+            } else {
+                text = forkmesh::vm::active()
+                           ? QStringLiteral(
+                                 "Disabled for next launch; this process is "
+                                 "still using KVM isolation.")
+                           : QStringLiteral(
+                                 "Off. Coding agents run directly on this host.");
+            }
+            if (restartRequired)
+                text += QStringLiteral("\nRestart required to apply this change.");
+            vmStatus->setText(text);
+            vmCheck->blockSignals(true);
+            vmCheck->setChecked(desired);
+            vmCheck->blockSignals(false);
+            // An active-but-broken setup must remain switchable off.
+            vmCheck->setEnabled(unavailable.isEmpty() || desired ||
+                                forkmesh::vm::active());
+            vmPrepareButton->setEnabled(desired && unavailable.isEmpty());
+            vmShellButton->setEnabled(desired && unavailable.isEmpty());
+            vmRestartButton->setVisible(restartRequired);
+        };
+    refreshVmStatus();
+
+    auto *vmProcess = new QProcess(page);
+    vmProcess->setProcessChannelMode(QProcess::MergedChannels);
+    connect(vmProcess, &QProcess::finished, page,
+            [vmProcess, vmStatus, vmPrepareButton, vmShellButton,
+             vmRestartButton, refreshVmStatus](int exitCode,
+                                               QProcess::ExitStatus exitStatus) {
+                const QString output =
+                    QString::fromUtf8(vmProcess->readAll()).trimmed();
+                const QString phase =
+                    vmProcess->property("forkmeshVmPhase").toString();
+                if (phase == QLatin1String("inspect")) {
+                    if (exitStatus != QProcess::NormalExit || exitCode != 0) {
+                        refreshVmStatus();
+                        vmStatus->setText(
+                            vmStatus->text() +
+                            QStringLiteral("\nCould not inspect Lima instances%1%2")
+                                .arg(output.isEmpty() ? QStringLiteral(".")
+                                                      : QStringLiteral(": "),
+                                     output.right(800)));
+                        vmShellButton->setEnabled(false);
+                        vmRestartButton->setEnabled(true);
+                        return;
+                    }
+
+                    const QStringList names =
+                        output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+                    if (names.contains(forkmesh::vm::instanceName())) {
+                        vmProcess->setProperty("forkmeshVmPhase", "start");
+                        vmStatus->setText(
+                            QStringLiteral("Starting KVM instance %1…")
+                                .arg(forkmesh::vm::instanceName()));
+                        vmProcess->start(forkmesh::vm::limactlProgram(),
+                                         forkmesh::vm::startArguments());
+                    } else {
+                        QDir().mkpath(forkmesh::vm::worktreeRoot());
+                        vmProcess->setProperty("forkmeshVmPhase", "create");
+                        vmStatus->setText(
+                            "Creating the QEMU/KVM guest and downloading its "
+                            "base image…");
+                        vmProcess->start(forkmesh::vm::limactlProgram(),
+                                         forkmesh::vm::createArguments());
+                    }
+                    return;
+                }
+
+                if (exitStatus == QProcess::NormalExit && exitCode == 0) {
+                    refreshVmStatus();
+                    vmStatus->setText(
+                        vmStatus->text() +
+                        QStringLiteral(
+                            "\nVM ready. Open its shell to install/sign in to "
+                            "the agent CLIs, then restart ForkMesh if prompted."));
+                    vmRestartButton->setEnabled(true);
+                    return;
+                }
+
+                refreshVmStatus();
+                vmStatus->setText(
+                    vmStatus->text() +
+                    QStringLiteral("\nVM preparation failed%1%2")
+                        .arg(output.isEmpty() ? QStringLiteral(".")
+                                              : QStringLiteral(": "),
+                             output.right(800)));
+                vmPrepareButton->setEnabled(
+                    QSettings()
+                        .value(forkmesh::vm::kEnabledSetting, false)
+                        .toBool() &&
+                    forkmesh::vm::availabilityError().isEmpty());
+                vmShellButton->setEnabled(false);
+                vmRestartButton->setEnabled(true);
+            });
+    connect(vmProcess, &QProcess::errorOccurred, page,
+            [vmProcess, vmStatus, vmPrepareButton,
+             vmRestartButton](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                vmStatus->setText(
+                    QStringLiteral("Could not start limactl: %1")
+                        .arg(vmProcess->errorString()));
+                vmPrepareButton->setEnabled(
+                    QSettings()
+                        .value(forkmesh::vm::kEnabledSetting, false)
+                        .toBool());
+                vmRestartButton->setEnabled(true);
+            });
+
+    connect(vmPrepareButton, &QPushButton::clicked, page,
+            [vmProcess, vmStatus, vmPrepareButton, vmShellButton,
+             vmRestartButton] {
+                if (vmProcess->state() != QProcess::NotRunning)
+                    return;
+                const QString unavailable = forkmesh::vm::availabilityError();
+                if (!unavailable.isEmpty()) {
+                    vmStatus->setText(unavailable);
+                    return;
+                }
+                QDir().mkpath(forkmesh::vm::worktreeRoot());
+                vmProcess->setProperty("forkmeshVmPhase", "inspect");
+                vmPrepareButton->setEnabled(false);
+                vmShellButton->setEnabled(false);
+                vmRestartButton->setEnabled(false);
+                vmStatus->setText(QStringLiteral("Checking KVM instance %1…")
+                                      .arg(forkmesh::vm::instanceName()));
+                vmProcess->start(forkmesh::vm::limactlProgram(),
+                                 forkmesh::vm::listArguments());
+            });
+
+    connect(vmCheck, &QCheckBox::toggled, page,
+            [vmPrepareButton, refreshVmStatus](bool enabled) {
+                QSettings settings;
+                settings.setValue(forkmesh::vm::kEnabledSetting, enabled);
+                settings.sync();
+                refreshVmStatus();
+                if (enabled && forkmesh::vm::availabilityError().isEmpty())
+                    vmPrepareButton->click();
+            });
+    connect(vmRestartButton, &QPushButton::clicked, this,
+            &MainWindow::relaunchForkMesh);
+    connect(vmShellButton, &QPushButton::clicked, this, [this] {
+        const QString command = forkmesh::vm::interactiveCommand();
+        if (command.isEmpty()) {
+            flashMessage("limactl is unavailable; prepare the VM first.", true);
+            return;
+        }
+        auto *dialog = new QDialog(this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle("ForkMesh KVM workspace");
+        dialog->resize(900, 560);
+        auto *layout = new QVBoxLayout(dialog);
+        auto *notice = new QLabel(
+            QStringLiteral(
+                "This shell is inside <b>%1</b>. Install and sign in to the "
+                "agent CLIs here; provider credentials remain in the guest. "
+                "The writable project mount is <code>%2</code>.")
+                .arg(forkmesh::vm::instanceName().toHtmlEscaped(),
+                     forkmesh::vm::workspaceRoot().toHtmlEscaped()),
+            dialog);
+        notice->setWordWrap(true);
+        layout->addWidget(notice);
+        auto *terminal = new TerminalWidget(dialog);
+        layout->addWidget(terminal, 1);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+        connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+        layout->addWidget(buttons);
+        dialog->show();
+        terminal->runCommand(command, forkmesh::vm::workspaceRoot(), {}, false);
+        terminal->setFocus();
     });
 
     // There is no "open repositories on tab" preference any more (adhoc #119): a
@@ -1408,6 +1656,34 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoSyncOnMergeSetting, enabled);
     });
 
+    auto *mirrorSyncLabel = new QLabel("MIRROR SYNC");
+    mirrorSyncLabel->setObjectName("sectionLabel");
+    auto *mirrorSyncHint = new QLabel(
+        QStringLiteral(
+            "How often to poll repo mirrors for source updates when a direct push"
+            " notification is not received."));
+    mirrorSyncHint->setObjectName("statusLine");
+    mirrorSyncHint->setWordWrap(true);
+    auto *mirrorSyncRow = new QHBoxLayout;
+    mirrorSyncRow->setContentsMargins(0, 0, 0, 0);
+    auto *mirrorSyncMinutes = new QSpinBox;
+    mirrorSyncMinutes->setRange(kMirrorSyncIntervalMinMinutes,
+                               kMirrorSyncIntervalMaxMinutes);
+    mirrorSyncMinutes->setValue(mirrorSyncIntervalMinutes());
+    mirrorSyncMinutes->setSuffix(" minutes");
+    mirrorSyncMinutes->setToolTip(
+        QStringLiteral(
+            "Pull each mirror in the background. Longer values reduce traffic; "
+            "shorter values recover faster after offline gaps."));
+    connect(mirrorSyncMinutes, QOverload<int>::of(&QSpinBox::valueChanged),
+            this,
+            [this](int minutes) {
+                QSettings().setValue(kMirrorSyncIntervalSetting, minutes);
+                restartMirrorSyncTimer();
+            });
+    mirrorSyncRow->addWidget(mirrorSyncMinutes, 0, Qt::AlignLeft);
+    mirrorSyncRow->addStretch();
+
     // Start a repository under this node: either spin up a brand-new empty repo
     // (git init) or adopt an existing local Git folder. Both then mirror + publish
     // under the account, exactly like the import flow below.
@@ -1715,6 +1991,13 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(m_autostartInfo);
     generalCol->addLayout(autostartRemoveRow);
     generalCol->addWidget(autoUpdateCheck);
+    generalCol->addSpacing(6);
+    generalCol->addWidget(vmLabel);
+    generalCol->addWidget(vmHint);
+    generalCol->addWidget(vmCheck);
+    generalCol->addWidget(vmStatus);
+    generalCol->addLayout(vmButtonRow);
+    generalCol->addSpacing(6);
     generalCol->addWidget(autoSwitchToAgentCheck);
     generalCol->addWidget(excludeExternalClaudeCheck);
     generalCol->addWidget(publishAgentsToWebCheck);
@@ -1747,6 +2030,10 @@ QWidget *MainWindow::buildSettingsSection()
     reposCol->addSpacing(6);
     reposCol->addWidget(pullsSyncLabel);
     reposCol->addWidget(autoSyncMergeCheck);
+    reposCol->addSpacing(6);
+    reposCol->addWidget(mirrorSyncLabel);
+    reposCol->addWidget(mirrorSyncHint);
+    reposCol->addLayout(mirrorSyncRow);
     reposCol->addStretch();
     addTab(reposTab, "Repositories");
 
@@ -3979,9 +4266,6 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
 {
     if (!m_settingsLog)
         return;
-    QScrollBar *scrollBar = m_settingsLog->verticalScrollBar();
-    const int lockedPosition =
-        m_logScrollLocked && scrollBar ? scrollBar->value() : -1;
 
     // The badge accents read on either canvas, but the timestamp, day divider
     // and message body need per-theme greys/text so the log isn't grey text
@@ -4002,8 +4286,6 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
         time, message, dark,
         logPromptIconTag(m_settingsLog, storedLine) +
             logFaviconTag(message, m_settingsLog)));
-    if (lockedPosition >= 0)
-        scrollBar->setValue(lockedPosition);
 }
 
 // Loads the next older page of matching lines when the user scrolls to the
@@ -4144,6 +4426,7 @@ void MainWindow::rebuildLogFilterButtons()
         connect(chip, &QPushButton::clicked, this, [this, category] {
             m_logFilter = category;
             rebuildNetworkLogView();
+            refreshLogTimelineChart();
         });
     };
 
@@ -4158,7 +4441,7 @@ void MainWindow::rebuildLogFilterButtons()
     // Show present categories in a stable, readable order.
     static const char *order[] = {
         "SESSION", "STATUS", "PEER",  "NODE",   "FORK",  "FORKED", "MIRROR",
-        "SYNC",    "ACCOUNT", "HOST", "ACTIONS", "PIN", "GIT",
+        "SYNC",    "ACCOUNT", "HOST", "ACTIONS", "PIN", "GIT", "BGTASK",
         "PUBLISH", "PULL",   "MERGE", "ISSUE", "PROMPT",    "BOUNTY", "WALLET",
         "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "NETWORK", "ERROR",
         "INFO",
@@ -4221,6 +4504,7 @@ void MainWindow::testResetNetworkLog()
     QFile::remove(networkLogPath());
     rebuildLogFilterButtons();
     rebuildNetworkLogView();
+    refreshLogTimelineChart();
 }
 #endif
 
@@ -4261,6 +4545,27 @@ void MainWindow::rebuildNetworkLogView()
                 .arg(muted, m_logFilter.toHtmlEscaped()));
     }
     m_logViewMutating = false;
+}
+
+void MainWindow::openFullLogForCategory(const QString &category)
+{
+    const QString trimmed = category.trimmed();
+    if (trimmed.isEmpty())
+        return;
+
+    m_logFilter = trimmed;
+    showSection(4);
+    if (m_logNavButton)
+        m_logNavButton->setChecked(true);
+    if (m_logFilterRow)
+        rebuildLogFilterButtons();
+    if (!m_settingsLog)
+        return;
+
+    m_networkLogViewStale = false;
+    rebuildNetworkLogView();
+    refreshLogTimelineChart();
+    m_settingsLog->moveCursor(QTextCursor::End);
 }
 
 void MainWindow::openFullLogAtFooterLine(const QString &rawLine)
@@ -4384,15 +4689,18 @@ void MainWindow::logSystem(const QString &text)
     NodeDiagnostics::hostCollector().noteLogLine(plain);
     m_networkLog.append(line);
     bool chipsChanged = false;
+    QStringList droppedTimelineLines;
     while (m_networkLog.size() > kNetworkLogLimit) {
         // The counts describe the buffered history, so a line ageing out of it
         // gives its category's chip back a tally point (and retires the chip
         // entirely once it was the last line of its kind).
-        const QString dropped = logBadgeFor(m_networkLog.first());
-        if (--m_logFilterCounts[dropped] <= 0) {
-            m_logFilterCounts.remove(dropped);
+        const QString droppedLine = m_networkLog.first();
+        const QString droppedBadge = logBadgeFor(droppedLine);
+        if (--m_logFilterCounts[droppedBadge] <= 0) {
+            m_logFilterCounts.remove(droppedBadge);
             chipsChanged = true;
         }
+        droppedTimelineLines.append(droppedLine);
         m_networkLog.removeFirst();
         // m_logRenderFrom indexes into m_networkLog; trimming the front shifts
         // every index down by one, so keep it pointed at the same line.
@@ -4417,6 +4725,22 @@ void MainWindow::logSystem(const QString &text)
         else
             appendNetworkLogLine(line);
     }
+    // The retained log is normally at its 20,000-line cap, so every append also
+    // evicts one old line. Rebuilding and reclassifying the full visible slice
+    // here made routine logging take seconds, and logging the resulting stall
+    // recursively triggered another rebuild. Remove only the evicted entries,
+    // then append the new one; a full rebuild remains reserved for range/filter
+    // changes where it is actually needed.
+    if (m_logTimelineChart) {
+        for (const QString &droppedLine : std::as_const(droppedTimelineLines)) {
+            const QDateTime timestamp = QDateTime::fromString(
+                droppedLine.left(19), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+            if (timestamp.isValid())
+                m_logTimelineChart->removeEntry(timestamp.toMSecsSinceEpoch(),
+                                                logBadgeFor(droppedLine));
+        }
+    }
+    appendLogTimelineEntry(line);
 
     // Mirror the newest event onto the always-on footer log line so the latest
     // activity is visible at the bottom of the app even when the Log tab is closed.
@@ -4449,16 +4773,44 @@ static constexpr int kPromptBubbleSeconds = 8;
 // finishes. It stays fully opaque throughout — the exit is the motion, not a fade
 // (adhoc #226), so the message is legible right up to the moment it leaves.
 static constexpr int kToastSlideOutMs = 320;
-// Routine notifications enter from just below their final position. Keeping
-// this shorter than the prompt-send flight makes bursts feel responsive without
-// the queue cards popping into place.
-static constexpr int kToastEntryMs = 180;
-static constexpr int kToastEntryOffset = 18;
+// Cards enter from just below their final position; the rise itself and the
+// stack's shuffle-up live in MainWindowInternal.h (kToastEntryRise /
+// kToastEntryMs / kToastShiftMs) because the layout code shares them.
 
 // Cap the visible notification backlog. A runaway retry loop firing messages
 // faster than they can be read should not grow the queue without bound; the
 // oldest queued message is dropped once the cap is hit.
 static constexpr int kToastQueueLimit = 20;
+
+QStringList promptAttachedImagePaths(const QString &prompt)
+{
+    QStringList paths;
+    const QString prefix = QStringLiteral("Attached image:");
+    for (const QString &line : prompt.split(QLatin1Char('\n'))) {
+        if (!line.trimmed().startsWith(prefix, Qt::CaseInsensitive))
+            continue;
+        const QString path = line.trimmed().mid(prefix.size()).trimmed();
+        if (!path.isEmpty() && !paths.contains(path))
+            paths << path;
+    }
+    return paths;
+}
+
+QString promptTextWithoutImages(const QString &prompt)
+{
+    QStringList lines;
+    const QString prefix = QStringLiteral("Attached image:");
+    for (const QString &line : prompt.split(QLatin1Char('\n'))) {
+        if (line.trimmed().startsWith(prefix, Qt::CaseInsensitive))
+            continue;
+        lines << line;
+    }
+    while (!lines.isEmpty() && lines.constFirst().trimmed().isEmpty())
+        lines.removeFirst();
+    while (!lines.isEmpty() && lines.constLast().trimmed().isEmpty())
+        lines.removeLast();
+    return lines.join(QLatin1Char('\n')).trimmed();
+}
 
 QString topMessageKindLabel(const QString &kind)
 {
@@ -4501,7 +4853,8 @@ void setTopMessageAction(QPushButton *button, int agentSessionId)
 // so every pending message remains visible and can be read before its turn.
 void MainWindow::queueTopMessage(const QString &text, bool error,
                                  const QString &clickHref,
-                                 const QString &kind, int durationSeconds)
+                                 const QString &kind, int durationSeconds,
+                                 int actionRunId)
 {
     const QString trimmed = text.simplified();
     if (trimmed.isEmpty())
@@ -4512,11 +4865,13 @@ void MainWindow::queueTopMessage(const QString &text, bool error,
                                            : kToastSuccessSeconds);
     m_topMessageQueue.append(
         {m_nextTopMessageQueueId++, trimmed, error, clickHref, entryDuration,
-         kind});
+         kind, actionRunId});
     while (m_topMessageQueue.size() > kToastQueueLimit)
         m_topMessageQueue.removeFirst();
     renderTopMessageQueue();
-    positionTopMessageBubble(); // move the active bubble up above the new card
+    // Glide the active bubble up above the new card instead of teleporting it,
+    // so a burst of arrivals reads as the stack sliding up one row at a time.
+    positionTopMessageBubble(true);
     renderTopMessageCountdown();
 }
 
@@ -4539,18 +4894,22 @@ void MainWindow::renderTopMessageQueue()
         card->setObjectName("topMessageQueueCard");
         card->setAttribute(Qt::WA_StyledBackground, true);
         auto *column = new QVBoxLayout(card);
-        column->setContentsMargins(12, 8, 10, 8);
-        column->setSpacing(6);
+        column->setContentsMargins(kToastPadLeft, kToastPadTop, kToastPadRight,
+                                   kToastPadBottom);
+        column->setSpacing(kToastRowSpacing);
 
+        // The kind badge shares the caption row with the countdown and the
+        // buttons, exactly like the active toast, so a queued card is two lines
+        // instead of three and the whole column stays compact.
         auto *typeBadge = new QLabel(topMessageKindLabel(entry.kind), card);
         typeBadge->setObjectName("topMessageQueueTypeBadge");
         typeBadge->setFocusPolicy(Qt::NoFocus);
-        column->addWidget(typeBadge, 0, Qt::AlignLeft);
 
         auto *label = new QLabel(card);
         label->setObjectName("topMessageQueueText");
         label->setTextFormat(Qt::RichText);
         label->setWordWrap(true);
+        label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
         const QString color = entry.error ? QStringLiteral("#f85149")
                                           : QStringLiteral("#3fb950");
@@ -4562,14 +4921,21 @@ void MainWindow::renderTopMessageQueue()
 
         auto *actions = new QWidget(card);
         actions->setObjectName("topMessageQueueActions");
+        actions->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         auto *actionRow = new QHBoxLayout(actions);
         actionRow->setContentsMargins(0, 0, 0, 0);
         actionRow->setSpacing(4);
+        actionRow->addWidget(typeBadge);
+        // "queued · 5s" instead of a sentence: the caption row has to hold the
+        // buttons too, and the tooltip carries the explanation.
         auto *timer = new QLabel(
-            QStringLiteral("%1s timer when it reaches the top")
-                .arg(entry.durationSeconds), card);
+            QString::fromUtf8("queued \xC2\xB7 %1s").arg(entry.durationSeconds),
+            actions);
         timer->setObjectName("topMessageQueueMeta");
         timer->setFocusPolicy(Qt::NoFocus);
+        timer->setToolTip(QStringLiteral("Counts down for %1s once it reaches "
+                                         "the top of the stack")
+                              .arg(entry.durationSeconds));
         actionRow->addWidget(timer);
         actionRow->addStretch(1);
 
@@ -4610,7 +4976,6 @@ void MainWindow::renderTopMessageQueue()
         m_topMessageQueueLayout->addWidget(card);
     }
 
-    m_topMessageQueueContent->adjustSize();
     m_topMessageQueueScroll->setVisible(!m_topMessageQueue.isEmpty());
 }
 
@@ -4647,7 +5012,7 @@ void MainWindow::dismissQueuedTopMessage(quint64 id)
             continue;
         m_topMessageQueue.erase(it);
         renderTopMessageQueue();
-        positionTopMessageBubble();
+        positionTopMessageBubble(true); // the stack closes the gap smoothly
         renderTopMessageCountdown();
         return;
     }
@@ -4675,28 +5040,112 @@ void MainWindow::renderTopMessage()
                                             : QString::fromUtf8("\xE2\x9C\x93"); // ✓
     // When a click target is set, the message text itself becomes a link so e.g.
     // an "agent is waiting for you" bubble jumps straight to that agent.
-    QString body = m_topMessageRaw.toHtmlEscaped();
+    QString visiblePrompt = promptTextWithoutImages(m_topMessageRaw);
+    if (visiblePrompt.isEmpty() && m_topMessageIsPromptBubble &&
+        !m_topMessagePromptImagePaths.isEmpty())
+        visiblePrompt = QStringLiteral("Image attachment");
+    QString body = (m_topMessageIsPromptBubble ? visiblePrompt : m_topMessageRaw)
+                       .toHtmlEscaped();
     body.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
     if (!m_topMessageHref.isEmpty())
         body = QStringLiteral(
                    "<a href='%1' style='color:%2;text-decoration:underline'>%3</a>")
                    .arg(m_topMessageHref.toHtmlEscaped(), fg, body);
     if (m_topMessageIsPromptBubble) {
-        m_topMessageBaseHtml = QStringLiteral(
-                                   "<span style='color:%1'><b>↗ Prompt sent</b></span>"
-                                   "<br><span style='color:%1'>%2</span>")
+        if (m_topMessagePromptHeader) {
+            m_topMessagePromptHeader->setText(
+                QStringLiteral("<span style='color:%1'><b>↗ Prompt sent</b></span>")
+                    .arg(fg));
+            m_topMessagePromptHeader->show();
+        }
+        if (m_topMessagePromptStatusLabel) {
+            m_topMessagePromptStatusLabel->setText(
+                m_topMessagePromptStatus.isEmpty()
+                    ? QString()
+                    : QStringLiteral("<span style='color:%1'>%2</span>")
+                          .arg(fg, m_topMessagePromptStatus.toHtmlEscaped()));
+            m_topMessagePromptStatusLabel->setVisible(
+                !m_topMessagePromptStatus.isEmpty());
+        }
+        m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2</span>")
                                    .arg(fg, body);
     } else {
+        if (m_topMessagePromptHeader)
+            m_topMessagePromptHeader->hide();
+        if (m_topMessagePromptStatusLabel)
+            m_topMessagePromptStatusLabel->hide();
         m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
                                    .arg(fg, glyph, body);
     }
     m_topMessage->setText(m_topMessageBaseHtml);
+    renderTopMessagePromptImages();
     if (m_topMessageTypeBadge) {
         m_topMessageTypeBadge->setText(
             m_topMessageIsPromptBubble ? QStringLiteral("Prompt")
                                        : topMessageKindLabel(m_topMessageKind));
         m_topMessageTypeBadge->show();
     }
+}
+
+void MainWindow::renderTopMessagePromptImages()
+{
+    if (!m_topMessagePromptImages)
+        return;
+    auto *row = qobject_cast<QHBoxLayout *>(m_topMessagePromptImages->layout());
+    if (!row)
+        return;
+    while (QLayoutItem *item = row->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+
+    for (const QString &path : std::as_const(m_topMessagePromptImagePaths)) {
+        auto *thumbnail = new QPushButton(m_topMessagePromptImages);
+        thumbnail->setObjectName("topMessagePromptImage");
+        // A confirmation only has to prove which images went with the prompt;
+        // a caption-sized chip does that without doubling the card's height
+        // (click it for the full-size view).
+        thumbnail->setFixedSize(46, 46);
+        thumbnail->setIconSize(QSize(40, 40));
+        thumbnail->setCursor(Qt::PointingHandCursor);
+        thumbnail->setToolTip(QStringLiteral("View %1")
+                                  .arg(QFileInfo(path).fileName()));
+        const QPixmap pixmap(path);
+        if (!pixmap.isNull()) {
+            thumbnail->setIcon(QIcon(pixmap));
+        } else {
+            thumbnail->setText(QStringLiteral("Image"));
+        }
+        connect(thumbnail, &QPushButton::clicked, this,
+                [this, path] { showQuickAddImageDetail(path); });
+        row->addWidget(thumbnail);
+    }
+    row->addStretch(1);
+    m_topMessagePromptImages->setVisible(
+        m_topMessageIsPromptBubble && !m_topMessagePromptImagePaths.isEmpty());
+}
+
+// Exact height the bubble's stacked lines occupy at a given width. Measured
+// through the layout's heightForWidth, which asks every wrapped label how tall
+// it really is at that width. The container's own sizeHint cannot answer this —
+// a word-wrapped QLabel reports its unwrapped metrics there, which sized the
+// bubble to a wildly wrong height and left the message floating in empty bands
+// (adhoc #1444).
+int MainWindow::topMessageBodyHeight(int textWidth) const
+{
+    if (!m_topMessageBody)
+        return 0;
+    QLayout *layout = m_topMessageBody->layout();
+    if (!layout)
+        return 0;
+    layout->activate();
+    const int hfw = layout->hasHeightForWidth()
+                        ? layout->heightForWidth(textWidth)
+                        : -1;
+    // No wrapped line to measure (a plain one-line pill, say): the layout's own
+    // sizeHint is exact for those.
+    return hfw > 0 ? hfw : layout->sizeHint().height();
 }
 
 // Calculate a readable floating-bubble rectangle directly above the prompt.
@@ -4728,11 +5177,30 @@ QRect MainWindow::topMessageBubbleRect()
         if (m_topMessageActions &&
             m_topMessageActions->isVisibleTo(m_topMessageContainer))
             chrome += m_topMessageActions->sizeHint().height() + column->spacing();
-        const int textWidth = qMax(40, bubbleWidth - pad.left() - pad.right());
-        int textHeight = m_topMessage->heightForWidth(textWidth);
+        const int roomForText = qMax(18, maxBubbleHeight - chrome);
+        int textWidth = qMax(40, bubbleWidth - pad.left() - pad.right());
+        int textHeight = 0;
+        if (m_topMessageBody) {
+            m_topMessageBody->setFixedWidth(textWidth);
+            textHeight = topMessageBodyHeight(textWidth);
+        }
+        if (textHeight <= 0)
+            textHeight = m_topMessage->heightForWidth(textWidth);
         if (textHeight <= 0)
             textHeight = m_topMessage->sizeHint().height();
-        textHeight = qBound(18, textHeight, qMax(18, maxBubbleHeight - chrome));
+        // Only a message too tall for the window scrolls, and then the scroll bar
+        // takes width from the text. Re-wrap inside what is left so the ends of
+        // those lines cannot hide behind the bar.
+        if (m_topMessageBody && textHeight > roomForText) {
+            QScrollBar *bar = m_topMessageScroll->verticalScrollBar();
+            const int barWidth = bar ? bar->sizeHint().width() : 0;
+            if (barWidth > 0 && textWidth - barWidth > 40) {
+                textWidth -= barWidth;
+                m_topMessageBody->setFixedWidth(textWidth);
+                textHeight = qMax(textHeight, topMessageBodyHeight(textWidth));
+            }
+        }
+        textHeight = qBound(18, textHeight, roomForText);
         m_topMessageScroll->setFixedHeight(textHeight);
         column->activate();
         bubbleHeight = textHeight + chrome;
@@ -4743,41 +5211,131 @@ QRect MainWindow::topMessageBubbleRect()
     const int x = qMax(margin, width() - bubbleWidth - margin);
     int queueHeight = 0;
     if (m_topMessageQueueScroll && m_topMessageQueueContent &&
-        !m_topMessageQueue.isEmpty()) {
+        m_topMessageQueueLayout && !m_topMessageQueue.isEmpty()) {
         m_topMessageQueueContent->setFixedWidth(bubbleWidth);
-        if (m_topMessageQueueLayout)
-            m_topMessageQueueLayout->activate();
-        m_topMessageQueueContent->adjustSize();
-        const int queueRoom = qMax(0, roomForBubble - bubbleHeight - 8);
-        queueHeight = qMin(m_topMessageQueueContent->sizeHint().height(), queueRoom);
+        m_topMessageQueueLayout->activate();
+        // Same measurement as the active bubble: ask the cards how tall they
+        // wrap at this width instead of trusting a sizeHint that ignores it.
+        int contentHeight =
+            m_topMessageQueueLayout->hasHeightForWidth()
+                ? m_topMessageQueueLayout->heightForWidth(bubbleWidth)
+                : 0;
+        if (contentHeight <= 0)
+            contentHeight = m_topMessageQueueLayout->minimumSize().height();
+        m_topMessageQueueContent->setFixedHeight(qMax(0, contentHeight));
+        const int queueRoom =
+            qMax(0, roomForBubble - bubbleHeight - kToastStackGap);
+        queueHeight = qMin(contentHeight, queueRoom);
         m_topMessageQueueScroll->setFixedWidth(bubbleWidth);
-        m_topMessageQueueScroll->setFixedHeight(queueHeight);
+        m_topMessageQueueScroll->setFixedHeight(qMax(0, queueHeight));
         m_topMessageQueueScroll->setVisible(queueHeight > 0);
     } else if (m_topMessageQueueScroll) {
         m_topMessageQueueScroll->hide();
     }
     const int y = qMax(margin, promptTop - bubbleHeight - queueHeight -
-                                   (queueHeight > 0 ? 8 : 0));
+                                   (queueHeight > 0 ? kToastStackGap : 0));
     return QRect(x, y, bubbleWidth, bubbleHeight);
 }
 
+// Park the queued column immediately under the active toast. Animated, it rises
+// into its new place: a card lands at the bottom of the column and the ones
+// above it glide up, which is what makes a burst read as one moving stack.
+void MainWindow::placeTopMessageQueue(const QRect &bubble, bool animate)
+{
+    if (!m_topMessageQueueScroll)
+        return;
+    if (m_topMessageQueueFlight)
+        m_topMessageQueueFlight->stop();
+    if (!m_topMessageQueueScroll->isVisible())
+        return;
+    const QRect target(bubble.left(), bubble.bottom() + kToastStackGap,
+                       m_topMessageQueueScroll->width(),
+                       m_topMessageQueueScroll->height());
+    const QRect current = m_topMessageQueueScroll->geometry();
+    // A column that was already on screen glides up from where it stood; the
+    // first card rises out of the gap the prompt anchor reserves beneath it.
+    const bool hadColumn = m_topMessageQueue.size() > 1 && current.isValid();
+    const QRect source =
+        hadColumn ? current : target.translated(0, kToastEntryRise);
+    if (animate && m_topMessageQueueFlight && source != target) {
+        m_topMessageQueueScroll->setGeometry(source);
+        m_topMessageQueueFlight->setStartValue(source);
+        m_topMessageQueueFlight->setEndValue(target);
+        m_topMessageQueueFlight->start();
+    } else {
+        m_topMessageQueueScroll->setGeometry(target);
+    }
+    if (auto *bar = m_topMessageQueueScroll->verticalScrollBar())
+        bar->setValue(bar->maximum()); // keep the newest queued card visible
+    m_topMessageQueueScroll->raise();
+}
+
 // Size and anchor the floating bubble. Called whenever its content changes and
-// when the window moves or resizes.
-void MainWindow::positionTopMessageBubble()
+// when the window moves or resizes. animate=true is for a change in stack depth:
+// the toast slides to its new anchor rather than jumping there.
+void MainWindow::positionTopMessageBubble(bool animate)
 {
     if (!m_topMessageContainer)
         return;
-    if (m_topMessageSlidingOut || m_topMessageEntering)
+    if (m_topMessageSlidingOut)
         return; // the exit animation owns the geometry until it lands
     const QRect bubble = topMessageBubbleRect();
-    m_topMessageContainer->setGeometry(bubble);
-    if (m_topMessageQueueScroll && m_topMessageQueueScroll->isVisible()) {
-        m_topMessageQueueScroll->move(bubble.left(), bubble.bottom() + 9);
-        if (auto *bar = m_topMessageQueueScroll->verticalScrollBar())
-            bar->setValue(bar->maximum()); // keep the newest queued card visible
-        m_topMessageQueueScroll->raise();
+    if (m_topMessageEntering) {
+        // A card arrived while this one was still rising. Re-aim the same motion
+        // at the new anchor: dropping the request instead would leave the toast
+        // sitting on top of the card that just joined the stack.
+        if (m_topMessageFlight)
+            m_topMessageFlight->setEndValue(bubble);
+        placeTopMessageQueue(bubble, animate);
+        m_topMessageContainer->raise();
+        return;
     }
+    const QRect current = m_topMessageContainer->geometry();
+    // Only a pure move is worth animating; a resize (the message changed, or the
+    // window did) has to land immediately or the bubble would visibly stretch.
+    if (animate && m_topMessageFlight && m_topMessageContainer->isVisible() &&
+        current.size() == bubble.size() && current != bubble) {
+        m_topMessageShifting = true;
+        m_topMessageFlight->stop();
+        m_topMessageFlight->setDuration(kToastShiftMs);
+        m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
+        m_topMessageFlight->setStartValue(current);
+        m_topMessageFlight->setEndValue(bubble);
+        m_topMessageFlight->start();
+    } else {
+        if (m_topMessageShifting && m_topMessageFlight)
+            m_topMessageFlight->stop(); // don't let a shift finish over this
+        m_topMessageShifting = false;
+        m_topMessageContainer->setGeometry(bubble);
+    }
+    placeTopMessageQueue(bubble, animate);
     m_topMessageContainer->raise();
+}
+
+// Show the bubble by sliding it up into its anchor. Every arrival uses this, so a
+// prompt confirmation and a background notification enter identically.
+void MainWindow::animateTopMessageEntry(const QRect &target)
+{
+    if (!m_topMessageContainer)
+        return;
+    if (m_topMessageFlight)
+        m_topMessageFlight->stop();
+    m_topMessageSlidingOut = false;
+    m_topMessageEntering = false;
+    m_topMessageShifting = false;
+    const QRect source = target.translated(0, kToastEntryRise);
+    m_topMessageContainer->setGeometry(source);
+    m_topMessageContainer->show();
+    m_topMessageContainer->raise();
+    placeTopMessageQueue(target, false);
+    if (m_topMessageFlight && source != target) {
+        m_topMessageEntering = true;
+        m_topMessageFlight->setDuration(kToastEntryMs);
+        m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
+        m_topMessageFlight->setStartValue(source);
+        m_topMessageFlight->setEndValue(target);
+        m_topMessageFlight->start();
+    }
 }
 
 // A hovered bubble should remain completely stable: stop the visible seconds
@@ -4818,6 +5376,7 @@ void MainWindow::slideTopMessageOut()
     if (m_topMessageSlidingOut)
         return; // already on its way out
     m_topMessageEntering = false;
+    m_topMessageShifting = false;
     m_topMessageSlidingOut = true;
     // Drop the countdown as it leaves, so the last thing on screen is the message
     // itself rather than a stale "0s".
@@ -4836,7 +5395,9 @@ void MainWindow::slideTopMessageOut()
 // After a footer send clears the editor, leave a copy of the exact prompt in a
 // bubble above the editor. Keeping the entire card above the prompt means it
 // never obscures either a draft or the send controls on any page.
-void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId)
+void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId,
+                                  const QString &status,
+                                  const QStringList &images)
 {
     const QString sent = prompt.trimmed();
     if (sent.isEmpty() || !m_topMessage || !m_topMessageContainer)
@@ -4845,6 +5406,11 @@ void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId)
     m_topMessageHref.clear();
     m_topMessageKind = QStringLiteral("prompt");
     m_topMessageAgentSessionId = agentSessionId;
+    m_topMessageActionRunId = -1;
+    m_topMessagePromptStatus = status.trimmed();
+    m_topMessagePromptImagePaths = images;
+    if (m_topMessagePromptImagePaths.isEmpty())
+        m_topMessagePromptImagePaths = promptAttachedImagePaths(sent);
     m_topMessageError = false;
     m_topMessageIsPromptBubble = true;
     m_topMessageRaw = sent;
@@ -4860,6 +5426,8 @@ void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId)
         setTopMessageAction(m_topMessageSendToPrompt, m_topMessageAgentSessionId);
         m_topMessageSendToPrompt->show();
     }
+    if (m_topMessageActionOutput)
+        m_topMessageActionOutput->hide();
     if (m_topMessageClose)
         m_topMessageClose->show();
     m_topMessageSecondsLeft = kPromptBubbleSeconds; // the row is sized with its countdown in place
@@ -4867,14 +5435,9 @@ void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId)
     if (m_topMessageActions)
         m_topMessageActions->show();
 
-    const QRect target = topMessageBubbleRect();
-    m_topMessageContainer->setGeometry(target);
-    m_topMessageContainer->show();
-    m_topMessageContainer->raise();
-    if (m_topMessageFlight)
-        m_topMessageFlight->stop();
-    m_topMessageSlidingOut = false;
-    m_topMessageEntering = false;
+    // The confirmation rises into the same anchor a notification uses, so the two
+    // kinds of card never enter differently.
+    animateTopMessageEntry(topMessageBubbleRect());
 
     if (!m_topMessageTimer) {
         m_topMessageTimer = new QTimer(this);
@@ -4905,7 +5468,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
 void MainWindow::flashMessage(const QString &text, bool error,
                               const QString &clickHref, int durationSeconds,
-                              const QString &kind)
+                              const QString &kind, int actionRunId)
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
@@ -4923,7 +5486,8 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // the queue and moves the active toast up, rather than replacing a message
     // that may still be being read.
     if (topMessageBusy()) {
-        queueTopMessage(trimmed, error, clickHref, kind, durationSeconds);
+        queueTopMessage(trimmed, error, clickHref, kind, durationSeconds,
+                        actionRunId);
         return;
     }
     // Carry an optional click target so the whole toast can act as a link (e.g. an
@@ -4932,8 +5496,16 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_topMessageHref = clickHref;
     m_topMessageKind = kind;
     m_topMessageAgentSessionId = -1;
+    m_topMessageActionRunId = actionRunId;
     m_topMessageError = error;
     m_topMessageIsPromptBubble = false;
+    m_topMessagePromptStatus.clear();
+    m_topMessagePromptImagePaths.clear();
+    if (m_topMessagePromptHeader)
+        m_topMessagePromptHeader->hide();
+    if (m_topMessagePromptStatusLabel)
+        m_topMessagePromptStatusLabel->hide();
+    renderTopMessagePromptImages();
     m_topMessageHovering = false;
     m_topMessageRaw = trimmed;
     // The whole message is shown: it wraps to the bubble's full width and the
@@ -4965,6 +5537,11 @@ void MainWindow::flashMessage(const QString &text, bool error,
                                            : kToastSuccessSeconds);
     if (m_topMessageCopy)
         m_topMessageCopy->show();
+    if (m_topMessageActionOutput) {
+        const bool canOpenOutput = error && actionRunId > 0 &&
+                                   findRun(actionRunId) != nullptr;
+        m_topMessageActionOutput->setVisible(canOpenOutput);
+    }
     if (m_topMessageSendToPrompt) {
         setTopMessageAction(m_topMessageSendToPrompt, -1);
         m_topMessageSendToPrompt->show();
@@ -4975,33 +5552,10 @@ void MainWindow::flashMessage(const QString &text, bool error,
     if (m_topMessageActions)
         m_topMessageActions->show();
 
-    if (m_topMessageContainer) {
-        // A previous bubble may have been mid-slide. Start just below the final
-        // dock and glide up once its text and actions have been measured. This
-        // also makes the next card in a burst load smoothly after the card above
-        // it leaves.
-        if (m_topMessageFlight)
-            m_topMessageFlight->stop();
-        m_topMessageSlidingOut = false;
-        m_topMessageEntering = false;
-        const QRect target = topMessageBubbleRect();
-        // The prompt anchor reserves a 16px gap below the final card. Keep the
-        // entry motion inside that gap, so even its first frame cannot overlap
-        // the prompt.
-        const QRect source = target.translated(
-            0, qMin(kToastEntryOffset, 15));
-        m_topMessageContainer->setGeometry(source);
-        m_topMessageContainer->show();
-        m_topMessageContainer->raise();
-        if (m_topMessageFlight && source != target) {
-            m_topMessageEntering = true;
-            m_topMessageFlight->setDuration(kToastEntryMs);
-            m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
-            m_topMessageFlight->setStartValue(source);
-            m_topMessageFlight->setEndValue(target);
-            m_topMessageFlight->start();
-        }
-    }
+    // A previous bubble may have been mid-slide. Start just below the final dock
+    // and glide up once its text and actions have been measured. This also makes
+    // the next card in a burst rise smoothly after the card above it leaves.
+    animateTopMessageEntry(topMessageBubbleRect());
     if (!m_topMessageEntering)
         m_topMessageTimer->start(1000);
 }
@@ -5037,6 +5591,13 @@ void MainWindow::dismissTopMessage()
     m_loadStatusShowing = false;
     m_topMessageHovering = false;
     m_topMessageIsPromptBubble = false;
+    m_topMessagePromptStatus.clear();
+    m_topMessagePromptImagePaths.clear();
+    if (m_topMessagePromptHeader)
+        m_topMessagePromptHeader->hide();
+    if (m_topMessagePromptStatusLabel)
+        m_topMessagePromptStatusLabel->hide();
+    renderTopMessagePromptImages();
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     m_topMessageKind.clear();
     m_topMessageAgentSessionId = -1;
@@ -5046,8 +5607,11 @@ void MainWindow::dismissTopMessage()
         m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
     if (m_topMessageFlight)
         m_topMessageFlight->stop();
+    if (m_topMessageQueueFlight)
+        m_topMessageQueueFlight->stop();
     m_topMessageSlidingOut = false;
     m_topMessageEntering = false;
+    m_topMessageShifting = false;
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageContainer)
@@ -5062,6 +5626,9 @@ void MainWindow::dismissTopMessage()
         m_topMessageCopy->hide();
     if (m_topMessageSendToPrompt)
         m_topMessageSendToPrompt->hide();
+    m_topMessageActionRunId = -1;
+    if (m_topMessageActionOutput)
+        m_topMessageActionOutput->hide();
     if (m_topMessageTypeBadge)
         m_topMessageTypeBadge->hide();
     if (m_topMessageClose)
@@ -5087,7 +5654,7 @@ void MainWindow::advanceTopMessageQueue()
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
     flashMessage(next.text, next.error, next.clickHref, next.durationSeconds,
-                 next.kind);
+                 next.kind, next.actionRunId);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)

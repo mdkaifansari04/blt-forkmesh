@@ -12,19 +12,20 @@ APP = (WORLD / "world.js").read_text(encoding="utf-8")
 DATA = (WORLD / "world-data.js").read_text(encoding="utf-8")
 
 
-def test_benches_ring_the_pit_from_a_distance():
-    radius = re.search(r"const CAMPFIRE_BENCH_RADIUS = ([\d.]+);", SCENE)
-    assert radius, "campfire bench radius constant missing"
-    # The log pile sits at ~2.6; benches must clear it with a walkable ring.
-    assert float(radius.group(1)) >= 6
+def test_open_member_rings_keep_people_clear_of_the_fire():
+    rings = SCENE.split("const MEMBER_CIRCLE_RINGS = [", 1)[1].split("]", 1)[0]
+    radii = [float(value) for value in re.findall(r"radius: ([\d.]+)", rings)]
+    assert radii and min(radii) >= 4.4
+    assert "const MEMBER_CLEARING_RADIUS = 12;" in SCENE
 
 
-def test_seat_position_is_read_from_the_live_world_matrix():
-    # Absolute seat coordinates captured at build time drift whenever the
-    # campfire is moved, which teleported sitters far away from the fire.
-    assert "seat.userData.campfireBench = true;" in SCENE
-    assert "seat.getWorldPosition(new THREE.Vector3())" in SCENE
-    assert "seat.x += deltaX" not in SCENE
+def test_directory_figures_are_positioned_relative_to_the_live_campfire():
+    lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
+        "function visitNeighborhoodHome", 1
+    )[0]
+    assert "const slot = memberCirclePosition(index, interiorMembers.length);" in lounge
+    assert "campfire.position.x + slot.x" in lounge
+    assert "campfire.position.z + slot.z" in lounge
 
 
 def test_sitting_holds_a_seated_pose_facing_the_fire():
@@ -56,73 +57,38 @@ def test_double_click_on_a_bench_sits_instead_of_dashing():
     assert dbl.index("sitOnCampfireBench") < dbl.index("dashTarget = point")
 
 
-def test_seats_are_benches_with_planks_and_legs():
-    # adhoc #291: the ring is made of wooden benches (plank + end legs,
-    # long axis tangent to the circle), not cylinder stools.
-    ring = SCENE.split("function rebuildCampfireCircle", 1)[1].split(
-        "setShadows(campfire);", 1
+def test_open_member_circle_uses_camera_lod_avatars_not_roster_bench_meshes():
+    assert "function rebuildCampfireCircle" not in SCENE
+    assert "campfire-member-bench-seats" not in SCENE
+    assert "const avatarLod = new THREE.LOD();" in SCENE
+    assert "memberCirclePosition(index, interiorMembers.length)" in SCENE
+
+
+def test_circle_bounds_directory_growth_without_spare_bench_geometry():
+    lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
+        "function visitNeighborhoodHome", 1
     )[0]
-    assert "CylinderGeometry" not in ring
-    assert "new THREE.BoxGeometry(1.6, 0.14, 0.6)" in ring
-    assert "bench.rotation.y = -angle + Math.PI / 2;" in ring
-    assert ring.count("leg") >= 2
-    assert "new THREE.InstancedMesh(" in ring
-    assert 'seatInstances.name = "campfire-member-bench-seats"' in ring
-    assert 'legInstances.name = "campfire-member-bench-legs"' in ring
-    assert 'labelMesh.name = "campfire-member-bench-label-atlas"' in ring
-    assert "seat.userData.raycastProxy = true;" in ring
+    assert ".slice(0, MEMBER_CIRCLE_VISIBLE_LIMIT);" in lounge
+    assert "guestSeats" not in lounge
+    assert "rebuildCampfireCircle" not in SCENE
 
 
-def test_circle_always_keeps_an_open_bench_for_the_next_guest():
-    # One bench beyond the registered membership stays blank; when a guest
-    # joins and takes it, the roster grows and the rebuilt ring brings a
-    # fresh open bench with it.
-    # adhoc #303 adds one more open bench per guest already in the world.
-    assert (
-        "rebuildCampfireCircle(\n      Math.max(total, roster.length) "
-        "+ guestSeats + 1,\n    )" in SCENE
-    )
-
-
-def test_circle_keeps_a_walk_in_gap_instead_of_closing_the_ring():
-    # adhoc #430: a bench at every angle walled the fire in, so the ring keeps
-    # a doorway-wide arc bench-free and spreads the seats over the rest.
-    assert "const CAMPFIRE_ENTRANCE_WIDTH = 3.4;" in SCENE
-    assert "const CAMPFIRE_ENTRANCE_MAX_ANGLE = Math.PI / 3;" in SCENE
-    # The opening faces the town centre the arrivals walk from, derived from the
-    # fire's own landmark so moving the campfire cannot leave it facing a wall.
-    assert (
-        "const CAMPFIRE_ENTRANCE_ANGLE = Math.atan2(\n"
-        "    -campfire.position.z,\n"
-        "    -campfire.position.x,\n"
-        "  );" in SCENE
-    )
-    ring = SCENE.split("function rebuildCampfireCircle", 1)[1].split(
-        "setShadows(campfire);", 1
+def test_open_circle_keeps_a_town_side_walk_in_gap():
+    positioner = SCENE.split("function memberCirclePosition", 1)[1].split(
+        "campfireGround.scale.setScalar", 1
     )[0]
-    # Members are split into concentric rows of at most 25. Every row computes
-    # its own entrance angle, so the walk-in gap stays aligned across them.
-    assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
-    assert "const CAMPFIRE_ROW_SPACING = 2.8;" in SCENE
-    assert "const row = Math.floor(index / CAMPFIRE_MEMBERS_PER_ROW);" in ring
-    assert (
-        "const entranceAngle = Math.min(\n"
-        "        CAMPFIRE_ENTRANCE_MAX_ANGLE,\n"
-        "        CAMPFIRE_ENTRANCE_WIDTH / radius,\n"
-        "      );" in ring
-    )
-    assert "const seatStep = (Math.PI * 2 - entranceAngle) / seatsInRow;" in ring
-    assert "(positionInRow + 0.5) * seatStep" in ring
-    # The old full-circle spacing is gone: it is what walled the fire in.
-    assert "(index / count) * Math.PI * 2" not in ring
+    assert "const entranceGap = Math.min(Math.PI / 2, 3.6 / ring.radius);" in positioner
+    assert "const usableArc = Math.PI * 2 - entranceGap;" in positioner
+    assert "-Math.PI / 2 + entranceGap / 2" in positioner
 
 
-def test_live_idle_members_wait_at_the_yurt_entrance_not_roster_benches():
+def test_live_idle_members_wait_at_the_open_circle_approach_not_roster_benches():
     remote = SCENE.split("function setRemotePlayers", 1)[1].split(
         "function updateMemberLounge", 1
     )[0]
     assert "Live idle peers keep their presence avatar" in remote
-    assert "MEMBERS_YURT_RADIUS" in remote
+    assert "MEMBER_CLEARING_RADIUS" in remote
+    assert "outside the open" in remote
     assert "campfire.userData.seatOffsets" not in remote
     assert "campfire.userData.seatByName" not in remote
 
@@ -207,42 +173,39 @@ def test_head_colour_is_sampled_from_the_edge_of_the_emoji():
     assert "skin.color.set(drawn.color);" in SCENE
 
 
-def test_members_yurt_is_the_existing_world_map_destination():
+def test_open_members_circle_is_the_existing_world_map_destination():
     assert 'id: "campfire"' in DATA
     assert 'shortLabel: "Members Center"' in DATA
     block = DATA[DATA.index('id: "campfire"'):]
     block = block[: block.index("\n  },")]
     assert "position: [0, 0, 130]" in block
     assert 'action: "campfire"' in block
+    assert 'eyebrow: "OPEN COMMUNITY / 04"' in block
+    assert "There is no enclosing shell, roof, or entry collision" in block
     assert "campfire.position.set(...landmarkById(\"campfire\").position);" in SCENE
     assert '  "campfire",\n' in APP.split("LOCAL_LIVE_LANDMARKS", 1)[1]
 
 
-def test_members_yurt_is_opaque_and_pages_its_interior_until_entry():
-    yurt = SCENE.split('membersYurt.name = "members-center-yurt"', 1)[1].split(
+def test_members_circle_has_no_shell_door_visibility_or_collision_gate():
+    clearing = SCENE.split("const MEMBER_CLEARING_RADIUS = 12;", 1)[1].split(
         "const SWING_SEAT_COUNT", 1
     )[0]
-    occupancy = SCENE.split("function updateMembersYurtOccupancy", 1)[1].split(
-        "function syncEnclosureDoors", 1
-    )[0]
-    assert "transparent: false" in yurt
-    assert "opacity: 1" in yurt
-    assert "depthWrite: true" in yurt
-    assert 'membersYurtInterior.name = "members-yurt-interior"' in yurt
-    assert "membersYurtInterior.visible = false" in yurt
-    assert "membersYurtInterior.add(child)" in yurt
-    assert "membersYurtInterior.visible = occupied" in occupancy
-    assert "membersYurt.visible = !occupied" in occupancy
-    assert "figure.visible = occupied" in occupancy
-    assert "constrainMembersYurt(previousHorizontalPosition)" in SCENE
+    assert 'memberCircleInfo.name = "members-circle-info-sign"' in clearing
+    assert "campfire.add(memberCircleInfo);" in clearing
+    assert "membersYurt" not in SCENE
+    assert "members-yurt" not in SCENE
+    assert "updateMembersYurtOccupancy" not in SCENE
+    assert "constrainMembersYurt" not in SCENE
+    assert "syncEnclosureDoors" not in SCENE
+    assert "setSlidingEnclosureDoorOpen" not in SCENE
 
 
-def test_choosing_the_members_spot_moves_you_to_the_yurt_entrance():
+def test_choosing_the_members_spot_moves_you_to_the_open_circle_edge():
     scene = SCENE.split("function returnToCampfireBench", 1)[1].split(
         "\n  function ", 1
     )[0]
-    assert "MEMBERS_YURT_RADIUS" in scene
-    assert 'activity: "visiting the Members Center yurt"' in scene
+    assert "MEMBER_CLEARING_RADIUS" in scene
+    assert 'activity: "visiting the Members Circle"' in scene
     assert "player.position.copy(entrance)" in scene
     assert "campfire.userData.seatByName" not in scene
     assert 'officeSceneMode !== "town"' in scene
@@ -263,10 +226,10 @@ def test_sitting_survives_the_campfire_landmark_proximity_label():
     # proximity relabel would otherwise overwrite the seated activity other
     # visitors render the pose from.
     assert "export const CAMPFIRE_SEATED_ACTIVITY" in SCENE
-    assert (
-        "  CAMPFIRE_SEATED_ACTIVITY,\n  SWING_RIDING_ACTIVITY,\n"
-        "  createWorldScene,\n" in APP
-    )
+    scene_import = APP.split('from "./world-scene.js";', 1)[0]
+    assert "CAMPFIRE_SEATED_ACTIVITY," in scene_import
+    assert "SWING_RIDING_ACTIVITY," in scene_import
+    assert "createWorldScene," in scene_import
     location = APP.split("  updateLocation(label, id) {", 1)[1].split(
         "\n  updateRegion(", 1
     )[0]
@@ -280,14 +243,14 @@ def test_campfire_clearing_keeps_its_landmark_tree_ring_out():
     assert 'if (["campfire", "office"].includes(landmark.id)) return;' in trees
 
 
-def test_directory_members_are_visible_as_bounded_yurt_interior_avatars():
+def test_directory_members_are_visible_as_bounded_open_circle_avatars():
     lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
         "// Legacy bench-circle implementation", 1
     )[0]
     assert "const interiorMembers =" in lounge
-    assert ".slice(0, MEMBERS_YURT_VISIBLE_MEMBER_LIMIT);" in lounge
-    assert "membersYurtMemberPosition(index, interiorMembers.length)" in lounge
-    assert 'status: "inside the Members Center yurt"' in lounge
+    assert ".slice(0, MEMBER_CIRCLE_VISIBLE_LIMIT);" in lounge
+    assert "memberCirclePosition(index, interiorMembers.length)" in lounge
+    assert 'status: "gathering in the open Members Circle"' in lounge
     assert "figure = createAvatar(" in lounge
     assert "campfire.userData.memberFigureCount = seen.size;" in lounge
     assert "campfire.userData.seatedMemberFigures = 0;" in lounge
@@ -313,38 +276,21 @@ def test_legs_hinge_at_the_hip_and_knee_with_the_shoe_on_the_shin():
     assert "if (legs.leftKnee) legs.leftKnee.rotation.x = 0;" in SCENE
 
 
-def test_bench_height_is_derived_from_the_seated_pose():
-    # A plank the sitter's shins cannot reach the ground from reads as
-    # hovering, so the bench is built up to the seated hip height instead.
-    # Derived from the pose, so retuning the pitch cannot leave the bench at a
-    # height the sitter's legs no longer match.
-    assert (
-        "const SEATED_SEAT_TO_SOLE =\n"
-        "  AVATAR_LEG_SEGMENT * Math.cos(SEATED_LEG_PITCH) +\n"
-        "  AVATAR_KNEE_TO_SOLE -\n"
-        "  SEATED_HIP_ABOVE_SEAT;" in SCENE
-    )
-    assert (
-        "const CAMPFIRE_SEAT_TOP_Y = WORLD_WALKING_PLANE_Y + SEATED_SEAT_TO_SOLE;"
-        in SCENE
-    )
-    ring = SCENE.split("function rebuildCampfireCircle", 1)[1].split(
-        "setShadows(campfire);", 1
+def test_open_circle_figures_stand_on_the_world_walking_plane():
+    lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
+        "function visitNeighborhoodHome", 1
     )[0]
-    assert "seat.position.y = CAMPFIRE_SEAT_Y;" in ring
-    # The legs grow with the plank so the bench still stands on the ground.
-    assert "const legGeometry = new THREE.BoxGeometry(" in ring
-    assert "CAMPFIRE_BENCH_LEG_HEIGHT," in ring
-    assert "CAMPFIRE_BENCH_LEG_HEIGHT / 2" in ring
-    assert "legInstances.setMatrixAt(" in ring
+    assert "WORLD_WALKING_PLANE_Y" in lounge
+    assert "applyLegPitch(figure, 0, 0);" in lounge
+    assert "CAMPFIRE_SEAT_TOP_Y" not in SCENE
 
 
-def test_yurt_fills_interior_rings_with_non_walking_member_figures():
-    interior = SCENE.split("// Populate the yurt interior", 1)[1].split(
+def test_open_circle_fills_bounded_rings_with_non_walking_member_figures():
+    interior = SCENE.split("// Populate the open member-circle rings", 1)[1].split(
         "// Legacy bench-circle implementation", 1
     )[0]
-    assert "const MEMBERS_YURT_MEMBER_RINGS" in SCENE
-    assert "const MEMBERS_YURT_VISIBLE_MEMBER_LIMIT" in SCENE
+    assert "const MEMBER_CIRCLE_RINGS" in SCENE
+    assert "const MEMBER_CIRCLE_VISIBLE_LIMIT" in SCENE
     assert "member?.away === true" in interior
     assert "campfire.userData.detailedMemberFigures" in SCENE
     assert "campfire-instanced-member-sitters" not in SCENE
@@ -355,17 +301,17 @@ def test_yurt_fills_interior_rings_with_non_walking_member_figures():
     assert "figure.rotation.y = Math.atan2(slot.x, slot.z);" in interior
 
 
-def test_member_total_and_latest_name_update_the_door_only():
-    assert "function membersYurtDoorTexture(THREE, total, newest = \"\")" in SCENE
-    assert 'memberDoorInfo.name = "members-yurt-door-member-info"' in SCENE
-    assert "memberDoorInfo.material.map = membersYurtDoorTexture(" in SCENE
+def test_member_total_and_latest_name_update_the_open_circle_sign_only():
+    assert "function membersCircleInfoTexture(THREE, total, newest = \"\")" in SCENE
+    assert 'memberCircleInfoFace.name = "members-circle-member-info"' in SCENE
+    assert "memberCircleInfoFace.material.map = membersCircleInfoTexture(" in SCENE
     assert 'latest ? `LATEST · ${latest.toUpperCase()}`' in SCENE
     lounge = SCENE.split("function updateMemberLounge", 1)[1]
     assert "setCampfireMemberCount(total, newestMemberName(members));" in lounge
     setter = SCENE.split("function setCampfireMemberCount", 1)[1].split(
         "\n  }", 1
     )[0]
-    assert "setMembersYurtDoorInfo(count, latest);" in setter
+    assert "setMemberCircleInfo(count, latest);" in setter
     assert "rebuildCampfireMemberLogs(count)" not in setter
     assert "memberCountSprite.material" not in setter
     assert "if (memberCountShown === key) return;" in SCENE

@@ -535,15 +535,31 @@ void MainWindow::scanActionSpool()
                 reattested.insert(idx);
                 const RepositoryRecord &r = m_repositories.at(idx);
                 if (!r.previewOnly && r.publishToNetwork &&
-                    !r.mirrorPath.trimmed().isEmpty())
+                    !r.mirrorPath.trimmed().isEmpty()) {
+                    // SSH fleet fan-out writes directly into this served bare
+                    // repository, bypassing syncRepository's fetch-completion
+                    // refresh. Rebuild the gateway's exact refs pin before
+                    // re-attesting the new catalog state, otherwise the direct
+                    // endpoint stays online while quarantining the push it
+                    // just accepted.
+                    QString gatewayError;
+                    if (!rebuildDirectMirrorGatewayConfiguration(
+                            &gatewayError, true)) {
+                        logSystem(
+                            QStringLiteral(
+                                "Direct gateway refresh after pushed refs "
+                                "failed: %1")
+                                .arg(gatewayError));
+                    }
                     publishRepository(idx, false);
+                }
                 // Tell connected peers that also mirror this repo that it just
                 // advanced, the same ephemeral "mirror-update" frame
                 // syncRepository broadcasts for a fetch-detected change (see
                 // MainWindow::syncRepository/onPeerMirrorUpdated). A push that
                 // lands directly on this served bare mirror never goes through
                 // syncRepository, so without this, peers would only notice at
-                // their next one-minute auto-sync tick instead of
+                // their next safety-sync tick instead of
                 // converging in seconds.
                 if (!r.previewOnly && m_backend)
                     m_backend->notifyMirrorUpdated(
@@ -861,6 +877,17 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
     // heavyweight refresh (git log, per-PR apply checks) once per event.
     if (repoIndex == m_repoDetailIndex)
         scheduleOpenRepoDetailRefresh();
+
+    const QString explicitKey =
+        owner + QLatin1Char('\x1f') + name + QLatin1Char('\x1f') +
+        commit.trimmed().toLower();
+    if (m_explicitActionPushes.remove(explicitKey)) {
+        logSystem(QStringLiteral(
+                      "Actions: checks for %1/%2 @ %3 were already queued by "
+                      "pull-request creation.")
+                      .arg(owner, name, commit.left(8)));
+        return;
+    }
 
     if (!repo.actionsEnabled)
         return; // push detection only; no workflow execution for this repo
@@ -1589,7 +1616,7 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
             notifyActionEvent(QStringLiteral("Action started"),
                               QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                                   .arg(run->workflowName, run->owner, run->name),
-                              false);
+                              false, run->id);
     }
     updateMirrorActionsRuntimeState();
 }
@@ -1621,7 +1648,7 @@ void MainWindow::onRunFinished(int runId, bool ok)
         notifyActionEvent(title,
                           QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                               .arg(run->workflowName, run->owner, run->name),
-                          !ok && !cancelled);
+                          !ok && !cancelled, run->id);
         if (!ok && !cancelled)
             maybeAutoFixFailedRun(*run);
     }
@@ -1679,9 +1706,9 @@ void MainWindow::refreshOpenPullChecks()
 }
 
 void MainWindow::notifyActionEvent(const QString &title, const QString &body,
-                                   bool warning)
+                                   bool warning, int runId)
 {
-    addNotification(title, body, warning);
+    addNotification(title, body, warning, runId);
     // The in-app Notifications page always logs the event above; the noisy
     // desktop toast is what these modes gate. "none" silences it entirely,
     // "failed" lets only failures through (warning == true).
@@ -1731,9 +1758,8 @@ void MainWindow::addNotification(const QString &title, const QString &body,
 }
 
 // Every in-app event lands here: it is filed on the Pings page, counted on the
-// bell, listed in the feed above the network log, and raised in the message
-// area above the footer's mini-log so a new event is seen without opening a
-// page (adhoc #77).
+// bell, and raised in the message area above the footer's mini-log so a new
+// event is seen without opening a page (adhoc #77).
 void MainWindow::recordNotification(AppNotification item)
 {
     item.id = m_nextNotificationId++;
@@ -1749,7 +1775,6 @@ void MainWindow::recordNotification(AppNotification item)
         m_notifications.removeLast();
     updateNotificationButton();
     flashNotification(item);
-    refreshLogEventList();
     // Keep the open Pings page live as new alerts arrive.
     if (m_notificationsTable && m_sectionStack &&
         m_sectionStack->currentIndex() == 3)
@@ -1776,10 +1801,10 @@ void MainWindow::flashNotification(const AppNotification &item)
                              .value(kInAppNotificationDurationSetting, 5)
                              .toInt();
     if (item.warning) {
-        flashMessage(text, true, QString(), duration, item.kind);
+        flashMessage(text, true, QString(), duration, item.kind, item.runId);
         flashErrorBorder();
     } else {
-        flashMessage(text, false, QString(), duration, item.kind);
+        flashMessage(text, false, QString(), duration, item.kind, item.runId);
     }
 }
 
@@ -1982,9 +2007,11 @@ void MainWindow::openActionRunFromNotification(int runId)
         return;
     openRepoDetail(index);
     if (m_repoDetailTabs && m_repoDetailTabs->button(6))
-        m_repoDetailTabs->button(6)->setChecked(true);
-    if (m_repoDetailStack)
+        m_repoDetailTabs->button(6)->click();
+    else if (m_repoDetailStack) {
+        ensureRepoDetailTabBuilt(6);
         m_repoDetailStack->setCurrentIndex(6);
+    }
     refreshRepoActions();
     if (m_actionsTable) {
         for (int row = 0; row < m_actionsTable->rowCount(); ++row) {
@@ -2101,8 +2128,32 @@ QString webPingKindLabel(const QString &kind)
         {QStringLiteral("organization_task_started"), QStringLiteral("Org task")},
         {QStringLiteral("organization_task_activity"), QStringLiteral("Org task")},
         {QStringLiteral("error_group"), QStringLiteral("Error group")},
+        {QStringLiteral("operational_alert"), QStringLiteral("System alert")},
     };
     return labels.value(kind, QStringLiteral("Web"));
+}
+
+// Does this operational ping report a system coming back rather than breaking?
+// The relay stamps the transition it reports on meta.state ("up" once the
+// /status probe is green again) — the same field the World's ping stream reads
+// to tell "recovered" from "needs attention". A recovery is good news, so it
+// must not be drawn, toasted or bordered as an outage (adhoc #1445). The title
+// wording is the fallback for a ping stored before meta.state existed.
+bool webPingIsRecovery(const QJsonObject &alert)
+{
+    const QString state = alert.value(QStringLiteral("meta"))
+                              .toObject()
+                              .value(QStringLiteral("state"))
+                              .toString()
+                              .trimmed()
+                              .toLower();
+    if (state == QLatin1String("up"))
+        return true;
+    if (state == QLatin1String("down"))
+        return false;
+    const QString title = alert.value(QStringLiteral("title")).toString();
+    return title.contains(QLatin1String("recovered"), Qt::CaseInsensitive) ||
+           title.contains(QLatin1String("back online"), Qt::CaseInsensitive);
 }
 } // namespace
 
@@ -2165,7 +2216,6 @@ QWidget *MainWindow::buildNotificationsSection()
         m_notifications.clear();
         markWebAlertsRead();
         updateNotificationButton();
-        refreshLogEventList();
         refreshNotificationsTable();
     });
 
@@ -2304,6 +2354,10 @@ void MainWindow::refreshNotificationsTable()
         QString link;
         int runId = -1;
         bool warning = false;
+        // The counterpart of `warning`: an event that reports something coming
+        // back (a recovered system) reads in green, so a scan of the page tells
+        // "it broke" from "it is fixed" without reading the copy.
+        bool good = false;
         NotificationLink destination;
         QString href;
         qint64 localId = 0;
@@ -2341,6 +2395,7 @@ void MainWindow::refreshNotificationsTable()
             whenItem,
             new QTableWidgetItem(data.link)};
         const QColor red("#f85149");
+        const QColor green("#3fb950");
         for (int column = 0; column < cells.size(); ++column) {
             QTableWidgetItem *cell = cells.at(column);
             // Long titles/details are elided by the column width, so keep the
@@ -2349,6 +2404,8 @@ void MainWindow::refreshNotificationsTable()
                 cell->setToolTip(cell->text());
             if (data.warning)
                 cell->setForeground(red);
+            else if (data.good)
+                cell->setForeground(green);
             m_notificationsTable->setItem(row, column, cell);
         }
     };
@@ -2407,8 +2464,14 @@ void MainWindow::refreshNotificationsTable()
             href.startsWith(QLatin1Char('/'))
                 ? catalogApiUrl().resolved(QUrl(href)).toString()
                 : QString();
+        // A recovery closes an outage: it is the one operational ping that is
+        // not a warning, and the Type column says so instead of filing it under
+        // the same "System alert" heading as the failure it resolves.
+        const bool recovery = kind == QLatin1String("operational_alert") &&
+                              webPingIsRecovery(alert);
         NotificationRow data;
-        data.type = webPingKindLabel(kind);
+        data.type = recovery ? QStringLiteral("System recovered")
+                             : webPingKindLabel(kind);
         data.kind = kind;
         // Unread pings are dotted the way the site's bell marks them; the
         // Status column spells the same thing out for sorting.
@@ -2421,8 +2484,12 @@ void MainWindow::refreshNotificationsTable()
                              : QStringLiteral("Read");
         data.whenMs = qint64(alert.value(QStringLiteral("ts")).toDouble());
         data.link = href;
-        // The site paints error groups red the way local alerts are.
-        data.warning = kind == QLatin1String("error_group");
+        // Worker failures and /status operational outages are both immediate
+        // admin warnings, not passive website activity.
+        data.warning = !recovery &&
+                       (kind == QLatin1String("error_group") ||
+                        kind == QLatin1String("operational_alert"));
+        data.good = recovery;
         data.destination = webAlertLink(alert);
         data.href = webUrl;
         data.webId = alert.value(QStringLiteral("id")).toString().trimmed();
@@ -2520,7 +2587,6 @@ void MainWindow::deleteSelectedNotifications()
     for (const QString &alertId : std::as_const(webIds))
         deleteWebAlert(alertId);
     updateNotificationButton();
-    refreshLogEventList();
     refreshNotificationsTable();
 }
 
@@ -2633,15 +2699,17 @@ void MainWindow::refreshWebAlerts(bool force)
         // subsequent polling is then free to surface genuinely new pings.
         const bool loadingStartupBaseline = !m_webAlertsBaselineLoaded;
         m_webAlertsBaselineLoaded = true;
-        // An unread error-group ping is an error that just happened somewhere
-        // on the mesh: after the startup baseline, raise it in the ping area
-        // (and flash the red border) the moment this poll sees it, instead of
-        // leaving it to be discovered on the Pings page. Each alert id flashes
-        // once per app run (adhoc #77).
+        // An unread error-group or operational ping is something that just
+        // changed somewhere on the mesh: after the startup baseline, raise it
+        // in the ping area (and, for a failure, flash the red border) the moment
+        // this poll sees it, instead of leaving it to be discovered on the Pings
+        // page. Each alert id flashes once per app run (adhoc #77).
         for (const QJsonValue &value : std::as_const(m_webAlerts)) {
             const QJsonObject alert = value.toObject();
-            if (alert.value(QStringLiteral("kind")).toString().trimmed() !=
-                    QLatin1String("error_group") ||
+            const QString kind =
+                alert.value(QStringLiteral("kind")).toString().trimmed();
+            if ((kind != QLatin1String("error_group") &&
+                 kind != QLatin1String("operational_alert")) ||
                 alert.value(QStringLiteral("readAt")).toDouble() > 0)
                 continue;
             const QString id =
@@ -2653,13 +2721,23 @@ void MainWindow::refreshWebAlerts(bool force)
                 continue;
             const QString title =
                 alert.value(QStringLiteral("title")).toString().trimmed();
+            // The recovery that closes an outage arrives on the same channel as
+            // the outage itself. It is still worth raising — but as good news:
+            // no red toast and no red border flash for a system that is green
+            // again (adhoc #1445).
+            const bool recovery = kind == QLatin1String("operational_alert") &&
+                                  webPingIsRecovery(alert);
             AppNotification ping;
             ping.title = title.isEmpty()
-                             ? QStringLiteral("New error group on the relay")
+                             ? (kind == QLatin1String("operational_alert")
+                                    ? (recovery
+                                           ? QStringLiteral("ForkMesh system recovered")
+                                           : QStringLiteral("ForkMesh system alert"))
+                                    : QStringLiteral("New error group on the relay"))
                              : title;
             ping.body = alert.value(QStringLiteral("body")).toString().trimmed();
-            ping.warning = true;
-            ping.kind = QStringLiteral("error_group");
+            ping.warning = !recovery;
+            ping.kind = kind;
             flashNotification(ping);
         }
         // Only repaint while the page is the one on screen; it rebuilds from
@@ -3649,9 +3727,9 @@ void MainWindow::showRun(int runId)
     if (m_actionFixButton)
         m_actionFixButton->setVisible(fixable);
     if (m_actionFixAgentCombo)
-        m_actionFixAgentCombo->setVisible(fixable);
+        m_actionFixAgentCombo->setVisible(false);
     if (m_actionFixModelCombo)
-        m_actionFixModelCombo->setVisible(fixable);
+        m_actionFixModelCombo->setVisible(false);
     if (!run) {
         if (m_actionRunTitle)
             m_actionRunTitle->setText(QStringLiteral("Select a run"));
@@ -4457,25 +4535,18 @@ QWidget *MainWindow::buildRepoActionsTab()
         flashMessage(QStringLiteral("Run log copied to the clipboard."));
     });
 
-    // Fix with agent: only relevant for a failed run (showRun() hides it
-    // otherwise). Starts a brand-new ad-hoc agent — its own worktree/branch/PR,
-    // same as any other agent run — with the failing run's log as its task. The
-    // agent and model are chosen in the two dropdowns beside it (adhoc #114).
-    m_actionFixButton = new QPushButton("Fix with agent");
+    // Action detail: only relevant for a failed run (showRun() hides it
+    // otherwise). Opens the action run detail pane for that run directly.
+    m_actionFixButton = new QPushButton("Action detail");
     m_actionFixButton->setObjectName("ghostButton");
     m_actionFixButton->setProperty("buttonSize", "sm");
     m_actionFixButton->setCursor(Qt::PointingHandCursor);
-    m_actionFixButton->setToolTip("Start a new coding agent to fix this failed run");
+    m_actionFixButton->setToolTip("Open the action run detail");
     setOcticon(m_actionFixButton, "rocket", 16);
     m_actionFixButton->hide();
     connect(m_actionFixButton, &QPushButton::clicked, this, [this] {
-        const QString provider = m_actionFixAgentCombo
-                                     ? m_actionFixAgentCombo->currentData().toString()
-                                     : QStringLiteral("claude-code");
-        const QString model = m_actionFixModelCombo
-                                  ? m_actionFixModelCombo->currentData().toString()
-                                  : QString();
-        fixSelectedRunWithAgent(provider, model);
+        if (const ActionRun *run = findRun(m_selectedRunId))
+            openActionRunFromNotification(run->id);
     });
 
     // Agent dropdown: which provider fixes the run. Data values match the

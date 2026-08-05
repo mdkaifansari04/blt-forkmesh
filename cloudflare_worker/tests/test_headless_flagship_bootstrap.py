@@ -126,6 +126,19 @@ def test_mirror_publish_requires_a_served_commit_and_sockets_are_retired():
     assert "syncRepository(index, /*quiet=*/true)" in publish_body
 
 
+def test_plaintext_public_sync_refreshes_the_managed_checkout_first():
+    repos = REPOS.read_text(encoding="utf-8")
+    start = repos.index("void MainWindow::syncRepository(int index, bool quiet)")
+    end = repos.index("bool MainWindow::completePendingRepoAutoOpen", start)
+    body = repos[start:end]
+
+    assert "m_headless && serviceManagedCheckout(repo.localPath)" in body
+    assert "managedCheckoutSource ? QString() : QStringLiteral(\"+\")" in body
+    refresh = body.index("refreshManagedCheckoutFromUpstream(")
+    bare_fetch = body.index("startSyncFetch(index")
+    assert refresh < bare_fetch
+
+
 def test_mirror_metadata_resolves_remote_refs_like_repo_host():
     shared = SHARED.read_text(encoding="utf-8")
     start = shared.index("QString mirrorHeadBranch")

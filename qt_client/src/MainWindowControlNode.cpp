@@ -269,15 +269,12 @@ QString normalizedHttpsOrigin(const QString &hostname)
 bool controlMirrorReady(const RepositoryRecord &repo)
 {
     if (!repo.isPrivate) {
-        if (!PublicMirrorRuntime::isArchiveId(repo.publicArchiveId))
-            return false;
-        const QString root =
-            QStandardPaths::writableLocation(
-                QStandardPaths::AppDataLocation) +
-            QStringLiteral("/public-mirror-archives");
-        return PublicMirrorRuntime::readMetadata(
-                   root, repo.publicArchiveId, nullptr)
-            .isValid();
+        return QFileInfo(repo.mirrorPath).isDir() &&
+               QFileInfo(QDir(repo.mirrorPath)
+                             .filePath(QStringLiteral("HEAD")))
+                   .isFile() &&
+               !PublicMirrorRuntime::repositoryRefsSha256(repo.mirrorPath)
+                    .isEmpty();
     }
     if (!PrivateMirrorStore::isOpaqueId(repo.privateReplicaId))
         return false;
@@ -297,9 +294,10 @@ QString controlMirrorReadyKey(const RepositoryRecord &repo)
                    ? QStringLiteral("private:") + repo.privateReplicaId
                    : QString();
     }
-    return PublicMirrorRuntime::isArchiveId(repo.publicArchiveId)
-               ? QStringLiteral("public:") + repo.publicArchiveId
-               : QString();
+    return repo.mirrorPath.trimmed().isEmpty()
+               ? QString()
+               : QStringLiteral("public:") + repo.mirrorPath +
+                     QLatin1Char(':') + QString::number(repo.lastSyncMs);
 }
 
 } // namespace
@@ -519,8 +517,9 @@ QWidget *MainWindow::buildControlNodeSection()
             "separate relay and mirror hostnames, creates/reuses D1, deploys the "
             "Worker, configures proxied DNS and a Tunnel, and starts the local "
             "gateway. Broader tokens require an explicit account and zone so "
-            "ForkMesh never guesses. The repository-pinned tools write only "
-            "encrypted public-mirror archives. The API "
+            "ForkMesh never guesses. Public repositories are served from "
+            "integrity-pinned bare mirrors; private repositories retain their "
+            "encrypted storage boundary. The API "
             "token is held in memory for this run, passed through the child "
             "environment, removed from displayed output, and never saved in "
             "settings, argv, logs, generated Worker configuration, D1, or Worker "
@@ -1172,7 +1171,7 @@ void MainWindow::refreshControlMirrorReadiness()
     QThread *worker = QThread::create([probes, result] {
         const forkmesh::BackgroundScope activity(
             QStringLiteral("mirrors"),
-            QStringLiteral("authenticate %1 encrypted mirror(s)")
+            QStringLiteral("validate %1 mirror(s)")
                 .arg(probes.size()),
             forkmesh::ActionTelemetry::Execution::Worker);
         for (const Probe &probe : probes)
@@ -1203,11 +1202,6 @@ void MainWindow::runControlNodeHealthCheck()
     results << (QStandardPaths::findExecutable(QStringLiteral("git")).isEmpty()
                     ? QStringLiteral("git missing")
                     : QStringLiteral("git OK"));
-    QString ageError;
-    results << (PublicMirrorRuntime::toolingAvailable(
-                    PublicMirrorRuntime::Tools(), &ageError)
-                    ? QStringLiteral("age encryption OK")
-                    : QStringLiteral("age encryption unavailable"));
     results <<
         (forkmesh::control::findCloudflareBootstrapScript(
              QStringLiteral(FORKMESH_SOURCE_DIR),
@@ -1277,7 +1271,8 @@ void MainWindow::startControlNodeServing()
         setNodeOffline(false);
     else
         startRepoHosts();
-    startDirectMirrorServices();
+    if (!startManagedMirrorNodeServer())
+        startDirectMirrorServices();
     appendControlNodeOutput(
         QStringLiteral(
             "Direct HTTPS mirror services and repository update channels "
@@ -1289,6 +1284,9 @@ void MainWindow::startControlNodeServing()
 
 void MainWindow::maybeAutoStartDirectMirrorServices()
 {
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     QSettings settings;
     if (!settings
              .value(QStringLiteral("control/autoStartMirrorServices"), true)
@@ -1317,7 +1315,9 @@ void MainWindow::maybeAutoStartDirectMirrorServices()
     if (!tokenInfo.isFile() || tokenInfo.isSymLink() ||
         (tokenInfo.permissions() & forbiddenPermissions))
         return;
-    if ((m_mirrorGatewayProcess &&
+    if ((m_mirrorNodeProcess &&
+         m_mirrorNodeProcess->state() != QProcess::NotRunning) ||
+        (m_mirrorGatewayProcess &&
          m_mirrorGatewayProcess->state() != QProcess::NotRunning) ||
         (m_cloudflaredProcess &&
          m_cloudflaredProcess->state() != QProcess::NotRunning))
@@ -1327,7 +1327,8 @@ void MainWindow::maybeAutoStartDirectMirrorServices()
                   "for %1.")
                   .arg(hostname));
     ensureDirectMirrorRegistrationTimer(this);
-    startDirectMirrorServices();
+    if (!startManagedMirrorNodeServer())
+        startDirectMirrorServices();
 }
 
 void MainWindow::stopControlNodeServing()
@@ -1543,10 +1544,6 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
         return false;
     }
 
-    const QString archiveRoot =
-        QStandardPaths::writableLocation(
-            QStandardPaths::AppDataLocation) +
-        QStringLiteral("/public-mirror-archives");
     const QString app = QCoreApplication::applicationFilePath();
     QJsonArray repositories;
     static const QStringList operations{
@@ -1564,13 +1561,13 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
         if (repo.previewOnly || repo.isPrivate ||
             !repo.publishToNetwork)
             continue;
-        const PublicMirrorRuntime::Metadata metadata =
-            PublicMirrorRuntime::readMetadata(
-                archiveRoot, repo.publicArchiveId, nullptr);
-        // An unsealed public repository is omitted, never represented by a
-        // plaintext path or an enabled-but-unverifiable entry. Its sync path
-        // will rebuild this configuration after age sealing succeeds.
-        if (!metadata.isValid())
+        const QString refsSha256 =
+            PublicMirrorRuntime::repositoryRefsSha256(
+                repo.mirrorPath, PublicMirrorRuntime::Tools(), nullptr);
+        // Never publish a path unless it is a readable bare repository with a
+        // deterministic refs pin. The sync path rebuilds this configuration
+        // as soon as the clone/fetch completes.
+        if (refsSha256.isEmpty())
             continue;
         QJsonArray operationArray;
         for (const QString &operation : operations)
@@ -1585,23 +1582,9 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
             {QStringLiteral("integrity"),
              QJsonObject{
                  {QStringLiteral("expectedRefsSha256"),
-                  metadata.expectedRefsSha256}}},
+                  refsSha256}}},
             {QStringLiteral("operations"), operationArray},
-            {QStringLiteral("encryptedArchive"),
-             QJsonObject{
-                 {QStringLiteral("scheme"),
-                  QStringLiteral("age-encrypted-tar-v1")},
-                 {QStringLiteral("ciphertextPath"),
-                  PublicMirrorRuntime::ciphertextPath(
-                      archiveRoot, metadata.archiveId)},
-                 {QStringLiteral("ciphertextSha256"),
-                  metadata.ciphertextSha256},
-                 {QStringLiteral("keyReference"),
-                  metadata.keyReference},
-                 {QStringLiteral("materializeCommand"),
-                  QJsonArray{app,
-                             QStringLiteral(
-                                 "--materialize-public-mirror")}}}},
+            {QStringLiteral("gitDir"), repo.mirrorPath},
         };
         const QStringList owners =
             forkmesh::control::directMirrorRepositoryOwners(
@@ -1649,13 +1632,9 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
         config.insert(QStringLiteral("privateReplicaStore"),
                       privateStoreInfo.absoluteFilePath());
     }
-    // Compare against what the gateway is already serving before rewriting it:
-    // every successful encrypted-mirror seal calls this with
-    // restartRunningGateway, and a seal happens every few minutes on an
-    // unattended mirror. Restarting unconditionally left the loopback origin
-    // down for a beat that often, so the relay's endpoint validation and health
-    // probes kept landing in the gap (502 -> invalid_manifest -> the node never
-    // registered a tunnel at all). An unchanged configuration needs no restart.
+    // Compare against what the gateway is already serving before rewriting it.
+    // An unchanged refs pin needs no restart, avoiding a needless loopback
+    // origin gap during an unattended sync.
     const QByteArray previousConfig = readOwnerFileIfPresent(
         directGatewayConfigPath());
     if (!writeOwnerJson(directGatewayConfigPath(), config, error))
@@ -1687,6 +1666,12 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
 
 void MainWindow::startDirectMirrorServices()
 {
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE")) {
+        appendControlNodeOutput(QStringLiteral(
+            "Direct mirror services are managed by forkmesh-mirror-node.\n"));
+        return;
+    }
     QSettings serviceSettings;
     m_directMirrorHostname =
         serviceSettings
@@ -2015,6 +2000,7 @@ void MainWindow::startDirectMirrorServices()
 
 void MainWindow::stopDirectMirrorServices()
 {
+    stopManagedMirrorNodeServer();
     auto stop = [this](QProcess *process,
                        const QString &label) {
         if (!process ||

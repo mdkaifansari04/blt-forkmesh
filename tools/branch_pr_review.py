@@ -6,9 +6,10 @@ Run from the repo root:
     python3 tools/branch_pr_review.py        # serves http://127.0.0.1:8799
 
 For every local `port/*` branch it shows the diff vs `main` and a "Create PR"
-button. Clicking it writes a real, signed ForkMesh native pull under `pulls/N/`
-(pull.md + changes.patch + commits.mbox), exactly the way the Qt client's
-PullStore::createPull does, and commits just that pull to the repo.
+button. Clicking it writes a real, signed ForkMesh native pull under `pulls/N/`.
+Because every pull originates from a real branch, pull.md stores immutable base
+and head commit pointers; the diff and commit series are derived from Git rather
+than duplicated into large changes.patch and commits.mbox files.
 
 Signing matches qt_client/src/PullStore.cpp::canonicalString:
     content      = title \0 base \0 head \0 patch \0 commits      (utf-8 bytes)
@@ -155,6 +156,10 @@ def create_pull(branch, title, description):
     _, author = load_identity()
     author_name = git_out("config", "user.name").strip()
     sig = sign_pull(title, base, head, patch_bytes, commits_bytes, ts, author)
+    base_oid = git_out("rev-parse", "--verify", f"{base}^{{commit}}").strip()
+    head_oid = git_out("rev-parse", "--verify", f"{head}^{{commit}}").strip()
+    if not base_oid or not head_oid:
+        return {"ok": False, "error": "Could not resolve the PR branch commits."}
     number = next_pull_number()
 
     pdir = pulls_dir() / str(number)
@@ -167,6 +172,9 @@ def create_pull(branch, title, description):
         f"base: {base}",
         f"head: {head}",
         "status: open",
+        "derive: branch",
+        f"creationBaseOid: {base_oid}",
+        f"creationHeadOid: {head_oid}",
         f"ts: {ts}",
         f"author: {author}",
         f"authorName: {author_name}",
@@ -175,8 +183,6 @@ def create_pull(branch, title, description):
         "",
     ])
     (pdir / "pull.md").write_text(front + "\n" + description + "\n")
-    (pdir / "changes.patch").write_bytes(patch_bytes)
-    (pdir / "commits.mbox").write_bytes(commits_bytes)
 
     add = git("add", f"pulls/{number}")
     if add.returncode != 0:

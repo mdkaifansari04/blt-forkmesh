@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "6y-dvBu_MYjTpLHeED8BJhF7JEkdMZtEUN4yHAlp_84",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785559638,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "6y-dvBu_MYjTpLHeED8BJhF7JEkdMZtEUN4yHAlp_84",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1785559638",
+            "sig": "MfX3S_kju0gzqSwFTRCmUJrcWs7enUqdNyt4_QDkH38WUXxWVSD5hXofVp_m5Qp9iIzlx42rlpPacQ_w6pvwDg",
+            "title": "please store open issues, discussions and PRs in KV storage for cloudflare so they can load fast on the site - update them as event based and keep them cached otherwise",
+            "ts": 1785559638,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 565,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "please store open issues, discussions and PRs in KV storage for cloudflare so they can load fast on the site - update them as event based and keep them cached otherwise",
+    "updatedAt": 1785559638,
+    "votes": 0
+}

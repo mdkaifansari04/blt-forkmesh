@@ -19,9 +19,11 @@ def test_world_uses_a_mixed_city_and_woodland_surface():
         '"forkmesh-town-path-junction"',
         "`forkmesh-town-path-${id}`",
         "deterministicTreeLayout().forEach",
-        '"/world/assets/city-park-grass-v1.webp"',
+        "function cityGrassTexture(THREE)",
+        "new THREE.DataTexture(",
     ):
         assert contract in scene
+    assert "city-park-grass-v1.webp" not in scene
     assert '"forkmesh-town-stone-plaza"' not in scene
     assert '"forkmesh-town-plaza-edge"' not in scene
     assert "forkmesh-town-path-edge-" not in scene
@@ -152,93 +154,90 @@ def test_leaderboards_have_one_square_raised_grid_without_circle_boards():
     assert '"forkmesh-leaderboard-ring-walk"' not in scene
 
 
-def test_leaderboard_circle_has_a_minimal_opaque_cover_with_an_open_door():
+def test_leaderboard_circle_is_open_without_a_cover_or_door_gate():
     scene = source()
-    cover = scene.split(
-        "function createOpaqueDistrictCover(", 1
-    )[1].split("function createLeaderboardOpaqueCover", 1)[0]
-    wrapper = scene.split(
-        "function createLeaderboardOpaqueCover(THREE)", 1
-    )[1].split("function createNodeOpaqueCover", 1)[0]
     district = scene.split(
         'leaderboardDistrict.name = "forkmesh-leaderboard-district"', 1
     )[1].split("const leaderboardBeacon", 1)[0]
-    assert "const LEADERBOARD_COVER_SIDES = 8;" in scene
-    assert "index === sides - 1" in cover
-    assert "doorWidth" in cover
-    assert "doorHeight" in cover
-    assert "new THREE.BufferGeometry()" in cover
-    assert "side: THREE.FrontSide" in cover
-    assert "transparent: false" in cover
-    assert "opacity: 1" in cover
-    assert "depthWrite: true" in cover
-    assert 'name: "forkmesh-leaderboard-opaque-cover"' in wrapper
-    assert 'interactiveKind: "leaderboard-cover"' in wrapper
-    assert "doorFrame.name = `${name}-door-frame`" in cover
-    assert "door.userData.closedZ" in cover
-    assert "door.userData.openZ" in cover
-    assert "new THREE.PlaneGeometry(" in cover
-    assert "side: THREE.DoubleSide" in cover
-    assert "createLeaderboardOpaqueCover(THREE)" in district
-    assert "leaderboardDistrict.add(leaderboardCover)" in district
-    assert "interactive.push(leaderboardCover)" in district
+    assert 'leaderboardInterior.name = "forkmesh-leaderboard-interior"' in district
+    assert "leaderboardDistrict.add(leaderboardInterior);" in district
+    assert "leaderboardInterior.visible = false" not in district
+    assert "createOpaqueDistrictCover" not in scene
+    assert "createLeaderboardOpaqueCover" not in scene
+    assert "forkmesh-leaderboard-opaque-cover" not in scene
+    assert "leaderboard-cover" not in scene
 
 
-def test_nodes_have_a_closed_opaque_cover_and_hidden_interior_scene():
+def test_open_node_yard_uses_instanced_boxes_until_the_camera_is_close():
     scene = source()
-    wrapper = scene.split("function createNodeOpaqueCover", 1)[1].split(
-        "function setOpaqueCoverDoorOpen", 1
-    )[0]
     district = scene.split(
         'nodeDistrict.name = "forkmesh-node-district"', 1
     )[1].split("const systemCapacityPlatform", 1)[0]
-    occupancy = scene.split("function updateNodeCoverOccupancy", 1)[1].split(
-        "function updateMembersYurtOccupancy", 1
+    lod = scene.split("function updateNodeDetailLevel", 1)[1].split(
+        "function enclosureSceneRoots", 1
     )[0]
-    assert 'name: "forkmesh-node-opaque-cover"' in wrapper
-    assert "cover.rotation.y = -Math.PI / 2" in wrapper
+    boxes = scene.split("function createMirrorNodeBoxLod", 1)[1].split(
+        "function createAgentRobot", 1
+    )[0]
+    assert '"forkmesh-node-opaque-cover"' not in scene
+    assert "function constrainNodeCover" not in scene
+    assert "const NODE_DETAIL_ENTER_DISTANCE = 58;" in scene
+    assert "const NODE_DETAIL_EXIT_DISTANCE = 70;" in scene
+    assert "new THREE.InstancedMesh(" in boxes
+    assert "NODE_LOD_MAX_INSTANCES" in boxes
+    assert 'boxes.name = "forkmesh-node-box-lod"' in boxes
+    assert "new THREE.BoxGeometry(2.24, 3.28, 1.42)" in boxes
     assert 'nodeInterior.name = "forkmesh-node-interior"' in district
     assert "nodeInterior.visible = false" in district
     assert "nodeInterior.add(fountainLandmark)" in district
-    assert "nodeDistrict.add(nodeInterior, nodeCover)" in district
+    assert "nodeDistrict.add(nodeInterior, nodeBoxLod)" in district
     assert "nodeInterior.add(cabinet)" in scene
-    assert "nodeCoverContainsWorldPoint(" in occupancy
-    assert "nodeInterior.visible = occupied" in occupancy
-    assert "nodeCover.visible = !occupied" in occupancy
-    assert "constrainNodeCover(previousHorizontalPosition)" in scene
+    assert "nodeDistrict.getWorldPosition(nodeDetailWorldPosition)" in lod
+    assert "camera.position.distanceTo(nodeDetailWorldPosition)" in lod
+    assert 'world.userData.nodeDetailSource = "camera"' in lod
+    assert "player.position" not in lod
+    assert "distance <= boundary" in lod
+    assert 'detailed ? "detailed" : "boxes"' in lod
+    assert "nodeInterior.visible = detailed" in lod
+    assert "nodeInterior.traverse((child) =>" in lod
+    assert 'Object.hasOwn(child.userData, "nodeLodVisible")' in lod
+    assert "child.visible = false" in lod
+    assert "nodeBoxLod.visible = !detailed" in lod
+    assert "nodeBoxLod.setMatrixAt(nodeIndex" in scene
+    assert "nodeBoxLod.setColorAt(" in scene
+    assert "nodeBoxLod.instanceMatrix.needsUpdate = true" in scene
+    assert "updateNodeDetailLevel(true);" in scene
+    assert 'if (worldElementEnabled("node-cabinets")) {' in scene
+    assert "if (nodeDetailVisible) {" in scene
+    assert "if (!group.parent?.visible) return;" in scene
 
 
-def test_leaderboard_contents_are_not_drawn_until_the_avatar_is_inside():
+def test_leaderboard_contents_are_always_mounted_in_the_open_district():
     scene = source()
     district = scene.split(
         'leaderboardDistrict.name = "forkmesh-leaderboard-district"', 1
     )[1].split("const leaderboardBeacon", 1)[0]
-    occupancy = scene.split(
-        "  function updateLeaderboardCircleOccupancy(", 1
-    )[1].split("  function compactDistrictDiagnostics(", 1)[0]
     assert (
         'leaderboardInterior.name = "forkmesh-leaderboard-interior"'
         in district
     )
-    assert "leaderboardInterior.visible = false" in district
+    assert "leaderboardInterior.visible = false" not in district
     assert "leaderboardInterior.add(\n    createDistrictGroundCircle" in district
     assert "leaderboardInterior.add(object)" in scene
     assert "leaderboardInterior.add(leaderboardSuperPanel)" in scene
-    assert "leaderboardCoverContainsWorldPoint(" in occupancy
-    assert "? -OFFICE_AVATAR_RADIUS" in occupancy
-    assert ": OFFICE_AVATAR_RADIUS" in occupancy
-    assert "leaderboardInterior.visible = occupied" in occupancy
-    assert "updateLeaderboardCircleOccupancy(true);" in scene
-    assert "updateLeaderboardCircleOccupancy();" in scene
+    assert "updateLeaderboardCircleOccupancy" not in scene
+    assert "leaderboardCoverContainsWorldPoint" not in scene
 
 
-def test_enclosure_entry_switches_to_an_isolated_low_triangle_scene():
+def test_only_office_and_beach_switch_to_isolated_scenes():
     scene = source()
     isolation = scene.split("function syncEnclosureSceneVisibility", 1)[1].split(
         "function compactDistrictDiagnostics", 1
     )[0]
-    for mode in ("office", "nodes", "leaderboards", "repositories", "members"):
+    for mode in ("office", "beach"):
         assert f'? "{mode}"' in isolation or f': "{mode}"' in isolation
+    for open_district in ("leaderboards", "repositories", "members", "nodes"):
+        assert f'"{open_district}"' not in isolation
     assert "enclosureHiddenWorldRoots.set(root, root.visible)" in isolation
     assert "root.visible = false" in isolation
     assert "enclosureHiddenWorldRoots.forEach" in isolation
@@ -246,25 +245,12 @@ def test_enclosure_entry_switches_to_an_isolated_low_triangle_scene():
     assert "syncEnclosureSceneVisibility();" in scene
 
 
-def test_leaderboard_walls_only_allow_crossing_through_the_door():
+def test_leaderboard_has_no_wall_or_door_collision_constraint():
     scene = source()
-    crossing = scene.split(
-        "function leaderboardDoorCrossingIsClear(", 1
-    )[1].split("export function circularRideCameraYaw(", 1)[0]
-    constraint = scene.split(
-        "  function constrainLeaderboardCover(", 1
-    )[1].split("  function constrainTownOfficeWalls(", 1)[0]
-    assert "LEADERBOARD_COVER_APOTHEM" in crossing
-    assert "LEADERBOARD_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS" in crossing
-    assert "wasInside === isInside" in constraint
-    assert (
-        "leaderboardDoorCrossingIsClear(previousPosition, player.position)"
-        in constraint
-    )
-    assert "player.position.x = previousPosition.x" in constraint
-    assert "player.position.z = previousPosition.z" in constraint
-    assert "cancelDash()" in constraint
-    assert "constrainLeaderboardCover(previousHorizontalPosition);" in scene
+    assert "leaderboardDoorCrossingIsClear" not in scene
+    assert "constrainLeaderboardCover" not in scene
+    assert "LEADERBOARD_COVER_APOTHEM" not in scene
+    assert "LEADERBOARD_DOOR_WIDTH" not in scene
 
 
 def test_two_clickable_bikes_use_normal_movement_and_collision():
@@ -291,10 +277,17 @@ def test_two_clickable_bikes_use_normal_movement_and_collision():
         assert contract in scene
 
 
-def test_clickable_quadcopter_flies_on_three_axes_to_a_bounded_high_altitude():
+def test_two_cloned_lod_quadcopters_fly_on_three_axes():
     scene = source()
     for contract in (
-        'quadcopter.name = "forkmesh-world-quadcopter"',
+        "function createWorldQuadcopterPrototype()",
+        "const quadcopterPrototype = createWorldQuadcopterPrototype();",
+        "const quadcopter = quadcopterPrototype.clone(true);",
+        'quadcopter.name = `forkmesh-world-quadcopter-${index + 1}`',
+        'quadcopterLod.addLevel(near, 0, 0.12)',
+        'quadcopterLod.addLevel(far, 68, 0.18)',
+        "addWorldQuadcopter(0, [-34, 0.24, -42]);",
+        "addWorldQuadcopter(1, [34, 0.24, -42]);",
         "const QUADCOPTER_HORIZONTAL_SPEED = 42",
         "const QUADCOPTER_VERTICAL_SPEED = 28",
         "const QUADCOPTER_MAX_ALTITUDE = 480",
@@ -309,8 +302,50 @@ def test_clickable_quadcopter_flies_on_three_axes_to_a_bounded_high_altitude():
         "getQuadcopterState:",
         '"FLY QUADCOPTER"',
         '"CLICK OR E · WASD · SPACE UP · C DOWN"',
+        "const legacyForwardInput =",
+        "movement.addScaledVector(forward, legacyForwardInput);",
+        "movement.addScaledVector(right, legacyRightInput);",
     ):
         assert contract in scene
+
+
+def test_avatar_lod_reuses_buffers_without_disposing_shared_far_materials():
+    scene = source()
+    avatar = scene.split("function createAvatar(THREE, identity", 1)[1].split(
+        "function applyAvatarLookDirection", 1
+    )[0]
+    far_model = scene.split("function cloneAvatarFarModel(THREE)", 1)[1].split(
+        "function createAvatar(THREE, identity", 1
+    )[0]
+    assert "const avatarLod = new THREE.LOD();" in avatar
+    assert "avatarLod.addLevel(highDetail, 0, 0.12);" in avatar
+    assert "avatarLod.addLevel(farDetail, AVATAR_LOD_DISTANCE, 0.18);" in avatar
+    assert "cloneSharedMesh(" in avatar
+    assert "prototype.clone(true)" in far_model
+    assert "bodyMaterial.userData.forkmeshSharedResource = true;" in far_model
+    assert "darkMaterial.userData.forkmeshSharedResource = true;" in far_model
+    assert "function disposeOwnedMaterial(material, disposeMap = false)" in scene
+    assert "disposeOwnedMaterial(child.material, true);" in scene
+
+
+def test_world_scale_drone_course_has_ten_low_poly_instanced_rings():
+    scene = source()
+    course = scene.split("function createDroneRaceCourse()", 1)[1].split(
+        "const droneRaceCourse = createDroneRaceCourse();", 1
+    )[0]
+    assert "const DRONE_COURSE_RING_COUNT = 10;" in scene
+    assert "const DRONE_COURSE_RADIUS = 500;" in scene
+    assert "new THREE.InstancedMesh(" in course
+    assert "DRONE_COURSE_RING_COUNT" in course
+    assert "new THREE.TorusGeometry(8, 0.55, 4, 12)" in course
+    assert "new THREE.TorusGeometry(8, 0.72, 3, 8)" in course
+    assert "course.addLevel(detailedRings, 0, 0.12);" in course
+    assert "course.addLevel(coarseRings, DRONE_COURSE_COARSE_DISTANCE, 0.16);" in course
+    assert "activeCamera.getWorldPosition(cameraCoursePosition);" in course
+    assert "cameraCoursePosition.distanceTo(center)" in course
+    assert "DRONE_COURSE_DETAIL_ENTER_DISTANCE" in course
+    assert 'course.userData.detailLevel = detailedVisible ? "detailed" : "coarse"' in course
+    assert 'course.name = "forkmesh-drone-race-course"' in course
 
 
 def test_car_and_quadcopter_hints_explain_directional_controls_nearby():
@@ -378,17 +413,23 @@ def test_connected_beach_has_local_horizon_car_and_clickable_seating():
         assert contract in scene
 
 
-def test_land_is_continuous_and_uses_preloaded_local_image_textures():
+def test_land_is_continuous_and_uses_a_cached_procedural_grass_texture():
     scene = source()
     for contract in (
         '"forkmesh-continuous-city-foundation"',
         '"forkmesh-continuous-city-land"',
-        '"/world/assets/city-park-grass-v1.webp"',
         '"/world/assets/concrete-brick-path-v1.webp"',
         "function projectAssetTexture(",
+        "const CITY_GRASS_PATTERN_SIZE = 64;",
+        "const cityGrassTextures = new WeakMap();",
+        "function cityGrassTexture(THREE)",
+        "new THREE.DataTexture(",
+        "texture.generateMipmaps = true;",
+        "cityGrassTextures.set(THREE, texture);",
         "function worldWalkSurfaceContains(",
     ):
         assert contract in scene
+    assert "city-park-grass-v1.webp" not in scene
 
 
 def test_start_here_map_persists_bounded_progress_between_visits():

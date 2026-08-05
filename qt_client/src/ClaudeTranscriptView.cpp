@@ -1366,9 +1366,22 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
         // utilization arrives either as a 0..1 fraction or an already-scaled
         // 0..100 percentage depending on the CLI build; scale a fraction but pass
         // a percentage through so the gauge isn't 100x too high (adhoc #47).
-        const double u = info.value(QStringLiteral("utilization")).toDouble();
-        const int pct = qRound(u <= 1.0 ? u * 100.0 : u);
-        const QString rlt = info.value(QStringLiteral("rateLimitType")).toString();
+        QJsonValue utilization = info.value(QStringLiteral("utilization"));
+        if (utilization.isUndefined())
+            utilization = info.value(QStringLiteral("utilisation"));
+        bool valid = utilization.isDouble();
+        double u = utilization.toDouble();
+        if (!valid && utilization.isString())
+            u = utilization.toString().toDouble(&valid);
+        if (!valid)
+            return;
+        const int pct = qBound(0, qRound(u >= 0.0 && u <= 1.0 ? u * 100.0 : u),
+                               100);
+        QString rlt =
+            info.value(QStringLiteral("rateLimitType")).toString().toLower();
+        if (rlt.isEmpty())
+            rlt = info.value(QStringLiteral("rate_limit_type"))
+                      .toString().toLower();
         // The premium per-model weekly window (adhoc #96) is its own bar, so it
         // must be recognised before the plain weekly test below — its type name
         // carries "seven_day" too.
@@ -1682,14 +1695,22 @@ bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringLi
         if (numbers.at(i) != i + 1)
             return false;
     }
-    // The question mark that makes this read like a clarifying question must
-    // appear in the lead-in prose before the options or on an option line —
-    // i.e. at or before the end of the list. A "?" only in text that *follows*
-    // the list (e.g. "I changed:\n1. A\n2. B\nWant me to run tests?") is a
-    // trailing yes/no follow-up, not a selection over these items, so it must
-    // not turn a completed-work summary into a multiple-choice card (adhoc #15).
-    if (!QStringView(markdown).left(lastEnd).contains(QLatin1Char('?')))
-        return false;
+    // Treat plain lists as choices when they look like a clarifying question.
+    // Prefer an explicit question mark before the list, but also accept intent
+    // phrases like "choose", "select", "want to", and "should" when the
+    // prompt is obvious but not punctuated as a question. Also keep these
+    // around when output-style prompts omitted punctuation (for example:
+    // "output: 1) ... 2) ...").
+    const QString leadIn = QStringView(markdown).left(lastEnd).toString();
+    if (!leadIn.contains(QLatin1Char('?'))) {
+        static const QRegularExpression cue(QStringLiteral(
+            "(?i)\\b(choose|select|pick|decide|option|should|would|could|can|"
+            "let's|let us|want|would you|can you|should we|output|result|message|"
+            "which one|pick one|select one|choose from|please)\\b"));
+        if (!cue.match(leadIn).hasMatch())
+            return false;
+    }
+
     options = found;
     return true;
 }

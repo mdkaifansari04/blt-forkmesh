@@ -1137,6 +1137,24 @@ def _source_refs_sha256(config: RefreshConfig) -> str:
     return _repository_refs_sha256(config, config.source_repository)
 
 
+def _source_storage_bytes(config: RefreshConfig) -> int:
+    """Return Git's inexpensive packed + loose object storage estimate."""
+    raw = _run_bounded(
+        _git_prefix(config) + ["count-objects", "-v"],
+        maximum_output=4096,
+        timeout=60,
+    )
+    kibibytes = 0
+    for line in raw.decode("ascii", errors="strict").splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key in {"size", "size-pack", "size-garbage"}:
+            try:
+                kibibytes += max(0, int(value.strip()))
+            except ValueError as exc:
+                raise RefreshError("source repository size is invalid") from exc
+    return kibibytes * 1024
+
+
 def _source_branch_commit(config: RefreshConfig) -> str:
     revision = (
         "refs/heads/" + config.catalog.branch
@@ -1896,13 +1914,7 @@ def _render_gateway_config(
         "--state-dir",
         str(config.identity_state_directory),
     ]
-    encrypted_archive = {
-        "scheme": "age-encrypted-tar-v1",
-        "ciphertextPath": str(archive_path),
-        "ciphertextSha256": metadata.ciphertext_sha256,
-        "keyReference": metadata.key_reference,
-        "materializeCommand": helper_base + ["materialize"],
-    }
+    del archive_path  # retained in the call shape for upgrade compatibility
     repositories = []
     for owner in config.owner_aliases:
         repository = {
@@ -1910,7 +1922,7 @@ def _render_gateway_config(
             "name": config.repository_name,
             "visibility": "public",
             "enabled": True,
-            "encryptedArchive": dict(encrypted_archive),
+            "gitDir": str(config.source_repository),
             "integrity": {
                 "expectedRefsSha256": metadata.expected_refs_sha256
             },
@@ -2219,33 +2231,21 @@ def _active_metadata(
     first = repositories[0]
     if not isinstance(first, dict):
         raise RefreshError("active gateway configuration is not refresh-managed")
-    archive = first.get("encryptedArchive")
+    git_dir_raw = first.get("gitDir")
     integrity = first.get("integrity")
-    if not isinstance(archive, dict) or not isinstance(integrity, dict):
+    if not isinstance(git_dir_raw, str) or not isinstance(integrity, dict):
         raise RefreshError("active gateway configuration is not refresh-managed")
-    digest = str(archive.get("ciphertextSha256") or "").lower()
     refs = str(integrity.get("expectedRefsSha256") or "").lower()
-    key_reference = str(archive.get("keyReference") or "")
-    archive_path = _absolute_path(
-        archive.get("ciphertextPath"), "active encrypted archive"
-    )
-    try:
-        size = archive_path.stat().st_size
-    except OSError as exc:
-        raise RefreshError("active encrypted archive is unavailable") from exc
-    metadata = SealMetadata(digest, size, key_reference, refs)
-    if (
-        not SHA256_RE.fullmatch(digest)
-        or not SHA256_RE.fullmatch(refs)
-        or not KEY_REFERENCE_RE.fullmatch(key_reference)
-        or archive_path.name != "archive-" + digest + ".age"
-    ):
+    git_dir = _absolute_path(git_dir_raw, "active public repository")
+    if git_dir != config.source_repository or not SHA256_RE.fullmatch(refs):
         raise RefreshError("active gateway configuration is not refresh-managed")
-    expected = _render_gateway_config(config, identity, metadata, archive_path)
+    metadata = SealMetadata(
+        refs, _source_storage_bytes(config), "public-plaintext", refs)
+    expected = _render_gateway_config(config, identity, metadata, git_dir)
     if not secrets.compare_digest(_canonical_json(source), _canonical_json(expected)):
         raise RefreshError("active gateway configuration drift was detected")
-    _validate_archive(config, archive_path, digest=digest, size=size)
-    return metadata, archive_path
+    _require_bare_source(config)
+    return metadata, git_dir
 
 
 def _validate_active(
@@ -2258,7 +2258,7 @@ def _validate_active(
         _source_refs_sha256(config),
         metadata.expected_refs_sha256,
     ):
-        raise RefreshError("active archive does not match the exact source refs")
+        raise RefreshError("active mirror does not match the exact source refs")
     _invoke_gateway_check(config, config.gateway_config_path)
     return identity, metadata, archive_path
 
@@ -2266,15 +2266,7 @@ def _validate_active(
 def _validate_active_renewal(
     config: RefreshConfig,
 ) -> tuple[PublicIdentity, SealMetadata, Path]:
-    """Validate the immutable active generation without materializing it.
-
-    A health-lease renewal runs every few minutes, so repeating a full Git fsck
-    and encrypted gateway materialization would consume most of a small mirror
-    host.  The active configuration and ciphertext are still authenticated
-    here, and the exact source refs must still match the sealed state.  The
-    Worker then performs its normal fresh signed repository challenge before it
-    marks the renewed endpoint healthy.
-    """
+    """Validate the active plaintext generation without a full Git fsck."""
     identity = _load_public_identity(config)
     _require_bare_source(config)
     metadata, archive_path = _active_metadata(config, identity)
@@ -2282,163 +2274,58 @@ def _validate_active_renewal(
         _source_refs_sha256(config),
         metadata.expected_refs_sha256,
     ):
-        raise RefreshError("active archive does not match the exact source refs")
+        raise RefreshError("active mirror does not match the exact source refs")
     return identity, metadata, archive_path
 
 
 def refresh(config: RefreshConfig) -> dict[str, Any]:
     with _refresh_lock(config, shared=False):
         identity = _load_public_identity(config)
-        _fsck_source(config)
-        before_refs = _source_refs_sha256(config)
-        active: tuple[SealMetadata, Path] | None = None
-        try:
-            config.gateway_config_path.lstat()
-        except FileNotFoundError:
-            pass
-        else:
-            try:
-                active = _active_metadata(config, identity)
-            except RefreshError:
-                # A refresh is also the recovery path for a damaged or stale
-                # active generation. Preserve unknown files until the newly
-                # sealed replacement has passed every validation step.
-                active = None
-        _prune_superseded_archives(
-            config,
-            keep=frozenset({active[1]}) if active is not None else frozenset(),
-        )
-        if active is not None and secrets.compare_digest(
-            before_refs,
-            active[0].expected_refs_sha256,
-        ):
-            # The encrypted flagship generation is unchanged, but adjacent
-            # hosted-import records may have changed. Rebuild and validate the
-            # lightweight gateway configuration without resealing repository
-            # bytes so additions/deletions become routable immediately.
+        _require_bare_source(config)
+        staged_gateway: Path | None = None
+        for _attempt in range(3):
+            before_refs = _source_refs_sha256(config)
+            metadata = SealMetadata(
+                before_refs,
+                _source_storage_bytes(config),
+                "public-plaintext",
+                before_refs,
+            )
             staged_gateway = _write_staged_json(
                 config.gateway_config_path.parent,
                 config.gateway_config_path.name,
                 _render_gateway_config(
-                    config,
-                    identity,
-                    active[0],
-                    active[1],
-                ),
+                    config, identity, metadata, config.source_repository),
             )
             try:
                 _invoke_gateway_check(config, staged_gateway)
+                if not secrets.compare_digest(
+                    before_refs, _source_refs_sha256(config)):
+                    staged_gateway.unlink()
+                    staged_gateway = None
+                    continue
+                _fsync_directory(config.gateway_config_path.parent)
                 os.replace(staged_gateway, config.gateway_config_path)
                 staged_gateway = None
                 try:
                     _fsync_directory(config.gateway_config_path.parent)
                 except RefreshError:
                     pass
+                # Public ciphertext from older releases has no remaining use.
+                _prune_superseded_archives(config, keep=frozenset())
+                return {
+                    "ok": True,
+                    "event": "refresh_complete",
+                    "aliasCount": len(config.owner_aliases),
+                }
             finally:
                 if staged_gateway is not None:
                     try:
                         staged_gateway.unlink()
                     except FileNotFoundError:
                         pass
-            return {
-                "ok": True,
-                "event": "refresh_complete",
-                "aliasCount": len(config.owner_aliases),
-            }
-        staged_archive = config.archive_directory / (
-            ".refresh-" + secrets.token_hex(16) + ".age"
-        )
-        staged_gateway: Path | None = None
-        try:
-            response = _helper_call(
-                config,
-                "seal-repository",
-                {
-                    "schemaVersion": 1,
-                    "type": "forkmesh.repository-archive-seal",
-                    "sourceRepository": str(config.source_repository),
-                    "ciphertextPath": str(staged_archive),
-                },
-            )
-            metadata = _validate_seal_response(response)
-            _validate_archive(
-                config,
-                staged_archive,
-                digest=metadata.ciphertext_sha256,
-                size=metadata.ciphertext_bytes,
-            )
-            _fsck_source(config)
-            after_refs = _source_refs_sha256(config)
-            if not (
-                secrets.compare_digest(before_refs, after_refs)
-                and secrets.compare_digest(
-                    after_refs, metadata.expected_refs_sha256
-                )
-            ):
-                raise RefreshError("source refs changed during repository sealing")
-            archive_path = _install_content_addressed_archive(
-                config, staged_archive, metadata
-            )
-            staged_gateway = _write_staged_json(
-                config.gateway_config_path.parent,
-                config.gateway_config_path.name,
-                _render_gateway_config(config, identity, metadata, archive_path),
-            )
-            _invoke_gateway_check(config, staged_gateway)
-            try:
-                config.gateway_config_path.lstat()
-                active_exists = True
-            except FileNotFoundError:
-                active_exists = False
-            if active_exists:
-                descriptor, _ = _open_bounded_file(
-                    config.gateway_config_path,
-                    label="active gateway configuration",
-                    maximum=MAX_CONFIG_BYTES,
-                    owner_only=True,
-                )
-                os.close(descriptor)
-            # Everything that can fail is complete before this linearization
-            # point.  Both the old and new regular files point only to an
-            # already-fsynced content-addressed archive, so a crash around the
-            # rename can expose either complete last-good generation, never a
-            # config with partially written bytes.
-            _fsync_directory(config.gateway_config_path.parent)
-            os.replace(staged_gateway, config.gateway_config_path)
-            staged_gateway = None
-            try:
-                _fsync_directory(config.gateway_config_path.parent)
-            except RefreshError:
-                # The atomic rename has already committed a complete,
-                # validated generation.  Reporting failure here would be
-                # misleading and could prompt an unsafe retry/rollback.
-                pass
-            # The running gateway has already materialized the previous
-            # generation, while every future start now reads the new config.
-            # Keeping randomized age ciphertext for superseded refs only makes
-            # storage grow by one full repository per push.
-            try:
-                _prune_superseded_archives(
-                    config,
-                    keep=frozenset({archive_path}),
-                )
-            except RefreshError:
-                # Publication already committed atomically. Do not turn a
-                # best-effort post-commit reclamation failure into another
-                # full reseal; the next refresh prunes it before writing.
-                pass
-            return {
-                "ok": True,
-                "event": "refresh_complete",
-                "aliasCount": len(config.owner_aliases),
-            }
-        finally:
-            for path in (staged_archive, staged_gateway):
-                if path is not None:
-                    try:
-                        path.unlink()
-                    except FileNotFoundError:
-                        pass
+                    staged_gateway = None
+        raise RefreshError("source refs kept changing during gateway refresh")
 
 
 class _NoRedirect(urlrequest.HTTPRedirectHandler):
@@ -3747,6 +3634,18 @@ def _merge_metadata_commit(
             object_directory=object_directory,
             maximum_output=256,
         )
+        # A merged pull retains metadata and review history, but its patch and
+        # commit-series payload are open-PR data. Remove both from the exact
+        # metadata tree atomically with the status transition.
+        for payload in ("changes.patch", "commits.mbox"):
+            _merge_git(
+                config,
+                ["update-index", "--force-remove",
+                 "pulls/%d/%s" % (request["pullNumber"], payload)],
+                index_file=index,
+                object_directory=object_directory,
+                maximum_output=256,
+            )
         _code, tree_raw = _merge_git(
             config, ["write-tree"], index_file=index,
             object_directory=object_directory, maximum_output=256)

@@ -15,6 +15,8 @@ CATALOG_TEXT = CATALOG.read_text(encoding="utf-8")
 
 FUNCS = {
     "clean_string",
+    "_notification_display_repo",
+    "_notification_digest_title",
     "_html_escape",
     "_light_email_fragment",
     "_forkmesh_email_action_html",
@@ -139,6 +141,24 @@ def test_digest_html_uses_one_high_contrast_light_mode():
     assert "background:#0f0f11" not in html
     assert "data-forkmesh-site-action" in html
     assert 'href="https://forkmesh.com/"' in html
+
+
+def test_digest_item_uses_public_flagship_alias_and_does_not_duplicate():
+    ns = _load()
+    _subject, text, html = ns["_notification_digest_email"]("alice", [{
+        "kind": "pending_inbox",
+        "title": "Issue submitted for mirror2/forkmesh",
+        "body": "",
+        "repo": "mirror2/forkmesh",
+        "actor": "bob",
+        "ts": 1783607520000,
+        "meta": {"number": 42, "source": "issue"},
+    }])
+    assert _subject == "ForkMesh: 1 new notification"
+    assert "mirror2/forkmesh" not in text
+    assert "mirror2/forkmesh" not in html
+    assert text.count("forkmesh/forkmesh") == 1
+    assert "- [forkmesh/forkmesh] #42 Issue submitted" in text
 
 
 def test_notify_mentions_accepts_an_optional_number_for_the_digest():

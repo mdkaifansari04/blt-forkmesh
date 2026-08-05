@@ -954,6 +954,46 @@ void MainWindow::refreshSourceControl()
     refreshSourceControl(/*force=*/false);
 }
 
+// A branch handoff can take a moment: the target's commit graph is rebuilt and
+// the working-tree status is read asynchronously.  Keeping the last checkout's
+// tree and diff visible during that gap makes it look as though those changes
+// belong to the branch the user just selected.  Start from an explicit, named
+// loading state instead.  The generation bump also makes any late status read
+// for the branch we left harmless.
+void MainWindow::showSourceControlLoading(const QString &branch)
+{
+    ++m_scmStatusGeneration;
+    m_scmStatusCache.clear();
+    m_scmPatchValid = false;
+    m_scmDiffRenderKey.clear();
+    m_scmDiffSourceKey.clear();
+    m_scmSectionKeys.clear();
+    m_scmSectionAnchors.clear();
+    m_scmSectionPaths.clear();
+    m_scmStickyLabelHtml.clear();
+    m_scmFileTops.clear();
+    m_scmStickySection.clear();
+    if (m_scmStickyHeader)
+        m_scmStickyHeader->hide();
+    if (m_scmTree) {
+        QSignalBlocker block(m_scmTree);
+        m_scmTree->clear();
+        m_scmTree->setEnabled(false);
+    }
+    if (m_scmCountLabel)
+        m_scmCountLabel->setText(QStringLiteral("Loading changes\xE2\x80\xA6"));
+    if (m_scmViewedLabel)
+        m_scmViewedLabel->clear();
+    if (m_scmDiff) {
+        const QString label = branch.isEmpty() ? QStringLiteral("repository")
+                                               : branch;
+        setDiffHtml(
+            m_scmDiff,
+            QStringLiteral("<p style='color:#8b949e'>Loading changes on %1\xE2\x80\xA6</p>")
+                .arg(label.toHtmlEscaped()));
+    }
+}
+
 void MainWindow::refreshSourceControl(bool force)
 {
     if (!m_scmTree)
@@ -1415,7 +1455,8 @@ void MainWindow::refreshSourceControlOutgoing()
         m_scmOutgoingPanel->hide();
     if (showOutgoingPanel && busy && m_scmOutgoingPanel->isVisible()) {
         m_scmSyncButton->setEnabled(false);
-        m_scmSyncButton->setText(QStringLiteral("Syncing"));
+        m_scmSyncButton->setText(QStringLiteral("Sync Changes"));
+        startButtonSpin(m_scmSyncButton);
         setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
         applySyncActivity(m_repoDetailIndex, true);
         showCommitControls(false);
@@ -1449,6 +1490,7 @@ void MainWindow::refreshSourceControlOutgoing()
             if (sourceControlShowsRange() || !m_scmPanel ||
                 !m_scmPanel->isVisible()) {
                 m_scmOutgoingPanel->hide();
+                stopButtonSpin(m_scmSyncButton);
                 showCommitControls(true);
                 return;
             }
@@ -1456,6 +1498,7 @@ void MainWindow::refreshSourceControlOutgoing()
                                    m_syncingRepos.contains(repoIndex);
             if (pending <= 0 && !stillBusy) {
                 m_scmOutgoingPanel->hide();
+                stopButtonSpin(m_scmSyncButton);
                 showCommitControls(true);
                 return;
             }
@@ -1469,9 +1512,14 @@ void MainWindow::refreshSourceControlOutgoing()
                     .arg(pending));
             m_scmOutgoingPanel->setProperty("branch", branch);
             m_scmSyncButton->setEnabled(!stillBusy && pending > 0);
-            m_scmSyncButton->setText(
-                stillBusy ? QStringLiteral("Syncing")
-                          : QStringLiteral("Sync Changes %1↑").arg(pending));
+            m_scmSyncButton->setText(pending > 0
+                                          ? QStringLiteral("Sync Changes %1↑")
+                                                .arg(pending)
+                                          : QStringLiteral("Sync Changes"));
+            if (stillBusy)
+                startButtonSpin(m_scmSyncButton);
+            else
+                stopButtonSpin(m_scmSyncButton);
             setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
             applySyncActivity(repoIndex, stillBusy);
             // Outgoing state is rendered as the graph's linked dotted top row,

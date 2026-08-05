@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repository dome and focused-workbench presentation contracts."""
+"""Open repository district and focused-workbench presentation contracts."""
 
 from pathlib import Path
 
@@ -11,54 +11,34 @@ APP = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
 CSS = (ROOT / "public" / "world" / "world.css").read_text(encoding="utf-8")
 
 
-def test_repository_circle_is_enclosed_by_a_geodesic_dome():
-    dome = SCENE[
-        SCENE.index("function createRepositoryGeodesicDome("):
-        SCENE.index("function createRepositoryDistrict(")
-    ]
+def test_repository_circle_keeps_its_charts_in_an_open_district():
     district = SCENE[
         SCENE.index("function createRepositoryDistrict("):
         SCENE.index("function createOrganizationQuarter(")
     ]
-    assert "const REPOSITORY_DOME_RADIUS = REPOSITORY_GROUND_RADIUS - 1.5" in SCENE
-    assert "const REPOSITORY_DOME_DETAIL = 2" in SCENE
-    assert 'dome.name = "repository-geodesic-dome"' in dome
-    assert "new THREE.IcosahedronGeometry(" in dome
-    assert 'shell.name = "repository-geodesic-dome-shell"' in dome
-    assert 'makeMaterial(THREE, "#ffffff"' in dome
-    assert "transparent: false" in dome
-    assert "opacity: 1" in dome
-    assert "new THREE.InstancedMesh(" in dome
-    assert 'struts.name = "repository-geodesic-dome-struts"' in dome
-    assert "struts.computeBoundingSphere();" in dome
-    assert 'foundation.name = "repository-geodesic-dome-foundation"' in dome
-    assert 'doors.name = "repository-geodesic-dome-doors"' in dome
-    assert 'transparent: false' in dome
-    assert "inWestDoorway" in dome
-    assert "const dome = createRepositoryGeodesicDome(THREE);" in district
-    assert "group.add(dome);" in district
-    assert 'interior.name = "repository-geodesic-dome-interior"' in district
-    assert "interior.visible = false" in district
+    assert 'content.name = "repository-district-content"' in district
+    assert "group.add(content);" in district
+    assert "content.add(\n    createDistrictGroundCircle(" in district
+    assert "content.add(portal);" in district
+    assert "content.add(importKiosk);" in district
+    assert "group.userData.repositoryContent = content;" in district
+    assert "createRepositoryGeodesicDome" not in SCENE
+    assert "repository-geodesic-dome" not in SCENE
+    assert "REPOSITORY_DOME_" not in SCENE
 
 
-def test_repository_dome_draws_its_interior_only_while_occupied():
-    occupancy = SCENE[
-        SCENE.index("  function updateRepositoryDomeOccupancy("):
-        SCENE.index("  function compactDistrictDiagnostics(")
-    ]
+def test_repository_catalog_has_no_enclosure_residency_or_collision_gate():
     catalog = SCENE[
         SCENE.index("  function updateRepositoryCatalog("):
         SCENE.index("  function setRepositoryImportState(")
     ]
-    assert "REPOSITORY_DOME_ENTER_RADIUS" in occupancy
-    assert "REPOSITORY_DOME_EXIT_RADIUS" in occupancy
-    assert "interior.visible = occupied" in occupancy
-    assert "catalog.visible = occupied" in occupancy
-    assert "dome.visible = !occupied" in occupancy
-    assert "updateRepositoryDomeOccupancy();" in SCENE
-    assert "layer.userData.repositoryDomeInterior = true" in catalog
-    assert "updateRepositoryDomeOccupancy(true);" in catalog
-    assert "constrainRepositoryDome(previousHorizontalPosition)" in SCENE
+    assert 'layer.name = "repository-perimeter-portals"' in catalog
+    assert "world.add(layer);" in catalog
+    assert 'registerCompactDistrictRoot("repositories", layer);' in catalog
+    assert "repositoryDomeInterior" not in catalog
+    assert "updateRepositoryDomeOccupancy" not in SCENE
+    assert "constrainRepositoryDome" not in SCENE
+    assert "setSlidingEnclosureDoorOpen" not in SCENE
 
 
 def test_repository_refresh_no_longer_feeds_the_tall_pr_and_issue_lists():

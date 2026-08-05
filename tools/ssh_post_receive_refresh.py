@@ -995,13 +995,12 @@ def _run_locked(
         _restart_gateway(config, runner=runner)
         phase = "health"
         health_waiter(config)
-        phase = "register"
-        # refresh() already performed the full source fsck, archive validation,
-        # and staged gateway check. Repeating them after the restart extends
-        # the public outage on small hosts by minutes. renew() revalidates the
-        # installed immutable generation, exact refs, and signatures before it
-        # performs the same endpoint and catalog publication.
-        _run_as_mirror(config, "renew", runner=runner)
+        # Serving is now current and integrity-checked. Do not synchronously
+        # renew the catalog lease here: an unavailable control-plane endpoint
+        # can block this oneshot for minutes, preventing systemd.path from
+        # processing a newer push. The resumed bounded renewal timer performs
+        # that publication independently while this critical path becomes idle
+        # again within seconds.
         _resume_renewal(runner=runner)
         renewal_paused = False
         _publication_succeeded(config, processing, clock_ms=clock_ms)

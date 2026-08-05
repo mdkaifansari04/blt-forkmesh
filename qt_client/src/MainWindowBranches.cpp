@@ -493,8 +493,8 @@ namespace {
 // pipe per standard channel plus the child watcher), so an unbounded fan-out
 // walks straight through the 1024-descriptor soft limit and the whole process
 // starts failing with "QProcess: Cannot create pipe (Too many open files)" —
-// including work that has nothing to do with git, such as the age/tar pipeline
-// behind the encrypted public mirror. Cap what is in flight and queue the rest;
+// including unrelated sync and network work. Cap what is in flight and queue
+// the rest;
 // every callback here already re-checks generation counters and widget pointers
 // before touching the UI, so a read that starts late is safe.
 constexpr int kMaxDetachedGitInFlight = 12;
@@ -1000,22 +1000,16 @@ void MainWindow::switchToBranch(const QString &branch, int agentSessionId)
     m_branchDiffPullNumber = -1; // plain branch mode
     showOverviewCommits();
     const QString base = branchCompareBase();
-    if (!target.isEmpty() && target != m_repoBranch) {
-        setRepoBranch(target); // rebuilds the graph + branch button for the ref
-    } else {
-        // Already browsing this ref: fill the workspace the same deferred way
-        // the Commits toggle does.
-        QTimer::singleShot(0, this, [this] {
-            if (commitsListIsCurrent())
-                refreshSourceControl();
-            else
-                loadCommits();
-        });
-    }
+    const bool branchChanged = !target.isEmpty() && target != m_repoBranch;
+    if (branchChanged)
+        // Changing m_repoBranch is cheap. Defer the overview/history rebuild
+        // until the selected branch and its loading state are on screen.
+        setRepoBranch(target, /*loadContent=*/false);
     if (target.isEmpty() || target == base) {
         // The base has no range against itself: plain working-tree view.
         m_branchDiffAgentSessionId = -1;
         setCommitWorkspacePage(kCommitWorkspaceChangesPage);
+        showSourceControlLoading(target.isEmpty() ? base : target);
     } else {
         // Compare against the base on the right pane (merge/PR toolbar
         // included), with the left column's CHANGES + graph staying put.
@@ -1025,6 +1019,25 @@ void MainWindow::switchToBranch(const QString &branch, int agentSessionId)
         if (m_branchDiffView)
             m_branchDiffView->setFocus();
     }
+    // loadRepoOverview() is deliberately expensive (a recursive tree walk and
+    // per-entry history), yet it is hidden behind the Git workspace. Starting
+    // it after this turn lets the branch-specific placeholder paint first and
+    // avoids delaying every branch click on invisible Code-overview work.
+    QTimer::singleShot(0, this, [this, target, branchChanged] {
+        if (branchChanged) {
+            if (m_repoBranch != target)
+                return; // a newer branch selection won
+            loadRepoOverview(QString());
+            loadCommits();
+            return;
+        }
+        // Already browsing this ref: fill the workspace the same deferred way
+        // the Commits toggle does.
+        if (commitsListIsCurrent())
+            refreshSourceControl();
+        else
+            loadCommits();
+    });
     // Branch selection is a browser-style destination: Back/Forward must be
     // able to return to the previous branch (or the main Git view).
     scheduleNavRecord();
@@ -1279,18 +1292,17 @@ bool MainWindow::testGitWorkspaceIsExclusive() const
     return true;
 }
 
-bool MainWindow::testGitPromptFloatsBottomRight() const
+bool MainWindow::testGitPromptFloatsBottomLeft() const
 {
-    constexpr int kPromptMargin = 8;
-    return m_footerDock && m_footerLeftRegion && m_promptWrapper &&
-           m_commitsStack && m_footerDock->isHidden() &&
-           m_footerLeftRegion->isHidden() &&
-           m_promptWrapper->parentWidget() == m_commitsStack &&
-           m_promptWrapper->isVisible() && m_promptWrapper->width() <= 560 &&
-           m_promptWrapper->x() + m_promptWrapper->width() ==
-               m_commitsStack->width() - kPromptMargin &&
-           m_promptWrapper->y() + m_promptWrapper->height() ==
-               m_commitsStack->height() - kPromptMargin;
+    return m_footerDock && m_globalOverlayHost && m_promptOverlayHost &&
+           m_promptWrapper && m_footerDock->parentWidget() == m_globalOverlayHost &&
+           m_footerDock->isVisible() && m_promptOverlayHost->isVisible() &&
+           m_promptOverlayHost->width() <= 560 &&
+           m_promptOverlayHost->geometry().left() == 8 &&
+           m_promptOverlayHost->geometry().bottom() ==
+               m_footerDock->rect().bottom() &&
+           m_footerDock->y() + m_footerDock->height() <=
+               m_globalOverlayHost->height();
 }
 
 int MainWindow::testCommitWorkspacePage() const
@@ -2934,8 +2946,10 @@ QWidget *MainWindow::buildBranchRangePane()
 
     // Merge the selected branch straight into the default branch (an empty
     // worktree path tells mergeWorktreeIntoMain not to prune any worktree).
+    // Ghost, not green: "Merge & clean up" beside it is the finishing move worth
+    // drawing the eye, and two green buttons in a row read as one wide target.
     m_branchMergeButton = new StackedIconButton("Merge to main");
-    m_branchMergeButton->setObjectName("primaryButton");
+    m_branchMergeButton->setObjectName("ghostButton");
     m_branchMergeButton->setProperty("buttonSize", "sm");
     m_branchMergeButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_branchMergeButton, "check-circle", 14);

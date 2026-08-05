@@ -73,10 +73,21 @@ function mountForkMeshDashboardChat() {
     `/api/repo/${encodeURIComponent(ROOM_OWNER)}` +
     `/${encodeURIComponent(ROOM_REPO)}/rooms/${encodeURIComponent(ACTIVE_ROOM)}/ws`;
   const FORKBOT_ENDPOINT = "/api/forkbot/chat";
+  // Cloudflare Workers AI model pick, shared with the public chat composer and
+  // the dashboard home ForkBot composer (both write this key).
+  const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";
   const FORKBOT_SENDER_ID = "forkbot";
   const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
   const CLAUDE_SENDER_ID = "claude";
   const CODEX_SENDER_ID = "codex";
+
+  function forkbotModel() {
+    try {
+      return localStorage.getItem(FORKBOT_MODEL_KEY) || "";
+    } catch (_) {
+      return "";
+    }
+  }
 
   async function moderateDashboardText(value) {
     const moderation = await chatModerationPromise;
@@ -3358,6 +3369,7 @@ function mountForkMeshDashboardChat() {
           sender: displayName(),
           room: ACTIVE_SPACE || ROOM_NAME,
           context,
+          model: forkbotModel(),
         }),
       });
       const data = await response.json().catch(() => ({}));

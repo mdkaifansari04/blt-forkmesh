@@ -1000,6 +1000,8 @@ QString directoryAccountKey(const MemberInfo &u)
 
 void MainWindow::refreshChatUserDirectory()
 {
+    if (qEnvironmentVariableIsSet("FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     if (!m_networkAccess || m_chatDirectoryFetchInFlight)
         return;
     // Keep polling so a brand-new signup appears in the users column within a
@@ -2092,7 +2094,7 @@ void MainWindow::sendMessageToPrompt(const QString &text)
 {
     if (text.isEmpty())
         return;
-    // The footer's bottom-right prompt box, not the chat input: a message worth
+    // The footer's bottom-left prompt box, not the chat input: a message worth
     // reusing is almost always a task for an agent, so it lands where the
     // app-wide "Send to Prompt" selection action puts text (adhoc #108).
     appendTextToActivePrompt(text);

@@ -174,15 +174,7 @@ Create an operator-owned JSON file outside the checkout:
       "name": "project",
       "visibility": "public",
       "enabled": true,
-      "encryptedArchive": {
-        "scheme": "age-encrypted-tar-v1",
-        "ciphertextPath": "/srv/forkmesh/encrypted/alice-project.tar.age",
-        "ciphertextSha256": "<sha256 of ciphertext>",
-        "keyReference": "keychain:forkmesh/alice-project",
-        "materializeCommand": [
-          "/usr/local/bin/forkmesh-materialize-age-repository"
-        ]
-      },
+      "gitDir": "/srv/forkmesh/mirrors/alice-project.git",
       "releaseStore": "/srv/forkmesh/releases/alice-project",
       "integrity": {
         "expectedRefsSha256": "<64 lowercase hex characters>"
@@ -217,79 +209,22 @@ python3 tools/mirror_gateway.py \
   --config /etc/forkmesh/mirror-gateway.json
 ```
 
-## Encryption at rest
+## Public and private storage
 
-Every enabled public mirror must use the external strong-envelope archive
-adapter. A plaintext `gitDir` configuration is rejected. The gateway does not
-implement or invent encryption.
+Every enabled public mirror uses an absolute `gitDir` pointing to an
+owner-controlled bare repository. Public repository data is intentionally not
+encrypted: avoiding seal, age, tar, and materialization work keeps push-driven
+updates in the seconds range. The gateway requires the directory to be real,
+owned by its service account, not world-writable, structurally bare, and pinned
+by `integrity.expectedRefsSha256`. Public `encryptedArchive` entries are
+rejected.
 
-The only accepted scheme is `age-encrypted-tar-v1`, using the established
-[age file format](https://age-encryption.org/v1). The gateway requires a native
-or ASCII-armored age header and the configured full-file SHA-256 before invoking
-the materializer. The external materializer must run an age implementation that
-authenticates the file, fail on any authentication/decryption error, and extract
-exactly one bare-repository tar archive. Generic or operator-defined envelope
-labels are rejected.
-
-An enabled public mirror declares:
-
-```json
-{
-  "encryptedArchive": {
-    "scheme": "age-encrypted-tar-v1",
-    "ciphertextPath": "/srv/forkmesh/encrypted/alice-project.tar.age",
-    "ciphertextSha256": "<sha256 of ciphertext>",
-    "keyReference": "keychain:forkmesh/alice-project",
-    "materializeCommand": [
-      "/usr/local/bin/forkmesh-materialize-age-repository"
-    ]
-  }
-}
-```
-
-The materializer receives the ciphertext path and digest, opaque key reference,
-and an owner-only temporary destination. It resolves the key locally, verifies
-and decrypts with the named established scheme, extracts one bare repository,
-and returns:
-
-```json
-{"ok": true, "repositoryPath": "repo.git"}
-```
-
-The key itself is never present in the gateway configuration, request, log, or
-response. Plaintext runtime data lives only in a mode-0700 temporary directory
-and is removed when the gateway exits normally.
-
-The Qt client implements this contract in `PublicMirrorRuntime`. It clones or
-refreshes a canonical bare repository in an owner-only temporary directory,
-streams `tar` output directly into the official `age` executable, and
-atomically installs only the `.age` ciphertext plus non-secret integrity
-metadata in the durable public-mirror directory. It does not write a plaintext
-tar file. A per-archive age X25519 identity is held in an AES-256-GCM vault
-bound to the local node identity. `age`, `age-keygen`, `tar`, and Git are
-required; if any is missing or authentication fails, sync and publication fail
-closed without creating a plaintext durable mirror. Existing managed plaintext
-mirrors are removed only after the encrypted replacement has been authenticated
-and successfully reopened.
-
-Exact limitations:
-
-- A mirror operator who controls the running machine can inspect plaintext
-  after their approved materializer decrypts a public repository. Encryption at
-  rest protects stopped storage; it is not protection from the active host
-  administrator.
-- Unexpected process termination can leave operating-system or filesystem
-  artifacts. Use an encrypted volume or ephemeral RAM-backed runtime directory
-  when that threat matters.
-- Private repositories are never materialized by this gateway. The Qt control
+Private repositories retain the encryption boundary. They are never
+materialized by the public gateway. The Qt control
   node persists them with `PrivateMirrorStore`; the gateway's separate
   `/v1/private-replicas/<opaque-id>` route streams that validated ciphertext
   only after a short-lived routing-Worker capability. It has no route from a
   private repository name to an opaque id and cannot decrypt the archive.
-- Rotation is performed by the external encryption tool: write a new ciphertext
-  under a new key reference, update its ciphertext digest and reference
-  atomically, validate, then restart. Old ciphertext and keys are retired using
-  the operator's retention policy.
 
 ### Private replica boundary
 
@@ -471,7 +406,7 @@ The desktop Control Node page operates both deployment stages:
    desktop can restart `cloudflared`; it is not a Cloudflare API token,
    repository key, wallet key, or ForkMesh identity key.
 3. **Start mirror services** validates and rewrites the strict gateway
-   configuration from authenticated encrypted archives, starts the loopback
+   configuration from integrity-pinned public bare mirrors, starts the loopback
    gateway, starts `cloudflared` with the connector token only in its child
    environment, checks local health, and posts the owner-signed endpoint
    registration to the Worker. If no system connector is present, the desktop
@@ -485,8 +420,8 @@ The desktop Control Node page operates both deployment stages:
    clears every deployment/service child process.
 
 Configuration refreshes caused by sync, visibility, or serving-permission
-changes restart the running gateway. An unsealed or unauthenticated public
-repository is omitted rather than falling back to a plaintext `gitDir`.
+changes restart the running gateway. An unavailable or integrity-invalid public
+repository is omitted rather than serving an unpinned path.
 Private repositories are represented only by the optional opaque ciphertext
 store; they are never added as named repository entries.
 

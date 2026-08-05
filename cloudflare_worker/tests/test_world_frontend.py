@@ -366,7 +366,7 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
         "queueMicrotask(() => onFediverseProfile(target))",
         '"FEDIVERSE · UNAVAILABLE"',
         'activityRing.name = "avatar-activity-ring"',
-        "new THREE.PlaneGeometry(0.88, 0.88)",
+        "cloneSharedPlane(\n    THREE,\n    0.88,\n    0.88,",
     ):
         assert contract in SCENE
     assert '"account-activity-light"' not in SCENE
@@ -2173,18 +2173,18 @@ def test_world_settings_moves_focus_before_hiding_the_panel():
     assert "panel.inert = true;" in toggle
 
 
-def test_world_members_center_is_a_fixed_cost_yurt_with_bounded_interior_roster():
-    assert 'membersYurt.name = "members-center-yurt"' in SCENE
-    assert 'yurtDoor.name = "members-yurt-door"' in SCENE
-    assert 'yurtChimney.name = "members-yurt-central-chimney"' in SCENE
-    assert "function membersYurtDoorTexture" in SCENE
+def test_world_members_center_is_an_open_fixed_cost_circle_with_bounded_roster():
+    assert "const MEMBER_CLEARING_RADIUS = 12;" in SCENE
+    assert 'memberCircleInfo.name = "members-circle-info-sign"' in SCENE
+    assert "function membersCircleInfoTexture" in SCENE
+    assert "membersYurt" not in SCENE
     assert "noteDirectoryMembers" in APP
     lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
         "// Legacy bench-circle implementation", 1
     )[0]
-    assert "MEMBERS_YURT_VISIBLE_MEMBER_LIMIT" in lounge
-    assert ".slice(0, MEMBERS_YURT_VISIBLE_MEMBER_LIMIT);" in lounge
-    assert "membersYurtMemberPosition(index, interiorMembers.length)" in lounge
+    assert "MEMBER_CIRCLE_VISIBLE_LIMIT" in lounge
+    assert ".slice(0, MEMBER_CIRCLE_VISIBLE_LIMIT);" in lounge
+    assert "memberCirclePosition(index, interiorMembers.length)" in lounge
     assert "campfire.userData.memberFigureCount = seen.size;" in lounge
     assert "return;" in lounge
     assert "createAvatar(" in lounge

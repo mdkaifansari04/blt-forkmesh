@@ -22,7 +22,9 @@ SYSTEMS = [("edge_api", "Edge API"), ("flagship_repository", "Flagship repo")]
 
 
 def _load(pings_enabled=True):
-    wanted_constants = {"STATUS_DEPLOY_GRACE_MS"}
+    wanted_constants = {
+        "STATUS_DEPLOY_GRACE_MS", "STATUS_ALERT_CONTINUAL_INTERVAL_MS",
+    }
     wanted_functions = {
         "_record_status_monitor_transitions",
         "_enqueue_operational_alert_pings",
@@ -96,6 +98,18 @@ def _load(pings_enabled=True):
     async def _status_alert_emails_enabled(_env):
         return False
 
+    async def _repo_alert_settings_get(_env, _owner, _repo):
+        return {"statusPings": pings_enabled, "statusEmails": False,
+                "statusMonitors": {}}
+
+    def _status_monitor_alert_setting(settings, system_id, channel):
+        del system_id
+        if channel == "pings":
+            return bool(settings.get("statusPings", True))
+        if channel == "emails":
+            return bool(settings.get("statusEmails", False))
+        return False
+
     namespace = {
         "d1_all": d1_all,
         "d1_run": d1_run,
@@ -106,6 +120,10 @@ def _load(pings_enabled=True):
         "MAX_NODE_NAME": 40,
         "STATUS_SYSTEMS": SYSTEMS,
         "STATUS_MIRROR_PREFIX": "mirror:",
+        "STATUS_SAMPLE_WINDOW_MS": 60_000,
+        "FLAGSHIP_MONITOR_ID": "forkmesh/forkmesh",
+        "_repo_alert_settings_get": _repo_alert_settings_get,
+        "_status_monitor_alert_setting": _status_monitor_alert_setting,
         "_status_alert_pings_enabled": _status_alert_pings_enabled,
         "_status_alert_emails_enabled": _status_alert_emails_enabled,
         "_test_control": control,

@@ -41,6 +41,7 @@
 #include "SystemStats.h"
 #include "AgentStore.h"
 #include "Theme.h"
+#include "VirtualMachineRuntime.h"
 
 #include <QAbstractButton>
 #include <QAbstractAnimation>
@@ -187,6 +188,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 
 #ifndef Q_OS_WIN
 #include <csignal>
@@ -280,6 +282,17 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QString &anchorFile = QString(),
                        const QHash<QString, QString> &lineNotes = {},
                        const QSet<QString> &viewedFiles = {});
+// The same render with the split/unified choice supplied rather than read from
+// QSettings, so the build can run on a worker thread (the caller resolves the
+// preference on the GUI thread first). Turning a large patch into HTML is pure
+// string work and was the single most common frame in the stall log; see
+// MainWindow::renderAgentDiff.
+QString renderDiffHtmlSplit(bool split, const QString &patch,
+                            QList<DiffFileEntry> &files, const QString &dir,
+                            const QString &base, const QString &head,
+                            const QString &anchorFile = QString(),
+                            const QHash<QString, QString> &lineNotes = {},
+                            const QSet<QString> &viewedFiles = {});
 bool diffSplitPref();
 void setDiffSplitPref(bool split);
 // Compact rich-text label (status octicon + muted dir / bold name + coloured
@@ -475,6 +488,31 @@ const ScmAiModel kScmAiModels[] = {
 };
 const int kScmAiModelCount = int(sizeof(kScmAiModels) / sizeof(kScmAiModels[0]));
 
+// Alert-stack metrics, shared by the code that builds the notification bubble
+// and its queued cards (MainWindowChat.cpp) and the code that measures and
+// anchors them above the prompt (MainWindowSettings.cpp). One set of numbers
+// keeps the active toast and the cards below it on the same compact grid.
+constexpr int kToastPadLeft = 10;
+constexpr int kToastPadTop = 6;
+constexpr int kToastPadRight = 8;
+constexpr int kToastPadBottom = 6;
+// Between the stacked lines inside a card (marker / agent line / message).
+constexpr int kToastLineSpacing = 2;
+// Between a card's message block and its caption row of actions.
+constexpr int kToastRowSpacing = 4;
+// Between cards in the stack, and between the active toast and the first
+// queued card, so the whole column reads as one evenly spaced list.
+constexpr int kToastStackGap = 6;
+// Cards rise into place from just below their anchor rather than appearing.
+// The prompt anchor reserves a 16px gap beneath the stack, so the rise stays
+// inside that gap and no frame of the motion can cover the composer.
+constexpr int kToastEntryRise = 14;
+constexpr int kToastEntryMs = 180;
+// How long the whole column takes to glide to its new anchor when a card
+// arrives or leaves. Short enough to feel immediate, long enough to read as
+// the stack sliding up rather than jumping.
+constexpr int kToastShiftMs = 150;
+
 constexpr int kTableSortRole = Qt::UserRole + 10;
 // Per-cell percentage (0..100) read by ProgressBarDelegate to draw a mini bar.
 constexpr int kProgressBarRole = Qt::UserRole + 11;
@@ -487,11 +525,37 @@ constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
 constexpr int kNodeLightRole = Qt::UserRole + 13;
 // Cadence on which a node re-fetches its mirrors from source (mirrors
 // m_mirrorSyncTimer, which adds ±15% jitter — the pie is an approximation);
-// a behind node is expected to catch up within roughly one minute. This is
+// a behind node is expected to catch up within roughly a few minutes. This is
 // only the dropped-event safety net: push events still notify mirror peers the
 // moment the source moves.
-constexpr qint64 kMirrorSyncIntervalMs = 60LL * 1000;
+// Push/websocket events are the primary update path. This short poll is the
+// bounded retry for a dropped event or for a peer that woke while the source's
+// gateway generation was still swapping.
+constexpr qint64 kMirrorSyncIntervalMs = 5LL * 60 * 1000;
 constexpr int kMirrorSyncJitterPercent = 15;
+// User-facing mirror-sync frequency (settings -> repositories). Tracked in
+// whole minutes so the settings UI can be straightforward and readable.
+constexpr int kMirrorSyncIntervalMinMinutes = 1;
+constexpr int kMirrorSyncIntervalMaxMinutes = 24 * 60;
+constexpr int kMirrorSyncIntervalDefaultMinutes = 5;
+const QString kMirrorSyncIntervalSetting =
+    QStringLiteral("repos/mirrorSyncIntervalMinutes");
+
+inline int mirrorSyncIntervalMinutes()
+{
+    return qBound(
+        kMirrorSyncIntervalMinMinutes,
+        QSettings()
+            .value(kMirrorSyncIntervalSetting,
+                   kMirrorSyncIntervalDefaultMinutes)
+            .toInt(),
+        kMirrorSyncIntervalMaxMinutes);
+}
+
+inline qint64 mirrorSyncIntervalMs()
+{
+    return qint64(mirrorSyncIntervalMinutes()) * 60 * 1000;
+}
 
 // Extra labels this machine answers to when a workflow declares `runs-on:`
 // (free-form, comma/space separated — e.g. "ios, xcode, gpu"). The machine's
@@ -901,6 +965,7 @@ public:
           m_windows(qBound(1, windows, int(WindowCount)))
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setCursor(Qt::PointingHandCursor);
         // Thin vertical bars that ride in the prompt toolbar (adhoc #47). No
         // inline text — the label/figures live in the hover tooltip only, so the
         // strip stays tiny next to the send buttons. The 3px padding around the
@@ -994,6 +1059,10 @@ public:
     // by the time the user actually looks at them. Fire this on hover to pull a
     // fresh reading on demand instead.
     std::function<void()> onHover;
+    // A click opens the provider account/usage menu anchored to this meter.
+    // Kept as a callback because this header-only widget intentionally has no
+    // Q_OBJECT dependency.
+    std::function<void(const QPoint &)> onClick;
 
 protected:
     void enterEvent(QEnterEvent *) override
@@ -1038,6 +1107,15 @@ protected:
                               4.0, 4.0);
         }
     }
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && onClick) {
+            onClick(mapToGlobal(event->position().toPoint()));
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
 
 private:
     QColor textColor(int alpha) const
@@ -1081,6 +1159,7 @@ private:
                    + line(QString::fromLatin1(labels[i]), m_pct[i], m_note[i]);
         if (!m_stats.isEmpty())
             tip += QStringLiteral("\n\n") + m_stats;
+        tip += QStringLiteral("\n\nClick to view accounts and usage.");
         setToolTip(tip);
     }
 
@@ -1098,6 +1177,93 @@ private:
     int m_flashToken = 0; // guards against an older flash clearing a newer one
 };
 
+// A menu-sized version of the compact usage chart. The top-bar meter is
+// intentionally icon-sized, but the account menu has enough room to make the
+// three limits readable at a glance instead of listing them as plain text.
+class TokenUsageMenuRow : public QWidget
+{
+public:
+    TokenUsageMenuRow(const QString &label, const QString &value,
+                      const QString &resetNote, int percent,
+                      QWidget *parent = nullptr)
+        : QWidget(parent), m_label(label), m_value(value),
+          m_resetNote(resetNote), m_percent(percent)
+    {
+        setFixedHeight(34);
+        setMinimumWidth(300);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setAccessibleName(QStringLiteral("%1 usage").arg(label));
+        setToolTip(QStringLiteral("%1: %2%3")
+                       .arg(label, value,
+                            resetNote.isEmpty()
+                                ? QString()
+                                : QStringLiteral(" · %1").arg(resetNote)));
+    }
+
+    void setUsageData(const QString &label, const QString &value,
+                      const QString &resetNote, int percent)
+    {
+        m_label = label;
+        m_value = value;
+        m_resetNote = resetNote;
+        m_percent = percent;
+        setAccessibleName(QStringLiteral("%1 usage").arg(label));
+        setToolTip(QStringLiteral("%1: %2%3")
+                       .arg(label, value,
+                            resetNote.isEmpty()
+                                ? QString()
+                                : QStringLiteral(" · %1").arg(resetNote)));
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const QColor text = palette().color(QPalette::WindowText);
+        const QColor muted(text.red(), text.green(), text.blue(), 150);
+        const QColor track(text.red(), text.green(), text.blue(), 38);
+        painter.setPen(text);
+        painter.drawText(QRectF(4, 2, 90, 15), Qt::AlignLeft | Qt::AlignVCenter,
+                         m_label);
+
+        const QRectF bar(96, 7, 132, 8);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(track);
+        painter.drawRoundedRect(bar, 4, 4);
+        if (m_percent >= 0) {
+            const qreal width = bar.width() * qBound(0, m_percent, 100) / 100.0;
+            if (width > 0) {
+                QColor fill = m_percent >= 90 ? QColor("#f85149")
+                                              : m_percent >= 70
+                                                    ? QColor("#d29922")
+                                                    : QColor("#3fb950");
+                painter.setBrush(fill);
+                painter.drawRoundedRect(QRectF(bar.left(), bar.top(), width,
+                                               bar.height()),
+                                        4, 4);
+            }
+        }
+
+        painter.setPen(text);
+        painter.drawText(QRectF(234, 2, width() - 238, 15),
+                         Qt::AlignRight | Qt::AlignVCenter, m_value);
+        if (!m_resetNote.isEmpty()) {
+            painter.setPen(muted);
+            painter.drawText(QRectF(96, 18, width() - 100, 13),
+                             Qt::AlignLeft | Qt::AlignVCenter, m_resetNote);
+        }
+    }
+
+private:
+    QString m_label;
+    QString m_value;
+    QString m_resetNote;
+    int m_percent = -1;
+};
+
 // A tiny moving line chart for one system resource (CPU, memory or disk). New
 // per-second samples push in from the right and scroll the history left, so the
 // recent load is visible at a glance; the current figure prints on its own
@@ -1105,8 +1271,8 @@ private:
 // (adhoc #17). Kept header-only (no Q_OBJECT) like the other Internal.h mini-
 // charts; the click hook is a std::function so a left-click can still open
 // the stall dialog.
-// The side of one resource square. The window chrome's live CPU/MEM/DISK
-// squares and the repo mode row's SIZE/LOC/FILES day trends share it (adhoc
+// The side of one compact resource chart. The window chrome's live resource
+// quadrants and the repo mode row's SIZE/LOC/FILES day trends share it (adhoc
 // #421) so both rows of cards are the same size.
 constexpr int kResourceSparklineSide = 34;
 
@@ -1278,6 +1444,193 @@ private:
     QVector<double> m_history;
     int m_maxPoints = 60;
     bool m_loading = false;
+};
+
+// The chrome combines the four live resource traces into one compact control:
+// CPU and memory on the top row, swap and disk on the bottom.  Each quadrant
+// retains its own hover text and click action, but leaves the chart itself free
+// of labels and values so the traces read as one small visual indicator.
+class ResourceQuadrantSparkline : public QWidget
+{
+public:
+    enum Resource {
+        Cpu = 0,
+        Memory,
+        Swap,
+        Disk,
+        ResourceCount
+    };
+
+    explicit ResourceQuadrantSparkline(QWidget *parent = nullptr,
+                                       int side = kResourceSparklineSide,
+                                       int maxPoints = 60)
+        : QWidget(parent), m_maxPoints(qMax(2, maxPoints))
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(side, side);
+        setCursor(Qt::PointingHandCursor);
+        setMouseTracking(true);
+    }
+
+    void addSample(Resource resource, double value, double maxValue)
+    {
+        Sample &sample = m_samples[resource];
+        sample.max = maxValue > 0 ? maxValue : 100.0;
+        sample.history.append(value);
+        while (sample.history.size() > m_maxPoints)
+            sample.history.removeFirst();
+        update();
+    }
+
+    void setResourceToolTip(Resource resource, const QString &toolTip)
+    {
+        m_samples[resource].toolTip = toolTip;
+    }
+
+    void setClickHandler(Resource resource, std::function<void()> handler)
+    {
+        m_samples[resource].onClicked = std::move(handler);
+    }
+
+protected:
+    bool event(QEvent *event) override
+    {
+        if (event->type() == QEvent::ToolTip) {
+            const auto *helpEvent = static_cast<QHelpEvent *>(event);
+            const int resource = resourceAt(helpEvent->pos());
+            if (resource >= 0 && !m_samples[resource].toolTip.isEmpty())
+                QToolTip::showText(helpEvent->globalPos(),
+                                   m_samples[resource].toolTip, this);
+            else
+                QToolTip::hideText();
+            return true;
+        }
+        return QWidget::event(event);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        const int resource = resourceAt(event->pos());
+        if (event->button() == Qt::LeftButton && resource >= 0 &&
+            m_samples[resource].onClicked) {
+            m_samples[resource].onClicked();
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int resource = resourceAt(event->pos());
+        if (resource != m_hoveredResource && QToolTip::isVisible()) {
+            if (resource >= 0 && !m_samples[resource].toolTip.isEmpty())
+                QToolTip::showText(mapToGlobal(event->pos()),
+                                   m_samples[resource].toolTip, this);
+            else
+                QToolTip::hideText();
+        }
+        m_hoveredResource = resource;
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        m_hoveredResource = -1;
+        QWidget::leaveEvent(event);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        for (int resource = 0; resource < ResourceCount; ++resource)
+            paintQuadrant(p, resource, quadrantRect(resource));
+    }
+
+private:
+    struct Sample {
+        QVector<double> history;
+        double max = 100.0;
+        QString toolTip;
+        std::function<void()> onClicked;
+    };
+
+    static QColor gaugeColor(double pct)
+    {
+        if (pct >= 90)
+            return QColor("#f85149"); // red: pegged
+        if (pct >= 70)
+            return QColor("#d29922"); // amber: getting busy
+        return QColor("#3fb950");     // green: light load
+    }
+
+    QRectF quadrantRect(int resource) const
+    {
+        constexpr qreal gap = 1.0;
+        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        const qreal cellWidth = (box.width() - gap) / 2.0;
+        const qreal cellHeight = (box.height() - gap) / 2.0;
+        const int row = resource / 2;
+        const int column = resource % 2;
+        return QRectF(box.left() + column * (cellWidth + gap),
+                      box.top() + row * (cellHeight + gap), cellWidth, cellHeight);
+    }
+
+    int resourceAt(const QPoint &position) const
+    {
+        for (int resource = 0; resource < ResourceCount; ++resource) {
+            if (quadrantRect(resource).contains(position))
+                return resource;
+        }
+        return -1;
+    }
+
+    void paintQuadrant(QPainter &p, int resource, const QRectF &box) const
+    {
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(box, 2, 2);
+        QColor card = palette().color(QPalette::WindowText);
+        card.setAlpha(28);
+        p.setPen(Qt::NoPen);
+        p.setBrush(card);
+        p.drawPath(cardPath);
+
+        const Sample &sample = m_samples[resource];
+        const QRectF area = box.adjusted(1.0, 1.0, -1.0, -1.0);
+        if (area.height() < 2 || sample.history.size() < 2)
+            return;
+
+        p.save();
+        p.setClipPath(cardPath);
+        const QColor line = gaugeColor(sample.history.last() / sample.max * 100.0);
+        const double step = area.width() / double(m_maxPoints - 1);
+        const int n = sample.history.size();
+        QPolygonF curve;
+        for (int i = 0; i < n; ++i) {
+            const double x = area.right() - (n - 1 - i) * step;
+            const double norm = qBound(0.0, sample.history.at(i) / sample.max, 1.0);
+            curve << QPointF(x, area.bottom() - norm * area.height());
+        }
+        QPolygonF fill = curve;
+        fill << QPointF(curve.last().x(), area.bottom())
+             << QPointF(curve.first().x(), area.bottom());
+        QColor under = line;
+        under.setAlpha(70);
+        p.setBrush(under);
+        p.setPen(Qt::NoPen);
+        p.drawPolygon(fill);
+        QPen pen(line);
+        pen.setWidthF(1.0);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(curve);
+        p.restore();
+    }
+
+    Sample m_samples[ResourceCount];
+    int m_maxPoints = 60;
+    int m_hoveredResource = -1;
 };
 
 // A row-sized memory trend square for one process in the "High memory usage"
@@ -2534,13 +2887,14 @@ public:
         const QVariant anchor = index.data(kPacmanAnchorRole);
         if (!anchor.isValid())
             return;
+        const qint64 intervalMs = qMax(1LL, mirrorSyncIntervalMs());
         qint64 elapsed =
             (QDateTime::currentMSecsSinceEpoch() - anchor.toLongLong()) %
-            kMirrorSyncIntervalMs;
+            intervalMs;
         if (elapsed < 0)
-            elapsed += kMirrorSyncIntervalMs;
+            elapsed += intervalMs;
         const double frac =
-            qBound(0.0, double(elapsed) / double(kMirrorSyncIntervalMs), 1.0);
+            qBound(0.0, double(elapsed) / double(intervalMs), 1.0);
 
         const bool dark = currentThemeIsDark();
         QRectF box(option.rect.right() - kDiameter - 6,
@@ -3056,6 +3410,130 @@ const QString kClaudeUsageWeekResetSetting = QStringLiteral("agents/claudeUsageW
 // reports next to the plan-wide one — the third bar on the chart (adhoc #96).
 const QString kClaudeUsageFablePctSetting = QStringLiteral("agents/claudeUsageFablePct");
 const QString kClaudeUsageFableResetSetting = QStringLiteral("agents/claudeUsageFableReset");
+// Provider accounts are isolated by the config root understood by each CLI.
+// The built-in "default" profile points at the provider's normal home; added
+// profiles are created directly inside an app-data config root, so ForkMesh
+// never copies OAuth tokens into settings or between profiles.
+struct AgentAccountProfile {
+    QString id;
+    QString label;
+    QString configDir;
+    bool builtIn = false;
+};
+
+inline QString agentAccountProviderKey(const QString &provider)
+{
+    return provider == QLatin1String("codex") ? QStringLiteral("codex")
+                                               : QStringLiteral("claude");
+}
+
+inline QString agentAccountDefaultConfigDir(const QString &provider)
+{
+    const bool codex =
+        agentAccountProviderKey(provider) == QLatin1String("codex");
+    const QString configured =
+        qEnvironmentVariable(codex ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR")
+            .trimmed();
+    if (!configured.isEmpty())
+        return QDir::cleanPath(configured);
+    return QDir::homePath() +
+           (codex ? QStringLiteral("/.codex") : QStringLiteral("/.claude"));
+}
+
+inline QString agentAccountCredentialPath(const QString &provider,
+                                          const QString &configDir)
+{
+    return QDir(configDir).filePath(
+        agentAccountProviderKey(provider) == QLatin1String("codex")
+            ? QStringLiteral("auth.json")
+            : QStringLiteral(".credentials.json"));
+}
+
+inline QString agentAccountProfilesGroup(const QString &provider)
+{
+    return QStringLiteral("agents/accountProfiles/") +
+           agentAccountProviderKey(provider);
+}
+
+inline QString agentActiveAccountSetting(const QString &provider)
+{
+    return QStringLiteral("agents/activeAccount/") +
+           agentAccountProviderKey(provider);
+}
+
+inline QString agentAccountLabelSetting(const QString &provider,
+                                        const QString &accountId)
+{
+    return QStringLiteral("agents/accountLabels/%1/%2")
+        .arg(agentAccountProviderKey(provider), accountId);
+}
+
+inline QList<AgentAccountProfile> agentAccountProfiles(const QString &provider)
+{
+    QSettings settings;
+    const QString defaultLabel =
+        settings.value(agentAccountLabelSetting(provider, QStringLiteral("default")),
+                       QStringLiteral("Default account"))
+            .toString()
+            .trimmed();
+    QList<AgentAccountProfile> profiles{
+        {QStringLiteral("default"),
+         defaultLabel.isEmpty() ? QStringLiteral("Default account") : defaultLabel,
+         agentAccountDefaultConfigDir(provider), true}};
+    settings.beginGroup(agentAccountProfilesGroup(provider));
+    const QStringList ids = settings.childGroups();
+    for (const QString &id : ids) {
+        settings.beginGroup(id);
+        const QString dir = settings.value(QStringLiteral("configDir")).toString();
+        if (!dir.trimmed().isEmpty()) {
+            profiles.append({id,
+                             settings.value(QStringLiteral("label"),
+                                            QStringLiteral("Account"))
+                                 .toString(),
+                             dir, false});
+        }
+        settings.endGroup();
+    }
+    settings.endGroup();
+    return profiles;
+}
+
+inline AgentAccountProfile activeAgentAccount(const QString &provider)
+{
+    const QList<AgentAccountProfile> profiles = agentAccountProfiles(provider);
+    const QString selected =
+        QSettings().value(agentActiveAccountSetting(provider),
+                          QStringLiteral("default")).toString();
+    for (const AgentAccountProfile &profile : profiles)
+        if (profile.id == selected)
+            return profile;
+    return profiles.first();
+}
+
+inline QString agentAccountUsageSetting(const QString &provider,
+                                        const QString &accountId,
+                                        const QString &field)
+{
+    return QStringLiteral("agents/accountUsage/%1/%2/%3")
+        .arg(agentAccountProviderKey(provider), accountId, field);
+}
+
+inline QString agentAccountUsageField(const QString &globalSetting)
+{
+    return globalSetting.section(QLatin1Char('/'), -1);
+}
+
+inline QStringList activeAgentAccountEnv(const QString &provider)
+{
+    const AgentAccountProfile profile = activeAgentAccount(provider);
+    if (profile.builtIn)
+        return {};
+    return {QStringLiteral("%1=%2")
+                .arg(agentAccountProviderKey(provider) == QLatin1String("codex")
+                         ? QStringLiteral("CODEX_HOME")
+                         : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                     profile.configDir)};
+}
 constexpr qint64 kAgentLimit5hMs = 5LL * 60 * 60 * 1000;
 constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
 // Issue #346: whether either window has been seen maxed out (>=99%) since it
@@ -3133,6 +3611,15 @@ const QString kClaudeModelsCacheSetting = QStringLiteral("agents/claudeModelsCac
 // raw model objects so pickers can update without shipping a stale hard-coded
 // list or starting a CLI process merely to open a menu.
 const QString kCodexModelsCacheSetting = QStringLiteral("agents/codexModelsCache");
+// Cloudflare Workers AI line-up the relay currently allows, cached from
+// GET /api/forkbot/models so the composer's picker survives a restart offline
+// and never has to wait on the network to open its menu.
+const QString kCloudflareAiModelsCacheSetting =
+    QStringLiteral("agents/cloudflareAiModelsCache");
+// Which Workers AI model the composer sends a prompt to when the Cloudflare AI
+// provider is picked.
+const QString kCloudflareAiModelSetting =
+    QStringLiteral("agents/cloudflareAiModel");
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
@@ -3280,6 +3767,12 @@ const QString kOrgTaskCompleteProof =
 // operator who launched normally instead of typing a password (adhoc #52).
 // Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
 const QString kOrgTaskListProof = QStringLiteral("forkmesh-org-task-list-v1");
+// Same key, deleting the one task the proof names. Without it Delete told an
+// operator who was signed in with their account key to go type a password
+// (adhoc #1426); the relay still requires manage permission either way. Must
+// stay byte-identical to ORG_TASK_DELETE_PROOF in entry.py.
+const QString kOrgTaskDeleteProof =
+    QStringLiteral("forkmesh-org-task-delete-v1");
 // Same signing key, for the one credential the "genie" button needs (adhoc
 // #49): the relay mints this desktop's task-only remote-MCP bearer instead of
 // its operator copying one out of the website. Must stay byte-identical to
@@ -3349,6 +3842,18 @@ inline bool agentUsesOpenAiKey(const QString &provider)
     return provider == QLatin1String("openai");
 }
 
+// Cloudflare Workers AI: picking one of these models in the composer sends the
+// typed prompt to the relay's Workers AI binding (POST /api/ai/ask) and shows
+// the answer. Deliberately NOT an agent provider — it starts no CLI, touches no
+// working tree, and opens no PR — but it shares the one composer model picker,
+// so every "is this an agent?" branch must exclude it explicitly.
+const QString kCloudflareAiProvider = QStringLiteral("cloudflare-ai");
+
+inline bool agentIsCloudflareAiProvider(const QString &provider)
+{
+    return provider == kCloudflareAiProvider;
+}
+
 // User's preferred default agent (Settings → Agents). One of the canonical
 // provider ids "codex", "openai", "claude-api" or "claude-code"; the quick-add
 // and issue-detail provider pickers start on this value. Falls back to OpenAI API
@@ -3383,8 +3888,10 @@ inline QString quickAddAgentProvider()
         QSettings().value(kQuickAddAgentProviderSetting).toString().trimmed();
     // "Manual (create issue)" is a quick-add-only pseudo-provider (adhoc #29): it
     // files an issue instead of running an agent, so it's not in the known-agent
-    // set but must still be restorable across launches.
-    if (value == QLatin1String("manual"))
+    // set but must still be restorable across launches. Cloudflare AI is the
+    // same kind of composer-only choice — it answers the prompt instead of
+    // starting an agent — and must likewise survive a restart.
+    if (value == QLatin1String("manual") || agentIsCloudflareAiProvider(value))
         return value;
     return agentProviderIsKnown(value) ? value : defaultAgentProvider();
 }
@@ -3412,6 +3919,29 @@ inline void selectQuickAddAgentProvider(QComboBox *combo)
 // AgentChoiceDescriptionDelegate — "Ask" alone does not say what it permits, and
 // the closed control has no room to say so (adhoc #1204).
 constexpr int kAgentChoiceDescriptionRole = Qt::UserRole + 7;
+
+// How the last run on this choice ended, for the ✓ / ✗ the model picker's rows
+// wear (adhoc #1445). The row carries the state rather than a colour: the label
+// text keeps the theme's own colour and AgentChoiceDescriptionDelegate paints
+// just the trailing glyph green or red, so a working model reads as good news at
+// a glance instead of as one more grey mark.
+constexpr int kAgentChoiceStatusRole = Qt::UserRole + 8;
+inline const QString kAgentChoiceStatusOk = QStringLiteral("ok");
+inline const QString kAgentChoiceStatusFailed = QStringLiteral("failed");
+
+inline QString agentChoiceStatusGlyph(const QString &state)
+{
+    if (state == kAgentChoiceStatusOk)
+        return QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    if (state == kAgentChoiceStatusFailed)
+        return QString::fromUtf8("\xE2\x9C\x97"); // ✗
+    return QString();
+}
+
+inline QColor agentChoiceStatusColour(const QString &state)
+{
+    return state == kAgentChoiceStatusOk ? QColor("#3fb950") : QColor("#f85149");
+}
 
 // A QComboBox whose popup always opens tall enough to show every item, with no
 // up/down scroll-arrow buttons (issue #348). Once a Qt Style Sheet is applied
@@ -3600,6 +4130,11 @@ private:
 // and leaves every other row to the default delegate. The description is drawn
 // in the row's own text colour at reduced alpha so it reads as secondary in both
 // themes and stays legible on the selected (filled) row.
+//
+// A row carrying kAgentChoiceStatusRole ends in the ✓ / ✗ of its last run: the
+// label is painted normally without it and the glyph is then re-drawn in green or
+// red at the same spot, which is the only way to colour part of an item's text
+// (adhoc #1445).
 class AgentChoiceDescriptionDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
@@ -3620,7 +4155,7 @@ protected:
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
-        QStyledItemDelegate::paint(painter, option, index);
+        paintWithStatusGlyph(painter, option, index);
         const QString description =
             index.data(kAgentChoiceDescriptionRole).toString();
         if (description.isEmpty())
@@ -3646,6 +4181,39 @@ protected:
     }
 
 private:
+    // The row exactly as the default delegate would draw it, except that a
+    // trailing outcome glyph is painted in its own colour: the label keeps the
+    // theme's text colour (and the selected row's highlight colour), so only the
+    // ✓ / ✗ carries the "did this work?" signal.
+    void paintWithStatusGlyph(QPainter *painter,
+                              const QStyleOptionViewItem &option,
+                              const QModelIndex &index) const
+    {
+        const QString state = index.data(kAgentChoiceStatusRole).toString();
+        const QString glyph = agentChoiceStatusGlyph(state);
+        QStyleOptionViewItem styled(option);
+        initStyleOption(&styled, index);
+        if (glyph.isEmpty() || !styled.text.endsWith(glyph)) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+        const QWidget *widget = styled.widget;
+        QStyle *style = widget ? widget->style() : QApplication::style();
+        QStyleOptionViewItem plain(styled);
+        plain.text.chop(glyph.size()); // the separating space stays put
+        style->drawControl(QStyle::CE_ItemViewItem, &plain, painter, widget);
+        QRect glyphRect =
+            style->subElementRect(QStyle::SE_ItemViewItemText, &styled, widget);
+        glyphRect.setLeft(glyphRect.left() +
+                          styled.fontMetrics.horizontalAdvance(plain.text));
+        if (glyphRect.width() <= 0)
+            return;
+        painter->save();
+        painter->setPen(agentChoiceStatusColour(state));
+        painter->drawText(glyphRect, Qt::AlignLeft | Qt::AlignVCenter, glyph);
+        painter->restore();
+    }
+
     static constexpr int kGap = 12;
 };
 
@@ -3904,6 +4472,92 @@ inline void populateCodexModelCombo(QComboBox *combo)
     }
 }
 
+// Static Cloudflare Workers AI line-up, mirroring the relay's allowlist
+// (FORKBOT_AI_MODEL_CHOICES in cloudflare_worker/src/entry.py). The relay is
+// the authority — it re-validates every pick and falls back when a cached id is
+// no longer offered — so this list only has to keep the picker populated before
+// the live fetch lands, offline, and on an older relay with no
+// /api/forkbot/models.
+inline QVector<QPair<QString, QString>> cloudflareAiFallbackModels()
+{
+    return {
+        {QStringLiteral("@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
+         QStringLiteral("Llama 3.3 70B (fast)")},
+        {QStringLiteral("@cf/meta/llama-4-scout-17b-16e-instruct"),
+         QStringLiteral("Llama 4 Scout 17B")},
+        {QStringLiteral("@cf/google/gemma-4-26b-a4b-it"),
+         QStringLiteral("Gemma 4 26B")},
+        {QStringLiteral("@cf/zai-org/glm-4.7-flash"),
+         QStringLiteral("GLM 4.7 Flash")},
+        {QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast"),
+         QStringLiteral("Llama 3.1 8B (fast)")},
+    };
+}
+
+// A Workers AI id reads as "@cf/<vendor>/<model>"; show the model half so the
+// composer row stays as short as the Claude/Codex ones.
+inline QString cloudflareAiModelLabel(const QString &model)
+{
+    const QString id = model.trimmed();
+    if (id.isEmpty())
+        return QString();
+    for (const auto &choice : cloudflareAiFallbackModels()) {
+        if (choice.first == id)
+            return choice.second;
+    }
+    const QJsonArray live =
+        QJsonDocument::fromJson(
+            QSettings().value(kCloudflareAiModelsCacheSetting).toByteArray())
+            .array();
+    for (const QJsonValue &value : live) {
+        const QJsonObject entry = value.toObject();
+        if (entry.value(QStringLiteral("id")).toString().trimmed() != id)
+            continue;
+        const QString label =
+            entry.value(QStringLiteral("label")).toString().trimmed();
+        if (!label.isEmpty())
+            return label;
+    }
+    return id.section(QLatin1Char('/'), -1);
+}
+
+// Fill a combo with the relay's cached Workers AI line-up, falling back to the
+// static list above. Item data is the "@cf/..." id sent to /api/ai/ask; the
+// relay's own default model sorts first so an untouched picker matches what the
+// relay would have used anyway.
+inline void populateCloudflareAiModelCombo(QComboBox *combo)
+{
+    if (!combo)
+        return;
+    combo->clear();
+    combo->setEditable(false);
+    combo->setInsertPolicy(QComboBox::NoInsert);
+    combo->setProperty("allowAutoModel", false);
+    // Not a Claude combo: mergeLiveClaudeModels must leave it alone.
+    combo->setProperty("claudeModelCombo", false);
+    const QJsonArray live =
+        QJsonDocument::fromJson(
+            QSettings().value(kCloudflareAiModelsCacheSetting).toByteArray())
+            .array();
+    for (const QJsonValue &value : live) {
+        const QJsonObject entry = value.toObject();
+        const QString id = entry.value(QStringLiteral("id")).toString().trimmed();
+        if (id.isEmpty())
+            continue;
+        const QString label =
+            entry.value(QStringLiteral("label")).toString().trimmed();
+        combo->addItem(label.isEmpty() ? cloudflareAiModelLabel(id) : label, id);
+        const QString description =
+            entry.value(QStringLiteral("description")).toString().trimmed();
+        if (!description.isEmpty())
+            combo->setItemData(combo->count() - 1, description, Qt::ToolTipRole);
+    }
+    if (combo->count() > 0)
+        return;
+    for (const auto &choice : cloudflareAiFallbackModels())
+        combo->addItem(choice.second, choice.first);
+}
+
 inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
 {
     if (!combo || models.isEmpty())
@@ -4047,6 +4701,10 @@ inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
         return QString();
+    // Workers AI ids are "@cf/<vendor>/<model>" and never appear in the map
+    // below, so they would otherwise be reported raw in status lines.
+    if (model.trimmed().startsWith(QLatin1String("@cf/")))
+        return cloudflareAiModelLabel(model);
     static const QHash<QString, QString> kLabels = {
         {QStringLiteral("auto"), QStringLiteral("Auto")},
         {QStringLiteral("opus"), QStringLiteral("Opus")},
@@ -4163,10 +4821,14 @@ constexpr int kRepoAgentsTab = 3;
 // ~/.claude/.credentials.json. Empty when the user logged in with an API key
 // (or isn't signed in). Read fresh each call so a token the CLI has rotated is
 // picked up automatically.
-inline QString claudeCodeOAuthToken()
+inline QString claudeCodeOAuthToken(const QString &configDir = QString())
 {
-    QFile credFile(QDir::homePath() +
-                   QStringLiteral("/.claude/.credentials.json"));
+    const QString root = configDir.isEmpty()
+                             ? activeAgentAccount(QStringLiteral("claude-code"))
+                                   .configDir
+                             : configDir;
+    QFile credFile(agentAccountCredentialPath(QStringLiteral("claude-code"),
+                                              root));
     if (!credFile.open(QIODevice::ReadOnly))
         return QString();
     return QJsonDocument::fromJson(credFile.readAll())
@@ -4186,11 +4848,13 @@ const QString kClaudeCodeOAuthSystem =
 // Materialize the bundled Claude agent script into the app data dir and return
 // its path. The script talks to the Anthropic API directly using
 // ANTHROPIC_API_KEY, so no `claude` binary is required.
-inline QString claudeAgentScriptPath()
+inline QString claudeAgentScriptPath(const QString &directory = QString())
 {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-        QStringLiteral("/agents");
+    const QString dir = directory.isEmpty()
+                            ? QStandardPaths::writableLocation(
+                                  QStandardPaths::AppDataLocation) +
+                                  QStringLiteral("/agents")
+                            : directory;
     QDir().mkpath(dir);
     const QString path = dir + QStringLiteral("/forkmesh_claude_agent.py");
     const QByteArray wanted = forkmeshClaudeAgentScript().toUtf8();
@@ -6568,6 +7232,643 @@ private:
     QTextCharFormat m_net, m_system, m_success, m_error, m_command, m_muted, m_tool;
 };
 
+// The collapsed form, expanded header and labeled debug row of the global log
+// overlay. All categories begin as neutral-grey octicons. The first event of a
+// category leaves its icon solid in that category's Log-page accent; later
+// events blink the already-lit icon and return it to the same solid colour.
+// This stays a paint-only widget rather than thirty child buttons, keeping a
+// traffic burst from creating or relaying out widgets while still exposing the
+// full taxonomy and per-category counts at a glance.
+inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color,
+                                   int size);
+
+class LogActivityLights : public QWidget
+{
+public:
+    enum Presentation {
+        Compact,
+        Header,
+        Debug,
+    };
+
+    struct WebsiteStatus {
+        QString id;
+        QString label;
+        QString status;
+        QString reason;
+        qint64 minuteTs = 0;
+    };
+
+    explicit LogActivityLights(Presentation presentation = Compact,
+                               QWidget *parent = nullptr)
+        : QWidget(parent), m_presentation(presentation)
+    {
+        setObjectName(presentation == Compact
+                          ? QStringLiteral("logActivityLights")
+                          : presentation == Header
+                                ? QStringLiteral("logActivityHeader")
+                                : QStringLiteral("debugActivityLights"));
+        if (presentation == Compact) {
+            updateCompactSize();
+        } else if (presentation == Header) {
+            setFixedHeight(kHeaderHeight);
+            setMinimumWidth(0);
+            setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        } else {
+            updateDebugSize();
+        }
+        setCursor(Qt::PointingHandCursor);
+        setMouseTracking(true);
+        setAccessibleName(
+            presentation == Compact
+                ? QStringLiteral("Live log activity by category")
+                : presentation == Header
+                      ? QStringLiteral("Live log category counts and website status")
+                      : QStringLiteral("Debug activity counts and website status"));
+        updateSummaryToolTip();
+    }
+
+    void pulse(const QString &badge)
+    {
+        const int lane = categoryIndex(badge);
+        if (lane < 0)
+            return;
+        const quint64 previous = m_counts[lane]++;
+        const int generation = ++m_generation[lane];
+        m_blinking[lane] = previous > 0;
+        m_blinkVisible[lane] = previous == 0;
+        update();
+        // The first event is the transition grey -> solid. Every later one
+        // blinks grey/solid twice, then deliberately remains solid.
+        if (previous > 0) {
+            for (int phase = 1; phase <= 4; ++phase) {
+                QTimer::singleShot(phase * 110, this,
+                                   [this, lane, generation, phase] {
+                    if (m_generation[lane] != generation)
+                        return;
+                    m_blinkVisible[lane] = (phase % 2) != 0;
+                    if (phase == 4) {
+                        m_blinkVisible[lane] = true;
+                        m_blinking[lane] = false;
+                    }
+                    update();
+                });
+            }
+        }
+        updateSummaryToolTip();
+    }
+
+    void setExpanded(bool expanded)
+    {
+        m_expanded = expanded;
+        updateSummaryToolTip();
+    }
+
+    void reset()
+    {
+        for (int i = 0; i < categoryCount(); ++i) {
+            m_counts[i] = 0;
+            m_blinking[i] = false;
+            m_blinkVisible[i] = false;
+            ++m_generation[i];
+        }
+        updateSummaryToolTip();
+        update();
+    }
+
+    void resetCategory(const QString &badge)
+    {
+        const int lane = categoryIndex(badge);
+        if (lane < 0)
+            return;
+        m_counts[lane] = 0;
+        m_blinking[lane] = false;
+        m_blinkVisible[lane] = false;
+        ++m_generation[lane];
+        updateSummaryToolTip();
+        update();
+    }
+
+    void setWebsiteStatuses(const QList<WebsiteStatus> &statuses)
+    {
+        m_websiteStatuses = statuses;
+        if (m_presentation == Compact)
+            updateCompactSize();
+        else if (m_presentation == Debug)
+            updateDebugSize();
+        updateSummaryToolTip();
+        update();
+    }
+
+    void setStallToolTip(const QString &toolTip)
+    {
+        m_stallToolTip = toolTip;
+    }
+
+    int lightCount() const { return categoryCount(); }
+    quint64 countFor(const QString &badge) const
+    {
+        const int lane = categoryIndex(badge);
+        return lane >= 0 ? m_counts[lane] : 0;
+    }
+    bool isActive(const QString &badge) const { return countFor(badge) > 0; }
+    bool isBlinking(const QString &badge) const
+    {
+        const int lane = categoryIndex(badge);
+        return lane >= 0 && m_blinking[lane];
+    }
+    int websiteStatusCount() const { return m_websiteStatuses.size(); }
+    QString websiteStatusFor(const QString &id) const
+    {
+        for (const WebsiteStatus &status : m_websiteStatuses) {
+            if (status.id == id)
+                return status.status;
+        }
+        return QString();
+    }
+    bool isHeader() const { return m_presentation == Header; }
+    bool isDebug() const { return m_presentation == Debug; }
+
+    std::function<void(const QString &category)> onCategoryClicked;
+    std::function<void()> onStallClicked;
+    std::function<void()> onStallContextMenu;
+    std::function<void()> onClicked;
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        const QVector<int> lanes = sortedCategoryLanes();
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const bool dark = currentThemeIsDark();
+        if (m_presentation == Compact) {
+            painter.setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 1));
+            painter.setBrush(QColor(dark ? "#161b22" : "#ffffff"));
+            painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 8, 8);
+        } else if (m_presentation == Header) {
+            painter.fillRect(rect(), QColor(dark ? "#0d1117" : "#f6f8fa"));
+            painter.setPen(QColor(dark ? "#30363d" : "#d0d7de"));
+            painter.drawLine(0, height() - 1, width(), height() - 1);
+        }
+
+        const QColor unseen(dark ? "#6e7681" : "#8c959f");
+        const QColor blinkOff(dark ? "#30363d" : "#d0d7de");
+        for (int i = 0; i < categoryCount(); ++i) {
+            const int lane = lanes.at(i);
+            QColor color = unseen;
+            if (m_counts[lane] > 0)
+                color = m_blinkVisible[lane]
+                            ? QColor(QString::fromLatin1(categories()[lane].accent))
+                            : blinkOff;
+            const QRect iconRect = categoryIconRect(i);
+            const int iconSize = qMax(7, qMin(iconRect.width(), iconRect.height()));
+            const QPixmap pixmap = tintedOcticonPixmap(
+                QString::fromLatin1(categories()[lane].icon), color, iconSize);
+            painter.drawPixmap(iconRect.center().x() - iconSize / 2,
+                               iconRect.center().y() - iconSize / 2, pixmap);
+
+            if (m_presentation == Header) {
+                QFont countFont = painter.font();
+                countFont.setPixelSize(qMax(6, qMin(9, categorySlotWidth() - 2)));
+                countFont.setBold(m_counts[lane] > 0);
+                painter.setFont(countFont);
+                painter.setPen(m_counts[lane] > 0 ? color : unseen);
+                painter.drawText(categoryCountRect(i), Qt::AlignHCenter | Qt::AlignTop,
+                                 QString::number(m_counts[lane]));
+            } else if (m_presentation == Debug) {
+                // The count rides the icon's top-right corner like the badges on
+                // the rest of the app's icon controls. Keep zeroes visible: the
+                // strip is a complete taxonomy, not just a list of active lanes.
+                QFont countFont = painter.font();
+                countFont.setPixelSize(6);
+                countFont.setBold(m_counts[lane] > 0);
+                painter.setFont(countFont);
+                painter.setPen(m_counts[lane] > 0 ? color : unseen);
+                const QString count = m_counts[lane] > 999
+                                          ? QStringLiteral("999+")
+                                          : QString::number(m_counts[lane]);
+                painter.drawText(categoryCountRect(i),
+                                 Qt::AlignLeft | Qt::AlignTop, count);
+
+                QFont labelFont = painter.font();
+                labelFont.setPixelSize(5);
+                labelFont.setBold(false);
+                painter.setFont(labelFont);
+                painter.setPen(unseen);
+                painter.drawText(categoryLabelRect(i),
+                                 Qt::AlignHCenter | Qt::AlignVCenter,
+                                 QString::fromLatin1(categories()[lane].badge));
+            }
+        }
+
+        if (!m_websiteStatuses.isEmpty()) {
+            const int separatorX = websiteSeparatorX();
+            painter.setPen(QPen(QColor(dark ? "#484f58" : "#afb8c1"), 1));
+            painter.drawLine(separatorX, 5, separatorX, height() - 6);
+            painter.setPen(Qt::NoPen);
+            for (int i = 0; i < m_websiteStatuses.size(); ++i) {
+                const QRect dotRect = websiteStatusRect(i);
+                const QColor color = websiteStatusColor(
+                    m_websiteStatuses.at(i).status, dark);
+                painter.setBrush(color);
+                painter.drawEllipse(dotRect);
+                if (m_presentation == Debug) {
+                    QFont labelFont = painter.font();
+                    labelFont.setPixelSize(6);
+                    labelFont.setBold(false);
+                    painter.setFont(labelFont);
+                    painter.setPen(unseen);
+                    painter.drawText(websiteStatusLabelRect(i),
+                                     Qt::AlignHCenter | Qt::AlignVCenter,
+                                     debugWebsiteLabel(m_websiteStatuses.at(i)));
+                    painter.setPen(Qt::NoPen);
+                }
+            }
+        }
+    }
+
+    bool event(QEvent *event) override
+    {
+        if (event->type() == QEvent::ToolTip) {
+            auto *help = static_cast<QHelpEvent *>(event);
+            const int lane = categoryAt(help->pos());
+            if (lane >= 0) {
+                const quint64 count = m_counts[lane];
+                QString tip = QStringLiteral("%1 — %2 occurrence%3")
+                                  .arg(QString::fromLatin1(categories()[lane].badge))
+                                  .arg(count)
+                                  .arg(count == 1 ? QString() : QStringLiteral("s"));
+                if (lane == stallCategoryIndex() && !m_stallToolTip.isEmpty())
+                    tip += QLatin1Char('\n') + m_stallToolTip;
+                else if (m_presentation != Header)
+                    tip += QStringLiteral("\nClick for full Log page filtered to this "
+                                          "category");
+                QToolTip::showText(help->globalPos(), tip, this);
+                return true;
+            }
+            const int website = websiteStatusAt(help->pos());
+            if (website >= 0) {
+                const WebsiteStatus &status = m_websiteStatuses.at(website);
+                QString tip = QStringLiteral("%1 — %2")
+                                  .arg(status.label, status.status);
+                if (status.minuteTs > 0) {
+                    tip += QStringLiteral("\nLast completed minute: %1")
+                               .arg(QDateTime::fromMSecsSinceEpoch(status.minuteTs)
+                                        .toLocalTime()
+                                        .toString(QStringLiteral("yyyy-MM-dd HH:mm")));
+                }
+                if (!status.reason.isEmpty())
+                    tip += QLatin1Char('\n') + status.reason;
+                QToolTip::showText(help->globalPos(), tip, this);
+                return true;
+            }
+        }
+        return QWidget::event(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && rect().contains(event->pos())) {
+            const int lane = categoryAt(event->pos());
+            if (lane == stallCategoryIndex() && onStallClicked)
+                onStallClicked();
+            else if (m_presentation != Header) {
+                if (onCategoryClicked)
+                    onCategoryClicked(categories()[lane].badge);
+                else if (onClicked)
+                    onClicked();
+            }
+        }
+        QWidget::mouseReleaseEvent(event);
+    }
+
+    void contextMenuEvent(QContextMenuEvent *event) override
+    {
+        if (categoryAt(event->pos()) == stallCategoryIndex() &&
+            onStallContextMenu) {
+            onStallContextMenu();
+            event->accept();
+            return;
+        }
+        QWidget::contextMenuEvent(event);
+    }
+
+private:
+    struct Category {
+        const char *badge;
+        const char *accent;
+        const char *icon;
+    };
+
+    static const Category *categories()
+    {
+        // Taxonomy and accents remain canonical; runtime draw order is driven by
+        // per-session counts (highest first), with a stable tie-break.
+        static const Category values[] = {
+            {"SESSION", "#f2cc60", "history"},
+            {"STATUS", "#56d364", "check-circle"},
+            {"PEER", "#3fb950", "people"},
+            {"NODE", "#3fb950", "server"},
+            {"FORK", "#3fb950", "repo-forked"},
+            {"FORKED", "#3fb950", "repo-forked"},
+            {"MIRROR", "#39c5cf", "sync"},
+            {"SYNC", "#39c5cf", "sync"},
+            {"ACCOUNT", "#8b949e", "person"},
+            {"HOST", "#76e3ea", "device-desktop"},
+            {"ACTIONS", "#f0883e", "workflow"},
+            {"PIN", "#79c0ff", "shield-check"},
+            {"GIT", "#58a6ff", "git-commit"},
+            {"BGTASK", "#8b949e", "gear"},
+            {"PUBLISH", "#58a6ff", "upload"},
+            {"PULL", "#3fb950", "git-pull-request"},
+            {"MERGE", "#a371f7", "git-merge"},
+            {"ISSUE", "#bc8cff", "issue-opened"},
+            {"PROMPT", "#bc8cff", "comment"},
+            {"BOUNTY", "#d29922", "star"},
+            {"WALLET", "#d29922", "credit-card"},
+            {"CRYPTO", "#79c0ff", "lock"},
+            {"IDENTITY", "#79c0ff", "key"},
+            {"ADMIN", "#db6d28", "crown"},
+            {"SAVE", "#3fb950", "check-circle"},
+            {"CLIP", "#8b949e", "copy"},
+            {"NETWORK", "#f2cc60", "broadcast"},
+            {"STALL", "#d29922", "alert"},
+            {"ERROR", "#f85149", "x"},
+            {"INFO", "#6e7681", "info"},
+        };
+        return values;
+    }
+
+    static constexpr int categoryCount() { return 30; }
+    static constexpr int stallCategoryIndex() { return 27; }
+    static constexpr int kCompactColumns = 10;
+    static constexpr int kCompactRows = 3;
+    static constexpr int kCompactCell = 16;
+    static constexpr int kCompactPadding = 7;
+    static constexpr int kHeaderHeight = 32;
+    static constexpr int kDebugHeight = 40;
+    static constexpr int kDebugPadding = 4;
+    static constexpr int kDebugCategorySlot = 25;
+    static constexpr int kDebugWebsiteSlot = 36;
+
+    static int categoryIndex(const QString &badge)
+    {
+        for (int i = 0; i < categoryCount(); ++i) {
+            if (badge == QLatin1String(categories()[i].badge))
+                return i;
+        }
+        return categoryCount() - 1; // unknown future categories pulse INFO
+    }
+
+    int compactCategoryWidth() const
+    {
+        return kCompactPadding * 2 + kCompactColumns * kCompactCell;
+    }
+
+    int compactWebsiteWidth() const
+    {
+        if (m_websiteStatuses.isEmpty())
+            return 0;
+        return 12 + ((m_websiteStatuses.size() + kCompactRows - 1) /
+                     kCompactRows) * 9 + kCompactPadding;
+    }
+
+    void updateCompactSize()
+    {
+        setFixedSize(compactCategoryWidth() + compactWebsiteWidth(),
+                     kCompactPadding * 2 + kCompactRows * kCompactCell);
+    }
+
+    int debugCategoryWidth() const
+    {
+        return kDebugPadding * 2 + categoryCount() * kDebugCategorySlot;
+    }
+
+    int debugWebsiteWidth() const
+    {
+        return m_websiteStatuses.isEmpty()
+                   ? 0
+                   : 8 + m_websiteStatuses.size() * kDebugWebsiteSlot;
+    }
+
+    void updateDebugSize()
+    {
+        setFixedSize(debugCategoryWidth() + debugWebsiteWidth(), kDebugHeight);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    }
+
+    int headerWebsiteWidth() const
+    {
+        if (m_websiteStatuses.isEmpty())
+            return 0;
+        const int wanted = 16 +
+            ((m_websiteStatuses.size() + 1) / 2) * 7;
+        return qBound(72, wanted, qMax(72, width() / 3));
+    }
+
+    int websiteSeparatorX() const
+    {
+        return m_presentation == Compact
+                   ? compactCategoryWidth() + 3
+                   : m_presentation == Debug
+                         ? debugCategoryWidth() + 3
+                   : qMax(1, width() - headerWebsiteWidth());
+    }
+
+    int categoryAreaWidth() const
+    {
+        if (m_presentation == Compact)
+            return compactCategoryWidth();
+        if (m_presentation == Debug)
+            return debugCategoryWidth();
+        return m_websiteStatuses.isEmpty() ? width()
+                                           : websiteSeparatorX() - 3;
+    }
+
+    int categorySlotWidth() const
+    {
+        if (m_presentation == Debug)
+            return kDebugCategorySlot;
+        return qMax(1, categoryAreaWidth() / categoryCount());
+    }
+
+    QRect categoryIconRect(int index) const
+    {
+        if (m_presentation == Compact) {
+            const int col = index % kCompactColumns;
+            const int row = index / kCompactColumns;
+            return QRect(kCompactPadding + col * kCompactCell,
+                         kCompactPadding + row * kCompactCell,
+                         kCompactCell, kCompactCell);
+        }
+        if (m_presentation == Debug) {
+            const int x = kDebugPadding + index * kDebugCategorySlot;
+            return QRect(x + (kDebugCategorySlot - 14) / 2, 5, 14, 14);
+        }
+        const int slot = categorySlotWidth();
+        return QRect(index * slot, 2, slot, 15);
+    }
+
+    QRect categoryCountRect(int index) const
+    {
+        if (m_presentation == Debug) {
+            const QRect icon = categoryIconRect(index);
+            return QRect(icon.right() - 1, 1, 14, 8);
+        }
+        const int slot = categorySlotWidth();
+        return QRect(index * slot, 17, slot, 12);
+    }
+
+    QRect categoryLabelRect(int index) const
+    {
+        const int x = kDebugPadding + index * kDebugCategorySlot;
+        return QRect(x, 24, kDebugCategorySlot, 13);
+    }
+
+    int categoryAt(const QPoint &point) const
+    {
+        const int displayIndex = categoryDisplayIndexAt(point);
+        if (displayIndex < 0)
+            return -1;
+        const QVector<int> lanes = sortedCategoryLanes();
+        return lanes.value(displayIndex, -1);
+    }
+
+    int categoryDisplayIndexAt(const QPoint &point) const
+    {
+        if (m_presentation == Compact) {
+            if (point.x() < kCompactPadding ||
+                point.x() >= compactCategoryWidth() - kCompactPadding ||
+                point.y() < kCompactPadding)
+                return -1;
+            const int col = (point.x() - kCompactPadding) / kCompactCell;
+            const int row = (point.y() - kCompactPadding) / kCompactCell;
+            const int index = row * kCompactColumns + col;
+            return index >= 0 && index < categoryCount() ? index : -1;
+        }
+        if (m_presentation == Debug) {
+            if (point.x() < kDebugPadding || point.x() >= debugCategoryWidth())
+                return -1;
+            const int index = (point.x() - kDebugPadding) / kDebugCategorySlot;
+            return index >= 0 && index < categoryCount() ? index : -1;
+        }
+        if (point.x() < 0 || point.x() >= categoryAreaWidth())
+            return -1;
+        return qBound(0, point.x() / categorySlotWidth(), categoryCount() - 1);
+    }
+
+    QVector<int> sortedCategoryLanes() const
+    {
+        QVector<int> lanes;
+        lanes.reserve(categoryCount());
+        for (int i = 0; i < categoryCount(); ++i)
+            lanes << i;
+        std::stable_sort(lanes.begin(), lanes.end(),
+                         [this](int left, int right) {
+                             if (m_counts[left] == m_counts[right])
+                                 return left < right;
+                             return m_counts[left] > m_counts[right];
+                         });
+        return lanes;
+    }
+
+    QRect websiteStatusRect(int index) const
+    {
+        if (m_presentation == Compact) {
+            const int col = index / kCompactRows;
+            const int row = index % kCompactRows;
+            const int x = websiteSeparatorX() + 7 + col * 9;
+            const int y = kCompactPadding + row * kCompactCell + 5;
+            return QRect(x, y, 6, 6);
+        }
+        if (m_presentation == Debug) {
+            const int x = websiteSeparatorX() +
+                          index * kDebugWebsiteSlot +
+                          (kDebugWebsiteSlot - 11) / 2;
+            return QRect(x, 7, 11, 11);
+        }
+        const int col = index / 2;
+        const int row = index % 2;
+        const int x = websiteSeparatorX() + 8 + col * 7;
+        const int y = 8 + row * 10;
+        return QRect(x, y, 5, 5);
+    }
+
+    QRect websiteStatusLabelRect(int index) const
+    {
+        const int x = websiteSeparatorX() + index * kDebugWebsiteSlot;
+        return QRect(x, 24, kDebugWebsiteSlot, 13);
+    }
+
+    static QString debugWebsiteLabel(const WebsiteStatus &status)
+    {
+        // The public labels are deliberately descriptive sentences. The debug
+        // bar only has room for the one- or two-word identity requested here.
+        static const QHash<QString, QString> labels = {
+            {QStringLiteral("website"), QStringLiteral("Web")},
+            {QStringLiteral("api"), QStringLiteral("API")},
+            {QStringLiteral("errors"), QStringLiteral("Errors")},
+            {QStringLiteral("database"), QStringLiteral("DB")},
+            {QStringLiteral("email"), QStringLiteral("Email")},
+            {QStringLiteral("flagship_repository"), QStringLiteral("Repo")},
+            {QStringLiteral("installer"), QStringLiteral("Installer")},
+            {QStringLiteral("git_hosting"), QStringLiteral("Git host")},
+            {QStringLiteral("realtime"), QStringLiteral("Realtime")},
+            {QStringLiteral("durable_objects"), QStringLiteral("Durables")},
+        };
+        const auto known = labels.constFind(status.id);
+        if (known != labels.cend())
+            return known.value();
+        return status.label.section(QLatin1Char(' '), 0, 1).left(12);
+    }
+
+    int websiteStatusAt(const QPoint &point) const
+    {
+        for (int i = 0; i < m_websiteStatuses.size(); ++i) {
+            if (websiteStatusRect(i).adjusted(-2, -2, 2, 2).contains(point))
+                return i;
+        }
+        return -1;
+    }
+
+    static QColor websiteStatusColor(const QString &status, bool dark)
+    {
+        if (status == QLatin1String("operational"))
+            return QColor(dark ? "#3fb950" : "#1a7f37");
+        if (status == QLatin1String("degraded"))
+            return QColor(dark ? "#d29922" : "#9a6700");
+        if (status == QLatin1String("down"))
+            return QColor(dark ? "#f85149" : "#cf222e");
+        return QColor(dark ? "#6e7681" : "#8c959f");
+    }
+
+    void updateSummaryToolTip()
+    {
+        if (m_presentation == Header) {
+            setToolTip(QStringLiteral(
+                "Log categories and session counts; website /status results "
+                "for the newest completed minute are separated on the right."));
+            return;
+        }
+        setToolTip(QStringLiteral(
+            "30 live-log categories%1 — hover an icon for its count; click for full "
+            "Log page filtered to this category")
+                       .arg(m_websiteStatuses.isEmpty()
+                                ? QString()
+                                : QStringLiteral(" and %1 website status results")
+                                      .arg(m_websiteStatuses.size())));
+    }
+
+    Presentation m_presentation = Compact;
+    quint64 m_counts[30] = {};
+    bool m_blinkVisible[30] = {};
+    bool m_blinking[30] = {};
+    int m_generation[30] = {};
+    bool m_expanded = false;
+    QList<WebsiteStatus> m_websiteStatuses;
+    QString m_stallToolTip;
+};
+
 // One conflict region in a file carrying git merge markers. Line indices are
 // 0-based into the file's lines: [start..sep) is "ours" (HEAD/base), the marker
 // lines are start, sep and end, and (sep..end) is "theirs" (the PR).
@@ -7352,6 +8653,10 @@ inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleD
     return out;
 }
 
+// Implemented with the log-formatting helpers below; declared here because the
+// background chip also uses the shared word-to-icon mapping.
+inline QString octiconForBackgroundTaskWord(const QString &word);
+
 // One kind of background work, drawn as a chip in the window's bottom status
 // strip (adhoc #1389). The footer panel this replaces spelled every job out in
 // words beside the live log; here the kind of work is an icon and the thin ring
@@ -7359,6 +8664,8 @@ inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleD
 // — with the whole ring rotating while any of them is live. Painted rather than
 // assembled from labels so a frame costs one repaint of an 18px square and the
 // spin never relayouts the strip.
+inline QString octiconForBackgroundTaskWord(const QString &word);
+
 class BackgroundTaskChip : public QWidget
 {
 public:
@@ -7399,27 +8706,7 @@ public:
     // going unmarked; the chip's tooltip always carries the kind and the count.
     static QString octiconForWord(const QString &word)
     {
-        static const QHash<QString, QString> icons{
-            {QStringLiteral("agent"), QStringLiteral("sparkle")},
-            {QStringLiteral("agents"), QStringLiteral("sparkle")},
-            {QStringLiteral("actions"), QStringLiteral("workflow")},
-            {QStringLiteral("avatars"), QStringLiteral("person")},
-            {QStringLiteral("chat"), QStringLiteral("comment")},
-            {QStringLiteral("cleanup"), QStringLiteral("trash")},
-            {QStringLiteral("diff"), QStringLiteral("file-diff")},
-            {QStringLiteral("fork"), QStringLiteral("repo-forked")},
-            {QStringLiteral("git"), QStringLiteral("git-commit")},
-            {QStringLiteral("issues"), QStringLiteral("issue-opened")},
-            {QStringLiteral("mirrors"), QStringLiteral("server")},
-            {QStringLiteral("net"), QStringLiteral("broadcast")},
-            {QStringLiteral("pulls"), QStringLiteral("git-pull-request")},
-            {QStringLiteral("releases"), QStringLiteral("tag")},
-            {QStringLiteral("repo"), QStringLiteral("repo")},
-            {QStringLiteral("scan"), QStringLiteral("search")},
-            {QStringLiteral("sync"), QStringLiteral("sync")},
-            {QStringLiteral("uibuild"), QStringLiteral("code")},
-        };
-        return icons.value(word, QStringLiteral("gear"));
+        return octiconForBackgroundTaskWord(word);
     }
 
 protected:
@@ -8186,6 +9473,17 @@ public:
         update();
     }
 
+    // Green icon+caption tint for a "go" action (the agent detail's Branch
+    // button). The painted equivalent of the QSS #successButton green, which
+    // this class cannot use — it draws itself rather than a styled QSS box.
+    void setAccentTint(bool accent)
+    {
+        if (m_accent == accent)
+            return;
+        m_accent = accent;
+        update();
+    }
+
     void setSyncing(bool on)
     {
         if (m_syncing == on)
@@ -8216,14 +9514,16 @@ protected:
         p.setRenderHint(QPainter::Antialiasing);
         const bool dark = currentThemeIsDark();
         const bool lit = isEnabled() && (isChecked() || underMouse());
-        // The alert tint outranks the resting grey but still brightens on
-        // hover/checked, mirroring the old QSS [alert="true"] rules. A disabled
-        // item (the agent detail reuses this class for its action buttons, which
-        // grey out per session) drops to a low-contrast grey.
+        // The alert and accent tints outrank the resting grey but still brighten
+        // on hover/checked, mirroring the old QSS [alert="true"] rules. A
+        // disabled item (the agent detail reuses this class for its action
+        // buttons, which grey out per session) drops to a low-contrast grey.
         const QColor fg =
             !isEnabled() ? QColor(dark ? "#484f58" : "#b6bdc4")
             : m_alert    ? QColor(dark ? (lit ? "#f0b72f" : "#d29922")
                                        : (lit ? "#7d4e00" : "#9a6700"))
+            : m_accent   ? QColor(dark ? (lit ? "#56d364" : "#3fb950")
+                                       : (lit ? "#1a7f37" : "#1f883d"))
                          : (dark ? QColor(lit ? "#e6edf3" : "#8b949e")
                                  : QColor(lit ? "#1f2328" : "#656d76"));
         const bool showLabel = !m_compact && !m_label.isEmpty();
@@ -8324,6 +9624,7 @@ private:
     int m_pendingSync = 0;
     bool m_badgeUrgent = false;
     bool m_alert = false;
+    bool m_accent = false;
     bool m_syncing = false;
     bool m_compact = false;
     QTimer *m_spinTimer = nullptr;
@@ -8891,6 +10192,67 @@ inline QString logPromptAnchorLine(const QString &href)
         href.mid(kLogPromptAnchorPrefix.size()).toLatin1());
 }
 
+inline QString octiconForBackgroundTaskWord(const QString &word)
+{
+    static const QHash<QString, QString> icons{
+        {QStringLiteral("agent"), QStringLiteral("sparkle")},
+        {QStringLiteral("agents"), QStringLiteral("sparkle")},
+        {QStringLiteral("actions"), QStringLiteral("workflow")},
+        {QStringLiteral("avatars"), QStringLiteral("person")},
+        {QStringLiteral("chat"), QStringLiteral("comment")},
+        {QStringLiteral("cleanup"), QStringLiteral("trash")},
+        {QStringLiteral("diff"), QStringLiteral("file-diff")},
+        {QStringLiteral("fork"), QStringLiteral("repo-forked")},
+        {QStringLiteral("git"), QStringLiteral("git-commit")},
+        {QStringLiteral("issues"), QStringLiteral("issue-opened")},
+        {QStringLiteral("mirrors"), QStringLiteral("server")},
+        {QStringLiteral("net"), QStringLiteral("broadcast")},
+        {QStringLiteral("pulls"), QStringLiteral("git-pull-request")},
+        {QStringLiteral("releases"), QStringLiteral("tag")},
+        {QStringLiteral("repo"), QStringLiteral("repo")},
+        {QStringLiteral("scan"), QStringLiteral("search")},
+        {QStringLiteral("sync"), QStringLiteral("sync")},
+        {QStringLiteral("uibuild"), QStringLiteral("code")},
+    };
+    return icons.value(word, QStringLiteral("gear"));
+}
+
+inline QString backgroundTaskWordFromLogMessage(const QString &storedLine)
+{
+    QString line = storedLine.trimmed();
+    const QString prefix = QStringLiteral("Background ");
+    if (!line.startsWith(prefix))
+        return QString();
+    line = line.mid(prefix.size()).trimmed();
+    if (line.startsWith(backgroundOkGlyph()) || line.startsWith(backgroundNotGlyph()))
+        line = line.mid(1).trimmed();
+    if (line.isEmpty())
+        return QString();
+    const int split = line.indexOf(QLatin1Char(' '));
+    return line.left(split < 0 ? line.size() : split).toLower();
+}
+
+inline QString logBgtaskIconTag(QTextEdit *view, const QString &storedLine)
+{
+    if (!view)
+        return QString();
+    QString message = storedLine;
+    if (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' '))
+        message = storedLine.mid(21);
+    const QString word = backgroundTaskWordFromLogMessage(message);
+    if (word.isEmpty())
+        return QString();
+    const QString icon = octiconForBackgroundTaskWord(word);
+    const QString resource = QStringLiteral("logbgtask://") + word + QLatin1String("-")
+                             + icon;
+    view->document()->addResource(
+        QTextDocument::ImageResource, QUrl(resource),
+        tintedOcticonPixmap(icon, QColor("#8b949e"), 11));
+    return QStringLiteral("<img src='%1' width='11' height='11' "
+                          "style='vertical-align:middle'>&nbsp;")
+        .arg(resource);
+}
+
 // The leading icon markup for one log entry, registering the glyph on `view`'s
 // document so the <img> resolves there. Grey enough to read on both the Log
 // view's themed canvas and the footer strip's forced-white one.
@@ -8901,10 +10263,12 @@ inline QString logPromptIconTag(QTextEdit *view, const QString &storedLine)
     view->document()->addResource(
         QTextDocument::ImageResource, QUrl(kLogPromptIconResource),
         tintedOcticonPixmap(QStringLiteral("plus"), QColor("#8b949e"), 12));
+    const QString appIcon = logBgtaskIconTag(view, storedLine);
     return QStringLiteral(
                "<a href='%1' style='text-decoration:none'><img src='%2' "
                "width='11' height='11' style='vertical-align:middle'></a>&nbsp;")
-        .arg(logPromptAnchorHref(storedLine), kLogPromptIconResource);
+        .arg(logPromptAnchorHref(storedLine), kLogPromptIconResource) +
+        appIcon;
 }
 
 inline QString serverHost(const QString &serverUrl)

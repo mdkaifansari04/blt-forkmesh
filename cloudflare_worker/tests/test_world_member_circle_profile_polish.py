@@ -10,14 +10,13 @@ HTML = (ROOT / "cloudflare_worker/public/world/index.html").read_text()
 ENTRY = (ROOT / "cloudflare_worker/src/entry.py").read_text()
 
 
-def test_members_yurt_has_fixed_geometry_and_a_central_chimney():
+def test_members_circle_is_an_open_fixed_cost_clearing():
     assert "function campfireDirtTexture(THREE)" in SCENE
     assert 'campfireGround.name = "campfire-member-circle-dirt"' in SCENE
-    assert 'membersYurt.name = "members-center-yurt"' in SCENE
-    assert 'yurtWalls.name = "members-yurt-walls"' in SCENE
-    assert 'yurtRoof.name = "members-yurt-roof"' in SCENE
-    assert 'yurtChimney.name = "members-yurt-central-chimney"' in SCENE
-    assert "const MEMBERS_YURT_RADIUS = 12;" in SCENE
+    assert "const MEMBER_CLEARING_RADIUS = 12;" in SCENE
+    assert "campfireGround.scale.setScalar(MEMBER_CLEARING_RADIUS + 0.8)" in SCENE
+    assert "membersYurt" not in SCENE
+    assert "members-yurt" not in SCENE
     assert "function rebuildCampfireMemberLogs" not in SCENE
     assert "memberLogIndex" not in SCENE
     # The hearth remains bounded and independent of roster growth.
@@ -40,19 +39,20 @@ def test_campfire_uses_layered_procedural_flames_and_atmosphere():
     assert "fireLight.position.set(" in SCENE
 
 
-def test_member_count_is_on_a_plaque_beside_the_yurt_door():
-    assert "function membersYurtDoorTexture(THREE, total, newest = \"\")" in SCENE
-    assert 'memberDoorInfo.name = "members-yurt-door-member-info"' in SCENE
-    assert "memberDoorInfo.position.set(4.95, 3.9" in SCENE
-    # PlaneGeometry faces +Z by default, while visitors approach this plaque
-    # from -Z. Turn its front toward them so DoubleSide does not mirror the
-    # canvas text through the back face.
-    assert "memberDoorInfo.rotation.y = Math.PI;" in SCENE
+def test_member_count_is_on_a_shared_mesh_sign_at_the_open_approach():
+    assert "function membersCircleInfoTexture(THREE, total, newest = \"\")" in SCENE
+    assert 'memberCircleInfo.name = "members-circle-info-sign"' in SCENE
+    assert 'memberCircleInfoFace.name = "members-circle-member-info"' in SCENE
+    assert "cloneSharedPlane(" in SCENE
+    assert '"member-circle-sign-post"' in SCENE
+    assert "memberCircleInfo.position.set(0, 0, -MEMBER_CLEARING_RADIUS - 1.1)" in SCENE
+    # PlaneGeometry faces +Z by default, while visitors approach from -Z.
+    assert "memberCircleInfoFace.rotation.y = Math.PI;" in SCENE
     assert 'context.fillText("MEMBERS CENTER", 512, 92);' in SCENE
 
 
 def test_latest_member_name_is_painted_on_the_door_plaque():
-    texture = SCENE.split("function membersYurtDoorTexture", 1)[1].split(
+    texture = SCENE.split("function membersCircleInfoTexture", 1)[1].split(
         "\n}", 1
     )[0]
     assert 'latest ? `LATEST · ${latest.toUpperCase()}`' in texture
@@ -174,14 +174,14 @@ def test_mirror_lights_are_colored_and_warning_states_blink():
     assert "mirrorByName" in APP
 
 
-def test_non_walking_directory_members_use_full_avatars_inside_the_yurt():
-    interior = SCENE.split("// Populate the yurt interior", 1)[1].split(
+def test_non_walking_directory_members_use_lod_avatars_in_the_open_circle():
+    interior = SCENE.split("// Populate the open member-circle rings", 1)[1].split(
         "// Legacy bench-circle implementation", 1
     )[0]
-    assert "MEMBERS_YURT_VISIBLE_MEMBER_LIMIT" in SCENE
-    assert "membersYurtMemberPosition(index, interiorMembers.length)" in interior
+    assert "MEMBER_CIRCLE_VISIBLE_LIMIT" in SCENE
+    assert "memberCirclePosition(index, interiorMembers.length)" in interior
     assert "member?.away === true" in interior
-    assert 'status: "inside the Members Center yurt"' in interior
+    assert 'status: "gathering in the open Members Circle"' in interior
     assert "figure = createAvatar(" in interior
     assert "figure.position.set(" in interior
     assert "applyLegPitch(figure, 0, 0)" in interior
@@ -189,6 +189,26 @@ def test_non_walking_directory_members_use_full_avatars_inside_the_yurt():
     assert "const memberWorldDestinations" not in SCENE
     assert "const memberNpcStations" not in SCENE
     assert "ambientRoutePosition" not in SCENE
+
+
+def test_repeated_avatar_meshes_share_geometry_and_use_camera_lod():
+    shared = SCENE.split("function cloneSharedMesh", 1)[1].split(
+        "function setShadows", 1
+    )[0]
+    avatar = SCENE.split(
+        "function createAvatar(THREE, identity, options = {})", 1
+    )[1].split("\nconst WORK_BADGE_ROWS", 1)[0]
+    assert "const sharedMeshPrototypeCaches = new WeakMap();" in SCENE
+    assert "prototype.clone(false)" in shared
+    assert "geometry.userData.forkmeshSharedResource = true" in shared
+    assert "geometry.userData?.forkmeshSharedResource === true" in SCENE
+    assert "return false;" in shared
+    assert "const avatarLod = new THREE.LOD();" in avatar
+    assert 'avatarLod.name = "avatar-camera-lod"' in avatar
+    assert "avatarLod.addLevel(highDetail, 0, 0.12);" in avatar
+    assert "avatarLod.addLevel(farDetail, AVATAR_LOD_DISTANCE, 0.18);" in avatar
+    assert "cloneSharedMesh(" in avatar
+    assert "cloneSharedPlane(" in avatar
 
 
 def test_camera_pan_and_tilt_turn_the_avatar_body_and_head():
@@ -235,12 +255,12 @@ def test_lobby_has_wall_doorways_with_access_and_walk_through_checks():
 
 def test_world_asset_loading_and_unavailable_actions_are_console_quiet():
     for asset in (
-        "city-park-grass-v1.webp",
         "concrete-brick-path-v1.webp",
         "beach-horizon-v1.webp",
     ):
         line = next(line for line in HTML.splitlines() if asset in line)
         assert 'crossorigin="anonymous"' in line
+    assert "city-park-grass-v1.webp" not in HTML
     face = SCENE.split(
         "function makeConsentedProfileFace", 1
     )[1].split("\nfunction ", 1)[0]

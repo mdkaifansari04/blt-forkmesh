@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "OOxqiVpa2mhrgSFvzKUT19qsBPncjwg2ZSv1S4AoqIg",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785543834,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "OOxqiVpa2mhrgSFvzKUT19qsBPncjwg2ZSv1S4AoqIg",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1785543834",
+            "sig": "r4sNs0EPSFhp1bgIskLPnwnY7J4EnH6sQq2DlMrXPp46436qybTv9-vxNVKDLo8GKpsYGnhv2ZqDlIwOavacAw",
+            "title": "Have the ability to close issues on the web and with comment",
+            "ts": 1785543834,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 563,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Have the ability to close issues on the web and with comment",
+    "updatedAt": 1785543834,
+    "votes": 0
+}

@@ -196,6 +196,7 @@ def _attestation_namespace(runs, verify_result=True):
             "blind_index": blind_index,
             "d1_run": d1_run,
             "_owner_signing_pubkeys": _owner_signing_pubkeys,
+            "_claimed_node_signing_pubkeys": _owner_signing_pubkeys,
             "ed25519_verify": ed25519_verify,
             "clean_string": clean_string,
         },
@@ -261,10 +262,24 @@ def test_qt_mirror_poll_merges_all_three_record_kinds():
     assert "drainIssuesInboxFor(repo" in poll
     assert "drainPullsInboxFor(repo" in poll
     assert "drainDiscussionsInboxFor(repo" in poll
+    assert poll.count("/*forceMirrorIntake=*/true") == 3
+    assert "if (probe.canWrite())" not in poll
     for source in (pulls, discussions):
         assert 'QStringLiteral("mirror"), QStringLiteral("1")' in source
         assert "/*mirrorIntake=*/true" in source
         assert 'QStringLiteral("ids")' in source
+
+
+def test_mirror_intake_uses_group_membership_plus_fresh_endpoint_integrity():
+    source = _function_source("_authorized_mirror_issue_signing_key")
+    assert '(context or {}).get("groupNodes", set())' in source
+    assert "checked_at>=? AND healthy=1" in source
+    assert "integrity='ok'" in source
+    assert "abuse_blocked=0" in source
+    assert "forkmesh_active=1" not in source
+    assert 'await _org_repo_node(env, "forkmesh", "forkmesh")' in source
+    assert "(not flagship_intake and node not in allowed_nodes)" in source
+    assert "_claimed_node_signing_pubkeys" in source
 
 
 def test_qt_mirror_acks_attest_served_state_and_keep_owner_only_rows():
