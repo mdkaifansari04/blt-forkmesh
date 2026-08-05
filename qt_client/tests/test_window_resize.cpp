@@ -772,6 +772,8 @@ int main(int argc, char *argv[])
         app.arguments().contains(QStringLiteral("--log-timeline-only"));
     const bool footerOverlayOnly =
         app.arguments().contains(QStringLiteral("--footer-overlay-only"));
+    const bool agentBotsOnly =
+        app.arguments().contains(QStringLiteral("--agent-bots-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -891,7 +893,8 @@ int main(int argc, char *argv[])
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
-    if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly)
+    if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly &&
+        !agentBotsOnly)
         check(detailedStartupSteps >= 7 &&
               startupLog.contains(QStringLiteral(
                   "BEGIN MainWindow: read connection state and cached model list")) &&
@@ -921,6 +924,53 @@ int main(int argc, char *argv[])
         window.show();
         QApplication::processEvents();
         checkFooterOverlayGeometry(window);
+        return failures == 0 ? 0 : 1;
+    }
+
+    // Fast, focused coverage for the animated fleet surface. The complete
+    // window suite also exercises this below, but this mode avoids unrelated
+    // network/control-node waits when iterating on the bot UI itself.
+    if (agentBotsOnly) {
+        QTemporaryDir botRepo;
+        check(initGitRepo(botRepo),
+              QStringLiteral("agent bot fixture repository is available"));
+        const int botRepoIndex =
+            window.testAddLocalRepository("me", "bot-grid", botRepo.path());
+        window.testOpenRepository(botRepoIndex);
+        window.resize(1200, 720);
+        window.show();
+        window.testOpenAgentsOverview();
+        QApplication::processEvents();
+        AgentSession sol;
+        sol.id = 133981;
+        sol.owner = QStringLiteral("me");
+        sol.name = QStringLiteral("r");
+        sol.provider = QStringLiteral("codex");
+        sol.model = QStringLiteral("gpt-5.6-sol");
+        sol.strength = QStringLiteral("high");
+        sol.status = AgentStatus::Running;
+        window.testAddAgentSession(sol);
+        AgentSession fable = sol;
+        fable.id = 133982;
+        fable.provider = QStringLiteral("claude-code");
+        fable.model = QStringLiteral("claude-fable-5");
+        fable.strength = QStringLiteral("max");
+        fable.status = AgentStatus::Waiting;
+        window.testAddAgentSession(fable);
+        window.testRefreshAgentBotFleet();
+        check(window.testAgentBotCount() == 2 &&
+                  window.testAgentBotSummary(sol.id) ==
+                      QStringLiteral("Sol|high|Working") &&
+                  window.testAgentBotSummary(fable.id) ==
+                      QStringLiteral("Fable|max|Waiting"),
+              QStringLiteral("agent bot grid carries model, reasoning, and status"));
+        window.testSummonAllAgentBots();
+        QApplication::processEvents();
+        QWidget *fleet = window.findChild<QWidget *>(
+            QStringLiteral("agentBotFleetOverlay"));
+        check(fleet && fleet->isVisibleTo(&window),
+              QStringLiteral("Summon reveals the animated agent bot grid"));
+        stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
 
@@ -2515,6 +2565,8 @@ int main(int argc, char *argv[])
             QStringLiteral("agentQueueLimitIncreaseButton"));
         QPushButton *startAll = window.findChild<QPushButton *>(
             QStringLiteral("agentStartAllButton"));
+        QPushButton *summonAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentSummonAllButton"));
         QPushButton *stopAll = window.findChild<QPushButton *>(
             QStringLiteral("agentStopAllButton"));
         QPushButton *deleteMerged = window.findChild<QPushButton *>(
@@ -2529,13 +2581,17 @@ int main(int argc, char *argv[])
             QStringLiteral("maxRunningAgentsEdit"));
         QWidget *queueOverlay = window.findChild<QWidget *>(
             QStringLiteral("agentQueueOverlay"));
-        check(queueStatus && decrease && increase && startAll && stopAll &&
+        QWidget *botFleet = window.findChild<QWidget *>(
+            QStringLiteral("agentBotFleetOverlay"));
+        check(queueStatus && decrease && increase && summonAll && startAll && stopAll &&
                   deleteMerged && hideDetail && claudeTerminal && codexTerminal &&
                   settingsLimit &&
-                  queueOverlay &&
+                  queueOverlay && botFleet &&
                   queueOverlay->parentWidget() &&
                   queueOverlay->parentWidget()->objectName() ==
                       QStringLiteral("agentsListPane") &&
+                  botFleet->parentWidget() == queueOverlay->parentWidget() &&
+                  summonAll->parentWidget() == queueOverlay &&
                   startAll->parentWidget() == queueOverlay &&
                   stopAll->parentWidget() == queueOverlay &&
                   deleteMerged->parentWidget() == queueOverlay &&
@@ -2670,6 +2726,45 @@ int main(int argc, char *argv[])
 
         for (int id = 133901; id < 133978; ++id)
             window.testRemoveAgentSession(id);
+    }
+
+    // Fresh and summoned agents use the model family's round symbol, show the
+    // snapshotted reasoning effort, and retain their status in the fleet grid.
+    {
+        const int botsBefore = window.testAgentBotCount();
+        AgentSession sol;
+        sol.id = 133981;
+        sol.owner = QStringLiteral("me");
+        sol.name = QStringLiteral("r");
+        sol.provider = QStringLiteral("codex");
+        sol.model = QStringLiteral("gpt-5.6-sol");
+        sol.strength = QStringLiteral("high");
+        sol.status = AgentStatus::Running;
+        window.testAddAgentSession(sol);
+        AgentSession fable = sol;
+        fable.id = 133982;
+        fable.provider = QStringLiteral("claude-code");
+        fable.model = QStringLiteral("claude-fable-5");
+        fable.strength = QStringLiteral("max");
+        fable.status = AgentStatus::Waiting;
+        window.testAddAgentSession(fable);
+        window.testRefreshAgentBotFleet();
+        check(window.testAgentBotCount() == botsBefore + 2 &&
+                  window.testAgentBotSummary(sol.id) ==
+                      QStringLiteral("Sol|high|Working") &&
+                  window.testAgentBotSummary(fable.id) ==
+                      QStringLiteral("Fable|max|Waiting"),
+              QStringLiteral("agent hangar identifies Codex and Claude models, "
+                             "reasoning effort, and current status"));
+        window.testSummonAllAgentBots();
+        QApplication::processEvents();
+        QWidget *fleet = window.findChild<QWidget *>(
+            QStringLiteral("agentBotFleetOverlay"));
+        check(fleet && fleet->isVisibleTo(&window),
+              QStringLiteral("Summon reveals the all-agent status grid"));
+        window.testSummonAllAgentBots(); // hide it again
+        window.testRemoveAgentSession(sol.id);
+        window.testRemoveAgentSession(fable.id);
     }
 
     // The source-of-truth inbox count is one response shared by all three

@@ -1993,6 +1993,336 @@ private:
     QTimer *m_sweep = nullptr; // only ticks while something is running
 };
 
+// The larger, playful counterpart to AgentDotMatrix. The chrome matrix answers
+// "how is the fleet?" in a few pixels; this overlay gives every session a bot
+// with its model portrait, reasoning effort, and a blinking status lamp.
+class AgentBotFleetOverlay : public QFrame
+{
+public:
+    struct Bot {
+        int sessionId = 0;
+        QString model;
+        QString effort;
+        QString status;
+        QIcon portrait;
+        QColor statusColor;
+    };
+
+    explicit AgentBotFleetOverlay(QWidget *pane)
+        : QFrame(pane), m_pane(pane)
+    {
+        setObjectName(QStringLiteral("agentBotFleetOverlay"));
+        setAttribute(Qt::WA_StyledBackground);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::StrongFocus);
+        setAccessibleName(QStringLiteral("Agent bot status grid"));
+        hide();
+        if (m_pane)
+            m_pane->installEventFilter(this);
+        m_tick.setInterval(40);
+        connect(&m_tick, &QTimer::timeout, this, [this] {
+            m_phase += 0.16;
+            constexpr qreal kFullTurn = 6.28318530717958647692;
+            if (m_phase >= kFullTurn)
+                m_phase -= kFullTurn;
+            bool dropping = false;
+            const qint64 elapsed = m_dropClock.isValid() ? m_dropClock.elapsed() : 0;
+            for (auto it = m_dropStarts.cbegin(); it != m_dropStarts.cend(); ++it)
+                dropping = dropping || elapsed - it.value() < kDropMs;
+            if (!dropping)
+                m_dropStarts.clear();
+            update();
+        });
+    }
+
+    void setBots(const QVector<Bot> &bots)
+    {
+        m_bots = bots;
+        m_scrollOffset = qMin(m_scrollOffset, maxScrollOffset());
+        if (isVisible()) {
+            reposition();
+            update();
+        }
+    }
+
+    int botCount() const { return m_bots.size(); }
+    QString botSummary(int sessionId) const
+    {
+        for (const Bot &bot : m_bots)
+            if (bot.sessionId == sessionId)
+                return QStringLiteral("%1|%2|%3")
+                    .arg(bot.model, bot.effort, bot.status);
+        return QString();
+    }
+
+    void summonAll()
+    {
+        if (m_bots.isEmpty())
+            return;
+        show();
+        raise();
+        reposition();
+        beginDrop(/*sessionId=*/0);
+    }
+
+    void summonOne(int sessionId)
+    {
+        if (m_bots.isEmpty())
+            return;
+        show();
+        raise();
+        reposition();
+        beginDrop(sessionId);
+    }
+
+    std::function<void(int)> onBotClicked;
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == m_pane &&
+            (event->type() == QEvent::Resize || event->type() == QEvent::Show))
+            QTimer::singleShot(0, this, [this] { reposition(); });
+        return QFrame::eventFilter(watched, event);
+    }
+
+    void showEvent(QShowEvent *event) override
+    {
+        QFrame::showEvent(event);
+        if (!m_tick.isActive())
+            m_tick.start();
+        QTimer::singleShot(0, this, [this] { reposition(); });
+    }
+
+    void hideEvent(QHideEvent *event) override
+    {
+        m_tick.stop();
+        QFrame::hideEvent(event);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && onBotClicked) {
+            const int index = botAt(event->position().toPoint());
+            if (index >= 0) {
+                onBotClicked(m_bots.at(index).sessionId);
+                event->accept();
+                return;
+            }
+        }
+        QFrame::mousePressEvent(event);
+    }
+
+    void wheelEvent(QWheelEvent *event) override
+    {
+        if (maxScrollOffset() <= 0) {
+            QFrame::wheelEvent(event);
+            return;
+        }
+        m_scrollOffset = qBound(0, m_scrollOffset - event->angleDelta().y() / 2,
+                                maxScrollOffset());
+        update();
+        event->accept();
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QColor panel = palette().color(QPalette::Window);
+        panel.setAlpha(247);
+        p.setPen(QPen(palette().color(QPalette::Mid), 1));
+        p.setBrush(panel);
+        p.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 14, 14);
+
+        QFont title = font();
+        title.setBold(true);
+        title.setPixelSize(13);
+        p.setFont(title);
+        p.setPen(palette().color(QPalette::WindowText));
+        p.drawText(QRect(kPad, 9, width() - kPad * 2, 22),
+                   Qt::AlignLeft | Qt::AlignVCenter,
+                   QStringLiteral("AGENT HANGAR  \xC2\xB7  %1 BOT%2")
+                       .arg(m_bots.size())
+                       .arg(m_bots.size() == 1 ? QString() : QStringLiteral("S")));
+
+        QFont hint = font();
+        hint.setPixelSize(10);
+        p.setFont(hint);
+        QColor muted = palette().color(QPalette::WindowText);
+        muted.setAlpha(145);
+        p.setPen(muted);
+        p.drawText(QRect(kPad, 29, width() - kPad * 2, 18),
+                   Qt::AlignLeft | Qt::AlignVCenter,
+                   QStringLiteral("Blinking lamps show live session status \xC2\xB7 click a bot to open it"));
+
+        p.save();
+        p.setClipRect(QRect(2, kHeaderH - 3, width() - 4,
+                            height() - kHeaderH + 1));
+        const qint64 elapsed = m_dropClock.isValid() ? m_dropClock.elapsed() : 0;
+        for (int i = 0; i < m_bots.size(); ++i) {
+            const Bot &bot = m_bots.at(i);
+            QRect card = botRect(i);
+            if (const auto start = m_dropStarts.constFind(bot.sessionId);
+                start != m_dropStarts.cend()) {
+                const qreal t = qBound<qreal>(0.0,
+                    qreal(elapsed - start.value()) / qreal(kDropMs), 1.0);
+                const qreal eased = 1.0 - std::pow(1.0 - t, 3.0);
+                card.translate(0, int(-height() * (1.0 - eased)));
+            }
+            paintBot(p, card, bot, i);
+        }
+        p.restore();
+
+        if (const int maximum = maxScrollOffset(); maximum > 0) {
+            const QRect track(width() - 7, kHeaderH, 3, height() - kHeaderH - 8);
+            QColor trackColor = palette().color(QPalette::Mid);
+            trackColor.setAlpha(80);
+            p.setPen(Qt::NoPen);
+            p.setBrush(trackColor);
+            p.drawRoundedRect(track, 1.5, 1.5);
+            const int thumbH = qMax(24, track.height() * track.height() /
+                                           (track.height() + maximum));
+            const int travel = track.height() - thumbH;
+            const int thumbY = track.top() +
+                               (maximum > 0 ? travel * m_scrollOffset / maximum : 0);
+            QColor thumb = palette().color(QPalette::WindowText);
+            thumb.setAlpha(130);
+            p.setBrush(thumb);
+            p.drawRoundedRect(QRect(track.left(), thumbY, track.width(), thumbH),
+                              1.5, 1.5);
+        }
+    }
+
+private:
+    void beginDrop(int sessionId)
+    {
+        m_dropStarts.clear();
+        m_dropClock.start();
+        qint64 delay = 0;
+        for (const Bot &bot : std::as_const(m_bots)) {
+            if (sessionId == 0 || bot.sessionId == sessionId) {
+                m_dropStarts.insert(bot.sessionId, delay);
+                delay += sessionId == 0 ? 75 : 0;
+            }
+        }
+        update();
+    }
+
+    void reposition()
+    {
+        if (!m_pane || !isVisible())
+            return;
+        const int availableW = qMax(260, m_pane->width() - 24);
+        const int columns = qMax(1, qMin(4, availableW / kCardW));
+        const int rows = qMax(1, (m_bots.size() + columns - 1) / columns);
+        const int wantedW = qMin(availableW, columns * kCardW + kPad * 2);
+        const int wantedH = qMin(qMax(190, m_pane->height() - 24),
+                                 kHeaderH + rows * kCardH + kPad);
+        resize(wantedW, wantedH);
+        m_scrollOffset = qMin(m_scrollOffset, maxScrollOffset());
+        move(qMax(12, (m_pane->width() - width()) / 2),
+             qMax(12, (m_pane->height() - height()) / 2));
+        raise();
+    }
+
+    int columns() const
+    {
+        return qMax(1, (width() - kPad * 2) / kCardW);
+    }
+
+    QRect botRect(int index) const
+    {
+        const int cols = columns();
+        return QRect(kPad + (index % cols) * kCardW,
+                     kHeaderH + (index / cols) * kCardH - m_scrollOffset,
+                     kCardW - 8, kCardH - 8);
+    }
+
+    int maxScrollOffset() const
+    {
+        const int rows = (m_bots.size() + columns() - 1) / columns();
+        return qMax(0, rows * kCardH - (height() - kHeaderH - kPad));
+    }
+
+    int botAt(const QPoint &point) const
+    {
+        for (int i = 0; i < m_bots.size(); ++i)
+            if (botRect(i).contains(point))
+                return i;
+        return -1;
+    }
+
+    void paintBot(QPainter &p, const QRect &card, const Bot &bot, int index)
+    {
+        p.save();
+        QColor cardColor = palette().color(QPalette::Base);
+        cardColor.setAlpha(230);
+        p.setPen(QPen(palette().color(QPalette::Mid), 1));
+        p.setBrush(cardColor);
+        p.drawRoundedRect(card, 10, 10);
+
+        const QPoint headCenter(card.center().x(), card.top() + 47);
+        const QRect head(headCenter.x() - 34, headCenter.y() - 29, 68, 58);
+        p.setPen(QPen(palette().color(QPalette::Mid), 2));
+        p.setBrush(palette().color(QPalette::Button));
+        p.drawRoundedRect(head, 14, 14);
+        p.drawLine(headCenter.x(), head.top(), headCenter.x(), head.top() - 10);
+
+        // The antenna lamp blinks in the exact colour used by the Agents list.
+        const qreal pulse = 0.52 + 0.48 * (0.5 + 0.5 * std::sin(m_phase + index * .7));
+        QColor lamp = bot.statusColor;
+        lamp.setAlphaF(pulse);
+        p.setPen(Qt::NoPen);
+        p.setBrush(lamp);
+        p.drawEllipse(QPointF(headCenter.x(), head.top() - 12), 5.5, 5.5);
+        QColor glow = lamp;
+        glow.setAlphaF(0.16 * pulse);
+        p.setBrush(glow);
+        p.drawEllipse(QPointF(headCenter.x(), head.top() - 12), 10, 10);
+
+        const QRect portrait(headCenter.x() - 23, headCenter.y() - 23, 46, 46);
+        bot.portrait.paint(&p, portrait, Qt::AlignCenter, QIcon::Normal, QIcon::On);
+
+        QFont modelFont = font();
+        modelFont.setBold(true);
+        modelFont.setPixelSize(12);
+        p.setFont(modelFont);
+        p.setPen(palette().color(QPalette::WindowText));
+        p.drawText(QRect(card.left() + 5, card.top() + 78, card.width() - 10, 18),
+                   Qt::AlignHCenter | Qt::AlignVCenter, bot.model);
+
+        QFont small = font();
+        small.setPixelSize(9);
+        small.setBold(true);
+        p.setFont(small);
+        QColor effortColor = QColor("#8b949e");
+        p.setPen(effortColor);
+        p.drawText(QRect(card.left() + 5, card.top() + 96, card.width() - 10, 16),
+                   Qt::AlignHCenter | Qt::AlignVCenter,
+                   QStringLiteral("%1 REASONING").arg(bot.effort.toUpper()));
+        p.setPen(bot.statusColor);
+        p.drawText(QRect(card.left() + 5, card.top() + 112, card.width() - 10, 15),
+                   Qt::AlignHCenter | Qt::AlignVCenter,
+                   QStringLiteral("%1  \xC2\xB7  #%2")
+                       .arg(bot.status.toUpper()).arg(bot.sessionId));
+        p.restore();
+    }
+
+    static constexpr int kPad = 12;
+    static constexpr int kHeaderH = 52;
+    static constexpr int kCardW = 142;
+    static constexpr int kCardH = 142;
+    static constexpr qint64 kDropMs = 650;
+    QWidget *m_pane = nullptr;
+    QVector<Bot> m_bots;
+    QTimer m_tick;
+    QElapsedTimer m_dropClock;
+    QHash<int, qint64> m_dropStarts;
+    qreal m_phase = 0.0;
+    int m_scrollOffset = 0;
+};
+
 // The mesh companion to the fleet matrix (adhoc #124): one dot per node on the
 // network, stacked three deep in the same 3x7 grid the agent squares use and
 // sitting immediately right of them behind a faint divider, so one glance at
@@ -4729,6 +5059,9 @@ inline QString agentModelLabel(const QString &model)
         {QStringLiteral("gpt-5.4-mini"), QStringLiteral("GPT-5.4-Mini")},
         {QStringLiteral("gpt-5.5"), QStringLiteral("GPT-5.5")},
         {QStringLiteral("gpt-5.5-codex"), QStringLiteral("GPT-5.5 Codex")},
+        {QStringLiteral("gpt-5.6-sol"), QStringLiteral("Sol")},
+        {QStringLiteral("gpt-5.6-luna"), QStringLiteral("Luna")},
+        {QStringLiteral("gpt-5.6-terra"), QStringLiteral("Terra")},
     };
     return kLabels.value(model.trimmed(), model.trimmed());
 }

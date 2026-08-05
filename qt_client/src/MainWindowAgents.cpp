@@ -261,21 +261,52 @@ int agentStatusModelIconIndex(const AgentSession &session)
 {
     const QString model = session.model.toLower();
     if (session.provider.startsWith(QLatin1String("claude"))) {
+        if (model.contains(QLatin1String("fable")))
+            return 0;
         if (model.contains(QLatin1String("opus")))
             return 1;
         if (model.contains(QLatin1String("haiku")))
             return 3;
-        if (model.contains(QLatin1String("sonnet")) ||
-            model.contains(QLatin1String("fable")))
+        if (model.contains(QLatin1String("sonnet")))
             return 2;
         return 0; // Auto / the provider default.
     }
+    if (model.contains(QLatin1String("luna")))
+        return 6;
+    if (model.contains(QLatin1String("terra")))
+        return 5;
+    if (model.contains(QLatin1String("sol")))
+        return 4;
     if (model.contains(QLatin1String("mini")) ||
         model.contains(QLatin1String("nano")))
         return 6;
     if (model.contains(QLatin1String("codex")))
         return 5;
     return 4;
+}
+
+QString agentBotModelName(const AgentSession &session)
+{
+    const QString model = session.model.trimmed().toLower();
+    if (model.contains(QLatin1String("fable")))
+        return QStringLiteral("Fable");
+    if (model.contains(QLatin1String("opus")))
+        return QStringLiteral("Opus");
+    if (model.contains(QLatin1String("sonnet")))
+        return QStringLiteral("Sonnet");
+    if (model.contains(QLatin1String("haiku")))
+        return QStringLiteral("Haiku");
+    if (model.contains(QLatin1String("luna")))
+        return QStringLiteral("Luna");
+    if (model.contains(QLatin1String("terra")))
+        return QStringLiteral("Terra");
+    if (model.contains(QLatin1String("sol")))
+        return QStringLiteral("Sol");
+    const QString label = agentModelLabel(session.model);
+    if (!label.isEmpty())
+        return compactModelName(label);
+    return agentIsClaudeProvider(session.provider) ? QStringLiteral("Claude")
+                                                   : QStringLiteral("Codex");
 }
 
 QString agentStatusBadgeText(const AgentSession &session)
@@ -2065,6 +2096,15 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
+    // Pull the whole fleet into a readable hangar grid. Each bot carries the
+    // round model symbol already used by the picker, its reasoning effort, and
+    // a status-coloured blinking antenna lamp.
+    m_agentSummonAllButton = railActionButton(
+        QStringLiteral("people"), QStringLiteral("Summon"),
+        "Summon every agent bot into a status grid");
+    m_agentSummonAllButton->setObjectName("agentSummonAllButton");
+    m_agentSummonAllButton->setCheckable(true);
+
     // Keep every fleet action in one floating bar at the bottom-right of the
     // session-list pane. Queue capacity, bulk controls, and interactive
     // provider terminals are all available from one place.
@@ -2072,6 +2112,25 @@ QWidget *MainWindow::buildAgentsTab()
     auto *agentQueueLayout = new QHBoxLayout(agentQueueOverlay);
     agentQueueLayout->setContentsMargins(8, 6, 8, 6);
     agentQueueLayout->setSpacing(4);
+
+    m_agentBotFleet = new AgentBotFleetOverlay(listPane);
+    m_agentBotFleet->onBotClicked = [this](int sessionId) {
+        if (m_agentSummonAllButton)
+            m_agentSummonAllButton->setChecked(false);
+        m_agentBotFleet->hide();
+        switchToAgentsTab(sessionId);
+    };
+    connect(m_agentSummonAllButton, &QPushButton::toggled, this,
+            [this](bool summoned) {
+                if (!m_agentBotFleet)
+                    return;
+                if (summoned) {
+                    refreshAgentBotFleet();
+                    m_agentBotFleet->summonAll();
+                } else {
+                    m_agentBotFleet->hide();
+                }
+            });
 
     auto openProviderTerminal = [this](const QString &program,
                                        const QString &providerName,
@@ -2183,6 +2242,7 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentQueueLimitIncreaseButton, &QPushButton::clicked, this, [this] {
         setAgentConcurrencyLimit(maxRunningAgents() + 1);
     });
+    agentQueueLayout->addWidget(m_agentSummonAllButton);
     agentQueueLayout->addWidget(m_agentStartAllButton);
     agentQueueLayout->addWidget(m_agentStopAllButton);
     agentQueueLayout->addWidget(m_agentDeleteMergedButton);
@@ -2975,6 +3035,7 @@ QWidget *MainWindow::buildAgentsTab()
                 m_agentTranscript->jumpToBottom();
         }
     });
+    refreshAgentBotFleet();
     return page;
 }
 
@@ -5832,6 +5893,7 @@ void MainWindow::reloadAgents()
         showAgentSession(m_selectedAgentSessionId);
     updateAgentsTabIndicator();
     refreshAgentDotMatrix();
+    refreshAgentBotFleet();
     updateAgentsNavBadge();
     // Every agent-completion path reaches this reload (adhoc #111: the process-exit
     // handler for stream/codex sessions, and the embedded-terminal path, both call
@@ -5936,12 +5998,72 @@ void MainWindow::refreshAgentDotMatrix()
     m_agentDotMatrix->setToolTip(tip);
 }
 
+// Rebuild the summonable hangar from the same session snapshots that drive the
+// compact chrome dots. This is intentionally cheap: portraits are cached QIcons
+// and the overlay paints the cards itself, so status transitions do not create
+// or relayout a forest of child widgets.
+void MainWindow::refreshAgentBotFleet()
+{
+    if (!m_agentBotFleet)
+        return;
+    QVector<AgentBotFleetOverlay::Bot> bots;
+    bots.reserve(m_agentSessions.size());
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        AgentBotFleetOverlay::Bot bot;
+        bot.sessionId = session.id;
+        bot.model = agentBotModelName(session);
+        bot.effort = session.strength.trimmed().isEmpty()
+                         ? QStringLiteral("default")
+                         : session.strength.trimmed();
+        bot.status = agentStatusBadgeText(session);
+        bot.portrait = agentControlIcon(agentStatusModelIconIndex(session));
+        bot.statusColor = agentStatusIconColor(session);
+        bots.append(bot);
+    }
+    m_agentBotFleet->setBots(bots);
+    if (bots.isEmpty()) {
+        m_agentBotFleet->hide();
+        if (m_agentSummonAllButton)
+            m_agentSummonAllButton->setChecked(false);
+    }
+    if (m_agentSummonAllButton)
+        m_agentSummonAllButton->setEnabled(!bots.isEmpty());
+}
+
+void MainWindow::summonAgentBot(int sessionId)
+{
+    if (!m_agentBotFleet || sessionId <= 0)
+        return;
+    refreshAgentBotFleet();
+    if (m_agentSummonAllButton) {
+        const QSignalBlocker blocker(m_agentSummonAllButton);
+        m_agentSummonAllButton->setChecked(true);
+    }
+    m_agentBotFleet->summonOne(sessionId);
+}
+
 #ifdef FORKMESH_WINDOW_TESTS
 int MainWindow::testAgentDotCount() const
 {
     return m_agentDotMatrix && !m_agentDotMatrix->isHidden()
                ? m_agentDotMatrix->shownCount()
                : 0;
+}
+
+int MainWindow::testAgentBotCount() const
+{
+    return m_agentBotFleet ? m_agentBotFleet->botCount() : 0;
+}
+
+QString MainWindow::testAgentBotSummary(int sessionId) const
+{
+    return m_agentBotFleet ? m_agentBotFleet->botSummary(sessionId) : QString();
+}
+
+void MainWindow::testSummonAllAgentBots()
+{
+    if (m_agentSummonAllButton)
+        m_agentSummonAllButton->click();
 }
 
 void MainWindow::testSetAgentSessionStatus(int sessionId, const QString &status)
@@ -5963,6 +6085,7 @@ void MainWindow::testRemoveAgentSession(int sessionId)
             m_agentStore->deleteSession(*it);
         m_agentSessions.erase(it);
         refreshAgentDotMatrix();
+        refreshAgentBotFleet();
         return;
     }
 }
@@ -8298,6 +8421,7 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     const int sessionId = session.id;
     m_agentQueue.append(sessionId);
     reloadAgents();
+    summonAgentBot(sessionId);
     reloadIssues();
     if (!quiet) {
         const bool autoSwitch =
@@ -8651,6 +8775,7 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         m_agentQueue.append(session.id);
         reloadAgents();
         switchToAgentsTab(session.id);
+        summonAgentBot(session.id);
         flashMessage(QStringLiteral("Queued \xE2\x80\x94 %1 agents are already "
                                     "running (limit set in Settings).")
                          .arg(maxRunningAgents()));
@@ -8679,6 +8804,11 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         reloadAgents();
         switchToAgentsTab(session.id);
     }
+    // The switch above realizes the lazy Agents page. Defer one event-loop turn
+    // so its overlay has final geometry before this bot falls into its card.
+    const int launchedSessionId = session.id;
+    QTimer::singleShot(0, this,
+                       [this, launchedSessionId] { summonAgentBot(launchedSessionId); });
     return session.id;
 }
 
@@ -11749,6 +11879,7 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     // going right away (adhoc #116).
     if (auto it = m_streamSessionInfo.find(sessionId); it != m_streamSessionInfo.end())
         it->status = s->status;
+    refreshAgentBotFleet();
     if (!m_agentTable)
         return;
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
