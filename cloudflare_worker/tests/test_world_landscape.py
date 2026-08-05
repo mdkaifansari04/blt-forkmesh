@@ -161,7 +161,7 @@ def test_leaderboard_circle_has_a_minimal_opaque_cover_with_an_open_door():
     )[1].split("function createLeaderboardOpaqueCover", 1)[0]
     wrapper = scene.split(
         "function createLeaderboardOpaqueCover(THREE)", 1
-    )[1].split("function createNodeOpaqueCover", 1)[0]
+    )[1].split("function setOpaqueCoverDoorOpen", 1)[0]
     district = scene.split(
         'leaderboardDistrict.name = "forkmesh-leaderboard-district"', 1
     )[1].split("const leaderboardBeacon", 1)[0]
@@ -186,28 +186,43 @@ def test_leaderboard_circle_has_a_minimal_opaque_cover_with_an_open_door():
     assert "interactive.push(leaderboardCover)" in district
 
 
-def test_nodes_keep_their_inside_facing_cover_around_the_interior_scene():
+def test_open_node_yard_uses_instanced_boxes_until_the_avatar_is_close():
     scene = source()
-    wrapper = scene.split("function createNodeOpaqueCover", 1)[1].split(
-        "function setOpaqueCoverDoorOpen", 1
-    )[0]
     district = scene.split(
         'nodeDistrict.name = "forkmesh-node-district"', 1
     )[1].split("const systemCapacityPlatform", 1)[0]
-    occupancy = scene.split("function updateNodeCoverOccupancy", 1)[1].split(
+    lod = scene.split("function updateNodeDetailLevel", 1)[1].split(
         "function updateMembersYurtOccupancy", 1
     )[0]
-    assert 'name: "forkmesh-node-opaque-cover"' in wrapper
-    assert "cover.rotation.y = -Math.PI / 2" in wrapper
+    boxes = scene.split("function createMirrorNodeBoxLod", 1)[1].split(
+        "function createAgentRobot", 1
+    )[0]
+    assert '"forkmesh-node-opaque-cover"' not in scene
+    assert "function constrainNodeCover" not in scene
+    assert "const NODE_DETAIL_ENTER_DISTANCE = 42;" in scene
+    assert "const NODE_DETAIL_EXIT_DISTANCE = 50;" in scene
+    assert "new THREE.InstancedMesh(" in boxes
+    assert "NODE_LOD_MAX_INSTANCES" in boxes
+    assert 'boxes.name = "forkmesh-node-box-lod"' in boxes
+    assert "new THREE.BoxGeometry(2.24, 3.28, 1.42)" in boxes
     assert 'nodeInterior.name = "forkmesh-node-interior"' in district
     assert "nodeInterior.visible = false" in district
     assert "nodeInterior.add(fountainLandmark)" in district
-    assert "nodeDistrict.add(nodeInterior, nodeCover)" in district
+    assert "nodeDistrict.add(nodeInterior, nodeBoxLod)" in district
     assert "nodeInterior.add(cabinet)" in scene
-    assert "nodeCoverContainsWorldPoint(" in occupancy
-    assert "nodeInterior.visible = occupied" in occupancy
-    assert "nodeCover.visible = true" in occupancy
-    assert "constrainNodeCover(previousHorizontalPosition)" in scene
+    assert "distance <= boundary" in lod
+    assert 'detailed ? "detailed" : "boxes"' in lod
+    assert "nodeInterior.visible = detailed" in lod
+    assert "nodeInterior.traverse((child) =>" in lod
+    assert 'Object.hasOwn(child.userData, "nodeLodVisible")' in lod
+    assert "child.visible = false" in lod
+    assert "nodeBoxLod.visible = !detailed" in lod
+    assert "nodeBoxLod.setMatrixAt(nodeIndex" in scene
+    assert "nodeBoxLod.setColorAt(" in scene
+    assert "nodeBoxLod.instanceMatrix.needsUpdate = true" in scene
+    assert "updateNodeDetailLevel(true);" in scene
+    assert 'if (nodeDetailVisible && worldElementEnabled("node-cabinets"))' in scene
+    assert "if (!group.parent?.visible) return;" in scene
 
 
 def test_leaderboard_contents_are_not_drawn_until_the_avatar_is_inside():
@@ -240,8 +255,9 @@ def test_enclosure_entry_switches_to_an_isolated_low_triangle_scene():
     isolation = scene.split("function syncEnclosureSceneVisibility", 1)[1].split(
         "function compactDistrictDiagnostics", 1
     )[0]
-    for mode in ("office", "nodes", "leaderboards", "repositories", "members"):
+    for mode in ("office", "leaderboards", "repositories", "members"):
         assert f'? "{mode}"' in isolation or f': "{mode}"' in isolation
+    assert ': "nodes"' not in isolation
     assert "enclosureHiddenWorldRoots.set(root, root.visible)" in isolation
     assert "root.visible = false" in isolation
     assert "enclosureHiddenWorldRoots.forEach" in isolation
