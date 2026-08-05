@@ -331,7 +331,7 @@ FORKBOT_AUTHOR = "forkbot"
 FORKBOT_DEFAULT_OWNER = "forkmesh"
 FORKBOT_DEFAULT_REPO = "forkmesh"
 FORKBOT_MAX_COMMAND = 4000
-FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 USERNAME_MODERATION_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
 # Cloudflare Workers AI text models a client may pick for its own ForkBot
 # prompt (GET /api/forkbot/models lists these; POST /api/forkbot/chat honors
@@ -344,18 +344,18 @@ FORKBOT_AI_MODEL_CHOICES = (
     ("@cf/meta/llama-3.3-70b-instruct-fp8-fast",
      "Llama 3.3 70B (fast)",
      "Best intent detection and JSON mode. The deployed default."),
-    ("@cf/meta/llama-3.1-8b-instruct",
-     "Llama 3.1 8B",
-     "Small and cheap; solid at plainly phrased requests."),
-    ("@cf/meta/llama-3.1-8b-instruct-fast",
-     "Llama 3.1 8B (fast)",
-     "Lowest latency; least reliable at subtle phrasing."),
     ("@cf/meta/llama-4-scout-17b-16e-instruct",
      "Llama 4 Scout 17B",
      "Strong reasoning with a long context window."),
-    ("@cf/google/gemma-3-12b-it",
-     "Gemma 3 12B",
-     "Concise summaries; terser issue titles."),
+    ("@cf/google/gemma-4-26b-a4b-it",
+     "Gemma 4 26B",
+     "Efficient reasoning, coding, and a long context window."),
+    ("@cf/zai-org/glm-4.7-flash",
+     "GLM 4.7 Flash",
+     "Fast multilingual instruction following and coding."),
+    ("@cf/meta/llama-3.1-8b-instruct-fast",
+     "Llama 3.1 8B (fast)",
+     "Low-latency answers for straightforward prompts."),
 )
 # POST /api/ai/ask: send one prompt to a picked Workers AI model and get the
 # answer back. Used by the desktop composer's "Cloudflare AI" provider, where
@@ -34266,18 +34266,6 @@ def _forkbot_resolve_ai_model(env, requested=""):
     return _forkbot_ai_default_model(env)
 
 
-def _forkbot_is_allowed_ai_model(env, wanted=""):
-    """Return True when the caller-supplied model pick is an explicit allowlist
-    pick for this relay."""
-    wanted = clean_string(wanted or "", 120).strip()
-    if not wanted:
-        return False
-    for option in _forkbot_ai_model_options(env):
-        if option["id"] == wanted:
-            return True
-    return False
-
-
 def _forkbot_ai_model_not_found_error(error):
     text = _safe_error_text(error).lower()
     if not text:
@@ -34551,6 +34539,37 @@ async def _forkbot_run_ai(
             # JSON mode returns the parsed object under "response".
             if isinstance(value, dict):
                 return value
+        # Current Workers AI chat models such as GLM 4.7 Flash and Gemma 4
+        # return the OpenAI Chat Completions shape instead of the older
+        # top-level {"response": "..."} shape. Accept the first usable choice
+        # and both content encodings Cloudflare documents: a string or an array
+        # of typed text parts.
+        choices = result.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                value = choice.get("text")
+                if isinstance(value, str) and value.strip():
+                    return value
+                message = choice.get("message")
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+                if isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if isinstance(part, str):
+                            parts.append(part)
+                        elif isinstance(part, dict):
+                            text = part.get("text")
+                            if isinstance(text, str):
+                                parts.append(text)
+                    joined = "".join(parts)
+                    if joined.strip():
+                        return joined
         # Some bindings return the parsed object directly rather than a text
         # field; hand the dict back so the caller can read fields off it.
         return result

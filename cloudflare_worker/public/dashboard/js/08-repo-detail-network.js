@@ -1152,6 +1152,10 @@
   const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";
 
   function forkbotModelPick() {
+    // Send the live picker value even when private-mode storage rejects the
+    // persistence write. localStorage is only the cross-page default.
+    const selected = String($("[data-home-agent-model]")?.value || "").trim();
+    if (selected) return selected;
     try {
       return localStorage.getItem(FORKBOT_MODEL_KEY) || "";
     } catch (_) {

@@ -4051,6 +4051,12 @@ int main(int argc, char *argv[])
             // Manual and the two API agents carry no model of their own.
             if (quickAgentModel->itemData(i, Qt::UserRole + 1).toString().isEmpty())
                 continue;
+            // Cloudflare chat models form their own group below the ranked
+            // coding agents and are verified separately.
+            const QString provider = quickAgentModel->itemData(i).toString();
+            if (provider != QStringLiteral("claude-code") &&
+                provider != QStringLiteral("codex"))
+                continue;
             rankedLabels << quickAgentModel->itemText(i);
         }
         check(rankedLabels == QStringList({QStringLiteral("Auto"),
@@ -4152,6 +4158,43 @@ int main(int argc, char *argv[])
             seeded.testRefreshQuickAddAgentModelSelector();
             QApplication::processEvents();
         }
+        // Every active Workers AI fallback must appear as its own selectable
+        // composer row. Selecting each row updates the same hidden provider and
+        // model controls quickAddIssue() reads when it sends /api/ai/ask.
+        bool allCloudflareModelsSelectable = quickAgentModel && canonicalModel;
+        QStringList selectedCloudflareModels;
+        for (const auto &choice :
+             forkmesh::ui::cloudflareAiFallbackModels()) {
+            int row = -1;
+            for (int i = 0; quickAgentModel && i < quickAgentModel->count(); ++i) {
+                if (quickAgentModel->itemData(i).toString() ==
+                        QStringLiteral("cloudflare-ai") &&
+                    quickAgentModel->itemData(i, Qt::UserRole + 1).toString() ==
+                        choice.first) {
+                    row = i;
+                    break;
+                }
+            }
+            allCloudflareModelsSelectable &= row >= 0;
+            if (row < 0)
+                continue;
+            quickAgentModel->setCurrentIndex(row);
+            QApplication::processEvents();
+            selectedCloudflareModels << canonicalModel->currentData().toString();
+            allCloudflareModelsSelectable &=
+                seeded.testQuickAddAgentProvider() ==
+                    QStringLiteral("cloudflare-ai") &&
+                canonicalModel->currentData().toString() == choice.first;
+        }
+        check(allCloudflareModelsSelectable &&
+                  selectedCloudflareModels.size() ==
+                      forkmesh::ui::cloudflareAiFallbackModels().size(),
+              QString("every active Cloudflare model is selectable in the "
+                      "prompt area (%1)")
+                  .arg(selectedCloudflareModels.join(QStringLiteral(", "))));
+        if (concreteClaudeChoice >= 0)
+            quickAgentModel->setCurrentIndex(concreteClaudeChoice);
+        QApplication::processEvents();
 
         // adhoc #38: the composer's speed (reasoning-effort) picker sits next to
         // the mode selector, offers the CLI's ladder with "Ultra" for xhigh, and

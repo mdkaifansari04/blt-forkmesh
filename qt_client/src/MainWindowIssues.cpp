@@ -4373,7 +4373,11 @@ void MainWindow::quickAddIssue()
             logSystem(QStringLiteral("Cloudflare AI answers text only; %1 "
                                      "attached image(s) were not sent.")
                           .arg(m_quickAddImages.size()));
-        sendPromptToCloudflareAi(title, model);
+        // Keep an unsent prompt in the composer when authentication is missing
+        // or another Workers AI request is still in flight. The old void path
+        // cleared it even though no request had started.
+        if (!sendPromptToCloudflareAi(title, model))
+            return;
         m_issueQuickAdd->clear();
         clearQuickAddImages();
         return;

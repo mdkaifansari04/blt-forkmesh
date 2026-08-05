@@ -4404,7 +4404,7 @@ private:
     // model (POST /api/ai/ask, signed as this account) and shows its reply. No
     // agent session, working tree or PR is involved.
     void refreshCloudflareAiModels();
-    void sendPromptToCloudflareAi(const QString &prompt, const QString &model);
+    bool sendPromptToCloudflareAi(const QString &prompt, const QString &model);
     // Probe the installed `claude` CLI for the effort levels it accepts and
     // cache them (kClaudeEffortLevelsCacheSetting). Cheap (`claude --help`),
     // once per app run, and a no-op while a probe is already in flight.

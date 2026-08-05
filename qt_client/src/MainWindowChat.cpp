@@ -3347,26 +3347,26 @@ void MainWindow::refreshCloudflareAiModels()
 // Authorization is this account's Ed25519 signature over the model and a digest
 // of the prompt (the desktop has no session token, and the relay bills every
 // call), so the reply is only ever produced for a signed, attributable account.
-void MainWindow::sendPromptToCloudflareAi(const QString &prompt,
+bool MainWindow::sendPromptToCloudflareAi(const QString &prompt,
                                           const QString &model)
 {
     const QString text = prompt.trimmed();
     if (text.isEmpty() || !m_networkAccess)
-        return;
+        return false;
     if (m_cloudflareAiAskInFlight) {
         logSystem("Cloudflare AI is still answering the previous prompt.");
-        return;
+        return false;
     }
     const QString signer = accountOwner().trimmed().toLower();
     if (signer.isEmpty() || !hasOwnerSigningCapability(signer)) {
         setIssueInlineNotice("Sign in to this node's account to send prompts to "
                              "Cloudflare AI.", true);
-        return;
+        return false;
     }
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
         setIssueInlineNotice("This node has no signing key yet, so Cloudflare AI "
                              "cannot verify the request.", true);
-        return;
+        return false;
     }
     const QString label = cloudflareAiModelLabel(model);
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
@@ -3395,13 +3395,18 @@ void MainWindow::sendPromptToCloudflareAi(const QString &prompt,
         request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     logSystem(QStringLiteral("Sent the prompt to %1 on Cloudflare AI.")
                   .arg(label.isEmpty() ? model : label));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, label] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, model, label] {
         reply->deleteLater();
         m_cloudflareAiAskInFlight = false;
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QJsonObject body =
             QJsonDocument::fromJson(reply->readAll()).object();
+        const QString responseModel =
+            body.value(QStringLiteral("model")).toString().trimmed();
+        const QString answeringModel =
+            responseModel.isEmpty() ? model : responseModel;
+        const QString answeringLabel = cloudflareAiModelLabel(answeringModel);
         const QString answer =
             body.value(QStringLiteral("reply")).toString().trimmed();
         if (answer.isEmpty()) {
@@ -3434,8 +3439,16 @@ void MainWindow::sendPromptToCloudflareAi(const QString &prompt,
                     .arg(detail), true);
             return;
         }
-        const QString name = label.isEmpty() ? QStringLiteral("Cloudflare AI")
-                                             : label;
+        const QString name = answeringLabel.isEmpty()
+                                 ? (label.isEmpty() ? QStringLiteral("Cloudflare AI")
+                                                    : label)
+                                 : answeringLabel;
+        if (!responseModel.isEmpty() && responseModel != model) {
+            const QString requestedName =
+                label.isEmpty() ? model : label;
+            logSystem(QStringLiteral("Cloudflare AI fell back from %1 to %2.")
+                          .arg(requestedName, name));
+        }
         // flashMessage logs the full answer and shows it in the top toast, whose
         // "Send to prompt" action pushes it into the composer — the toast is
         // one simplified line, the log keeps the whole reply. A longer countdown
@@ -3443,6 +3456,7 @@ void MainWindow::sendPromptToCloudflareAi(const QString &prompt,
         flashMessage(QStringLiteral("%1: %2").arg(name, answer), false,
                      QString(), 30);
     });
+    return true;
 }
 
 void MainWindow::refreshQuickAddSpeedSelector()
