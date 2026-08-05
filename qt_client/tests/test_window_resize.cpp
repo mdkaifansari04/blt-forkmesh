@@ -1970,6 +1970,11 @@ int main(int argc, char *argv[])
     window.testRefreshSignInButton();
     check(window.testSignInButtonVisible(),
           QStringLiteral("the sign-in pill offers a way in once no account is found"));
+    check(!window.testUsersNavButtonVisible(),
+          QStringLiteral("the Users rail destination is hidden from non-admins"));
+    window.testShowUsersSection();
+    check(window.testUsersColumns().isEmpty(),
+          QStringLiteral("non-admin navigation cannot build the Users page"));
 
     // No wallet, no signup: starting a node needs only a valid name. The core
     // flow never invokes the (opt-in) account/signup flow, and a fresh node drops
@@ -2022,6 +2027,69 @@ int main(int argc, char *argv[])
               nodesAfterUserPresence.contains(QStringLiteral("jett-mirror"),
                                               Qt::CaseInsensitive),
           QStringLiteral("a directory user is never classified as a node"));
+
+    // The admin-only Users destination sits under Network and renders exactly
+    // the privacy-filtered statistics used by World avatar chests. Every field
+    // is a real sortable table column, with numeric activity sorting independent
+    // of its human-readable duration.
+    window.testSetAdmin(true);
+    check(window.testUsersNavButtonVisible(),
+          QStringLiteral("admins can see the Users rail destination"));
+    window.testShowUsersSection();
+    window.testApplyUsersDirectory(QJsonArray{
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("zora")},
+                    {QStringLiteral("kind"), QStringLiteral("user")},
+                    {QStringLiteral("status"), QStringLiteral("active")},
+                    {QStringLiteral("emailVerified"), false},
+                    {QStringLiteral("createdAt"), 1700000000000.0},
+                    {QStringLiteral("totalActiveMs"), 3600000.0},
+                    {QStringLiteral("activityBucket"), QStringLiteral("5h")},
+                    {QStringLiteral("lastEmailAt"), 0},
+                    {QStringLiteral("lastEmailStatus"), QString()},
+                    {QStringLiteral("countryCode"), QStringLiteral("CA")},
+                    {QStringLiteral("browser"), QStringLiteral("firefox")},
+                    {QStringLiteral("os"), QStringLiteral("linux")},
+                    {QStringLiteral("nodes"), QJsonArray{}}},
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("alice")},
+                    {QStringLiteral("kind"), QStringLiteral("user")},
+                    {QStringLiteral("status"), QStringLiteral("active")},
+                    {QStringLiteral("emailVerified"), true},
+                    {QStringLiteral("createdAt"), 1600000000000.0},
+                    {QStringLiteral("totalActiveMs"), 7380000.0},
+                    {QStringLiteral("activityBucket"), QStringLiteral("hour")},
+                    {QStringLiteral("lastEmailAt"), 1710000000000.0},
+                    {QStringLiteral("lastEmailStatus"),
+                     QStringLiteral("delivered")},
+                    {QStringLiteral("countryCode"), QStringLiteral("US")},
+                    {QStringLiteral("browser"), QStringLiteral("chrome")},
+                    {QStringLiteral("os"), QStringLiteral("macos")},
+                    {QStringLiteral("nodes"),
+                     QJsonArray{QStringLiteral("node-a"),
+                                QStringLiteral("node-b")}}},
+    });
+    const QStringList userColumns = window.testUsersColumns();
+    const QStringList expectedUserColumns{
+        QStringLiteral("User"),          QStringLiteral("Email verified"),
+        QStringLiteral("Status"),        QStringLiteral("Joined"),
+        QStringLiteral("World activity"),
+        QStringLiteral("Activity recency"),
+        QStringLiteral("Last email"),    QStringLiteral("Email delivery"),
+        QStringLiteral("Country"),       QStringLiteral("Browser"),
+        QStringLiteral("OS"),            QStringLiteral("Nodes")};
+    check(userColumns == expectedUserColumns,
+          QStringLiteral("Users shows every World chest directory statistic"));
+    const QStringList activityOrder = window.testSortUsersBy(
+        QStringLiteral("World activity"), Qt::DescendingOrder);
+    check(activityOrder == QStringList{QStringLiteral("alice"),
+                                       QStringLiteral("zora")} &&
+              window.testUsersCellText(0, QStringLiteral("World activity")) ==
+                  QStringLiteral("2h 03m") &&
+              window.testUsersCellText(0, QStringLiteral("Nodes")) ==
+                  QStringLiteral("2 - node-a, node-b"),
+          QStringLiteral("Users sorts formatted statistics by their numeric values"));
+    window.testSetAdmin(false);
+    check(!window.testUsersNavButtonVisible(),
+          QStringLiteral("losing admin status immediately hides Users"));
 
     // adhoc #129: a public room (#general) is open to every registered account,
     // so its users popup lists the whole database directory — not just the
@@ -4442,64 +4510,46 @@ int main(int argc, char *argv[])
                   canonicalModel->currentData().toString() == concreteClaudeModel,
               QStringLiteral("one combined-menu click updates provider and model state"));
 
-        // adhoc #1445: every model row wears the outcome of the run that finished
-        // most recently on it, as a ✓ / ✗ the delegate paints green or red. Two
-        // fixtures for the ways the mark used to go stale: a failure that was
-        // *created* after the success it precedes (the list is ordered by
-        // creation, so it sorted first), and a failure on a sibling model that
-        // used to stamp every row of the same family.
+        // The composer puts most-used models first and keeps the open row to the
+        // model name alone: no last-run ✓ / ✗, quota countdown, or provider text.
         {
             const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-            const auto addOutcome = [&seeded](int id, const QString &model,
-                                              const QString &status,
-                                              qint64 createdAtMs,
-                                              qint64 finishedAtMs) {
+            const auto addUse = [&seeded](int id, const QString &model,
+                                          qint64 createdAtMs) {
                 AgentSession session;
                 session.id = id;
                 session.owner = QStringLiteral("me");
                 session.name = QStringLiteral("provider-picker");
-                session.prompt = QStringLiteral("Model status fixture");
+                session.prompt = QStringLiteral("Model frequency fixture");
                 session.provider = QStringLiteral("claude-code");
                 session.model = model;
-                session.status = status;
+                session.status = AgentStatus::Success;
                 session.createdAtMs = createdAtMs;
                 session.startedAtMs = createdAtMs;
-                session.finishedAtMs = finishedAtMs;
-                if (status == AgentStatus::Failed)
-                    session.lastError = QStringLiteral("credit balance too low");
+                session.finishedAtMs = createdAtMs + 1000;
                 seeded.testAddAgentSession(session);
             };
-            // Newest finish, oldest creation: a long run that was resumed and has
-            // just succeeded.
-            addOutcome(144501, QStringLiteral("claude-opus-4-8"),
-                       AgentStatus::Success, nowMs - 36000000, nowMs - 60000);
-            addOutcome(144502, QStringLiteral("claude-opus-4-8"),
-                       AgentStatus::Failed, nowMs - 18000000, nowMs - 14400000);
-            // No run of its own on Sonnet 4.6, so that row still reports its
-            // family's last outcome.
-            addOutcome(144503, QStringLiteral("claude-sonnet-4-5"),
-                       AgentStatus::Failed, nowMs - 7200000, nowMs - 7100000);
+            for (int i = 0; i < 4; ++i)
+                addUse(144501 + i, QStringLiteral("claude-sonnet-4-6"),
+                       nowMs - (i + 1) * 60000);
+            for (int i = 0; i < 2; ++i)
+                addUse(144505 + i, QStringLiteral("claude-opus-4-8"),
+                       nowMs - (i + 5) * 60000);
             seeded.testRefreshQuickAddAgentModelSelector();
             QApplication::processEvents();
-            const QString opusStatus = seeded.testQuickAddAgentModelStatus(
-                QStringLiteral("claude-opus-4-8"));
             const QString opusLabel = seeded.testQuickAddAgentModelLabel(
                 QStringLiteral("claude-opus-4-8"));
-            const QString sonnetStatus = seeded.testQuickAddAgentModelStatus(
+            const QString sonnetLabel = seeded.testQuickAddAgentModelLabel(
                 QStringLiteral("claude-sonnet-4-6"));
-            const QString haikuStatus = seeded.testQuickAddAgentModelStatus(
-                QStringLiteral("claude-haiku-4-5"));
-            check(opusStatus == QStringLiteral("ok") &&
-                      opusLabel.startsWith(QStringLiteral("Opus 4.8")) &&
-                      opusLabel.endsWith(QString::fromUtf8("\xE2\x9C\x93")) &&
-                      sonnetStatus == QStringLiteral("failed") &&
-                      haikuStatus.isEmpty(),
-                  QString("the model menu marks a model by its newest finished run "
-                          "(Opus %1 \"%2\", Sonnet %3, Haiku %4)")
-                      .arg(opusStatus, opusLabel, sonnetStatus,
-                           haikuStatus.isEmpty() ? QStringLiteral("unmarked")
-                                                 : haikuStatus));
-            for (int id = 144501; id <= 144503; ++id)
+            const int sonnetRow = quickAgentModel->findText(sonnetLabel);
+            const int opusRow = quickAgentModel->findText(opusLabel);
+            check(sonnetRow >= 0 && opusRow > sonnetRow &&
+                      sonnetLabel == QStringLiteral("Sonnet 4.6") &&
+                      opusLabel == QStringLiteral("Opus 4.8"),
+                  QString("the model menu orders by use frequency and shows only "
+                          "model names (Sonnet row %1, Opus row %2)")
+                      .arg(sonnetRow).arg(opusRow));
+            for (int id = 144501; id <= 144506; ++id)
                 seeded.testRemoveAgentSession(id);
             seeded.testRefreshQuickAddAgentModelSelector();
             QApplication::processEvents();

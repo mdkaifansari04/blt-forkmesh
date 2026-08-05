@@ -174,7 +174,7 @@ def test_mirror_lights_are_colored_and_warning_states_blink():
     assert "mirrorByName" in APP
 
 
-def test_non_walking_directory_members_use_lod_avatars_in_the_open_circle():
+def test_non_walking_directory_members_use_full_detail_avatars_in_the_open_circle():
     interior = SCENE.split("// Populate the open member-circle rings", 1)[1].split(
         "// Legacy bench-circle implementation", 1
     )[0]
@@ -191,7 +191,7 @@ def test_non_walking_directory_members_use_lod_avatars_in_the_open_circle():
     assert "ambientRoutePosition" not in SCENE
 
 
-def test_repeated_avatar_meshes_share_geometry_and_use_camera_lod():
+def test_repeated_avatar_meshes_share_geometry_and_keep_full_detail():
     shared = SCENE.split("function cloneSharedMesh", 1)[1].split(
         "function setShadows", 1
     )[0]
@@ -203,10 +203,10 @@ def test_repeated_avatar_meshes_share_geometry_and_use_camera_lod():
     assert "geometry.userData.forkmeshSharedResource = true" in shared
     assert "geometry.userData?.forkmeshSharedResource === true" in SCENE
     assert "return false;" in shared
-    assert "const avatarLod = new THREE.LOD();" in avatar
-    assert 'avatarLod.name = "avatar-camera-lod"' in avatar
-    assert "avatarLod.addLevel(highDetail, 0, 0.12);" in avatar
-    assert "avatarLod.addLevel(farDetail, AVATAR_LOD_DISTANCE, 0.18);" in avatar
+    assert 'highDetail.name = "avatar-full-detail"' in avatar
+    assert "group.add(highDetail);" in avatar
+    assert "new THREE.LOD()" not in avatar
+    assert "cloneAvatarFarModel" not in SCENE
     assert "cloneSharedMesh(" in avatar
     assert "cloneSharedPlane(" in avatar
 
