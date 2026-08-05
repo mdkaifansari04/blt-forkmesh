@@ -1247,12 +1247,36 @@ int main(int argc, char *argv[])
               QStringLiteral(
                   "direct controller uploads pin the exact local binary SHA-256"));
 
+        // The source-tree test must not depend on a developer having already
+        // built the release companion.  Put a tiny non-empty executable in
+        // PATH so this exercises the package framing and remote installer
+        // deterministically; production still fails closed when the packaged
+        // Go binary is absent.
+        QTemporaryDir mirrorPackageDir;
+        const QByteArray originalPath = qgetenv("PATH");
+        QFile mirrorBinaryFixture(
+            mirrorPackageDir.filePath(QStringLiteral("forkmesh-mirror-node")));
+        const bool mirrorFixtureReady = mirrorPackageDir.isValid() &&
+            mirrorBinaryFixture.open(QIODevice::WriteOnly) &&
+            mirrorBinaryFixture.write("#!/bin/sh\nexit 0\n") > 0;
+        mirrorBinaryFixture.close();
+        if (mirrorFixtureReady) {
+            mirrorBinaryFixture.setPermissions(
+                QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+                QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                QFileDevice::ExeOther);
+            qputenv("PATH", mirrorPackageDir.path().toUtf8() + ':' +
+                                originalPath);
+        }
         qsizetype mirrorUploadBytes = -1;
         QString mirrorUploadError;
         const QString mirrorCommand =
             window.testVultrGoMirrorInstallRemoteCommand(
                 &mirrorUploadBytes, &mirrorUploadError);
-        check(!mirrorCommand.isEmpty() && mirrorUploadError.isEmpty() &&
+        qputenv("PATH", originalPath);
+        check(mirrorFixtureReady && !mirrorCommand.isEmpty() &&
+                  mirrorUploadError.isEmpty() &&
                   mirrorUploadBytes > 0 &&
                   mirrorCommand.contains(QStringLiteral(
                       "systemctl enable --now forkmesh-mirror-node.service")) &&
