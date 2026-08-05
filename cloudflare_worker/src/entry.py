@@ -17313,6 +17313,7 @@ def _account_public_last_email(rec):
 
 def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+    solana = (rec.get("solana") or "").strip()
     return {
         "name": name,
         "status": rec.get("status", "active"),
@@ -17324,6 +17325,9 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
+        # Payout addresses are public profile data, but never pass through a
+        # malformed value from a stored record.
+        "solana": solana if SOLANA_RE.match(solana) else "",
         # Aggregate-only and rounded down to whole minutes. The public
         # directory deliberately exposes neither a last-seen timestamp nor the
         # current activity interval used by an authenticated World tab.
