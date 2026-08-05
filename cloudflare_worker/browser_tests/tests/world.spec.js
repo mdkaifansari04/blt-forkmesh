@@ -9461,7 +9461,7 @@ test("camera LOD swaps node boxes while open districts keep displays visible", a
   });
 });
 
-test("scene repeats share geometry and use camera-driven LOD", async ({
+test("scene repeats share geometry while avatars keep full detail", async ({
   page,
 }) => {
   await prepareWorldPage(page, "scene-camera-lod", {
@@ -9528,12 +9528,11 @@ test("scene repeats share geometry and use camera-driven LOD", async ({
 
     return {
       avatars: {
-        bothUseLod:
-          player.userData.avatarLod?.isLOD === true &&
-          member.userData.avatarLod?.isLOD === true,
-        bothHaveTwoLevels:
-          player.userData.avatarLod?.levels?.length === 2 &&
-          member.userData.avatarLod?.levels?.length === 2,
+        bothKeepFullDetail:
+          player.userData.highDetail?.visible === true &&
+          member.userData.highDetail?.visible === true &&
+          player.userData.avatarLod === undefined &&
+          member.userData.avatarLod === undefined,
         sharedGeometryMarked:
           playerGeometry.size > 0 && memberGeometry.size > 0,
         shareGeometry: intersects(playerGeometry, memberGeometry),
@@ -9571,8 +9570,7 @@ test("scene repeats share geometry and use camera-driven LOD", async ({
   });
 
   expect(contract.avatars).toEqual({
-    bothUseLod: true,
-    bothHaveTwoLevels: true,
+    bothKeepFullDetail: true,
     sharedGeometryMarked: true,
     shareGeometry: true,
   });

@@ -31,16 +31,18 @@ def test_world_uses_a_mixed_city_and_woodland_surface():
     assert 'makeMaterial(THREE, "#174434"' not in scene
 
 
-def test_world_land_uses_one_clean_low_draw_call_foundation():
+def test_world_land_uses_one_flat_textured_surface():
     scene = source()
     for contract in (
-        '"forkmesh-continuous-city-foundation"',
         '"forkmesh-continuous-city-land"',
-        "new THREE.CylinderGeometry(1, 1, 6.4, 128)",
         "const CONTINUOUS_CITY_RADIUS = 365;",
-        "CONTINUOUS_CITY_RADIUS,\n    1,\n    CONTINUOUS_CITY_RADIUS,",
+        "new THREE.CircleGeometry(1, 160)",
+        "cityGrassMaterial(THREE)",
+        "continuousCityLand.userData.ground = true;",
     ):
         assert contract in scene
+    assert '"forkmesh-continuous-city-foundation"' not in scene
+    assert "new THREE.CylinderGeometry(1, 1, 6.4, 128)" not in scene
     assert "function createTerrainFoundation(" not in scene
     assert "hosted-repository-terrain-foundation" not in scene
     assert "forkmesh-office-terrain-foundation" not in scene
@@ -309,21 +311,16 @@ def test_two_cloned_lod_quadcopters_fly_on_three_axes():
         assert contract in scene
 
 
-def test_avatar_lod_reuses_buffers_without_disposing_shared_far_materials():
+def test_avatar_full_detail_reuses_buffers_without_camera_lod():
     scene = source()
     avatar = scene.split("function createAvatar(THREE, identity", 1)[1].split(
         "function applyAvatarLookDirection", 1
     )[0]
-    far_model = scene.split("function cloneAvatarFarModel(THREE)", 1)[1].split(
-        "function createAvatar(THREE, identity", 1
-    )[0]
-    assert "const avatarLod = new THREE.LOD();" in avatar
-    assert "avatarLod.addLevel(highDetail, 0, 0.12);" in avatar
-    assert "avatarLod.addLevel(farDetail, AVATAR_LOD_DISTANCE, 0.18);" in avatar
+    assert 'highDetail.name = "avatar-full-detail"' in avatar
+    assert "group.add(highDetail);" in avatar
+    assert "new THREE.LOD()" not in avatar
+    assert "cloneAvatarFarModel" not in scene
     assert "cloneSharedMesh(" in avatar
-    assert "prototype.clone(true)" in far_model
-    assert "bodyMaterial.userData.forkmeshSharedResource = true;" in far_model
-    assert "darkMaterial.userData.forkmeshSharedResource = true;" in far_model
     assert "function disposeOwnedMaterial(material, disposeMap = false)" in scene
     assert "disposeOwnedMaterial(child.material, true);" in scene
 
@@ -416,7 +413,6 @@ def test_connected_beach_has_local_horizon_car_and_clickable_seating():
 def test_land_is_continuous_and_uses_a_cached_procedural_grass_texture():
     scene = source()
     for contract in (
-        '"forkmesh-continuous-city-foundation"',
         '"forkmesh-continuous-city-land"',
         '"/world/assets/concrete-brick-path-v1.webp"',
         "function projectAssetTexture(",

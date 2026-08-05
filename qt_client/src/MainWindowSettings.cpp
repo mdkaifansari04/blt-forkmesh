@@ -2974,6 +2974,7 @@ void MainWindow::quickRebuildRestart()
     // user wait for the fleet to go idle (adhoc #176). This supersedes the old
     // queue-behind-agents gate (adhoc #75/#91/#104/#111/#116/#134/#143).
     m_rebuildRestartQueued = false;
+    startRestartCautionFlash();
     if (m_rebuildQueuePollTimer)
         m_rebuildQueuePollTimer->stop();
     setRestartSpinHourglass(false);
@@ -3024,6 +3025,7 @@ void MainWindow::maybeStartQueuedRebuild()
 
 void MainWindow::rebuildAndRelaunch()
 {
+    startRestartCautionFlash();
     beginRestartLog();
     showUpdateLog();
     logRestart(QStringLiteral("clean rebuild & restart started"));
@@ -5461,9 +5463,12 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     // Keep the floating prompt bubble anchored as the footer moves.
     if (m_topMessageContainer && m_topMessageContainer->isVisible())
         positionTopMessageBubble();
-    // The red error-ping border hugs the window edges (adhoc #77).
+    // The notification and restart borders hug the window edges.
     if (m_errorBorderOverlay && m_errorBorderOverlay->isVisible())
         m_errorBorderOverlay->setGeometry(rect());
+    if (m_restartCautionBorderOverlay &&
+        m_restartCautionBorderOverlay->isVisible())
+        m_restartCautionBorderOverlay->setGeometry(rect());
 }
 
 void MainWindow::flashMessage(const QString &text, bool error,
