@@ -75,6 +75,35 @@ func TestSyncRepositoryFetchesStableRefsAndReportsFailure(t *testing.T) {
 	}
 }
 
+func TestSyncRepositoryDoesNotRegressToAStaleRoundRobinPeer(t *testing.T) {
+	source, bare := makeBareRepo(t)
+	initial := run(t, source, "git", "rev-parse", "main")
+	run(t, ".", "git", "--git-dir="+bare, "tag", "local-release", initial)
+	newer := filepath.Join(t.TempDir(), "newer")
+	run(t, ".", "git", "clone", bare, newer)
+	run(t, newer, "git", "config", "user.email", "test@example.test")
+	run(t, newer, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(newer, "new.txt"), []byte("newer\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(t, newer, "git", "add", "new.txt")
+	run(t, newer, "git", "commit", "-m", "newer local state")
+	run(t, newer, "git", "push", "origin", "main")
+	newTip := run(t, newer, "git", "rev-parse", "main")
+	if err := syncRepository(context.Background(), Repository{GitDir: bare}, []string{source}); err != nil {
+		t.Fatal(err)
+	}
+	if got := run(t, ".", "git", "--git-dir="+bare, "rev-parse", "main"); got != newTip {
+		t.Fatalf("stale peer rewound main to %s", got)
+	}
+	if got := run(t, ".", "git", "--git-dir="+bare, "rev-parse", "refs/tags/local-release"); got != initial {
+		t.Fatalf("stale peer removed release tag: %s", got)
+	}
+	if refs := run(t, ".", "git", "--git-dir="+bare, "for-each-ref", "--format=%(refname)", "refs/forkmesh/upstream"); refs != "" {
+		t.Fatalf("staging refs leaked: %s", refs)
+	}
+}
+
 func TestWriteAndLoadGatewayConfigAreAtomicAndStrict(t *testing.T) {
 	_, bare := makeBareRepo(t)
 	identity, _ := testIdentity(t)

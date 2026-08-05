@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -103,16 +104,112 @@ func syncRepository(ctx context.Context, repo Repository, upstreams []string) er
 		if strings.TrimSpace(upstream) == "" {
 			continue
 		}
+		// A public upstream is round-robin: the selected peer can briefly be
+		// behind this node. Fetch into an isolated namespace first so one stale
+		// response cannot rewind main, delete a new tag, or make the whole cycle
+		// fail with a non-fast-forward rejection.
 		cmd := exec.CommandContext(ctx, "git", "--git-dir="+repo.GitDir, "fetch", "--prune", upstream,
-			"refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*")
+			"+refs/heads/*:refs/forkmesh/upstream/heads/*",
+			"+refs/tags/*:refs/forkmesh/upstream/tags/*")
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		if output, err := cmd.CombinedOutput(); err == nil {
+			if err := reconcileUpstreamRefs(ctx, repo.GitDir); err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %s", upstream, err))
+				continue
+			}
 			return nil
 		} else {
 			failures = append(failures, fmt.Sprintf("%s: %s", upstream, boundedText(output, 240)))
 		}
 	}
 	return fmt.Errorf("all upstreams failed: %s", strings.Join(failures, "; "))
+}
+
+func reconcileUpstreamRefs(ctx context.Context, gitDir string) error {
+	defer clearRefNamespace(context.Background(), gitDir, "refs/forkmesh/upstream")
+	cmd := exec.CommandContext(ctx, "git", "--git-dir="+gitDir, "for-each-ref",
+		"--format=%(refname) %(objectname)", "refs/forkmesh/upstream/heads",
+		"refs/forkmesh/upstream/tags")
+	raw, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("list staged refs: %w", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		staged, incoming := fields[0], fields[1]
+		local := ""
+		switch {
+		case strings.HasPrefix(staged, "refs/forkmesh/upstream/heads/"):
+			local = "refs/heads/" + strings.TrimPrefix(staged, "refs/forkmesh/upstream/heads/")
+		case strings.HasPrefix(staged, "refs/forkmesh/upstream/tags/"):
+			local = "refs/tags/" + strings.TrimPrefix(staged, "refs/forkmesh/upstream/tags/")
+		default:
+			continue
+		}
+		current := gitRefValue(ctx, gitDir, local)
+		if current == incoming || (strings.HasPrefix(local, "refs/tags/") && current != "") {
+			continue // tags are immutable once observed
+		}
+		chosen := incoming
+		if current != "" && gitIsAncestor(ctx, gitDir, incoming, current) {
+			chosen = current // the selected round-robin peer is behind us
+		} else if current != "" && !gitIsAncestor(ctx, gitDir, current, incoming) {
+			// Diverged force-pushes converge deterministically on the newer commit;
+			// an object-id tie-break makes simultaneous rewrites choose identically.
+			currentTime := gitCommitTime(ctx, gitDir, current)
+			incomingTime := gitCommitTime(ctx, gitDir, incoming)
+			if currentTime > incomingTime || (currentTime == incomingTime && current > incoming) {
+				chosen = current
+			}
+		}
+		if chosen == current {
+			continue
+		}
+		args := []string{"--git-dir=" + gitDir, "update-ref", local, chosen}
+		if current != "" {
+			args = append(args, current)
+		}
+		if output, err := exec.CommandContext(ctx, "git", args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("update %s: %s", local, boundedText(output, 160))
+		}
+	}
+	return nil
+}
+
+func gitRefValue(ctx context.Context, gitDir, ref string) string {
+	out, err := exec.CommandContext(ctx, "git", "--git-dir="+gitDir,
+		"rev-parse", "--verify", "-q", ref).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitIsAncestor(ctx context.Context, gitDir, older, newer string) bool {
+	return exec.CommandContext(ctx, "git", "--git-dir="+gitDir,
+		"merge-base", "--is-ancestor", older, newer).Run() == nil
+}
+
+func gitCommitTime(ctx context.Context, gitDir, oid string) int64 {
+	out, err := exec.CommandContext(ctx, "git", "--git-dir="+gitDir,
+		"show", "-s", "--format=%ct", oid).Output()
+	if err != nil {
+		return 0
+	}
+	value, _ := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	return value
+}
+
+func clearRefNamespace(ctx context.Context, gitDir, namespace string) {
+	out, _ := exec.CommandContext(ctx, "git", "--git-dir="+gitDir,
+		"for-each-ref", "--format=%(refname)", namespace).Output()
+	for _, ref := range strings.Fields(string(out)) {
+		_ = exec.CommandContext(ctx, "git", "--git-dir="+gitDir,
+			"update-ref", "-d", ref).Run()
+	}
 }
 
 func writeGatewayConfig(path string, cfg GatewayConfig) (bool, error) {
