@@ -7328,9 +7328,10 @@ public:
     bool isHeader() const { return m_presentation == Header; }
     bool isDebug() const { return m_presentation == Debug; }
 
-    std::function<void()> onClicked;
+    std::function<void(const QString &category)> onCategoryClicked;
     std::function<void()> onStallClicked;
     std::function<void()> onStallContextMenu;
+    std::function<void()> onClicked;
 
 protected:
     void paintEvent(QPaintEvent *) override
@@ -7437,11 +7438,9 @@ protected:
                 if (lane == stallCategoryIndex() && !m_stallToolTip.isEmpty())
                     tip += QLatin1Char('\n') + m_stallToolTip;
                 else if (m_presentation != Header)
-                    tip += QStringLiteral("\nClick to %1 recent log lines.")
-                               .arg(m_expanded ? QStringLiteral("hide")
-                                               : QStringLiteral("show"));
-                QToolTip::showText(
-                    help->globalPos(), tip, this);
+                    tip += QStringLiteral("\nClick for full Log page filtered to this "
+                                          "category");
+                QToolTip::showText(help->globalPos(), tip, this);
                 return true;
             }
             const int website = websiteStatusAt(help->pos());
@@ -7470,8 +7469,12 @@ protected:
             const int lane = categoryAt(event->pos());
             if (lane == stallCategoryIndex() && onStallClicked)
                 onStallClicked();
-            else if (m_presentation != Header && onClicked)
-                onClicked();
+            else if (m_presentation != Header) {
+                if (onCategoryClicked)
+                    onCategoryClicked(categories()[lane].badge);
+                else if (onClicked)
+                    onClicked();
+            }
         }
         QWidget::mouseReleaseEvent(event);
     }
@@ -7760,14 +7763,12 @@ private:
             return;
         }
         setToolTip(QStringLiteral(
-            "30 live-log categories%1 — hover an icon for its count; click to %2 "
-            "recent lines")
+            "30 live-log categories%1 — hover an icon for its count; click for full "
+            "Log page filtered to this category")
                        .arg(m_websiteStatuses.isEmpty()
                                 ? QString()
                                 : QStringLiteral(" and %1 website status results")
-                                      .arg(m_websiteStatuses.size()),
-                            m_expanded ? QStringLiteral("hide")
-                                       : QStringLiteral("show")));
+                                      .arg(m_websiteStatuses.size()));
     }
 
     Presentation m_presentation = Compact;

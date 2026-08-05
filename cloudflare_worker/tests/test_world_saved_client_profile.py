@@ -147,10 +147,11 @@ def test_signed_out_visitors_keep_their_country_locally():
     assert "/^[A-Z]{2}$/.test(clean)" in remember
 
 
-def test_every_seated_member_bench_figure_wears_the_saved_profile():
+def test_every_open_circle_member_figure_wears_the_saved_profile():
     lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
-        "campfire.userData.seatByName", 1)[0]
-    assert "const seatedMemberIds = new Set(" in lounge
+        "function visitNeighborhoodHome", 1)[0]
+    assert "const interiorMembers =" in lounge
+    assert "memberCirclePosition(index, interiorMembers.length)" in lounge
     assert "CAMPFIRE_DETAILED_MEMBER_LIMIT" not in lounge
     assert "flagEmoji(memberCountry)" in lounge
     assert "countryCode: memberCountry," in lounge

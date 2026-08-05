@@ -1315,6 +1315,7 @@ private:
     // Open the full Log section (section 4) and scroll it to the entry matching a
     // line clicked in the always-on footer strip (adhoc #133).
     void openFullLogAtFooterLine(const QString &rawLine);
+    void openFullLogForCategory(const QString &category);
     void persistProfile();
 
     // Chat page

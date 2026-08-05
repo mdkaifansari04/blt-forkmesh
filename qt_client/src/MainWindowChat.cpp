@@ -2458,12 +2458,10 @@ QWidget *MainWindow::buildNetworkLogDock()
 
     // State one now lives in the version-controlled debug row: all thirty icons
     // stay in one labeled line with their counts on the icon corners. Clicking
-    // a category still reveals this recent-line overlay; clicking a line there
-    // opens the existing full Log page (state three).
+    // a category opens the full Log page filtered to that category.
     m_logActivityLights = new LogActivityLights(LogActivityLights::Debug, dock);
-    m_logActivityLights->onClicked = [this] {
-        if (!m_sectionStack || m_sectionStack->currentIndex() != 4)
-            setLogOverlayExpanded(!m_logOverlayExpanded);
+    m_logActivityLights->onCategoryClicked = [this](const QString &category) {
+        openFullLogForCategory(category);
     };
     const QString stallTip = QStringLiteral(
         "Click to draft a fix-it prompt for recorded UI stalls; right-click "
