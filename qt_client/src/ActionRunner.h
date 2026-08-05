@@ -40,6 +40,7 @@ class ActionRunner : public QObject
     Q_OBJECT
 public:
     explicit ActionRunner(ActionStore *store, QObject *parent = nullptr);
+    ~ActionRunner() override;
 
     bool busy() const { return m_busy; }
     // The id of the run currently executing, or -1 when idle.
