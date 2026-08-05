@@ -1029,17 +1029,38 @@ void MainWindow::refreshChatUserDirectory()
         const QByteArray body = reply->readAll();
         const bool ok = reply->error() == QNetworkReply::NoError;
         reply->deleteLater();
-        if (!ok)
+        if (!ok) {
+            if (m_usersStatus)
+                m_usersStatus->setText(
+                    QStringLiteral("Could not refresh the user directory"));
             return;
+        }
         const QJsonObject obj = QJsonDocument::fromJson(body).object();
-        if (!obj.value(QStringLiteral("ok")).toBool())
+        if (!obj.value(QStringLiteral("ok")).toBool()) {
+            if (m_usersStatus)
+                m_usersStatus->setText(
+                    QStringLiteral("The user directory returned an invalid response"));
             return;
+        }
         mergeChatUserDirectory(obj.value(QStringLiteral("users")).toArray());
     });
 }
 
 void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
 {
+    // Keep the original privacy-filtered records for the admin Users table.
+    // MemberInfo intentionally carries only chat identity, so reconstructing
+    // the table from it would throw away the World chest's activity/client/mail
+    // facts and create a second, incomplete user model.
+    m_usersDirectoryPayload = QJsonArray();
+    for (const QJsonValue &value : users) {
+        QJsonObject stats = value.toObject();
+        // The decoded avatar is already retained in m_avatars below. Keeping
+        // another base64 copy for every account would make the new page double
+        // the directory's largest memory cost just to repaint an icon.
+        stats.remove(QStringLiteral("avatarPng"));
+        m_usersDirectoryPayload.append(stats);
+    }
     QHash<QString, MemberInfo> next;
     const QString ownName = accountOwner().trimmed();
     for (const QJsonValue &value : users) {
@@ -1099,6 +1120,7 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
     }
     m_chatDirectoryLoaded = true;
     m_chatDirectoryUsers = next;
+    renderUsersPage(m_usersDirectoryPayload);
     // The roster may have arrived before this directory fetch. Normalize those
     // cached entries too, so a user identity remains a user everywhere until
     // the next live roster update rather than only being filtered at render

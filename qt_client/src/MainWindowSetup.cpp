@@ -1246,6 +1246,64 @@ QStringList MainWindow::testNodeDirectoryNames() const
     return names;
 }
 
+bool MainWindow::testUsersNavButtonVisible() const
+{
+    return m_usersNavButton && !m_usersNavButton->isHidden();
+}
+
+QStringList MainWindow::testUsersColumns() const
+{
+    QStringList labels;
+    if (!m_usersTable)
+        return labels;
+    for (int column = 0; column < m_usersTable->columnCount(); ++column) {
+        if (QTableWidgetItem *item =
+                m_usersTable->horizontalHeaderItem(column))
+            labels.append(item->text());
+    }
+    return labels;
+}
+
+QString MainWindow::testUsersCellText(int row, const QString &header) const
+{
+    if (!m_usersTable || row < 0 || row >= m_usersTable->rowCount())
+        return QString();
+    for (int column = 0; column < m_usersTable->columnCount(); ++column) {
+        const QTableWidgetItem *label =
+            m_usersTable->horizontalHeaderItem(column);
+        if (!label || label->text() != header)
+            continue;
+        const QTableWidgetItem *item = m_usersTable->item(row, column);
+        return item ? item->text() : QString();
+    }
+    return QString();
+}
+
+QStringList MainWindow::testSortUsersBy(const QString &header,
+                                        Qt::SortOrder order)
+{
+    QStringList names;
+    if (!m_usersTable)
+        return names;
+    int sortColumn = -1;
+    for (int column = 0; column < m_usersTable->columnCount(); ++column) {
+        const QTableWidgetItem *item =
+            m_usersTable->horizontalHeaderItem(column);
+        if (item && item->text() == header) {
+            sortColumn = column;
+            break;
+        }
+    }
+    if (sortColumn < 0)
+        return names;
+    m_usersTable->sortItems(sortColumn, order);
+    for (int row = 0; row < m_usersTable->rowCount(); ++row) {
+        if (const QTableWidgetItem *item = m_usersTable->item(row, 0))
+            names.append(item->text());
+    }
+    return names;
+}
+
 QStringList MainWindow::testChatMemberNames(const QString &conversation)
 {
     const QString saved = m_currentConversation;
@@ -1446,6 +1504,7 @@ void MainWindow::startSession()
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
+        updateAdminCrownBadge();
         QSettings().remove(kAuthedAccountSetting);
     }
 
@@ -1541,6 +1600,7 @@ void MainWindow::startSession()
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
+        updateAdminCrownBadge();
         QSettings().remove(kAuthedAccountSetting);
     }
     m_accountName = name;
@@ -3150,6 +3210,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
+        updateAdminCrownBadge();
         QSettings().remove(kAuthedAccountSetting);
     }
     int status = 0;
