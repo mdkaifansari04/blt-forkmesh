@@ -5133,8 +5133,8 @@ private:
     void autoSyncMirrorsIfRelayHealthy();
     // Re-arm the mirror sync timer after interval updates from Settings.
     void restartMirrorSyncTimer();
-    // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
-    // pull it immediately instead of waiting for the next auto-sync tick.
+    // Roster-driven catch-up: when a peer advertises a ref-set fingerprint (or,
+    // for older peers, a HEAD commit) our mirror lacks, pull immediately.
     void syncMirrorsBehindRoster();
     // `git cat-file -e` probe with memoized positive answers, so the roster
     // reconcile doesn't re-spawn git for the same converged tip on every peer
@@ -5153,7 +5153,9 @@ private:
     // for the safety sync, so counts and content converge right away.
     void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
-    // mirror the same repo. `commit` is the new HEAD it advanced to.
+    // mirror the same repo. `commit` is its primary HEAD for status display;
+    // the wake-up still fetches all refs because collaboration branches may be
+    // the only refs that changed.
     void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName,
                              const QString &commit);
     // A peer reported it finished pulling "owner/name" up to `commit` — the
