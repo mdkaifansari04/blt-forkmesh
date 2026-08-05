@@ -996,7 +996,27 @@ void MainWindow::switchToBranch(const QString &branch, int agentSessionId)
 {
     // setRepoBranch below reassigns m_repoBranch, which some callers pass in by
     // reference — copy before the string underneath us can change.
-    const QString target = branch.trimmed();
+    QString target = branch.trimmed();
+    // A cross-node PR displays its head as "<node>:<branch>".  A colon cannot
+    // occur in a Git ref; it means revision:path to Git.  Resolve only the real
+    // branch portion when this mirror has it, and otherwise leave the current
+    // view intact instead of launching an invalid `base...node:branch` range.
+    const int nodeSeparator = target.indexOf(QLatin1Char(':'));
+    if (nodeSeparator > 0) {
+        const QString local = target.mid(nodeSeparator + 1).trimmed();
+        const QString dir = repoGitDir();
+        if (!local.isEmpty() && localBranchExists(dir, local)) {
+            target = local;
+        } else {
+            setRepoDetailNotice(
+                QStringLiteral("%1 is a cross-node pull-request label; its branch "
+                               "is not available on this mirror. Open the pull "
+                               "request to review its stored changes.")
+                    .arg(target),
+                true);
+            return;
+        }
+    }
     m_branchDiffPullNumber = -1; // plain branch mode
     showOverviewCommits();
     const QString base = branchCompareBase();
@@ -6423,8 +6443,8 @@ void MainWindow::applyBranchAutoMarkViewedOnScroll()
         // file still being read (anchors are rebuilt by the render above).
         const int idx = m_branchDiffFilePaths.indexOf(currentFile);
         if (idx >= 0 && idx < m_branchDiffFileAnchors.size()) {
-            flushDiffStream(m_branchDiffView);
-            m_branchDiffView->scrollToAnchor(m_branchDiffFileAnchors.at(idx));
+            scrollDiffToAnchor(m_branchDiffView,
+                               m_branchDiffFileAnchors.at(idx));
         }
     }
 }

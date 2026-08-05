@@ -37,3 +37,30 @@ def test_debug_panel_uses_green_orange_red_thresholds():
     assert 'status === "warning"' in SCENE
     assert 'statusHigh(engineeringDebugLongestFrameMs, 24, 40)' in SCENE
     assert "statusLow(fps, 50, 30)" in SCENE
+
+
+def test_compact_debug_panel_can_toggle_a_mesh_only_triangle_view():
+    world = (ROOT / "public" / "world" / "world.js").read_text(
+        encoding="utf-8"
+    )
+    css = (ROOT / "public" / "world" / "world.css").read_text(
+        encoding="utf-8"
+    )
+
+    for contract in (
+        "data-world-triangle-view",
+        "View triangles",
+        "this.world?.setTriangleView?.(enabled)",
+    ):
+        assert contract in world
+    for contract in (
+        "function setTriangleView(enabled = false)",
+        "if (child.isMesh) child.layers.enable(TRIANGLE_VIEW_LAYER)",
+        "camera.layers.set(TRIANGLE_VIEW_LAYER)",
+        "scene.overrideMaterial = triangleViewMaterial",
+        "labelLayer.hidden = true",
+        "scene.overrideMaterial = null",
+        "setTriangleView,",
+    ):
+        assert contract in SCENE
+    assert ".world-diagnostics-triangle-control" in css

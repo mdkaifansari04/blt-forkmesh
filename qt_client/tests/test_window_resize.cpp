@@ -728,6 +728,31 @@ int main(int argc, char *argv[])
     const QString testApplicationName =
         QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
     app.setApplicationName(testApplicationName);
+
+    // Synchronous helper callers still receive a result immediately, but the
+    // process and wait must be owned by a worker rather than the QApplication
+    // thread. The activity bus exposes the actual lane used by waitForGit.
+    std::atomic<int> gitWorkerStarts{0};
+    std::atomic<int> gitUiStarts{0};
+    forkmesh::BackgroundActivity::setListener(
+        [&gitWorkerStarts, &gitUiStarts](
+            quint64, const QString &kind, const QString &,
+            forkmesh::ActionTelemetry::Execution execution, bool started) {
+            if (!started || kind != QLatin1String("git"))
+                return;
+            if (execution == forkmesh::ActionTelemetry::Execution::Worker)
+                ++gitWorkerStarts;
+            if (execution == forkmesh::ActionTelemetry::Execution::UiBlocking)
+                ++gitUiStarts;
+        });
+    QByteArray gitVersion;
+    const bool gitVersionOk = forkmesh::ui::runGitCapture(
+        QDir::tempPath(), {QStringLiteral("--version")}, &gitVersion, nullptr);
+    forkmesh::BackgroundActivity::setListener(nullptr);
+    check(gitVersionOk && gitVersion.startsWith("git version") &&
+              gitWorkerStarts.load() == 1 && gitUiStarts.load() == 0,
+          QStringLiteral("synchronous Git helpers execute and wait on a worker"));
+
     const QString darkTheme = QString::fromLatin1(Theme::styleSheetForDark(true));
     const QString lightTheme = QString::fromLatin1(Theme::styleSheetForDark(false));
     check(darkTheme.contains(QStringLiteral(
@@ -2254,6 +2279,28 @@ int main(int argc, char *argv[])
     check(window.testResolvablePullHead(repairedPull) == QStringLiteral("pr/404"),
           QStringLiteral("a missing signed PR head falls back to pr/<number>"));
 
+    // A remote submitter decorates its head as "<node>:<branch>".  The colon is
+    // revision:path syntax to Git, so feeding the label to a range used to turn
+    // `main...cache-socket-2632:fix/x` into an invalid lookup of only
+    // `cache-socket-2632`.  Resolve and browse the exact local branch portion.
+    runGitChecked(repoDir.path(),
+                  {"branch", "fix/stall-filter-test-isolation", "HEAD"});
+    PullRequest crossNodePull;
+    crossNodePull.number = 405;
+    crossNodePull.head =
+        QStringLiteral("cache-socket-2632:fix/stall-filter-test-isolation");
+    check(window.testResolvablePullHead(crossNodePull) ==
+              QStringLiteral("fix/stall-filter-test-isolation"),
+          QStringLiteral("a cross-node PR label resolves its synced branch without "
+                         "passing node:branch to Git"));
+    check(window.testSwitchToWorktreeGitBranch(crossNodePull.head) ==
+              QStringLiteral("fix/stall-filter-test-isolation") &&
+              window.testBranchDiffBranch() ==
+                  QStringLiteral("fix/stall-filter-test-isolation"),
+          QStringLiteral("opening a cross-node head diffs the branch portion, not "
+                         "the cache-socket node label"));
+    window.testSwitchToWorktreeGitBranch(QStringLiteral("main"));
+
     // adhoc #55: the status strip names the commit the open branch is on —
     // short SHA, date, subject and author. The read is detached (it must not
     // block the GUI thread), so pump the loop until it lands.
@@ -3078,6 +3125,11 @@ int main(int argc, char *argv[])
             newIdentity.ownerUser = QStringLiteral("alice");
             newIdentity.diskUsedBytes = 40 * 1024 * 1024;
             newIdentity.diskTotalBytes = 100 * 1024 * 1024;
+            newIdentity.diagnostics = {
+                NodeDiagnostics::Finding{QStringLiteral("relay-flap"),
+                                         NodeDiagnostics::Warning,
+                                         QStringLiteral("Relay link dropped 6 times in the last 30m")}};
+            newIdentity.diagnosticsMs = QDateTime::currentMSecsSinceEpoch();
             advert.worktreeCount = 3;
             newIdentity.mirrorDetails.append(advert);
             MemberInfo offlineNode = testMember(QStringLiteral("offline-key"),
@@ -3135,6 +3187,24 @@ int main(int argc, char *argv[])
             check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 21) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
+            const QString healthTip = window.testMirrorNodeCellToolTip(
+                QStringLiteral("mirror1"), 13);
+            check(healthTip.contains(QStringLiteral("Warning [relay-flap]")) &&
+                      healthTip.contains(QStringLiteral("Correlate disconnect times")) &&
+                      healthTip.contains(QStringLiteral("draft a troubleshooting prompt")),
+                  QStringLiteral("Mirror nodes Health explains the finding, next checks, "
+                                 "and its prompt action"));
+            check(window.testDraftMirrorNodeDiagnostics(QStringLiteral("mirror1")),
+                  QStringLiteral("activating Mirror nodes Health drafts its diagnostic prompt"));
+            const QString diagnosticPrompt = window.testQuickAddText();
+            check(diagnosticPrompt.contains(QStringLiteral("Node: mirror1")) &&
+                      diagnosticPrompt.contains(QStringLiteral("Node id: mirror1-new-key")) &&
+                      diagnosticPrompt.contains(QStringLiteral("Platform: linux")) &&
+                      diagnosticPrompt.contains(QStringLiteral("Repository mirrored:")) &&
+                      diagnosticPrompt.contains(QStringLiteral("Warning [relay-flap]")) &&
+                      diagnosticPrompt.contains(QStringLiteral("Find the root cause")),
+                  QStringLiteral("the mirror diagnostic prompt carries actionable node, repo, "
+                                 "and finding context"));
             window.testSetMirrorNodesOnlineOnly(false);
             QApplication::processEvents();
             const QStringList unfilteredRows = window.testMirrorNodeRows();
