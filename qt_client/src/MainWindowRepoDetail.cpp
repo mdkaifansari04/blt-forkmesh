@@ -5266,10 +5266,13 @@ void MainWindow::rebuildGlobalSearchResults()
         {"Hosts", "server", 7},
         {"Relays", "broadcast", 8},
         {"Network", "workflow", kNetworkDiagnosticsSectionIndex},
+        {"Users", "people", kUsersSectionIndex},
         {"Settings", "gear", 1},
     };
     bool header = false;
     for (const Sec &s : kSections) {
+        if (s.index == kUsersSectionIndex && !m_isAdmin)
+            continue;
         if (!QString::fromLatin1(s.label).toLower().contains(needle))
             continue;
         if (!header) { addHeader(QStringLiteral("Go to")); header = true; }
@@ -6048,6 +6051,9 @@ QString MainWindow::navPlaceLabel(const NavPlace &place) const
                 place.subTab < m_networkTabs->count())
                 destination = QStringLiteral("Network · %1")
                                   .arg(m_networkTabs->tabText(place.subTab));
+            break;
+        case kUsersSectionIndex:
+            destination = QStringLiteral("Users");
             break;
         default:
             destination = QStringLiteral("Home");
