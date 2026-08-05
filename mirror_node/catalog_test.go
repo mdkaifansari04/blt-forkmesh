@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -93,6 +94,60 @@ func TestCatalogPublisherSurfacesHTTPFailure(t *testing.T) {
 	p := &CatalogPublisher{URL: server.URL, Owner: "mirror9", Node: "mirror9", Version: "test", Identity: identity, Client: server.Client()}
 	if err := p.Publish(context.Background(), Repository{Owner: "mirror9", Name: "forkmesh", GitDir: bare}, stateHash); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatal("HTTP failure ignored")
+	}
+}
+
+func TestEndpointPublisherRenewsSignedActiveLease(t *testing.T) {
+	identity, _ := testIdentity(t)
+	var received map[string]any
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mirrors/https" || r.Method != http.MethodPost {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Error(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "node": "mirror9", "baseUrl": "https://mirror9.example.test",
+			"health": "active",
+		})
+	}))
+	defer server.Close()
+	publisher := &EndpointPublisher{
+		CatalogURL: server.URL + "/api/repositories?ignored=true",
+		Node:       "mirror9", BaseURL: "https://mirror9.example.test",
+		Version: "test", Identity: identity, Client: server.Client(),
+	}
+	active, err := publisher.Publish(context.Background())
+	if err != nil || !active {
+		t.Fatal(err)
+	}
+	issuedAt := int64(received["issuedAt"].(float64))
+	message := "forkmesh-https-endpoint-v1\nmirror9\nhttps://mirror9.example.test\n" +
+		identity.PublicKey() + "\n" + strconv.FormatInt(issuedAt, 10)
+	signature, err := base64.RawURLEncoding.DecodeString(received["signature"].(string))
+	if err != nil || !ed25519.Verify(identity.public, []byte(message), signature) {
+		t.Fatal("endpoint registration signature is invalid")
+	}
+}
+
+func TestEndpointPublisherRetriesPendingLeaseWithoutFailingSync(t *testing.T) {
+	identity, _ := testIdentity(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "node": "mirror9", "baseUrl": "https://mirror9.example.test",
+			"health": "pending",
+		})
+	}))
+	defer server.Close()
+	publisher := &EndpointPublisher{
+		CatalogURL: server.URL + "/api/repositories", Node: "mirror9",
+		BaseURL: "https://mirror9.example.test", Version: "test",
+		Identity: identity, Client: server.Client(),
+	}
+	active, err := publisher.Publish(context.Background())
+	if err != nil || active {
+		t.Fatalf("pending lease result: active=%v err=%v", active, err)
 	}
 }
 
