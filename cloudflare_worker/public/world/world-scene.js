@@ -107,7 +107,11 @@ const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
-const PLAYER_MAX_SPEED = 13;
+const PLAYER_MAX_SPEED = 17;
+// Walking input accelerates from base pace into a higher "running" pace over a
+// short interval so holding a direction grows into a smooth speed gradient.
+const PLAYER_SPEED_GRADIENT_UP_TIME = 0.85;
+const PLAYER_SPEED_GRADIENT_DOWN_TIME = 0.25;
 // Holding either Shift key is an explicit sprint: fast enough to cross the
 // World quickly, while still using the ordinary collision and presence path.
 const PLAYER_SPRINT_MULTIPLIER = 2.6;
@@ -24104,10 +24108,11 @@ export function createWorldScene({
   let jumpQueued = false;
   let officeRoofJumping = false;
   let roofParachute = null;
-  // Per-device movement tuning scales the shared speed. Digital movement is
-  // deliberately immediate; there is no acceleration state to delay input.
+  // Per-device movement tuning scales the shared speed. Keyboard movement uses a
+  // blend state so holding direction ramps to the selected top speed.
   let moveSpeedScale = 1;
   let keyboardMovementSpeed = PLAYER_SPEED;
+  let keyboardMovementRamp = 0;
   let dashTarget = null;
   // Set while the player is sitting on a campfire bench: the seat pose is held
   // every frame until the visitor walks, dashes or jumps away from it.
@@ -24420,16 +24425,38 @@ export function createWorldScene({
       (input.ridingCar ? CAR_RIDE_SPEED_MULTIPLIER : 1);
     const topSpeed = PLAYER_MAX_SPEED * moveSpeedScale * sprintScale;
     const inputStrength = Math.max(0, Number(input.inputStrength) || 0);
-    // Digital input has no acceleration ramp: the first rendered movement
-    // frame reaches the selected speed. Analog touch keeps its proportional
-    // strength, which preserves fine positioning without making WASD feel
-    // sticky after a stop.
-    keyboardMovementSpeed =
-      input.keyboardActive
-        ? topSpeed
-        : Number(input.touchStrength) > 0
-          ? topSpeed * inputStrength
-          : baseMoveSpeed() * sprintScale;
+    const touchStrength = Math.max(0, Number(input.touchStrength) || 0);
+    const rawDelta = Math.max(0, Number(delta) || 0);
+
+    if (input.keyboardActive) {
+      const rampRate = 1 / PLAYER_SPEED_GRADIENT_UP_TIME;
+      const targetRamp = 1;
+      const blendStep = rampRate * rawDelta;
+      keyboardMovementRamp = clamp(
+        keyboardMovementRamp +
+          (targetRamp - keyboardMovementRamp) * Math.min(1, blendStep),
+        0,
+        1,
+      );
+      const baseSpeed = baseMoveSpeed() * sprintScale;
+      keyboardMovementSpeed = baseSpeed + (topSpeed - baseSpeed) * keyboardMovementRamp;
+      return keyboardMovementSpeed;
+    }
+
+    if (touchStrength > 0) {
+      keyboardMovementRamp = 0;
+      keyboardMovementSpeed = topSpeed * inputStrength;
+      return keyboardMovementSpeed;
+    }
+
+    const rampRate = 1 / PLAYER_SPEED_GRADIENT_DOWN_TIME;
+    const blendStep = rampRate * rawDelta;
+    keyboardMovementRamp = clamp(
+      keyboardMovementRamp * Math.max(0, 1 - blendStep),
+      0,
+      1,
+    );
+    keyboardMovementSpeed = baseMoveSpeed() * sprintScale;
     return keyboardMovementSpeed;
   }
 
@@ -36507,7 +36534,7 @@ export function createWorldScene({
       baseSpeed: baseMoveSpeed(),
       maxSpeed: PLAYER_MAX_SPEED * moveSpeedScale,
       speedScale: moveSpeedScale,
-      immediateDigitalInput: true,
+      immediateDigitalInput: false,
       keyboardActive: [...keys].some((code) => MOVEMENT_KEYS.has(code)),
       touchActive: touchMovement.lengthSq() > 0,
       touchStrength: touchMovement.length(),

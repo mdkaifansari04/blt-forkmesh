@@ -371,7 +371,7 @@ const WORLD_DAYLIGHT_MODES = new Set(["auto", "day", "night"]);
 // Movement tuning, stored per device as a percentage of the shared defaults.
 const WORLD_MOVE_SPEED_MIN = 50;
 const WORLD_MOVE_SPEED_MAX = 300;
-const WORLD_MOVE_SPEED_DEFAULT = 100;
+const WORLD_MOVE_SPEED_DEFAULT = 120;
 // Swing-ride pumping strength; session-only because the control is only on
 // screen while actually riding one of the town swings.
 const WORLD_SWING_SPEED_MIN = 10;
@@ -5505,9 +5505,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 value="${escapeHTML(settings.moveSpeed)}"
                 data-world-move-speed
               />
-              <small>Scales how fast your avatar walks and runs. 100% is the default pace.</small>
+              <small>Scales how fast your avatar walks and runs. 120% is now the default pace.</small>
             </label>
-            <p class="world-setting-note">Keyboard movement responds at the selected speed on its first frame; touch remains proportional for precise positioning.</p>
+            <p class="world-setting-note">Keyboard movement now eases into a higher speed while held; touch remains proportional for precise positioning.</p>
           </fieldset>
 
           <fieldset class="world-setting-group">
