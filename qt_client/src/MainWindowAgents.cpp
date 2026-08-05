@@ -1028,16 +1028,21 @@ AgentProviderGlyph agentProviderGlyph(const QString &provider)
     return {QString(), QColor(), QString()};
 }
 
-// A single identity badge now owns the far-left position in every Agents row:
-// model artwork for agent sessions, and the PR author's avatar for PR-linked
-// sessions. Status is a coloured stroke around that badge, rather than a second
-// competing icon, so the first mark answers who/what and the border answers how
-// it is going.
-constexpr int kAgentLeadGlyphsPx = 20;
+// Keep identity and state as two separate marks at the far-left of every Agents
+// row. The circular badge answers which provider/person owns the session; the
+// glyph immediately to its right answers what state it is in. Running identity
+// circles carry a rotating activity arc, so motion says "working" without
+// making the status glyph itself ambiguous.
+constexpr int kAgentIdentityCirclePx = 20;
+constexpr int kAgentStatusGlyphPx = 14;
+constexpr int kAgentLeadGlyphGapPx = 4;
+constexpr int kAgentLeadGlyphsPx =
+    kAgentIdentityCirclePx + kAgentLeadGlyphGapPx + kAgentStatusGlyphPx;
 constexpr int kAgentIdentityArtworkPx = 14;
 
 QPixmap agentLeadGlyphPixmap(const AgentSession &session,
-                             const QPixmap &pullAuthorAvatar = QPixmap())
+                             const QPixmap &pullAuthorAvatar = QPixmap(),
+                             qreal activityAngle = 0.0)
 {
     QPixmap artwork = pullAuthorAvatar;
     if (artwork.isNull())
@@ -1049,15 +1054,47 @@ QPixmap agentLeadGlyphPixmap(const AgentSession &session,
                                   iconDevicePixelRatio());
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing, true);
-    const int inset = (kAgentLeadGlyphsPx - kAgentIdentityArtworkPx) / 2;
+    const int inset = (kAgentIdentityCirclePx - kAgentIdentityArtworkPx) / 2;
     p.drawPixmap(QRect(inset, inset, kAgentIdentityArtworkPx,
                        kAgentIdentityArtworkPx), artwork);
-    QPen statusRing(agentStatusIconColor(session), 2.0);
-    statusRing.setJoinStyle(Qt::RoundJoin);
-    p.setPen(statusRing);
+    const bool running = !session.merged && session.status == AgentStatus::Running;
+    QPen identityRing(QColor(currentThemeIsDark() ? "#484f58" : "#afb8c1"),
+                      1.2);
+    identityRing.setJoinStyle(Qt::RoundJoin);
+    p.setPen(identityRing);
     p.setBrush(Qt::NoBrush);
-    p.drawEllipse(QRectF(1.0, 1.0, kAgentLeadGlyphsPx - 2.0,
-                         kAgentLeadGlyphsPx - 2.0));
+    const QRectF circle(1.0, 1.0, kAgentIdentityCirclePx - 2.0,
+                        kAgentIdentityCirclePx - 2.0);
+    p.drawEllipse(circle);
+    if (running) {
+        // Two opposed arcs produce an unmistakable rotating circle without
+        // replacing the provider artwork or conflating it with run status.
+        QPen activityPen(agentStatusIconColor(session), 2.1,
+                         Qt::SolidLine, Qt::RoundCap);
+        p.setPen(activityPen);
+        const int start = qRound(-activityAngle * 16.0);
+        p.drawArc(circle, start, -72 * 16);
+        p.drawArc(circle, start + 180 * 16, -72 * 16);
+    }
+
+    const QString statusIcon = agentStatusCellIconName(session);
+    if (!statusIcon.isEmpty()) {
+        const QRect statusRect(kAgentIdentityCirclePx + kAgentLeadGlyphGapPx,
+                               (kAgentIdentityCirclePx - kAgentStatusGlyphPx) / 2,
+                               kAgentStatusGlyphPx, kAgentStatusGlyphPx);
+        const QIcon icon = themedOcticon(statusIcon, agentStatusIconColor(session),
+                                         kAgentStatusGlyphPx);
+        if (running) {
+            p.save();
+            p.translate(statusRect.center());
+            p.rotate(activityAngle);
+            p.translate(-statusRect.center());
+            icon.paint(&p, statusRect);
+            p.restore();
+        } else {
+            icon.paint(&p, statusRect);
+        }
+    }
     p.end();
     return out;
 }
@@ -1103,10 +1140,8 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                                 : QStringLiteral("-"));
     cell->setData(Qt::UserRole, s.id);
     cell->setData(kTableSortRole, s.id);
-    // The leading identity badge is model artwork for ordinary sessions or the
-    // author's face for a PR. Its status is the surrounding stroke: blue while
-    // running, purple once merged, green on success, red when halted/failed and
-    // amber while queued or waiting.
+    // The leading badge is model artwork for ordinary sessions or the author's
+    // face for a PR. Run state remains a separate glyph immediately to its right.
     const QString statusIcon = agentStatusCellIconName(s);
     const QPixmap lead = agentLeadGlyphPixmap(s, pullAuthorAvatar);
     cell->setIcon(lead.isNull() ? QIcon() : QIcon(lead));
@@ -1129,8 +1164,8 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     cell->setData(kAgentBehindRole, stat.behind);
     cell->setData(kAgentConflictRole, stat.conflicted);
     cell->setData(kAgentConflictSessionRole, sessionId);
-    // With the Status column gone the glyph is the only thing showing the run
-    // state, so the tooltip has to name it outright. The session number and the
+    // The separate status glyph is compact, so the tooltip still names it
+    // outright. The session number and the
     // full "updated" timestamp lead it now that the cell itself shows neither
     // (adhoc #84).
     QString tip = QStringLiteral(
@@ -2030,10 +2065,9 @@ QWidget *MainWindow::buildAgentsTab()
     // The square's slot has to be asked for: a view with no iconSize of its own
     // hands the delegate QStyleOptionViewItem's 16px default, which caps
     // (QIcon::actualSize) the 20px thumbnail down to 16 and draws it softened.
-    // The box is wide enough for the "#" cell's provider+status pair too (adhoc
-    // #1443): actualSize only ever shrinks, so a narrower box would squash that
-    // pixmap to fit, and both the 20px square and the 14px-tall glyph pair keep
-    // their own size inside this one.
+    // The box is wide enough for the "#" cell's provider circle + separate
+    // status glyph too: actualSize only ever shrinks, so a narrower box would
+    // squash the pair to fit.
     m_agentTable->setIconSize(
         QSize(qMax(kAgentThumbnailPx, kAgentLeadGlyphsPx), kAgentThumbnailPx));
     // Hold every row tall enough for that square. The rows are a fixed height
@@ -11971,11 +12005,9 @@ void MainWindow::hideAgentMetaPopupIfPointerAway()
         m_agentMetaPopup->hide();
 }
 
-// Spin the blue "sync" glyph on every running row's "#" cell so the agents
-// list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
-// ticks while a session is running, so finished rows keep their static icon.
-// Each row spins at its own session's tok/s (adhoc #50), so a fast run visibly
-// outruns a slow one instead of every row turning in lockstep.
+// Animate every running row's provider circle and its separate blue sync glyph.
+// The timer only ticks while a session is running, so terminal rows remain
+// static and the motion is a truthful liveness signal rather than decoration.
 void MainWindow::animateRunningAgentIcons()
 {
     if (!m_agentTable)
@@ -11992,6 +12024,20 @@ void MainWindow::animateRunningAgentIcons()
         const AgentSession *s = findAgentSession(idItem->data(Qt::UserRole).toInt());
         if (!s || s->merged || s->status != AgentStatus::Running)
             continue;
+        const double meter = qMax(
+            qBound(0.0, m_scannerStates.value(s->id).intensity, 1.0),
+            qBound(0.0,
+                   agentTokensPerSecond(*s, sessionTokenTotal(*s)) /
+                       kAgentFastTokensPerSecond,
+                   1.0));
+        const qreal angle = std::fmod(
+            qreal(m_agentSpinTicks) * (11.0 + 13.0 * meter) +
+                qreal(s->id % 29) * 7.0,
+            360.0);
+        const QPixmap lead =
+            agentLeadGlyphPixmap(*s, agentSessionPullAvatar(*s), angle);
+        idItem->setIcon(lead.isNull() ? QIcon() : QIcon(lead));
+        m_agentTable->viewport()->update(m_agentTable->visualItemRect(idItem));
         // Tick the detail header's run stats (elapsed time, and the live tok/s
         // figure whose run duration grows against the wall clock — issue #245,
         // moved here from the table by adhoc #35) for the open session — meta

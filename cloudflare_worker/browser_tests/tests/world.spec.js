@@ -1261,6 +1261,80 @@ async function waitForWorld(page, url = "/world/") {
   await waitForWorldReady(page);
 }
 
+test("authorized agent sessions create one status-lit world robot each", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "session-agent-robots");
+  await waitForWorld(page);
+  const sessions = [
+    {
+      id: "agent-session-claude",
+      provider: "claude-code",
+      status: "running",
+      localAgentId: 41,
+      title: "Claude working session",
+    },
+    {
+      id: "agent-session-codex",
+      provider: "codex",
+      status: "queued",
+      localAgentId: 42,
+      title: "Codex queued session",
+    },
+  ];
+  const spawned = await page
+    .locator("forkmesh-world")
+    .evaluate((shell, roster) => {
+      shell.world.setAgentBotAccess(true);
+      shell.world.updateMirrorAgentTasks(roster);
+      return roster.map((session) => {
+        const provider = session.provider === "codex" ? "codex" : "claude";
+        const robot = shell.world.scene.getObjectByName(
+          `${provider}-agent-droid-${session.id}`,
+        );
+        return {
+          found: Boolean(robot),
+          aboveGround: Number(robot?.position?.y || 0) > 0.38,
+          sessionId: robot?.children
+            ?.find((child) => child?.isMesh)
+            ?.userData?.repositoryAgentSession?.id,
+        };
+      });
+    }, sessions);
+  expect(spawned).toEqual([
+    { found: true, aboveGround: true, sessionId: "agent-session-claude" },
+    { found: true, aboveGround: true, sessionId: "agent-session-codex" },
+  ]);
+
+  const remaining = await page.locator("forkmesh-world").evaluate(
+    (shell, roster) => {
+      shell.world.updateMirrorAgentTasks(roster.slice(1));
+      return {
+        claude: Boolean(
+          shell.world.scene.getObjectByName(
+            `claude-agent-droid-${roster[0].id}`,
+          ),
+        ),
+        codex: Boolean(
+          shell.world.scene.getObjectByName(
+            `codex-agent-droid-${roster[1].id}`,
+          ),
+        ),
+      };
+    },
+    sessions,
+  );
+  expect(remaining).toEqual({ claude: false, codex: true });
+
+  const hidden = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setAgentBotAccess(false);
+    return shell.world.scene
+      .getObjectByName("codex-agent-droid-agent-session-codex")
+      ?.visible;
+  });
+  expect(hidden).toBe(false);
+});
+
 async function waitForWorldReady(page) {
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
