@@ -2388,6 +2388,24 @@ int main(int argc, char *argv[])
                                  "limit and syncs Settings"));
         }
     }
+    // A restored Codex session can retain its persisted Running status after its
+    // app-server transport has gone away. Its Continue action must requeue it;
+    // otherwise a follow-up prompt is accepted by the UI but has no process to
+    // receive it.
+    {
+        AgentSession detachedCodex;
+        detachedCodex.id = 133892;
+        detachedCodex.owner = QStringLiteral("me");
+        detachedCodex.name = QStringLiteral("r");
+        detachedCodex.provider = QStringLiteral("codex");
+        detachedCodex.prompt = QStringLiteral("Detached Codex transport fixture");
+        detachedCodex.status = AgentStatus::Running;
+        window.testAddAgentSession(detachedCodex);
+        check(window.testQueueDetachedRunningAgentSession(detachedCodex.id),
+              QStringLiteral("a detached Running Codex session can be requeued "
+                             "for a follow-up prompt"));
+        window.testRemoveAgentSession(detachedCodex.id);
+    }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
     // own "Updated" column) and the title, which is the column that flexes — so
