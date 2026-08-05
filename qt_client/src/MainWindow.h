@@ -730,6 +730,7 @@ public:
     Q_INVOKABLE QStringList testMirrorNodeRows() const;
     bool testMirrorNodesOnlineOnlyChecked() const;
     void testSetMirrorNodesOnlineOnly(bool checked);
+    bool testMirrorNodeCardsAreCompact() const;
     QString testMirrorNodeCellText(const QString &nodeName, int column) const;
     QString testMirrorNodeCellToolTip(const QString &nodeName, int column) const;
     // Build the exact command used by the fleet-wide binary action without
@@ -740,6 +741,8 @@ public:
                                                 QString *errorOut);
     QString testDirectBinaryInstallRemoteCommand(qsizetype *uploadByteCount,
                                                  QString *errorOut);
+    QString testVultrGoMirrorInstallRemoteCommand(qsizetype *uploadByteCount,
+                                                  QString *errorOut);
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
@@ -1744,6 +1747,15 @@ private:
         QString *error = nullptr, bool restartRunningGateway = false);
     void startDirectMirrorServices();
     void stopDirectMirrorServices();
+    // Desktop companion for the small Go mirror-node supervisor. The daemon
+    // owns serving/sync work; this window only reads its loopback API and sends
+    // explicit local control requests.
+    bool rebuildManagedMirrorNodeConfiguration(QString *error = nullptr);
+    bool startManagedMirrorNodeServer();
+    void stopManagedMirrorNodeServer();
+    void requestManagedMirrorNodeSync();
+    void showMirrorNodeCompanion();
+    void refreshMirrorNodeCompanion();
     // Startup auto-start for provisioned direct HTTPS mirrors (gated by
     // control/autoStartMirrorServices, default on): re-establishes the
     // gateway + Tunnel + registration after a restart without anyone
@@ -1940,6 +1952,10 @@ private:
                                  bool requirePublishedBinary,
                                  QString *remoteCmd, QByteArray *uploadBytes,
                                  QString *errorOut);
+    bool buildVultrMirrorNodeInstallCommand(const QString &node,
+                                            QString *remoteCmd,
+                                            QByteArray *uploadBytes,
+                                            QString *errorOut) const;
     // Save non-sensitive host metadata from the form without running the
     // installer. pass is cached only for the current process; it is never
     // written to QSettings. identityFile records the ForkMesh-managed private
@@ -3843,6 +3859,8 @@ private:
     // local sync, a live peer via a targeted relay frame, an SSH-fed/offline
     // catalog mirror via the source of truth's push.
     void syncMirrorNodeNow(int row);
+    QWidget *buildMirrorNodeCard(int row);
+    void rebuildMirrorNodeCards();
     // Fetch the worker's catalog mirror list for a repo group so the owner sees
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
@@ -4387,7 +4405,7 @@ private:
     // model (POST /api/ai/ask, signed as this account) and shows its reply. No
     // agent session, working tree or PR is involved.
     void refreshCloudflareAiModels();
-    void sendPromptToCloudflareAi(const QString &prompt, const QString &model);
+    bool sendPromptToCloudflareAi(const QString &prompt, const QString &model);
     // Probe the installed `claude` CLI for the effort levels it accepts and
     // cache them (kClaudeEffortLevelsCacheSetting). Cheap (`claude --help`),
     // once per app run, and a no-op while a probe is already in flight.
@@ -4883,6 +4901,9 @@ private:
     void saveIncomingFile(const QString &fileName, const QByteArray &data);
     // Local chat history persistence (per active server/room).
     QString chatHistoryKey() const;
+    QString chatHistoryPathForServerUrl(const QString &serverUrl,
+                                        const QString &room) const;
+    QStringList chatHistoryCompatibilityPaths() const;
     QString chatHistoryPath() const;
     void saveChatHistory();
     void loadChatHistory();
@@ -5103,6 +5124,11 @@ private:
 
     // Configured mainnode relays (switched via the top-bar relay dropdown).
     QList<ServerConfig> m_servers;
+    // URL values from the persisted server list before canonicalization. Chat
+    // history used these raw values in older releases, so retain them for a
+    // one-time history-file migration after the relay URL format changed.
+    QStringList m_legacyServerUrls;
+    QStringList m_legacyServerRooms;
     int m_activeServer = 0;
     QHash<QString, QPixmap> m_faviconCache; // host -> favicon
     QSet<QString> m_faviconFetching;        // hosts with an in-flight favicon GET
@@ -5555,6 +5581,8 @@ private:
     QProcess *m_cloudflareBootstrapProcess = nullptr;
     QProcess *m_cloudflareTunnelBootstrapProcess = nullptr;
     QProcess *m_cloudflaredInstallProcess = nullptr;
+    QProcess *m_mirrorNodeProcess = nullptr;
+    bool m_mirrorNodeStopRequested = false;
     QProcess *m_mirrorGatewayProcess = nullptr;
     QProcess *m_cloudflaredProcess = nullptr;
     QString m_cloudflareActiveSecret;
@@ -5568,6 +5596,14 @@ private:
     bool m_cloudflareInstallVpsAfterDeploy = false;
     QTimer *m_controlNodeRefreshTimer = nullptr;
     QTimer *m_directMirrorRegistrationTimer = nullptr;
+    QDialog *m_mirrorNodeCompanion = nullptr;
+    QLabel *m_mirrorNodeCompanionStatus = nullptr;
+    QLabel *m_mirrorNodeCompanionStats = nullptr;
+    QLabel *m_mirrorNodeCompanionAccount = nullptr;
+    QLabel *m_mirrorNodeCompanionBalance = nullptr;
+    QLabel *m_mirrorNodeCompanionQr = nullptr;
+    QPushButton *m_mirrorNodeCompanionLogout = nullptr;
+    QTimer *m_mirrorNodeCompanionTimer = nullptr;
     // Full encrypted-archive authentication hashes hundreds of megabytes for a
     // large mirror. Keep it off the GUI thread and let the Control page render
     // the most recent completed snapshot.

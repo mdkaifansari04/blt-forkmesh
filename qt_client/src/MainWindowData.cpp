@@ -1059,12 +1059,14 @@ void MainWindow::stopLiveServicesForDataOp()
 // imported/wiped data, then quit this instance.
 void MainWindow::relaunchForkMesh()
 {
-    QDir::setCurrent(QDir::homePath());
+    const QString launchDir = forkmesh::vm::workspaceRoot().isEmpty()
+                                  ? QDir::currentPath()
+                                  : forkmesh::vm::workspaceRoot();
     // Release the instance lock before spawning the replacement process, or it
     // bounces off the still-held lock (this process hasn't unwound yet) and
     // exits into nothing instead of taking over.
     forkmesh::releaseSingleInstance();
     QProcess::startDetached(QCoreApplication::applicationFilePath(),
-                            QCoreApplication::arguments().mid(1));
+                            QCoreApplication::arguments().mid(1), launchDir);
     QCoreApplication::exit(0);
 }

@@ -133,7 +133,8 @@ void TerminalWidget::resizeGrid(int rows, int cols)
 // ---- process lifecycle -----------------------------------------------------
 
 void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
-                                const QStringList &extraEnv)
+                                const QStringList &extraEnv,
+                                bool keepHostShell)
 {
     stop();
 
@@ -160,11 +161,17 @@ void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
     // QStrings or call setenv() in the child. We assemble the argv and a full
     // envp here and merely chdir()/execvp() over there.
     const QByteArray cwdBytes = cwd.toLocal8Bit();
-    // Keep an interactive shell after the command exits so output stays readable
-    // and the user can poke around the worktree.
-    QByteArray wrapped =
-        commandLine.toUtf8() +
-        "; ec=$?; echo; echo \"[ForkMesh: process exited ($ec)]\"; exec bash -i";
+    QByteArray wrapped = commandLine.toUtf8() +
+                         "; ec=$?; echo; echo \"[ForkMesh: process exited ($ec)]\"";
+    if (keepHostShell) {
+        // Keep an interactive shell after ordinary host commands so output
+        // stays readable and the user can poke around the worktree.
+        wrapped += "; exec bash -i";
+    } else {
+        // A VM shell must end at the VM boundary. Falling through to `bash -i`
+        // here would be a host shell in the mounted workspace.
+        wrapped += "; exit $ec";
+    }
     wrapped.append('\0');
     QByteArray a0 = QByteArrayLiteral("bash");
     QByteArray a1 = QByteArrayLiteral("-lc");

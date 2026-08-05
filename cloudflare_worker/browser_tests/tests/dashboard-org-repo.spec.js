@@ -186,7 +186,9 @@ test("organization repository alias resolves its linked mirror catalog group", a
             artifactCount: 0,
           },
         ],
-        summary: { mirrors: 3 },
+        // Simulate a catalog summary that has not caught up with the live
+        // mirror membership response. The Mirrors badge must follow the list.
+        summary: { mirrors: 1 },
       };
     }
     return route.fulfill({
@@ -220,6 +222,9 @@ test("organization repository alias resolves its linked mirror catalog group", a
   for (const label of ["Watch", "Fork", "Star", "Mirrors"]) {
     await expect(aboutActions.getByText(label, { exact: true })).toBeVisible();
   }
+  await expect(
+    aboutActions.locator('[data-dashboard-repo-count="mirrors"]'),
+  ).toHaveText("3");
   await expect(page.locator("[data-dashboard-history-button]")).toHaveAttribute(
     "href",
     "/forkmesh/forkmesh/commits",

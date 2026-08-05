@@ -15,8 +15,8 @@ If you want to change ForkMesh itself, clone the source and run the Qt client:
 
 ```sh
 git clone https://forkmesh.com/forkmesh/forkmesh
-cd forkmesh/qt_client
-./run.sh
+cd forkmesh
+./qt_client/run.sh
 ```
 
 The source build needs Qt 6.4 or newer with Widgets, Network, SVG, Concurrent,

@@ -104,6 +104,14 @@ func syncRepository(ctx context.Context, repo Repository, upstreams []string) er
 		if strings.TrimSpace(upstream) == "" {
 			continue
 		}
+		if _, err := os.Stat(repo.GitDir); errors.Is(err, os.ErrNotExist) {
+			if err := cloneMirrorRepository(ctx, upstream, repo.GitDir); err == nil {
+				return nil
+			} else {
+				failures = append(failures, fmt.Sprintf("%s: %s", upstream, err))
+				continue
+			}
+		}
 		// A public upstream is round-robin: the selected peer can briefly be
 		// behind this node. Fetch into an isolated namespace first so one stale
 		// response cannot rewind main, delete a new tag, or make the whole cycle
@@ -123,6 +131,28 @@ func syncRepository(ctx context.Context, repo Repository, upstreams []string) er
 		}
 	}
 	return fmt.Errorf("all upstreams failed: %s", strings.Join(failures, "; "))
+}
+
+func cloneMirrorRepository(ctx context.Context, upstream, destination string) error {
+	parent := filepath.Dir(destination)
+	if err := os.MkdirAll(parent, 0700); err != nil {
+		return err
+	}
+	temporary, err := os.MkdirTemp(parent, ".clone-*")
+	if err != nil {
+		return err
+	}
+	os.Remove(temporary)
+	defer os.RemoveAll(temporary)
+	command := exec.CommandContext(ctx, "git", "clone", "--mirror", "--", upstream, temporary)
+	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("clone failed: %s", boundedText(output, 240))
+	}
+	if err := os.Rename(temporary, destination); err != nil {
+		return err
+	}
+	return nil
 }
 
 func reconcileUpstreamRefs(ctx context.Context, gitDir string) error {

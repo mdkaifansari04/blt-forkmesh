@@ -1246,6 +1246,54 @@ int main(int argc, char *argv[])
                       "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256=")),
               QStringLiteral(
                   "direct controller uploads pin the exact local binary SHA-256"));
+
+        // The source-tree test must not depend on a developer having already
+        // built the release companion.  Put a tiny non-empty executable in
+        // PATH so this exercises the package framing and remote installer
+        // deterministically; production still fails closed when the packaged
+        // Go binary is absent.
+        QTemporaryDir mirrorPackageDir;
+        const QByteArray originalPath = qgetenv("PATH");
+        QFile mirrorBinaryFixture(
+            mirrorPackageDir.filePath(QStringLiteral("forkmesh-mirror-node")));
+        const bool mirrorFixtureReady = mirrorPackageDir.isValid() &&
+            mirrorBinaryFixture.open(QIODevice::WriteOnly) &&
+            mirrorBinaryFixture.write("#!/bin/sh\nexit 0\n") > 0;
+        mirrorBinaryFixture.close();
+        if (mirrorFixtureReady) {
+            mirrorBinaryFixture.setPermissions(
+                QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+                QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                QFileDevice::ExeOther);
+            qputenv("PATH", mirrorPackageDir.path().toUtf8() + ':' +
+                                originalPath);
+        }
+        qsizetype mirrorUploadBytes = -1;
+        QString mirrorUploadError;
+        const QString mirrorCommand =
+            window.testVultrGoMirrorInstallRemoteCommand(
+                &mirrorUploadBytes, &mirrorUploadError);
+        qputenv("PATH", originalPath);
+        check(mirrorFixtureReady && !mirrorCommand.isEmpty() &&
+                  mirrorUploadError.isEmpty() &&
+                  mirrorUploadBytes > 0 &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "systemctl enable --now forkmesh-mirror-node.service")) &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "Go mirror-node installed and running (no Qt/GTK packages)")) &&
+                  !mirrorCommand.contains(QStringLiteral("install.sh")),
+              QStringLiteral(
+                  "Vultr uses one native Go mirror package without the desktop installer"));
+        QProcess mirrorSyntax;
+        mirrorSyntax.start(QStringLiteral("bash"),
+                           {QStringLiteral("-n"), QStringLiteral("-c"),
+                            mirrorCommand});
+        const bool mirrorSyntaxFinished = mirrorSyntax.waitForFinished(5000);
+        check(mirrorSyntaxFinished &&
+                  mirrorSyntax.exitStatus() == QProcess::NormalExit &&
+                  mirrorSyntax.exitCode() == 0,
+              QStringLiteral("Vultr Go mirror remote command is valid shell syntax"));
     }
     if (fleetBinaryInstallOnly)
         return failures == 0 ? 0 : 1;
@@ -2888,19 +2936,22 @@ int main(int argc, char *argv[])
             check(mirror1Id == QStringLiteral("mirror1-new-key"),
                   QString("the newer identity wins the deduped Mirror nodes row "
                           "(got id %1)").arg(mirror1Id));
+            check(window.testMirrorNodeCardsAreCompact(),
+                  QStringLiteral("Mirror nodes render as three-row cards with "
+                                 "resource gauges and live node, sync, commit, "
+                                 "health, and reachability controls"));
             check(!sawOffline,
                   QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
             check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 2) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
-            // Columns: Node, Owner, Latest commit, Message, Author, Synced,
-            // Sync delay, Size, Issues, Commits, Branches, Pulls, Discussions,
-            // CPU, RAM, Disk, Platform, … — the sync-delay column pushes
-            // Disk/Platform to 15/16.
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 15)
+            // Hidden data-model columns remain stable behind the card: Node,
+            // Sync, Owner, commit identity, sync facts, repo counts, pending
+            // inbox counts, Health, then CPU/RAM/Disk/Platform.
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 20)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 16) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 21) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             window.testSetMirrorNodesOnlineOnly(false);
@@ -4024,6 +4075,12 @@ int main(int argc, char *argv[])
             // Manual and the two API agents carry no model of their own.
             if (quickAgentModel->itemData(i, Qt::UserRole + 1).toString().isEmpty())
                 continue;
+            // Cloudflare chat models form their own group below the ranked
+            // coding agents and are verified separately.
+            const QString provider = quickAgentModel->itemData(i).toString();
+            if (provider != QStringLiteral("claude-code") &&
+                provider != QStringLiteral("codex"))
+                continue;
             rankedLabels << quickAgentModel->itemText(i);
         }
         check(rankedLabels == QStringList({QStringLiteral("Auto"),
@@ -4125,6 +4182,43 @@ int main(int argc, char *argv[])
             seeded.testRefreshQuickAddAgentModelSelector();
             QApplication::processEvents();
         }
+        // Every active Workers AI fallback must appear as its own selectable
+        // composer row. Selecting each row updates the same hidden provider and
+        // model controls quickAddIssue() reads when it sends /api/ai/ask.
+        bool allCloudflareModelsSelectable = quickAgentModel && canonicalModel;
+        QStringList selectedCloudflareModels;
+        for (const auto &choice :
+             forkmesh::ui::cloudflareAiFallbackModels()) {
+            int row = -1;
+            for (int i = 0; quickAgentModel && i < quickAgentModel->count(); ++i) {
+                if (quickAgentModel->itemData(i).toString() ==
+                        QStringLiteral("cloudflare-ai") &&
+                    quickAgentModel->itemData(i, Qt::UserRole + 1).toString() ==
+                        choice.first) {
+                    row = i;
+                    break;
+                }
+            }
+            allCloudflareModelsSelectable &= row >= 0;
+            if (row < 0)
+                continue;
+            quickAgentModel->setCurrentIndex(row);
+            QApplication::processEvents();
+            selectedCloudflareModels << canonicalModel->currentData().toString();
+            allCloudflareModelsSelectable &=
+                seeded.testQuickAddAgentProvider() ==
+                    QStringLiteral("cloudflare-ai") &&
+                canonicalModel->currentData().toString() == choice.first;
+        }
+        check(allCloudflareModelsSelectable &&
+                  selectedCloudflareModels.size() ==
+                      forkmesh::ui::cloudflareAiFallbackModels().size(),
+              QString("every active Cloudflare model is selectable in the "
+                      "prompt area (%1)")
+                  .arg(selectedCloudflareModels.join(QStringLiteral(", "))));
+        if (concreteClaudeChoice >= 0)
+            quickAgentModel->setCurrentIndex(concreteClaudeChoice);
+        QApplication::processEvents();
 
         // adhoc #38: the composer's speed (reasoning-effort) picker sits next to
         // the mode selector, offers the CLI's ladder with "Ultra" for xhigh, and
@@ -4726,6 +4820,9 @@ int main(int argc, char *argv[])
         mergeSession.issueTitle = QStringLiteral("note a task merging into main");
         mergeSession.baseBranch = QStringLiteral("main");
         mergeSession.status = AgentStatus::Success;
+        // adhoc #1443: the "#" cell leads with the provider that ran the session,
+        // and the hover card names it.
+        mergeSession.provider = QStringLiteral("claude-code");
         check(!mergeSession.merged,
               QStringLiteral("the merge-note fixture starts unmerged"));
         check(window.testAgentStatusCellText(mergeSession.id).isEmpty(),
@@ -4790,6 +4887,45 @@ int main(int argc, char *argv[])
                   agentTip.count(QStringLiteral("<tr>")) ==
                       agentTip.count(QStringLiteral("<img ")),
               QStringLiteral("every line in an agent hover card has an icon"));
+        // adhoc #1443: the hover card also has to explain the marks the cell
+        // paints — which agent ran it, the branch button's ring colour, the amber
+        // dot on its corner, and the down arrow beside it — since none of them
+        // can be read off the row on their own.
+        check(agentTip.contains(QStringLiteral("Claude Code")) &&
+                  agentTip.contains(QStringLiteral("`claude` CLI")),
+              QStringLiteral("the hover card names the provider that ran the "
+                             "session (adhoc #1443)"));
+        check(agentTip.contains(QStringLiteral("blue ring")) &&
+                  agentTip.contains(QStringLiteral("still on disk")),
+              QStringLiteral("the hover card explains the branch button's ring "
+                             "colour (adhoc #1443)"));
+        check(agentTip.contains(QStringLiteral("amber dot")),
+              QStringLiteral("the hover card explains the dot on the branch "
+                             "button (adhoc #1443)"));
+        check(agentTip.contains(QString::fromUtf8("\xE2\xAC\x87 arrow")) &&
+                  agentTip.contains(QStringLiteral("9 commits behind main")),
+              QStringLiteral("the hover card explains the down arrow beside the "
+                             "branch button (adhoc #1443)"));
+        // QStringLiteral wraps a u"" literal, so a UTF-8 byte escape in one lands
+        // as a code point per byte: the churn line used to read "added Â·
+        // removed" in the card. Every separator has to survive as itself.
+        check(agentTip.contains(QString::fromUtf8("added \xC2\xB7 ")) &&
+                  !agentTip.contains(QString::fromUtf8("\xC3\x82")),
+              QStringLiteral("the hover card's punctuation is not mangled into "
+                             "mojibake (adhoc #1443)"));
+        // A session whose checkout has been cleaned up says so, and says the ring
+        // goes grey with it.
+        AgentDiffStat gone = chip;
+        gone.worktree.clear();
+        gone.dirty = 0;
+        gone.behind = 0;
+        const QString goneTip = window.testAgentStatusCellToolTip(2910, gone);
+        check(goneTip.contains(QStringLiteral("grey ring")) &&
+                  goneTip.contains(QStringLiteral("no dot")) &&
+                  !goneTip.contains(QString::fromUtf8("\xE2\xAC\x87 arrow")),
+              QStringLiteral("a cleaned-up, clean, up-to-date session explains a "
+                             "grey ring and no dot, and mentions no arrow "
+                             "(adhoc #1443)"));
         // A cleaned-up session with no patch yet leaves every badge unknown, so
         // the chip falls back to the plain branch button.
         check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==

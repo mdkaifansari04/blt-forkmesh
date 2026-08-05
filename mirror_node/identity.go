@@ -3,6 +3,7 @@ package mirrornode
 import (
 	"bufio"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -30,6 +32,57 @@ var (
 type Identity struct {
 	private ed25519.PrivateKey
 	public  ed25519.PublicKey
+}
+
+// GenerateIdentity creates a new owner-only PKCS#8 Ed25519 identity.  The
+// temporary file is fsynced and renamed so a power loss can never leave the
+// service with a partial key.
+func GenerateIdentity(path string) (*Identity, error) {
+	if !filepath.IsAbs(path) {
+		return nil, errors.New("identity key path must be absolute")
+	}
+	if existing, err := LoadIdentity(path); err == nil {
+		return existing, nil
+	} else if _, statErr := os.Lstat(path); statErr == nil {
+		return nil, errors.New("refusing to replace an invalid identity key")
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".identity-*")
+	if err != nil {
+		return nil, err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0600); err != nil {
+		temporary.Close()
+		return nil, err
+	}
+	block := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})
+	if _, err := temporary.Write(block); err != nil {
+		temporary.Close()
+		return nil, err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return nil, err
+	}
+	if err := temporary.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return nil, err
+	}
+	return &Identity{private: private, public: public}, nil
 }
 
 func LoadIdentity(path string) (*Identity, error) {
@@ -74,6 +127,53 @@ type helperRequest struct {
 	MessageBase64 string `json:"messageBase64"`
 	MessageSHA256 string `json:"messageSha256"`
 	Signature     string `json:"signature,omitempty"`
+}
+
+type manifestSigningRequest struct {
+	SchemaVersion    int    `json:"schemaVersion"`
+	Type             string `json:"type"`
+	Algorithm        string `json:"algorithm"`
+	Encoding         string `json:"encoding"`
+	Canonicalization string `json:"canonicalization"`
+	PublicKey        string `json:"publicKey"`
+	PayloadBase64    string `json:"payloadBase64"`
+	PayloadSHA256    string `json:"payloadSha256"`
+}
+
+func RunManifestSigner(input io.Reader, output io.Writer, identity *Identity) error {
+	raw, err := io.ReadAll(io.LimitReader(input, maxHelperRequest+1))
+	if err != nil || len(raw) == 0 || len(raw) > maxHelperRequest {
+		return errors.New("invalid request size")
+	}
+	var request manifestSigningRequest
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return errors.New("invalid request JSON")
+	}
+	if request.SchemaVersion != 1 || request.Type != "forkmesh.mirror-endpoint-signing-request" ||
+		request.Algorithm != "Ed25519" || request.Encoding != "base64url-no-padding" ||
+		request.Canonicalization != "forkmesh-json-sort-v1" || request.PublicKey != identity.PublicKey() {
+		return errors.New("unsupported manifest signing request")
+	}
+	payload, err := decodeCanonicalBase64(request.PayloadBase64, -1)
+	if err != nil || len(payload) == 0 || len(payload) > 64<<10 {
+		return errors.New("invalid manifest payload")
+	}
+	digest := sha256.Sum256(payload)
+	if request.PayloadSHA256 != hex.EncodeToString(digest[:]) {
+		return errors.New("manifest payload digest mismatch")
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(payload, &manifest); err != nil || manifest["type"] != "forkmesh.mirror-endpoint" {
+		return errors.New("invalid mirror manifest")
+	}
+	if _, signed := manifest["signature"]; signed {
+		return errors.New("manifest is already signed")
+	}
+	return json.NewEncoder(output).Encode(map[string]any{
+		"publicKey": identity.PublicKey(), "signature": identity.Sign(payload),
+	})
 }
 
 func readHelperRequest(input io.Reader, expectSignature bool) (helperRequest, []byte, error) {

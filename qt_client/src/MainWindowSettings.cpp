@@ -285,6 +285,252 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoUpdateSetting, enabled);
     });
 
+    // Boot-scoped KVM workspace. The Qt desktop remains on the host so native
+    // display, keychain and notifications keep working; every coding-agent CLI
+    // and its subprocesses run in a Lima QEMU/KVM guest. Only the directory
+    // ForkMesh was launched from, linked Git metadata required by that checkout,
+    // and a dedicated temporary worktree root are mounted writable.
+    auto *vmLabel = new QLabel("KVM WORKSPACE");
+    vmLabel->setObjectName("sectionLabel");
+    auto *vmHint = new QLabel(
+        "Run ForkMesh coding work behind a separate Linux kernel. The guest "
+        "receives the directory this process was launched from, while host "
+        "HOME, desktop sockets, SSH agents and unrelated environment variables "
+        "stay outside the VM.");
+    vmHint->setObjectName("modeHint");
+    vmHint->setWordWrap(true);
+
+    auto *vmCheck =
+        new QCheckBox("Run coding agents in an isolated KVM virtual machine");
+    vmCheck->setObjectName("kvmWorkspaceCheck");
+    vmCheck->setChecked(
+        QSettings().value(forkmesh::vm::kEnabledSetting, false).toBool());
+    vmCheck->setToolTip(
+        "Linux only. Uses Lima's QEMU driver with /dev/kvm and a deterministic "
+        "per-directory guest. Changing this setting requires a ForkMesh restart.");
+
+    auto *vmStatus = new QLabel;
+    vmStatus->setObjectName("kvmWorkspaceStatus");
+    vmStatus->setWordWrap(true);
+    vmStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *vmPrepareButton = new QPushButton("Prepare / start VM");
+    vmPrepareButton->setObjectName("ghostButton");
+    vmPrepareButton->setCursor(Qt::PointingHandCursor);
+    vmPrepareButton->setToolTip(
+        "Create this directory's minimal Lima QEMU instance, or start it if it "
+        "already exists. The first image download can take several minutes.");
+    auto *vmShellButton = new QPushButton("Open VM shell…");
+    vmShellButton->setObjectName("ghostButton");
+    vmShellButton->setCursor(Qt::PointingHandCursor);
+    vmShellButton->setToolTip(
+        "Open a terminal inside the guest to install and sign in to Claude Code, "
+        "Codex, or another configured agent. Host login files are not mounted.");
+    auto *vmRestartButton = new QPushButton("Restart ForkMesh now");
+    vmRestartButton->setObjectName("primaryButton");
+    vmRestartButton->setCursor(Qt::PointingHandCursor);
+    vmRestartButton->setToolTip(
+        "Relaunch without rebuilding so the saved KVM setting becomes active.");
+
+    auto *vmButtonRow = new QHBoxLayout;
+    vmButtonRow->setContentsMargins(0, 0, 0, 0);
+    vmButtonRow->addWidget(vmPrepareButton);
+    vmButtonRow->addWidget(vmShellButton);
+    vmButtonRow->addWidget(vmRestartButton);
+    vmButtonRow->addStretch();
+
+    const auto refreshVmStatus =
+        [vmCheck, vmStatus, vmPrepareButton, vmShellButton, vmRestartButton]() {
+            const bool desired =
+                QSettings()
+                    .value(forkmesh::vm::kEnabledSetting, false)
+                    .toBool();
+            const bool restartRequired = desired != forkmesh::vm::active();
+            const QString unavailable = forkmesh::vm::availabilityError();
+            QString text;
+            if (!unavailable.isEmpty()) {
+                text = unavailable;
+            } else if (desired) {
+                text = QStringLiteral(
+                           "%1 KVM instance: %2\nWorkspace: %3")
+                           .arg(forkmesh::vm::active()
+                                    ? QStringLiteral("Active.")
+                                    : QStringLiteral("Enabled for next launch."),
+                                forkmesh::vm::instanceName(),
+                                QDir::toNativeSeparators(
+                                    forkmesh::vm::workspaceRoot()));
+            } else {
+                text = forkmesh::vm::active()
+                           ? QStringLiteral(
+                                 "Disabled for next launch; this process is "
+                                 "still using KVM isolation.")
+                           : QStringLiteral(
+                                 "Off. Coding agents run directly on this host.");
+            }
+            if (restartRequired)
+                text += QStringLiteral("\nRestart required to apply this change.");
+            vmStatus->setText(text);
+            vmCheck->blockSignals(true);
+            vmCheck->setChecked(desired);
+            vmCheck->blockSignals(false);
+            // An active-but-broken setup must remain switchable off.
+            vmCheck->setEnabled(unavailable.isEmpty() || desired ||
+                                forkmesh::vm::active());
+            vmPrepareButton->setEnabled(desired && unavailable.isEmpty());
+            vmShellButton->setEnabled(desired && unavailable.isEmpty());
+            vmRestartButton->setVisible(restartRequired);
+        };
+    refreshVmStatus();
+
+    auto *vmProcess = new QProcess(page);
+    vmProcess->setProcessChannelMode(QProcess::MergedChannels);
+    connect(vmProcess, &QProcess::finished, page,
+            [vmProcess, vmStatus, vmPrepareButton, vmShellButton,
+             vmRestartButton, refreshVmStatus](int exitCode,
+                                               QProcess::ExitStatus exitStatus) {
+                const QString output =
+                    QString::fromUtf8(vmProcess->readAll()).trimmed();
+                const QString phase =
+                    vmProcess->property("forkmeshVmPhase").toString();
+                if (phase == QLatin1String("inspect")) {
+                    if (exitStatus != QProcess::NormalExit || exitCode != 0) {
+                        refreshVmStatus();
+                        vmStatus->setText(
+                            vmStatus->text() +
+                            QStringLiteral("\nCould not inspect Lima instances%1%2")
+                                .arg(output.isEmpty() ? QStringLiteral(".")
+                                                      : QStringLiteral(": "),
+                                     output.right(800)));
+                        vmShellButton->setEnabled(false);
+                        vmRestartButton->setEnabled(true);
+                        return;
+                    }
+
+                    const QStringList names =
+                        output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+                    if (names.contains(forkmesh::vm::instanceName())) {
+                        vmProcess->setProperty("forkmeshVmPhase", "start");
+                        vmStatus->setText(
+                            QStringLiteral("Starting KVM instance %1…")
+                                .arg(forkmesh::vm::instanceName()));
+                        vmProcess->start(forkmesh::vm::limactlProgram(),
+                                         forkmesh::vm::startArguments());
+                    } else {
+                        QDir().mkpath(forkmesh::vm::worktreeRoot());
+                        vmProcess->setProperty("forkmeshVmPhase", "create");
+                        vmStatus->setText(
+                            "Creating the QEMU/KVM guest and downloading its "
+                            "base image…");
+                        vmProcess->start(forkmesh::vm::limactlProgram(),
+                                         forkmesh::vm::createArguments());
+                    }
+                    return;
+                }
+
+                if (exitStatus == QProcess::NormalExit && exitCode == 0) {
+                    refreshVmStatus();
+                    vmStatus->setText(
+                        vmStatus->text() +
+                        QStringLiteral(
+                            "\nVM ready. Open its shell to install/sign in to "
+                            "the agent CLIs, then restart ForkMesh if prompted."));
+                    vmRestartButton->setEnabled(true);
+                    return;
+                }
+
+                refreshVmStatus();
+                vmStatus->setText(
+                    vmStatus->text() +
+                    QStringLiteral("\nVM preparation failed%1%2")
+                        .arg(output.isEmpty() ? QStringLiteral(".")
+                                              : QStringLiteral(": "),
+                             output.right(800)));
+                vmPrepareButton->setEnabled(
+                    QSettings()
+                        .value(forkmesh::vm::kEnabledSetting, false)
+                        .toBool() &&
+                    forkmesh::vm::availabilityError().isEmpty());
+                vmShellButton->setEnabled(false);
+                vmRestartButton->setEnabled(true);
+            });
+    connect(vmProcess, &QProcess::errorOccurred, page,
+            [vmProcess, vmStatus, vmPrepareButton,
+             vmRestartButton](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                vmStatus->setText(
+                    QStringLiteral("Could not start limactl: %1")
+                        .arg(vmProcess->errorString()));
+                vmPrepareButton->setEnabled(
+                    QSettings()
+                        .value(forkmesh::vm::kEnabledSetting, false)
+                        .toBool());
+                vmRestartButton->setEnabled(true);
+            });
+
+    connect(vmPrepareButton, &QPushButton::clicked, page,
+            [vmProcess, vmStatus, vmPrepareButton, vmShellButton,
+             vmRestartButton] {
+                if (vmProcess->state() != QProcess::NotRunning)
+                    return;
+                const QString unavailable = forkmesh::vm::availabilityError();
+                if (!unavailable.isEmpty()) {
+                    vmStatus->setText(unavailable);
+                    return;
+                }
+                QDir().mkpath(forkmesh::vm::worktreeRoot());
+                vmProcess->setProperty("forkmeshVmPhase", "inspect");
+                vmPrepareButton->setEnabled(false);
+                vmShellButton->setEnabled(false);
+                vmRestartButton->setEnabled(false);
+                vmStatus->setText(QStringLiteral("Checking KVM instance %1…")
+                                      .arg(forkmesh::vm::instanceName()));
+                vmProcess->start(forkmesh::vm::limactlProgram(),
+                                 forkmesh::vm::listArguments());
+            });
+
+    connect(vmCheck, &QCheckBox::toggled, page,
+            [vmPrepareButton, refreshVmStatus](bool enabled) {
+                QSettings settings;
+                settings.setValue(forkmesh::vm::kEnabledSetting, enabled);
+                settings.sync();
+                refreshVmStatus();
+                if (enabled && forkmesh::vm::availabilityError().isEmpty())
+                    vmPrepareButton->click();
+            });
+    connect(vmRestartButton, &QPushButton::clicked, this,
+            &MainWindow::relaunchForkMesh);
+    connect(vmShellButton, &QPushButton::clicked, this, [this] {
+        const QString command = forkmesh::vm::interactiveCommand();
+        if (command.isEmpty()) {
+            flashMessage("limactl is unavailable; prepare the VM first.", true);
+            return;
+        }
+        auto *dialog = new QDialog(this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle("ForkMesh KVM workspace");
+        dialog->resize(900, 560);
+        auto *layout = new QVBoxLayout(dialog);
+        auto *notice = new QLabel(
+            QStringLiteral(
+                "This shell is inside <b>%1</b>. Install and sign in to the "
+                "agent CLIs here; provider credentials remain in the guest. "
+                "The writable project mount is <code>%2</code>.")
+                .arg(forkmesh::vm::instanceName().toHtmlEscaped(),
+                     forkmesh::vm::workspaceRoot().toHtmlEscaped()),
+            dialog);
+        notice->setWordWrap(true);
+        layout->addWidget(notice);
+        auto *terminal = new TerminalWidget(dialog);
+        layout->addWidget(terminal, 1);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+        connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+        layout->addWidget(buttons);
+        dialog->show();
+        terminal->runCommand(command, forkmesh::vm::workspaceRoot(), {}, false);
+        terminal->setFocus();
+    });
+
     // There is no "open repositories on tab" preference any more (adhoc #119): a
     // repo opens on its Code overview, and a relaunch restores the tab last
     // viewed. See kRepoLandingTab.
@@ -1745,6 +1991,13 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(m_autostartInfo);
     generalCol->addLayout(autostartRemoveRow);
     generalCol->addWidget(autoUpdateCheck);
+    generalCol->addSpacing(6);
+    generalCol->addWidget(vmLabel);
+    generalCol->addWidget(vmHint);
+    generalCol->addWidget(vmCheck);
+    generalCol->addWidget(vmStatus);
+    generalCol->addLayout(vmButtonRow);
+    generalCol->addSpacing(6);
     generalCol->addWidget(autoSwitchToAgentCheck);
     generalCol->addWidget(excludeExternalClaudeCheck);
     generalCol->addWidget(publishAgentsToWebCheck);

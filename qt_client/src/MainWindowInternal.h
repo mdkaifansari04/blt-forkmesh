@@ -41,6 +41,7 @@
 #include "SystemStats.h"
 #include "AgentStore.h"
 #include "Theme.h"
+#include "VirtualMachineRuntime.h"
 
 #include <QAbstractButton>
 #include <QAbstractAnimation>
@@ -4412,22 +4413,23 @@ inline void populateCodexModelCombo(QComboBox *combo)
 
 // Static Cloudflare Workers AI line-up, mirroring the relay's allowlist
 // (FORKBOT_AI_MODEL_CHOICES in cloudflare_worker/src/entry.py). The relay is
-// the authority — it re-validates every pick and rejects anything it does not
-// offer — so this list only has to keep the picker populated before the live
-// fetch lands, offline, and on an older relay with no /api/forkbot/models.
+// the authority — it re-validates every pick and falls back when a cached id is
+// no longer offered — so this list only has to keep the picker populated before
+// the live fetch lands, offline, and on an older relay with no
+// /api/forkbot/models.
 inline QVector<QPair<QString, QString>> cloudflareAiFallbackModels()
 {
     return {
         {QStringLiteral("@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
-         QStringLiteral("Llama 3.3 70B")},
+         QStringLiteral("Llama 3.3 70B (fast)")},
         {QStringLiteral("@cf/meta/llama-4-scout-17b-16e-instruct"),
          QStringLiteral("Llama 4 Scout 17B")},
-        {QStringLiteral("@cf/google/gemma-3-12b-it"),
-         QStringLiteral("Gemma 3 12B")},
-        {QStringLiteral("@cf/meta/llama-3.1-8b-instruct"),
-         QStringLiteral("Llama 3.1 8B")},
+        {QStringLiteral("@cf/google/gemma-4-26b-a4b-it"),
+         QStringLiteral("Gemma 4 26B")},
+        {QStringLiteral("@cf/zai-org/glm-4.7-flash"),
+         QStringLiteral("GLM 4.7 Flash")},
         {QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast"),
-         QStringLiteral("Llama 3.1 8B fast")},
+         QStringLiteral("Llama 3.1 8B (fast)")},
     };
 }
 
@@ -4785,11 +4787,13 @@ const QString kClaudeCodeOAuthSystem =
 // Materialize the bundled Claude agent script into the app data dir and return
 // its path. The script talks to the Anthropic API directly using
 // ANTHROPIC_API_KEY, so no `claude` binary is required.
-inline QString claudeAgentScriptPath()
+inline QString claudeAgentScriptPath(const QString &directory = QString())
 {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-        QStringLiteral("/agents");
+    const QString dir = directory.isEmpty()
+                            ? QStandardPaths::writableLocation(
+                                  QStandardPaths::AppDataLocation) +
+                                  QStringLiteral("/agents")
+                            : directory;
     QDir().mkpath(dir);
     const QString path = dir + QStringLiteral("/forkmesh_claude_agent.py");
     const QByteArray wanted = forkmeshClaudeAgentScript().toUtf8();
@@ -7791,7 +7795,7 @@ private:
                        .arg(m_websiteStatuses.isEmpty()
                                 ? QString()
                                 : QStringLiteral(" and %1 website status results")
-                                      .arg(m_websiteStatuses.size()));
+                                      .arg(m_websiteStatuses.size())));
     }
 
     Presentation m_presentation = Compact;
