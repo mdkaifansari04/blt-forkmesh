@@ -32,58 +32,79 @@ def test_mirrors_css_has_responsive_table_hooks():
     assert "@media (max-width: 700px)" in STYLES
 
 
-def test_live_mirror_tab_uses_responsive_summary_and_cards():
+def test_live_mirror_tab_uses_compact_borderless_table():
     rows = DASHBOARD_JS[
         DASHBOARD_JS.index("function renderMirrorTabRow(")
-        : DASHBOARD_JS.index("function renderMirrorNetworkSummary(")
-    ]
-    assert "data-mirror-card" in rows
-    assert "min-w-0 overflow-hidden rounded-lg" in rows
-    assert "mirrorDetailGroups(mirror, refMirror)" in rows
-    assert "min-w-max" not in rows
-    assert "whitespace-nowrap" not in rows
-
-    summary = DASHBOARD_JS[
-        DASHBOARD_JS.index("function renderMirrorNetworkSummary(")
         : DASHBOARD_JS.index("function renderMirrorRow(")
     ]
-    assert "data-mirror-summary" in summary
-    assert "Registered nodes" in summary
-    assert "Online now" in summary
-    assert "revision mismatch" in summary
+    assert "data-mirror-row" in rows
+    assert '<tr data-mirror-row' in rows
+    assert "max-w-28 truncate whitespace-nowrap px-1 py-1" in rows
+    assert "<article" not in rows
+    assert "border" not in rows
+
+    headers = DASHBOARD_JS[
+        DASHBOARD_JS.index("function mirrorTableHeader(")
+        : DASHBOARD_JS.index("function renderMirrorTabRow(")
+    ]
+    assert '<th scope="col"' in headers
+    assert 'class="inline-block h-3 w-3"' in headers
+    assert '<span class="sr-only">${escapeHtml(label)}</span>' in headers
+    for heading in (
+        "Node",
+        "Status",
+        "Revision",
+        "Last synced",
+        "Endpoint",
+        "Issues",
+        "Commits",
+        "Clones served",
+        "Website requests",
+    ):
+        assert f'"{heading}"' in headers
 
     mirror_list = DASHBOARD_JS[
         DASHBOARD_JS.index("function renderRepoMirrorLists(")
         : DASHBOARD_JS.index("const REPO_MIRROR_MIN_REFRESH_MS")
     ]
-    assert "renderMirrorNetworkSummary(ordered, refMirror)" in mirror_list
-    assert 'data-mirror-card-grid class="grid gap-3 p-3 md:grid-cols-2"' in mirror_list
-    assert "overflow-x-auto" not in mirror_list
+    assert "data-mirror-table-wrap" in mirror_list
+    assert "data-mirror-table" in mirror_list
+    assert "border-separate border-spacing-0 whitespace-nowrap" in mirror_list
+    assert "mirrorTableHead()" in mirror_list
+    assert "data-mirror-card" not in mirror_list
 
 
-def test_live_mirror_details_have_scannable_sections():
-    details = DASHBOARD_JS[
-        DASHBOARD_JS.index("function mirrorChip(")
-        : DASHBOARD_JS.index("function mirrorCountText(")
+def test_live_mirror_table_keeps_dense_values_in_tooltips():
+    rows = DASHBOARD_JS[
+        DASHBOARD_JS.index("function renderMirrorTabRow(")
+        : DASHBOARD_JS.index("function renderMirrorRow(")
     ]
-    for heading in (
-        "Revision",
-        "Connection",
-        "Repository contents",
-        "Local activity",
-    ):
-        assert f'mirrorDetailGroup("{heading}"' in details
-    assert "sm:grid-cols-2" in details
-    assert "max-w-full" in details
+    assert 'const capabilityTitle = operations.length' in rows
+    assert 'Capabilities: ${operations.join(", ")}' in rows
+    assert "formatCount(operations.length)" in rows
+    assert "Source of truth is at" in rows
 
 
-def test_long_mirror_capabilities_use_a_mouseover_list():
-    chips = DASHBOARD_JS[
-        DASHBOARD_JS.index("function mirrorListChip(")
-        : DASHBOARD_JS.index("function mirrorCountText(")
+def test_mirror_page_shell_has_no_outer_margin_or_border():
+    panel = DASHBOARD_JS[
+        DASHBOARD_JS.index('<section data-dashboard-repo-tab-panel="mirrors"')
+        : DASHBOARD_JS.index('<section data-dashboard-repo-tab-panel="agents"')
     ]
-    assert r'list.map((value) => `\u2022 ${value}`).join("\n")' in chips
-    assert 'title="${escapeHtml(tooltip)}"' in chips
-    assert 'tabindex="0"' in chips
-    assert 'aria-label="${escapeHtml(`${label}: ${list.join(", ")}`)}"' in chips
-    assert 'mirrorListChip("Capabilities", operations)' in chips
+    assert 'class="hidden"><div data-mirror-request' in panel
+    assert "mt-4" not in panel
+    assert "border" not in panel
+    assert "rounded-lg" not in panel
+
+
+def test_mirrors_action_badge_uses_the_live_membership_list():
+    loader = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadRepoMirrors(")
+        : DASHBOARD_JS.index("function repoMirrorsTabVisible(")
+    ]
+
+    # The endpoint's summary can lag the returned node records. The rail badge
+    # must agree with the list rendered in the Mirrors panel.
+    assert "const mirrorCount = mirrors.length;" in loader
+    assert "data.summary?.mirrors" not in loader
+    assert "updateRepoLiveCounts(repo, { mirrors: mirrorCount });" in loader
+    assert 'setRepoTabCount("mirrors", mirrorCount);' in loader

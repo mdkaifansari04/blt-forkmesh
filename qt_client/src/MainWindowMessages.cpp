@@ -1000,6 +1000,8 @@ QString directoryAccountKey(const MemberInfo &u)
 
 void MainWindow::refreshChatUserDirectory()
 {
+    if (qEnvironmentVariableIsSet("FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     if (!m_networkAccess || m_chatDirectoryFetchInFlight)
         return;
     // Keep polling so a brand-new signup appears in the users column within a

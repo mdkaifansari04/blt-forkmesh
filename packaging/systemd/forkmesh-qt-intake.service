@@ -1,0 +1,29 @@
+[Unit]
+Description=ForkMesh legacy relay intake bridge
+Documentation=https://forkmesh.com/docs/operations/mirror-node
+Wants=network-online.target forkmesh-mirror-node.service
+After=network-online.target forkmesh-mirror-node.service
+
+[Service]
+Type=simple
+User=forkmesh-node
+Group=forkmesh-node
+EnvironmentFile=/etc/forkmesh/node.env
+Environment=FORKMESH_EXTERNAL_MIRROR_NODE=1
+ExecStart=/usr/local/bin/forkmesh
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/forkmesh
+RestrictSUIDSGID=true
+LockPersonality=true
+TasksMax=128
+LimitNOFILE=8192
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

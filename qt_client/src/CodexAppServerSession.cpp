@@ -1,6 +1,7 @@
 #include "CodexAppServerSession.h"
 
 #include "AgentJail.h"
+#include "VirtualMachineRuntime.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -186,6 +187,7 @@ void CodexAppServerSession::start(const QString &cwd,
         else if (equals < 0 && !entry.isEmpty())
             env.remove(entry);
     }
+    forkmesh::vm::applyGuestEnvironmentPolicy(env);
     proc->setProcessEnvironment(env);
     proc->setProcessChannelMode(QProcess::SeparateChannels);
 
@@ -213,19 +215,36 @@ void CodexAppServerSession::start(const QString &cwd,
                 onProcessFinished(code);
             });
 
+    QString program;
+    QStringList arguments;
     if (!m_program.isEmpty()) {
-        proc->start(m_program, m_arguments);
+        program = m_program;
+        arguments = m_arguments;
+    } else {
+#ifdef Q_OS_WIN
+        program = QStringLiteral("codex");
+        arguments = {QStringLiteral("app-server")};
+#else
+        // A login shell gives GUI launches the same PATH as an interactive terminal.
+        program = QStringLiteral("bash");
+        arguments = {
+            QStringLiteral("-lc"),
+            AgentJail::wrapCommand(QStringLiteral("exec codex app-server"),
+                                   memoryLimitMb)};
+#endif
+    }
+    const forkmesh::vm::LaunchCommand launch =
+        forkmesh::vm::isolateCommand(program, arguments, cwd);
+    if (!launch.error.isEmpty()) {
+        emitLocalNotice(QStringLiteral("error"),
+                        QStringLiteral("KVM launch failed: %1")
+                            .arg(launch.error));
+        m_proc = nullptr;
+        proc->deleteLater();
+        QTimer::singleShot(0, this, [this] { emit finished(-1); });
         return;
     }
-#ifdef Q_OS_WIN
-    proc->start(QStringLiteral("codex"), {QStringLiteral("app-server")});
-#else
-    // A login shell gives GUI launches the same PATH as an interactive terminal.
-    proc->start(QStringLiteral("bash"),
-                {QStringLiteral("-lc"),
-                 AgentJail::wrapCommand(QStringLiteral("exec codex app-server"),
-                                        memoryLimitMb)});
-#endif
+    proc->start(launch.program, launch.arguments);
 }
 
 void CodexAppServerSession::resetProtocolState()

@@ -1,6 +1,92 @@
 const { test, expect } = require("@playwright/test");
 
 
+test("ForkBot sends the model selected in the prompt area without storage", async ({
+  page,
+}) => {
+  const selectedModel = "@cf/zai-org/glm-4.7-flash";
+  let forkbotRequest = null;
+
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "forkmesh.session",
+      JSON.stringify({
+        nodeName: "alice",
+        email: "alice@example.test",
+        kind: "user",
+        sessionToken: "test-session",
+      }),
+    );
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItem(key, value) {
+      if (key === "forkmesh.forkbot.model") {
+        throw new DOMException("Storage disabled", "SecurityError");
+      }
+      return originalSetItem.call(this, key, value);
+    };
+  });
+
+  await page.route("**/api/**", (route) => {
+    const url = new URL(route.request().url());
+    let body = { error: "not_found" };
+    let status = 404;
+    if (url.pathname === "/api/chat/room-key") {
+      status = 200;
+      body = {
+        ok: true,
+        room: "world-general",
+        access: "public-world-general",
+        passphrase: "playwright-forkbot-model-passphrase",
+      };
+    } else if (url.pathname === "/api/accounts/users") {
+      status = 200;
+      body = { ok: true, users: [] };
+    } else if (url.pathname === "/api/chat/activity") {
+      status = 200;
+      body = { ok: true, messageCount: 0, latestMessageTs: 0, userCount: 0 };
+    } else if (url.pathname === "/api/forkbot/models") {
+      status = 200;
+      body = {
+        ok: true,
+        default: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        models: [
+          {
+            id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+            label: "Llama 3.3 70B (fast)",
+            default: true,
+          },
+          { id: selectedModel, label: "GLM 4.7 Flash", default: false },
+        ],
+      };
+    } else if (url.pathname === "/api/forkbot/chat") {
+      status = 200;
+      forkbotRequest = route.request().postDataJSON();
+      body = { ok: true, botMessage: "GLM handled that prompt." };
+    }
+    return route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    () => {},
+  );
+
+  await page.goto("/chat.html");
+  await expect(page.locator("#chat-status")).toContainText("Connected");
+  const modelPicker = page.locator("#chat-forkbot-model");
+  await expect(modelPicker).toBeVisible();
+  await modelPicker.selectOption(selectedModel);
+  await page.locator("#chat-input").fill("forkbot explain this failure");
+  await page.locator("#chat-send").click();
+
+  await expect.poll(() => forkbotRequest?.model).toBe(selectedModel);
+  expect(forkbotRequest.message).toBe("forkbot explain this failure");
+});
+
+
 test("self-authored retained chat survives a page refresh", async ({ page }) => {
   const passphrase = "playwright-public-world-general-passphrase";
   const retainedFrames = [];

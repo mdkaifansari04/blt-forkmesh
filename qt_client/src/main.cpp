@@ -18,6 +18,7 @@
 #include "StartupTrace.h"
 #include "SystemStats.h"
 #include "Theme.h"
+#include "VirtualMachineRuntime.h"
 
 #if __has_include("ForkMeshVersion.h")
 #include "ForkMeshVersion.h"
@@ -691,6 +692,17 @@ int main(int argc, char *argv[])
         QGuiApplication::setDesktopFileName(QStringLiteral("forkmesh"));
         app.setStyle(QStyleFactory::create("Fusion"));
     }
+
+    // Snapshot the process-wide work boundary before any agents or worktrees
+    // can start. The Settings switch intentionally takes effect only here: a
+    // running provider must never jump between the host and a VM mid-session.
+    forkmesh::vm::initialize(
+        QSettings().value(forkmesh::vm::kEnabledSetting, false).toBool());
+    forkmesh::logStartupTrace(
+        QStringLiteral("work runtime: %1; launch directory=%2")
+            .arg(forkmesh::vm::active() ? QStringLiteral("KVM")
+                                        : QStringLiteral("host"),
+                 forkmesh::vm::workspaceRoot()));
 
     // From here to the main window's first frame the GUI thread is busy and
     // nothing is on screen, so put up the launch splash: a centred card that

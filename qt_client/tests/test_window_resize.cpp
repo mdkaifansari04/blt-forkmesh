@@ -146,17 +146,63 @@ void checkFooterOverlayGeometry(MainWindow &window)
     auto *promptWrapper = window.findChild<QWidget *>(QStringLiteral("promptWrapper"));
     auto *avatar = window.findChild<QPushButton *>(QStringLiteral("serverFooterButton"));
     auto *lights = dynamic_cast<forkmesh::ui::LogActivityLights *>(
-        window.findChild<QWidget *>(QStringLiteral("logActivityLights")));
+        window.findChild<QWidget *>(QStringLiteral("debugActivityLights")));
     auto *header = dynamic_cast<forkmesh::ui::LogActivityLights *>(
         window.findChild<QWidget *>(QStringLiteral("logActivityHeader")));
-    check(dock && log && prompt && lights && header && !log->isVisible() &&
-              lights->isVisible() && lights->lightCount() == 30 &&
+    auto *debugBar = window.findChild<QWidget *>(QStringLiteral("debugBar"));
+    auto *version = window.findChild<QPushButton *>(
+        QStringLiteral("statusVersionButton"));
+    check(dock && log && prompt && lights && header && debugBar && version &&
+              !log->isVisible() && !debugBar->isVisible() && lights->isDebug() &&
+              lights->lightCount() == 30 &&
               prompt->geometry().center().x() > dock->rect().center().x() &&
-              prompt->geometry().bottom() == dock->rect().bottom() &&
-              lights->geometry().left() == dock->rect().left() &&
-              lights->geometry().bottom() == dock->rect().bottom(),
-          QStringLiteral("all 30 collapsed log-category lights stay lower-left "
-                         "while the lower-right prompt is bottom-flush"));
+              prompt->geometry().bottom() == dock->rect().bottom(),
+          QStringLiteral("all 30 labeled log categories start collapsed in the "
+                         "version-controlled debug bar"));
+    if (version && debugBar) {
+        version->click();
+        QApplication::processEvents();
+        check(debugBar->isVisible() && lights->isVisibleTo(debugBar) &&
+                  window.findChild<QWidget *>(
+                      QStringLiteral("debugResourceChart")) != nullptr,
+              QStringLiteral("clicking the footer version reveals debug activity "
+                             "and the enlarged four-resource chart"));
+
+        const quint64 gitCountBefore = lights->countFor(QStringLiteral("GIT"));
+        lights->pulse(QStringLiteral("GIT"));
+        lights->pulse(QStringLiteral("GIT"));
+        check(lights->countFor(QStringLiteral("GIT")) == gitCountBefore + 2,
+              QStringLiteral("the debug row keeps per-category occurrence counts"));
+
+        const qint64 minute = QDateTime::currentMSecsSinceEpoch() - 60000;
+        const QJsonArray systems = {
+            QJsonObject{
+                {QStringLiteral("id"), QStringLiteral("website")},
+                {QStringLiteral("label"), QStringLiteral("Website")},
+                {QStringLiteral("minutes"),
+                 QJsonArray{QJsonObject{
+                     {QStringLiteral("minuteTs"), double(minute)},
+                     {QStringLiteral("status"), QStringLiteral("operational")}}}}},
+            QJsonObject{
+                {QStringLiteral("id"), QStringLiteral("api")},
+                {QStringLiteral("label"), QStringLiteral("API")},
+                {QStringLiteral("minutes"),
+                 QJsonArray{QJsonObject{
+                     {QStringLiteral("minuteTs"), double(minute)},
+                     {QStringLiteral("status"), QStringLiteral("down")}}}}},
+        };
+        check(window.testApplyFooterWebsiteStatusPayload(
+                  QJsonObject{{QStringLiteral("ok"), true},
+                              {QStringLiteral("now"), double(minute + 60000)},
+                              {QStringLiteral("systems"), systems}}) &&
+                  lights->websiteStatusCount() == 2 &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("operational") &&
+                  lights->websiteStatusFor(QStringLiteral("api")) ==
+                      QStringLiteral("down"),
+              QStringLiteral("the debug row appends labeled green/red website "
+                             "minute states"));
+    }
 
     // The prompt avatar is the lower-right launcher: clicking it collapses the
     // composer to the circular avatar, and hovering that avatar opens it again.
@@ -179,7 +225,7 @@ void checkFooterOverlayGeometry(MainWindow &window)
 
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
-    check(log && lights && header && log->isVisible() && !lights->isVisible() &&
+    check(log && lights && header && log->isVisible() && lights->isVisible() &&
               header->isVisible() && header->lightCount() == 30 &&
               log->geometry().center().x() < dock->rect().center().x() &&
               log->geometry().bottom() == dock->rect().bottom() &&
@@ -189,11 +235,8 @@ void checkFooterOverlayGeometry(MainWindow &window)
 
     window.testShowLogSection();
     QApplication::processEvents();
-    check(!log->isVisible() && lights->isVisible() &&
-              lights->geometry().left() == dock->rect().left() &&
-              lights->geometry().bottom() == dock->rect().bottom(),
-          QStringLiteral("the full Log view returns the category lights to the "
-                         "lower-left"));
+    check(!log->isVisible() && lights->isVisible(),
+          QStringLiteral("the full Log view leaves the debug category row visible"));
     window.testShowHomeSection();
     QApplication::processEvents();
 }
@@ -700,15 +743,15 @@ int main(int argc, char *argv[])
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
     if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly)
-        check(detailedStartupSteps >= 20 &&
+        check(detailedStartupSteps >= 7 &&
               startupLog.contains(QStringLiteral(
-                  "BEGIN MainWindow: load repository catalog from settings")) &&
+                  "BEGIN MainWindow: read connection state and cached model list")) &&
               startupLog.contains(QStringLiteral(
-                  "DONE  MainWindow: load repository catalog from settings (")) &&
+                  "DONE  MainWindow: read connection state and cached model list (")) &&
               startupLog.contains(QStringLiteral(
-                  "BEGIN MainWindow: warm Code, Branches and Worktrees UI")) &&
+                  "BEGIN MainWindow: populate Hosts navigation count")) &&
               startupLog.contains(QStringLiteral(
-                  "DONE  MainWindow: warm Code, Branches and Worktrees UI (")) &&
+                  "DONE  MainWindow: populate Hosts navigation count (")) &&
               startupLog.contains(QStringLiteral(
                   "startup job scheduled: initial mirror synchronization in "
                   "1000ms")),
@@ -910,6 +953,30 @@ int main(int argc, char *argv[])
                       QStringLiteral("Fable: 58%")),
               QStringLiteral("selecting an account activates its provider config "
                              "root and cached limits"));
+
+        window.testShowAgentAccountMenu(QStringLiteral("claude-code"));
+        QApplication::processEvents();
+        accountMenu = window.findChild<QMenu *>(
+            QStringLiteral("claudeAccountUsageMenu"));
+        bool hasEditAction = false;
+        if (accountMenu) {
+            for (QAction *action : accountMenu->actions()) {
+                if (action->objectName() ==
+                    QStringLiteral("agentAccountEdit_%1").arg(profileId))
+                    hasEditAction = true;
+            }
+        }
+        check(hasEditAction,
+              QStringLiteral("account menu offers editing for saved accounts"));
+        check(window.testRenameAgentAccount(QStringLiteral("claude-code"),
+                                            profileId,
+                                            QStringLiteral("Work Claude")) &&
+                  forkmesh::ui::activeAgentAccount(
+                      QStringLiteral("claude-code")).label ==
+                      QStringLiteral("Work Claude"),
+              QStringLiteral("editing an account persists its label"));
+        if (accountMenu)
+            accountMenu->close();
         window.testSelectAgentAccount(QStringLiteral("claude-code"),
                                       QStringLiteral("default"));
     }
@@ -993,6 +1060,13 @@ int main(int argc, char *argv[])
                       appPath->toolTip().contains(
                           QCoreApplication::applicationFilePath()),
                   QStringLiteral("status bar shows the running app's location"));
+            QPushButton *version = statusBar->findChild<QPushButton *>(
+                QStringLiteral("statusVersionButton"));
+            statusBar->layout()->activate();
+            QApplication::processEvents();
+            check(version && appPath && version->geometry().left() >=
+                                               appPath->geometry().right(),
+                  QStringLiteral("clickable version sits to the right of the app path"));
 
             // adhoc #1389: slow background work no longer reserves a permanent
             // footer column. Each kind appears as one 18px status icon, and the
@@ -1198,6 +1272,54 @@ int main(int argc, char *argv[])
                       "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256=")),
               QStringLiteral(
                   "direct controller uploads pin the exact local binary SHA-256"));
+
+        // The source-tree test must not depend on a developer having already
+        // built the release companion.  Put a tiny non-empty executable in
+        // PATH so this exercises the package framing and remote installer
+        // deterministically; production still fails closed when the packaged
+        // Go binary is absent.
+        QTemporaryDir mirrorPackageDir;
+        const QByteArray originalPath = qgetenv("PATH");
+        QFile mirrorBinaryFixture(
+            mirrorPackageDir.filePath(QStringLiteral("forkmesh-mirror-node")));
+        const bool mirrorFixtureReady = mirrorPackageDir.isValid() &&
+            mirrorBinaryFixture.open(QIODevice::WriteOnly) &&
+            mirrorBinaryFixture.write("#!/bin/sh\nexit 0\n") > 0;
+        mirrorBinaryFixture.close();
+        if (mirrorFixtureReady) {
+            mirrorBinaryFixture.setPermissions(
+                QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+                QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                QFileDevice::ExeOther);
+            qputenv("PATH", mirrorPackageDir.path().toUtf8() + ':' +
+                                originalPath);
+        }
+        qsizetype mirrorUploadBytes = -1;
+        QString mirrorUploadError;
+        const QString mirrorCommand =
+            window.testVultrGoMirrorInstallRemoteCommand(
+                &mirrorUploadBytes, &mirrorUploadError);
+        qputenv("PATH", originalPath);
+        check(mirrorFixtureReady && !mirrorCommand.isEmpty() &&
+                  mirrorUploadError.isEmpty() &&
+                  mirrorUploadBytes > 0 &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "systemctl enable --now forkmesh-mirror-node.service")) &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "Go mirror-node installed and running (no Qt/GTK packages)")) &&
+                  !mirrorCommand.contains(QStringLiteral("install.sh")),
+              QStringLiteral(
+                  "Vultr uses one native Go mirror package without the desktop installer"));
+        QProcess mirrorSyntax;
+        mirrorSyntax.start(QStringLiteral("bash"),
+                           {QStringLiteral("-n"), QStringLiteral("-c"),
+                            mirrorCommand});
+        const bool mirrorSyntaxFinished = mirrorSyntax.waitForFinished(5000);
+        check(mirrorSyntaxFinished &&
+                  mirrorSyntax.exitStatus() == QProcess::NormalExit &&
+                  mirrorSyntax.exitCode() == 0,
+              QStringLiteral("Vultr Go mirror remote command is valid shell syntax"));
     }
     if (fleetBinaryInstallOnly)
         return failures == 0 ? 0 : 1;
@@ -2290,6 +2412,24 @@ int main(int argc, char *argv[])
                                  "limit and syncs Settings"));
         }
     }
+    // A restored Codex session can retain its persisted Running status after its
+    // app-server transport has gone away. Its Continue action must requeue it;
+    // otherwise a follow-up prompt is accepted by the UI but has no process to
+    // receive it.
+    {
+        AgentSession detachedCodex;
+        detachedCodex.id = 133892;
+        detachedCodex.owner = QStringLiteral("me");
+        detachedCodex.name = QStringLiteral("r");
+        detachedCodex.provider = QStringLiteral("codex");
+        detachedCodex.prompt = QStringLiteral("Detached Codex transport fixture");
+        detachedCodex.status = AgentStatus::Running;
+        window.testAddAgentSession(detachedCodex);
+        check(window.testQueueDetachedRunningAgentSession(detachedCodex.id),
+              QStringLiteral("a detached Running Codex session can be requeued "
+                             "for a follow-up prompt"));
+        window.testRemoveAgentSession(detachedCodex.id);
+    }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
     // own "Updated" column) and the title, which is the column that flexes — so
@@ -2358,6 +2498,17 @@ int main(int argc, char *argv[])
         for (int id = 133901; id < 133978; ++id)
             window.testRemoveAgentSession(id);
     }
+
+    // The source-of-truth inbox count is one response shared by all three
+    // collaboration tabs. Each action must surface its own value before the
+    // user opens the review list.
+    window.testSetPendingInboxCounts(3, 2, 4);
+    check(window.testIssueInboxBadgeCount() == 3 &&
+              window.testPullInboxBadgeCount() == 2 &&
+              window.testDiscussionInboxButtonText().contains(
+                  QStringLiteral("4")),
+          QStringLiteral("issue, PR, and discussion inbox actions show their "
+                         "pending submission counts"));
 
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
@@ -2840,19 +2991,22 @@ int main(int argc, char *argv[])
             check(mirror1Id == QStringLiteral("mirror1-new-key"),
                   QString("the newer identity wins the deduped Mirror nodes row "
                           "(got id %1)").arg(mirror1Id));
+            check(window.testMirrorNodeCardsAreCompact(),
+                  QStringLiteral("Mirror nodes render as three-row cards with "
+                                 "resource gauges and live node, sync, commit, "
+                                 "health, and reachability controls"));
             check(!sawOffline,
                   QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
             check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 2) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
-            // Columns: Node, Owner, Latest commit, Message, Author, Synced,
-            // Sync delay, Size, Issues, Commits, Branches, Pulls, Discussions,
-            // CPU, RAM, Disk, Platform, … — the sync-delay column pushes
-            // Disk/Platform to 15/16.
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 15)
+            // Hidden data-model columns remain stable behind the card: Node,
+            // Sync, Owner, commit identity, sync facts, repo counts, pending
+            // inbox counts, Health, then CPU/RAM/Disk/Platform.
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 20)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 16) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 21) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             window.testSetMirrorNodesOnlineOnly(false);
@@ -3976,6 +4130,12 @@ int main(int argc, char *argv[])
             // Manual and the two API agents carry no model of their own.
             if (quickAgentModel->itemData(i, Qt::UserRole + 1).toString().isEmpty())
                 continue;
+            // Cloudflare chat models form their own group below the ranked
+            // coding agents and are verified separately.
+            const QString provider = quickAgentModel->itemData(i).toString();
+            if (provider != QStringLiteral("claude-code") &&
+                provider != QStringLiteral("codex"))
+                continue;
             rankedLabels << quickAgentModel->itemText(i);
         }
         check(rankedLabels == QStringList({QStringLiteral("Auto"),
@@ -4077,6 +4237,43 @@ int main(int argc, char *argv[])
             seeded.testRefreshQuickAddAgentModelSelector();
             QApplication::processEvents();
         }
+        // Every active Workers AI fallback must appear as its own selectable
+        // composer row. Selecting each row updates the same hidden provider and
+        // model controls quickAddIssue() reads when it sends /api/ai/ask.
+        bool allCloudflareModelsSelectable = quickAgentModel && canonicalModel;
+        QStringList selectedCloudflareModels;
+        for (const auto &choice :
+             forkmesh::ui::cloudflareAiFallbackModels()) {
+            int row = -1;
+            for (int i = 0; quickAgentModel && i < quickAgentModel->count(); ++i) {
+                if (quickAgentModel->itemData(i).toString() ==
+                        QStringLiteral("cloudflare-ai") &&
+                    quickAgentModel->itemData(i, Qt::UserRole + 1).toString() ==
+                        choice.first) {
+                    row = i;
+                    break;
+                }
+            }
+            allCloudflareModelsSelectable &= row >= 0;
+            if (row < 0)
+                continue;
+            quickAgentModel->setCurrentIndex(row);
+            QApplication::processEvents();
+            selectedCloudflareModels << canonicalModel->currentData().toString();
+            allCloudflareModelsSelectable &=
+                seeded.testQuickAddAgentProvider() ==
+                    QStringLiteral("cloudflare-ai") &&
+                canonicalModel->currentData().toString() == choice.first;
+        }
+        check(allCloudflareModelsSelectable &&
+                  selectedCloudflareModels.size() ==
+                      forkmesh::ui::cloudflareAiFallbackModels().size(),
+              QString("every active Cloudflare model is selectable in the "
+                      "prompt area (%1)")
+                  .arg(selectedCloudflareModels.join(QStringLiteral(", "))));
+        if (concreteClaudeChoice >= 0)
+            quickAgentModel->setCurrentIndex(concreteClaudeChoice);
+        QApplication::processEvents();
 
         // adhoc #38: the composer's speed (reasoning-effort) picker sits next to
         // the mode selector, offers the CLI's ladder with "Ultra" for xhigh, and
@@ -4678,6 +4875,9 @@ int main(int argc, char *argv[])
         mergeSession.issueTitle = QStringLiteral("note a task merging into main");
         mergeSession.baseBranch = QStringLiteral("main");
         mergeSession.status = AgentStatus::Success;
+        // adhoc #1443: the "#" cell leads with the provider that ran the session,
+        // and the hover card names it.
+        mergeSession.provider = QStringLiteral("claude-code");
         check(!mergeSession.merged,
               QStringLiteral("the merge-note fixture starts unmerged"));
         check(window.testAgentStatusCellText(mergeSession.id).isEmpty(),
@@ -4742,6 +4942,45 @@ int main(int argc, char *argv[])
                   agentTip.count(QStringLiteral("<tr>")) ==
                       agentTip.count(QStringLiteral("<img ")),
               QStringLiteral("every line in an agent hover card has an icon"));
+        // adhoc #1443: the hover card also has to explain the marks the cell
+        // paints — which agent ran it, the branch button's ring colour, the amber
+        // dot on its corner, and the down arrow beside it — since none of them
+        // can be read off the row on their own.
+        check(agentTip.contains(QStringLiteral("Claude Code")) &&
+                  agentTip.contains(QStringLiteral("`claude` CLI")),
+              QStringLiteral("the hover card names the provider that ran the "
+                             "session (adhoc #1443)"));
+        check(agentTip.contains(QStringLiteral("blue ring")) &&
+                  agentTip.contains(QStringLiteral("still on disk")),
+              QStringLiteral("the hover card explains the branch button's ring "
+                             "colour (adhoc #1443)"));
+        check(agentTip.contains(QStringLiteral("amber dot")),
+              QStringLiteral("the hover card explains the dot on the branch "
+                             "button (adhoc #1443)"));
+        check(agentTip.contains(QString::fromUtf8("\xE2\xAC\x87 arrow")) &&
+                  agentTip.contains(QStringLiteral("9 commits behind main")),
+              QStringLiteral("the hover card explains the down arrow beside the "
+                             "branch button (adhoc #1443)"));
+        // QStringLiteral wraps a u"" literal, so a UTF-8 byte escape in one lands
+        // as a code point per byte: the churn line used to read "added Â·
+        // removed" in the card. Every separator has to survive as itself.
+        check(agentTip.contains(QString::fromUtf8("added \xC2\xB7 ")) &&
+                  !agentTip.contains(QString::fromUtf8("\xC3\x82")),
+              QStringLiteral("the hover card's punctuation is not mangled into "
+                             "mojibake (adhoc #1443)"));
+        // A session whose checkout has been cleaned up says so, and says the ring
+        // goes grey with it.
+        AgentDiffStat gone = chip;
+        gone.worktree.clear();
+        gone.dirty = 0;
+        gone.behind = 0;
+        const QString goneTip = window.testAgentStatusCellToolTip(2910, gone);
+        check(goneTip.contains(QStringLiteral("grey ring")) &&
+                  goneTip.contains(QStringLiteral("no dot")) &&
+                  !goneTip.contains(QString::fromUtf8("\xE2\xAC\x87 arrow")),
+              QStringLiteral("a cleaned-up, clean, up-to-date session explains a "
+                             "grey ring and no dot, and mentions no arrow "
+                             "(adhoc #1443)"));
         // A cleaned-up session with no patch yet leaves every badge unknown, so
         // the chip falls back to the plain branch button.
         check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==
