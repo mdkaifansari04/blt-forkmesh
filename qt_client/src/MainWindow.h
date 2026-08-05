@@ -7813,7 +7813,7 @@ private:
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
-    // "Start" on the detail page (adhoc #20): resume this one session with no
+    // "Continue" on the detail page: resume this one session with no
     // follow-up text, exactly what the composer's "add" button does when nothing
     // is typed. Hidden while the session is already in flight.
     QPushButton *m_agentStartButton = nullptr;
