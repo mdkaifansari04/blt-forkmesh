@@ -12404,6 +12404,8 @@ QWidget *MainWindow::buildHostsSection()
     m_vultrStatus = new QLabel;
     m_vultrStatus->setObjectName("mutedLabel");
     m_vultrStatus->setWordWrap(true);
+    m_vultrStatus->setStyleSheet(
+        QStringLiteral("color:#c9d1d9; font-size:11px;"));
     vultrRow->addWidget(m_vultrStatus, 1);
     vultrCol->addLayout(vultrRow);
     // --- Live session / install output ------------------------------------
@@ -18204,16 +18206,20 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
     if (m_vultrCreateButton)
         m_vultrCreateButton->setText(ok ? QStringLiteral("Create another mirror")
                                         : QStringLiteral("Retry deployment"));
-    if (m_vultrStatus)
-        m_vultrStatus->setText(
-            (ok ? QString::fromUtf8("\xE2\x9C\x94 ")
-                : QString::fromUtf8("\xE2\x9C\x98 ")) + message);
+    if (!ok && m_vultrStatus)
+        m_vultrStatus->setText(QString::fromUtf8("\xE2\x9C\x98 ") + message);
     if (!message.isEmpty())
         appendHostInstallLog(
             (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
                 : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
             message + QStringLiteral("\n"));
     pingVultrProvisionStage(m_vultrProvisionStage, ok, message);
+    if (ok) {
+        if (m_vultrNameEdit)
+            m_vultrNameEdit->clear();
+        if (m_vultrStatus)
+            m_vultrStatus->clear();
+    }
     saveVultrProvisionLog();
     m_vultrProvisionActive = false;
     m_vultrResumeRequested = !ok;
