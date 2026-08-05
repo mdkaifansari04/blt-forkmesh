@@ -1778,6 +1778,29 @@ int main(int argc, char *argv[])
     window.show();
     QApplication::processEvents();
 
+    // A rebuild/restart can continue in the background while the initiating
+    // Settings control is no longer visible. Keep a pulsing amber edge around
+    // the real window until that restart finishes or fails.
+    window.testSetRestartCautionFlash(true);
+    QApplication::processEvents();
+    auto *restartCaution = window.findChild<QWidget *>(
+        QStringLiteral("restartCautionBorderOverlay"));
+    const QImage restartCautionImage =
+        restartCaution ? restartCaution->grab().toImage() : QImage();
+    const QColor restartCautionPixel = restartCautionImage.isNull()
+        ? QColor()
+        : restartCautionImage.pixelColor(2, 2);
+    check(restartCaution && restartCaution->isVisible() &&
+              restartCaution->geometry() == window.rect() &&
+              restartCautionPixel.red() > restartCautionPixel.green() &&
+              restartCautionPixel.green() > restartCautionPixel.blue() &&
+              restartCautionPixel.red() > 150,
+          QStringLiteral("a restart flashes an amber caution border around the app"));
+    window.testSetRestartCautionFlash(false);
+    QApplication::processEvents();
+    check(restartCaution && !restartCaution->isVisible(),
+          QStringLiteral("the restart caution border clears when the restart stops"));
+
     // The Log destination is a timeline rather than a second scrolling text
     // feed or a duplicate of the Pings page. Its timeframe presets and direct
     // area selection keep dense activity explorable without losing the category
