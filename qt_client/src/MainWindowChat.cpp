@@ -7909,15 +7909,23 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // One compact four-quadrant chart for the debug line: CPU/memory above
     // swap/disk. It receives one sample per second from updateFooterDiagnostics.
-    // CPU, swap and disk open diagnostics; memory opens the culprit list.
+    // CPU and swap open diagnostics; disk opens the Size map scanner; memory
+    // opens the culprit list.
     auto *resourceChart = new ResourceQuadrantSparkline;
     for (ResourceQuadrantSparkline::Resource resource : {
-             ResourceQuadrantSparkline::Cpu, ResourceQuadrantSparkline::Swap,
-             ResourceQuadrantSparkline::Disk}) {
+             ResourceQuadrantSparkline::Cpu, ResourceQuadrantSparkline::Swap}) {
         resourceChart->setClickHandler(resource, [this] { showDiagnosticsDialog(); });
     }
     resourceChart->setClickHandler(ResourceQuadrantSparkline::Memory,
                                    [this] { showHighMemoryProcessPanel(); });
+    resourceChart->setClickHandler(ResourceQuadrantSparkline::Disk, [this] {
+        showSection(0);
+        if (m_repoDetailTabs && m_sizeMapTabIndex >= 0) {
+            if (QAbstractButton *sizeMapTab =
+                    m_repoDetailTabs->button(m_sizeMapTabIndex))
+                sizeMapTab->click();
+        }
+    });
     m_resourceChart = resourceChart;
 
     // The thirty-day SIZE/LOC/FILES repository trends and the Ratchet mode
