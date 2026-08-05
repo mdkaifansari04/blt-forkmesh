@@ -1523,6 +1523,26 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     const QString base = repoDefaultBranch(repoBranches());
     if (branch.isEmpty() || branch == base || dir.isEmpty())
         return false;
+    // Never race a live agent's checkout. It can advance the branch between the
+    // merge command and the containment safety check, which used to surface as
+    // the misleading "couldn't merge cleanly" message even when merge-tree said
+    // the tips were conflict-free. Keep the branch/worktree intact and let the
+    // completed-session refresh enable merging once the producer is done.
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.branchName != branch)
+            continue;
+        if (session.status == AgentStatus::Running ||
+            session.status == AgentStatus::Waiting ||
+            session.status == AgentStatus::Queued) {
+            setRepoDetailNotice(
+                QStringLiteral("Agent #%1 is still working on %2. Wait for it to "
+                               "finish before merging so its final commit is included.")
+                    .arg(session.id)
+                    .arg(branch),
+                true);
+            return false;
+        }
+    }
     if (!repoHasWorkingTree()) {
         setRepoDetailNotice("Read-only mirror — nothing to merge into here.", true);
         return false;
