@@ -10581,9 +10581,17 @@ void MainWindow::startButtonSpin(QPushButton *button)
         // Re-read the hourglass flag every tick so a caller can flip a spin
         // already in progress between the refresh-arrows and hourglass looks
         // (see setRestartSpinHourglass) without restarting the timer.
-        const QPixmap frame = button->property("fmSpinHourglass").toBool()
-                                   ? hourglassPixmap(QColor(Theme::kRunning), *angle, size)
-                                   : refreshPixmap(QColor(Theme::kRunning), *angle, size);
+        const QVariant restartProgress = button->property("fmRestartProgress");
+        const QPixmap frame = restartProgress.isValid()
+                                  ? restartProgressPixmap(
+                                        QColor(Theme::kRunning), *angle, size,
+                                        restartProgress.toInt(),
+                                        button->property("fmSpinHourglass").toBool())
+                                  : (button->property("fmSpinHourglass").toBool()
+                                         ? hourglassPixmap(QColor(Theme::kRunning), *angle,
+                                                           size)
+                                         : refreshPixmap(QColor(Theme::kRunning), *angle,
+                                                         size));
         button->setIcon(QIcon(frame));
     });
     timer->start(60);
@@ -10600,6 +10608,7 @@ void MainWindow::stopButtonSpin(QPushButton *button)
     button->setIcon(button->property("fmSpinIcon").value<QIcon>());
     button->setProperty("fmSpinning", false);
     button->setProperty("fmSpinHourglass", false);
+    button->setProperty("fmRestartProgress", QVariant());
 }
 
 void MainWindow::startRestartSpin(QPushButton *button)
@@ -10608,6 +10617,7 @@ void MainWindow::startRestartSpin(QPushButton *button)
         return;
     stopRestartSpin();
     m_restartSpinButton = button;
+    button->setProperty("fmRestartProgress", 0);
     startButtonSpin(button);
 }
 
@@ -10617,6 +10627,12 @@ void MainWindow::stopRestartSpin()
         return;
     stopButtonSpin(m_restartSpinButton);
     m_restartSpinButton = nullptr;
+}
+
+void MainWindow::setRestartSpinProgress(int percent)
+{
+    if (m_restartSpinButton)
+        m_restartSpinButton->setProperty("fmRestartProgress", qBound(0, percent, 100));
 }
 
 // Switches the in-progress restart spin (if any) between the refresh-arrows
