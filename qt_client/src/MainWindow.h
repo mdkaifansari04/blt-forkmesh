@@ -477,6 +477,20 @@ public:
                                    const QStringList &nodes);
     void testShowNodesSection();
     QStringList testNodeDirectoryNames() const;
+    void testSetAdmin(bool admin)
+    {
+        m_isAdmin = admin;
+        updateAdminCrownBadge();
+    }
+    bool testUsersNavButtonVisible() const;
+    void testShowUsersSection() { showSection(kUsersSectionIndex); }
+    void testApplyUsersDirectory(const QJsonArray &users)
+    {
+        mergeChatUserDirectory(users);
+    }
+    QStringList testUsersColumns() const;
+    QString testUsersCellText(int row, const QString &header) const;
+    QStringList testSortUsersBy(const QString &header, Qt::SortOrder order);
     // The chat header's users popup: rebuild it for `conversation` and read back
     // the names it lists (adhoc #129).
     QStringList testChatMemberNames(const QString &conversation);
@@ -1153,6 +1167,7 @@ private:
     static constexpr int kControlNodeSectionIndex = 14;
     static constexpr int kOrganizationTasksSectionIndex = 15;
     static constexpr int kNotesSectionIndex = 16;
+    static constexpr int kUsersSectionIndex = 17;
 
     // Setup page
     QWidget *buildSetupPage();
@@ -2233,6 +2248,14 @@ private:
     // to be on navigation.
     void refreshNetworkTab(int tabIndex);
     void showEndpointRequestDetails(int row, int column);
+
+    // Admin-only Users page: the same privacy-filtered account facts shown on
+    // World avatar chests, laid out as one sortable table. It deliberately
+    // reuses /api/accounts/users (and the chat directory's cache) so the Qt and
+    // World views cannot drift into separate definitions of user statistics.
+    QWidget *buildUsersSection();
+    void refreshUsersPage(bool force = false);
+    void renderUsersPage(const QJsonArray &users);
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
     void ensureRepoDetailSectionBuilt();
@@ -4785,7 +4808,7 @@ private:
     void adoptWebAccountAvatar(const QByteArray &png);
     void updateAvatarButton();
     void updateUserAvatarButton();
-    // Shows/hides the admin crown badge overlaid on the user avatar button,
+    // Shows/hides admin-only chrome (the avatar crown and Users rail entry)
     // based on the current m_isAdmin.
     void updateAdminCrownBadge();
     void refreshIssueComposerAvatar();
@@ -5607,6 +5630,7 @@ private:
     // they are tabs of the Network section, and their counts add up on the
     // Network button's badge.
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
+    QPushButton *m_usersNavButton = nullptr; // admin-only World user statistics
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     // Top-bar "Log in / Sign up" pill. The first-run setup screen is gone (adhoc
     // #115) — the app opens straight into the shell — so this is the only entry
@@ -5942,6 +5966,10 @@ private:
     int m_networkRelayCount = 0;
     int m_networkNodeCount = 0;
     int m_networkHostCount = 0;
+    QTableWidget *m_usersTable = nullptr;
+    QLabel *m_usersStatus = nullptr;
+    QPushButton *m_usersRefreshButton = nullptr;
+    QJsonArray m_usersDirectoryPayload;
     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {
