@@ -577,11 +577,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     restartMirrorSyncTimer();
     logStartup(QStringLiteral("  timer armed: mirror safety sync every %1ms")
                    .arg(m_mirrorSyncTimer->interval()));
+#ifndef FORKMESH_WINDOW_TESTS
     QTimer::singleShot(1000, this, [this] {
         forkmesh::StartupTraceStep step(
             QStringLiteral("delayed startup: initial mirror synchronization"));
         autoSyncMirrors();
     });
+#endif
     logStartup(QStringLiteral(
         "  startup job scheduled: initial mirror synchronization in 1000ms"));
     // Source-of-truth nodes pick up issues/PRs/comments/agent-prompts filed by
@@ -597,11 +599,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_inboxPollTimer, &QTimer::timeout, this, &MainWindow::performRelaySync);
     m_inboxPollTimer->start(5 * 60 * 1000);
     logStartup(QStringLiteral("  timer armed: relay inbox safety sync every 300000ms"));
+#ifndef FORKMESH_WINDOW_TESTS
     QTimer::singleShot(20000, this, [this] {
         forkmesh::StartupTraceStep step(
             QStringLiteral("delayed startup: initial relay inbox sync"));
         performRelaySync();
     });
+#endif
     logStartup(QStringLiteral(
         "  startup job scheduled: initial relay inbox sync in 20000ms"));
     // Settings → "Automatically update ForkMesh" (off by default on desktop, on
@@ -662,11 +666,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             &MainWindow::refreshFooterWebsiteStatus);
     m_relayLatencyTimer->start(60 * 1000);
     logStartup(QStringLiteral("  timer armed: relay latency and uptime every 60000ms"));
+#ifndef FORKMESH_WINDOW_TESTS
     QTimer::singleShot(2500, this, [this] {
         forkmesh::StartupTraceStep step(
             QStringLiteral("delayed startup: first relay latency probe"));
         probeRelayLatency();
     });
+#endif
     logStartup(QStringLiteral(
         "  startup job scheduled: first relay latency probe in 2500ms"));
     // React to the OS's own connectivity signal so the radar flips to
@@ -680,20 +686,24 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // the board once the account session has had time to come up.
     traceStep(QStringLiteral("restore cached organization task badge"),
               [this] { restoreOrganizationTaskBadge(); });
+#ifndef FORKMESH_WINDOW_TESTS
     QTimer::singleShot(25000, this, [this] {
         forkmesh::StartupTraceStep step(
             QStringLiteral("delayed startup: refresh organization task badge"));
         refreshOrganizationTaskBadge();
     });
+#endif
     logStartup(QStringLiteral(
         "  startup job scheduled: organization task refresh in 25000ms"));
     // Bootstrap the flagship ForkMesh mirror shortly after launch so a freshly
     // installed client shows the project repo without manual setup.
+#ifndef FORKMESH_WINDOW_TESTS
     QTimer::singleShot(3000, this, [this] {
         forkmesh::StartupTraceStep step(
             QStringLiteral("delayed startup: ensure flagship repository"));
         ensureFlagshipRepo();
     });
+#endif
     logStartup(QStringLiteral(
         "  startup job scheduled: flagship repository check in 3000ms"));
 
@@ -754,6 +764,7 @@ void MainWindow::showEvent(QShowEvent *event)
     logStartup(QStringLiteral(
         "first window show observed; deferred authentication and repository "
         "restore intentionally scheduled in 5000ms to protect first paint"));
+#ifndef FORKMESH_WINDOW_TESTS
     // An Expose event is not proof that Qt has painted the first frame (notably
     // with the offscreen QPA and some compositors). Starting silent auth from
     // that event let key/account work run ahead of paint and restored the black
@@ -765,6 +776,7 @@ void MainWindow::showEvent(QShowEvent *event)
     // this timer to it from paintEvent — there, the frame is proven and there
     // is no interactive runway to protect because the card is over the app.
     QTimer::singleShot(5000, this, &MainWindow::runDeferredStartup);
+#endif
 }
 
 void MainWindow::paintEvent(QPaintEvent *event)

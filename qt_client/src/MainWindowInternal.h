@@ -4487,8 +4487,6 @@ inline QVector<QPair<QString, QString>> cloudflareAiFallbackModels()
          QStringLiteral("Llama 4 Scout 17B")},
         {QStringLiteral("@cf/google/gemma-4-26b-a4b-it"),
          QStringLiteral("Gemma 4 26B")},
-        {QStringLiteral("@cf/zai-org/glm-4.7-flash"),
-         QStringLiteral("GLM 4.7 Flash")},
         {QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast"),
          QStringLiteral("Llama 3.1 8B (fast)")},
     };
@@ -6259,6 +6257,45 @@ inline QPixmap hourglassPixmap(const QColor &color, double angleDeg, int size)
     glass.lineTo(w, h);
     glass.closeSubpath();
     p.drawPath(glass);
+    return pm;
+}
+
+// The restart buttons keep their familiar rotating glyph while work is in
+// flight, but add a determinate ring around it so a long rebuild does not read
+// as an endless, indistinguishable wait. `percent` names the completed restart
+// phase rather than trying to estimate compiler output, which is not stable
+// across machines or build systems.
+inline QPixmap restartProgressPixmap(const QColor &color, double angleDeg, int size,
+                                     int percent, bool hourglass)
+{
+    QPixmap pm = crispIconPixmap(size, iconDevicePixelRatio());
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    const qreal stroke = qMax<qreal>(1.0, size * 0.075);
+    const qreal inset = stroke * 0.5 + qMax<qreal>(0.5, size * 0.055);
+    const QRectF ring(inset, inset, size - inset * 2, size - inset * 2);
+    QColor track = color;
+    track.setAlphaF(0.26);
+    QPen ringPen(track, stroke, Qt::SolidLine, Qt::RoundCap);
+    p.setPen(ringPen);
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(ring);
+
+    const int clampedPercent = qBound(0, percent, 100);
+    if (clampedPercent > 0) {
+        ringPen.setColor(color);
+        p.setPen(ringPen);
+        // Qt starts at three o'clock and positive sweeps counter-clockwise.
+        // Start at twelve and sweep clockwise so the ring fills naturally.
+        p.drawArc(ring, 90 * 16, -clampedPercent * 360 * 16 / 100);
+    }
+
+    const int glyphSize = qMax(8, qRound(size * 0.63));
+    const QPixmap glyph = hourglass
+                              ? hourglassPixmap(color, angleDeg, glyphSize)
+                              : refreshPixmap(color, angleDeg, glyphSize);
+    p.drawPixmap((size - glyphSize) / 2.0, (size - glyphSize) / 2.0, glyph);
     return pm;
 }
 

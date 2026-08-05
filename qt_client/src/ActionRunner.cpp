@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
@@ -431,10 +432,12 @@ void ActionRunner::launch(Phase phase, const QString &program,
             m_currentCommand += QLatin1Char(' ') + arg;
     }
     updateCrashContext();
-    m_process = new QProcess(this);
-    m_process->setProcessChannelMode(QProcess::MergedChannels);
+    auto *child = new QProcess(this);
+    m_process = child;
+    const QPointer<QProcess> process(child);
+    child->setProcessChannelMode(QProcess::MergedChannels);
     if (!workingDir.isEmpty())
-        m_process->setWorkingDirectory(workingDir);
+        child->setWorkingDirectory(workingDir);
 
 #ifndef Q_OS_WIN
     // Put each child in its own process group so stop() can signal the whole
@@ -442,7 +445,7 @@ void ActionRunner::launch(Phase phase, const QString &program,
     // outlive a kill of just the shell.
     const ActionSandboxLimits limits = m_limits;
     const bool sandboxedStep = phase == Phase::Step;
-    m_process->setChildProcessModifier([limits, sandboxedStep] {
+    child->setChildProcessModifier([limits, sandboxedStep] {
         ::setsid();
         ::umask(0077);
         setLimit(RLIMIT_CORE, 0);
@@ -528,32 +531,47 @@ void ActionRunner::launch(Phase phase, const QString &program,
         env.insert(QStringLiteral("HOME"), m_sandboxHome);
         env.insert(QStringLiteral("TMPDIR"), m_sandboxTmp);
     }
-    m_process->setProcessEnvironment(env);
+    child->setProcessEnvironment(env);
 
-    connect(m_process, &QProcess::readyReadStandardOutput, this, [this] {
-        emitProcessOutput(m_process->readAllStandardOutput());
+    // A terminal statusChanged handler can refresh pull checks synchronously.
+    // That refresh runs a nested Qt event loop, so deleteLater() below may
+    // destroy this child while its final socket notifications are still being
+    // dispatched. Never read through the mutable m_process member from a child
+    // callback: onProcessFinished() deliberately clears it before emitting the
+    // terminal status, and a later phase may already have installed a different
+    // child. QPointer also goes null as QObject destruction begins, including
+    // the QProcess destructor's own waitForFinished() event processing.
+    connect(child, &QProcess::readyReadStandardOutput, this, [this, process] {
+        if (!process || m_process != process.data())
+            return;
+        emitProcessOutput(process->readAllStandardOutput());
     });
-    connect(m_process, &QProcess::finished, this,
-            [this](int exitCode, QProcess::ExitStatus) {
+    connect(child, &QProcess::finished, this,
+            [this, process](int exitCode, QProcess::ExitStatus) {
+                if (!process || m_process != process.data())
+                    return;
                 onProcessFinished(exitCode);
             });
-    connect(m_process, &QProcess::errorOccurred, this,
-            [this](QProcess::ProcessError) {
-                if (m_process)
-                    emitLog(QString::fromUtf8("!! \xE2\x9A\xA0\xEF\xB8\x8F  ") + // ⚠️
-                            m_process->errorString());
+    connect(child, &QProcess::errorOccurred, this,
+            [this, process](QProcess::ProcessError) {
+                if (!process || m_process != process.data())
+                    return;
+                emitLog(QString::fromUtf8("!! \xE2\x9A\xA0\xEF\xB8\x8F  ") + // ⚠️
+                        process->errorString());
             });
-    connect(m_process, &QProcess::started, this, [this] {
-        if (m_process && !m_processStdin.isEmpty()) {
-            m_process->write(m_processStdin);
-            m_process->closeWriteChannel();
+    connect(child, &QProcess::started, this, [this, process] {
+        if (!process || m_process != process.data())
+            return;
+        if (!m_processStdin.isEmpty()) {
+            process->write(m_processStdin);
+            process->closeWriteChannel();
             m_processStdin.clear();
         }
     });
 
-    m_process->setProgram(program);
-    m_process->setArguments(args);
-    m_process->start();
+    child->setProgram(program);
+    child->setArguments(args);
+    child->start();
     const int timeoutMs =
         phase == Phase::Step
             ? qMax(250, m_limits.stepTimeoutMs)
