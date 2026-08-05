@@ -97,10 +97,8 @@ const NODE_DETAIL_EXIT_DISTANCE = 70;
 const NODE_PLAZA_MAX_RADIUS = 28;
 const NODE_LOD_MAX_INSTANCES = 64;
 const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
-// Detailed people are the heaviest repeating scene object. Every avatar uses
-// the same cloned geometry, then swaps to a shared low-poly silhouette when
-// its camera distance crosses this boundary.
-const AVATAR_LOD_DISTANCE = 42;
+// Avatar geometry is shared across users, while each person remains complete
+// and visible at every camera distance.
 const OFFICE_EXTERIOR_LOD_DISTANCE = 235;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
@@ -6222,53 +6220,6 @@ function createAvatarJetpack(THREE) {
   return group;
 }
 
-const avatarFarModelPrototypes = new WeakMap();
-function cloneAvatarFarModel(THREE) {
-  let prototype = avatarFarModelPrototypes.get(THREE);
-  if (!prototype) {
-    prototype = new THREE.Group();
-    prototype.name = "avatar-camera-lod-far";
-    const bodyMaterial = makeMaterial(THREE, "#4d8171", {
-      roughness: 0.86,
-    });
-    const darkMaterial = makeMaterial(THREE, "#13231e", {
-      roughness: 0.9,
-    });
-    bodyMaterial.userData.forkmeshSharedResource = true;
-    darkMaterial.userData.forkmeshSharedResource = true;
-    const head = cloneSharedMesh(
-      THREE,
-      "avatar-lod-head",
-      () => new THREE.OctahedronGeometry(0.62, 0),
-      bodyMaterial,
-    );
-    head.position.y = 3.35;
-    prototype.add(head);
-    const torso = cloneSharedMesh(
-      THREE,
-      "avatar-lod-torso",
-      () => new THREE.BoxGeometry(1.05, 1.45, 0.58),
-      bodyMaterial,
-    );
-    torso.position.y = 2.15;
-    prototype.add(torso);
-    [-0.32, 0.32].forEach((x) => {
-      const leg = cloneSharedMesh(
-        THREE,
-        "avatar-lod-leg",
-        () => new THREE.BoxGeometry(0.32, 1.45, 0.36),
-        darkMaterial,
-      );
-      leg.position.set(x, 0.78, 0);
-      prototype.add(leg);
-    });
-    avatarFarModelPrototypes.set(THREE, prototype);
-  }
-  const clone = prototype.clone(true);
-  clone.name = "avatar-camera-lod-far";
-  return clone;
-}
-
 function createAvatar(THREE, identity, options = {}) {
   const seed = hashNumber(identity.id || identity.name);
   const group = new THREE.Group();
@@ -6276,13 +6227,10 @@ function createAvatar(THREE, identity, options = {}) {
   const scale = options.scale || 1;
   const remote = Boolean(options.remote);
   const highDetail = new THREE.Group();
-  highDetail.name = "avatar-camera-lod-near";
-  const avatarLod = new THREE.LOD();
-  avatarLod.name = "avatar-camera-lod";
-  const farDetail = cloneAvatarFarModel(THREE);
-  avatarLod.addLevel(highDetail, 0, 0.12);
-  avatarLod.addLevel(farDetail, AVATAR_LOD_DISTANCE, 0.18);
-  group.add(avatarLod);
+  highDetail.name = "avatar-full-detail";
+  // Avatars represent people, so they keep their complete form and scale at
+  // every camera distance. Scene LOD may simplify world props, never users.
+  group.add(highDetail);
 
   // Unlit so the head sphere renders the sampled emoji colour exactly, with
   // no lighting term to pull it off the flat decal wrapped over it.
@@ -6548,7 +6496,6 @@ function createAvatar(THREE, identity, options = {}) {
     verifiedPin,
     jetpack,
     highDetail,
-    avatarLod,
   };
   syncOperatorBelt(THREE, group, identity.nodes || []);
   syncAvatarBackName(THREE, group, identity);
@@ -6557,7 +6504,6 @@ function createAvatar(THREE, identity, options = {}) {
   syncAvatarWallet(THREE, group, identity);
   syncAvatarVerifiedPin(THREE, group, identity);
   setShadows(group, true, true);
-  setShadows(farDetail, false, false);
   return group;
 }
 
@@ -16315,6 +16261,14 @@ export function createWorldScene({
   function tagTriangleViewMeshes() {
     scene.traverse((child) => {
       if (child.isMesh) child.layers.enable(TRIANGLE_VIEW_LAYER);
+      // Ground is one flat, textured walking surface. Keeping it on the
+      // normal layer prevents the diagnostic wireframe from drawing the
+      // internal triangles that every rendered surface needs underneath its
+      // texture. Disable it here as well as skipping future ground meshes so
+      // repeated inspector toggles remain clean.
+      if (child.isMesh && child.userData.ground) {
+        child.layers.disable(TRIANGLE_VIEW_LAYER);
+      }
     });
   }
 
@@ -17058,26 +17012,9 @@ export function createWorldScene({
     "discord-board", "Discord board", "Boards & kiosks", worldDiscordBoard,
   );
 
-  // One uninterrupted city park slab sits under every district, path, and
-  // building. Satellite circles remain semantic layout regions only; they no
-  // longer expose separate land edges when the camera pulls back.
-  const continuousCityFoundation = new THREE.Mesh(
-    new THREE.CylinderGeometry(1, 1, 6.4, 128),
-    makeMaterial(THREE, "#59483a", { roughness: 1 }),
-  );
-  continuousCityFoundation.name = "forkmesh-continuous-city-foundation";
-  continuousCityFoundation.scale.set(
-    CONTINUOUS_CITY_RADIUS,
-    1,
-    CONTINUOUS_CITY_RADIUS,
-  );
-  continuousCityFoundation.position.set(
-    0,
-    -3.22,
-    CONTINUOUS_CITY_CENTER_Z,
-  );
-  continuousCityFoundation.receiveShadow = true;
-  world.add(continuousCityFoundation);
+  // One flat, textured city surface sits under every district, path, and
+  // building. The prior thick cylinder contributed a ring of radial faces to
+  // the triangle inspector even though it added no visible walkable surface.
   const continuousCityLand = new THREE.Mesh(
     new THREE.CircleGeometry(1, 160),
     cityGrassMaterial(THREE),
@@ -17097,8 +17034,8 @@ export function createWorldScene({
   const townLandscape = createTownLandscape(THREE);
   world.add(townLandscape);
   registerWorldElement(
-    "city-terrain", "City terrain & foundation", "Terrain",
-    [continuousCityFoundation, continuousCityLand],
+    "city-terrain", "City terrain", "Terrain",
+    continuousCityLand,
   );
   registerWorldElement(
     "town-landscape", "Town landscaping, buildings & trees", "Terrain",
