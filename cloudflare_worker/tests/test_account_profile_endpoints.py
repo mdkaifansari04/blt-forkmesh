@@ -26,7 +26,7 @@ QT_TEXT = "\n".join(
 
 def test_worker_routes_public_profile_contributions_before_account_lookup():
     assert "ACCOUNT_CONTRIBUTIONS_RE" in URLS_TEXT
-    assert "ACCOUNT_CONTRIBUTIONS_RE," in ENTRY_TEXT
+    assert '"ACCOUNT_CONTRIBUTIONS_RE"' in ENTRY_TEXT
     routes = ENTRY_TEXT[ENTRY_TEXT.index("async def accounts_handler"):]
     assert routes.index("ACCOUNT_CONTRIBUTIONS_RE.match(url.path)") < routes.index(
         "ACCOUNTS_RE.match(url.path)"
