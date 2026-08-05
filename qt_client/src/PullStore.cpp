@@ -103,6 +103,46 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
     return true;
 }
 
+// Read the checked-out branch without starting git. PullStore::metaWorkTree()
+// sits below nearly every PR path lookup, so even a very short symbolic-ref
+// subprocess becomes catastrophic when a refresh reads a few dozen PRs.
+QString headBranchFromFile(const QString &workTree)
+{
+    if (workTree.trimmed().isEmpty())
+        return QString();
+
+    QString gitDir;
+    const QFileInfo dotGit(QDir(workTree).filePath(QStringLiteral(".git")));
+    if (dotGit.isDir()) {
+        gitDir = dotGit.absoluteFilePath();
+    } else if (dotGit.isFile()) {
+        QFile link(dotGit.absoluteFilePath());
+        if (!link.open(QIODevice::ReadOnly | QIODevice::Text))
+            return QString();
+        const QString line = QString::fromUtf8(link.readLine(4096)).trimmed();
+        if (!line.startsWith(QLatin1String("gitdir:")))
+            return QString();
+        const QString target = line.mid(7).trimmed();
+        if (target.isEmpty())
+            return QString();
+        gitDir = QDir::isAbsolutePath(target)
+                     ? target
+                     : QDir(workTree).absoluteFilePath(target);
+    } else if (QFileInfo::exists(
+                   QDir(workTree).filePath(QStringLiteral("HEAD")))) {
+        gitDir = workTree; // bare repository
+    } else {
+        return QString();
+    }
+
+    QFile head(QDir(gitDir).filePath(QStringLiteral("HEAD")));
+    if (!head.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    const QString line = QString::fromUtf8(head.readLine(4096)).trimmed();
+    static const QString prefix = QStringLiteral("ref: refs/heads/");
+    return line.startsWith(prefix) ? line.mid(prefix.size()) : QString();
+}
+
 // Reconstruct a branch-backed PR's diff and commit series from the synced
 // base/head refs instead of from committed patch blobs. `dir` may be a working
 // tree or a bare mirror — both carry refs/heads/* after a sync. The diff uses
@@ -894,15 +934,14 @@ QString PullStore::metaWorkTree() const
 {
     if (m_workTree.isEmpty())
         return QString();
+    if (!m_metaWorkTreeCache.isEmpty())
+        return m_metaWorkTreeCache;
     // Mirror intake already opens a short-lived worktree directly on the
     // dedicated metadata branch. Reuse it instead of creating a second,
     // persistent linked worktree whose path is keyed to a temporary directory.
-    QByteArray currentBranch;
-    if (runGit(m_workTree, {"symbolic-ref", "--short", "-q", "HEAD"},
-               &currentBranch) &&
-        QString::fromUtf8(currentBranch).trimmed() ==
-            QLatin1String("forkmesh/pulls")) {
-        return m_workTree;
+    if (headBranchFromFile(m_workTree) == QLatin1String("forkmesh/pulls")) {
+        m_metaWorkTreeCache = m_workTree;
+        return m_metaWorkTreeCache;
     }
     // One linked worktree per repo, keyed by a hash of its path, under app
     // data so it persists across restarts (unlike the /tmp agent-session
@@ -915,8 +954,10 @@ QString PullStore::metaWorkTree() const
                                 .left(16);
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
                         "/pull-meta/" + QString::fromUtf8(key);
-    if (QFileInfo::exists(dir + "/.git"))
-        return dir; // already linked from a prior run
+    if (QFileInfo::exists(dir + "/.git")) {
+        m_metaWorkTreeCache = dir;
+        return m_metaWorkTreeCache; // already linked from a prior run
+    }
     QDir().mkpath(QFileInfo(dir).absolutePath());
     const bool branchExists = runGit(
         m_workTree, {"rev-parse", "--verify", "-q", "refs/heads/forkmesh/pulls^{commit}"});
@@ -935,7 +976,8 @@ QString PullStore::metaWorkTree() const
             return QString();
     }
     QDir().mkpath(dir + "/pulls");
-    return dir;
+    m_metaWorkTreeCache = dir;
+    return m_metaWorkTreeCache;
 }
 
 bool PullStore::materializePullMetadataRef(int number, QString *error) const
