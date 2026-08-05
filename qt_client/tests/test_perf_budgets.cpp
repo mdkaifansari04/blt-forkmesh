@@ -123,7 +123,12 @@ int main(int argc, char *argv[])
         return 1;
     }
     qputenv("XDG_DATA_HOME", dataDir.path().toUtf8());
-    QStandardPaths::setTestModeEnabled(true);
+    qputenv("XDG_CONFIG_HOME", dataDir.path().toUtf8());
+    qputenv("XDG_CACHE_HOME", dataDir.path().toUtf8());
+    // XDG already points every writable application path at this throwaway
+    // directory. Qt's test mode would override it with ~/.qttest, which is not
+    // writable in sandboxed builds and defeats the isolation above.
+    QStandardPaths::setTestModeEnabled(false);
 
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
@@ -159,7 +164,8 @@ int main(int argc, char *argv[])
 
     // --- Pathological rich-text diff: a single generated file used to bypass
     // per-file streaming and block QTextDocument layout for 2-12 seconds. The
-    // renderer keeps the complete diff rather than omitting its content.
+    // renderer keeps the complete diff without an omission cap, while keeping
+    // one bounded rich-text page resident and every row on navigable pages.
     QString hugeDiffHtml =
         QStringLiteral("<a name=\"file-0\"></a><div class='fileblock'>"
                        "<div class='fileheader'>large/generated.json</div>"
@@ -186,9 +192,18 @@ int main(int argc, char *argv[])
         forkmesh::ui::diffStyleSheet());
     checkBudget(QStringLiteral("single-file 4 MiB diff render"),
                 hugeDiffTimer.elapsed(), diffBudgetMs);
-    if (!hugeDiffView.toPlainText().contains(
-            QStringLiteral("generated-key"))) {
-        qCritical("FAIL: oversized diff was not retained in the first paint");
+    if (forkmesh::ui::diffPageCount(&hugeDiffView) <= 1) {
+        qCritical("FAIL: oversized diff was not split into bounded pages");
+        ++failures;
+    }
+    const int lastPage = forkmesh::ui::diffPageCount(&hugeDiffView) - 1;
+    forkmesh::ui::showDiffPage(&hugeDiffView, lastPage);
+    for (int i = 0; i < 20; ++i)
+        QApplication::processEvents();
+    if (forkmesh::ui::diffCurrentPage(&hugeDiffView) != lastPage ||
+        hugeDiffView.toPlainText().contains(QStringLiteral("content omitted")) ||
+        !hugeDiffView.toPlainText().contains(QStringLiteral("generated-key"))) {
+        qCritical("FAIL: oversized diff pages did not preserve all row content");
         ++failures;
     }
 

@@ -1983,8 +1983,7 @@ void MainWindow::showPull(int number)
         m_pullFiles->setCurrentRow(0);
         m_pullSuppressFileScroll = false;
     } else {
-        m_pullDiff->setPlainText("(no changes)");
-        m_pullDiff->setProperty("fm_diffSource", QString()); // not a rendered diff
+        setDiffHtml(m_pullDiff, QStringLiteral("(no changes)"));
         m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
         m_pullDiffSourceKey.clear();
         m_pullFileAnchors.clear();
@@ -2147,10 +2146,6 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     });
 }
 
-// Property holding a diff view's last-set source HTML, so a font-size change can
-// re-render it in place at the new size without re-running its renderer (#254).
-static const char *kDiffSourceProp = "fm_diffSource";
-
 // Track a diff viewer for the shared text-size zoom: the +/- buttons and
 // Ctrl+wheel re-render every registered view at the new size (issue #254).
 void MainWindow::registerDiffView(QTextEdit *view)
@@ -2173,9 +2168,8 @@ void MainWindow::registerDiffView(QTextEdit *view)
     view->viewport()->installEventFilter(this); // Ctrl+wheel, see eventFilter
     if (auto *browser = qobject_cast<QTextBrowser *>(view))
         browser->setOpenLinks(false);
-    // Whatever this view derives from the *complete* document (file positions for
-    // the sticky headers, search matches) has to be recomputed once a streamed
-    // diff has finished filling in behind the visible window (adhoc #421).
+    // Whatever this view derives from the resident page (file positions and
+    // search matches) is recomputed after that page finishes streaming.
     addDiffStreamFinishedHook(view, [this, view] { onDiffStreamFinished(view); });
     connect(view, &QObject::destroyed, this, [this](QObject *o) {
         auto *dead = static_cast<QTextEdit *>(o);
@@ -2184,16 +2178,13 @@ void MainWindow::registerDiffView(QTextEdit *view)
     });
 }
 
-// Set a diff viewer's HTML, remembering the source so adjustDiffFont can later
-// re-render it at a new text size. Use this for every diff viewer's content so
-// the zoom works everywhere (issue #254). The layout is progressive: the visible
-// window is rendered now and the rest streams in, so even a multi-megabyte diff
-// shows immediately without blocking the GUI thread (adhoc #421).
+// Set a diff viewer's HTML. The pager owns the only retained rendered copy and
+// keeps one bounded rich-text page resident; this avoids duplicating a large
+// source string on the widget solely for later zoom changes.
 void MainWindow::setDiffHtml(QTextEdit *view, const QString &html)
 {
     if (!view)
         return;
-    view->setProperty(kDiffSourceProp, html);
     renderDiffStreamed(view, html, diffStyleSheet(m_diffFontPt));
 }
 
@@ -2237,17 +2228,14 @@ void MainWindow::adjustDiffFont(int delta)
     for (QTextEdit *view : m_diffViews) {
         if (!view || view->document()->isEmpty())
             continue;
-        const QString src = view->property(kDiffSourceProp).toString();
-        if (src.isEmpty())
-            continue; // plain text (e.g. "(no changes)") -- nothing to re-scale
         QScrollBar *vbar = view->verticalScrollBar();
         const int scroll = vbar ? vbar->value() : 0;
-        // Re-render through the streaming path: a big diff re-lays out in the
-        // background, so the reader's place is restored from the finished hook
-        // (the document is still filling in right after the first paint).
+        // Re-render only the resident page. The pager retains its fragments, so
+        // zoom does not rebuild or duplicate the complete diff source.
         if (scroll > 0)
             m_diffRestoreScroll.insert(view, scroll);
-        setDiffHtml(view, src);
+        if (!restyleDiffStreamed(view, diffStyleSheet(m_diffFontPt)))
+            continue;
         if (vbar)
             vbar->setValue(qMin(scroll, vbar->maximum()));
     }
@@ -2475,10 +2463,9 @@ void MainWindow::scrollPullDiffToFile(const QString &filePath)
     const QString anchor = m_pullFileAnchors.value(filePath);
     if (anchor.isEmpty())
         return;
-    // The file may still be queued behind the visible window on a big diff; its
-    // anchor only exists once the rest has landed (adhoc #421).
-    flushDiffStream(m_pullDiff);
-    m_pullDiff->scrollToAnchor(anchor);
+    // The file may live on a later bounded page; select that page before the
+    // progressive render scrolls to its anchor.
+    scrollDiffToAnchor(m_pullDiff, anchor);
 }
 
 // Select a file in the changed-files list without letting currentItemChanged
