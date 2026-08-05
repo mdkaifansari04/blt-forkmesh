@@ -959,6 +959,30 @@ int main(int argc, char *argv[])
         fable.strength = QStringLiteral("max");
         fable.status = AgentStatus::Waiting;
         window.testAddAgentSession(fable);
+        AgentSession luna = sol;
+        luna.id = 133983;
+        luna.model = QStringLiteral("gpt-5.6-luna");
+        luna.strength = QStringLiteral("medium");
+        luna.status = AgentStatus::Queued;
+        window.testAddAgentSession(luna);
+        AgentSession terra = sol;
+        terra.id = 133984;
+        terra.model = QStringLiteral("gpt-5.6-terra");
+        terra.strength = QStringLiteral("low");
+        terra.status = AgentStatus::Success;
+        window.testAddAgentSession(terra);
+        AgentSession opus = fable;
+        opus.id = 133985;
+        opus.model = QStringLiteral("claude-opus-4-8");
+        opus.strength = QStringLiteral("xhigh");
+        opus.status = AgentStatus::Failed;
+        window.testAddAgentSession(opus);
+        AgentSession sonnet = fable;
+        sonnet.id = 133986;
+        sonnet.model = QStringLiteral("claude-sonnet-4-6");
+        sonnet.strength = QStringLiteral("high");
+        sonnet.status = AgentStatus::Stopped;
+        window.testAddAgentSession(sonnet);
         check(window.testHasAgentSession(sol.id) &&
                   window.testHasAgentSession(fable.id),
               QStringLiteral("pre-page bot sessions enter the agent roster"));
@@ -973,11 +997,19 @@ int main(int argc, char *argv[])
                   window.testHasAgentSession(fable.id),
               QStringLiteral("lazy Agents navigation preserves bot sessions"));
         window.testRefreshAgentBotFleet();
-        check(window.testAgentBotCount() == 2 &&
+        check(window.testAgentBotCount() == 6 &&
                   window.testAgentBotSummary(sol.id) ==
                       QStringLiteral("Sol|high|Working") &&
                   window.testAgentBotSummary(fable.id) ==
-                      QStringLiteral("Fable|max|Waiting"),
+                      QStringLiteral("Fable|max|Waiting") &&
+                  window.testAgentBotSummary(luna.id) ==
+                      QStringLiteral("Luna|medium|Queued") &&
+                  window.testAgentBotSummary(terra.id) ==
+                      QStringLiteral("Terra|low|Done") &&
+                  window.testAgentBotSummary(opus.id) ==
+                      QStringLiteral("Opus|xhigh|Failed") &&
+                  window.testAgentBotSummary(sonnet.id) ==
+                      QStringLiteral("Sonnet|high|Stopped"),
               QStringLiteral("agent bot grid carries model, reasoning, and status "
                              "(count=%1 sol=%2 fable=%3)")
                   .arg(window.testAgentBotCount())
@@ -992,6 +1024,10 @@ int main(int argc, char *argv[])
         QApplication::processEvents();
         check(fleet && fleet->isVisibleTo(&window),
               QStringLiteral("Summon reveals the complete animated agent bot grid"));
+        window.testSetAgentSessionStatus(sol.id, AgentStatus::Success);
+        check(window.testAgentBotSummary(sol.id) ==
+                  QStringLiteral("Sol|high|Done"),
+              QStringLiteral("an open bot grid updates a session status in place"));
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }

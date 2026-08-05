@@ -6111,6 +6111,7 @@ void MainWindow::testSetAgentSessionStatus(int sessionId, const QString &status)
         if (m_agentStore)
             m_agentStore->saveSession(*session);
         refreshAgentDotMatrix();
+        refreshAgentBotFleet();
     }
 }
 
