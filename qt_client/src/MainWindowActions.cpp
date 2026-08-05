@@ -1637,6 +1637,9 @@ void MainWindow::onRunFinished(int runId, bool ok)
         const QString title = ok ? QStringLiteral("Action succeeded")
                                  : cancelled ? QStringLiteral("Action stopped")
                                              : QStringLiteral("Action failed");
+        const QString body =
+            QString::fromUtf8("%1 \xC2\xB7 %2/%3")
+                .arg(run->workflowName, run->owner, run->name);
         logSystem(QStringLiteral("Actions: %1 run #%2 \"%3\" for %4/%5 @ %6. "
                                  "Run log: %7")
                       .arg(ok ? QStringLiteral("succeeded")
@@ -1645,10 +1648,13 @@ void MainWindow::onRunFinished(int runId, bool ok)
                       .arg(run->id)
                       .arg(run->workflowName, run->owner, run->name,
                            run->commit.left(8), actionRunLogPath(*run)));
-        notifyActionEvent(title,
-                          QString::fromUtf8("%1 \xC2\xB7 %2/%3")
-                              .arg(run->workflowName, run->owner, run->name),
-                          !ok && !cancelled, run->id);
+        if (cancelled) {
+            // A manual stop is already visible in the run history. Keep it in
+            // the in-app Pings page, but do not raise a desktop alert for it.
+            addNotification(title, body, false, run->id);
+        } else {
+            notifyActionEvent(title, body, !ok, run->id);
+        }
         if (!ok && !cancelled)
             maybeAutoFixFailedRun(*run);
     }
