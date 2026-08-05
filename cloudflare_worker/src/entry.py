@@ -20526,7 +20526,13 @@ async def _account_heartbeat(env, request):
     else:
         notification_preferences = dict(
             prefs_rec.get("notification_preferences") or {})
-    is_admin = await _is_admin(env, name)
+    # A desktop heartbeat is signed by the machine node, while administrator
+    # status belongs to its owning user after the users/nodes split. Checking
+    # only `name` leaves an admin's linked desktop looking like a non-admin and
+    # keeps admin-only app navigation (including Users) hidden. Standalone
+    # legacy user-clients still fall back to their own name.
+    admin_account = owner or name
+    is_admin = await _is_admin(env, admin_account)
     response = {"ok": True, "online": True,
                 "hasPayoutAddress": bool(rec.get("solana")),
                 "payoutCustody": "external-self-custodial-public-address",
