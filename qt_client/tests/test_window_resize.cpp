@@ -1970,6 +1970,11 @@ int main(int argc, char *argv[])
     window.testRefreshSignInButton();
     check(window.testSignInButtonVisible(),
           QStringLiteral("the sign-in pill offers a way in once no account is found"));
+    check(!window.testUsersNavButtonVisible(),
+          QStringLiteral("the Users rail destination is hidden from non-admins"));
+    window.testShowUsersSection();
+    check(window.testUsersColumns().isEmpty(),
+          QStringLiteral("non-admin navigation cannot build the Users page"));
 
     // No wallet, no signup: starting a node needs only a valid name. The core
     // flow never invokes the (opt-in) account/signup flow, and a fresh node drops
@@ -2022,6 +2027,69 @@ int main(int argc, char *argv[])
               nodesAfterUserPresence.contains(QStringLiteral("jett-mirror"),
                                               Qt::CaseInsensitive),
           QStringLiteral("a directory user is never classified as a node"));
+
+    // The admin-only Users destination sits under Network and renders exactly
+    // the privacy-filtered statistics used by World avatar chests. Every field
+    // is a real sortable table column, with numeric activity sorting independent
+    // of its human-readable duration.
+    window.testSetAdmin(true);
+    check(window.testUsersNavButtonVisible(),
+          QStringLiteral("admins can see the Users rail destination"));
+    window.testShowUsersSection();
+    window.testApplyUsersDirectory(QJsonArray{
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("zora")},
+                    {QStringLiteral("kind"), QStringLiteral("user")},
+                    {QStringLiteral("status"), QStringLiteral("active")},
+                    {QStringLiteral("emailVerified"), false},
+                    {QStringLiteral("createdAt"), 1700000000000.0},
+                    {QStringLiteral("totalActiveMs"), 3600000.0},
+                    {QStringLiteral("activityBucket"), QStringLiteral("5h")},
+                    {QStringLiteral("lastEmailAt"), 0},
+                    {QStringLiteral("lastEmailStatus"), QString()},
+                    {QStringLiteral("countryCode"), QStringLiteral("CA")},
+                    {QStringLiteral("browser"), QStringLiteral("firefox")},
+                    {QStringLiteral("os"), QStringLiteral("linux")},
+                    {QStringLiteral("nodes"), QJsonArray{}}},
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("alice")},
+                    {QStringLiteral("kind"), QStringLiteral("user")},
+                    {QStringLiteral("status"), QStringLiteral("active")},
+                    {QStringLiteral("emailVerified"), true},
+                    {QStringLiteral("createdAt"), 1600000000000.0},
+                    {QStringLiteral("totalActiveMs"), 7380000.0},
+                    {QStringLiteral("activityBucket"), QStringLiteral("hour")},
+                    {QStringLiteral("lastEmailAt"), 1710000000000.0},
+                    {QStringLiteral("lastEmailStatus"),
+                     QStringLiteral("delivered")},
+                    {QStringLiteral("countryCode"), QStringLiteral("US")},
+                    {QStringLiteral("browser"), QStringLiteral("chrome")},
+                    {QStringLiteral("os"), QStringLiteral("macos")},
+                    {QStringLiteral("nodes"),
+                     QJsonArray{QStringLiteral("node-a"),
+                                QStringLiteral("node-b")}}},
+    });
+    const QStringList userColumns = window.testUsersColumns();
+    const QStringList expectedUserColumns{
+        QStringLiteral("User"),          QStringLiteral("Email verified"),
+        QStringLiteral("Status"),        QStringLiteral("Joined"),
+        QStringLiteral("World activity"),
+        QStringLiteral("Activity recency"),
+        QStringLiteral("Last email"),    QStringLiteral("Email delivery"),
+        QStringLiteral("Country"),       QStringLiteral("Browser"),
+        QStringLiteral("OS"),            QStringLiteral("Nodes")};
+    check(userColumns == expectedUserColumns,
+          QStringLiteral("Users shows every World chest directory statistic"));
+    const QStringList activityOrder = window.testSortUsersBy(
+        QStringLiteral("World activity"), Qt::DescendingOrder);
+    check(activityOrder == QStringList{QStringLiteral("alice"),
+                                       QStringLiteral("zora")} &&
+              window.testUsersCellText(0, QStringLiteral("World activity")) ==
+                  QStringLiteral("2h 03m") &&
+              window.testUsersCellText(0, QStringLiteral("Nodes")) ==
+                  QStringLiteral("2 - node-a, node-b"),
+          QStringLiteral("Users sorts formatted statistics by their numeric values"));
+    window.testSetAdmin(false);
+    check(!window.testUsersNavButtonVisible(),
+          QStringLiteral("losing admin status immediately hides Users"));
 
     // adhoc #129: a public room (#general) is open to every registered account,
     // so its users popup lists the whole database directory — not just the
