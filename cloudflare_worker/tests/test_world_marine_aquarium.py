@@ -108,6 +108,21 @@ def test_cinematic_reef_contains_layered_habitat_families():
         assert name in aquarium
 
 
+def test_cinematic_reef_uses_compact_habitat_geometry():
+    aquarium = _aquarium_block()
+    # The reef is viewed as a whole across the lobby, so the habitat shapes
+    # keep their silhouettes with deliberately modest segment counts.
+    for geometry in (
+        "new THREE.IcosahedronGeometry(1, 0)",
+        "new THREE.SphereGeometry(0.145 * scale, 8, 6)",
+        "new THREE.SphereGeometry(scale, 12, 8)",
+        "new THREE.CapsuleGeometry(0.12 * scale, length, 4, 6)",
+        "new THREE.CapsuleGeometry(0.038 * scale, length, 4, 5)",
+    ):
+        assert geometry in aquarium
+    assert "for (let index = 0; index < 16; index += 1)" in aquarium
+
+
 def test_cinematic_reef_uses_curved_motion_and_initialized_atmosphere():
     aquarium = _aquarium_block()
     assert "new THREE.CatmullRomCurve3" in aquarium
