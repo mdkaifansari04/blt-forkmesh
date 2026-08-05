@@ -302,6 +302,9 @@ def test_two_cloned_lod_quadcopters_fly_on_three_axes():
         "getQuadcopterState:",
         '"FLY QUADCOPTER"',
         '"CLICK OR E · WASD · SPACE UP · C DOWN"',
+        "const legacyForwardInput =",
+        "movement.addScaledVector(forward, legacyForwardInput);",
+        "movement.addScaledVector(right, legacyRightInput);",
     ):
         assert contract in scene
 
