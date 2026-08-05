@@ -20,6 +20,7 @@
 #include <QEvent>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QButtonGroup>
 #include <QFrame>
 #include <QShowEvent>
 
@@ -2565,7 +2566,9 @@ QWidget *MainWindow::buildAgentsTab()
     // tab. They are plain full-size buttons (adhoc #61), with the names they open
     // in the status popup and the tooltip. Branch is tinted green: reviewing the
     // work is the thing you reach for from a finished run, so it reads as the go
-    // action in the row.
+    // action in the row. Branch is painted as the solid green action at the
+    // far right of the header below; Worktree stays with the other session
+    // actions because it is a secondary navigation destination.
     auto *branchButton = railActionButton(
         QStringLiteral("git-branch"), QStringLiteral("Branch"),
         "Open this session's branch in the Git view");
@@ -2601,7 +2604,6 @@ QWidget *MainWindow::buildAgentsTab()
     actionRow->addWidget(m_agentStartButton);
     actionRow->addWidget(m_agentStopButton);
     actionRow->addWidget(m_agentDeleteAllButton);
-    actionRow->addWidget(m_agentBranchButton);
     actionRow->addWidget(m_agentWorktreeButton);
 
     // The header's first line is the run's state and everything you can do about
@@ -2755,6 +2757,10 @@ QWidget *MainWindow::buildAgentsTab()
                          "Show this run's raw, unformatted output");
     for (QPushButton *b : {m_transcriptModeButton, m_terminalModeButton})
         b->setCheckable(true);
+    auto *outputModeGroup = new QButtonGroup(this);
+    outputModeGroup->setExclusive(true);
+    outputModeGroup->addButton(m_transcriptModeButton);
+    outputModeGroup->addButton(m_terminalModeButton);
     m_transcriptModeButton->setChecked(true);
     connect(m_transcriptModeButton, &QPushButton::clicked, this, [this] {
         m_transcriptModeButton->setChecked(true);
@@ -2808,10 +2814,11 @@ QWidget *MainWindow::buildAgentsTab()
     // The output toolbar is gone with the search box it was built around (adhoc
     // #224): its last two controls, Transcript and Raw, join the actions in the
     // header's top-right corner, so the transcript starts directly under the
-    // title instead of a row down.
-    statusRow->addSpacing(8);
+    // title instead of a row down. Branch follows the pair with no extra
+    // separator, making it the final right-most action.
     statusRow->addWidget(m_transcriptModeButton, 0, Qt::AlignVCenter);
     statusRow->addWidget(m_terminalModeButton, 0, Qt::AlignVCenter);
+    statusRow->addWidget(m_agentBranchButton, 0, Qt::AlignVCenter);
 
     // Edited-files list for the "Files changed" tab: the files this session has
     // touched in its branch (derived from Edit/Write/MultiEdit tool calls, and
