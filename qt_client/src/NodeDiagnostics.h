@@ -89,8 +89,8 @@ QString severityName(int severity);
 // the node has diagnostics reporting off) gives an em dash.
 QString summaryLabel(const QList<Finding> &findings, bool reported);
 
-// Multi-line detail (one "Severity: message" per finding) for tooltips and the
-// node detail panel. Empty when there is nothing to say.
+// Multi-line detail (severity, stable check id, summary, and concrete next
+// checks per finding) for tooltips and diagnostic prompts. Empty for no findings.
 QString detailText(const QList<Finding> &findings);
 
 // Wire form carried in a heartbeat's "dg" field: [{"i":id,"s":sev,"m":msg}].
