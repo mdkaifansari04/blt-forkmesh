@@ -16261,6 +16261,14 @@ export function createWorldScene({
   function tagTriangleViewMeshes() {
     scene.traverse((child) => {
       if (child.isMesh) child.layers.enable(TRIANGLE_VIEW_LAYER);
+      // Ground is one flat, textured walking surface. Keeping it on the
+      // normal layer prevents the diagnostic wireframe from drawing the
+      // internal triangles that every rendered surface needs underneath its
+      // texture. Disable it here as well as skipping future ground meshes so
+      // repeated inspector toggles remain clean.
+      if (child.isMesh && child.userData.ground) {
+        child.layers.disable(TRIANGLE_VIEW_LAYER);
+      }
     });
   }
 
@@ -17004,26 +17012,9 @@ export function createWorldScene({
     "discord-board", "Discord board", "Boards & kiosks", worldDiscordBoard,
   );
 
-  // One uninterrupted city park slab sits under every district, path, and
-  // building. Satellite circles remain semantic layout regions only; they no
-  // longer expose separate land edges when the camera pulls back.
-  const continuousCityFoundation = new THREE.Mesh(
-    new THREE.CylinderGeometry(1, 1, 6.4, 128),
-    makeMaterial(THREE, "#59483a", { roughness: 1 }),
-  );
-  continuousCityFoundation.name = "forkmesh-continuous-city-foundation";
-  continuousCityFoundation.scale.set(
-    CONTINUOUS_CITY_RADIUS,
-    1,
-    CONTINUOUS_CITY_RADIUS,
-  );
-  continuousCityFoundation.position.set(
-    0,
-    -3.22,
-    CONTINUOUS_CITY_CENTER_Z,
-  );
-  continuousCityFoundation.receiveShadow = true;
-  world.add(continuousCityFoundation);
+  // One flat, textured city surface sits under every district, path, and
+  // building. The prior thick cylinder contributed a ring of radial faces to
+  // the triangle inspector even though it added no visible walkable surface.
   const continuousCityLand = new THREE.Mesh(
     new THREE.CircleGeometry(1, 160),
     cityGrassMaterial(THREE),
@@ -17043,8 +17034,8 @@ export function createWorldScene({
   const townLandscape = createTownLandscape(THREE);
   world.add(townLandscape);
   registerWorldElement(
-    "city-terrain", "City terrain & foundation", "Terrain",
-    [continuousCityFoundation, continuousCityLand],
+    "city-terrain", "City terrain", "Terrain",
+    continuousCityLand,
   );
   registerWorldElement(
     "town-landscape", "Town landscaping, buildings & trees", "Terrain",
