@@ -8282,6 +8282,13 @@ void MainWindow::performRelaySync()
     // securely materialize public issue leases for repos it currently serves.
     // Run that independent intake on the same push/fallback cadence.
     pollMirrorIssueInboxes();
+    // The service-managed mirror companion is intentionally not a chat/user
+    // session.  It only drains the three signed mirror-intake endpoints; asking
+    // for the account-owned /api/sync feed both wastes work and produces an
+    // expected 401 for node-only identities.
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     const QString account = m_accountName.isEmpty()
         ? QSettings().value(kAccountNameSetting).toString().trimmed()
         : m_accountName;

@@ -802,6 +802,9 @@ void MainWindow::runDeferredStartup()
     if (QWindow *handle = windowHandle())
         handle->removeEventFilter(this);
 
+    const bool externalMirrorBridge =
+        m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE");
     bool headlessBootstrapQueued = false;
     auto runHeadlessBootstrap = [this, &headlessBootstrapQueued] {
         if (!m_headless || qEnvironmentVariableIsSet(
@@ -849,8 +852,10 @@ void MainWindow::runDeferredStartup()
                 {
                     forkmesh::StartupTraceStep step(
                         QStringLiteral("deferred startup: start mesh session"));
-                    startupStep(QStringLiteral("Connecting to the mesh"));
-                    startSession();
+                    if (!externalMirrorBridge) {
+                        startupStep(QStringLiteral("Connecting to the mesh"));
+                        startSession();
+                    }
                 }
                 runHeadlessBootstrap();
             } else {
@@ -878,7 +883,7 @@ void MainWindow::runDeferredStartup()
                             "deferred startup: headless silent authentication"));
                         authenticateSilently(name);
                     }
-                    {
+                    if (!externalMirrorBridge) {
                         forkmesh::StartupTraceStep step(QStringLiteral(
                             "deferred startup: start headless mesh session"));
                         startSession();
@@ -905,10 +910,6 @@ void MainWindow::runDeferredStartup()
     // the user's first navigation.
     if (m_headless)
         startNetworking();
-
-    const bool externalMirrorBridge =
-        m_headless && qEnvironmentVariableIsSet(
-                          "FORKMESH_EXTERNAL_MIRROR_NODE");
 
     // Restore the last open repository (for a desktop this comes first,
     // matching the old scheduling order).
