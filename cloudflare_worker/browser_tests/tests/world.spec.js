@@ -6490,11 +6490,22 @@ test("local diagnostics report renderer and existing socket state without new te
     liveChart.locator('[data-world-diagnostics-chart-value="memory"]'),
   ).toContainText("MB");
   for (const metric of ["fps", "triangles", "memory"]) {
-    await expect(
-      liveChart.locator(
-        `[data-world-diagnostics-chart-line="${metric}"]`,
-      ),
-    ).toHaveAttribute("points", /\d+\.\d,\d+\.\d \d+\.\d,\d+\.\d/);
+    const line = liveChart.locator(
+      `[data-world-diagnostics-chart-line="${metric}"]`,
+    );
+    await expect(line).toHaveAttribute(
+      "points",
+      /\d+\.\d,\d+\.\d \d+\.\d,\d+\.\d/,
+    );
+    const chartPoints = (await line.getAttribute("points"))
+      .trim()
+      .split(/\s+/)
+      .map((point) => point.split(",").map(Number));
+    expect(chartPoints.length).toBeGreaterThanOrEqual(2);
+    for (const [, y] of chartPoints) {
+      expect(y).toBeGreaterThan(0);
+      expect(y).toBeLessThan(16);
+    }
   }
   const collapsedBox = await diagnostics.boundingBox();
   expect(collapsedBox?.width).toBeGreaterThan(240);
