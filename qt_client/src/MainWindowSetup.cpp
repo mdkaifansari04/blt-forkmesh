@@ -4214,6 +4214,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
 
 void MainWindow::runQuickUpdate()
 {
+    startRestartCautionFlash();
     beginRestartLog();
     showUpdateLog();
     logRestart(QStringLiteral("quick update started"));
@@ -4619,6 +4620,7 @@ bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
 void MainWindow::installPrebuiltAndRelaunch(const QString &artifactPath,
                                             const QString &tag)
 {
+    startRestartCautionFlash();
     // Stage a private executable copy — the CAS blob is not executable and
     // may sit on a different filesystem than the installed binary.
     const QString staged =
@@ -4649,6 +4651,7 @@ void MainWindow::installPrebuiltAndRelaunch(const QString &artifactPath,
 
 void MainWindow::updateRebuildRestart()
 {
+    startRestartCautionFlash();
     beginRestartLog();
     showUpdateLog();
     logRestart(QStringLiteral("update, rebuild & restart started"));

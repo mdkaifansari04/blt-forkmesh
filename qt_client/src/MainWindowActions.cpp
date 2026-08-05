@@ -1868,6 +1868,69 @@ void MainWindow::flashErrorBorder()
     m_errorBorderTimer->start(1500); // world-admin-error-arrival's 1.5s
 }
 
+// A restart can spend a while fetching or compiling while the relevant control
+// is hidden in another section.  Pulse the full app edge in the theme's amber
+// caution colour for that entire interval, without intercepting any input.
+void MainWindow::startRestartCautionFlash()
+{
+    if (!m_restartCautionBorderOverlay) {
+        class RestartCautionBorderWidget : public QWidget
+        {
+        public:
+            explicit RestartCautionBorderWidget(QWidget *parent) : QWidget(parent)
+            {
+                setAttribute(Qt::WA_TransparentForMouseEvents);
+                setAttribute(Qt::WA_NoSystemBackground);
+                setAttribute(Qt::WA_TranslucentBackground);
+                setObjectName(QStringLiteral("restartCautionBorderOverlay"));
+            }
+
+        protected:
+            void paintEvent(QPaintEvent *) override
+            {
+                QPainter painter(this);
+                painter.setRenderHint(QPainter::Antialiasing, false);
+                // GitHub's amber caution tone, with a soft inset glow so it
+                // remains unmistakable against either application theme.
+                QPen pen(QColor(210, 153, 34, 220), 3);
+                pen.setJoinStyle(Qt::MiterJoin);
+                painter.setPen(pen);
+                painter.drawRect(rect().adjusted(1, 1, -2, -2));
+                for (int step = 1; step <= 5; ++step) {
+                    const int inset = 2 + step * 3;
+                    QPen glow(QColor(210, 153, 34, 62 - step * 10), 3);
+                    glow.setJoinStyle(Qt::MiterJoin);
+                    painter.setPen(glow);
+                    painter.drawRect(
+                        rect().adjusted(inset, inset, -inset - 1, -inset - 1));
+                }
+            }
+        };
+        m_restartCautionBorderOverlay = new RestartCautionBorderWidget(this);
+        m_restartCautionBorderTimer = new QTimer(this);
+        connect(m_restartCautionBorderTimer, &QTimer::timeout, this, [this] {
+            if (!m_restartCautionBorderOverlay)
+                return;
+            m_restartCautionBorderOverlay->setVisible(
+                !m_restartCautionBorderOverlay->isVisible());
+            if (m_restartCautionBorderOverlay->isVisible())
+                m_restartCautionBorderOverlay->raise();
+        });
+    }
+    m_restartCautionBorderOverlay->setGeometry(rect());
+    m_restartCautionBorderOverlay->show();
+    m_restartCautionBorderOverlay->raise();
+    m_restartCautionBorderTimer->start(650);
+}
+
+void MainWindow::stopRestartCautionFlash()
+{
+    if (m_restartCautionBorderTimer)
+        m_restartCautionBorderTimer->stop();
+    if (m_restartCautionBorderOverlay)
+        m_restartCautionBorderOverlay->hide();
+}
+
 // Jump to the screen/item a ping points at: open the owning repo, switch
 // to the right tab and select the issue / PR / discussion / commit (issue #292).
 void MainWindow::openNotificationLink(const NotificationLink &link)
