@@ -14190,115 +14190,59 @@
     return Number(ref) >= 0 && Number(value) >= 0 && Number(value) !== Number(ref);
   }
 
-  // One metadata chip. `mismatch` underlines it (amber) and notes the canonical
-  // value in the tooltip, matching the desktop panel's underline of a cell that
-  // doesn't match the source of truth.
-  function mirrorChip(label, value, mismatch, note) {
-    const shown = value === "" || value === undefined || value === null ? "-" : value;
-    return `
-        <span class="inline-flex max-w-full items-center gap-1.5 rounded-md border ${mismatch ? "border-amber-500/50 bg-amber-500/10" : "border-border bg-background"} px-2 py-1 text-[10px] font-mono"${mismatch && note ? ` title="${escapeHtml(note)}"` : ""}>
-          <span class="shrink-0 text-muted-foreground">${escapeHtml(label)}</span>
-          <span class="min-w-0 break-all ${mismatch ? "text-amber-600 underline decoration-amber-500/60" : "text-foreground"}">${escapeHtml(shown)}</span>
-        </span>`;
-  }
-
-  // Potentially long lists stay out of the row layout. The chip carries only
-  // the item count; hovering it reveals the complete, one-item-per-line list.
-  // Keeping it focusable gives keyboard users the same native tooltip and an
-  // explicit accessible label without adding a second visual row.
-  function mirrorListChip(label, values) {
-    const list = (Array.isArray(values) ? values : [])
-      .map((value) => String(value || "").trim())
-      .filter(Boolean);
-    if (!list.length) return mirrorChip(label, "", false, "");
-    const tooltip = `${label}:\n${list.map((value) => `\u2022 ${value}`).join("\n")}`;
-    return `
-        <span class="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-[10px] font-mono" tabindex="0" aria-label="${escapeHtml(`${label}: ${list.join(", ")}`)}" title="${escapeHtml(tooltip)}">
-          <span class="shrink-0 text-muted-foreground">${escapeHtml(label)}</span>
-          <span class="text-foreground">${formatCount(list.length)}</span>
-        </span>`;
-  }
-
-  function mirrorDetailGroup(label, chips) {
-    return `
-        <section class="min-w-0">
-          <h4 class="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">${escapeHtml(label)}</h4>
-          <div class="flex min-w-0 flex-wrap gap-1.5">${chips.join("")}</div>
-        </section>`;
-  }
-
-  // Keep the desktop Mirror nodes panel's complete health payload, but group it
-  // into four scannable sections instead of flattening every field into one
-  // unbroken strip. Content mismatches remain amber and retain their source-value
-  // tooltip.
-  function mirrorDetailGroups(mirror, refMirror) {
-    const commit = String(mirror.commit || "").trim();
-    const refCommit = String(refMirror?.commit || "").trim();
-    const branch = String(mirror.branch || "").trim();
-    const commitLabel = commit
-      ? commit.slice(0, 7) + (branch ? ` (${branch})` : "")
-      : "";
-    const operations = Array.isArray(mirror.operations)
-      ? mirror.operations.map((value) => String(value || "").trim()).filter(Boolean)
-      : [];
-    let endpointHost = "";
-    try {
-      endpointHost = mirror.endpoint ? new URL(String(mirror.endpoint)).host : "";
-    } catch (_) {
-      endpointHost = "";
-    }
-    const revision = [
-      mirrorChip(
-        "Commit",
-        commitLabel,
-        Boolean(commit && refCommit && commit !== refCommit),
-        refCommit ? `Source of truth is at ${refCommit.slice(0, 7)}` : "",
-      ),
-      mirrorChip("Synced", mirror.lastSync ? formatTimeAgo(mirror.lastSync) : "", false, ""),
-      mirrorChip("Size", mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "", false, ""),
-    ];
-    const connection = [
-      mirrorChip("Endpoint", endpointHost, false, ""),
-      mirrorChip("Health checked", mirror.checkedAt ? formatTimeAgo(mirror.checkedAt) : "", false, ""),
-      mirrorChip("Latency", Number.isFinite(Number(mirror.latencyMs)) ? `${Math.max(0, Number(mirror.latencyMs))} ms` : "", false, ""),
-      mirrorChip("Region", mirror.region || "", false, ""),
-      mirrorChip("Endpoint integrity", mirror.endpointIntegrity || "", mirror.endpointIntegrity && mirror.endpointIntegrity !== "ok", ""),
-      mirrorListChip("Capabilities", operations),
-    ];
-    const content = [
-      mirrorChip("Issues", mirrorCountText(mirror.issueCount), mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), `Source: ${mirrorCountText(refMirror?.issueCount)}`),
-      mirrorChip("Commits", mirrorCountText(mirror.commitCount), mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), `Source: ${mirrorCountText(refMirror?.commitCount)}`),
-      mirrorChip("Branches", mirrorCountText(mirror.branchCount), mirrorCountMismatch(mirror.branchCount, refMirror?.branchCount), `Source: ${mirrorCountText(refMirror?.branchCount)}`),
-      mirrorChip("Pulls", mirrorCountText(mirror.pullCount), mirrorCountMismatch(mirror.pullCount, refMirror?.pullCount), `Source: ${mirrorCountText(refMirror?.pullCount)}`),
-      mirrorChip("Discussions", mirrorCountText(mirror.discussionCount), mirrorCountMismatch(mirror.discussionCount, refMirror?.discussionCount), `Source: ${mirrorCountText(refMirror?.discussionCount)}`),
-      mirrorChip("Artifacts", mirrorCountText(mirror.artifactCount), mirrorCountMismatch(mirror.artifactCount, refMirror?.artifactCount), `Source: ${mirrorCountText(refMirror?.artifactCount)}`),
-    ];
-    const usage = [
-      mirrorChip("Worktrees", mirrorCountText(mirror.worktreeCount), false, ""),
-      mirrorChip("Clones", mirrorCountText(mirror.clonesServed), false, ""),
-      mirrorChip("Website", mirrorCountText(mirror.websiteServed), false, ""),
-    ];
-    return `
-        <div class="grid gap-3 border-t border-border bg-secondary/20 p-3 sm:grid-cols-2">
-          ${mirrorDetailGroup("Revision", revision)}
-          ${mirrorDetailGroup("Connection", connection)}
-        </div>
-        <div class="grid gap-3 border-t border-border p-3 sm:grid-cols-2">
-          ${mirrorDetailGroup("Repository contents", content)}
-          ${mirrorDetailGroup("Local activity", usage)}
-        </div>`;
-  }
-
   // Counts arrive as -1 when a node hasn't reported them; show a dash for those
-  // (a distinct state from a real 0) so a chip never reads a misleading "0".
+  // (a distinct state from a real 0) so a cell never reads a misleading "0".
   function mirrorCountText(value) {
     const number = Number(value);
     return Number.isFinite(number) && number >= 0 ? formatCount(number) : "";
   }
 
-  // A mirror is a responsive card: identity and reachability remain prominent,
-  // while the denser health payload is grouped below. Cards become a two-column
-  // grid when space allows and remain a single, wrapping column on small screens.
+  function mirrorTableHeader(icon, label, wide = false) {
+    return `
+        <th scope="col" class="${wide ? "" : "w-px"} whitespace-nowrap px-1 py-1 text-center text-muted-foreground" title="${escapeHtml(label)}">
+          <i data-lucide="${icon}" class="inline-block h-3 w-3" aria-hidden="true"></i>
+          <span class="sr-only">${escapeHtml(label)}</span>
+        </th>`;
+  }
+
+  function mirrorTableCell(value, options = {}) {
+    const shown = value === "" || value === undefined || value === null ? "-" : value;
+    const mismatch = options.mismatch === true;
+    const title = options.title || String(shown);
+    return `
+        <td class="w-px max-w-28 truncate whitespace-nowrap px-1 py-1 text-[10px] font-mono ${mismatch ? "text-amber-600 underline decoration-amber-500/60" : "text-muted-foreground"}" title="${escapeHtml(title)}">${escapeHtml(shown)}</td>`;
+  }
+
+  function mirrorTableHead() {
+    const columns = [
+      ["server", "Node", true],
+      ["radio", "Status"],
+      ["activity", "Activity"],
+      ["package", "Version"],
+      ["git-commit-horizontal", "Revision"],
+      ["refresh-cw", "Last synced"],
+      ["globe", "Endpoint"],
+      ["heart-pulse", "Health checked"],
+      ["gauge", "Latency"],
+      ["map-pin", "Region"],
+      ["shield-check", "Endpoint integrity"],
+      ["list-checks", "Capabilities"],
+      ["hard-drive", "Repository size"],
+      ["circle-dot", "Issues"],
+      ["git-commit-horizontal", "Commits"],
+      ["git-branch", "Branches"],
+      ["git-pull-request", "Pull requests"],
+      ["messages-square", "Discussions"],
+      ["package-open", "Artifacts"],
+      ["trees", "Worktrees"],
+      ["copy", "Clones served"],
+      ["mouse-pointer-click", "Website requests"],
+    ];
+    return columns.map(([icon, label, wide]) => mirrorTableHeader(icon, label, wide)).join("");
+  }
+
+  // Every node is a single compact table row. Long values stay on that line and
+  // the borderless table scrolls horizontally instead of turning into cards.
   function renderMirrorTabRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
@@ -14322,86 +14266,58 @@
       serving: "serving",
       offline: "offline",
     }[activity] || "";
-    const activityClass =
-      activity === "integrity-blocked"
-        ? "border-destructive/40 bg-destructive/10 text-destructive"
-        : ["syncing", "verifying", "awaiting-verification"].includes(activity)
-          ? "border-amber-500/40 bg-amber-500/10 text-amber-600"
-          : "border-primary/40 bg-primary/10 text-primary";
-    const dotColor = !online
-      ? "text-muted-foreground"
-      : behind
-        ? "text-amber-500"
-        : "text-primary";
-    const statusClass = online
-      ? "border-primary/40 bg-primary/10 text-primary"
-      : "border-border bg-secondary/40 text-muted-foreground";
+    const operations = Array.isArray(mirror.operations)
+      ? mirror.operations.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    let endpointHost = "";
+    try {
+      endpointHost = mirror.endpoint ? new URL(String(mirror.endpoint)).host : "";
+    } catch (_) {
+      endpointHost = "";
+    }
+    const commitLabel = commit
+      ? commit.slice(0, 7) + (mirror.branch ? `/${mirror.branch}` : "")
+      : "";
     const rowClass = isServing
-      ? "min-w-0 overflow-hidden rounded-lg border border-primary/40 bg-primary/5 ring-1 ring-inset ring-primary"
+      ? "bg-primary/10"
       : behind
-        ? "min-w-0 overflow-hidden rounded-lg border border-amber-500/40 bg-background"
-        : "min-w-0 overflow-hidden rounded-lg border border-border bg-background transition-colors hover:bg-secondary/40";
+        ? "bg-amber-500/10"
+        : "transition-colors hover:bg-secondary/40";
+    const statusIcon = online ? "radio" : "circle";
+    const statusColor = online ? (behind ? "text-amber-500" : "text-primary") : "text-muted-foreground";
+    const nodeFlags = [
+      isSource ? '<i data-lucide="database" class="inline-block h-3 w-3 text-primary" title="Source of truth"></i><span class="sr-only">Source of truth</span>' : "",
+      behind ? '<i data-lucide="git-compare-arrows" class="inline-block h-3 w-3 text-amber-500" title="Out of sync"></i><span class="sr-only">Out of sync</span>' : "",
+      integrityRejected ? '<i data-lucide="shield-alert" class="inline-block h-3 w-3 text-destructive" title="Failing integrity pin"></i><span class="sr-only">Failing integrity pin</span>' : "",
+    ].join("");
+    const capabilityTitle = operations.length
+      ? `Capabilities: ${operations.join(", ")}`
+      : "Capabilities not reported";
     return `
-        <article data-mirror-card data-mirror-state="${online ? "online" : "offline"}" class="${rowClass}">
-          <div class="flex min-w-0 flex-wrap items-start justify-between gap-3 p-4">
-            <div class="flex min-w-0 items-start gap-3">
-              <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${online ? "bg-primary/10" : "bg-secondary"}">
-                <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 ${dotColor}"></i>
-              </span>
-              <span class="min-w-0">
-                <span class="flex min-w-0 flex-wrap items-center gap-1.5">
-                  <span class="min-w-0 truncate text-sm font-semibold text-foreground font-mono">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
-                  ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
-                </span>
-                <span class="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-                  ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
-                  ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
-                  ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
-                  ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
-                  ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary font-mono">${escapeHtml(speed)}</span>` : ""}
-                </span>
-              </span>
-            </div>
-            <span class="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-medium ${statusClass}">
-              <span class="h-1.5 w-1.5 rounded-full ${online ? "bg-primary" : "bg-muted-foreground/40"}"></span>
-              ${escapeHtml(mirror.status || "unknown")}
-            </span>
-          </div>
-          ${mirrorDetailGroups(mirror, refMirror)}
-        </article>`;
-  }
-
-  function renderMirrorNetworkSummary(mirrors, refMirror) {
-    const online = mirrors.filter((mirror) => mirror.status === "online").length;
-    const offline = Math.max(0, mirrors.length - online);
-    const referenceCommit = String(refMirror?.commit || "").trim();
-    const reported = mirrors.filter((mirror) => String(mirror.commit || "").trim());
-    const current = referenceCommit
-      ? reported.filter((mirror) => String(mirror.commit || "").trim() === referenceCommit).length
-      : 0;
-    const mismatched = referenceCommit ? Math.max(0, reported.length - current) : 0;
-    const revisionValue = referenceCommit ? formatCount(current) : "-";
-    const revisionLabel = referenceCommit
-      ? (mismatched ? `${formatCount(mismatched)} revision mismatch${mismatched === 1 ? "" : "es"}` : "Matching source revision")
-      : "Revision not reported";
-    const revisionTone = mismatched
-      ? "border-amber-500/40 bg-amber-500/10 text-amber-600"
-      : "border-primary/40 bg-primary/10 text-primary";
-    return `
-        <div data-mirror-summary class="grid gap-3 border-b border-border bg-secondary/20 p-3 sm:grid-cols-3">
-          <div class="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-background p-3">
-            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground"><i data-lucide="server" class="h-4 w-4"></i></span>
-            <span class="min-w-0"><strong class="block text-xl leading-none text-foreground font-mono">${formatCount(mirrors.length)}</strong><span class="mt-1 block text-xs text-muted-foreground">Registered nodes</span></span>
-          </div>
-          <div class="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-background p-3">
-            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><i data-lucide="radio" class="h-4 w-4"></i></span>
-            <span class="min-w-0"><strong class="block text-xl leading-none text-foreground font-mono">${formatCount(online)}</strong><span class="mt-1 block text-xs text-muted-foreground">Online now · ${formatCount(offline)} offline</span></span>
-          </div>
-          <div class="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-background p-3">
-            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border ${revisionTone}"><i data-lucide="git-commit-horizontal" class="h-4 w-4"></i></span>
-            <span class="min-w-0"><strong class="block text-xl leading-none text-foreground font-mono">${revisionValue}</strong><span class="mt-1 block text-xs text-muted-foreground">${escapeHtml(revisionLabel)}</span></span>
-          </div>
-        </div>`;
+        <tr data-mirror-row data-mirror-state="${online ? "online" : "offline"}" class="${rowClass}">
+          <th scope="row" class="max-w-28 truncate whitespace-nowrap px-1 py-1 text-left text-[11px] font-medium text-foreground font-mono">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")} ${nodeFlags}</th>
+          <td class="w-px whitespace-nowrap px-1 py-1 text-center" title="${escapeHtml(mirror.status || "unknown")}"><i data-lucide="${statusIcon}" class="inline-block h-3 w-3 ${statusColor}" aria-hidden="true"></i><span class="sr-only">${escapeHtml(mirror.status || "unknown")}</span></td>
+          ${mirrorTableCell(activityLabel || "", { title: activityLabel || "Activity not reported" })}
+          ${mirrorTableCell(version)}
+          ${mirrorTableCell(commitLabel, { mismatch: behind, title: behind && refCommit ? `Source of truth is at ${refCommit.slice(0, 7)}` : commitLabel })}
+          ${mirrorTableCell(mirror.lastSync ? formatTimeAgo(mirror.lastSync) : "")}
+          ${mirrorTableCell(endpointHost)}
+          ${mirrorTableCell(mirror.checkedAt ? formatTimeAgo(mirror.checkedAt) : "")}
+          ${mirrorTableCell(Number.isFinite(Number(mirror.latencyMs)) ? `${Math.max(0, Number(mirror.latencyMs))} ms` : "")}
+          ${mirrorTableCell(mirror.region || "")}
+          ${mirrorTableCell(mirror.endpointIntegrity || "", { mismatch: Boolean(mirror.endpointIntegrity && mirror.endpointIntegrity !== "ok") })}
+          ${mirrorTableCell(operations.length ? formatCount(operations.length) : "", { title: capabilityTitle })}
+          ${mirrorTableCell(mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "")}
+          ${mirrorTableCell(mirrorCountText(mirror.issueCount), { mismatch: mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), title: `Source: ${mirrorCountText(refMirror?.issueCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.commitCount), { mismatch: mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), title: `Source: ${mirrorCountText(refMirror?.commitCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.branchCount), { mismatch: mirrorCountMismatch(mirror.branchCount, refMirror?.branchCount), title: `Source: ${mirrorCountText(refMirror?.branchCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.pullCount), { mismatch: mirrorCountMismatch(mirror.pullCount, refMirror?.pullCount), title: `Source: ${mirrorCountText(refMirror?.pullCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.discussionCount), { mismatch: mirrorCountMismatch(mirror.discussionCount, refMirror?.discussionCount), title: `Source: ${mirrorCountText(refMirror?.discussionCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.artifactCount), { mismatch: mirrorCountMismatch(mirror.artifactCount, refMirror?.artifactCount), title: `Source: ${mirrorCountText(refMirror?.artifactCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.worktreeCount))}
+          ${mirrorTableCell(mirrorCountText(mirror.clonesServed), { title: speed ? `${mirrorCountText(mirror.clonesServed) || "-"} clones · ${speed}` : `${mirrorCountText(mirror.clonesServed) || "-"} clones` })}
+          ${mirrorTableCell(mirrorCountText(mirror.websiteServed))}
+        </tr>`;
   }
 
   function renderMirrorRow(mirror, servedBy, refMirror) {
@@ -14463,9 +14379,9 @@
           (Number(b.lastSync) || 0) - (Number(a.lastSync) || 0) ||
           String(a.node || a.owner || a.name || "").localeCompare(String(b.node || b.owner || b.name || "")),
       );
-      tabContainer.innerHTML = `${renderMirrorNetworkSummary(ordered, refMirror)}<div data-mirror-card-grid class="grid gap-3 p-3 md:grid-cols-2">${ordered
+      tabContainer.innerHTML = `<div data-mirror-table-wrap class="overflow-x-auto"><table data-mirror-table class="min-w-full border-separate border-spacing-0 whitespace-nowrap text-left"><caption class="sr-only">Mirror node health</caption><thead class="sticky top-0 z-10 bg-background"><tr>${mirrorTableHead()}</tr></thead><tbody>${ordered
         .map((mirror) => renderMirrorTabRow(mirror, servedBy, refMirror))
-        .join("")}</div>`;
+        .join("")}</tbody></table></div>`;
     }
     renderRepoLiveMirrorList(mirrors, servedBy);
     window.lucide?.createIcons();
@@ -15384,7 +15300,7 @@
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
             <section data-dashboard-repo-tab-panel="sizemap" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-pie" class="h-3.5 w-3.5 text-primary"></i>Size map</span><span class="font-mono text-[10px] text-muted-foreground">directory sizes · default branch</span></div><div data-repo-sizemap class="p-4"></div></div></section>
-            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-4"><span class="flex min-w-0 items-center gap-3"><span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><i data-lucide="radio" class="h-4 w-4"></i></span><span class="min-w-0"><span class="block text-sm font-semibold text-foreground">Mirror network</span><span class="mt-0.5 block text-xs text-muted-foreground">Independent copies, live reachability, and source revision health.</span></span></span><span class="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary"><span class="h-1.5 w-1.5 rounded-full bg-primary"></span>Live health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a ping; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
+            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div data-mirror-request hidden class="py-2"><label class="block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md bg-secondary px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="text-[11px] text-muted-foreground">They get a ping; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-workshop-agent-context hidden></div><div data-repo-agents></div></div></section>` : ""}
             ${settingsPanel}
           </div>
