@@ -56,7 +56,7 @@ def test_worker_footprint_budgets_match_current_source_tree():
         "compressedBundlePaidBytes": 10_000_000,
         "uncompressedBundleBytes": 64_000_000,
         "startupTimeMs": 1000,
-        "startupSourceBytesSoft": 2_500_000,
+        "startupSourceBytesSoft": 2_300_000,
         "dynamicRequestsFreeDaily": 100_000,
     }
     assert data["staticLimits"] == {
@@ -105,19 +105,28 @@ def test_optional_python_route_modules_are_deferred_from_global_scope():
         "activitypub_threads",
         "badges",
         "blog_feed",
+        "catalog",
         "chat_channels_api",
         "chat_direct_messages_api",
         "community_ads_api",
         "contributions",
         "edge_routing",
+        "events",
         "fediverse_digest",
         "fediverse_mentions_api",
+        "git_http",
+        "notes",
         "og_card",
         "organization_discord",
         "organization_succession_api",
+        "polar_integration",
+        "releases",
         "reward_policy",
         "security_controls",
         "security_scan_ingest",
+        "solana",
+        "static_routes",
+        "urls",
         "schema",
         "world",
         "world_build_board",
@@ -134,6 +143,23 @@ def test_optional_python_route_modules_are_deferred_from_global_scope():
     for module in deferred:
         assert f'_LazyModule("{module}")' in eager_imports
         assert f"import {module}" not in eager_imports
+
+
+def test_heavy_stdlib_modules_are_deferred_from_global_scope():
+    """Pyodide must not allocate optional stdlib modules during validation."""
+    eager_imports = ENTRY[: ENTRY.index("MAX_ROOM_NAME =")]
+    for module in (
+        "base64", "gzip", "io", "ipaddress", "math", "struct", "time",
+        "asyncio", "hashlib", "hmac", "json", "traceback", "urllib.parse",
+    ):
+        assert f'_LazyModule("{module}")' in eager_imports
+    for statement in (
+        "import asyncio", "import base64", "import gzip", "import hashlib",
+        "import hmac", "import io", "import ipaddress", "import json",
+        "import math", "import struct", "import time", "import traceback",
+        "from urllib.parse import",
+    ):
+        assert statement not in eager_imports
 
 
 def test_infrastructure_room_renders_detailed_honest_footprint_chart():
