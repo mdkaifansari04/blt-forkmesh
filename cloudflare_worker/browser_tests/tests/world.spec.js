@@ -6532,6 +6532,54 @@ test("local diagnostics report renderer and existing socket state without new te
   await expect(diagnostics).toContainText(
     "Nothing here is transmitted while you are in the World",
   );
+  const triangleView = diagnostics.locator("[data-world-triangle-view]");
+  await expect(triangleView).toHaveText("View triangles");
+  await expect(triangleView).toHaveAttribute("aria-pressed", "false");
+  await triangleView.click();
+  await expect(triangleView).toHaveText("Show normal world");
+  await expect(triangleView).toHaveAttribute("aria-pressed", "true");
+  const triangleState = await page
+    .locator("forkmesh-world")
+    .evaluate((shell) => {
+      const { camera, scene } = shell.world;
+      let visibleMeshes = 0;
+      let visibleNonMeshes = 0;
+      scene.traverse((object) => {
+        if (!object.layers?.test(camera.layers)) return;
+        if (object.isMesh) visibleMeshes += 1;
+        else if (object.isLine || object.isPoints || object.isSprite) {
+          visibleNonMeshes += 1;
+        }
+      });
+      return {
+        active: shell.world.isTriangleView(),
+        wireframe: scene.overrideMaterial?.wireframe,
+        labelsHidden: shell.querySelector("[data-world-label-layer]")?.hidden,
+        visibleMeshes,
+        visibleNonMeshes,
+      };
+    });
+  expect(triangleState).toMatchObject({
+    active: true,
+    wireframe: true,
+    labelsHidden: true,
+    visibleNonMeshes: 0,
+  });
+  expect(triangleState.visibleMeshes).toBeGreaterThan(0);
+  await triangleView.click();
+  await expect(triangleView).toHaveText("View triangles");
+  await expect(triangleView).toHaveAttribute("aria-pressed", "false");
+  expect(
+    await page.locator("forkmesh-world").evaluate((shell) => ({
+      active: shell.world.isTriangleView(),
+      overrideMaterial: shell.world.scene.overrideMaterial,
+      labelsHidden: shell.querySelector("[data-world-label-layer]")?.hidden,
+    })),
+  ).toEqual({
+    active: false,
+    overrideMaterial: null,
+    labelsHidden: false,
+  });
 
   const snapshot = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.lastDiagnosticsSnapshot,
