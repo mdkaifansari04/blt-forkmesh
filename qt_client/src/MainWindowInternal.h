@@ -3141,9 +3141,9 @@ const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
 // migration: older builds stored a plain bool here; new builds read/write
 // kActionAlertModeSetting ("all" / "failed" / "none") instead.
 const QString kActionAlertSetting = QStringLiteral("actions/runAlert");
-// Which action runs raise a desktop alert: "all" (start + every finish),
-// "failed" (only failures), or "none" (never). Mirrors GitHub's per-account
-// Actions notification choice.
+// Which action runs raise a desktop alert: "all" (start + every non-stopped
+// finish), "failed" (only failures), or "none" (never). Mirrors GitHub's
+// per-account Actions notification choice.
 const QString kActionAlertModeSetting = QStringLiteral("actions/runAlertMode");
 
 // Resolve the effective action-alert mode, migrating the legacy bool: an
