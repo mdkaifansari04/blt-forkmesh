@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QList>
 #include <QString>
 #include <QtGlobal>
 
@@ -56,6 +57,21 @@ struct DescendantLoad {
     int count = 0;             // matching processes below the root
     qint64 residentBytes = 0;  // their combined RSS
 };
+
+// One live process below a root process. `command` is the kernel's short
+// command name (the `comm` field), deliberately avoiding a potentially
+// sensitive full command line. Linux only; returns an empty list elsewhere or
+// when rootPid <= 0.
+struct DescendantProcess {
+    qint64 pid = 0;
+    qint64 parentPid = 0;
+    QString command;
+};
+
+// Lists every currently running child, grandchild, … below rootPid. This is
+// useful when a long-lived agent transport has declared a turn complete but a
+// build/test subprocess it launched is still draining.
+QList<DescendantProcess> descendantProcesses(qint64 rootPid);
 
 // Counts the processes in `rootPid`'s subtree (children, grandchildren, …) whose
 // command name is exactly `comm` — e.g. how many `cc1plus` compilers a running

@@ -7139,6 +7139,10 @@ int main(int argc, char *argv[])
         // by these tickets, so a lost or double-retired one leaves a spinner
         // running forever (or hides work that is still going).
         QStringList seen;
+        forkmesh::BackgroundActivity::setListener(nullptr);
+        const quint64 startup = forkmesh::BackgroundActivity::begin(
+            QStringLiteral("startup"), QStringLiteral("already running"),
+            forkmesh::ActionTelemetry::Execution::Worker);
         forkmesh::BackgroundActivity::setListener(
             [&seen](quint64 id, const QString &kind, const QString &detail,
                     forkmesh::ActionTelemetry::Execution execution,
@@ -7156,6 +7160,10 @@ int main(int argc, char *argv[])
                                 .arg(id)
                                 .arg(kind, detail, lane));
             });
+        check(seen == QStringList({
+                  QStringLiteral("+:%1:startup:already running:worker")
+                      .arg(startup)}),
+              "attaching a listener replays work that started before the footer");
         const quint64 first =
             forkmesh::BackgroundActivity::begin(QStringLiteral("git"),
                                                 QStringLiteral("git log"));
@@ -7165,26 +7173,30 @@ int main(int argc, char *argv[])
               "each background ticket gets its own non-zero id");
         forkmesh::BackgroundActivity::end(first);
         forkmesh::BackgroundActivity::end(second);
+        forkmesh::BackgroundActivity::end(startup);
         forkmesh::BackgroundActivity::end(0); // no-op guard for untracked work
         check(seen == QStringList({
+                  QStringLiteral("+:%1:startup:already running:worker")
+                      .arg(startup),
                   QStringLiteral("+:%1:git:git log:async").arg(first),
                   QStringLiteral("+:%1:net::async").arg(second),
                   QStringLiteral("-:%1:::async").arg(first),
-                  QStringLiteral("-:%1:::async").arg(second)}),
+                  QStringLiteral("-:%1:::async").arg(second),
+                  QStringLiteral("-:%1:::worker").arg(startup)}),
               "every begin/end pair reaches the listener exactly once, in order");
 
         {
             const forkmesh::BackgroundScope scope(QStringLiteral("scan"));
-            check(seen.size() == 5 && seen.last().startsWith(QLatin1Char('+')),
+            check(seen.size() == 7 && seen.last().startsWith(QLatin1Char('+')),
                   "a background scope opens its ticket on construction");
         }
-        check(seen.size() == 6 && seen.last().startsWith(QLatin1Char('-')),
+        check(seen.size() == 8 && seen.last().startsWith(QLatin1Char('-')),
               "a background scope retires its ticket when it unwinds");
 
         forkmesh::BackgroundActivity::setListener(nullptr);
         forkmesh::BackgroundActivity::end(
             forkmesh::BackgroundActivity::begin(QStringLiteral("git")));
-        check(seen.size() == 6,
+        check(seen.size() == 8,
               "a detached bus drops announcements instead of calling a dead "
               "listener");
     }
@@ -7781,10 +7793,12 @@ int main(int argc, char *argv[])
         // find a grandchild by command name and ignore everything outside the
         // tree it was asked about.
         using SystemStats::descendantsNamed;
-        check(descendantsNamed(0, QStringLiteral("sleep")).count == 0 &&
+        using SystemStats::descendantProcesses;
+        check(descendantProcesses(0).isEmpty() &&
+                  descendantsNamed(0, QStringLiteral("sleep")).count == 0 &&
                   descendantsNamed(QCoreApplication::applicationPid(), QString())
                           .count == 0,
-              "an invalid root PID or empty name counts nothing");
+              "an invalid root PID or empty name reports nothing");
 
         QProcess child;
         // `sh` execs the sleep, so the match is a grandchild of this process —
@@ -7803,6 +7817,19 @@ int main(int argc, char *argv[])
             }
             check(load.count >= 1 && load.residentBytes > 0,
                   "a descendant process is counted with its resident memory");
+            bool foundSleep = false;
+            for (const SystemStats::DescendantProcess &process :
+                 descendantProcesses(QCoreApplication::applicationPid())) {
+                // /bin/sh may exec sleep or fork it before waiting, so the
+                // observed child's PID is not guaranteed to be QProcess's PID.
+                if (process.pid > 0 && process.parentPid > 0 &&
+                    process.command == QLatin1String("sleep")) {
+                    foundSleep = true;
+                    break;
+                }
+            }
+            check(foundSleep,
+                  "a descendant process snapshot identifies the child PID and command");
             check(descendantsNamed(child.processId(),
                                    QStringLiteral("forkmesh-tests"))
                           .count == 0,

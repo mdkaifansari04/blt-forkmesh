@@ -15691,6 +15691,20 @@ async def repo_mirrors_handler(env, request, owner, repo):
         )
     }
     reachable_nodes = set(reachable_seen)
+    routing_verified_nodes = {
+        node_name
+        for node_name, row in endpoint_by_node.items()
+        if (
+            int(row.get("checked_at") or 0)
+            >= now - HTTPS_MIRROR_STATUS_FRESH_MS
+            and int(row.get("forkmesh_verified_at") or 0)
+            >= now - HTTPS_MIRROR_STATUS_FRESH_MS
+            and bool(int(row.get("healthy") or 0))
+            and bool(int(row.get("forkmesh_active") or 0))
+            and str(row.get("integrity") or "") == "ok"
+            and not bool(int(row.get("abuse_blocked") or 0))
+        )
+    }
     presence = {}
     for row in catalog_rows:
         record = row.get("data") or {}
@@ -15743,6 +15757,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         history,
         linked_canonical=bool(linked_row),
         reachable_nodes=reachable_nodes,
+        routing_verified_nodes=routing_verified_nodes,
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
@@ -44166,6 +44181,71 @@ async def _https_mirror_expected_forkmesh_refs(env):
         return ""
 
 
+async def _https_mirror_flagship_quorum(env, allowed_nodes=None, now=None):
+    """Return fresh repository states independently attested by two mirrors.
+
+    The organization alias still has a durable catalog row for permissions and
+    repository identity, but that row must not make its hosting machine the
+    fleet's availability authority.  A new flagship state therefore joins the
+    accepted set once two distinct, healthy group endpoints return matching
+    node-signed repository proofs.  One compromised or divergent mirror cannot
+    repin the route by itself, while removing the former catalog host leaves
+    the remaining agreeing mirrors able to advance normally.
+    """
+    try:
+        now = int(now if now is not None else Date.now())
+        allowed = (
+            {
+                clean_string(node, MAX_NODE_NAME).strip().lower()
+                for node in allowed_nodes
+                if valid_node_name(
+                    clean_string(node, MAX_NODE_NAME).strip().lower())
+            }
+            if allowed_nodes is not None else None
+        )
+        rows = await d1_all(
+            env,
+            """SELECT node_name,checked_at,forkmesh_refs_sha256,
+                      forkmesh_operations_json
+                 FROM mirror_https_endpoints
+                WHERE healthy=1 AND integrity='ok' AND abuse_blocked=0
+                  AND checked_at>=?""",
+            now - https_routing.ENDPOINT_STALE_MS,
+        )
+        by_digest = {}
+        node_digest = {}
+        for row in rows or []:
+            node = clean_string(
+                row.get("node_name", ""), MAX_NODE_NAME).strip().lower()
+            digest = clean_string(
+                row.get("forkmesh_refs_sha256", ""), 64).strip().lower()
+            try:
+                operations = set(json.loads(
+                    str(row.get("forkmesh_operations_json") or "[]")))
+            except Exception:
+                operations = set()
+            if (
+                not valid_node_name(node)
+                or (allowed is not None and node not in allowed)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or not HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS.issubset(
+                    operations)
+            ):
+                continue
+            by_digest.setdefault(digest, set()).add(node)
+            node_digest[node] = digest
+        pins = frozenset(
+            digest for digest, nodes in by_digest.items() if len(nodes) >= 2)
+        return {
+            "pins": pins,
+            "nodes": frozenset(
+                node for digest in pins for node in by_digest[digest]),
+            "nodeDigests": node_digest,
+        }
+    except Exception:
+        return {"pins": frozenset(), "nodes": frozenset(), "nodeDigests": {}}
+
+
 async def _https_mirror_accepted_forkmesh_refs(env):
     """Current and recent source-attested states accepted during convergence.
 
@@ -44203,6 +44283,30 @@ async def _https_mirror_accepted_forkmesh_refs(env):
                 item.get("state_hash", ""), 64).strip().lower()
             if re.fullmatch(r"[0-9a-f]{64}", digest):
                 pins.add(digest)
+        # Mirror2 historically supplied the organization alias's catalog row.
+        # Keep its signed current/history states as a safe bootstrap, then let
+        # the independently signed mirror group advance without depending on
+        # that machine remaining online.
+        try:
+            catalog_rows = await _decrypted_public_catalog(
+                env, int(Date.now()))
+            target = record
+            group_nodes = set()
+            for catalog_row in catalog_rows or []:
+                candidate = (catalog_row or {}).get("data") or {}
+                if not repo_mirror_same_group(target, candidate):
+                    continue
+                node = clean_string(
+                    candidate.get("machineName")
+                    or candidate.get("owner", ""),
+                    MAX_NODE_NAME,
+                ).strip().lower()
+                if valid_node_name(node):
+                    group_nodes.add(node)
+            quorum = await _https_mirror_flagship_quorum(env, group_nodes)
+            pins.update(quorum.get("pins", ()))
+        except Exception:
+            pass
         return frozenset(pins)
     except Exception:
         return frozenset()
@@ -44840,11 +44944,21 @@ async def _https_mirror_public_context(env, owner, repo):
             owner_l,
             repo_l,
         )
-        if (
-            linked_target
-            and str(target.get("source") or "").strip().lower()
-            == "remote-clone"
-        ):
+        catalog_group_nodes = set()
+        for row in members:
+            record = row.get("data") or {}
+            node = clean_string(
+                record.get("machineName") or record.get("owner", ""),
+                MAX_NODE_NAME,
+            ).strip().lower()
+            if valid_node_name(node):
+                catalog_group_nodes.add(node)
+        quorum = {
+            "pins": frozenset(),
+            "nodes": frozenset(),
+            "nodeDigests": {},
+        }
+        if linked_target:
             pins = set()
             current_pins = set()
             target_state = clean_string(
@@ -44857,6 +44971,14 @@ async def _https_mirror_public_context(env, owner, repo):
                 state = clean_string(state, 64).lower()
                 if re.fullmatch(r"[0-9a-f]{64}", state):
                     pins.add(state)
+            # The linked row establishes the stable organization identity, not
+            # a preferred endpoint. Two fresh, independently signed matching
+            # group proofs may advance the flagship state even when that row's
+            # original host (historically mirror2) has been removed.
+            quorum = await _https_mirror_flagship_quorum(
+                env, catalog_group_nodes)
+            pins.update(quorum.get("pins", ()))
+            current_pins.update(quorum.get("pins", ()))
             pins = pins or None
         else:
             pins = clone_state_pins(
@@ -44890,10 +45012,11 @@ async def _https_mirror_public_context(env, owner, repo):
             if not valid_node_name(node):
                 continue
             group_nodes.add(node)
-            if pins and state not in pins:
+            endpoint_state = quorum.get("nodeDigests", {}).get(node, "")
+            if pins and state not in pins and endpoint_state not in pins:
                 continue
             allowed.add(node)
-            if state in current_pins:
+            if state in current_pins or endpoint_state in current_pins:
                 current_nodes.add(node)
             if (
                 source is None
@@ -44932,6 +45055,10 @@ async def _https_mirror_public_context(env, owner, repo):
             # refs state. Historical pins may serve as temporary failover but
             # can never populate a current-generation immutable cache entry.
             "currentPins": set(current_pins),
+            # Organization aliases identify a logical repository. They never
+            # nominate their linked catalog host as a traffic endpoint: every
+            # fresh integrity-approved member participates in one cursor ring.
+            "roundRobinAll": bool(linked_target),
             "repoBi": await blind_index(
                 env, canonical_owner + "/" + canonical_repo.lower()),
         }
@@ -44973,36 +45100,39 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
         env, "SELECT cursor FROM edge_route_cursor WHERE repo_bi=?",
         context["repoBi"])
     cursor = int((cursor_row or {}).get("cursor") or 0)
-    current_nodes = {
-        str(node or "").lower()
-        for node in context.get("currentNodes", set())
-    }
-    # Catalog identities can nominate one preferred current host even when
-    # several healthy endpoints carry the exact same signed refs digest. Treat
-    # those byte-identical copies as equally current so this preference sort
-    # does not undo the cursor rotation and pin every request to one node.
-    current_nodes = https_routing.equivalent_current_endpoint_nodes(
-        records, current_nodes, context.get("currentPins", set())
-    )
-    # Select current-generation mirrors before applying the bounded failover
-    # limit. Selecting from the whole historical set first could truncate all
-    # current mirrors and leave only stale archive generations.
-    current_records = [
-        record for record in records
-        if str(record.get("node") or "").lower() in current_nodes
-    ]
-    historical_records = [
-        record for record in records
-        if str(record.get("node") or "").lower() not in current_nodes
-    ]
     now = int(Date.now())
-    selected = https_routing.select_endpoints(
-        current_records, now,
-        preferred_region=preferred_region, cursor=cursor)
-    selected.extend(https_routing.select_endpoints(
-        historical_records, now,
-        preferred_region=preferred_region, cursor=cursor))
-    selected = selected[:https_routing.MAX_FAILOVER_ATTEMPTS]
+    if context.get("roundRobinAll"):
+        # One ring over the complete live group. The cursor is reduced modulo
+        # the current member count by select_endpoints, so adding or removing a
+        # mirror cannot strand the route or require a cursor reset.
+        selected = https_routing.select_endpoints(
+            records, now,
+            preferred_region=preferred_region, cursor=cursor)
+    else:
+        current_nodes = {
+            str(node or "").lower()
+            for node in context.get("currentNodes", set())
+        }
+        # Catalog identities can nominate one preferred current host even when
+        # several healthy endpoints carry the exact same signed refs digest.
+        current_nodes = https_routing.equivalent_current_endpoint_nodes(
+            records, current_nodes, context.get("currentPins", set())
+        )
+        current_records = [
+            record for record in records
+            if str(record.get("node") or "").lower() in current_nodes
+        ]
+        historical_records = [
+            record for record in records
+            if str(record.get("node") or "").lower() not in current_nodes
+        ]
+        selected = https_routing.select_endpoints(
+            current_records, now,
+            preferred_region=preferred_region, cursor=cursor)
+        selected.extend(https_routing.select_endpoints(
+            historical_records, now,
+            preferred_region=preferred_region, cursor=cursor))
+        selected = selected[:https_routing.MAX_FAILOVER_ATTEMPTS]
     sticky = str(sticky or "").lower()
     if sticky:
         selected.sort(key=lambda item: 0 if item["node"] == sticky else 1)

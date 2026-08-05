@@ -260,6 +260,30 @@ QString jsonString(const QJsonObject &obj, const QString &container,
     return nested.value(key).toString().trimmed();
 }
 
+QHash<QString, QString> &claudeCliIdentityCache()
+{
+    static QHash<QString, QString> cache;
+    return cache;
+}
+
+QSet<QString> &claudeCliIdentityProbes()
+{
+    static QSet<QString> probes;
+    return probes;
+}
+
+QString claudeCliIdentityFromStatus(const QByteArray &statusJson)
+{
+    const QJsonObject auth = QJsonDocument::fromJson(statusJson).object();
+    const QString name = firstNonEmpty(
+        {jsonString(auth, QStringLiteral("name")),
+         jsonString(auth, QStringLiteral("username"))});
+    const QString email = jsonString(auth, QStringLiteral("email"));
+    if (!name.isEmpty() && !email.isEmpty())
+        return QStringLiteral("%1 (%2)").arg(name, email);
+    return name.isEmpty() ? email : name;
+}
+
 QString agentCliIdentityLabel(const QString &provider,
                               const QString &configDir = QString())
 {
@@ -280,6 +304,17 @@ QString agentCliIdentityLabel(const QString &provider,
     QString name;
     QString email;
     QString token;
+
+    // Claude's credentials file intentionally contains OAuth material rather
+    // than the human identity. showAgentAccountMenu() probes the CLI
+    // asynchronously and fills this process cache; ordinary model-picker
+    // refreshes only read the cache/files and can never wait on a subprocess.
+    if (!codex) {
+        const QString cached =
+            claudeCliIdentityCache().value(QDir::cleanPath(configDir));
+        if (!cached.isEmpty())
+            return cached;
+    }
 
     if (codex) {
         const QJsonObject tokens = credentials.value(QStringLiteral("tokens")).toObject();
@@ -310,6 +345,7 @@ QString agentCliIdentityLabel(const QString &provider,
         const QJsonObject oauth =
             credentials.value(QStringLiteral("claudeAiOauth")).toObject();
         name = firstNonEmpty({
+            name,
             jsonString(oauth, QStringLiteral("user"), QStringLiteral("name")),
             jsonString(oauth, QStringLiteral("user"), QStringLiteral("username")),
             jsonString(oauth, QStringLiteral("account"), QStringLiteral("name")),
@@ -318,6 +354,7 @@ QString agentCliIdentityLabel(const QString &provider,
             jsonString(credentials, QStringLiteral("name")),
         });
         email = firstNonEmpty({
+            email,
             jsonString(oauth, QStringLiteral("user"), QStringLiteral("email")),
             jsonString(oauth, QStringLiteral("account"), QStringLiteral("email")),
             jsonString(oauth, QStringLiteral("email")),
@@ -428,8 +465,18 @@ ModelChoiceOutcome quickAddModelChoiceSummary(const QList<AgentSession> &session
 
 } // namespace
 
-QStringList MainWindow::agentAccountUsageLines(const QString &provider,
-                                               const QString &accountId) const
+namespace {
+
+struct AgentUsageMenuData {
+    QString label;
+    QString value;
+    QString resetNote;
+    QString detail;
+    int percent = -1;
+};
+
+QList<AgentUsageMenuData> agentAccountUsageMenuData(const QString &provider,
+                                                    const QString &accountId)
 {
     const bool codex = agentIsCodexProvider(provider);
     const bool builtIn = accountId == QLatin1String("default");
@@ -447,32 +494,40 @@ QStringList MainWindow::agentAccountUsageLines(const QString &provider,
                     qint64 durationMs = 0) {
         const QVariant pctValue = value(pctKey);
         QString amount = QString::fromUtf8("\xE2\x80\x94");
+        int chartPercent = -1;
         qint64 estimatedReset = 0;
         if (pctValue.isValid()) {
             const int used = qBound(0, pctValue.toInt(), 100);
             amount = codex ? QStringLiteral("%1% remaining").arg(100 - used)
                            : QStringLiteral("%1% used").arg(used);
+            chartPercent = codex ? 100 - used : used;
         } else if (codex && !anchorKey.isEmpty()) {
             const qint64 anchor = value(anchorKey).toLongLong();
             const qint64 remaining = durationMs - (now - anchor);
             if (anchor > 0 && remaining > 0) {
-                amount = QStringLiteral("%1% remaining")
-                             .arg(qBound(0, qRound(remaining * 100.0 /
+                chartPercent = qBound(0, qRound(remaining * 100.0 /
                                                    double(durationMs)),
-                                         100));
+                                      100);
+                amount = QStringLiteral("%1% remaining").arg(chartPercent);
                 estimatedReset = anchor + durationMs;
             }
         }
-        QString result = QStringLiteral("%1: %2").arg(label, amount);
+        QString resetNote;
         const qint64 providerReset = value(resetKey).toLongLong();
         const qint64 resetAt = providerReset > 0 ? providerReset : estimatedReset;
         if (resetAt > now)
-            result += QString::fromUtf8(" \xC2\xB7 resets in %1")
-                          .arg(humanizeRemaining(resetAt - now));
-        return result;
+            resetNote = QStringLiteral("resets in %1")
+                            .arg(humanizeRemaining(resetAt - now));
+        const QString detail = QStringLiteral("%1: %2%3")
+                                   .arg(label, amount,
+                                        resetNote.isEmpty()
+                                            ? QString()
+                                            : QString::fromUtf8(" \xC2\xB7 ") +
+                                                  resetNote);
+        return AgentUsageMenuData{label, amount, resetNote, detail, chartPercent};
     };
 
-    QStringList result;
+    QList<AgentUsageMenuData> result;
     result << line(QStringLiteral("5-hour"),
                    codex ? kCodexUsage5hPctSetting : kClaudeUsage5hPctSetting,
                    codex ? kCodexUsage5hResetSetting : kClaudeUsage5hResetSetting,
@@ -487,6 +542,18 @@ QStringList MainWindow::agentAccountUsageLines(const QString &provider,
         result << line(QStringLiteral("Fable weekly"),
                        kClaudeUsageFablePctSetting,
                        kClaudeUsageFableResetSetting);
+    return result;
+}
+
+} // namespace
+
+QStringList MainWindow::agentAccountUsageLines(const QString &provider,
+                                               const QString &accountId) const
+{
+    QStringList result;
+    for (const AgentUsageMenuData &row :
+         agentAccountUsageMenuData(provider, accountId))
+        result << row.detail;
     return result;
 }
 
@@ -518,7 +585,10 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
     for (const AgentAccountProfile &profile : profiles) {
         const QString identity = agentCliIdentityLabel(provider, profile.configDir);
         const bool signedIn = providerAccountSignedIn(provider, profile.configDir);
-        QString label = identity.isEmpty() ? profile.label : identity;
+        const QString baseLabel = profile.label.trimmed();
+        QString label = baseLabel;
+        if (!identity.isEmpty())
+            label += QStringLiteral(" — ") + identity;
         if (!signedIn)
             label += QString::fromUtf8(" \xC2\xB7 not signed in");
         QAction *account = menu->addAction(label);
@@ -527,13 +597,27 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
         account->setChecked(profile.id == active.id);
         account->setToolTip(QStringLiteral("Use this %1 account for new agents")
                                 .arg(providerName));
+        if (!codex && signedIn && identity.isEmpty())
+            probeClaudeAgentAccountIdentity(profile.configDir, account,
+                                            baseLabel);
         connect(account, &QAction::triggered, this,
                 [this, provider, id = profile.id] {
                     selectAgentAccount(provider, id);
                 });
-        for (const QString &usage : agentAccountUsageLines(provider, profile.id)) {
-            QAction *usageLine = menu->addAction(QStringLiteral("    ") + usage);
-            usageLine->setEnabled(false);
+        for (const AgentUsageMenuData &usage :
+             agentAccountUsageMenuData(provider, profile.id)) {
+            auto *row = new TokenUsageMenuRow(usage.label, usage.value,
+                                              usage.resetNote, usage.percent,
+                                              menu);
+            auto *usageAction = new QWidgetAction(menu);
+            // Keep the full text on the action for accessibility and for
+            // screen readers that do not inspect the custom-painted row.
+            usageAction->setText(usage.detail);
+            usageAction->setObjectName(
+                QStringLiteral("agentUsage_%1_%2")
+                    .arg(profile.id, usage.label.toLower().replace('-', '_')));
+            usageAction->setDefaultWidget(row);
+            menu->addAction(usageAction);
         }
         menu->addSeparator();
     }
@@ -559,6 +643,75 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
     });
 
     menu->popup(globalPosition);
+}
+
+void MainWindow::probeClaudeAgentAccountIdentity(const QString &configDir,
+                                                 QAction *accountAction,
+                                                 const QString &baseLabel)
+{
+    if (!accountAction)
+        return;
+    const QString key = QDir::cleanPath(configDir);
+    if (claudeCliIdentityCache().contains(key)) {
+        const QString cached = claudeCliIdentityCache().value(key);
+        if (!cached.isEmpty())
+            accountAction->setText(baseLabel + QStringLiteral(" — ") + cached);
+        return;
+    }
+    if (claudeCliIdentityProbes().contains(key))
+        return;
+    const QString claude =
+        QStandardPaths::findExecutable(QStringLiteral("claude"));
+    if (claude.isEmpty()) {
+        claudeCliIdentityCache().insert(key, QString());
+        return;
+    }
+
+    claudeCliIdentityProbes().insert(key);
+    auto *process = new QProcess(this);
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    if (!configDir.trimmed().isEmpty())
+        environment.insert(QStringLiteral("CLAUDE_CONFIG_DIR"), configDir);
+    process->setProcessEnvironment(environment);
+    const QPointer<QAction> guardedAction(accountAction);
+    auto settled = std::make_shared<bool>(false);
+    auto settle = [key, process, settled] {
+        if (*settled)
+            return false;
+        *settled = true;
+        claudeCliIdentityProbes().remove(key);
+        process->deleteLater();
+        return true;
+    };
+    connect(process, &QProcess::finished, this,
+            [process, key, baseLabel, guardedAction, settle](
+                int exitCode, QProcess::ExitStatus exitStatus) {
+                if (!settle())
+                    return;
+                QString identity;
+                if (exitStatus == QProcess::NormalExit && exitCode == 0)
+                    identity = claudeCliIdentityFromStatus(
+                        process->readAllStandardOutput());
+                claudeCliIdentityCache().insert(key, identity);
+                if (guardedAction && !identity.isEmpty())
+                    guardedAction->setText(
+                        baseLabel + QStringLiteral(" — ") + identity);
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [key, settle](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart || !settle())
+                    return;
+                claudeCliIdentityCache().insert(key, QString());
+            });
+    process->start(claude,
+                   {QStringLiteral("auth"), QStringLiteral("status"),
+                    QStringLiteral("--json")});
+    trackProcessActivity(process, QStringLiteral("agent"),
+                         QStringLiteral("Read Claude Code account identity"));
+    QTimer::singleShot(1500, process, [process] {
+        if (process->state() != QProcess::NotRunning)
+            process->kill();
+    });
 }
 
 void MainWindow::selectAgentAccount(const QString &provider,
@@ -3325,6 +3478,7 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             : chosenEmail.isEmpty()
                   ? chosenAccount
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
+    QHash<QString, QString> providerIdentities;
     for (const Choice &choice : models) {
         const ModelChoiceOutcome outcome =
             quickAddModelChoiceSummary(m_agentSessions, choice.provider,
@@ -3345,8 +3499,14 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             label += QLatin1Char(' ') + statusGlyph;
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
-        const QString identity = agentCliIdentityLabel(
-            choice.provider, activeAgentAccount(choice.provider).configDir);
+        if (!providerIdentities.contains(choice.provider)) {
+            const AgentAccountProfile account =
+                activeAgentAccount(choice.provider);
+            providerIdentities.insert(
+                choice.provider,
+                agentCliIdentityLabel(choice.provider, account.configDir));
+        }
+        const QString identity = providerIdentities.value(choice.provider);
         if (!identity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
@@ -6162,14 +6322,13 @@ QWidget *MainWindow::buildLogSection()
     connect(cloudflareButton, &QPushButton::clicked, this,
             &MainWindow::showCloudflareWorkerLogs);
 
-    // Keep the rich renderer alive off-screen for footer deep-links and the
-    // existing add-to-prompt path. The old scrolling text pane is deliberately
-    // no longer part of this page; the timeline below is the log surface.
+    // The timeline is only a compact overview. Keep the paged rich log visible
+    // below it so opening Logs stays useful immediately instead of spending the
+    // whole page on a large chart.
     m_settingsLog = new QTextBrowser(page);
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
     m_settingsLog->setOpenExternalLinks(true);
-    m_settingsLog->hide();
     // Clicks on the leading "add to prompt" plus of an entry are handled in
     // MainWindow::eventFilter before the browser's own anchor activation sees
     // them (adhoc #114); http(s) links in the message body still open normally.
@@ -6182,6 +6341,7 @@ QWidget *MainWindow::buildLogSection()
             &MainWindow::onNetworkLogScrolled);
 
     m_logTimelineChart = new LogTimelineChart(page);
+    m_logTimelineChart->setFixedHeight(68);
     m_logTimelineSummary = new QLabel;
     m_logTimelineSummary->setObjectName(QStringLiteral("logTimelineSummary"));
     m_logTimelineSummary->setAccessibleName(QStringLiteral("Visible log summary"));
@@ -6219,10 +6379,6 @@ QWidget *MainWindow::buildLogSection()
             &MainWindow::chooseCustomLogTimelineRange);
     dayButton->setChecked(true);
 
-    auto *zoomHint = new QLabel(
-        QStringLiteral("Drag across the chart or scroll to zoom · Double-click to reset"));
-    zoomHint->setObjectName(QStringLiteral("modeHint"));
-    zoomHint->setWordWrap(true);
     rangeRow->addStretch();
     m_logTimelineResetZoom = new QPushButton(QStringLiteral("Reset zoom"));
     m_logTimelineResetZoom->setObjectName(QStringLiteral("ghostButton"));
@@ -6292,11 +6448,10 @@ QWidget *MainWindow::buildLogSection()
     layout->setSpacing(8);
     layout->addLayout(headerRow);
     layout->addLayout(rangeRow);
+    layout->addWidget(m_logTimelineChart);
     layout->addWidget(filterScroll);
-    layout->addWidget(m_logTimelineChart, 1);
-    layout->addWidget(zoomHint);
-    refreshLogTimelineChart();
     setLogTimelinePresetHours(24);
+    layout->addWidget(m_settingsLog, 1);
     return page;
 }
 
@@ -6304,10 +6459,30 @@ void MainWindow::refreshLogTimelineChart()
 {
     if (!m_logTimelineChart)
         return;
+    const qint64 fromMs = m_logTimelineChart->viewFromMs();
+    const qint64 toMs = m_logTimelineChart->viewToMs();
+    const QString from = QDateTime::fromMSecsSinceEpoch(fromMs)
+                             .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    const QString to = QDateTime::fromMSecsSinceEpoch(toMs)
+                           .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    // m_networkLog is append-only and persisted in that same order. Find the
+    // selected time slice before parsing dates or categories: the old chart
+    // rebuilt all 20,000 retained lines even for the default 24-hour rail.
+    const auto first = std::lower_bound(
+        m_networkLog.cbegin(), m_networkLog.cend(), from,
+        [](const QString &line, const QString &timestamp) {
+            return line.left(19) < timestamp;
+        });
+    const auto last = std::upper_bound(
+        first, m_networkLog.cend(), to,
+        [](const QString &timestamp, const QString &line) {
+            return timestamp < line.left(19);
+        });
     QVector<LogTimelineEntry> entries;
-    entries.reserve(m_networkLog.size());
+    entries.reserve(int(std::distance(first, last)));
     QColor selectedAccent(QStringLiteral("#58a6ff"));
-    for (const QString &line : std::as_const(m_networkLog)) {
+    for (auto it = first; it != last; ++it) {
+        const QString &line = *it;
         const QDateTime timestamp =
             QDateTime::fromString(line.left(19), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
         if (!timestamp.isValid())
@@ -6333,10 +6508,6 @@ void MainWindow::appendLogTimelineEntry(const QString &storedLine)
         storedLine.left(19), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
     if (!timestamp.isValid())
         return;
-    LogTimelineEntry entry;
-    entry.timestampMs = timestamp.toMSecsSinceEpoch();
-    entry.category = logBadgeFor(storedLine);
-    m_logTimelineChart->appendEntry(entry);
     // Presets follow the present as fresh events arrive. Do not disturb an area
     // the user has deliberately zoomed into.
     if (m_logTimelinePresetHours > 0 && !m_logTimelineChart->isZoomed()) {
@@ -6344,6 +6515,14 @@ void MainWindow::appendLogTimelineEntry(const QString &storedLine)
         m_logTimelineChart->setRange(
             now - qint64(m_logTimelinePresetHours) * 60 * 60 * 1000, now);
     }
+    const qint64 timestampMs = timestamp.toMSecsSinceEpoch();
+    if (timestampMs < m_logTimelineChart->viewFromMs() ||
+        timestampMs > m_logTimelineChart->viewToMs())
+        return;
+    LogTimelineEntry entry;
+    entry.timestampMs = timestampMs;
+    entry.category = logBadgeFor(storedLine);
+    m_logTimelineChart->appendEntry(entry);
 }
 
 void MainWindow::setLogTimelinePresetHours(int hours)
@@ -6355,6 +6534,7 @@ void MainWindow::setLogTimelinePresetHours(int hours)
         m_logTimelineRangeGroup->button(hours)->setChecked(true);
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     m_logTimelineChart->setRange(now - qint64(hours) * 60 * 60 * 1000, now);
+    refreshLogTimelineChart();
 }
 
 void MainWindow::chooseCustomLogTimelineRange()
@@ -6413,6 +6593,7 @@ void MainWindow::chooseCustomLogTimelineRange()
     if (m_logTimelineRangeGroup && m_logTimelineRangeGroup->button(0))
         m_logTimelineRangeGroup->button(0)->setChecked(true);
     m_logTimelineChart->setRange(from, to);
+    refreshLogTimelineChart();
 }
 
 void MainWindow::updateLogTimelineSummary()

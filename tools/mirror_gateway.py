@@ -1286,6 +1286,48 @@ def refs_sha256(git_dir: Path) -> str:
     return hashlib.sha256(refs_canonical(git_dir).encode("utf-8")).hexdigest()
 
 
+def routing_refs_canonical(git_dir: Path) -> str:
+    """Stable serving generation: default branch plus release tags.
+
+    Auxiliary agent and pull-request branches legitimately move at different
+    moments on independently syncing mirrors.  Using every head as the routing
+    lease made an otherwise current fleet disappear whenever any one of those
+    branches was in flight.  The default branch and tags are the durable public
+    generation; branch-specific reads remain protected by the endpoint's fresh
+    signed request/proof and fail over normally.
+    """
+    head = _run_git(
+        git_dir,
+        ["symbolic-ref", "--quiet", "HEAD"],
+        max_output=1024,
+        allow_exit_one=True,
+    ).decode("utf-8", "replace").strip()
+    if not head.startswith("refs/heads/"):
+        head = "refs/heads/main"
+    output = _run_git(
+        git_dir,
+        [
+            "for-each-ref",
+            "--sort=refname",
+            "--format=%(objectname) %(refname)",
+            head,
+            "refs/tags/",
+        ],
+        max_output=4 * 1024 * 1024,
+    )
+    return "\n".join(
+        line
+        for line in output.decode("utf-8", "replace").splitlines()
+        if line
+    )
+
+
+def routing_refs_sha256(git_dir: Path) -> str:
+    return hashlib.sha256(
+        routing_refs_canonical(git_dir).encode("utf-8")
+    ).hexdigest()
+
+
 def private_replica_file(
     store: Path | None, opaque_id: str, max_bytes: int
 ) -> tuple[Path, int, str]:
@@ -1784,6 +1826,7 @@ class GitRepository:
         self._integrity_lock = threading.Lock()
         self._integrity_checked_at = 0.0
         self._integrity_ok = False
+        self._trusted_routing_refs_sha256 = ""
         self._analysis_lock = threading.Lock()
         self._analysis_commit = ""
         self._analysis_value: dict[str, Any] = {}
@@ -1797,8 +1840,20 @@ class GitRepository:
                 return self._integrity_ok
             try:
                 actual = refs_sha256(self.git_dir)
-                self._integrity_ok = hmac.compare_digest(
-                    actual, self.config.expected_refs_sha256
+                exact = hmac.compare_digest(
+                    actual, self.config.expected_refs_sha256)
+                routing_actual = routing_refs_sha256(self.git_dir)
+                if exact and not self._trusted_routing_refs_sha256:
+                    # The signed, owner-written configuration authenticates the
+                    # complete initial ref set. Capture its stable serving
+                    # generation only after that strict bootstrap succeeds.
+                    self._trusted_routing_refs_sha256 = routing_actual
+                self._integrity_ok = bool(
+                    self._trusted_routing_refs_sha256
+                    and hmac.compare_digest(
+                        routing_actual,
+                        self._trusted_routing_refs_sha256,
+                    )
                 )
             except (GitError, OSError):
                 self._integrity_ok = False
@@ -3822,7 +3877,7 @@ class GatewayApplication:
                 )
                 empty_digest = hashlib.sha256(b"").hexdigest()
                 refs_digest = (
-                    refs_sha256(repository.git_dir)
+                    routing_refs_sha256(repository.git_dir)
                     if available and repository is not None
                     else empty_digest
                 )

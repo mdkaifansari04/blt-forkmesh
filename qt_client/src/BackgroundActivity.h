@@ -46,12 +46,12 @@ public:
     {
         const quint64 id = state().nextId.fetchAndAddOrdered(1);
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        ActionTelemetry::started(id, kind, detail, execution, now);
         {
             QMutexLocker lock(&state().mutex);
             state().tickets.insert(id, Ticket{kind, detail, execution, now});
+            notifyLocked(id, kind, detail, execution, true);
         }
-        ActionTelemetry::started(id, kind, detail, execution, now);
-        notify(id, kind, detail, execution, true);
         return id;
     }
 
@@ -69,6 +69,8 @@ public:
                 ticket = *it;
                 state().tickets.erase(it);
                 found = true;
+                notifyLocked(id, QString(), QString(), ticket.execution,
+                             false);
             }
         }
         if (found) {
@@ -77,16 +79,29 @@ public:
                                       ticket.execution, ticket.startedAtMs, now,
                                       outcome);
         }
-        if (found)
-            notify(id, QString(), QString(), ticket.execution, false);
     }
 
     // Only the window installs a listener; passing a default-constructed
-    // std::function (as the window's destructor does) detaches again.
+    // std::function (as the window's destructor does) detaches again. Attaching
+    // replays every open ticket so work that began during startup cannot be in
+    // actions.jsonl while missing from the bottom background strip.
+    //
+    // Listener calls are serialized under the state mutex. The UI listener only
+    // posts an event and never re-enters this bus; keeping the replay and live
+    // edges in the same critical section prevents an end edge racing ahead of
+    // its replayed start edge and leaving a permanent chip behind.
     static void setListener(Listener listener)
     {
         QMutexLocker lock(&state().mutex);
         state().listener = std::move(listener);
+        if (!state().listener)
+            return;
+        for (auto it = state().tickets.cbegin();
+             it != state().tickets.cend(); ++it) {
+            const Ticket &ticket = it.value();
+            state().listener(it.key(), ticket.kind, ticket.detail,
+                             ticket.execution, true);
+        }
     }
 
 private:
@@ -111,10 +126,14 @@ private:
         return s;
     }
 
-    static void notify(quint64 id, const QString &kind, const QString &detail,
-                       ActionTelemetry::Execution execution, bool started)
+    // state().mutex must be held. Keeping notification inside the ticket
+    // mutation's critical section gives listener installation a strict ordered
+    // snapshot without duplicate or inverted edges.
+    static void notifyLocked(quint64 id, const QString &kind,
+                             const QString &detail,
+                             ActionTelemetry::Execution execution,
+                             bool started)
     {
-        QMutexLocker lock(&state().mutex);
         if (state().listener)
             state().listener(id, kind, detail, execution, started);
     }

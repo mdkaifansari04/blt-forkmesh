@@ -2646,6 +2646,10 @@ private:
     // app-server or the classic AgentRunner); 0 when the session isn't running
     // here. Everything the agent shells out to lives under it (adhoc #57).
     qint64 agentSessionProcessId(int sessionId) const;
+    // A clean CLI result is not a completed agent run while the agent's own
+    // subprocess tree still exists. Rechecks that tree until it drains, then
+    // makes the pending session successful.
+    void completeAgentSessionWhenSubprocessesExit(int sessionId);
     // Populate the raw-log QPlainTextEdit (m_agentLog) only when the content
     // actually changed. setPlainText()+moveCursor(End) forces a full document
     // layout, which for a large transcript blocks the GUI thread for seconds
@@ -2823,6 +2827,9 @@ private:
     // logout and system-terminal entry points.
     void showAgentAccountMenu(const QString &provider,
                               const QPoint &globalPosition);
+    void probeClaudeAgentAccountIdentity(const QString &configDir,
+                                         QAction *accountAction,
+                                         const QString &baseLabel);
     void selectAgentAccount(const QString &provider, const QString &accountId);
     void addAgentAccount(const QString &provider);
     void launchAgentSystemTerminal(const QString &provider,
@@ -7521,6 +7528,9 @@ private:
     // and corrupt the half-built table unless we skip the nested rebuild.
     bool m_agentTableRefreshing = false;
     QHash<int, QString> m_lastAssistantText; // last assistant prose, for waiting/question
+    // Sessions that delivered a clean result but still have agent-owned child
+    // processes. Their status stays Running until the tree is empty.
+    QSet<int> m_agentCompletionChecks;
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;

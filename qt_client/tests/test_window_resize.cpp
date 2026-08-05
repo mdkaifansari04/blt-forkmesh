@@ -2,6 +2,7 @@
 #include "../src/MainWindowInternal.h"
 #include "../src/BackgroundActivity.h"
 #include "../src/ClaudeTranscriptView.h"
+#include "../src/LogTimelineChart.h"
 #include "../src/PlatformLogFilter.h"
 #include "ForkMeshVersion.h"
 
@@ -415,6 +416,22 @@ void stopChildProcesses(QObject &root)
 
 void runLogTimelineChecks(MainWindow &window)
 {
+    {
+        LogTimelineChart retentionChart;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        retentionChart.setRange(now - 1000, now + 1000);
+        retentionChart.setEntries({{now, QStringLiteral("NET")},
+                                   {now, QStringLiteral("GIT")},
+                                   {now, QStringLiteral("NET")}});
+        retentionChart.removeEntry(now, QStringLiteral("NET"));
+        check(retentionChart.visibleEntryCount() == 2,
+              QStringLiteral("timeline retention removes only one matching "
+                             "evicted log entry"));
+        retentionChart.removeEntry(now, QStringLiteral("MISSING"));
+        check(retentionChart.visibleEntryCount() == 2,
+              QStringLiteral("timeline retention ignores an entry outside its "
+                             "loaded slice"));
+    }
     window.testResetNetworkLog();
     window.testLogSystem(QStringLiteral("Timeline session started"));
     window.testLogSystem(QStringLiteral("Pushed 2 commits to origin/main"));
@@ -425,9 +442,10 @@ void runLogTimelineChecks(MainWindow &window)
     QWidget *chart = window.testLogTimelineChart();
     check(chart && chart->isVisible(),
           QStringLiteral("the Log page shows its activity chart"));
-    check(window.testNetworkLogView() &&
-              !window.testNetworkLogView()->isVisible(),
-          QStringLiteral("the old scrolling network-log pane is removed"));
+    check(chart && chart->maximumHeight() <= 72,
+          QStringLiteral("the activity chart stays a thin top rail"));
+    check(window.testNetworkLogView() && window.testNetworkLogView()->isVisible(),
+          QStringLiteral("the paged network log remains visible below the rail"));
     check(window.findChild<QListWidget *>(QStringLiteral("logEventList")) ==
               nullptr,
           QStringLiteral("the duplicate Recent Pings feed is removed"));
