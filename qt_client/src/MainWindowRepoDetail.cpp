@@ -8567,6 +8567,8 @@ QString MainWindow::repoHeadBranch() const
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return QString();
+    if (const QString branch = headBranchFromFile(dir); !branch.isEmpty())
+        return branch;
     QByteArray out;
     if (!runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &out, nullptr))
         return QString();
