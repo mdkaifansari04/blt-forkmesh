@@ -3194,7 +3194,7 @@ void MainWindow::updateAgentsTabIndicator()
     if (!m_agentsSpinTimer) {
         m_agentsSpinTimer = new QTimer(this);
         connect(m_agentsSpinTimer, &QTimer::timeout, this,
-                &MainWindow::animateRunningAgentIcons); // spin running rows' glyph
+                &MainWindow::animateRunningAgentIcons); // refresh live row metadata
     }
     if (!m_agentsSpinTimer->isActive())
         m_agentsSpinTimer->start(kAgentSpinTickMs);

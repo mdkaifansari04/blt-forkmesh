@@ -57,10 +57,11 @@ def test_double_click_on_a_bench_sits_instead_of_dashing():
     assert dbl.index("sitOnCampfireBench") < dbl.index("dashTarget = point")
 
 
-def test_open_member_circle_uses_camera_lod_avatars_not_roster_bench_meshes():
+def test_open_member_circle_uses_full_detail_avatars_not_roster_bench_meshes():
     assert "function rebuildCampfireCircle" not in SCENE
     assert "campfire-member-bench-seats" not in SCENE
-    assert "const avatarLod = new THREE.LOD();" in SCENE
+    assert 'highDetail.name = "avatar-full-detail"' in SCENE
+    assert "cloneAvatarFarModel" not in SCENE
     assert "memberCirclePosition(index, interiorMembers.length)" in SCENE
 
 
