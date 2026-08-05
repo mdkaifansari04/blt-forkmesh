@@ -6,10 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ENTRY = (
-    (ROOT / "src" / "entry.py").read_text(encoding="utf-8") + "\n"
-    + (ROOT / "src" / "admin_console.py").read_text(encoding="utf-8")
-)
+ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 REPORTER = (ROOT / "public" / "posthog.js").read_text(encoding="utf-8")
 WORLD = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
 WORLD_CSS = (ROOT / "public" / "world" / "world.css").read_text(

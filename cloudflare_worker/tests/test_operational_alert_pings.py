@@ -5,11 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ENTRY = ROOT / "src" / "entry.py"
-ENTRY_TEXT = (
-    ENTRY.read_text(encoding="utf-8") + "\n"
-    + ENTRY.with_name("admin_console.py").read_text(encoding="utf-8")
-)
+ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 
 
 def test_operational_pings_are_a_first_class_default_on_channel():

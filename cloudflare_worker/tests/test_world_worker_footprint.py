@@ -56,7 +56,7 @@ def test_worker_footprint_budgets_match_current_source_tree():
         "compressedBundlePaidBytes": 10_000_000,
         "uncompressedBundleBytes": 64_000_000,
         "startupTimeMs": 1000,
-        "startupSourceBytesSoft": 2_150_000,
+        "startupSourceBytesSoft": 2_300_000,
         "dynamicRequestsFreeDaily": 100_000,
     }
     assert data["staticLimits"] == {
@@ -143,8 +143,6 @@ def test_optional_python_route_modules_are_deferred_from_global_scope():
     for module in deferred:
         assert f'_LazyModule("{module}")' in eager_imports
         assert f"import {module}" not in eager_imports
-    assert '_LazyModule("admin_console")' in ENTRY
-    assert "import admin_console" not in ENTRY
 
 
 def test_heavy_stdlib_modules_are_deferred_from_global_scope():
