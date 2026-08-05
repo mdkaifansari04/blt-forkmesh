@@ -2279,6 +2279,28 @@ int main(int argc, char *argv[])
     check(window.testResolvablePullHead(repairedPull) == QStringLiteral("pr/404"),
           QStringLiteral("a missing signed PR head falls back to pr/<number>"));
 
+    // A remote submitter decorates its head as "<node>:<branch>".  The colon is
+    // revision:path syntax to Git, so feeding the label to a range used to turn
+    // `main...cache-socket-2632:fix/x` into an invalid lookup of only
+    // `cache-socket-2632`.  Resolve and browse the exact local branch portion.
+    runGitChecked(repoDir.path(),
+                  {"branch", "fix/stall-filter-test-isolation", "HEAD"});
+    PullRequest crossNodePull;
+    crossNodePull.number = 405;
+    crossNodePull.head =
+        QStringLiteral("cache-socket-2632:fix/stall-filter-test-isolation");
+    check(window.testResolvablePullHead(crossNodePull) ==
+              QStringLiteral("fix/stall-filter-test-isolation"),
+          QStringLiteral("a cross-node PR label resolves its synced branch without "
+                         "passing node:branch to Git"));
+    check(window.testSwitchToWorktreeGitBranch(crossNodePull.head) ==
+              QStringLiteral("fix/stall-filter-test-isolation") &&
+              window.testBranchDiffBranch() ==
+                  QStringLiteral("fix/stall-filter-test-isolation"),
+          QStringLiteral("opening a cross-node head diffs the branch portion, not "
+                         "the cache-socket node label"));
+    window.testSwitchToWorktreeGitBranch(QStringLiteral("main"));
+
     // adhoc #55: the status strip names the commit the open branch is on —
     // short SHA, date, subject and author. The read is detached (it must not
     // block the GUI thread), so pump the loop until it lands.
