@@ -694,11 +694,9 @@ public:
     QStringList testQuickAddModelLabels() const;
     bool testQuickAddModelVisible() const;
     bool testQuickAddModelEditable() const;
-    // adhoc #1445: rebuild the combined agent/model menu, then read back one
-    // row's label and the outcome state behind its coloured ✓ / ✗, so a test can
-    // prove a model that has just succeeded stops wearing an older run's mark.
+    // Rebuild the combined agent/model menu, then read back a row label for UI
+    // tests of ordering and the model-only visible text.
     void testRefreshQuickAddAgentModelSelector();
-    QString testQuickAddAgentModelStatus(const QString &model) const;
     QString testQuickAddAgentModelLabel(const QString &model) const;
     // Prompt shortcuts can pin a dedicated CLI agent/model in their metadata.
     // Return the parsed fields plus launch prompt so tests cover both the pin and
