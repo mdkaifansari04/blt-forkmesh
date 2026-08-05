@@ -9869,7 +9869,7 @@ void MainWindow::updateRepoActivityRail()
     syncGitCommitFilter();
     syncAgentPageSearch();
     if (onChanges)
-        QTimer::singleShot(0, this, &MainWindow::positionTopMessageBubble);
+        QTimer::singleShot(0, this, [this] { positionTopMessageBubble(); });
 }
 
 void MainWindow::setGitPromptOverlay(bool enabled)
@@ -10862,6 +10862,10 @@ void MainWindow::showLoadStatus(const QString &what)
         if (m_topMessageFlight)
             m_topMessageFlight->stop();
         m_topMessageSlidingOut = false;
+        // stop() never emits finished(), so the in-flight motion's flags have to
+        // be cleared here or positionTopMessageBubble would refuse to re-anchor.
+        m_topMessageEntering = false;
+        m_topMessageShifting = false;
         positionTopMessageBubble();
         m_topMessageContainer->show();
         m_topMessageContainer->raise();

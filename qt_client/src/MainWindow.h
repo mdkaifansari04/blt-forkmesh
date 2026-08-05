@@ -434,6 +434,20 @@ public:
         onUiStall(peakMs, blockingCall, backtrace);
     }
     QString testStallFixPrompt() const { return stallFixPrompt(); }
+    // adhoc #1444: the alert stack has to hug its own content and stay one
+    // evenly spaced column. These raise a real bubble (and a real queued card)
+    // so the layout test can measure the geometry the user actually sees.
+    void testFlashMessage(const QString &text, bool error = false)
+    {
+        flashMessage(text, error);
+    }
+    void testShowPromptBubble(const QString &prompt, const QString &status)
+    {
+        showPromptBubble(prompt, -1, status);
+    }
+    QRect testTopMessageRect() { return topMessageBubbleRect(); }
+    int testTopMessageQueueDepth() const { return m_topMessageQueue.size(); }
+    void testDismissTopMessage() { dismissTopMessage(); }
     // False (without opening the modal fallback dialog, which would block a test
     // run) when this window has no footer composer to draft into.
     bool testDraftStallPromptInComposer();
@@ -4858,8 +4872,17 @@ private:
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
     void renderTopMessagePromptImages(); // rebuild thumbnails for a sent prompt
-    void positionTopMessageBubble(); // size + anchor the bubble above the prompt
+    // Size + anchor the bubble above the prompt. animate=true glides the stack
+    // to its new anchor (a card arrived or left) instead of snapping it there.
+    void positionTopMessageBubble(bool animate = false);
     QRect topMessageBubbleRect(); // calculates the prompt-anchored stack geometry
+    // Height the stacked bubble lines need at a given text width, measured line
+    // by line rather than from the container's own sizeHint.
+    int topMessageBodyHeight(int textWidth) const;
+    // Park the queued-card column under the active toast, optionally gliding.
+    void placeTopMessageQueue(const QRect &bubble, bool animate);
+    // Slide a freshly shown bubble up into its anchor.
+    void animateTopMessageEntry(const QRect &target);
     void setTopMessagePaused(bool paused); // hover pauses the countdown
     void slideTopMessageOut(); // countdown finished: ease the bubble off the right edge, then advance
     // Animate a submitted prompt into a bubble. When it launched or steered an
@@ -5373,8 +5396,11 @@ private:
     // Composer-to-bubble send motion, reused for the slide-off exit so only one
     // animation ever drives the bubble's geometry.
     QPropertyAnimation *m_topMessageFlight = nullptr;
+    // Same motion for the queued column beneath it, so the two move as one stack.
+    QPropertyAnimation *m_topMessageQueueFlight = nullptr;
     bool m_topMessageSlidingOut = false;  // countdown finished; bubble is easing off the right edge
     bool m_topMessageEntering = false;    // wait for the entry glide before starting its countdown
+    bool m_topMessageShifting = false;    // gliding up/down because the queue changed depth
     QPushButton *m_topMessageCopy = nullptr;
     QPushButton *m_topMessageActionOutput = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;
