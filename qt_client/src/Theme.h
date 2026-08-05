@@ -222,6 +222,11 @@ QPushButton#socialIconButton:hover { border-color: #6e7681; }
     font-size: 11px; padding: 0 4px;
 }
 #appStatusBar QPushButton:hover { color: #58a6ff; }
+#statusVersionButton:checked { color: #58a6ff; font-weight: 700; }
+#debugBar { background-color: #0d1117; border-top: 1px solid #30363d; }
+#debugBarScroll, #debugBarContent { background: transparent; border: none; }
+#debugBarSeparator { color: #30363d; }
+#debugBarScroll QScrollBar:horizontal { height: 7px; }
 /* Background-work chips (adhoc #1389): the chips paint themselves, so the host
    only has to stay out of the way of the strip's own fill. */
 #statusBackgroundTasks { background: transparent; }
@@ -386,9 +391,6 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 }
 #appVersionLabel {
     background: transparent; color: #e6edf3; font-size: 13px; font-weight: 700;
-}
-#chromeVersionLabel {
-    background: transparent; color: #8b949e; font-size: 9px; font-weight: 600;
 }
 #breadcrumb { background: transparent; font-size: 14px; font-weight: 600; }
 #issueDetailOverlay { background-color: #0d1117; }
@@ -1786,9 +1788,6 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 #appVersionLabel {
     background: transparent; color: #1f2328; font-size: 13px; font-weight: 700;
 }
-#chromeVersionLabel {
-    background: transparent; color: #656d76; font-size: 9px; font-weight: 600;
-}
 #issueDetailOverlay { background-color: #ffffff; }
 #globalSearch {
     background-color: #ffffff; border: 1px solid #d0d7de;
@@ -2313,6 +2312,11 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     font-size: 11px; padding: 0 4px;
 }
 #appStatusBar QPushButton:hover { color: #0969da; }
+#statusVersionButton:checked { color: #0969da; font-weight: 700; }
+#debugBar { background-color: #ffffff; border-top: 1px solid #d0d7de; }
+#debugBarScroll, #debugBarContent { background: transparent; border: none; }
+#debugBarSeparator { color: #d0d7de; }
+#debugBarScroll QScrollBar:horizontal { height: 7px; }
 /* See the dark rule: the chips are painted, the host is just a layout. */
 #statusBackgroundTasks { background: transparent; }
 

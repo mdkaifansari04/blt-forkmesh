@@ -7167,13 +7167,13 @@ private:
     QTextCharFormat m_net, m_system, m_success, m_error, m_command, m_muted, m_tool;
 };
 
-// The collapsed form (and expanded header) of the global log overlay. All
-// categories begin as neutral-grey octicons. The first event of a category
-// leaves its icon solid in that category's Log-page accent; later events blink
-// the already-lit icon and return it to the same solid colour. This stays a
-// paint-only widget rather than thirty child buttons, keeping a traffic burst
-// from creating or relaying out widgets while still exposing the full taxonomy
-// and per-category counts at a glance.
+// The collapsed form, expanded header and labeled debug row of the global log
+// overlay. All categories begin as neutral-grey octicons. The first event of a
+// category leaves its icon solid in that category's Log-page accent; later
+// events blink the already-lit icon and return it to the same solid colour.
+// This stays a paint-only widget rather than thirty child buttons, keeping a
+// traffic burst from creating or relaying out widgets while still exposing the
+// full taxonomy and per-category counts at a glance.
 inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color,
                                    int size);
 
@@ -7183,6 +7183,7 @@ public:
     enum Presentation {
         Compact,
         Header,
+        Debug,
     };
 
     struct WebsiteStatus {
@@ -7199,19 +7200,26 @@ public:
     {
         setObjectName(presentation == Compact
                           ? QStringLiteral("logActivityLights")
-                          : QStringLiteral("logActivityHeader"));
+                          : presentation == Header
+                                ? QStringLiteral("logActivityHeader")
+                                : QStringLiteral("debugActivityLights"));
         if (presentation == Compact) {
             updateCompactSize();
-        } else {
+        } else if (presentation == Header) {
             setFixedHeight(kHeaderHeight);
             setMinimumWidth(0);
             setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        } else {
+            updateDebugSize();
         }
         setCursor(Qt::PointingHandCursor);
         setMouseTracking(true);
-        setAccessibleName(presentation == Compact
-                              ? QStringLiteral("Live log activity by category")
-                              : QStringLiteral("Live log category counts and website status"));
+        setAccessibleName(
+            presentation == Compact
+                ? QStringLiteral("Live log activity by category")
+                : presentation == Header
+                      ? QStringLiteral("Live log category counts and website status")
+                      : QStringLiteral("Debug activity counts and website status"));
         updateSummaryToolTip();
     }
 
@@ -7281,6 +7289,8 @@ public:
         m_websiteStatuses = statuses;
         if (m_presentation == Compact)
             updateCompactSize();
+        else if (m_presentation == Debug)
+            updateDebugSize();
         updateSummaryToolTip();
         update();
     }
@@ -7312,6 +7322,7 @@ public:
         return QString();
     }
     bool isHeader() const { return m_presentation == Header; }
+    bool isDebug() const { return m_presentation == Debug; }
 
     std::function<void()> onClicked;
     std::function<void()> onStallClicked;
@@ -7327,7 +7338,7 @@ protected:
             painter.setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 1));
             painter.setBrush(QColor(dark ? "#161b22" : "#ffffff"));
             painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 8, 8);
-        } else {
+        } else if (m_presentation == Header) {
             painter.fillRect(rect(), QColor(dark ? "#0d1117" : "#f6f8fa"));
             painter.setPen(QColor(dark ? "#30363d" : "#d0d7de"));
             painter.drawLine(0, height() - 1, width(), height() - 1);
@@ -7356,6 +7367,29 @@ protected:
                 painter.setPen(m_counts[i] > 0 ? color : unseen);
                 painter.drawText(categoryCountRect(i), Qt::AlignHCenter | Qt::AlignTop,
                                  QString::number(m_counts[i]));
+            } else if (m_presentation == Debug) {
+                // The count rides the icon's top-right corner like the badges on
+                // the rest of the app's icon controls. Keep zeroes visible: the
+                // strip is a complete taxonomy, not just a list of active lanes.
+                QFont countFont = painter.font();
+                countFont.setPixelSize(6);
+                countFont.setBold(m_counts[i] > 0);
+                painter.setFont(countFont);
+                painter.setPen(m_counts[i] > 0 ? color : unseen);
+                const QString count = m_counts[i] > 999
+                                          ? QStringLiteral("999+")
+                                          : QString::number(m_counts[i]);
+                painter.drawText(categoryCountRect(i),
+                                 Qt::AlignLeft | Qt::AlignTop, count);
+
+                QFont labelFont = painter.font();
+                labelFont.setPixelSize(5);
+                labelFont.setBold(false);
+                painter.setFont(labelFont);
+                painter.setPen(unseen);
+                painter.drawText(categoryLabelRect(i),
+                                 Qt::AlignHCenter | Qt::AlignVCenter,
+                                 QString::fromLatin1(categories()[i].badge));
             }
         }
 
@@ -7370,6 +7404,17 @@ protected:
                     m_websiteStatuses.at(i).status, dark);
                 painter.setBrush(color);
                 painter.drawEllipse(dotRect);
+                if (m_presentation == Debug) {
+                    QFont labelFont = painter.font();
+                    labelFont.setPixelSize(6);
+                    labelFont.setBold(false);
+                    painter.setFont(labelFont);
+                    painter.setPen(unseen);
+                    painter.drawText(websiteStatusLabelRect(i),
+                                     Qt::AlignHCenter | Qt::AlignVCenter,
+                                     debugWebsiteLabel(m_websiteStatuses.at(i)));
+                    painter.setPen(Qt::NoPen);
+                }
             }
         }
     }
@@ -7387,7 +7432,7 @@ protected:
                                   .arg(count == 1 ? QString() : QStringLiteral("s"));
                 if (lane == stallCategoryIndex() && !m_stallToolTip.isEmpty())
                     tip += QLatin1Char('\n') + m_stallToolTip;
-                else if (m_presentation == Compact)
+                else if (m_presentation != Header)
                     tip += QStringLiteral("\nClick to %1 recent log lines.")
                                .arg(m_expanded ? QStringLiteral("hide")
                                                : QStringLiteral("show"));
@@ -7421,7 +7466,7 @@ protected:
             const int lane = categoryAt(event->pos());
             if (lane == stallCategoryIndex() && onStallClicked)
                 onStallClicked();
-            else if (m_presentation == Compact && onClicked)
+            else if (m_presentation != Header && onClicked)
                 onClicked();
         }
         QWidget::mouseReleaseEvent(event);
@@ -7490,6 +7535,10 @@ private:
     static constexpr int kCompactCell = 16;
     static constexpr int kCompactPadding = 7;
     static constexpr int kHeaderHeight = 32;
+    static constexpr int kDebugHeight = 40;
+    static constexpr int kDebugPadding = 4;
+    static constexpr int kDebugCategorySlot = 25;
+    static constexpr int kDebugWebsiteSlot = 36;
 
     static int categoryIndex(const QString &badge)
     {
@@ -7519,6 +7568,24 @@ private:
                      kCompactPadding * 2 + kCompactRows * kCompactCell);
     }
 
+    int debugCategoryWidth() const
+    {
+        return kDebugPadding * 2 + categoryCount() * kDebugCategorySlot;
+    }
+
+    int debugWebsiteWidth() const
+    {
+        return m_websiteStatuses.isEmpty()
+                   ? 0
+                   : 8 + m_websiteStatuses.size() * kDebugWebsiteSlot;
+    }
+
+    void updateDebugSize()
+    {
+        setFixedSize(debugCategoryWidth() + debugWebsiteWidth(), kDebugHeight);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    }
+
     int headerWebsiteWidth() const
     {
         if (m_websiteStatuses.isEmpty())
@@ -7532,6 +7599,8 @@ private:
     {
         return m_presentation == Compact
                    ? compactCategoryWidth() + 3
+                   : m_presentation == Debug
+                         ? debugCategoryWidth() + 3
                    : qMax(1, width() - headerWebsiteWidth());
     }
 
@@ -7539,12 +7608,16 @@ private:
     {
         if (m_presentation == Compact)
             return compactCategoryWidth();
+        if (m_presentation == Debug)
+            return debugCategoryWidth();
         return m_websiteStatuses.isEmpty() ? width()
                                            : websiteSeparatorX() - 3;
     }
 
     int categorySlotWidth() const
     {
+        if (m_presentation == Debug)
+            return kDebugCategorySlot;
         return qMax(1, categoryAreaWidth() / categoryCount());
     }
 
@@ -7557,14 +7630,28 @@ private:
                          kCompactPadding + row * kCompactCell,
                          kCompactCell, kCompactCell);
         }
+        if (m_presentation == Debug) {
+            const int x = kDebugPadding + index * kDebugCategorySlot;
+            return QRect(x + (kDebugCategorySlot - 14) / 2, 5, 14, 14);
+        }
         const int slot = categorySlotWidth();
         return QRect(index * slot, 2, slot, 15);
     }
 
     QRect categoryCountRect(int index) const
     {
+        if (m_presentation == Debug) {
+            const QRect icon = categoryIconRect(index);
+            return QRect(icon.right() - 1, 1, 14, 8);
+        }
         const int slot = categorySlotWidth();
         return QRect(index * slot, 17, slot, 12);
+    }
+
+    QRect categoryLabelRect(int index) const
+    {
+        const int x = kDebugPadding + index * kDebugCategorySlot;
+        return QRect(x, 24, kDebugCategorySlot, 13);
     }
 
     int categoryAt(const QPoint &point) const
@@ -7577,6 +7664,12 @@ private:
             const int col = (point.x() - kCompactPadding) / kCompactCell;
             const int row = (point.y() - kCompactPadding) / kCompactCell;
             const int index = row * kCompactColumns + col;
+            return index >= 0 && index < categoryCount() ? index : -1;
+        }
+        if (m_presentation == Debug) {
+            if (point.x() < kDebugPadding || point.x() >= debugCategoryWidth())
+                return -1;
+            const int index = (point.x() - kDebugPadding) / kDebugCategorySlot;
             return index >= 0 && index < categoryCount() ? index : -1;
         }
         if (point.x() < 0 || point.x() >= categoryAreaWidth())
@@ -7593,11 +7686,45 @@ private:
             const int y = kCompactPadding + row * kCompactCell + 5;
             return QRect(x, y, 6, 6);
         }
+        if (m_presentation == Debug) {
+            const int x = websiteSeparatorX() +
+                          index * kDebugWebsiteSlot +
+                          (kDebugWebsiteSlot - 11) / 2;
+            return QRect(x, 7, 11, 11);
+        }
         const int col = index / 2;
         const int row = index % 2;
         const int x = websiteSeparatorX() + 8 + col * 7;
         const int y = 8 + row * 10;
         return QRect(x, y, 5, 5);
+    }
+
+    QRect websiteStatusLabelRect(int index) const
+    {
+        const int x = websiteSeparatorX() + index * kDebugWebsiteSlot;
+        return QRect(x, 24, kDebugWebsiteSlot, 13);
+    }
+
+    static QString debugWebsiteLabel(const WebsiteStatus &status)
+    {
+        // The public labels are deliberately descriptive sentences. The debug
+        // bar only has room for the one- or two-word identity requested here.
+        static const QHash<QString, QString> labels = {
+            {QStringLiteral("website"), QStringLiteral("Web")},
+            {QStringLiteral("api"), QStringLiteral("API")},
+            {QStringLiteral("errors"), QStringLiteral("Errors")},
+            {QStringLiteral("database"), QStringLiteral("DB")},
+            {QStringLiteral("email"), QStringLiteral("Email")},
+            {QStringLiteral("flagship_repository"), QStringLiteral("Repo")},
+            {QStringLiteral("installer"), QStringLiteral("Installer")},
+            {QStringLiteral("git_hosting"), QStringLiteral("Git host")},
+            {QStringLiteral("realtime"), QStringLiteral("Realtime")},
+            {QStringLiteral("durable_objects"), QStringLiteral("Durables")},
+        };
+        const auto known = labels.constFind(status.id);
+        if (known != labels.cend())
+            return known.value();
+        return status.label.section(QLatin1Char(' '), 0, 1).left(12);
     }
 
     int websiteStatusAt(const QPoint &point) const
