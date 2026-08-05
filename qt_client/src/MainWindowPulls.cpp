@@ -289,6 +289,68 @@ void setPullActionBadge(QPushButton *button, int count)
         tile->setBadgeCount(qMax(0, count));
 }
 
+QString pendingInboxAuthor(const QString &kind, const QJsonObject &item)
+{
+    QJsonObject object;
+    if (kind == QLatin1String("pulls") && item.contains("pull"))
+        object = item.value("pull").toObject();
+    else
+        object = item.value("event").toObject();
+    const QString name = object.value("authorName").toString().trimmed();
+    const QString author = object.value("author").toString().trimmed();
+    return !name.isEmpty() ? name
+                           : (!author.isEmpty() ? author.left(12)
+                                                : QStringLiteral("Unknown"));
+}
+
+QString pendingInboxSummary(const QString &kind, const QJsonObject &item)
+{
+    const int number = item.value("number").toInt();
+    if (kind == QLatin1String("issues")) {
+        const QJsonObject event = item.value("event").toObject();
+        const QString type = event.value("type").toString();
+        QString title = event.value("title").toString().trimmed();
+        if (title.isEmpty())
+            title = item.value("titleIfNew").toString().trimmed();
+        if (type == QLatin1String("open"))
+            return title.isEmpty() ? QStringLiteral("New issue") : title;
+        const QString action = type == QLatin1String("comment")
+            ? QStringLiteral("Comment")
+            : (type.isEmpty() ? QStringLiteral("Issue update")
+                              : type.left(1).toUpper() + type.mid(1));
+        return number > 0 ? QStringLiteral("%1 on issue #%2").arg(action).arg(number)
+                          : action;
+    }
+    if (kind == QLatin1String("pulls")) {
+        if (item.contains("pull")) {
+            const QJsonObject pull = item.value("pull").toObject();
+            const int pullNumber = pull.value("number").toInt(number);
+            const QString title = pull.value("title").toString().trimmed();
+            return pullNumber > 0
+                ? QStringLiteral("PR #%1: %2").arg(pullNumber).arg(
+                      title.isEmpty() ? QStringLiteral("New pull request") : title)
+                : (title.isEmpty() ? QStringLiteral("New pull request") : title);
+        }
+        const QString type = item.value("event").toObject()
+                                 .value("type").toString().trimmed();
+        return number > 0
+            ? QStringLiteral("%1 on PR #%2")
+                  .arg(type.isEmpty() ? QStringLiteral("Review") : type)
+                  .arg(number)
+            : QStringLiteral("Pull request update");
+    }
+
+    const QJsonObject event = item.value("event").toObject();
+    const QString type = event.value("type").toString();
+    QString title = event.value("title").toString().trimmed();
+    if (title.isEmpty())
+        title = item.value("titleIfNew").toString().trimmed();
+    if (type == QLatin1String("open"))
+        return title.isEmpty() ? QStringLiteral("New discussion") : title;
+    return number > 0 ? QStringLiteral("Comment on discussion #%1").arg(number)
+                      : QStringLiteral("Discussion update");
+}
+
 // Locates a named HTML anchor (<a name="...">) inside a QTextDocument.
 // QTextDocument::find only searches visible text, and an anchor carries none,
 // so finding one means walking fragments and checking their char format for it
@@ -4205,6 +4267,7 @@ void MainWindow::updatePullActionState()
         m_pullImportButton->setEnabled(writable);
     if (m_pullSyncButton)
         m_pullSyncButton->setEnabled(writable);
+    refreshPendingInboxBadges();
     if (m_pullDeleteAllMergedButton) {
         int mergedCount = 0;
         for (const PullRequest &pr : m_currentPulls)
@@ -7903,8 +7966,233 @@ void MainWindow::syncPullsInbox()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
-    drainPullsInboxFor(m_repositories.at(m_repoDetailIndex), /*interactive=*/true);
+    showPendingInbox(m_repositories.at(m_repoDetailIndex),
+                     QStringLiteral("pulls"));
 }
+
+void MainWindow::showPendingInbox(const RepositoryRecord &repo,
+                                  const QString &kind)
+{
+    if (!m_networkAccess || !hasOwnerSigningCapability()) {
+        flashMessage(QStringLiteral("Network access is unavailable."), true);
+        return;
+    }
+
+    QUrl url;
+    if (kind == QLatin1String("issues"))
+        url = issuesApiUrl(repo);
+    else if (kind == QLatin1String("pulls"))
+        url = pullsApiUrl(repo);
+    else if (kind == QLatin1String("discussions"))
+        url = discussionsApiUrl(repo);
+    else
+        return;
+    url.setQuery(signedInboxQuery(
+        repoSegment(repo.owner, QStringLiteral("owner"))));
+
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, repo, kind] {
+        const QByteArray body = reply->readAll();
+        const int status = reply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QNetworkReply::NetworkError networkError = reply->error();
+        const QString networkErrorText = reply->errorString();
+        reply->deleteLater();
+        if (networkError != QNetworkReply::NoError) {
+            QMessageBox::warning(
+                this, QStringLiteral("Sync inbox"),
+                QStringLiteral("Could not load the pending inbox (HTTP %1): %2")
+                    .arg(status)
+                    .arg(networkErrorText));
+            return;
+        }
+        const QJsonArray pending =
+            QJsonDocument::fromJson(body).object().value("pending").toArray();
+        setPendingInboxCount(repo, kind, pending.size());
+        showPendingInboxDialog(repo, kind, pending);
+    });
+}
+
+void MainWindow::showPendingInboxDialog(const RepositoryRecord &repo,
+                                        const QString &kind,
+                                        const QJsonArray &pending)
+{
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("pendingInboxDialog"));
+    dialog.setWindowTitle(QStringLiteral("Pending %1")
+                              .arg(kind == QLatin1String("pulls")
+                                       ? QStringLiteral("pull requests")
+                                       : kind));
+    dialog.resize(680, qBound(260, 180 + pending.size() * 38, 620));
+
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *intro = new QLabel(
+        pending.isEmpty()
+            ? QStringLiteral("This inbox is up to date.")
+            : QStringLiteral("%1 submission%2 waiting to be written into %3/%4.")
+                  .arg(pending.size())
+                  .arg(pending.size() == 1 ? QString() : QStringLiteral("s"))
+                  .arg(repo.owner, repo.name),
+        &dialog);
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+
+    auto *tree = new QTreeWidget(&dialog);
+    tree->setObjectName(QStringLiteral("pendingInboxList"));
+    tree->setColumnCount(3);
+    tree->setHeaderLabels({QStringLiteral("Submission"),
+                           QStringLiteral("Author"), QString()});
+    tree->setRootIsDecorated(false);
+    tree->setAlternatingRowColors(true);
+    tree->setSelectionMode(QAbstractItemView::NoSelection);
+    tree->header()->setStretchLastSection(false);
+    tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    layout->addWidget(tree, 1);
+
+    for (const QJsonValue &value : pending) {
+        const QJsonObject item = value.toObject();
+        auto *row = new QTreeWidgetItem(
+            tree, {pendingInboxSummary(kind, item),
+                   pendingInboxAuthor(kind, item), QString()});
+        auto *syncOne = new QPushButton(QStringLiteral("Sync"), tree);
+        syncOne->setObjectName(QStringLiteral("pendingInboxSyncOne"));
+        syncOne->setProperty("buttonSize", "sm");
+        syncOne->setCursor(Qt::PointingHandCursor);
+        tree->setItemWidget(row, 2, syncOne);
+        connect(syncOne, &QPushButton::clicked, &dialog,
+                [this, tree, row, repo, kind, item] {
+            QJsonArray selected;
+            selected.append(item);
+            applyPendingInboxSelection(repo, kind, selected);
+            const int index = tree->indexOfTopLevelItem(row);
+            if (index >= 0)
+                delete tree->takeTopLevelItem(index);
+            setPendingInboxCount(repo, kind, tree->topLevelItemCount());
+        });
+    }
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    QPushButton *syncAll = buttons->addButton(
+        QStringLiteral("Sync all"), QDialogButtonBox::ActionRole);
+    syncAll->setObjectName(QStringLiteral("pendingInboxSyncAll"));
+    syncAll->setEnabled(!pending.isEmpty());
+    connect(syncAll, &QPushButton::clicked, &dialog,
+            [this, &dialog, repo, kind, pending] {
+        applyPendingInboxSelection(repo, kind, pending);
+        setPendingInboxCount(repo, kind, 0);
+        dialog.accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.exec();
+}
+
+void MainWindow::applyPendingInboxSelection(const RepositoryRecord &repo,
+                                            const QString &kind,
+                                            const QJsonArray &pending)
+{
+    if (pending.isEmpty())
+        return;
+    if (kind == QLatin1String("issues"))
+        applyIssuesInboxPayload(repo, pending, /*interactive=*/true);
+    else if (kind == QLatin1String("pulls"))
+        applyPullsInboxPayload(repo, pending, /*interactive=*/true);
+    else if (kind == QLatin1String("discussions"))
+        applyDiscussionsInboxPayload(repo, pending, /*interactive=*/true);
+
+    // The apply helpers acknowledge exact row ids asynchronously. Refresh the
+    // content-free count shortly afterwards so a failed ack cannot leave an
+    // optimistic badge hidden for the rest of the session.
+    QTimer::singleShot(1500, this, [this, repo] {
+        const QString source =
+            repoSegment(repo.owner, QStringLiteral("owner")) + QLatin1Char('/') +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        QJsonObject cached = m_mirrorPendingCache.value(source);
+        cached.insert(QStringLiteral("clientFetchedAt"), 0);
+        m_mirrorPendingCache.insert(source, cached);
+        refreshPendingInboxBadges();
+    });
+}
+
+void MainWindow::setPendingInboxCount(const RepositoryRecord &repo,
+                                      const QString &kind, int count)
+{
+    const QString source =
+        repoSegment(repo.owner, QStringLiteral("owner")) + QLatin1Char('/') +
+        repoSegment(repo.name, QStringLiteral("repository"));
+    QJsonObject result = m_mirrorPendingCache.value(source);
+    QJsonObject counts = result.value(QStringLiteral("pending")).toObject();
+    counts.insert(kind, qMax(0, count));
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("pending"), counts);
+    result.insert(QStringLiteral("clientFetchedAt"),
+                  double(QDateTime::currentMSecsSinceEpoch()));
+    m_mirrorPendingCache.insert(source, result);
+    refreshPendingInboxBadges();
+}
+
+void MainWindow::refreshPendingInboxBadges()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        setPullActionBadge(m_issueSyncButton, 0);
+        setPullActionBadge(m_pullSyncButton, 0);
+        if (m_discussionSyncButton)
+            m_discussionSyncButton->setText(QStringLiteral("Sync inbox"));
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+    const QString source = owner + QLatin1Char('/') + name;
+    const QJsonObject result = m_mirrorPendingCache.value(source);
+    const QJsonObject counts = result.value(QStringLiteral("pending")).toObject();
+    const bool known = result.value(QStringLiteral("ok")).toBool();
+    const int issues = known ? counts.value(QStringLiteral("issues")).toInt() : 0;
+    const int pulls = known ? counts.value(QStringLiteral("pulls")).toInt() : 0;
+    const int discussions =
+        known ? counts.value(QStringLiteral("discussions")).toInt() : 0;
+    setPullActionBadge(m_issueSyncButton, issues);
+    setPullActionBadge(m_pullSyncButton, pulls);
+    if (m_discussionSyncButton) {
+        m_discussionSyncButton->setText(
+            discussions > 0 ? QStringLiteral("Sync inbox (%1)").arg(discussions)
+                            : QStringLiteral("Sync inbox"));
+    }
+    fetchMirrorPendingCounts(owner, name, source);
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+void MainWindow::testSetPendingInboxCounts(int issues, int pulls,
+                                           int discussions)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    setPendingInboxCount(repo, QStringLiteral("issues"), issues);
+    setPendingInboxCount(repo, QStringLiteral("pulls"), pulls);
+    setPendingInboxCount(repo, QStringLiteral("discussions"), discussions);
+}
+
+int MainWindow::testIssueInboxBadgeCount() const
+{
+    const auto *button = dynamic_cast<const VerticalIconButton *>(m_issueSyncButton);
+    return button ? int(button->badgeCount()) : 0;
+}
+
+int MainWindow::testPullInboxBadgeCount() const
+{
+    const auto *button = dynamic_cast<const VerticalIconButton *>(m_pullSyncButton);
+    return button ? int(button->badgeCount()) : 0;
+}
+
+QString MainWindow::testDiscussionInboxButtonText() const
+{
+    return m_discussionSyncButton ? m_discussionSyncButton->text() : QString();
+}
+#endif
 
 void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive,
                                     bool forceMirrorIntake)

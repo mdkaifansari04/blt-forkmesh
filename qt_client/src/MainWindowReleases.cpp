@@ -3404,6 +3404,7 @@ void MainWindow::fetchMirrorPendingCounts(const QString &owner,
         result.insert(QStringLiteral("clientFetchedAt"),
                       double(QDateTime::currentMSecsSinceEpoch()));
         m_mirrorPendingCache.insert(source, result);
+        refreshPendingInboxBadges();
         if (m_repoDetailIndex < 0 ||
             m_repoDetailIndex >= m_repositories.size())
             return;

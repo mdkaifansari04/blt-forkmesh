@@ -597,6 +597,13 @@ public:
     // Switch the open repo-detail view to its Issues sub-tab (stack index 2) so
     // the issues toolbar gets real geometry. Returns false if not built yet.
     Q_INVOKABLE bool testShowRepoIssuesTab();
+    // Pending collaboration inbox badges share the relay's content-free
+    // /pending response. Tests inject one response here and verify that all
+    // three repository actions reflect it without making a network request.
+    void testSetPendingInboxCounts(int issues, int pulls, int discussions);
+    int testIssueInboxBadgeCount() const;
+    int testPullInboxBadgeCount() const;
+    QString testDiscussionInboxButtonText() const;
     Q_INVOKABLE bool testSaveRepoAboutMetadata(const QString &about,
                                                const QString &website)
     {
@@ -4611,6 +4618,19 @@ private:
                                const QStringList &attachmentPlaceholders = {},
                                std::function<void(bool ok, const QString &error)> onDone = {});
     void syncIssuesInbox();
+    // Fetch the signed contents of one collaboration inbox and present a
+    // reviewable list with per-submission and sync-all actions. Counts stay on
+    // the three toolbar buttons via the public, content-free /pending endpoint.
+    void showPendingInbox(const RepositoryRecord &repo, const QString &kind);
+    void showPendingInboxDialog(const RepositoryRecord &repo,
+                                const QString &kind,
+                                const QJsonArray &pending);
+    void applyPendingInboxSelection(const RepositoryRecord &repo,
+                                    const QString &kind,
+                                    const QJsonArray &pending);
+    void refreshPendingInboxBadges();
+    void setPendingInboxCount(const RepositoryRecord &repo,
+                              const QString &kind, int count);
     // Drain one repo's issue inbox. Owners consume their queue; eligible public
     // mirrors materialize it without consuming the source-of-truth delivery.
     // `interactive` shows inline notices for a manual "Sync inbox". Repo is
