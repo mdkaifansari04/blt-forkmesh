@@ -685,9 +685,28 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullMeta, &QLabel::linkActivated, this, [this](const QString &href) {
         if (href.startsWith(kAgentLinkScheme))
             switchToAgentsTab(href.mid(kAgentLinkScheme.size()).toInt());
-        else if (href.startsWith(kBranchLinkScheme))
-            switchToBranch(QUrl::fromPercentEncoding(
-                href.mid(kBranchLinkScheme.size()).toUtf8()));
+        else if (href.startsWith(kBranchLinkScheme)) {
+            const QString branch = QUrl::fromPercentEncoding(
+                href.mid(kBranchLinkScheme.size()).toUtf8());
+            // A submitted pull can label its head as "<node>:<branch>".  That
+            // value is provenance, not a Git ref: passing it to `git diff`
+            // makes Git parse the colon as the revision/path separator (for
+            // example `main...cache-socket:fix/x` becomes the nonexistent
+            // revision `cache-socket`).  The PR route already knows how to use
+            // a locally synced head, pr/<N>, or the carried patch, so keep head
+            // links on that safe route.  Base links remain ordinary branches.
+            bool isCurrentPullHead = false;
+            for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+                if (pr.number == m_currentPullNumber && pr.head == branch) {
+                    isCurrentPullHead = true;
+                    break;
+                }
+            }
+            if (isCurrentPullHead)
+                openPullDiffInGitView(m_currentPullNumber);
+            else
+                switchToBranch(branch);
+        }
     });
     // Merge-readiness banner: a dry-run of the patch tells the reviewer whether
     // it applies cleanly (or which files conflict) before they hit Merge.
@@ -3491,19 +3510,29 @@ QString MainWindow::resolvablePullHead(PullRequest pr) const
     const QString dir = repoGitDir();
     if (dir.isEmpty() || pr.number <= 0)
         return QString();
-    auto resolves = [&](const QString &ref) {
-        return !ref.trimmed().isEmpty() &&
+    auto resolvesLocalBranch = [&](const QString &branch) {
+        return !branch.trimmed().isEmpty() &&
                runGitCapture(dir,
                              {QStringLiteral("rev-parse"),
                               QStringLiteral("--verify"),
                               QStringLiteral("--quiet"),
-                              ref + QStringLiteral("^{commit}")},
+                              QStringLiteral("--end-of-options"),
+                              QStringLiteral("refs/heads/") + branch +
+                                  QStringLiteral("^{commit}")},
                              nullptr, nullptr);
     };
-    if (resolves(pr.head))
-        return pr.head;
+    QString head = pr.head.trimmed();
+    // Cross-node heads are stored as "<node>:<branch>" for attribution.  A
+    // mirror may nevertheless have synced the real branch, in which case use
+    // its exact refs/heads name.  Never probe the decorated label itself:
+    // revision:path is valid Git syntax and can resolve to the wrong object.
+    const int separator = head.indexOf(QLatin1Char(':'));
+    if (separator > 0)
+        head = head.mid(separator + 1).trimmed();
+    if (resolvesLocalBranch(head))
+        return head;
     const QString canonical = QStringLiteral("pr/%1").arg(pr.number);
-    return resolves(canonical) ? canonical : QString();
+    return resolvesLocalBranch(canonical) ? canonical : QString();
 }
 
 // The base..head range walks for a PR, reused while neither ref has moved.

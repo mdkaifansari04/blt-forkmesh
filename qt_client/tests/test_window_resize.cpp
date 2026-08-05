@@ -728,6 +728,31 @@ int main(int argc, char *argv[])
     const QString testApplicationName =
         QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
     app.setApplicationName(testApplicationName);
+
+    // Synchronous helper callers still receive a result immediately, but the
+    // process and wait must be owned by a worker rather than the QApplication
+    // thread. The activity bus exposes the actual lane used by waitForGit.
+    std::atomic<int> gitWorkerStarts{0};
+    std::atomic<int> gitUiStarts{0};
+    forkmesh::BackgroundActivity::setListener(
+        [&gitWorkerStarts, &gitUiStarts](
+            quint64, const QString &kind, const QString &,
+            forkmesh::ActionTelemetry::Execution execution, bool started) {
+            if (!started || kind != QLatin1String("git"))
+                return;
+            if (execution == forkmesh::ActionTelemetry::Execution::Worker)
+                ++gitWorkerStarts;
+            if (execution == forkmesh::ActionTelemetry::Execution::UiBlocking)
+                ++gitUiStarts;
+        });
+    QByteArray gitVersion;
+    const bool gitVersionOk = forkmesh::ui::runGitCapture(
+        QDir::tempPath(), {QStringLiteral("--version")}, &gitVersion, nullptr);
+    forkmesh::BackgroundActivity::setListener(nullptr);
+    check(gitVersionOk && gitVersion.startsWith("git version") &&
+              gitWorkerStarts.load() == 1 && gitUiStarts.load() == 0,
+          QStringLiteral("synchronous Git helpers execute and wait on a worker"));
+
     const QString darkTheme = QString::fromLatin1(Theme::styleSheetForDark(true));
     const QString lightTheme = QString::fromLatin1(Theme::styleSheetForDark(false));
     check(darkTheme.contains(QStringLiteral(
@@ -2253,6 +2278,28 @@ int main(int argc, char *argv[])
     repairedPull.head = QStringLiteral("api-pr/removed/historical-head");
     check(window.testResolvablePullHead(repairedPull) == QStringLiteral("pr/404"),
           QStringLiteral("a missing signed PR head falls back to pr/<number>"));
+
+    // A remote submitter decorates its head as "<node>:<branch>".  The colon is
+    // revision:path syntax to Git, so feeding the label to a range used to turn
+    // `main...cache-socket-2632:fix/x` into an invalid lookup of only
+    // `cache-socket-2632`.  Resolve and browse the exact local branch portion.
+    runGitChecked(repoDir.path(),
+                  {"branch", "fix/stall-filter-test-isolation", "HEAD"});
+    PullRequest crossNodePull;
+    crossNodePull.number = 405;
+    crossNodePull.head =
+        QStringLiteral("cache-socket-2632:fix/stall-filter-test-isolation");
+    check(window.testResolvablePullHead(crossNodePull) ==
+              QStringLiteral("fix/stall-filter-test-isolation"),
+          QStringLiteral("a cross-node PR label resolves its synced branch without "
+                         "passing node:branch to Git"));
+    check(window.testSwitchToWorktreeGitBranch(crossNodePull.head) ==
+              QStringLiteral("fix/stall-filter-test-isolation") &&
+              window.testBranchDiffBranch() ==
+                  QStringLiteral("fix/stall-filter-test-isolation"),
+          QStringLiteral("opening a cross-node head diffs the branch portion, not "
+                         "the cache-socket node label"));
+    window.testSwitchToWorktreeGitBranch(QStringLiteral("main"));
 
     // adhoc #55: the status strip names the commit the open branch is on —
     // short SHA, date, subject and author. The read is detached (it must not

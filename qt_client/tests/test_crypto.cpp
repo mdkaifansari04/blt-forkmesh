@@ -7184,7 +7184,9 @@ int main(int argc, char *argv[])
                         : execution ==
                                   forkmesh::ActionTelemetry::Execution::Worker
                               ? QStringLiteral("worker")
-                              : QStringLiteral("ui");
+                              : execution == forkmesh::ActionTelemetry::Execution::UiDeferred
+                                    ? QStringLiteral("ui-deferred")
+                                    : QStringLiteral("ui");
                 seen.append(QStringLiteral("%1:%2:%3:%4:%5")
                                 .arg(started ? QStringLiteral("+")
                                              : QStringLiteral("-"))
