@@ -157,7 +157,13 @@ def test_newly_logged_errors_are_announced_not_only_counted():
     assert "this.adminErrorPendingAnnounce = 0;" in refresh
     assert "New error logged" in refresh
     assert "new errors logged" in refresh
-    assert '{ kind: "error" },' in refresh
+    assert 'kind: "error",' in refresh
+    assert "const announcedErrorId = this.adminErrorLatestId;" in refresh
+    assert "this.openAdminErrors(null, announcedErrorId)" in refresh
+    assert 'data-world-admin-error-detail="' in WORLD
+    assert "openAdminErrorDetail(errorId)" in WORLD
+    assert 'query.get("id", ["0"])[0]' in ENTRY
+    assert '"FROM error_log WHERE id=? LIMIT 1"' in ENTRY
     # Status and source only: no route, message, ray or actor in the HUD.
     assert "payload?.latestStatus" in refresh
     assert "payload?.latestSource" in refresh
