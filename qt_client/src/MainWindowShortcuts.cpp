@@ -6,7 +6,8 @@
 // they version and sync with the repo like workflows do. The tab lists each
 // file as a clickable card: a script click runs it through bash with stdout/
 // stderr streamed live into the page's output pane; other kinds open in the
-// editor. New / edit / delete round out the CRUD.
+// composer or, when their header pins an agent, start a dedicated session. New /
+// edit / delete round out the CRUD.
 //
 // These are MainWindow member functions defined in their own translation unit;
 // the class itself is declared in MainWindow.h. Shared helpers live in
@@ -44,31 +45,45 @@ QString shortcutKind(const QString &filePath)
     return QStringLiteral("file");
 }
 
-// Card title/subtitle from the file's header: a "# name:" / "# description:"
-// comment when present, else the file name and its first comment line.
-void shortcutMeta(const QString &filePath, QString *name, QString *description)
+struct ShortcutMeta
 {
-    *name = QFileInfo(filePath).fileName();
-    description->clear();
+    QString name;
+    QString description;
+    QString agent;
+    QString model;
+};
+
+// Card and launch metadata from the file's header. Prompt shortcuts may pin a
+// CLI agent and model; that turns their card into a one-click, fresh agent run.
+// Without those fields they retain the safer draft-in-the-composer behaviour.
+ShortcutMeta shortcutMeta(const QString &filePath)
+{
+    ShortcutMeta meta;
+    meta.name = QFileInfo(filePath).fileName();
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-        return;
-    for (int i = 0; i < 12 && !file.atEnd(); ++i) {
+        return meta;
+    for (int i = 0; i < 20 && !file.atEnd(); ++i) {
         const QString line = QString::fromUtf8(file.readLine()).trimmed();
         if (line.startsWith(QLatin1String("#!")))
             continue;
         if (line.startsWith(QLatin1String("# name:")))
-            *name = line.mid(7).trimmed();
+            meta.name = line.mid(7).trimmed();
         else if (line.startsWith(QLatin1String("# description:")))
-            *description = line.mid(14).trimmed();
-        else if (description->isEmpty() && line.startsWith(QLatin1Char('#')))
-            *description = line.mid(1).trimmed();
+            meta.description = line.mid(14).trimmed();
+        else if (line.startsWith(QLatin1String("# agent:")))
+            meta.agent = line.mid(8).trimmed().toLower();
+        else if (line.startsWith(QLatin1String("# model:")))
+            meta.model = line.mid(8).trimmed();
+        else if (meta.description.isEmpty() && line.startsWith(QLatin1Char('#')))
+            meta.description = line.mid(1).trimmed();
     }
+    return meta;
 }
 
 // The prompt a "prompt" card drafts into the composer: the file's text minus
-// the "# name:" / "# description:" header lines, which describe the card rather
-// than form part of the ask.
+// its shortcut metadata header lines, which configure the card rather than form
+// part of the ask.
 QString shortcutPromptText(const QString &filePath)
 {
     QFile file(filePath);
@@ -79,7 +94,9 @@ QString shortcutPromptText(const QString &filePath)
         const QString line = QString::fromUtf8(file.readLine());
         const QString trimmed = line.trimmed();
         if (trimmed.startsWith(QLatin1String("# name:")) ||
-            trimmed.startsWith(QLatin1String("# description:")))
+            trimmed.startsWith(QLatin1String("# description:")) ||
+            trimmed.startsWith(QLatin1String("# agent:")) ||
+            trimmed.startsWith(QLatin1String("# model:")))
             continue;
         text += line;
     }
@@ -231,8 +248,9 @@ QWidget *MainWindow::buildShortcutsTab()
         "Scripts, prompts and skills stored in this repo's .forkmesh/shortcuts/ "
         "folder, so they version and sync with the code. Click a script card to "
         "run it (bash, from the repo root) — its output streams below. A prompt "
-        "card fills the composer with its text, ready to send to an agent; other "
-        "files open in the editor.");
+        "card fills the composer with its text, ready to send to an agent. A "
+        "prompt with # agent: and # model: starts that dedicated agent in one "
+        "click; other files open in the editor.");
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
     layout->addWidget(hint);
@@ -305,8 +323,8 @@ void MainWindow::loadShortcutsPanel()
         const QString path = info.absoluteFilePath();
         const bool script = shortcutIsScript(path);
         const bool prompt = shortcutKind(path) == QLatin1String("prompt");
-        QString name, description;
-        shortcutMeta(path, &name, &description);
+        const ShortcutMeta meta = shortcutMeta(path);
+        const bool dedicated = prompt && !meta.agent.isEmpty();
 
         // The card is itself a button — clicking anywhere runs a script or
         // opens anything else in the editor. Its labels are made transparent
@@ -317,6 +335,12 @@ void MainWindow::loadShortcutsPanel()
         card->setCursor(Qt::PointingHandCursor);
         card->setToolTip(
             script ? QStringLiteral("Run %1").arg(info.fileName())
+                   : dedicated
+                         ? QStringLiteral("Start a new %1 agent with %2")
+                               .arg(meta.agent,
+                                    meta.model.isEmpty()
+                                        ? QStringLiteral("its default model")
+                                        : meta.model)
                    : prompt ? QStringLiteral("Draft %1 in the composer")
                                   .arg(info.fileName())
                             : QStringLiteral("Edit %1").arg(info.fileName()));
@@ -337,19 +361,22 @@ void MainWindow::loadShortcutsPanel()
         titleRow->setContentsMargins(0, 0, 0, 0);
         titleRow->setSpacing(8);
         auto *icon = new QLabel;
-        icon->setPixmap(themedOcticon(script ? "rocket"
-                                             : prompt ? "comment" : "file",
+        icon->setPixmap(themedOcticon(script || dedicated
+                                         ? "rocket"
+                                         : prompt ? "comment" : "file",
                                       QColor("#2ea043"), 16)
                             .pixmap(16, 16));
         icon->setAttribute(Qt::WA_TransparentForMouseEvents);
-        auto *title = new QLabel(name);
+        auto *title = new QLabel(meta.name);
         // Wraps rather than forcing a wide column when a shortcut has a long
         // name; the title takes the row's spare width so short names stay on
         // one line.
         title->setWordWrap(true);
         title->setStyleSheet("font-weight:600;font-size:14px;background:transparent;");
         title->setAttribute(Qt::WA_TransparentForMouseEvents);
-        auto *kind = new QLabel(shortcutKind(path));
+        auto *kind = new QLabel(dedicated && !meta.model.isEmpty()
+                                    ? meta.model
+                                    : shortcutKind(path));
         kind->setObjectName("statusLine");
         kind->setAttribute(Qt::WA_TransparentForMouseEvents);
         auto *editButton = new QPushButton;
@@ -375,8 +402,8 @@ void MainWindow::loadShortcutsPanel()
         titleRow->addWidget(deleteButton);
         cardLayout->addLayout(titleRow);
 
-        if (!description.isEmpty()) {
-            auto *desc = new QLabel(description);
+        if (!meta.description.isEmpty()) {
+            auto *desc = new QLabel(meta.description);
             desc->setObjectName("statusLine");
             desc->setWordWrap(true);
             desc->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -387,15 +414,15 @@ void MainWindow::loadShortcutsPanel()
     }
 }
 
-// Clicking a prompt card drafts its text into the footer composer, the same way
-// the stall badge drafts its fix-it prompt (adhoc #73) — one Enter from an agent
-// run, with a chance to edit first. {{stallLog}} / {{appLog}} are substituted
-// with this machine's real log paths so a prompt that asks an agent to read them
-// carries the right locations on every platform.
+// Clicking an ordinary prompt card drafts its text into the footer composer.
+// A card whose metadata pins an agent starts a fresh dedicated session instead.
+// {{stallLog}} / {{appLog}} are substituted with this machine's real log paths
+// so a prompt that asks an agent to read them carries the right locations on
+// every platform.
 void MainWindow::draftShortcutPrompt(const QString &filePath)
 {
     QString prompt = shortcutPromptText(filePath);
-    if (prompt.isEmpty() || !m_issueQuickAdd) {
+    if (prompt.isEmpty()) {
         openShortcutEditor(filePath); // nothing to send: fall back to editing
         return;
     }
@@ -406,6 +433,42 @@ void MainWindow::draftShortcutPrompt(const QString &filePath)
                        : QDir::toNativeSeparators(stallLog));
     prompt.replace(QStringLiteral("{{appLog}}"),
                    QDir::toNativeSeparators(networkLogPath()));
+    const ShortcutMeta meta = shortcutMeta(filePath);
+    if (!meta.agent.isEmpty()) {
+        QString provider = meta.agent;
+        if (provider == QLatin1String("claude"))
+            provider = QStringLiteral("claude-code");
+        if (!agentIsCodexProvider(provider) &&
+            provider != QLatin1String("claude-code")) {
+            setRepoDetailNotice(
+                QStringLiteral("Shortcut %1 names unsupported dedicated agent “%2”.")
+                    .arg(QFileInfo(filePath).fileName(), meta.agent),
+                true);
+            return;
+        }
+        if (!agentModelMatchesProvider(provider, meta.model)) {
+            setRepoDetailNotice(
+                QStringLiteral("Shortcut model %1 does not match agent %2.")
+                    .arg(meta.model, provider),
+                true);
+            return;
+        }
+        const int sessionId = startAdHocAgentForRepo(
+            m_repoDetailIndex, prompt, provider, /*createPr=*/true, meta.model,
+            meta.name);
+        if (sessionId > 0)
+            setRepoDetailNotice(
+                QStringLiteral("Started dedicated %1 agent for “%2”%3.")
+                    .arg(agentProviderName(provider), meta.name,
+                         meta.model.isEmpty()
+                             ? QString()
+                             : QStringLiteral(" on %1").arg(meta.model)));
+        return;
+    }
+    if (!m_issueQuickAdd) {
+        openShortcutEditor(filePath);
+        return;
+    }
     // Anything half-typed goes into the recall history first, so overwriting the
     // box never loses a prompt — Up brings it straight back.
     recordQuickAddHistory(m_issueQuickAdd->toPlainText());
@@ -416,6 +479,15 @@ void MainWindow::draftShortcutPrompt(const QString &filePath)
                                        "it, then send it to an agent.")
                             .arg(QFileInfo(filePath).fileName()));
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+QStringList MainWindow::testShortcutMetadata(const QString &filePath) const
+{
+    const ShortcutMeta meta = shortcutMeta(filePath);
+    return {meta.name, meta.description, meta.agent, meta.model,
+            shortcutPromptText(filePath)};
+}
+#endif
 
 void MainWindow::runShortcut(const QString &filePath)
 {
