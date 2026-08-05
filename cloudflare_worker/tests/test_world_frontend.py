@@ -1294,6 +1294,36 @@ def test_admin_error_button_opens_a_sortable_in_world_error_table():
     assert 'data-world-activity-sort="errors"' in APP
 
 
+def test_new_error_notice_opens_the_exact_error_detail():
+    refresh = APP[
+        APP.index("  async refreshAdminErrors() {"):
+        APP.index("\n  startAdminErrorPolling()", APP.index("  async refreshAdminErrors() {"))
+    ]
+    assert "const announcedErrorId = this.adminErrorLatestId;" in refresh
+    assert "onActivate: () =>" in refresh
+    assert "this.openAdminErrors(null, announcedErrorId)" in refresh
+    assert "data-world-admin-error-detail=" in APP
+    assert "openAdminErrorDetail(errorId)" in APP
+    assert "data-world-admin-error-detail-panel" in APP
+
+
+def test_ping_board_exposes_a_full_detail_view():
+    assert 'data-world-notification-detail="${escapeHTML(item.id)}"' in APP
+    assert "data-world-notification-detail-panel" in APP
+    assert '"Destination", selected.destination || "—"' in APP
+    assert '"Received",' in APP
+    assert "selected.errorSource || selected.source" in APP
+    assert "notificationBoardDetailId" in APP
+
+
+def test_touch_debug_pill_clears_the_thumbstick():
+    assert "--world-touch-control-size: 94px;" in CSS
+    assert "--world-touch-control-size: 86px;" in CSS
+    assert "--world-touch-control-size: 82px;" in CSS
+    assert "var(--safe-bottom) + var(--world-touch-control-size) + 12px" in CSS
+    assert ".world-touch-controls {\n    bottom: var(--safe-bottom);" in CSS
+
+
 def test_world_task_button_and_inactive_avatar_visibility_contracts():
     assert "data-world-tasks-open" in APP
     assert "data-world-task-count" in APP
