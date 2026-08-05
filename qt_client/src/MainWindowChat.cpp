@@ -12553,7 +12553,92 @@ QWidget *MainWindow::buildHostsSection()
         "Optional \xE2\x80\x94 defaults to the next free mirrorN "
         "(mirror5, mirror6, \xE2\x80\xA6)"));
     vultrForm->addRow(QStringLiteral("Node name"), m_vultrNameEdit);
+
+    m_mirrorFleetDesiredSpin = new QSpinBox;
+    m_mirrorFleetDesiredSpin->setObjectName(
+        QStringLiteral("desiredHealthyMirrorCount"));
+    m_mirrorFleetDesiredSpin->setRange(0, 9999);
+    QSettings fleetSettings;
+    int initialDesired = 0;
+    if (fleetSettings.contains(kMirrorFleetDesiredSetting)) {
+        initialDesired =
+            fleetSettings.value(kMirrorFleetDesiredSetting).toInt();
+    } else {
+        // First exposure must be non-destructive for existing installations:
+        // seed the target from the managed fleet instead of an arbitrary one
+        // that could delete paid-for servers as soon as automation is enabled.
+        const QJsonArray existingHosts = forkmesh::control::loadSavedHosts(
+            fleetSettings, kHostsSetting, nullptr);
+        for (const QJsonValue &value : existingHosts) {
+            if (!forkmesh::control::savedHostVultrInstanceId(
+                     value.toObject()).isEmpty()) {
+                ++initialDesired;
+            }
+        }
+    }
+    m_mirrorFleetDesiredSpin->setValue(initialDesired);
+    m_mirrorFleetDesiredSpin->setToolTip(QStringLiteral(
+        "The number of healthy ForkMesh-managed Vultr mirrors to keep. "
+        "Increasing this creates servers; lowering it permanently destroys "
+        "excess managed servers. A mirror counts as healthy only after the "
+        "public catalog confirms live, fresh, integrity-approved clone traffic."));
+    vultrForm->addRow(QStringLiteral("Healthy mirrors to keep"),
+                      m_mirrorFleetDesiredSpin);
     vultrCol->addLayout(vultrForm);
+
+    m_mirrorFleetEnabledCheck = new QCheckBox(QStringLiteral(
+        "Automatically maintain this healthy mirror count"));
+    m_mirrorFleetEnabledCheck->setObjectName(
+        QStringLiteral("healthyMirrorFleetEnabled"));
+    m_mirrorFleetEnabledCheck->setChecked(
+        QSettings().value(kMirrorFleetEnabledSetting, false).toBool());
+    m_mirrorFleetEnabledCheck->setToolTip(QStringLiteral(
+        "Opt in to automatic Vultr fleet sizing. ForkMesh creates one server "
+        "at a time when healthy capacity is short and permanently destroys "
+        "excess servers when the number above is lowered. Only Vultr mirrors "
+        "created and tracked by this app are ever destroyed; manual hosts and "
+        "other providers are never touched."));
+    connect(m_mirrorFleetEnabledCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+        QSettings settings;
+        settings.setValue(kMirrorFleetEnabledSetting, enabled);
+        if (enabled && m_mirrorFleetDesiredSpin) {
+            // Persist even an untouched, safety-seeded target. Otherwise a
+            // restart during temporary replacement over-capacity could infer
+            // that larger transient fleet as the new desired count.
+            settings.setValue(kMirrorFleetDesiredSetting,
+                              m_mirrorFleetDesiredSpin->value());
+        }
+        if (!enabled) {
+            if (m_mirrorFleetStatus)
+                m_mirrorFleetStatus->setText(QStringLiteral(
+                    "Automatic fleet sizing is off; existing servers are unchanged."));
+            return;
+        }
+        QTimer::singleShot(0, this,
+                           &MainWindow::reconcileDesiredMirrorFleet);
+    });
+    connect(m_mirrorFleetDesiredSpin,
+            qOverload<int>(&QSpinBox::valueChanged), this,
+            [this](int desired) {
+        QSettings().setValue(kMirrorFleetDesiredSetting, desired);
+        if (m_mirrorFleetEnabledCheck &&
+            m_mirrorFleetEnabledCheck->isChecked()) {
+            QTimer::singleShot(0, this,
+                               &MainWindow::reconcileDesiredMirrorFleet);
+        }
+    });
+    vultrCol->addWidget(m_mirrorFleetEnabledCheck);
+    m_mirrorFleetStatus = new QLabel;
+    m_mirrorFleetStatus->setObjectName(
+        QStringLiteral("healthyMirrorFleetStatus"));
+    m_mirrorFleetStatus->setWordWrap(true);
+    m_mirrorFleetStatus->setText(
+        m_mirrorFleetEnabledCheck->isChecked()
+            ? QStringLiteral("Checking managed mirror health…")
+            : QStringLiteral(
+                  "Automatic fleet sizing is off; existing servers are unchanged."));
+    vultrCol->addWidget(m_mirrorFleetStatus);
 
     // Agent CLIs on the new mirror (adhoc #418). A headless VPS has no browser
     // to sign either provider in with, so the installed binaries would sit
@@ -12685,6 +12770,7 @@ QWidget *MainWindow::buildHostsSection()
     renderVultrProvisionProgress();
     restoreVultrProvision();
     QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
+    QTimer::singleShot(0, this, &MainWindow::reconcileDesiredMirrorFleet);
     return page;
 }
 
@@ -13013,6 +13099,211 @@ void MainWindow::probeSavedHosts()
             host.value(QStringLiteral("user")).toString().trimmed(),
             host.value(QStringLiteral("status")).toString().trimmed());
     }
+    reconcileDesiredMirrorFleet();
+}
+
+void MainWindow::reconcileDesiredMirrorFleet()
+{
+    if (!m_mirrorFleetEnabledCheck || !m_mirrorFleetDesiredSpin ||
+        !m_mirrorFleetEnabledCheck->isChecked()) {
+        return;
+    }
+    const int desired = m_mirrorFleetDesiredSpin->value();
+    if (m_vultrProvisionActive) {
+        if (m_mirrorFleetStatus) {
+            m_mirrorFleetStatus->setText(QStringLiteral(
+                "Target: %1 healthy mirror(s) · waiting for the current "
+                "deployment to become healthy.").arg(desired));
+        }
+        return;
+    }
+    if (m_mirrorFleetMutationInFlight || m_mirrorFleetReconcileInFlight)
+        return;
+    if (!m_networkAccess) {
+        if (m_mirrorFleetStatus)
+            m_mirrorFleetStatus->setText(
+                QStringLiteral("Mirror health cannot be checked while network access is unavailable."));
+        return;
+    }
+
+    m_mirrorFleetReconcileInFlight = true;
+    if (m_mirrorFleetStatus) {
+        m_mirrorFleetStatus->setText(
+            QStringLiteral("Checking managed mirrors against the public health catalog…"));
+    }
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/forkmesh/forkmesh/mirrors"));
+    url.setQuery(QString());
+    QNetworkRequest request(url);
+    request.setRawHeader(QByteArrayLiteral("accept"),
+                         QByteArrayLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const QByteArray body = reply->readAll();
+        const QString networkError = reply->errorString();
+        const bool networkOk = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        m_mirrorFleetReconcileInFlight = false;
+        if (!m_mirrorFleetEnabledCheck || !m_mirrorFleetDesiredSpin ||
+            !m_mirrorFleetEnabledCheck->isChecked()) {
+            return;
+        }
+
+        const QJsonObject payload = QJsonDocument::fromJson(body).object();
+        if (!networkOk || !payload.value(QStringLiteral("ok")).toBool()) {
+            if (m_mirrorFleetStatus) {
+                m_mirrorFleetStatus->setText(
+                    QStringLiteral("Could not verify mirror health; no fleet change was made. %1")
+                        .arg(networkOk ? QStringLiteral("The catalog response was invalid.")
+                                       : networkError));
+            }
+            return;
+        }
+
+        QSettings settings;
+        const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+            settings, kHostsSetting, &m_hostSessionPasswords);
+        const int desired = m_mirrorFleetDesiredSpin->value();
+        const forkmesh::control::MirrorFleetReconcilePlan plan =
+            forkmesh::control::planMirrorFleetReconciliation(
+                desired, hosts,
+                payload.value(QStringLiteral("mirrors")).toArray());
+        const QString summary = QStringLiteral(
+            "%1 of %2 managed mirror(s) healthy · target %3")
+                                    .arg(plan.healthyCount)
+                                    .arg(plan.managedCount)
+                                    .arg(desired);
+
+        switch (plan.action) {
+        case forkmesh::control::MirrorFleetAction::None:
+            if (m_mirrorFleetStatus)
+                m_mirrorFleetStatus->setText(
+                    QString::fromUtf8("\xE2\x9C\x94 ") + summary);
+            return;
+        case forkmesh::control::MirrorFleetAction::Create:
+            if (m_mirrorFleetStatus) {
+                m_mirrorFleetStatus->setText(
+                    summary + QStringLiteral(
+                                  " · creating one mirror to restore healthy capacity."));
+            }
+            // A failed durable deployment must resume its exact server. A new
+            // capacity request, however, always lets the normal name allocator
+            // choose a fresh collision-free mirrorN.
+            if (!m_vultrResumeRequested && m_vultrNameEdit)
+                m_vultrNameEdit->clear();
+            createVultrMirrorFromForm();
+            return;
+        case forkmesh::control::MirrorFleetAction::Destroy:
+            if (m_mirrorFleetStatus) {
+                m_mirrorFleetStatus->setText(
+                    summary + QStringLiteral(
+                                  " · destroying excess managed mirror %1.")
+                                  .arg(plan.nodeName));
+            }
+            destroyDesiredMirrorFleetNode(plan.nodeName);
+            return;
+        }
+    });
+}
+
+void MainWindow::destroyDesiredMirrorFleetNode(const QString &node)
+{
+    if (m_mirrorFleetMutationInFlight || node.trimmed().isEmpty())
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QJsonObject target;
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString().trimmed().compare(
+                node, Qt::CaseInsensitive) == 0) {
+            target = host;
+            break;
+        }
+    }
+    const QString instanceId =
+        forkmesh::control::savedHostVultrInstanceId(target);
+    QString apiKey =
+        m_vultrApiKeyEdit ? m_vultrApiKeyEdit->text().trimmed() : QString();
+    if (apiKey.isEmpty()) {
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+    }
+    const QString invalid =
+        forkmesh::control::validateVultrDestroyRequest(apiKey, instanceId);
+    if (!invalid.isEmpty()) {
+        if (m_mirrorFleetStatus) {
+            m_mirrorFleetStatus->setText(
+                QStringLiteral("Could not scale down %1: %2").arg(node, invalid));
+        }
+        return;
+    }
+
+    m_mirrorFleetMutationInFlight = true;
+    appendHostInstallLog(QString::fromUtf8(
+        "Automatic fleet sizing: destroying excess Vultr instance %1 "
+        "(\"%2\")\xE2\x80\xA6\n").arg(instanceId, node));
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances/") + instanceId,
+        QByteArrayLiteral("DELETE"), {},
+        [this, node, instanceId](QJsonObject, QString error) {
+            m_mirrorFleetMutationInFlight = false;
+            if (!error.isEmpty()) {
+                if (m_mirrorFleetStatus) {
+                    m_mirrorFleetStatus->setText(
+                        QStringLiteral("Could not automatically destroy %1: %2")
+                            .arg(node, error));
+                }
+                appendHostInstallLog(
+                    QStringLiteral("Automatic fleet scale-down failed: %1\n")
+                        .arg(error));
+                return;
+            }
+
+            appendHostInstallLog(QStringLiteral(
+                "Automatic fleet sizing destroyed Vultr instance %1 (\"%2\").\n")
+                                     .arg(instanceId, node));
+            // A checkpoint for the removed node is no longer meaningful. In
+            // particular, a failed checkpoint must not resurrect the server
+            // we just intentionally removed after a target reduction.
+            if (m_vultrProvisionNode.compare(node, Qt::CaseInsensitive) == 0) {
+                m_vultrResumeRequested = false;
+                m_vultrResumeChain = false;
+                m_vultrProvisionState.clear();
+                m_vultrProvisionStage = 0;
+                m_vultrProvisionDetail.clear();
+                m_vultrProvisionMessage.clear();
+                m_vultrProvisionNode.clear();
+                m_vultrInstanceId.clear();
+                m_vultrInstanceIp.clear();
+                m_vultrIdentityFile.clear();
+                m_vultrDnsHostname.clear();
+                m_vultrHostMetadata = QJsonObject();
+                QSettings().remove(kVultrProvisionSetting);
+                if (m_vultrNameEdit)
+                    m_vultrNameEdit->clear();
+                renderVultrProvisionProgress();
+            }
+            forgetSavedHostNamed(node);
+            removeVultrMirrorDns(
+                node, [this](QString outcome) {
+                    if (!outcome.isEmpty())
+                        appendHostInstallLog(outcome + QLatin1Char('\n'));
+                });
+            addNotification(
+                QStringLiteral("Mirror fleet scaled down"),
+                QStringLiteral("Destroyed excess managed mirror %1; Vultr billing for instance %2 has stopped.")
+                    .arg(node, instanceId),
+                false);
+            if (m_mirrorFleetStatus) {
+                m_mirrorFleetStatus->setText(
+                    QStringLiteral("Destroyed excess managed mirror %1; checking the new target…")
+                        .arg(node));
+            }
+            QTimer::singleShot(0, this,
+                               &MainWindow::reconcileDesiredMirrorFleet);
+        });
 }
 
 void MainWindow::probeSavedHost(const QString &name, const QString &ip,
@@ -18418,6 +18709,11 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
     m_vultrTunnelApiToken.clear();
     if (m_vultrCreateButton)
         m_vultrCreateButton->setEnabled(true);
+    if (ok && m_mirrorFleetEnabledCheck &&
+        m_mirrorFleetEnabledCheck->isChecked()) {
+        QTimer::singleShot(0, this,
+                           &MainWindow::reconcileDesiredMirrorFleet);
+    }
 }
 
 void MainWindow::waitForVultrMirrorPublication(
@@ -18463,19 +18759,7 @@ void MainWindow::waitForVultrMirrorPublication(
                     candidate =
                         mirror.value(QStringLiteral("owner")).toString().trimmed();
                 if (candidate.compare(node, Qt::CaseInsensitive) == 0 &&
-                    mirror.value(QStringLiteral("status"))
-                            .toString()
-                            .compare(QStringLiteral("online"),
-                                     Qt::CaseInsensitive) == 0 &&
-                    mirror.value(QStringLiteral("integrity"))
-                            .toString()
-                            .compare(QStringLiteral("ok"),
-                                     Qt::CaseInsensitive) == 0 &&
-                    mirror.value(QStringLiteral("lastSync")).toVariant()
-                            .toLongLong() > 0 &&
-                    mirror.value(QStringLiteral("cloneAvailable")).toBool() &&
-                    mirror.value(QStringLiteral("endpointHealthy")).toBool() &&
-                    mirror.value(QStringLiteral("endpointFresh")).toBool()) {
+                    forkmesh::control::mirrorCatalogEntryIsHealthy(mirror)) {
                     // The relay reports endpoint health for this exact node.
                     // Do not require its URL spelling to match the hostname
                     // saved before installation: Cloudflare can normalize the

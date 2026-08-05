@@ -137,6 +137,16 @@ starts syncing the ForkMesh project. The main areas are:
 - **Settings** — account, node, agent, notification, network, storage, and
   backup controls.
 
+Under **Network → Hosts → Create a Vultr mirror**, the desired healthy mirror
+count can be set before opting in to automatic fleet sizing. While enabled, the
+client checks the public ForkMesh catalog every 30 seconds. It creates one
+managed Vultr mirror at a time until the target is healthy, and permanently
+destroys one excess managed instance at a time when the target is lowered.
+Only Vultr instances created and tracked by this client participate; manually
+added hosts and other providers are never destroyed by this setting. A mirror
+counts as healthy only when its public catalog row is online, fresh,
+integrity-approved, clone eligible, and serving healthy endpoint traffic.
+
 To add an existing project, choose **Repos → Add local repo** and select the
 working-tree folder. To contribute to someone else's repository, find it under
 **Repos**, choose **Fork**, and select a parent folder for the new working copy.

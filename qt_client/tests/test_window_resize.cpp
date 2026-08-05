@@ -1695,6 +1695,20 @@ int main(int argc, char *argv[])
               hostsPageLayout->indexOf(hostsProvisioningRow) == 1,
           QStringLiteral(
               "Hosts puts the saved-host fleet first and provisioning cards next"));
+    QCheckBox *healthyFleetEnabled = window.findChild<QCheckBox *>(
+        QStringLiteral("healthyMirrorFleetEnabled"));
+    QSpinBox *desiredHealthyMirrors = window.findChild<QSpinBox *>(
+        QStringLiteral("desiredHealthyMirrorCount"));
+    QLabel *healthyFleetStatus = window.findChild<QLabel *>(
+        QStringLiteral("healthyMirrorFleetStatus"));
+    check(healthyFleetEnabled && desiredHealthyMirrors && healthyFleetStatus &&
+              !healthyFleetEnabled->isChecked() &&
+              desiredHealthyMirrors->isEnabled() &&
+              desiredHealthyMirrors->value() == 0 &&
+              healthyFleetEnabled->toolTip().contains(
+                  QStringLiteral("permanently destroys")),
+          QStringLiteral(
+              "Hosts exposes an explicit opt-in desired healthy mirror count with destructive scaling explained"));
     const QList<QPushButton *> inlineHelpButtons =
         window.findChildren<QPushButton *>(QStringLiteral("inlineHelpButton"));
     QSet<QString> inlineHelpNames;
