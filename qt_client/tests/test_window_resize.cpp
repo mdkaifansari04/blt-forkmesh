@@ -2,6 +2,7 @@
 #include "../src/MainWindowInternal.h"
 #include "../src/BackgroundActivity.h"
 #include "../src/ClaudeTranscriptView.h"
+#include "../src/LogTimelineChart.h"
 #include "../src/PlatformLogFilter.h"
 #include "ForkMeshVersion.h"
 
@@ -415,6 +416,22 @@ void stopChildProcesses(QObject &root)
 
 void runLogTimelineChecks(MainWindow &window)
 {
+    {
+        LogTimelineChart retentionChart;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        retentionChart.setRange(now - 1000, now + 1000);
+        retentionChart.setEntries({{now, QStringLiteral("NET")},
+                                   {now, QStringLiteral("GIT")},
+                                   {now, QStringLiteral("NET")}});
+        retentionChart.removeEntry(now, QStringLiteral("NET"));
+        check(retentionChart.visibleEntryCount() == 2,
+              QStringLiteral("timeline retention removes only one matching "
+                             "evicted log entry"));
+        retentionChart.removeEntry(now, QStringLiteral("MISSING"));
+        check(retentionChart.visibleEntryCount() == 2,
+              QStringLiteral("timeline retention ignores an entry outside its "
+                             "loaded slice"));
+    }
     window.testResetNetworkLog();
     window.testLogSystem(QStringLiteral("Timeline session started"));
     window.testLogSystem(QStringLiteral("Pushed 2 commits to origin/main"));

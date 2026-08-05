@@ -7,6 +7,7 @@
 
 #include "ControlNode.h"
 #include "ForkMeshVersion.h"
+#include "LogTimelineChart.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "NodeDiagnostics.h"
@@ -4414,18 +4415,19 @@ void MainWindow::logSystem(const QString &text)
     NodeDiagnostics::hostCollector().noteLogLine(plain);
     m_networkLog.append(line);
     bool chipsChanged = false;
-    bool logHistoryTrimmed = false;
+    QStringList droppedTimelineLines;
     while (m_networkLog.size() > kNetworkLogLimit) {
         // The counts describe the buffered history, so a line ageing out of it
         // gives its category's chip back a tally point (and retires the chip
         // entirely once it was the last line of its kind).
-        const QString dropped = logBadgeFor(m_networkLog.first());
-        if (--m_logFilterCounts[dropped] <= 0) {
-            m_logFilterCounts.remove(dropped);
+        const QString droppedLine = m_networkLog.first();
+        const QString droppedBadge = logBadgeFor(droppedLine);
+        if (--m_logFilterCounts[droppedBadge] <= 0) {
+            m_logFilterCounts.remove(droppedBadge);
             chipsChanged = true;
         }
+        droppedTimelineLines.append(droppedLine);
         m_networkLog.removeFirst();
-        logHistoryTrimmed = true;
         // m_logRenderFrom indexes into m_networkLog; trimming the front shifts
         // every index down by one, so keep it pointed at the same line.
         if (m_logRenderFrom > 0)
@@ -4449,10 +4451,22 @@ void MainWindow::logSystem(const QString &text)
         else
             appendNetworkLogLine(line);
     }
-    if (logHistoryTrimmed)
-        refreshLogTimelineChart();
-    else
-        appendLogTimelineEntry(line);
+    // The retained log is normally at its 20,000-line cap, so every append also
+    // evicts one old line. Rebuilding and reclassifying the full visible slice
+    // here made routine logging take seconds, and logging the resulting stall
+    // recursively triggered another rebuild. Remove only the evicted entries,
+    // then append the new one; a full rebuild remains reserved for range/filter
+    // changes where it is actually needed.
+    if (m_logTimelineChart) {
+        for (const QString &droppedLine : std::as_const(droppedTimelineLines)) {
+            const QDateTime timestamp = QDateTime::fromString(
+                droppedLine.left(19), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+            if (timestamp.isValid())
+                m_logTimelineChart->removeEntry(timestamp.toMSecsSinceEpoch(),
+                                                logBadgeFor(droppedLine));
+        }
+    }
+    appendLogTimelineEntry(line);
 
     // Mirror the newest event onto the always-on footer log line so the latest
     // activity is visible at the bottom of the app even when the Log tab is closed.
