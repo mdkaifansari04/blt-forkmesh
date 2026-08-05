@@ -1367,13 +1367,21 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
 
 QString diffStickyLabelHtml(const DiffFileEntry &f)
 {
+    QString icon = QStringLiteral("file-diff");
     QString word = QStringLiteral("Modified");
-    if (f.status == QLatin1String("added"))
+    QString tint = QStringLiteral("#d29922");
+    if (f.status == QLatin1String("added")) {
+        icon = QStringLiteral("diff");
         word = QStringLiteral("Added");
-    else if (f.status == QLatin1String("deleted"))
+        tint = QStringLiteral("#3fb950");
+    } else if (f.status == QLatin1String("deleted")) {
+        icon = QStringLiteral("trash");
         word = QStringLiteral("Removed");
-    else if (f.status == QLatin1String("renamed"))
+        tint = QStringLiteral("#f85149");
+    } else if (f.status == QLatin1String("renamed")) {
         word = QStringLiteral("Renamed");
+        tint = QStringLiteral("#58a6ff");
+    }
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
     const QString muted = QStringLiteral("#8b949e");
     const QString fg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
@@ -1398,9 +1406,12 @@ QString diffStickyLabelHtml(const DiffFileEntry &f)
                                 "\xE2\x88\x92%2</span>")
                   .arg(QString::number(f.adds), QString::number(f.dels));
 
+    const QString badge = octiconMarkup(icon, 14, QColor(tint));
     return QStringLiteral("<span title='%1' style='font-family:monospace;"
-                          "font-size:12px'>%2 &nbsp;%3</span>")
-        .arg(word, pathHtml, statHtml);
+                          "font-size:12px'><span style='color:%2'>%3</span> "
+                          "<span style='color:%2;font-weight:700'>%1</span> "
+                          "&nbsp;%4 &nbsp;%5</span>")
+        .arg(word, tint, badge, pathHtml, statHtml);
 }
 
 QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
@@ -1960,9 +1971,10 @@ QString diffStyleSheet(int fontPt)
     const QString gutterBg = dark ? "#0d1117" : "#f6f8fa";
     const QString fg = dark ? "#e6edf3" : "#1f2328";
     return QStringLiteral(
-               ".fileblock { margin:0; }"
-               ".fileheader { background:%1; padding:9px 12px; font-family:"
-               "monospace; font-size:13px; border:1px solid %7; }"
+               ".fileblock { margin:0 0 14px 0; }"
+               ".fileheader { background:%1; padding:10px 14px; font-family:"
+               "monospace; font-size:13px; border:1px solid %7; "
+               "border-radius:6px 6px 0 0; }"
                // Status octicon badge (image) sat next to the path.
                ".stbadge { margin-right:8px; vertical-align:middle; }"
                ".fpath { vertical-align:middle; }"
@@ -1970,7 +1982,7 @@ QString diffStyleSheet(int fontPt)
                ".fname { font-weight:700; color:%8; font-size:14px; }"
                ".fstat { color:%2; font-size:12px; }"
                // Second header line: status word + change total (adhoc #223).
-               ".fmetaline { font-size:11px; }"
+               ".fmetaline { font-size:11px; line-height:1.35; }"
                ".fkind { font-weight:700; letter-spacing:1px; color:%2; }"
                ".fkind.added { color:#3fb950; }"
                ".fkind.deleted { color:#f85149; }"

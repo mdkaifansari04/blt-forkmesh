@@ -356,6 +356,13 @@ public:
                       QObject *parent)
         : QObject(parent), m_diff(diff), m_list(list), m_anchorRole(anchorRole)
     {
+        // QListWidget normally handles these keys itself, but keeping the
+        // behavior here makes file navigation consistent even when a themed
+        // delegate or a parent event filter consumes the view's default key
+        // handling. The list remains the keyboard home after a mouse click.
+        m_list->setFocusPolicy(Qt::StrongFocus);
+        m_list->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_list->installEventFilter(this);
         m_sticky = new QLabel(m_diff->viewport());
         m_sticky->setObjectName(QStringLiteral("diffStickyHeader"));
         m_sticky->setTextFormat(Qt::RichText);
@@ -391,11 +398,39 @@ public:
     void rebuild(const QList<DiffFileEntry> &files, int fontPt)
     {
         m_files = files;
+        m_filesByAnchor.clear();
+        for (const DiffFileEntry &file : m_files)
+            m_filesByAnchor.insert(file.anchor, file);
         m_sticky->setStyleSheet(diffStickyStyleSheet(fontPt));
         rebuildSpans();
     }
 
 private:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == m_list && event->type() == QEvent::KeyPress) {
+            const auto *key = static_cast<QKeyEvent *>(event);
+            if ((key->key() == Qt::Key_Up || key->key() == Qt::Key_Down) &&
+                !(key->modifiers() &
+                  (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+                const int delta = key->key() == Qt::Key_Up ? -1 : 1;
+                int row = m_list->currentRow();
+                if (row < 0)
+                    row = delta > 0 ? -1 : m_list->count();
+                do {
+                    row += delta;
+                } while (row >= 0 && row < m_list->count() &&
+                         m_list->item(row)->isHidden());
+                if (row >= 0 && row < m_list->count()) {
+                    m_list->setCurrentRow(row);
+                    m_list->scrollToItem(m_list->item(row));
+                }
+                return true;
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
     struct Span {
         int pos;
         QString path;
@@ -442,7 +477,10 @@ private:
         }
         if (syncSelection)
             selectByAnchor(cur->anchor);
-        m_sticky->setText(diffStickyPathHtml(cur->path));
+        const auto file = m_filesByAnchor.constFind(cur->anchor);
+        m_sticky->setText(file == m_filesByAnchor.constEnd()
+                              ? diffStickyPathHtml(cur->path)
+                              : diffStickyLabelHtml(file.value()));
         m_sticky->setGeometry(0, 0, m_diff->viewport()->width(),
                               m_sticky->sizeHint().height());
         m_sticky->show();
@@ -468,6 +506,7 @@ private:
     int m_anchorRole = Qt::UserRole;
     bool m_ignoreScroll = false;
     QList<DiffFileEntry> m_files;
+    QHash<QString, DiffFileEntry> m_filesByAnchor;
     QList<Span> m_spans;
 };
 // Models offered for inline commit-message / X-post generation, with per-million
