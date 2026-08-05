@@ -2226,6 +2226,13 @@ void MainWindow::onDiffStreamFinished(QTextEdit *view)
         if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
             pullDiffSearchRecompute();
         updatePullDiffScrollState();
+    } else if (view == m_scmDiff) {
+        m_scmFileTops.clear(); // file positions moved as the rest landed
+        const int index = m_scmSectionKeys.indexOf(m_scmPendingScrollKey);
+        if (index >= 0 && pinScmDiffSectionToTop(index))
+            m_scmPendingScrollKey.clear();
+        else
+            updateScmDiffScrollState();
     } else if (view == m_branchDiffView) {
         m_branchFileTops.clear(); // file positions moved as the rest landed
         m_branchStickyFile.clear();
