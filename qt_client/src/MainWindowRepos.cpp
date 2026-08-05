@@ -7555,6 +7555,7 @@ void MainWindow::onProfileNameChanged(const QString &name)
     m_accountTier = QStringLiteral("free");
     m_accountSolanaVerified = false;
     m_isAdmin = false;
+    updateAdminCrownBadge();
     if (m_adminPollTimer)
         m_adminPollTimer->stop();
     QSettings().remove(kAuthedAccountSetting);
@@ -7601,6 +7602,7 @@ void MainWindow::logout()
     m_accountTier = QStringLiteral("free");
     m_accountSolanaVerified = false;
     m_isAdmin = false;
+    updateAdminCrownBadge();
     m_seenPendingUsers.clear();
     m_accountName.clear();
     m_accountEmail.clear();
