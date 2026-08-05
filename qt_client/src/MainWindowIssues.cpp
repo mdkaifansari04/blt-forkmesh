@@ -3922,6 +3922,7 @@ void MainWindow::updateIssueActionState()
         m_issueListNewButton->setEnabled(writable || issuesRepoIndex() >= 0);
     if (m_issueSyncButton)
         m_issueSyncButton->setEnabled(writable);
+    refreshPendingInboxBadges();
     if (m_issueTitleEditButton)
         m_issueTitleEditButton->setEnabled(writable && haveIssue);
     if (m_issueTitleEditor)
@@ -8136,7 +8137,7 @@ void MainWindow::syncIssuesInbox()
     const int idx = issuesRepoIndex();
     if (idx < 0)
         return;
-    drainIssuesInboxFor(m_repositories.at(idx), /*interactive=*/true);
+    showPendingInbox(m_repositories.at(idx), QStringLiteral("issues"));
 }
 
 void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,

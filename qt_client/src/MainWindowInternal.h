@@ -7764,7 +7764,7 @@ private:
                        .arg(m_websiteStatuses.isEmpty()
                                 ? QString()
                                 : QStringLiteral(" and %1 website status results")
-                                      .arg(m_websiteStatuses.size()));
+                                      .arg(m_websiteStatuses.size())));
     }
 
     Presentation m_presentation = Compact;

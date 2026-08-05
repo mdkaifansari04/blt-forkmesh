@@ -2407,6 +2407,17 @@ int main(int argc, char *argv[])
             window.testRemoveAgentSession(id);
     }
 
+    // The source-of-truth inbox count is one response shared by all three
+    // collaboration tabs. Each action must surface its own value before the
+    // user opens the review list.
+    window.testSetPendingInboxCounts(3, 2, 4);
+    check(window.testIssueInboxBadgeCount() == 3 &&
+              window.testPullInboxBadgeCount() == 2 &&
+              window.testDiscussionInboxButtonText().contains(
+                  QStringLiteral("4")),
+          QStringLiteral("issue, PR, and discussion inbox actions show their "
+                         "pending submission counts"));
+
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
     check(window.findChild<QLabel *>(
