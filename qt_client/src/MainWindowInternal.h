@@ -4994,17 +4994,28 @@ inline QString codexCommandSetting()
     return command;
 }
 
-// Directory holding client/CMakeLists.txt to update from: the build-time
-// checkout when it still exists, otherwise a persistent clone managed by the
-// app in its data directory (used when the binary was installed without a
-// checkout, e.g. via install.sh).
-inline QString updateClientDir()
+// App-managed source used only to build the running copy. This is the same
+// installer-owned location used by cloudflare_worker/public/install.sh.
+inline QString runningClientDir()
+{
+#ifdef Q_OS_WIN
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           "/src/qt_client";
+#else
+    return QDir::homePath() + QStringLiteral("/.local/share/forkmesh/src/qt_client");
+#endif
+}
+
+// The editable source tree this build came from. Rebuild-only developer actions
+// intentionally use it so local edits can be compiled and previewed. Update
+// actions must never use this path: a failed fast-forward can replace its source
+// checkout, which would destroy the user's uncommitted work.
+inline QString workingClientDir()
 {
     const QString baked = QStringLiteral(FORKMESH_SOURCE_DIR);
     if (!baked.isEmpty() && QDir(baked).exists("CMakeLists.txt"))
         return baked;
-    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-           "/src/qt_client";
+    return runningClientDir();
 }
 
 inline bool gitOutput(const QString &clientDir, const QStringList &arguments, QString *out)
@@ -5072,11 +5083,36 @@ inline QString homeForUser(const QString &user)
     return QDir::homePath();
 }
 
-// The managed source checkout directory (holding qt_client/CMakeLists.txt) under
-// a specific home directory.
-inline QString clientDirUnderHome(const QString &home)
+// The app-managed running source checkout (holding qt_client/CMakeLists.txt)
+// under a specific home directory. Used when a root process updates for the
+// non-root user who invoked sudo.
+inline QString runningClientDirUnderHome(const QString &home)
 {
+#ifdef Q_OS_WIN
+    Q_UNUSED(home);
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           QStringLiteral("/src/qt_client");
+#else
     return home + QStringLiteral("/.local/share/forkmesh/src/qt_client");
+#endif
+}
+
+// Stable installed executable for the running copy. Source builds launched
+// directly from a working tree migrate here on their first Update & restart;
+// rebuild-only actions continue to relaunch the developer's existing binary.
+inline QString runningClientExecutableUnderHome(const QString &home)
+{
+#ifdef Q_OS_WIN
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           QStringLiteral("/bin/forkmesh.exe");
+#else
+    return home + QStringLiteral("/.local/bin/forkmesh");
+#endif
+}
+
+inline QString runningClientExecutable()
+{
+    return runningClientExecutableUnderHome(QDir::homePath());
 }
 
 // Single-quote a string for safe use inside an `sh -c` command line.

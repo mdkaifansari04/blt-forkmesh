@@ -1028,17 +1028,15 @@ AgentProviderGlyph agentProviderGlyph(const QString &provider)
     return {QString(), QColor(), QString()};
 }
 
-// Keep identity and state as two separate marks at the far-left of every Agents
-// row. The circular badge answers which provider/person owns the session; the
-// glyph immediately to its right answers what state it is in. Running identity
-// circles carry a rotating activity arc, so motion says "working" without
-// making the status glyph itself ambiguous.
+// Keep identity and state as two separate, full-size marks at the far-left of
+// every Agents row. The identity artwork is shown directly, without a badge or
+// ring around it; the glyph immediately to its right communicates its state.
 constexpr int kAgentIdentityCirclePx = 20;
-constexpr int kAgentStatusGlyphPx = 14;
+constexpr int kAgentStatusGlyphPx = 20;
 constexpr int kAgentLeadGlyphGapPx = 4;
 constexpr int kAgentLeadGlyphsPx =
     kAgentIdentityCirclePx + kAgentLeadGlyphGapPx + kAgentStatusGlyphPx;
-constexpr int kAgentIdentityArtworkPx = 14;
+constexpr int kAgentIdentityArtworkPx = kAgentIdentityCirclePx;
 
 QPixmap agentLeadGlyphPixmap(const AgentSession &session,
                              const QPixmap &pullAuthorAvatar = QPixmap(),
@@ -1050,32 +1048,13 @@ QPixmap agentLeadGlyphPixmap(const AgentSession &session,
             kAgentIdentityArtworkPx, kAgentIdentityArtworkPx);
     if (artwork.isNull())
         return QPixmap();
-    QPixmap out = crispIconPixmap(kAgentLeadGlyphsPx, kAgentLeadGlyphsPx,
+    QPixmap out = crispIconPixmap(kAgentLeadGlyphsPx, kAgentIdentityCirclePx,
                                   iconDevicePixelRatio());
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing, true);
-    const int inset = (kAgentIdentityCirclePx - kAgentIdentityArtworkPx) / 2;
-    p.drawPixmap(QRect(inset, inset, kAgentIdentityArtworkPx,
+    p.drawPixmap(QRect(0, 0, kAgentIdentityArtworkPx,
                        kAgentIdentityArtworkPx), artwork);
     const bool running = !session.merged && session.status == AgentStatus::Running;
-    QPen identityRing(QColor(currentThemeIsDark() ? "#484f58" : "#afb8c1"),
-                      1.2);
-    identityRing.setJoinStyle(Qt::RoundJoin);
-    p.setPen(identityRing);
-    p.setBrush(Qt::NoBrush);
-    const QRectF circle(1.0, 1.0, kAgentIdentityCirclePx - 2.0,
-                        kAgentIdentityCirclePx - 2.0);
-    p.drawEllipse(circle);
-    if (running) {
-        // Two opposed arcs produce an unmistakable rotating circle without
-        // replacing the provider artwork or conflating it with run status.
-        QPen activityPen(agentStatusIconColor(session), 2.1,
-                         Qt::SolidLine, Qt::RoundCap);
-        p.setPen(activityPen);
-        const int start = qRound(-activityAngle * 16.0);
-        p.drawArc(circle, start, -72 * 16);
-        p.drawArc(circle, start + 180 * 16, -72 * 16);
-    }
 
     const QString statusIcon = agentStatusCellIconName(session);
     if (!statusIcon.isEmpty()) {
@@ -12005,9 +11984,9 @@ void MainWindow::hideAgentMetaPopupIfPointerAway()
         m_agentMetaPopup->hide();
 }
 
-// Animate every running row's provider circle and its separate blue sync glyph.
-// The timer only ticks while a session is running, so terminal rows remain
-// static and the motion is a truthful liveness signal rather than decoration.
+// Animate every running row's full-size status glyph. The timer only ticks while
+// a session is running, so terminal rows remain static and the motion is a
+// truthful liveness signal rather than decoration.
 void MainWindow::animateRunningAgentIcons()
 {
     if (!m_agentTable)
