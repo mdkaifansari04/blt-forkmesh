@@ -2217,10 +2217,10 @@ QWidget *MainWindow::buildNotificationsSection()
     clearButton->setCursor(Qt::PointingHandCursor);
     setOcticon(clearButton, "trash", 16);
     clearButton->setToolTip(QStringLiteral(
-        "Dismiss all past pings and mark website pings read"));
+        "Delete all past desktop and website pings"));
     connect(clearButton, &QPushButton::clicked, this, [this] {
         m_notifications.clear();
-        markWebAlertsRead();
+        clearWebAlerts();
         updateNotificationButton();
         refreshNotificationsTable();
     });
@@ -2754,9 +2754,14 @@ void MainWindow::refreshWebAlerts(bool force)
     });
 }
 
-void MainWindow::markWebAlertsRead()
+void MainWindow::clearWebAlerts()
 {
-    if (!m_networkAccess || m_webAlerts.isEmpty() || m_webAlertsUnread <= 0)
+    // Clear means remove every website ping, including operational alerts —
+    // merely marking them read made system failures reappear in the Pings
+    // table after a refresh.
+    m_webAlerts = QJsonArray();
+    m_webAlertsUnread = 0;
+    if (!m_networkAccess)
         return;
     const QString node = accountOwner().trimmed().toLower();
     if (node.isEmpty())
@@ -2768,35 +2773,35 @@ void MainWindow::markWebAlertsRead()
     request.setTransferTimeout(15000);
     request.setRawHeader(QByteArrayLiteral("Accept"),
                          QByteArrayLiteral("application/json"));
-    // A distinct proof from the list read, so a signed GET is never replayable
-    // as this mutation.
-    if (!authenticateOrgTaskRequest(url, request, kAccountAlertReadProof,
-                                    QString()))
+    // A bulk deletion has its own signed proof; a captured row-delete proof
+    // cannot be replayed to empty the whole inbox.
+    if (!authenticateOrgTaskRequest(url, request, kAccountAlertClearProof,
+                                    QStringLiteral("all"))) {
+        flashMessage(QStringLiteral(
+                         "Couldn't clear website pings: sign in or unlock "
+                         "this account's key."),
+                     true);
+        m_webAlertsFetchedAtMs = 0;
         return;
+    }
     const QJsonObject body{{QStringLiteral("node"), node},
                            {QStringLiteral("all"), true}};
-    QNetworkReply *reply = m_networkAccess->post(
-        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    QNetworkReply *reply = m_networkAccess->sendCustomRequest(
+        request, QByteArrayLiteral("DELETE"),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         reply->deleteLater();
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError || status < 200 ||
-            status >= 300)
+            status >= 300) {
+            flashMessage(QStringLiteral("Couldn't clear website pings (%1).")
+                             .arg(status),
+                         true);
+            // Surface the still-present remote rows on the next refresh.
+            m_webAlertsFetchedAtMs = 0;
             return;
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        for (int index = 0; index < m_webAlerts.size(); ++index) {
-            QJsonObject alert = m_webAlerts.at(index).toObject();
-            if (alert.value(QStringLiteral("readAt")).toDouble() <= 0) {
-                alert.insert(QStringLiteral("readAt"), double(now));
-                m_webAlerts.replace(index, alert);
-            }
         }
-        m_webAlertsUnread = 0;
-        updateNotificationButton();
-        if (m_notificationsTable && m_sectionStack &&
-            m_sectionStack->currentIndex() == 3)
-            refreshNotificationsTable();
     });
 }
 

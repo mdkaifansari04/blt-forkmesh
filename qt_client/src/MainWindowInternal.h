@@ -3794,6 +3794,11 @@ const QString kAccountAlertReadProof =
 // stay byte-identical to ACCOUNT_ALERT_DELETE_PROOF in entry.py.
 const QString kAccountAlertDeleteProof =
     QStringLiteral("forkmesh-account-alert-delete-v1");
+// Clearing all website pings is broader than deleting one row, so it requires
+// its own signed proof. Must stay byte-identical to ACCOUNT_ALERT_CLEAR_PROOF
+// in entry.py.
+const QString kAccountAlertClearProof =
+    QStringLiteral("forkmesh-account-alert-clear-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.

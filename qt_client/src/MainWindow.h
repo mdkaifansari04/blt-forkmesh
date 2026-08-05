@@ -3255,8 +3255,8 @@ private:
     // an alert raised on the site is readable — and openable — in the desktop
     // (adhoc #59). Throttled unless `force`, because it rides the heartbeat.
     void refreshWebAlerts(bool force = false);
-    // Mark every mirrored website alert read, on the site and here.
-    void markWebAlertsRead();
+    // Remove every mirrored website ping from the site and this page.
+    void clearWebAlerts();
     // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
     void updateNavRebuildButton();
     // Show the top-bar "Log in / Sign up" pill only while this machine has no

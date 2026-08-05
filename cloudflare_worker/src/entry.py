@@ -3691,29 +3691,18 @@ async def _record_status_monitor_transitions(
                 STATUS_ALERT_CONTINUAL_INTERVAL_MS
         )
         should_ping = should_ping or continual_ping
-        if system_id == "flagship_repository":
-            if (
-                not is_up
-                and int(now) - int(outage_started_at)
-                < STATUS_DEPLOY_GRACE_MS
-            ):
-                # Wait for a sustained failure. This also protects the handoff
-                # from the retiring Worker version, which cannot see the new
-                # deployment timestamp yet.
+        if system_id == "flagship_repository" and is_up and row and not previous_up:
+            # A recovery is only useful on a channel that announced the
+            # outage. Deployment handoffs are already made green before they
+            # reach this transition recorder, so do not apply a second
+            # five-minute grace here: it hid genuine short repository outages
+            # and their Pings.
+            if prior_notified != "down":
+                notified = "up"
                 should_notify = False
+            if prior_pinged != "down":
+                pinged = "up"
                 should_ping = False
-            elif is_up and row and not previous_up:
-                # A probe that recovered inside the grace window never paged,
-                # so it must not send a confusing recovery-only alert. Each
-                # channel answers that for itself: mail being off is not a
-                # reason to swallow the recovery ping for an outage that was
-                # pinged, and vice versa.
-                if prior_notified != "down":
-                    notified = "up"
-                    should_notify = False
-                if prior_pinged != "down":
-                    pinged = "up"
-                    should_ping = False
         if should_notify or should_ping:
             alert = {
                 "system": system_id, "label": label, "state": state,
@@ -12900,6 +12889,7 @@ async def _genie_credential_signed_session(env, request):
 ACCOUNT_ALERT_LIST_PROOF = "forkmesh-account-alert-list-v1"
 ACCOUNT_ALERT_READ_PROOF = "forkmesh-account-alert-read-v1"
 ACCOUNT_ALERT_DELETE_PROOF = "forkmesh-account-alert-delete-v1"
+ACCOUNT_ALERT_CLEAR_PROOF = "forkmesh-account-alert-clear-v1"
 ACCOUNT_ALERT_COLLECTION_RE = re.compile(r"^/api/notifications/?$")
 
 
@@ -12907,11 +12897,12 @@ async def _account_alert_signed_session(env, request, resource=""):
     """Resolve the account behind a key-signed alert-inbox request.
 
     Deliberately narrow: reading the account's own notifications, marking them
-    read and deleting one of them — what the desktop Pings page does. Each
-    verb has its own proof string (and the delete proof additionally binds the
-    notification id), so a signed GET can never be replayed as a mutation and a
-    signed delete can never be replayed against a different row. Returns the
-    account name, or "" when nothing valid signed the request.
+    read, deleting one, or clearing the inbox — what the desktop Pings page
+    does. Each operation has its own proof string (and the row-delete proof
+    additionally binds the notification id), so a signed GET can never be
+    replayed as a mutation and a signed delete can never be replayed against a
+    different row. Returns the account name, or "" when nothing valid signed
+    the request.
     """
     method = method_name(request)
     if method not in ("GET", "POST", "DELETE"):
@@ -12930,13 +12921,19 @@ async def _account_alert_signed_session(env, request, resource=""):
     elif method == "POST":
         canonical_prefix = ACCOUNT_ALERT_READ_PROOF + "\n" + node
     else:
-        # The row being deleted is part of what was signed, so a captured
-        # delete cannot be replayed against a different notification.
         item_id = clean_string(resource or "", 160).lower()
-        if not item_id:
+        if item_id == "all":
+            # Clearing is intentionally a separate capability from deleting a
+            # row: a captured single-row delete must never empty the inbox.
+            canonical_prefix = (
+                ACCOUNT_ALERT_CLEAR_PROOF + "\n" + node + "\nall")
+        elif item_id:
+            # The row being deleted is part of what was signed, so a captured
+            # delete cannot be replayed against a different notification.
+            canonical_prefix = (
+                ACCOUNT_ALERT_DELETE_PROOF + "\n" + node + "\n" + item_id)
+        else:
             return ""
-        canonical_prefix = (
-            ACCOUNT_ALERT_DELETE_PROOF + "\n" + node + "\n" + item_id)
     canonical = (canonical_prefix + "\n" + str(ts)).encode()
     pubkey = await _owner_pubkey(env, node)
     if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
@@ -33352,26 +33349,33 @@ async def notifications_handler(env, request):
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+        clear_all = data.get("all") is True
         item_id = clean_string(data.get("id", ""), 160).lower()
-        if not valid_node_name(node) or not re.fullmatch(
-                r"[a-f0-9]{64}", item_id):
+        if not valid_node_name(node) or (
+                not clear_all and not re.fullmatch(r"[a-f0-9]{64}", item_id)):
             return json_response({"error": "bad_request"}, status=400)
         # A notification can only be removed from the authenticated owner's
         # own encrypted inbox. The opaque id is still scoped by recipient_bi,
         # so an id copied from another account cannot delete anything. The
-        # desktop, which holds keys and no session token, signs the id itself
-        # with a proof distinct from the list/read ones (adhoc #77).
+        # desktop, which holds keys and no session token, signs either the id
+        # or the explicit all-inbox operation with distinct proofs.
         if await _alert_inbox_account_name(
-                env, request, data, resource=item_id) != node:
+                env, request, data,
+                resource=("all" if clear_all else item_id)) != node:
             return json_response({"error": "unauthorized"}, status=401)
         recipient_bi = await blind_index(env, node)
-        await d1_run(
-            env,
-            "DELETE FROM notifications "
-            "WHERE recipient_bi=? AND dedupe_bi=?",
-            recipient_bi,
-            item_id,
-        )
+        if clear_all:
+            await d1_run(
+                env, "DELETE FROM notifications WHERE recipient_bi=?",
+                recipient_bi)
+        else:
+            await d1_run(
+                env,
+                "DELETE FROM notifications "
+                "WHERE recipient_bi=? AND dedupe_bi=?",
+                recipient_bi,
+                item_id,
+            )
         return json_response({"ok": True})
 
     return json_response(
