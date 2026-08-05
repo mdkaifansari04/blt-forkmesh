@@ -815,15 +815,24 @@ void ActionRunner::onProcessFinished(int exitCode)
 {
     m_stepTimer->stop();
     m_systemdUnit.clear();
-    // Drain any tail output before tearing the process down.
-    if (m_process) {
-        const QByteArray tail = m_process->readAllStandardOutput();
-        if (!tail.isEmpty())
-            emitProcessOutput(tail);
-        emitSuppressedProcessOutputTail();
-        m_process->deleteLater();
-        m_process = nullptr;
+    // Retire the exact child before any callback can spin a nested event loop.
+    // QPointer is cleared by QObject::~QObject(), which runs *after* the
+    // QProcess destructor. QProcess::~QProcess() may call waitForFinished() and
+    // emit one last readyReadStandardOutput while the pointer still appears
+    // valid, so the guarded launch callbacks alone do not close this window.
+    // Disconnect first, clear the mutable active-process identity, drain its
+    // already-buffered tail, and schedule deletion before emitting log/UI work.
+    const QPointer<QProcess> finishedProcess(m_process);
+    m_process = nullptr;
+    QByteArray tail;
+    if (finishedProcess) {
+        QObject::disconnect(finishedProcess.data(), nullptr, this, nullptr);
+        tail = finishedProcess->readAllStandardOutput();
+        finishedProcess->deleteLater();
     }
+    if (!tail.isEmpty())
+        emitProcessOutput(tail);
+    emitSuppressedProcessOutputTail();
 
     // A user-requested stop overrides whatever exit code the killed process
     // reported; record the run as Cancelled rather than Failed.
