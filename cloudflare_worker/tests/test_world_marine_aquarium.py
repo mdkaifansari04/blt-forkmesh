@@ -32,8 +32,8 @@ def test_office_lobby_has_a_bioluminescent_left_wall_marine_aquarium():
         "forkmesh-office-aquarium-light",
     ):
         assert name in aquarium
-    assert "function createOfficeMarineAquarium(THREE, animated, maxFish = 24)" in SCENE
-    assert "compactRenderer ? 12 : 24" in SCENE
+    assert "function createOfficeMarineAquarium(THREE, animated)" in SCENE
+    assert "createInstancedUserFish(THREE, population)" in aquarium
 
 
 def test_marine_aquarium_stays_ambient_and_reuses_the_scene_animation_queue():
@@ -49,9 +49,9 @@ def test_marine_aquarium_stays_ambient_and_reuses_the_scene_animation_queue():
     assert "anemone.rotation.z" in aquarium
 
 
-def test_marine_fish_have_smooth_species_detail_and_individual_curved_paths():
+def test_marine_fish_have_compact_species_detail_and_individual_curved_paths():
     aquarium = _aquarium_block()
-    assert "new THREE.LatheGeometry(profile, 24)" in aquarium
+    assert "new THREE.LatheGeometry(profile, 12)" in aquarium
     assert "forkmesh-office-aquarium-fish-eye" in aquarium
     assert "forkmesh-office-aquarium-fish-dorsal-fin" in aquarium
     assert "forkmesh-office-aquarium-fish-pectoral-fin" in aquarium
@@ -106,6 +106,21 @@ def test_cinematic_reef_contains_layered_habitat_families():
         "forkmesh-office-aquarium-seagrass",
     ):
         assert name in aquarium
+
+
+def test_cinematic_reef_uses_compact_habitat_geometry():
+    aquarium = _aquarium_block()
+    # The reef is viewed as a whole across the lobby, so the habitat shapes
+    # keep their silhouettes with deliberately modest segment counts.
+    for geometry in (
+        "new THREE.IcosahedronGeometry(1, 0)",
+        "new THREE.SphereGeometry(0.145 * scale, 8, 6)",
+        "new THREE.SphereGeometry(scale, 12, 8)",
+        "new THREE.CapsuleGeometry(0.12 * scale, length, 4, 6)",
+        "new THREE.CapsuleGeometry(0.038 * scale, length, 4, 5)",
+    ):
+        assert geometry in aquarium
+    assert "for (let index = 0; index < 16; index += 1)" in aquarium
 
 
 def test_cinematic_reef_uses_curved_motion_and_initialized_atmosphere():
@@ -227,15 +242,14 @@ def test_aquarium_fish_approach_a_visitor_gently_without_a_second_loop():
     assert "setVisitorProximity(" in SCENE
 
 
-def test_tap_reverses_routes_continuously_and_one_close_fish_puffs_its_mouth():
+def test_tap_reverses_routes_continuously_and_one_focus_fish_swims_closer():
     aquarium = _aquarium_block()
     assert "function tapGlass(time = performance.now())" in aquarium
     assert "state.direction *= -1" in aquarium
     assert "progress - now * state.speed * state.direction" in aquarium
     assert "AQUARIUM_GLASS_TAP_REACTION_MS = 2_600" in aquarium
-    assert "const mouthPuff =" in aquarium
-    assert "index === visitorFocusIndex" in aquarium
-    assert "state.mouth.scale.setScalar(1 + mouthPuff)" in aquarium
+    assert "const focus = index === visitorFocusIndex" in aquarium
+    assert "approachBlend * (focus ? 0.86 : 0.62)" in aquarium
     assert "tapGlass," in aquarium
 
 
@@ -250,22 +264,23 @@ def test_aquarium_background_and_light_are_real_scene_toggles():
     assert "topLight.visible = aquariumLightEnabled" in aquarium
 
 
-def test_public_users_seed_a_bounded_activity_first_school():
+def test_public_users_seed_an_activity_first_school_for_every_member():
     aquarium = _aquarium_block()
     assert "function aquariumUserPalette(name)" in aquarium
     assert '"outfit:" + String(name || "guest")' in aquarium
     assert "OUTFIT_COLORWAYS[rng.int(OUTFIT_COLORWAYS.length)]" in aquarium
     assert "function setUsers(users = [])" in aquarium
-    assert ".slice(0, fishLimit)" in aquarium
     assert "visibleUsers.forEach((user, index) =>" in aquarium
     assert "group.userData.accountPopulation = normalized.length" in aquarium
     assert "group.userData.visibleFish = visibleUsers.length" in aquarium
-    assert "group.userData.fishLimit = fishLimit" in aquarium
+    assert "const population = visibleUsers.length" in aquarium
+    assert "createInstancedUserFish(THREE, population)" in aquarium
+    assert "fishLimit" not in aquarium
     assert "fishStates.push({" in aquarium
     assert '"active-recent"' in aquarium
     assert '"inactive"' in aquarium
     assert "const laneMin = recent ? 6.8 : 1.65" in aquarium
-    assert "Math.log2(population + 1)" in aquarium
+    assert "Math.log2(Math.max(1, population) + 1)" in aquarium
     assert "officeAquarium.setUsers(members)" in SCENE
     # Names seed appearance but are not drawn or attached as visible labels.
     assert "makeLabelSprite" not in aquarium
