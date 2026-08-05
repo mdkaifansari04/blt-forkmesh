@@ -6676,6 +6676,37 @@ test("the Debug tab lists every individual object drawing triangles and sorts by
   await expect(rows.first()).toBeVisible();
 });
 
+test("World edge walk has two line rails and no path triangles", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-edge-walk");
+  await waitForWorld(page);
+
+  const edgeWalk = await page.locator("forkmesh-world").evaluate((shell) => {
+    const element = shell.world
+      .listWorldElements()
+      .find((entry) => entry.id === "void-walk-rails");
+    const rails = shell.world.scene.getObjectByName("forkmesh-void-walk-rails");
+    return {
+      triangles: element?.triangles,
+      drawables: element?.drawables,
+      rails: rails?.children.map((rail) => ({
+        line: rail.isLine === true,
+        vertices: rail.geometry?.attributes?.position?.count,
+      })),
+    };
+  });
+
+  expect(edgeWalk).toEqual({
+    triangles: 0,
+    drawables: 2,
+    rails: [
+      { line: true, vertices: 2 },
+      { line: true, vertices: 2 },
+    ],
+  });
+});
+
 test("every element in the Elements tab opens into its own pieces, each list sorted on its own", async ({
   page,
 }) => {

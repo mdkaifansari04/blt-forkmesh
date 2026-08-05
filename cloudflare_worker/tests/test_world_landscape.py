@@ -115,6 +115,30 @@ def test_continuous_visible_foundation_drives_walkability():
     assert "WORLD_LOOP_CONTROL_POINTS" not in scene
 
 
+def test_world_edge_walk_uses_only_two_zero_triangle_line_rails():
+    scene = source()
+    for contract in (
+        "const VOID_WALK_CENTER_Z = 270;",
+        "const VOID_WALK_END_X = WORLD_RADIUS + 120;",
+        "function voidWalkSurfaceContains(",
+        "function createVoidWalkRails(THREE)",
+        'rails.name = "forkmesh-void-walk-rails"',
+        "new THREE.LineBasicMaterial({",
+        "new THREE.Line(geometry, railMaterial)",
+        "forkmesh-void-walk-${index === 0 ? \"south\" : \"north\"}-rail",
+        '"void-walk-rails", "World edge walk · line rails", "Terrain",',
+        "voidWalkSurfaceContains(x, z, radius)",
+    ):
+        assert contract in scene
+
+    void_walk = scene.split("function createVoidWalkRails(THREE)", 1)[1].split(
+        "const projectAssetTextures", 1
+    )[0]
+    assert "new THREE.Mesh(" not in void_walk
+    assert "new THREE.BoxGeometry(" not in void_walk
+    assert void_walk.count("new THREE.Line(geometry, railMaterial)") == 1
+
+
 def test_paths_share_a_concrete_brick_texture_and_closed_bike_lane():
     scene = source()
     for contract in (
