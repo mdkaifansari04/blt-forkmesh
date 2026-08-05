@@ -40010,6 +40010,24 @@ async def world_admin_errors_handler(env, request):
             "SELECT id,ts,status,method,path,message,ray,actor "
             "FROM error_log ORDER BY id DESC LIMIT 100",
         )
+        # The World arrival notice links to the specific newest record. Keep
+        # that record in the focused detail response even if an unusually busy
+        # error storm has already pushed it just beyond the ordinary 100-row
+        # board window.
+        try:
+            focused_id = max(0, int(query.get("id", ["0"])[0] or 0))
+        except (TypeError, ValueError):
+            focused_id = 0
+        if focused_id and not any(
+                int(row.get("id") or 0) == focused_id for row in rows or []):
+            focused = await d1_first(
+                env,
+                "SELECT id,ts,status,method,path,message,ray,actor "
+                "FROM error_log WHERE id=? LIMIT 1",
+                focused_id,
+            )
+            if focused:
+                rows = (rows or []) + [focused]
         payload["errors"] = rows or []
         grouped_rows = await d1_all(
             env,

@@ -10114,6 +10114,16 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   border-color: rgb(63 185 80 / 0.65);
 }
 
+.world-activity-stream article[data-actionable="true"] {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.world-activity-stream article[data-actionable="true"]:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+
 .world-activity-icon {
   display: grid;
   width: 30px;
@@ -12445,6 +12455,109 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   cursor: pointer;
 }
 
+.world-activity-detail {
+  margin: 0 0 14px;
+  border: 1px solid #3b4a5a;
+  border-left: 4px solid #58a6ff;
+  border-radius: 12px;
+  background: #0d141d;
+  padding: 13px;
+}
+
+.world-activity-detail--error {
+  border-left-color: #f85149;
+  background: linear-gradient(110deg, rgb(248 81 73 / 0.08), transparent 36%), #151217;
+}
+
+.world-activity-detail > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.world-activity-detail .world-eyebrow {
+  margin: 0 0 3px;
+}
+
+.world-activity-detail h4 {
+  margin: 0;
+  color: #f0f6fc;
+  font-size: 0.88rem;
+}
+
+.world-activity-detail > p {
+  margin: 10px 0 0;
+  color: #c8d1da;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.world-activity-detail-path code,
+.world-activity-detail pre {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.world-activity-detail pre {
+  margin: 10px 0 0;
+  border: 1px solid rgb(139 148 158 / 0.24);
+  border-radius: 8px;
+  background: rgb(1 4 9 / 0.42);
+  padding: 9px;
+  color: #ffa198;
+  font: 0.68rem/1.45 "ForkMesh Mono", ui-monospace, monospace;
+}
+
+.world-activity-detail dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin: 12px 0 0;
+}
+
+.world-activity-detail dl > div {
+  min-width: 0;
+}
+
+.world-activity-detail dt {
+  color: #8593a2;
+  font: 700 0.57rem/1.25 "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-activity-detail dd {
+  margin: 3px 0 0;
+  color: #dbe8f5;
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+}
+
+.world-activity-detail :is(a, button) {
+  color: #79c0ff;
+}
+
+.world-activity-detail > header > button,
+.world-activity-detail-actions button {
+  min-height: 28px;
+  border: 1px solid #3b4a5a;
+  border-radius: 6px;
+  background: #141d27;
+  padding: 0 8px;
+  font: 700 0.62rem/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.world-activity-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
 .world-error-groups {
   margin: 14px 0 18px;
 }
@@ -13998,7 +14111,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-task-row-metadata,
-  .world-activity-copy dl {
+  .world-activity-copy dl,
+  .world-activity-detail dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -14903,5 +15017,38 @@ forkmesh-world[data-world-chat-micro="true"]
     [data-dashboard-chat-compose-row],
   .world-chat-terminal[data-show-feed="true"] .world-quick-chat-feed {
     animation: none;
+  }
+}
+
+/* Touch movement owns the bottom-left corner. Keep the DEBUG pill immediately
+   above it; this late compact-HUD pass intentionally wins over the generic
+   mobile terminal positioning declared earlier in the stylesheet. */
+@media (pointer: coarse), (hover: none) {
+  .fm-world {
+    --world-touch-control-size: 94px;
+  }
+
+  .world-touch-controls {
+    bottom: var(--safe-bottom);
+  }
+
+  .world-diagnostics:not(.world-chat-terminal) {
+    bottom: calc(
+      var(--safe-bottom) + var(--world-touch-control-size) + 12px
+    );
+  }
+}
+
+@media (pointer: coarse) and (max-height: 520px) and (orientation: landscape),
+  (hover: none) and (max-height: 520px) and (orientation: landscape) {
+  .fm-world {
+    --world-touch-control-size: 82px;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 480px),
+  (hover: none) and (max-width: 480px) {
+  .fm-world {
+    --world-touch-control-size: 86px;
   }
 }
