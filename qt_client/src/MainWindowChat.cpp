@@ -14081,6 +14081,9 @@ void MainWindow::refreshNodesTable()
     auto relayOnline = [this](const QString &name) {
         return m_relayOnlineNodes.contains(name.trimmed().toLower());
     };
+    auto wasDeleted = [this](const QString &name) {
+        return m_deletedMeshNodeNames.contains(name.trimmed().toLower());
+    };
     const QString dash = QString::fromUtf8("\xE2\x80\x94");
 
     // Build the database-backed node -> owning-user map. The public user
@@ -14129,7 +14132,7 @@ void MainWindow::refreshNodesTable()
     for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
         MemberInfo mi = rosterInfo(e.name);
         const QString key = e.name.trimmed().toLower();
-        if (key.isEmpty() || isDirectoryUser(key))
+        if (key.isEmpty() || wasDeleted(key) || isDirectoryUser(key))
             continue;
         if (mi.accountKind == QLatin1String("user"))
             continue;
@@ -14157,7 +14160,7 @@ void MainWindow::refreshNodesTable()
                   return a.compare(b, Qt::CaseInsensitive) < 0;
               });
     for (const QString &key : std::as_const(directoryNodes)) {
-        if (visibleNames.contains(key))
+        if (wasDeleted(key) || visibleNames.contains(key))
             continue;
         NodeMenuEntry entry;
         entry.name = key;
@@ -14181,7 +14184,7 @@ void MainWindow::refreshNodesTable()
                   return a.compare(b, Qt::CaseInsensitive) < 0;
               });
     for (const QString &key : std::as_const(servingNodes)) {
-        if (key.isEmpty() || isDirectoryUser(key) ||
+        if (key.isEmpty() || wasDeleted(key) || isDirectoryUser(key) ||
             visibleNames.contains(key))
             continue;
         NodeMenuEntry entry;
@@ -14343,7 +14346,9 @@ void MainWindow::refreshNodesTable()
     m_nodesTable->setSortingEnabled(true);
     refreshNodeActionButtons();
 
-    if (m_nodesStatus) {
+    // A refresh can land between two deletion steps.  Do not replace the one
+    // line that explains the destructive operation with the routine count.
+    if (m_nodesStatus && !m_nodeDeleteInProgress) {
         m_nodesStatus->setText(visible.isEmpty()
             ? QStringLiteral("No nodes known yet.")
             : QString::fromUtf8("%1 node%2 \xC2\xB7 %3 online")
@@ -14405,11 +14410,18 @@ void MainWindow::refreshNodeActionButtons()
         // (adhoc #376).
         deleteButton->setProperty("buttonSize", "sm");
         setOcticon(deleteButton, "trash", 12);
-        deleteButton->setToolTip(QString::fromUtf8(
-            "Delete \"%1\" for good: destroy its Vultr server, remove its DNS "
-            "record, erase it from the relay (account, mirrors, agent jobs and "
-            "the /status history) and forget the saved SSH host here.")
-                                     .arg(node));
+        if (m_nodeDeleteInProgress) {
+            deleteButton->setEnabled(false);
+            deleteButton->setToolTip(
+                QStringLiteral("Deleting \"%1\"; wait for the relay result.")
+                    .arg(m_nodeDeleteTarget));
+        } else {
+            deleteButton->setToolTip(QString::fromUtf8(
+                "Delete \"%1\" for good: destroy its Vultr server, remove its DNS "
+                "record, erase it from the relay (account, mirrors, agent jobs and "
+                "the /status history) and forget the saved SSH host here.")
+                                         .arg(node));
+        }
         connect(deleteButton, &QPushButton::clicked, this,
                 [this, node, nodeId] {
                     // Next tick: the deletion re-lists this table and destroys
@@ -14447,6 +14459,11 @@ void MainWindow::deleteMeshNodeCompletely(const QString &node,
     const QString target = node.trimmed().toLower();
     if (target.isEmpty() || isProtectedMeshNode(target))
         return;
+    if (m_nodeDeleteInProgress) {
+        flashMessage(QStringLiteral("Deletion of \"%1\" is already in progress.")
+                         .arg(m_nodeDeleteTarget), true);
+        return;
+    }
     if (!m_isAdmin) {
         flashMessage(QStringLiteral(
             "Only a platform admin can delete a node from the mesh."), true);
@@ -14481,10 +14498,15 @@ void MainWindow::deleteMeshNodeCompletely(const QString &node,
     if (!accepted || typed.trimmed() != required)
         return;
 
+    m_nodeDeleteInProgress = true;
+    m_nodeDeleteTarget = target;
+    refreshNodeActionButtons();
     setNodeDeleteStatus(
         QString::fromUtf8("1/3 \xE2\x80\x94 Destroying the server for "
                           "\"%1\"\xE2\x80\xA6")
             .arg(target));
+    flashMessage(QStringLiteral("Deleting node \"%1\". Waiting for the relay to confirm it.")
+                     .arg(target));
     // Provider teardown first (it is the step that costs money to skip), then
     // DNS, then the mesh. Both provider steps report what they did and hand
     // control on regardless: a node this app never provisioned still has to
@@ -14706,8 +14728,16 @@ void MainWindow::removeVultrMirrorDns(
 void MainWindow::sendMeshNodeDeleteRequest(const QString &node,
                                            const QString &nodeId)
 {
-    if (!m_networkAccess)
+    if (!m_networkAccess) {
+        const QString message = QStringLiteral(
+            "Could not delete \"%1\": network access is unavailable.").arg(node);
+        m_nodeDeleteInProgress = false;
+        m_nodeDeleteTarget.clear();
+        setNodeDeleteStatus(message);
+        flashMessage(message, true);
+        refreshNodeActionButtons();
         return;
+    }
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/world/admin/nodes/delete"));
     url.setQuery(QString());
@@ -14731,9 +14761,14 @@ void MainWindow::sendMeshNodeDeleteRequest(const QString &node,
             QLatin1Char('\n') + node + QLatin1Char('\n') + ts;
         const QString sig = m_profileIdentity.signData(canonical.toUtf8());
         if (actor.isEmpty() || sig.isEmpty()) {
-            setNodeDeleteStatus(QString::fromUtf8(
+            const QString message = QString::fromUtf8(
                 "Could not sign the deletion of \"%1\" with this desktop's "
-                "account key.").arg(node));
+                "account key.").arg(node);
+            m_nodeDeleteInProgress = false;
+            m_nodeDeleteTarget.clear();
+            setNodeDeleteStatus(message);
+            flashMessage(message, true);
+            refreshNodeActionButtons();
             return;
         }
         QUrlQuery query;
@@ -14766,41 +14801,90 @@ void MainWindow::sendMeshNodeDeleteRequest(const QString &node,
                 response.value(QStringLiteral("error")).toString().trimmed();
             if (detail.isEmpty())
                 detail = transportError;
-            setNodeDeleteStatus(
-                QString::fromUtf8("Could not delete \"%1\": %2")
-                    .arg(node, detail));
-            flashMessage(QString::fromUtf8("Could not delete \"%1\": %2")
-                             .arg(node, detail), true);
+            const QString message = QString::fromUtf8(
+                "Could not delete \"%1\": %2").arg(node, detail);
+            m_nodeDeleteInProgress = false;
+            m_nodeDeleteTarget.clear();
+            setNodeDeleteStatus(message);
+            flashMessage(message, true);
+            refreshNodeActionButtons();
+            return;
+        }
+        // Treat HTTP success as provisional.  The worker promises the
+        // canonical deleted name and all aliases it purged; do not hide a row
+        // or report success unless that response explicitly includes the
+        // requested node.
+        const QString deletedName = response.value(QStringLiteral("nodeDeleted"))
+                                        .toString().trimmed().toLower();
+        QSet<QString> deletedNames;
+        for (const QJsonValue &value :
+             response.value(QStringLiteral("identifiers")).toArray()) {
+            const QString identifier = value.toString().trimmed().toLower();
+            if (!identifier.isEmpty())
+                deletedNames.insert(identifier);
+        }
+        if (!deletedName.isEmpty())
+            deletedNames.insert(deletedName);
+        if (deletedName.isEmpty() || !deletedNames.contains(node)) {
+            const QString message = QStringLiteral(
+                "The relay did not confirm deletion of \"%1\"; it remains visible.")
+                                        .arg(node);
+            m_nodeDeleteInProgress = false;
+            m_nodeDeleteTarget.clear();
+            setNodeDeleteStatus(message);
+            flashMessage(message, true);
+            refreshNodeActionButtons();
             return;
         }
         forgetSavedHostNamed(node);
         // Drop the node from this client's caches so the row goes immediately,
         // instead of lingering until the (throttled, edge-cached) directory and
-        // live-set reads catch up with the relay.
-        m_relayOnlineNodes.remove(node);
+        // live-set reads catch up with the relay.  Every alias returned by the
+        // worker is cleared too: older entries may use a machine label while
+        // the relay names the account-backed node.
+        m_deletedMeshNodeNames.unite(deletedNames);
+        for (const QString &deleted : std::as_const(deletedNames)) {
+            m_relayOnlineNodes.remove(deleted);
+            m_nodesCatalogInfo.remove(deleted);
+        }
         for (int i = m_nodeMenuEntries.size() - 1; i >= 0; --i) {
-            if (m_nodeMenuEntries.at(i).name.trimmed().compare(
-                    node, Qt::CaseInsensitive) == 0)
+            if (deletedNames.contains(
+                    m_nodeMenuEntries.at(i).name.trimmed().toLower()))
                 m_nodeMenuEntries.removeAt(i);
         }
+        m_homeRoster.removeIf([&deletedNames](const MemberInfo &member) {
+            return deletedNames.contains(
+                nodeListIdentityKey(member).trimmed().toLower());
+        });
         for (MemberInfo &user : m_chatDirectoryUsers) {
             QStringList nodes = user.nodeName.split(QStringLiteral(", "),
                                                     Qt::SkipEmptyParts);
-            nodes.removeIf([&node](const QString &name) {
-                return name.trimmed().compare(node, Qt::CaseInsensitive) == 0;
+            nodes.removeIf([&deletedNames](const QString &name) {
+                return deletedNames.contains(name.trimmed().toLower());
             });
             user.nodeName = nodes.join(QStringLiteral(", "));
         }
+        // Let each follow-up request make a fresh authoritative read; these
+        // caches would otherwise defer it for 15 seconds/five minutes.
+        m_relayOnlineNodesFetchedMs = 0;
+        m_nodesCatalogFetchedMs = 0;
+        m_chatDirectoryFetchedMs = 0;
+        m_nodeDeleteInProgress = false;
+        m_nodeDeleteTarget.clear();
         refreshChatUserDirectory();
         fetchRelayOnlineNodes(true);
+        fetchNodesCatalogInfo(true);
         refreshNodesTable();
-        // After refreshNodesTable, which re-stamps the summary line.
-        setNodeDeleteStatus(
-            QString::fromUtf8("3/3 complete \xE2\x80\x94 Deleted \"%1\"; no "
-                              "trace of it is left in the mesh, mirrors or "
-                              "status page.")
-                .arg(node));
-        flashMessage(QString::fromUtf8("Deleted node \"%1\".").arg(node));
+        refreshNodeActionButtons();
+        const bool alreadyAbsent =
+            response.value(QStringLiteral("alreadyAbsent")).toBool();
+        const QString message = alreadyAbsent
+            ? QStringLiteral("Relay confirmed \"%1\" was already absent; removed its stale local entry.")
+                  .arg(node)
+            : QStringLiteral("3/3 complete — Relay confirmed deletion of \"%1\"; it has been removed from this list.")
+                  .arg(node);
+        setNodeDeleteStatus(message);
+        flashMessage(message);
     });
 }
 

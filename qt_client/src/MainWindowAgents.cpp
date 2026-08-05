@@ -301,9 +301,6 @@ QIcon agentStatusPillIcon(const AgentSession &session)
 {
     if (session.merged || session.status == AgentStatus::Success)
         return themedOcticon("check-circle", QColor("#3fb950"), 14);
-    if (session.status == AgentStatus::Failed ||
-        session.status == AgentStatus::Stopped)
-        return themedOcticon("x", QColor("#f85149"), 14);
     return agentControlIcon(agentStatusModelIconIndex(session));
 }
 
@@ -2116,6 +2113,17 @@ QWidget *MainWindow::buildAgentsTab()
         stopStreamSession(m_selectedAgentSessionId);
     });
 
+    // A paused session can pick up its previous thread without making the user
+    // hunt for the composer. Keep this beside its failure/success pill so the
+    // recovery path is immediately available where the outcome is shown.
+    m_agentStartButton = railActionButton(
+        QStringLiteral("play"), QStringLiteral("Continue"),
+        "Resume this session from where it left off");
+    m_agentStartButton->setObjectName("agentContinueButton");
+    m_agentStartButton->hide();
+    connect(m_agentStartButton, &QPushButton::clicked, this,
+            &MainWindow::continueSelectedAgentSession);
+
     // Delete the agent together with its worktree folder and branch in one action.
     // adhoc #51 folded the session-only "Delete" that sat beside it into this one
     // button, so watch-only rows (no branch of ours to clean up) go down the
@@ -2323,7 +2331,7 @@ QWidget *MainWindow::buildAgentsTab()
             switchToWorktree(s->branchName);
     });
 
-    // Session actions: "+ issue", View PR, Start, Stop, Delete, Branch and
+    // Session actions: "+ issue", View PR, Continue, Stop, Delete, Branch and
     // Worktree.
     // Each already manages its own visibility (they appear per session), so they
     // are only laid out here. adhoc #35 moved them off the header onto the output
@@ -13132,17 +13140,19 @@ void MainWindow::updateAgentActionState()
         externalIsLive(m_externalSurfaced.value(m_selectedAgentSessionId).uuid);
     if (m_agentStopButton)
         m_agentStopButton->setEnabled(running || externalRunning);
-    // "Start" (adhoc #20) is Stop's counterpart on the detail page: live for one
-    // of our own sessions that isn't already in flight. External (watch-only)
-    // rows belong to another process, and a queued session is already on its
-    // way — continueAgentSession() would drop both on the floor.
+    // "Continue" is Stop's counterpart on the detail page: show it for one of
+    // our own sessions that isn't already in flight. External
+    // (watch-only) rows belong to another process, and a queued session is
+    // already on its way — continueAgentSession() would drop both on the floor.
     if (m_agentStartButton) {
         const AgentSession *startable =
             selected ? findAgentSession(m_selectedAgentSessionId) : nullptr;
-        m_agentStartButton->setEnabled(
+        const bool canContinue =
             startable && !running && !externalSelected &&
             !startable->associationOnly &&
-            startable->status != AgentStatus::Queued);
+            startable->status != AgentStatus::Queued;
+        m_agentStartButton->setEnabled(canContinue);
+        m_agentStartButton->setVisible(canContinue);
     }
     // "Stop all" doesn't depend on the selection — it's live whenever any
     // ForkMesh session is running, waiting or queued anywhere (adhoc #433).
