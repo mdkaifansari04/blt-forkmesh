@@ -10459,8 +10459,11 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // controls + diff; page 1 is the selected commit metadata/actions + diff.
     auto *changesPage = new QWidget;
     auto *changesLayout = new QVBoxLayout(changesPage);
-    changesLayout->setContentsMargins(16, 12, 16, 16);
-    changesLayout->setSpacing(8);
+    // The diff owns this whole right-hand surface. Its document blocks already
+    // provide their own boundaries, so no outer gutter belongs above, below, or
+    // beside the changes viewer.
+    changesLayout->setContentsMargins(0, 0, 0, 0);
+    changesLayout->setSpacing(0);
     m_scmDiff = new QTextBrowser;
     m_scmDiff->setObjectName("diffView");
     registerDiffView(m_scmDiff);

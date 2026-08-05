@@ -2454,6 +2454,8 @@ int main(int argc, char *argv[])
             scmMargins = scmPanel->layout()->contentsMargins();
         check(scmPanel && scmMargins.left() <= 6 && scmMargins.right() <= 6,
               QStringLiteral("source-control controls sit close to both pane edges"));
+        check(window.testScmDiffUsesFullSurface(),
+              QStringLiteral("working-tree diff has no outer or document padding"));
 
         QPlainTextEdit *draft = window.findChild<QPlainTextEdit *>(
             QStringLiteral("scmMessageInput"));
@@ -3056,6 +3058,11 @@ int main(int argc, char *argv[])
                   .arg(stagedWaiting)
                   .arg(window.testSourceControlPaths().join(QStringLiteral(", ")),
                        controls));
+        check(window.testClickSourceControlPath(QStringLiteral("commit-waiting.txt")) &&
+                  window.testScmDiffFilePinnedToTop(
+                      QStringLiteral("commit-waiting.txt")),
+              QStringLiteral("clicking a working-tree file pins its sticky filename "
+                             "at the top of the diff"));
 
         // …and once that change is committed the row hands itself back to Sync,
         // which is the behaviour the swap was there for in the first place.
