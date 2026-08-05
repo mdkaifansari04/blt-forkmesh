@@ -183,7 +183,7 @@ const DETAIL_WIDTH_STEP = 48;
 const SETTINGS_WIDTH_KEY = "forkmesh.world.settingsWidth.v1";
 const SETTINGS_WIDTH_MIN = 360;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
-// Start outside the closed yurt so its roster is not drawn before entry.
+// Start just outside the open Members Circle for a readable first view.
 const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
   x: 0,
   y: 0.38,
@@ -371,7 +371,7 @@ const WORLD_DAYLIGHT_MODES = new Set(["auto", "day", "night"]);
 // Movement tuning, stored per device as a percentage of the shared defaults.
 const WORLD_MOVE_SPEED_MIN = 50;
 const WORLD_MOVE_SPEED_MAX = 300;
-const WORLD_MOVE_SPEED_DEFAULT = 100;
+const WORLD_MOVE_SPEED_DEFAULT = 120;
 // Swing-ride pumping strength; session-only because the control is only on
 // screen while actually riding one of the town swings.
 const WORLD_SWING_SPEED_MIN = 10;
@@ -2457,8 +2457,8 @@ function normalizeMediaSpaces(value) {
     .slice(0, 50);
 }
 
-// The public user-profile directory also populates the bounded member-avatar
-// rings inside the Members Center yurt.
+// The public user-profile directory also populates the open member-avatar
+// rings around the Members Center fire.
 function normalizeMemberDirectory(value) {
   return (Array.isArray(value?.users) ? value.users : [])
     .map((user) => ({
@@ -5505,9 +5505,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 value="${escapeHTML(settings.moveSpeed)}"
                 data-world-move-speed
               />
-              <small>Scales how fast your avatar walks and runs. 100% is the default pace.</small>
+              <small>Scales how fast your avatar walks and runs. 120% is now the default pace.</small>
             </label>
-            <p class="world-setting-note">Keyboard movement responds at the selected speed on its first frame; touch remains proportional for precise positioning.</p>
+            <p class="world-setting-note">Keyboard movement now eases into a higher speed while held; touch remains proportional for precise positioning.</p>
           </fieldset>
 
           <fieldset class="world-setting-group">
@@ -7285,7 +7285,7 @@ class ForkMeshWorld extends HTMLElement {
       );
       if (this.restoredPosition) {
         // Older builds persisted bench-ring coordinates. The current scene
-        // restores them as a normal standing position around the yurt.
+        // restores them as a normal standing position around the circle.
         const restoredCampfireSeat =
           !this.sharedView &&
           this.world.restoreCampfireSeatIfNearby?.(
@@ -18801,7 +18801,7 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-  // First-time Town Square arrivals start outside the Members Center yurt.
+  // First-time Town Square arrivals start beside the open Members Circle.
   seatFreshArrivalAtCampfire() {
     // A saved pose, shared view, or explicit regional destination always wins.
     // Only a truly unplaced Town Square arrival starts at the social circle.
@@ -18829,7 +18829,7 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     this.closeLandmark();
-    this.toast("Welcome to the Members Center yurt.");
+    this.toast("Welcome to the Members Circle.");
   }
 
   broadcastPanelHTML() {
@@ -25970,7 +25970,34 @@ class ForkMeshWorld extends HTMLElement {
       } else if (shape.type === "text") {
         context.font = `600 ${fontSize}px "ForkMesh Favorit", sans-serif`;
         context.textBaseline = "top";
-        context.fillText(shape.text, shape.x, shape.y);
+        const lineHeight = Math.max(1, Math.round(fontSize * 1.2));
+        const maxWidth = Math.max(1, Math.round(shape.width || shot.width));
+        const maxHeight = Math.max(1, Math.round(shape.height || shot.height));
+        const lines = (() => {
+          const wrapped = [];
+          const parts = String(shape.text || "").split(/\r?\n/);
+          for (const part of parts) {
+            const words = part.length === 0 ? [""] : part.split(/\s+/);
+            let current = "";
+            for (const word of words) {
+              const next = current ? `${current} ${word}` : word;
+              if (context.measureText(next).width <= maxWidth) {
+                current = next;
+                continue;
+              }
+              wrapped.push(current);
+              current = word;
+            }
+            wrapped.push(current);
+          }
+          return wrapped;
+        })();
+        let y = shape.y;
+        for (const line of lines) {
+          if (y - shape.y + lineHeight > maxHeight) break;
+          context.fillText(line, shape.x, y);
+          y += lineHeight;
+        }
       }
     };
     const redraw = (preview) => {
@@ -25992,27 +26019,58 @@ class ForkMeshWorld extends HTMLElement {
       stage.querySelector(".world-shot-text-input")?.remove();
       const bounds = canvas.getBoundingClientRect();
       const stageBounds = stage.getBoundingClientRect();
-      const input = document.createElement("input");
-      input.type = "text";
+      const input = document.createElement("textarea");
+      const defaultWidth = Math.max(
+        160,
+        Math.min(320, bounds.width * 0.45),
+      );
+      const defaultHeight = Math.max(72, Math.min(180, bounds.height * 0.24));
+      const stageScaleX = canvas.width / Math.max(1, bounds.width);
+      const stageScaleY = canvas.height / Math.max(1, bounds.height);
       input.className = "world-shot-text-input";
-      input.placeholder = "Type, then press Enter";
+      input.placeholder = "Type, use Enter for a new line, Ctrl/Cmd+Enter to place";
       input.style.left = `${
         bounds.left - stageBounds.left + (point.x / canvas.width) * bounds.width
       }px`;
       input.style.top = `${
         bounds.top - stageBounds.top + (point.y / canvas.height) * bounds.height
       }px`;
+      input.style.width = `${Math.round(defaultWidth)}px`;
+      input.style.height = `${Math.round(defaultHeight)}px`;
       input.style.color = color;
       const commit = () => {
-        const text = input.value.trim();
+        const text = input.value.replace(/\r/g, "").trim();
         input.remove();
         if (!text) return;
-        shapes.push({ type: "text", x: point.x, y: point.y, text, color });
+        const width = Math.max(
+          20,
+          Math.min(
+            Math.max(1, Math.round(input.offsetWidth * stageScaleX)),
+            shot.width - Math.max(0, point.x),
+          ),
+        );
+        const height = Math.max(
+          30,
+          Math.min(
+            Math.max(1, Math.round(input.offsetHeight * stageScaleY)),
+            shot.height - Math.max(0, point.y),
+          ),
+        );
+        shapes.push({
+          type: "text",
+          x: point.x,
+          y: point.y,
+          text,
+          color,
+          width,
+          height,
+        });
         redraw();
       };
       input.addEventListener("keydown", (event) => {
         event.stopPropagation();
-        if (event.code === "Enter") commit();
+        if (event.code === "Enter" && (event.metaKey || event.ctrlKey))
+          commit();
         else if (event.code === "Escape") input.remove();
       });
       input.addEventListener("blur", commit);
@@ -29939,9 +29997,9 @@ class ForkMeshWorld extends HTMLElement {
 
   syncMemberLounge() {
     if (!this.world?.updateMemberLounge) return;
-    // Populate the yurt from the public directory. Members already rendered as
-    // live or opted-in idle avatars keep their richer presence avatar instead
-    // of receiving a duplicate interior figure.
+    // Populate the open circle from the public directory. Members already
+    // rendered as live or opted-in idle avatars keep their richer presence
+    // avatar instead of receiving a duplicate directory figure.
     const present = new Set();
     const registered = [];
     let guests = 0;

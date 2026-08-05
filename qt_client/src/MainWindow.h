@@ -421,6 +421,11 @@ public:
     QStringList testNetworkLog() const { return m_networkLog; }
     void testResetNetworkLog();
     void testLogSystem(const QString &text) { logSystem(text); }
+    void testLoadNetworkLog(const QStringList &lines)
+    {
+        m_networkLog = lines;
+        m_networkLogViewStale = true;
+    }
     // adhoc #73: record a UI stall the way the watchdog does, then read back the
     // fix-it prompt the footer badge drafts into the quick-add composer.
     void testRecordUiStall(qint64 peakMs, const QString &blockingCall,
@@ -592,6 +597,13 @@ public:
     // Switch the open repo-detail view to its Issues sub-tab (stack index 2) so
     // the issues toolbar gets real geometry. Returns false if not built yet.
     Q_INVOKABLE bool testShowRepoIssuesTab();
+    // Pending collaboration inbox badges share the relay's content-free
+    // /pending response. Tests inject one response here and verify that all
+    // three repository actions reflect it without making a network request.
+    void testSetPendingInboxCounts(int issues, int pulls, int discussions);
+    int testIssueInboxBadgeCount() const;
+    int testPullInboxBadgeCount() const;
+    QString testDiscussionInboxButtonText() const;
     Q_INVOKABLE bool testSaveRepoAboutMetadata(const QString &about,
                                                const QString &website)
     {
@@ -725,6 +737,7 @@ public:
     Q_INVOKABLE QStringList testMirrorNodeRows() const;
     bool testMirrorNodesOnlineOnlyChecked() const;
     void testSetMirrorNodesOnlineOnly(bool checked);
+    bool testMirrorNodeCardsAreCompact() const;
     QString testMirrorNodeCellText(const QString &nodeName, int column) const;
     QString testMirrorNodeCellToolTip(const QString &nodeName, int column) const;
     // Build the exact command used by the fleet-wide binary action without
@@ -735,6 +748,8 @@ public:
                                                 QString *errorOut);
     QString testDirectBinaryInstallRemoteCommand(qsizetype *uploadByteCount,
                                                  QString *errorOut);
+    QString testVultrGoMirrorInstallRemoteCommand(qsizetype *uploadByteCount,
+                                                  QString *errorOut);
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
@@ -794,6 +809,18 @@ public:
     int testAgentDotCount() const;
     void testSetAgentSessionStatus(int sessionId, const QString &status);
     void testRemoveAgentSession(int sessionId);
+    // A transport can disappear while the persisted session is still marked
+    // Running.  Queue it without launching a real CLI so the UI test can prove
+    // that Continue (and a follow-up prompt) recovers this detached state.
+    bool testQueueDetachedRunningAgentSession(int sessionId)
+    {
+        continueAgentSession(sessionId, /*deferRefresh=*/true);
+        const AgentSession *session = findAgentSession(sessionId);
+        const bool queued = session && session->status == AgentStatus::Queued &&
+                            m_agentQueue.contains(sessionId);
+        m_agentQueue.removeAll(sessionId);
+        return queued;
+    }
     // Live search: type into the top bar the way a user does (textChanged drives
     // the whole feature), persist a line of a session's transcript, force the
     // debounced transcript scan to run now, and read the filtered list back.
@@ -1313,6 +1340,7 @@ private:
     // Open the full Log section (section 4) and scroll it to the entry matching a
     // line clicked in the always-on footer strip (adhoc #133).
     void openFullLogAtFooterLine(const QString &rawLine);
+    void openFullLogForCategory(const QString &category);
     void persistProfile();
 
     // Chat page
@@ -1452,7 +1480,7 @@ private:
     void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
-    // One-line strip pinned to the very bottom of the window (adhoc #2).
+    // One-line strip pinned to the bottom, plus its version-toggled debug row.
     QWidget *buildStatusBar();
     // Compact footer queue between the live log and agent prompt. It is always on
     // screen (reading "idle" when nothing is running) and gives each kind of job
@@ -1744,6 +1772,15 @@ private:
         QString *error = nullptr, bool restartRunningGateway = false);
     void startDirectMirrorServices();
     void stopDirectMirrorServices();
+    // Desktop companion for the small Go mirror-node supervisor. The daemon
+    // owns serving/sync work; this window only reads its loopback API and sends
+    // explicit local control requests.
+    bool rebuildManagedMirrorNodeConfiguration(QString *error = nullptr);
+    bool startManagedMirrorNodeServer();
+    void stopManagedMirrorNodeServer();
+    void requestManagedMirrorNodeSync();
+    void showMirrorNodeCompanion();
+    void refreshMirrorNodeCompanion();
     // Startup auto-start for provisioned direct HTTPS mirrors (gated by
     // control/autoStartMirrorServices, default on): re-establishes the
     // gateway + Tunnel + registration after a restart without anyone
@@ -1940,6 +1977,10 @@ private:
                                  bool requirePublishedBinary,
                                  QString *remoteCmd, QByteArray *uploadBytes,
                                  QString *errorOut);
+    bool buildVultrMirrorNodeInstallCommand(const QString &node,
+                                            QString *remoteCmd,
+                                            QByteArray *uploadBytes,
+                                            QString *errorOut) const;
     // Save non-sensitive host metadata from the form without running the
     // installer. pass is cached only for the current process; it is never
     // written to QSettings. identityFile records the ForkMesh-managed private
@@ -3847,6 +3888,8 @@ private:
     // local sync, a live peer via a targeted relay frame, an SSH-fed/offline
     // catalog mirror via the source of truth's push.
     void syncMirrorNodeNow(int row);
+    QWidget *buildMirrorNodeCard(int row);
+    void rebuildMirrorNodeCards();
     // Fetch the worker's catalog mirror list for a repo group so the owner sees
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
@@ -4391,7 +4434,7 @@ private:
     // model (POST /api/ai/ask, signed as this account) and shows its reply. No
     // agent session, working tree or PR is involved.
     void refreshCloudflareAiModels();
-    void sendPromptToCloudflareAi(const QString &prompt, const QString &model);
+    bool sendPromptToCloudflareAi(const QString &prompt, const QString &model);
     // Probe the installed `claude` CLI for the effort levels it accepts and
     // cache them (kClaudeEffortLevelsCacheSetting). Cheap (`claude --help`),
     // once per app run, and a no-op while a probe is already in flight.
@@ -4597,6 +4640,19 @@ private:
                                const QStringList &attachmentPlaceholders = {},
                                std::function<void(bool ok, const QString &error)> onDone = {});
     void syncIssuesInbox();
+    // Fetch the signed contents of one collaboration inbox and present a
+    // reviewable list with per-submission and sync-all actions. Counts stay on
+    // the three toolbar buttons via the public, content-free /pending endpoint.
+    void showPendingInbox(const RepositoryRecord &repo, const QString &kind);
+    void showPendingInboxDialog(const RepositoryRecord &repo,
+                                const QString &kind,
+                                const QJsonArray &pending);
+    void applyPendingInboxSelection(const RepositoryRecord &repo,
+                                    const QString &kind,
+                                    const QJsonArray &pending);
+    void refreshPendingInboxBadges();
+    void setPendingInboxCount(const RepositoryRecord &repo,
+                              const QString &kind, int count);
     // Drain one repo's issue inbox. Owners consume their queue; eligible public
     // mirrors materialize it without consuming the source-of-truth delivery.
     // `interactive` shows inline notices for a manual "Sync inbox". Repo is
@@ -4887,6 +4943,9 @@ private:
     void saveIncomingFile(const QString &fileName, const QByteArray &data);
     // Local chat history persistence (per active server/room).
     QString chatHistoryKey() const;
+    QString chatHistoryPathForServerUrl(const QString &serverUrl,
+                                        const QString &room) const;
+    QStringList chatHistoryCompatibilityPaths() const;
     QString chatHistoryPath() const;
     void saveChatHistory();
     void loadChatHistory();
@@ -5107,6 +5166,11 @@ private:
 
     // Configured mainnode relays (switched via the top-bar relay dropdown).
     QList<ServerConfig> m_servers;
+    // URL values from the persisted server list before canonicalization. Chat
+    // history used these raw values in older releases, so retain them for a
+    // one-time history-file migration after the relay URL format changed.
+    QStringList m_legacyServerUrls;
+    QStringList m_legacyServerRooms;
     int m_activeServer = 0;
     QHash<QString, QPixmap> m_faviconCache; // host -> favicon
     QSet<QString> m_faviconFetching;        // hosts with an in-flight favicon GET
@@ -5383,6 +5447,9 @@ private:
     // every workspace, including Git, so users can prompt an agent from a diff.
     QWidget *m_footerDock = nullptr;
     QWidget *m_footerLeftRegion = nullptr;
+    // Version-controlled strip below the one-line status bar. It owns the live
+    // resource chart, labeled log counters and newest website minute states.
+    QWidget *m_debugBar = nullptr;
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
@@ -5556,6 +5623,8 @@ private:
     QProcess *m_cloudflareBootstrapProcess = nullptr;
     QProcess *m_cloudflareTunnelBootstrapProcess = nullptr;
     QProcess *m_cloudflaredInstallProcess = nullptr;
+    QProcess *m_mirrorNodeProcess = nullptr;
+    bool m_mirrorNodeStopRequested = false;
     QProcess *m_mirrorGatewayProcess = nullptr;
     QProcess *m_cloudflaredProcess = nullptr;
     QString m_cloudflareActiveSecret;
@@ -5569,6 +5638,14 @@ private:
     bool m_cloudflareInstallVpsAfterDeploy = false;
     QTimer *m_controlNodeRefreshTimer = nullptr;
     QTimer *m_directMirrorRegistrationTimer = nullptr;
+    QDialog *m_mirrorNodeCompanion = nullptr;
+    QLabel *m_mirrorNodeCompanionStatus = nullptr;
+    QLabel *m_mirrorNodeCompanionStats = nullptr;
+    QLabel *m_mirrorNodeCompanionAccount = nullptr;
+    QLabel *m_mirrorNodeCompanionBalance = nullptr;
+    QLabel *m_mirrorNodeCompanionQr = nullptr;
+    QPushButton *m_mirrorNodeCompanionLogout = nullptr;
+    QTimer *m_mirrorNodeCompanionTimer = nullptr;
     // Full encrypted-archive authentication hashes hundreds of megabytes for a
     // large mirror. Keep it off the GUI thread and let the Control page render
     // the most recent completed snapshot.
@@ -6113,7 +6190,7 @@ private:
     // it is obvious which build/checkout the open window came from.
     QLabel *m_statusAppPath = nullptr;
     // Live one-per-second moving sparklines for CPU, host memory, swap and disk
-    // usage (adhoc #17), combined into four quadrants on the chrome line. Held
+    // usage (adhoc #17), combined into four quadrants in the debug bar. Held
     // as QWidget* and poked via static_cast since the compact chart widget lives
     // in MainWindowInternal.h.
     QWidget *m_resourceChart = nullptr;

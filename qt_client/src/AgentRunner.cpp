@@ -1,6 +1,7 @@
 #include "AgentRunner.h"
 
 #include "AgentJail.h"
+#include "VirtualMachineRuntime.h"
 #include "BackgroundActivity.h"
 
 #include <QDateTime>
@@ -246,6 +247,11 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
                  QStringLiteral("No git checkout is available for this repo."));
         return;
     }
+    if (forkmesh::vm::active() && !forkmesh::vm::pathIsShared(m_repoPath)) {
+        complete(false, AgentStatus::Failed,
+                 forkmesh::vm::pathError(m_repoPath));
+        return;
+    }
 
     if (m_session.branchName.isEmpty()) {
         m_session.branchName =
@@ -307,7 +313,11 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
     }
     releaseBranchWorktree(m_repoPath, m_session.branchName);
 
-    m_worktree = QDir::tempPath() + QStringLiteral("/forkmesh-agent-") +
+    const QString worktreeBase = forkmesh::vm::active()
+                                     ? forkmesh::vm::worktreeRoot()
+                                     : QDir::tempPath();
+    QDir().mkpath(worktreeBase);
+    m_worktree = worktreeBase + QStringLiteral("/forkmesh-agent-") +
                  QString::number(m_session.id) + QLatin1Char('-') +
                  QString::number(QDateTime::currentMSecsSinceEpoch());
     emitLog(QStringLiteral("==> Creating temporary worktree %1").arg(m_worktree));
@@ -376,8 +386,12 @@ void AgentRunner::launch(Phase phase, const QString &program,
 
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     if (m_config.preferApiKeyAuth && !m_config.isolatedHome.isEmpty()) {
-        QDir().mkpath(m_config.isolatedHome);
-        env.insert(QStringLiteral("CODEX_HOME"), m_config.isolatedHome);
+        const QString isolatedHome =
+            forkmesh::vm::active()
+                ? m_worktree + QStringLiteral("-codex-home")
+                : m_config.isolatedHome;
+        QDir().mkpath(isolatedHome);
+        env.insert(QStringLiteral("CODEX_HOME"), isolatedHome);
     }
     // Jail (adhoc #236): point the agent's scratch state (tmp/cache) at a
     // private directory beside the worktree — outside it, so the redirected
@@ -428,6 +442,8 @@ void AgentRunner::launch(Phase phase, const QString &program,
     env.insert(QStringLiteral("PATH"),
                extraPath + QLatin1Char(':') +
                    env.value(QStringLiteral("PATH")));
+    if (phase == Phase::Agent)
+        forkmesh::vm::applyGuestEnvironmentPolicy(env);
     m_process->setProcessEnvironment(env);
 
     connect(m_process, &QProcess::readyReadStandardOutput, this, [this] {
@@ -583,7 +599,14 @@ void AgentRunner::runAgentProcess()
     const QString command = expandCommand(promptPath);
     emitLog(QStringLiteral("==> Running configured command."));
 #ifdef Q_OS_WIN
-    launch(Phase::Agent, QStringLiteral("cmd"), {QStringLiteral("/c"), command},
+    const forkmesh::vm::LaunchCommand launchCommand =
+        forkmesh::vm::isolateCommand(
+            QStringLiteral("cmd"), {QStringLiteral("/c"), command}, m_worktree);
+    if (!launchCommand.error.isEmpty()) {
+        complete(false, AgentStatus::Failed, launchCommand.error);
+        return;
+    }
+    launch(Phase::Agent, launchCommand.program, launchCommand.arguments,
            m_worktree);
 #else
     if (m_config.jailMemoryMb > 0)
@@ -593,9 +616,19 @@ void AgentRunner::runAgentProcess()
     const QString shell =
         QFile::exists(QStringLiteral("/bin/bash")) ? QStringLiteral("/bin/bash")
                                                    : QStringLiteral("/bin/sh");
-    launch(Phase::Agent, shell,
-           {QStringLiteral("-lc"),
-            AgentJail::wrapCommand(command, m_config.jailMemoryMb)},
+    const QStringList shellArguments{
+        QStringLiteral("-lc"),
+        AgentJail::wrapCommand(command, m_config.jailMemoryMb)};
+    const forkmesh::vm::LaunchCommand launchCommand =
+        forkmesh::vm::isolateCommand(shell, shellArguments, m_worktree);
+    if (!launchCommand.error.isEmpty()) {
+        complete(false, AgentStatus::Failed, launchCommand.error);
+        return;
+    }
+    if (launchCommand.isolated)
+        emitLog(QStringLiteral("==> KVM isolated in Lima instance %1.")
+                    .arg(forkmesh::vm::instanceName()));
+    launch(Phase::Agent, launchCommand.program, launchCommand.arguments,
            m_worktree);
 #endif
 }
@@ -687,6 +720,7 @@ void AgentRunner::cleanupWorktree()
                        m_worktree});
     QDir(m_worktree).removeRecursively();
     QDir(m_worktree + QStringLiteral("-jail")).removeRecursively();
+    QDir(m_worktree + QStringLiteral("-codex-home")).removeRecursively();
     m_worktree.clear();
 }
 

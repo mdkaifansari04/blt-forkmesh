@@ -111,8 +111,9 @@ REWARD_HEALTH_FRESH_MS = "600000"
 # ForkBot's chat-to-issue model. llama-3.3-70b (fp8-fast) is markedly better
 # at intent detection and supports Workers AI JSON mode (response_format
 # json_schema), which _forkbot_run_ai requests first so replies are guaranteed
-# parseable; the code default (FORKBOT_AI_DEFAULT_MODEL) stays llama-3.1-8b as
-# a conservative fallback when this var is unset. This is the DEFAULT model: a
+# parseable; the code default (FORKBOT_AI_DEFAULT_MODEL) matches this active
+# model so a self-hosted relay without the override never falls onto a retired
+# Workers AI id. This is the DEFAULT model: a
 # chat client may send its own prompt to any other model listed by
 # GET /api/forkbot/models (FORKBOT_AI_MODEL_CHOICES), and this var's model is
 # always offered there as the default pick.

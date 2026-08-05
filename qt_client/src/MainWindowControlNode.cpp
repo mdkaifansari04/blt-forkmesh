@@ -1271,7 +1271,8 @@ void MainWindow::startControlNodeServing()
         setNodeOffline(false);
     else
         startRepoHosts();
-    startDirectMirrorServices();
+    if (!startManagedMirrorNodeServer())
+        startDirectMirrorServices();
     appendControlNodeOutput(
         QStringLiteral(
             "Direct HTTPS mirror services and repository update channels "
@@ -1283,6 +1284,9 @@ void MainWindow::startControlNodeServing()
 
 void MainWindow::maybeAutoStartDirectMirrorServices()
 {
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     QSettings settings;
     if (!settings
              .value(QStringLiteral("control/autoStartMirrorServices"), true)
@@ -1311,7 +1315,9 @@ void MainWindow::maybeAutoStartDirectMirrorServices()
     if (!tokenInfo.isFile() || tokenInfo.isSymLink() ||
         (tokenInfo.permissions() & forbiddenPermissions))
         return;
-    if ((m_mirrorGatewayProcess &&
+    if ((m_mirrorNodeProcess &&
+         m_mirrorNodeProcess->state() != QProcess::NotRunning) ||
+        (m_mirrorGatewayProcess &&
          m_mirrorGatewayProcess->state() != QProcess::NotRunning) ||
         (m_cloudflaredProcess &&
          m_cloudflaredProcess->state() != QProcess::NotRunning))
@@ -1321,7 +1327,8 @@ void MainWindow::maybeAutoStartDirectMirrorServices()
                   "for %1.")
                   .arg(hostname));
     ensureDirectMirrorRegistrationTimer(this);
-    startDirectMirrorServices();
+    if (!startManagedMirrorNodeServer())
+        startDirectMirrorServices();
 }
 
 void MainWindow::stopControlNodeServing()
@@ -1659,6 +1666,12 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
 
 void MainWindow::startDirectMirrorServices()
 {
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE")) {
+        appendControlNodeOutput(QStringLiteral(
+            "Direct mirror services are managed by forkmesh-mirror-node.\n"));
+        return;
+    }
     QSettings serviceSettings;
     m_directMirrorHostname =
         serviceSettings
@@ -1987,6 +2000,7 @@ void MainWindow::startDirectMirrorServices()
 
 void MainWindow::stopDirectMirrorServices()
 {
+    stopManagedMirrorNodeServer();
     auto stop = [this](QProcess *process,
                        const QString &label) {
         if (!process ||

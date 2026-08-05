@@ -29,8 +29,12 @@ public:
     // Run a shell command line under a fresh PTY, working in cwd. Any running
     // session is replaced first. extraEnv holds "KEY=VALUE" entries; an entry
     // with no '=' (just "KEY") removes that variable from the child environment.
+    // keepHostShell keeps the historical interactive host shell after the
+    // command exits; VM callers turn it off so exiting the guest cannot cross
+    // the isolation boundary.
     void runCommand(const QString &commandLine, const QString &cwd,
-                    const QStringList &extraEnv = {});
+                    const QStringList &extraEnv = {},
+                    bool keepHostShell = true);
     bool isRunning() const { return m_childPid > 0; }
     void stop();
 

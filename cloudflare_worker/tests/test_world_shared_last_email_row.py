@@ -129,10 +129,10 @@ def test_world_app_forwards_both_fields_from_the_directory():
 
 
 def test_scene_paints_the_row_for_members_and_hides_it_for_guests():
-    # Directory facts: walking avatars and yurt member figures both read them.
+    # Directory facts: walking avatars and open-circle member figures read them.
     assert "lastEmailAt: Math.max(0, Number(member?.lastEmailAt) || 0)" in SCENE
     assert "lastEmailAt: Math.max(0, Number(member.lastEmailAt) || 0)" in SCENE
-    assert SCENE.count("lastEmailPrivate: false") == 4
+    assert SCENE.count("lastEmailPrivate: false") == 3
     # withMemberFacts returns early for a guest, so the guest badge keeps the
     # "NOT SHARED" line.
     assert '"LAST EMAIL · NOT SHARED"' in SCENE

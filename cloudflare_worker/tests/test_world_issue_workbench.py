@@ -98,12 +98,12 @@ def test_office_exit_preserves_heading_instead_of_reversing_the_visitor():
     assert "setCameraMode(\"third-person\", \"office-exit\")" in leave
 
 
-def test_repository_circle_uses_avatar_orbit_inside_the_geodesic_dome():
+def test_repository_circle_uses_avatar_orbit_in_the_open_district():
     assert 'icon.scale.set(1.14, 1.14, 1)' in SCENE
     assert "const orbitRadius = 4.25" in SCENE
-    assert "function createRepositoryGeodesicDome(THREE)" in SCENE
-    assert 'dome.name = "repository-geodesic-dome"' in SCENE
-    assert 'struts.name = "repository-geodesic-dome-struts"' in SCENE
+    assert 'content.name = "repository-district-content"' in SCENE
+    assert "function createRepositoryGeodesicDome" not in SCENE
+    assert "repository-geodesic-dome" not in SCENE
     assert '"repository-create-button"' not in SCENE
     follower_texture = _function_body(SCENE, "repositoryFollowerIconTexture")
     assert "256, 256" in follower_texture
@@ -111,7 +111,7 @@ def test_repository_circle_uses_avatar_orbit_inside_the_geodesic_dome():
     assert "fillText" not in follower_texture
 
 
-def test_repository_records_stay_bounded_in_the_web_workbench_not_the_dome():
+def test_repository_records_stay_bounded_in_the_web_workbench_not_the_world_scene():
     assert "const selected = numbered.slice(0, 250)" in WORLD
     assert ".slice(0, 250);" in _function_body(WORLD, "repositoryPullRecords")
     assert "offset += 60" in _function_body(WORLD, "loadRepositoryBlobBatches")

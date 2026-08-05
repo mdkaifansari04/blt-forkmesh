@@ -70,6 +70,44 @@ constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
 // first ticket is this old, or as soon as the strip goes quiet.
 constexpr qint64 kBackgroundTaskFastFlushMs = 2000;
 
+// Parse the fixed persisted-log timestamp without asking QDateTime's locale and
+// time-zone parser to scan every row. A 20,000-line log used to spend seconds
+// in qMkTime/QDateTimeParser when Logs first opened. The caller caches midnight
+// per date, so normal 24-hour slices need one time-zone conversion, not 20,000.
+qint64 fastStoredLogTimestampMs(const QString &line, QString *cachedDate,
+                                qint64 *cachedMidnightMs)
+{
+    if (line.size() < 19 || line.at(4) != QLatin1Char('-') ||
+        line.at(7) != QLatin1Char('-') || line.at(10) != QLatin1Char(' ') ||
+        line.at(13) != QLatin1Char(':') || line.at(16) != QLatin1Char(':'))
+        return -1;
+    auto digits = [&line](int offset, int length) {
+        int value = 0;
+        for (int i = 0; i < length; ++i) {
+            const ushort digit = line.at(offset + i).unicode();
+            if (digit < '0' || digit > '9')
+                return -1;
+            value = value * 10 + int(digit - '0');
+        }
+        return value;
+    };
+    const QString dateText = line.left(10);
+    if (*cachedDate != dateText) {
+        const QDate date(digits(0, 4), digits(5, 2), digits(8, 2));
+        if (!date.isValid())
+            return -1;
+        *cachedDate = dateText;
+        *cachedMidnightMs = QDateTime(date, QTime(0, 0)).toMSecsSinceEpoch();
+    }
+    const int hour = digits(11, 2);
+    const int minute = digits(14, 2);
+    const int second = digits(17, 2);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 ||
+        second > 59)
+        return -1;
+    return *cachedMidnightMs + qint64(hour * 3600 + minute * 60 + second) * 1000;
+}
+
 QPushButton *makeInlineHelpButton(const QString &accessibleName,
                                   const QString &helpText,
                                   QWidget *parent = nullptr)
@@ -1074,6 +1112,8 @@ void MainWindow::loadServers()
         hostSettings, kHostsSetting, &m_hostSessionPasswords);
 
     m_servers.clear();
+    m_legacyServerUrls.clear();
+    m_legacyServerRooms.clear();
     bool migratedDefaultRoom = false;
     const QString json = QSettings().value(kServersArray).toString();
     const QJsonArray array = QJsonDocument::fromJson(json.toUtf8()).array();
@@ -1082,6 +1122,9 @@ void MainWindow::loadServers()
         const QString url = obj.value("url").toString().trimmed();
         if (url.isEmpty())
             continue;
+        m_legacyServerUrls.append(url);
+        m_legacyServerRooms.append(
+            obj.value("room").toString(kDefaultRoomName));
         ServerConfig server;
         server.url = canonicalServerUrl(url);
         server.room = obj.value("room").toString(kDefaultRoomName);
@@ -1098,12 +1141,15 @@ void MainWindow::loadServers()
         const bool legacyWorkersDevUrl =
             QUrl(savedUrl).host().endsWith(QStringLiteral(".workers.dev"));
         ServerConfig server;
+        const QString savedRoom =
+            QSettings().value(kRoomNameSetting, kDefaultRoomName).toString();
+        m_legacyServerUrls.append(savedUrl);
+        m_legacyServerRooms.append(savedRoom);
         server.url = (savedUrl.isEmpty() || savedUrl == kLocalServerUrl ||
                       legacyWorkersDevUrl)
                          ? kDefaultServerUrl
                          : savedUrl;
-        server.room =
-            QSettings().value(kRoomNameSetting, kDefaultRoomName).toString();
+        server.room = savedRoom;
         migratedDefaultRoom |=
             forkmesh::mainnode::migrateSavedDefaultRoom(
                 &server.url, &server.room);
@@ -1229,9 +1275,12 @@ void MainWindow::promptAddServer()
     server.url = urlEdit->text().trimmed();
     if (server.url.isEmpty())
         server.url = kDefaultServerUrl;
+    const QString legacyUrl = server.url;
     server.url = canonicalServerUrl(server.url);
     server.room = kDefaultRoomName;
     m_servers.append(server);
+    m_legacyServerUrls.append(legacyUrl);
+    m_legacyServerRooms.append(server.room);
     const int newIndex = m_servers.size() - 1;
     saveServers();
     updateBreadcrumb();
@@ -1251,6 +1300,10 @@ void MainWindow::removeServer(int index)
 
     const bool removingActive = (index == m_activeServer);
     m_servers.removeAt(index);
+    if (index < m_legacyServerUrls.size())
+        m_legacyServerUrls.removeAt(index);
+    if (index < m_legacyServerRooms.size())
+        m_legacyServerRooms.removeAt(index);
     if (m_activeServer > index)
         --m_activeServer;
     if (m_activeServer >= m_servers.size())
@@ -1515,21 +1568,28 @@ QWidget *MainWindow::buildChatPage()
     root->setSpacing(0);
     root->addWidget(header);
     root->addWidget(lower, 1);
-    // Thin one-line strip under everything else, spanning the rail as well as
-    // the content shell so it reads as the window's own bottom edge (adhoc #2).
+    // One-line status strip plus its opt-in debug row, spanning the rail and
+    // content shell so both read as window chrome rather than page content.
     root->addWidget(buildStatusBar());
     return page;
 }
 
-// A single text line tall: the branch switcher and the repo's git identity (both
-// of which used to sit inside the repo Code overview) plus the on-disk location
-// of the running executable. The widgets are created here, not in the repo pages
+// One text line tall while collapsed: the branch switcher and the repo's git
+// identity (both of which used to sit inside the repo Code overview) plus the
+// on-disk location of the running executable. The widgets are created here,
+// not in the repo pages
 // they came from, because those pages build lazily on first navigation while the
 // strip has to be populated from the first frame; setRepoBranch /
 // loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before,
 // and updateFooterCommitInfo adds the commit that branch is on.
 QWidget *MainWindow::buildStatusBar()
 {
+    auto *statusArea = new QWidget;
+    statusArea->setObjectName(QStringLiteral("appStatusArea"));
+    auto *statusAreaLayout = new QVBoxLayout(statusArea);
+    statusAreaLayout->setContentsMargins(0, 0, 0, 0);
+    statusAreaLayout->setSpacing(0);
+
     auto *bar = new QWidget;
     bar->setObjectName("appStatusBar");
 
@@ -1573,6 +1633,15 @@ QWidget *MainWindow::buildStatusBar()
         QStringLiteral("Running app: %1\nWorking directory: %2")
             .arg(appPath, QDir::toNativeSeparators(QDir::currentPath())));
 
+    // The build number belongs beside the path it identifies. It is also the
+    // intentionally-small disclosure control for the diagnostics row below.
+    auto *versionButton = new QPushButton(QStringLiteral("v" FORKMESH_VERSION));
+    versionButton->setObjectName(QStringLiteral("statusVersionButton"));
+    versionButton->setCheckable(true);
+    versionButton->setCursor(Qt::PointingHandCursor);
+    versionButton->setAccessibleName(QStringLiteral("Toggle debug bar"));
+    versionButton->setToolTip(QStringLiteral("Show debug activity and resource use"));
+
     // Background work rides the middle of the strip (adhoc #1389): one small
     // rotating icon per kind of job in flight, in place of the "Background" panel
     // that used to take a column out of the footer. A stretch on either side
@@ -1595,13 +1664,67 @@ QWidget *MainWindow::buildStatusBar()
     row->addWidget(m_statusBackgroundHost);
     row->addStretch(1);
     row->addWidget(m_statusAppPath);
+    row->addWidget(versionButton);
 
     // One line, nothing more: the tallest child (the branch button) is capped to
     // the strip so the menu indicator can't push the bar taller.
     const int rowHeight = qMax(20, bar->fontMetrics().height() + 6);
     bar->setFixedHeight(rowHeight);
     m_branchButton->setMaximumHeight(rowHeight - 2);
-    return bar;
+    statusAreaLayout->addWidget(bar);
+
+    // A horizontally scrollable debug row keeps every category in one labeled
+    // line without imposing a desktop-sized minimum width on small screens.
+    auto *debugBar = new QFrame;
+    m_debugBar = debugBar;
+    debugBar->setObjectName(QStringLiteral("debugBar"));
+    auto *debugBarLayout = new QHBoxLayout(debugBar);
+    debugBarLayout->setContentsMargins(0, 0, 0, 0);
+    debugBarLayout->setSpacing(0);
+
+    auto *debugScroll = new QScrollArea;
+    debugScroll->setObjectName(QStringLiteral("debugBarScroll"));
+    debugScroll->setFrameShape(QFrame::NoFrame);
+    debugScroll->setWidgetResizable(true);
+    debugScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    debugScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // 40px content + 4px vertical inset + the narrow 7px scrollbar when a
+    // laptop-width window needs it. No resource or caption is clipped then.
+    debugScroll->setFixedHeight(51);
+
+    auto *debugContent = new QWidget;
+    debugContent->setObjectName(QStringLiteral("debugBarContent"));
+    auto *debugRow = new QHBoxLayout(debugContent);
+    debugRow->setContentsMargins(8, 2, 8, 2);
+    debugRow->setSpacing(8);
+    debugRow->setSizeConstraint(QLayout::SetMinimumSize);
+    if (m_resourceChart) {
+        m_resourceChart->setObjectName(QStringLiteral("debugResourceChart"));
+        m_resourceChart->setFixedSize(40, 40);
+        debugRow->addWidget(m_resourceChart, 0, Qt::AlignVCenter);
+    }
+    auto *separator = new QFrame;
+    separator->setObjectName(QStringLiteral("debugBarSeparator"));
+    separator->setFrameShape(QFrame::VLine);
+    separator->setFixedHeight(32);
+    debugRow->addWidget(separator, 0, Qt::AlignVCenter);
+    if (m_logActivityLights)
+        debugRow->addWidget(m_logActivityLights, 0, Qt::AlignVCenter);
+    debugRow->addStretch(1);
+    debugScroll->setWidget(debugContent);
+    debugBarLayout->addWidget(debugScroll);
+    debugBar->hide();
+    statusAreaLayout->addWidget(debugBar);
+
+    connect(versionButton, &QPushButton::toggled, this,
+            [this, versionButton](bool expanded) {
+                if (m_debugBar)
+                    m_debugBar->setVisible(expanded);
+                versionButton->setToolTip(
+                    expanded ? QStringLiteral("Hide debug activity and resource use")
+                             : QStringLiteral("Show debug activity and resource use"));
+            });
+    return statusArea;
 }
 
 // kFooterLogSeedLines (MainWindowInternal.h) bounds both the startup seed and
@@ -2456,16 +2579,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     leftRegionLayout->setSpacing(8);
     leftRegionLayout->addWidget(logPanel, 1);
 
-    // State one: all thirty log-category icons start grey, become solid on their
-    // first occurrence, and blink on later occurrences. Hover exposes the count.
-    // A click reveals the recent-line overlay; clicking a line there opens the
-    // existing full Log page (state three).
-    // Keep the compact icons outside the box layout so a collapsed log occupies
-    // no layout width. The expanded header above takes over inside the panel.
-    m_logActivityLights = new LogActivityLights(LogActivityLights::Compact, dock);
-    m_logActivityLights->onClicked = [this] {
-        if (!m_sectionStack || m_sectionStack->currentIndex() != 4)
-            setLogOverlayExpanded(!m_logOverlayExpanded);
+    // State one now lives in the version-controlled debug row: all thirty icons
+    // stay in one labeled line with their counts on the icon corners. Clicking
+    // a category opens the full Log page filtered to that category.
+    m_logActivityLights = new LogActivityLights(LogActivityLights::Debug, dock);
+    m_logActivityLights->onCategoryClicked = [this](const QString &category) {
+        openFullLogForCategory(category);
     };
     const QString stallTip = QStringLiteral(
         "Click to draft a fix-it prompt for recorded UI stalls; right-click "
@@ -2476,7 +2595,7 @@ QWidget *MainWindow::buildNetworkLogDock()
         lights->onStallContextMenu = [this] { showDiagnosticsDialog(); };
     }
 
-    // The compact log owns the lower-left and the prompt owns the lower-right.
+    // The expanded log owns the lower-left and the prompt owns the lower-right.
     // The stretch between them is transparent and masked out below so neither
     // overlay blocks the workspace behind it.
     auto *dockRow = new QHBoxLayout(dock);
@@ -2560,20 +2679,7 @@ void MainWindow::positionGlobalFooterOverlays()
     // middle so the overlay never steals clicks from the page underneath.
     if (QLayout *layout = m_footerDock->layout())
         layout->activate();
-    if (m_logActivityLights) {
-        const bool fullLog =
-            m_sectionStack && m_sectionStack->currentIndex() == 4;
-        const bool showCompact = fullLog || !m_logOverlayExpanded;
-        m_logActivityLights->move(
-            0,
-            qMax(0, m_footerDock->height() - m_logActivityLights->height()));
-        m_logActivityLights->setVisible(showCompact);
-        if (showCompact)
-            m_logActivityLights->raise();
-    }
     QRegion interactive;
-    if (m_logActivityLights && m_logActivityLights->isVisible())
-        interactive += m_logActivityLights->geometry();
     if (m_footerLeftRegion && m_footerLeftRegion->isVisible())
         interactive += m_footerLeftRegion->geometry();
     if (m_promptOverlayHost && m_promptOverlayHost->isVisible())
@@ -3362,26 +3468,26 @@ void MainWindow::refreshCloudflareAiModels()
 // Authorization is this account's Ed25519 signature over the model and a digest
 // of the prompt (the desktop has no session token, and the relay bills every
 // call), so the reply is only ever produced for a signed, attributable account.
-void MainWindow::sendPromptToCloudflareAi(const QString &prompt,
+bool MainWindow::sendPromptToCloudflareAi(const QString &prompt,
                                           const QString &model)
 {
     const QString text = prompt.trimmed();
     if (text.isEmpty() || !m_networkAccess)
-        return;
+        return false;
     if (m_cloudflareAiAskInFlight) {
         logSystem("Cloudflare AI is still answering the previous prompt.");
-        return;
+        return false;
     }
     const QString signer = accountOwner().trimmed().toLower();
     if (signer.isEmpty() || !hasOwnerSigningCapability(signer)) {
         setIssueInlineNotice("Sign in to this node's account to send prompts to "
                              "Cloudflare AI.", true);
-        return;
+        return false;
     }
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
         setIssueInlineNotice("This node has no signing key yet, so Cloudflare AI "
                              "cannot verify the request.", true);
-        return;
+        return false;
     }
     const QString label = cloudflareAiModelLabel(model);
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
@@ -3410,13 +3516,18 @@ void MainWindow::sendPromptToCloudflareAi(const QString &prompt,
         request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     logSystem(QStringLiteral("Sent the prompt to %1 on Cloudflare AI.")
                   .arg(label.isEmpty() ? model : label));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, label] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, model, label] {
         reply->deleteLater();
         m_cloudflareAiAskInFlight = false;
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QJsonObject body =
             QJsonDocument::fromJson(reply->readAll()).object();
+        const QString responseModel =
+            body.value(QStringLiteral("model")).toString().trimmed();
+        const QString answeringModel =
+            responseModel.isEmpty() ? model : responseModel;
+        const QString answeringLabel = cloudflareAiModelLabel(answeringModel);
         const QString answer =
             body.value(QStringLiteral("reply")).toString().trimmed();
         if (answer.isEmpty()) {
@@ -3449,8 +3560,16 @@ void MainWindow::sendPromptToCloudflareAi(const QString &prompt,
                     .arg(detail), true);
             return;
         }
-        const QString name = label.isEmpty() ? QStringLiteral("Cloudflare AI")
-                                             : label;
+        const QString name = answeringLabel.isEmpty()
+                                 ? (label.isEmpty() ? QStringLiteral("Cloudflare AI")
+                                                    : label)
+                                 : answeringLabel;
+        if (!responseModel.isEmpty() && responseModel != model) {
+            const QString requestedName =
+                label.isEmpty() ? model : label;
+            logSystem(QStringLiteral("Cloudflare AI fell back from %1 to %2.")
+                          .arg(requestedName, name));
+        }
         // flashMessage logs the full answer and shows it in the top toast, whose
         // "Send to prompt" action pushes it into the composer — the toast is
         // one simplified line, the log keeps the whole reply. A longer countdown
@@ -3458,6 +3577,7 @@ void MainWindow::sendPromptToCloudflareAi(const QString &prompt,
         flashMessage(QStringLiteral("%1: %2").arg(name, answer), false,
                      QString(), 30);
     });
+    return true;
 }
 
 void MainWindow::refreshQuickAddSpeedSelector()
@@ -3805,8 +3925,20 @@ void MainWindow::refreshClaudeEffortLevels()
             });
     // A login shell so a `claude` in ~/.local/bin resolves exactly as it does for
     // the real launches.
-    proc->start(QStringLiteral("bash"),
-                {QStringLiteral("-lc"), QStringLiteral("claude --help 2>/dev/null")});
+    const QString probeDir = forkmesh::vm::active()
+                                 ? forkmesh::vm::workspaceRoot()
+                                 : QDir::currentPath();
+    const forkmesh::vm::LaunchCommand probe = forkmesh::vm::isolateCommand(
+        QStringLiteral("bash"),
+        {QStringLiteral("-lc"), QStringLiteral("claude --help 2>/dev/null")},
+        probeDir, false);
+    if (!probe.error.isEmpty()) {
+        m_claudeEffortProbe = nullptr;
+        proc->deleteLater();
+        return;
+    }
+    proc->setWorkingDirectory(probeDir);
+    proc->start(probe.program, probe.arguments);
 }
 
 // Probes the live `claude` CLI for its slash-command list via the same
@@ -3868,10 +4000,22 @@ void MainWindow::refreshClaudeSlashCommands()
              QJsonObject{{QStringLiteral("subtype"), QStringLiteral("initialize")}}}};
         proc->write(QJsonDocument(req).toJson(QJsonDocument::Compact) + "\n");
     });
-    proc->start(QStringLiteral("bash"),
-                {QStringLiteral("-lc"),
-                 QStringLiteral("exec claude --print --input-format stream-json "
-                                "--output-format stream-json --verbose")});
+    const QString probeDir = forkmesh::vm::active()
+                                 ? forkmesh::vm::workspaceRoot()
+                                 : QDir::currentPath();
+    const forkmesh::vm::LaunchCommand probe = forkmesh::vm::isolateCommand(
+        QStringLiteral("bash"),
+        {QStringLiteral("-lc"),
+         QStringLiteral("exec claude --print --input-format stream-json "
+                        "--output-format stream-json --verbose")},
+        probeDir, false);
+    if (!probe.error.isEmpty()) {
+        m_claudeSlashProbe = nullptr;
+        proc->deleteLater();
+        return;
+    }
+    proc->setWorkingDirectory(probeDir);
+    proc->start(probe.program, probe.arguments);
 }
 
 // "Mention file from this project…" (adhoc #116): pick a file under the
@@ -6604,14 +6748,16 @@ void MainWindow::refreshLogTimelineChart()
     QVector<LogTimelineEntry> entries;
     entries.reserve(int(std::distance(first, last)));
     QColor selectedAccent(QStringLiteral("#58a6ff"));
+    QString cachedDate;
+    qint64 cachedMidnightMs = 0;
     for (auto it = first; it != last; ++it) {
         const QString &line = *it;
-        const QDateTime timestamp =
-            QDateTime::fromString(line.left(19), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-        if (!timestamp.isValid())
+        const qint64 timestampMs =
+            fastStoredLogTimestampMs(line, &cachedDate, &cachedMidnightMs);
+        if (timestampMs < 0)
             continue;
         LogTimelineEntry entry;
-        entry.timestampMs = timestamp.toMSecsSinceEpoch();
+        entry.timestampMs = timestampMs;
         entry.category = logBadgeFor(line);
         const QColor entryAccent(logAccentFor(line));
         if (entry.category == m_logFilter && entryAccent.isValid())
@@ -7735,7 +7881,7 @@ QWidget *MainWindow::buildBreadcrumb()
         resize(1280, 720);
     });
 
-    // One compact four-quadrant chart on the chrome line: CPU/memory above
+    // One compact four-quadrant chart for the debug line: CPU/memory above
     // swap/disk. It receives one sample per second from updateFooterDiagnostics.
     // CPU, swap and disk open diagnostics; memory opens the culprit list.
     auto *resourceChart = new ResourceQuadrantSparkline;
@@ -7756,10 +7902,6 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-
-    auto *appVersionLabel = new QLabel(QStringLiteral("v" FORKMESH_VERSION));
-    appVersionLabel->setObjectName("chromeVersionLabel");
-    appVersionLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
 
     auto *chrome = new WindowChromeBar;
     auto *chromeRow = new QHBoxLayout(chrome);
@@ -7808,13 +7950,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
     // #124) — its colour moved to the dot above the instance logo and its
     // node blips to the node dots beside the agent fleet.
-    // Live CPU/MEM/SWAP/DISK sparklines, combined into one chart on the
-    // window-chrome line next to the minimize/maximize/close buttons.
-    chromeRow->addWidget(resourceChart);
-    // UI stalls now use the STALL category icon inside the bottom-left log
-    // control, where its count and blink have the same language as every other
-    // event. The chrome keeps only the version and opt-in restart action.
-    chromeRow->addWidget(appVersionLabel, 0, Qt::AlignVCenter);
+    // Resource traces and the version moved to the opt-in debug/status rows at
+    // the bottom, leaving this chrome cluster for window-level actions only.
     chromeRow->addWidget(m_navRebuildButton, 0, Qt::AlignVCenter);
     chromeRow->addSpacing(8);
 
@@ -12441,6 +12578,8 @@ QWidget *MainWindow::buildHostsSection()
     m_vultrStatus = new QLabel;
     m_vultrStatus->setObjectName("mutedLabel");
     m_vultrStatus->setWordWrap(true);
+    m_vultrStatus->setStyleSheet(
+        QStringLiteral("color:#c9d1d9; font-size:11px;"));
     vultrRow->addWidget(m_vultrStatus, 1);
     vultrCol->addLayout(vultrRow);
     // --- Live session / install output ------------------------------------
@@ -18241,16 +18380,20 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
     if (m_vultrCreateButton)
         m_vultrCreateButton->setText(ok ? QStringLiteral("Create another mirror")
                                         : QStringLiteral("Retry deployment"));
-    if (m_vultrStatus)
-        m_vultrStatus->setText(
-            (ok ? QString::fromUtf8("\xE2\x9C\x94 ")
-                : QString::fromUtf8("\xE2\x9C\x98 ")) + message);
+    if (!ok && m_vultrStatus)
+        m_vultrStatus->setText(QString::fromUtf8("\xE2\x9C\x98 ") + message);
     if (!message.isEmpty())
         appendHostInstallLog(
             (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
                 : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
             message + QStringLiteral("\n"));
     pingVultrProvisionStage(m_vultrProvisionStage, ok, message);
+    if (ok) {
+        if (m_vultrNameEdit)
+            m_vultrNameEdit->clear();
+        if (m_vultrStatus)
+            m_vultrStatus->clear();
+    }
     saveVultrProvisionLog();
     m_vultrProvisionActive = false;
     m_vultrResumeRequested = !ok;
@@ -19343,12 +19486,10 @@ void MainWindow::appendVultrAttemptHistory()
 void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                                        const QString &identityFile)
 {
-    // Two attempts, not a ladder of them: waitForVultrSshReady has already
-    // proven the host answers, so "not reachable yet" is no longer a reason to
-    // repeat a whole-binary upload (adhoc #48). The one retry left is the
-    // switch to uploading this app's own binary when the relay download turns
-    // out to have nothing to serve.
-    constexpr int kMaxInstallAttempts = 2;
+    // The native package is streamed once from this desktop.  It has no
+    // dependency on an already-online mirror, so retrying the general desktop
+    // installer or uploading the much larger Qt executable is never useful.
+    constexpr int kMaxInstallAttempts = 1;
     if (!m_vultrProvisionActive)
         return;
     // Hand off to the shared install path through the form it reads; the
@@ -19387,10 +19528,8 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     if (m_vultrStatus)
         m_vultrStatus->setText(
             QString::fromUtf8(
-                m_vultrInstallUseLocalBinary
-                    ? "Installing ForkMesh (attempt %1 of %2) \xE2\x80\x94 "
-                      "uploading this app's release directly\xE2\x80\xA6"
-                    : "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
+                "Installing the Go mirror server (attempt %1 of %2) \xE2\x80\x94 "
+                "no Qt or GTK packages\xE2\x80\xA6")
                 .arg(m_vultrInstallAttempts)
                 .arg(kMaxInstallAttempts));
     // A first attempt can still fail its way into the local-binary switch
@@ -19460,27 +19599,6 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                 "the network that owns that range); it is saved under Hosts "
                 "\xE2\x80\x94 fix the address there and click Update.")
                 .arg(ip, unroutable));
-            return;
-        }
-        // A brand-new instance has nobody mirroring it yet and may have no
-        // published release for its platform, so a relay download/clone can
-        // never succeed no matter how many times it is retried the same way.
-        // Switch this and every later attempt this run to uploading this app's
-        // own release binary directly over the SSH session instead — that needs
-        // neither an online mirror nor a published release — and retry right
-        // away, since SSH clearly worked.
-        if (!m_vultrInstallUseLocalBinary && !isFinalAttempt &&
-            forkmesh::control::vultrInstallNeedsLocalBinary(
-                m_hostInstallRawTail)) {
-            m_vultrInstallUseLocalBinary = true;
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Nothing published to install from yet \xE2\x80\x94 "
-                    "retrying with this app's own binary uploaded "
-                    "directly\xE2\x80\xA6"));
-            QTimer::singleShot(2000, this, [this, node, ip, identityFile] {
-                startVultrHostInstall(node, ip, identityFile);
-            });
             return;
         }
         // Nothing is left to retry: SSH was proven reachable before this ran,
@@ -19700,6 +19818,26 @@ namespace {
 // (adhoc #67). The remote side discards lines until it sees this marker, so
 // the upload stays intact whether or not sudo actually read the password.
 const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
+const QString kVultrMirrorUploadMarker =
+    QStringLiteral("__FORKMESH_GO_MIRROR_V1__");
+
+QString packagedMirrorFile(const QString &relative)
+{
+    const QStringList candidates{
+        QDir(QStringLiteral(FORKMESH_SOURCE_DIR)).filePath(relative),
+        QDir(QStringLiteral(FORKMESH_SOURCE_DIR))
+            .filePath(QStringLiteral("../") + relative),
+        QDir(QCoreApplication::applicationDirPath()).filePath(relative),
+        QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("../share/forkmesh/") + relative),
+    };
+    for (const QString &candidate : candidates) {
+        const QFileInfo info(candidate);
+        if (info.isFile() && !info.isSymLink())
+            return info.absoluteFilePath();
+    }
+    return {};
+}
 
 QString controllerReleaseManifestDigest(const QString &expectedBuildCommit,
                                         QString *errorOut)
@@ -19781,6 +19919,153 @@ QString controllerReleaseManifestDigest(const QString &expectedBuildCommit,
 }
 } // namespace
 
+bool MainWindow::buildVultrMirrorNodeInstallCommand(
+    const QString &node, QString *remoteCmd, QByteArray *uploadBytes,
+    QString *errorOut) const
+{
+    QString mirrorBinary =
+        QStandardPaths::findExecutable(QStringLiteral("forkmesh-mirror-node"));
+    if (mirrorBinary.isEmpty()) {
+        const QString sibling =
+            QDir(QCoreApplication::applicationDirPath())
+                .filePath(QStringLiteral("forkmesh-mirror-node"));
+        if (QFileInfo(sibling).isExecutable())
+            mirrorBinary = sibling;
+    }
+    if (mirrorBinary.isEmpty()) {
+        const QString sourceBinary =
+            QDir(QStringLiteral(FORKMESH_SOURCE_DIR))
+                .filePath(QStringLiteral("../mirror_node/forkmesh-mirror-node"));
+        if (QFileInfo(sourceBinary).isExecutable())
+            mirrorBinary = sourceBinary;
+    }
+    struct PayloadFile {
+        QString name;
+        QString path;
+        QByteArray data;
+        bool executable = false;
+    };
+    QList<PayloadFile> files{
+        {QStringLiteral("forkmesh-mirror-node"), mirrorBinary, {}, true},
+        {QStringLiteral("mirror_gateway.py"),
+         packagedMirrorFile(QStringLiteral("tools/mirror_gateway.py"))},
+        {QStringLiteral("cloudflare_bootstrap.py"),
+         packagedMirrorFile(QStringLiteral("tools/cloudflare_bootstrap.py"))},
+        {QStringLiteral("cloudflare_tunnel_bootstrap.py"),
+         packagedMirrorFile(
+             QStringLiteral("tools/cloudflare_tunnel_bootstrap.py"))},
+        {QStringLiteral("cloudflared_install.py"),
+         packagedMirrorFile(QStringLiteral("tools/cloudflared_install.py"))},
+        {QStringLiteral("forkmesh-mirror-node.service"),
+         packagedMirrorFile(
+             QStringLiteral("packaging/systemd/forkmesh-mirror-node.service"))},
+    };
+    for (PayloadFile &file : files) {
+        if (file.path.isEmpty()) {
+            if (errorOut)
+                *errorOut = QStringLiteral(
+                    "The Go mirror-node package is incomplete (%1 is missing). "
+                    "Reinstall this ForkMesh release and retry.")
+                                .arg(file.name);
+            return false;
+        }
+        QFile source(file.path);
+        if (!source.open(QIODevice::ReadOnly) ||
+            (file.data = source.readAll()).isEmpty()) {
+            if (errorOut)
+                *errorOut = QStringLiteral("Could not read packaged %1.")
+                                .arg(file.name);
+            return false;
+        }
+    }
+
+    QByteArray payload = kVultrMirrorUploadMarker.toUtf8() + '\n' +
+                         QByteArray::number(files.size()) + '\n';
+    for (const PayloadFile &file : std::as_const(files)) {
+        const QByteArray digest =
+            QCryptographicHash::hash(file.data, QCryptographicHash::Sha256)
+                .toHex();
+        payload += file.name.toUtf8() + '\n' +
+                   QByteArray::number(file.data.size()) + '\n' + digest + '\n';
+        payload += file.data;
+    }
+
+    auto shq = [](QString value) {
+        value.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
+        return QStringLiteral("'") + value + QStringLiteral("'");
+    };
+    const QString hostname = m_vultrDnsHostname.trimmed().toLower();
+    const QString zone = hostname.section(QLatin1Char('.'), 1);
+    const QUrl catalog = catalogApiUrl();
+    QUrl accounts = catalog;
+    accounts.setPath(QStringLiteral("/api/accounts"));
+    accounts.setQuery(QString());
+    const QString relayHost = catalog.host();
+    if (hostname.isEmpty() || zone.isEmpty() || relayHost.isEmpty()) {
+        if (errorOut)
+            *errorOut = QStringLiteral(
+                "The Vultr mirror hostname or relay endpoint is unavailable.");
+        return false;
+    }
+
+    // The remote receives a tiny, length-delimited package on stdin.  It never
+    // runs the desktop installer, downloads Qt, or asks another mirror for the
+    // repository before the service exists.  Repository sync begins inside the
+    // Go daemon and retries the public round-robin endpoint independently.
+    QString pipeline = QStringLiteral(
+        "set -eu; umask 077; IFS= read -r fm_cf_token || exit 68; "
+        "IFS= read -r marker; [ \"$marker\" = %1 ] || exit 69; "
+        "IFS= read -r count; [ \"$count\" = 6 ] || exit 69; "
+        "stage=\"$(mktemp -d /tmp/forkmesh-go-node.XXXXXX)\" || exit 70; "
+        "trap 'rm -rf \"$stage\"; unset fm_cf_token' EXIT HUP INT TERM; "
+        "i=0; while [ \"$i\" -lt \"$count\" ]; do "
+        "IFS= read -r name; IFS= read -r size; IFS= read -r expected; "
+        "case \"$name\" in forkmesh-mirror-node|mirror_gateway.py|cloudflare_bootstrap.py|cloudflare_tunnel_bootstrap.py|cloudflared_install.py|forkmesh-mirror-node.service) ;; *) exit 69;; esac; "
+        "dd iflag=fullblock bs=1 count=\"$size\" of=\"$stage/$name\" status=none; "
+        "actual=\"$(sha256sum \"$stage/$name\")\"; actual=\"${actual%% *}\"; "
+        "[ \"$actual\" = \"$expected\" ] || exit 69; i=$((i+1)); done; "
+        "export DEBIAN_FRONTEND=noninteractive; "
+        "missing=0; for command_name in curl git python3 openssl; do command -v \"$command_name\" >/dev/null 2>&1 || missing=1; done; "
+        "if [ \"$missing\" -ne 0 ]; then apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl git python3 openssl; fi; "
+        "install -m 0755 \"$stage/forkmesh-mirror-node\" /usr/local/bin/forkmesh-mirror-node; "
+        "install -d -m 0755 /usr/local/share/forkmesh/tools; "
+        "for tool in mirror_gateway.py cloudflare_bootstrap.py cloudflare_tunnel_bootstrap.py cloudflared_install.py; do install -m 0644 \"$stage/$tool\" \"/usr/local/share/forkmesh/tools/$tool\"; done; "
+        "install -m 0644 \"$stage/forkmesh-mirror-node.service\" /etc/systemd/system/forkmesh-mirror-node.service; "
+        "id forkmesh-node >/dev/null 2>&1 || useradd --system --home-dir /var/lib/forkmesh --create-home --shell /usr/sbin/nologin forkmesh-node; "
+        "install -d -o forkmesh-node -g forkmesh-node -m 0700 /var/lib/forkmesh /var/lib/forkmesh/tmp /etc/forkmesh; "
+        "router_json=\"$(curl -fsS --max-time 20 %2)\"; "
+        "router_key=\"$(printf '%%s' \"$router_json\" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"routerPublicKey\",\"\"))')\"; "
+        "printf '%%s' \"$router_key\" | grep -Eq '^[A-Za-z0-9_-]{43}$' || exit 71; "
+        "runuser -u forkmesh-node -- /usr/local/bin/forkmesh-mirror-node --init --config /etc/forkmesh/mirror-node.json --state-dir /var/lib/forkmesh --node %3 --owner forkmesh --repository forkmesh --upstream %4 --catalog-url %5 --public-origin %6 --router-public-key \"$router_key\" --version %7 >/tmp/forkmesh-node-public-key; "
+        "node_key=\"$(tr -d '\\r\\n' </tmp/forkmesh-node-public-key)\"; rm -f /tmp/forkmesh-node-public-key; "
+        "python3 /usr/local/share/forkmesh/tools/cloudflared_install.py --destination /usr/local/bin/cloudflared --json-stdout >/dev/null; chmod 0755 /usr/local/bin/cloudflared; "
+        "CLOUDFLARE_API_TOKEN=\"$fm_cf_token\" HOME=/var/lib/forkmesh XDG_DATA_HOME=/var/lib/forkmesh/.local/share runuser -u forkmesh-node -- python3 /usr/local/share/forkmesh/tools/cloudflare_tunnel_bootstrap.py --hostname %8 --zone %9 --node-name %3 --origin-host 127.0.0.1 --origin-port 8790 --gateway-config /var/lib/forkmesh/mirror-gateway/config.json --mirror-public-key=\"$node_key\" --manifest-signer-command '/usr/local/bin/forkmesh-mirror-node --config /etc/forkmesh/mirror-node.json --sign-mirror-manifest' --manifest-output /var/lib/forkmesh/mirror-gateway/forkmesh-mirror.json --tunnel-token-file /var/lib/forkmesh/mirror-gateway/connector.token; "
+        "unset fm_cf_token; link_number=\"$(od -An -N4 -tu4 /dev/urandom)\"; link_number=\"${link_number// /}\"; link_code=\"$(printf '%%06d' $((link_number %% 1000000)))\"; "
+        "printf 'FORKMESH LINK CODE: %%s\\n' \"$link_code\"; "
+        "runuser -u forkmesh-node -- /usr/local/bin/forkmesh-mirror-node --config /etc/forkmesh/mirror-node.json --accounts-url %10 --register-link-code \"$link_code\"; "
+        "systemctl daemon-reload; systemctl enable --now forkmesh-mirror-node.service; "
+        "for n in 1 2 3 4 5 6 7 8 9 10; do curl -fsS http://127.0.0.1:8791/healthz >/dev/null && break; sleep 1; done; "
+        "curl -fsS http://127.0.0.1:8791/healthz >/dev/null; "
+        "printf 'Go mirror-node installed and running (no Qt/GTK packages).\\n'")
+                           .arg(shq(kVultrMirrorUploadMarker))
+                           .arg(shq(QStringLiteral("https://") + relayHost +
+                                    QStringLiteral("/api/mirrors/https")))
+                           .arg(shq(node))
+                           .arg(shq(QStringLiteral("https://") + relayHost +
+                                    QStringLiteral("/forkmesh/forkmesh")))
+                           .arg(shq(catalog.toString()))
+                           .arg(shq(QStringLiteral("https://") + hostname))
+                           .arg(shq(QStringLiteral(FORKMESH_VERSION)))
+                           .arg(shq(hostname))
+                           .arg(shq(zone))
+                           .arg(shq(accounts.toString()));
+    if (remoteCmd)
+        *remoteCmd = pipeline;
+    if (uploadBytes)
+        *uploadBytes = payload;
+    return true;
+}
+
 bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                                          const QString &node, bool uploadBinary,
                                          bool reinstall, bool fromSource,
@@ -19788,6 +20073,10 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                                          QString *remoteCmd, QByteArray *uploadBytes,
                                          QString *errorOut)
 {
+    if (m_vultrProvisionActive) {
+        return buildVultrMirrorNodeInstallCommand(
+            node, remoteCmd, uploadBytes, errorOut);
+    }
     const QString installUrl = installScriptUrl();
     if (installUrl.isEmpty()) {
         if (errorOut)
@@ -20099,6 +20388,7 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
             onFinished(false);
         return;
     }
+    const bool hasUpload = !uploadBytes.isEmpty();
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
@@ -20138,15 +20428,15 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     appendHostInstallLog(
         QStringLiteral("Connecting to %1 as %2 and running %3 ...\n\n")
             .arg(ip, user, installUrl));
-    if (uploadBinary)
+    if (hasUpload)
         appendHostInstallLog(
-            QString::fromUtf8("Uploading this app's release binary (%1 MB) "
+            QString::fromUtf8("Uploading the native mirror package (%1 MB) "
                               "over the SSH session\xE2\x80\xA6\n")
                 .arg(QString::number(uploadBytes.size() / (1024.0 * 1024.0),
                                      'f', 1)));
     if (m_hostInstallStatus)
         m_hostInstallStatus->setText(
-            uploadBinary
+            hasUpload
                 ? QString::fromUtf8(
                       "Uploading the release and installing on %1\xE2\x80\xA6")
                       .arg(ip)
@@ -20271,8 +20561,9 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     // into the temp file until the EOF the channel close below produces.
     // QProcess buffers the write and drains it as ssh accepts it, and
     // closeWriteChannel() only closes once everything queued has been written.
-    if (uploadBinary) {
-        proc->write((kHostUploadMarker + QStringLiteral("\n")).toUtf8());
+    if (hasUpload) {
+        if (!m_vultrProvisionActive)
+            proc->write((kHostUploadMarker + QStringLiteral("\n")).toUtf8());
         proc->write(uploadBytes);
     }
     proc->closeWriteChannel();
@@ -20337,6 +20628,26 @@ QString MainWindow::testDirectBinaryInstallRemoteCommand(
         /*reinstall=*/false, /*fromSource=*/false,
         /*requirePublishedBinary=*/false, &remoteCommand, &uploadBytes,
         &error);
+    if (uploadByteCount)
+        *uploadByteCount = uploadBytes.size();
+    if (errorOut)
+        *errorOut = error;
+    uploadBytes.fill('\0');
+    uploadBytes.clear();
+    return ok ? remoteCommand : QString();
+}
+
+QString MainWindow::testVultrGoMirrorInstallRemoteCommand(
+    qsizetype *uploadByteCount, QString *errorOut)
+{
+    const QString previousHostname = m_vultrDnsHostname;
+    m_vultrDnsHostname = QStringLiteral("mirror17.forkmesh.com");
+    QString remoteCommand;
+    QByteArray uploadBytes;
+    QString error;
+    const bool ok = buildVultrMirrorNodeInstallCommand(
+        QStringLiteral("mirror17"), &remoteCommand, &uploadBytes, &error);
+    m_vultrDnsHostname = previousHostname;
     if (uploadByteCount)
         *uploadByteCount = uploadBytes.size();
     if (errorOut)

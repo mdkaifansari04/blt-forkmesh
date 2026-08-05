@@ -3922,6 +3922,7 @@ void MainWindow::updateIssueActionState()
         m_issueListNewButton->setEnabled(writable || issuesRepoIndex() >= 0);
     if (m_issueSyncButton)
         m_issueSyncButton->setEnabled(writable);
+    refreshPendingInboxBadges();
     if (m_issueTitleEditButton)
         m_issueTitleEditButton->setEnabled(writable && haveIssue);
     if (m_issueTitleEditor)
@@ -4373,7 +4374,11 @@ void MainWindow::quickAddIssue()
             logSystem(QStringLiteral("Cloudflare AI answers text only; %1 "
                                      "attached image(s) were not sent.")
                           .arg(m_quickAddImages.size()));
-        sendPromptToCloudflareAi(title, model);
+        // Keep an unsent prompt in the composer when authentication is missing
+        // or another Workers AI request is still in flight. The old void path
+        // cleared it even though no request had started.
+        if (!sendPromptToCloudflareAi(title, model))
+            return;
         m_issueQuickAdd->clear();
         clearQuickAddImages();
         return;
@@ -8136,7 +8141,7 @@ void MainWindow::syncIssuesInbox()
     const int idx = issuesRepoIndex();
     if (idx < 0)
         return;
-    drainIssuesInboxFor(m_repositories.at(idx), /*interactive=*/true);
+    showPendingInbox(m_repositories.at(idx), QStringLiteral("issues"));
 }
 
 void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
@@ -8328,6 +8333,12 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
 
 void MainWindow::pollMirrorIssueInboxes()
 {
+    // Browsing a public mirror on a desktop does not make the signed-in user a
+    // registered mirror endpoint. Sending ?mirror=1 from those sessions caused
+    // the repeated HTTP/2 "Host requires authentication" warnings. Only a
+    // provisioned headless node may compete for mirror intake leases.
+    if (!m_headless)
+        return;
     if (!m_networkAccess || !hasOwnerSigningCapability(accountOwner()))
         return;
     QSet<QString> seen;

@@ -331,7 +331,7 @@ FORKBOT_AUTHOR = "forkbot"
 FORKBOT_DEFAULT_OWNER = "forkmesh"
 FORKBOT_DEFAULT_REPO = "forkmesh"
 FORKBOT_MAX_COMMAND = 4000
-FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 USERNAME_MODERATION_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
 # Cloudflare Workers AI text models a client may pick for its own ForkBot
 # prompt (GET /api/forkbot/models lists these; POST /api/forkbot/chat honors
@@ -344,18 +344,18 @@ FORKBOT_AI_MODEL_CHOICES = (
     ("@cf/meta/llama-3.3-70b-instruct-fp8-fast",
      "Llama 3.3 70B (fast)",
      "Best intent detection and JSON mode. The deployed default."),
-    ("@cf/meta/llama-3.1-8b-instruct",
-     "Llama 3.1 8B",
-     "Small and cheap; solid at plainly phrased requests."),
-    ("@cf/meta/llama-3.1-8b-instruct-fast",
-     "Llama 3.1 8B (fast)",
-     "Lowest latency; least reliable at subtle phrasing."),
     ("@cf/meta/llama-4-scout-17b-16e-instruct",
      "Llama 4 Scout 17B",
      "Strong reasoning with a long context window."),
-    ("@cf/google/gemma-3-12b-it",
-     "Gemma 3 12B",
-     "Concise summaries; terser issue titles."),
+    ("@cf/google/gemma-4-26b-a4b-it",
+     "Gemma 4 26B",
+     "Efficient reasoning, coding, and a long context window."),
+    ("@cf/zai-org/glm-4.7-flash",
+     "GLM 4.7 Flash",
+     "Fast multilingual instruction following and coding."),
+    ("@cf/meta/llama-3.1-8b-instruct-fast",
+     "Llama 3.1 8B (fast)",
+     "Low-latency answers for straightforward prompts."),
 )
 # POST /api/ai/ask: send one prompt to a picked Workers AI model and get the
 # answer back. Used by the desktop composer's "Cloudflare AI" provider, where
@@ -2439,6 +2439,7 @@ async def network_overview(env):
 #     "realtime" without adding one actionable Worker-error row per reconnect.
 STATUS_SYSTEMS = [
     ("website", "Website"),
+    ("status_page", "Status page API"),
     ("api", "API"),
     ("errors", "Worker errors"),
     ("database", "Database"),
@@ -2459,6 +2460,11 @@ STATUS_SYSTEM_CHECKS = {
         "real index document returns HTTP 200 with the ForkMesh homepage "
         "marker. Worker page-route errors are also included, so either a "
         "failed request or a server-side rendering failure turns this row red."),
+    "status_page": (
+        "Runs the same cached status-history response used by /api/status "
+        "once a minute. Passes only when that response returns HTTP 200, so "
+        "a broken status page is visible and paged even if the other service "
+        "checks remain green."),
     "api": (
         "Scans the last minute of the worker error log for unhandled "
         "exceptions or 5xx responses on /api/* routes. 502/503/504 on "
@@ -2535,7 +2541,9 @@ STATUS_MIRROR_MAX = 50
 # These nodes have been intentionally retired and are being removed from the
 # fleet. Keep historical D1 rows from resurrecting them on the public status
 # page while their registrations age out.
-STATUS_RETIRED_MIRRORS = frozenset(("mirror6", "mirror7", "mirror8"))
+STATUS_RETIRED_MIRRORS = frozenset((
+    "mirror2", "mirror3", "mirror6", "mirror7", "mirror8", "mirror11",
+))
 FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
 FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
 INSTALLER_MONITOR_ID = "installer-delivery"
@@ -2566,6 +2574,11 @@ STATUS_MONITOR_GUIDANCE = {
         "Cloudflare Worker API logs, especially the path named in the reason",
         "Replay the failing API request, inspect its D1 or upstream call, and "
         "fix or roll back the responsible handler."),
+    "status_page": (
+        "Cloudflare Worker logs and the /api/status cache and history query",
+        "Open /api/status without a cached browser response, inspect the "
+        "first Worker exception, and fix or roll back the failing status "
+        "history or cache path."),
     "errors": (
         "the first qualifying entry in Cloudflare Worker and ForkMesh error "
         "logs, including its route and status",
@@ -3103,7 +3116,10 @@ def _status_monitor_alert_setting(settings, system_id, channel):
         return bool(settings.get("statusEmails", False))
     if channel == "pings":
         return bool(settings.get("statusPings", True))
-    return system_id == "website" if channel == "continual" else False
+    # The public status page is the operator's visibility into every other
+    # monitor. Its outage must keep paging by default even when all of those
+    # individual checks remain green.
+    return system_id in ("website", "status_page") if channel == "continual" else False
 
 
 async def _repo_alert_settings_bi(env, owner, repo):
@@ -4163,6 +4179,22 @@ async def _homepage_status_probe(env):
     return True, ""
 
 
+async def _status_page_api_probe(env):
+    """Exercise the same cached response path served by ``/api/status``.
+
+    The status document is the operator's view of every other monitor, so it
+    needs an independent health row rather than relying on the generic API
+    error bucket.  Calling the cached handler directly avoids an unreliable
+    scheduled-worker hairpin through the public hostname while still covering
+    the cache lookup and the status-history work that the route performs.
+    """
+    response = await cached_status_history(env, "full")
+    status = int(getattr(response, "status", 0) or 0)
+    if status != 200:
+        return False, "Status API returned HTTP %d" % status
+    return True, ""
+
+
 async def record_status_sample(env):
     # Called once a minute by the platform Cron Trigger (scheduled()) and by
     # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
@@ -4189,6 +4221,15 @@ async def record_status_sample(env):
     except Exception as exc:
         ok["website"] = False
         reason["website"] = "Homepage probe failed: " + str(exc)[:160]
+
+    try:
+        status_page_ok, status_page_reason = await _status_page_api_probe(env)
+        ok["status_page"] = status_page_ok
+        if not status_page_ok:
+            reason["status_page"] = status_page_reason
+    except Exception as exc:
+        ok["status_page"] = False
+        reason["status_page"] = "Status API probe failed: " + str(exc)[:160]
 
     try:
         await d1_first(env, "SELECT 1 AS ok")
@@ -34266,18 +34307,6 @@ def _forkbot_resolve_ai_model(env, requested=""):
     return _forkbot_ai_default_model(env)
 
 
-def _forkbot_is_allowed_ai_model(env, wanted=""):
-    """Return True when the caller-supplied model pick is an explicit allowlist
-    pick for this relay."""
-    wanted = clean_string(wanted or "", 120).strip()
-    if not wanted:
-        return False
-    for option in _forkbot_ai_model_options(env):
-        if option["id"] == wanted:
-            return True
-    return False
-
-
 def _forkbot_ai_model_not_found_error(error):
     text = _safe_error_text(error).lower()
     if not text:
@@ -34551,6 +34580,37 @@ async def _forkbot_run_ai(
             # JSON mode returns the parsed object under "response".
             if isinstance(value, dict):
                 return value
+        # Current Workers AI chat models such as GLM 4.7 Flash and Gemma 4
+        # return the OpenAI Chat Completions shape instead of the older
+        # top-level {"response": "..."} shape. Accept the first usable choice
+        # and both content encodings Cloudflare documents: a string or an array
+        # of typed text parts.
+        choices = result.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                value = choice.get("text")
+                if isinstance(value, str) and value.strip():
+                    return value
+                message = choice.get("message")
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+                if isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if isinstance(part, str):
+                            parts.append(part)
+                        elif isinstance(part, dict):
+                            text = part.get("text")
+                            if isinstance(text, str):
+                                parts.append(text)
+                    joined = "".join(parts)
+                    if joined.strip():
+                        return joined
         # Some bindings return the parsed object directly rather than a text
         # field; hand the dict back so the caller can read fields off it.
         return result
@@ -43799,6 +43859,14 @@ async def https_mirror_endpoint_handler(env, request):
     if not await _https_mirror_manifest_ok(registration):
         return json_response({"error": "invalid_manifest"}, status=400)
 
+    # Snapshot the accepted state set before resetting this endpoint's lease.
+    # Two independently signed pending proofs can form the quorum that admits
+    # a new fleet state. Clearing this row first reduced that quorum back to
+    # one on every renewal and left both honest nodes stuck in `pending` until
+    # the slow background sweep happened to challenge one of them.
+    accepted_before_registration = (
+        await _https_mirror_accepted_forkmesh_refs(env))
+
     now = int(Date.now())
     node_bi = await blind_index(env, registration["node"])
     region = world_request_country(request)
@@ -43846,7 +43914,12 @@ async def https_mirror_endpoint_handler(env, request):
     # proxied DNS, the registered Ed25519 key, and the canonical repository
     # state pin, so acceptance here does not grant trust by itself.
     health_active = await _https_mirror_refresh_registered_health(
-        env, registration["node"])
+        env,
+        registration["node"],
+        accepted_refs=(
+            accepted_before_registration
+            if accepted_before_registration else None),
+    )
     return json_response({
         "ok": True,
         "node": registration["node"],
@@ -44329,7 +44402,8 @@ def _https_mirror_refs_match(refs_digest, accepted_refs):
     )
 
 
-async def _https_mirror_refresh_registered_health(env, node):
+async def _https_mirror_refresh_registered_health(
+        env, node, accepted_refs=None):
     """Best-effort activation for one exact registered endpoint.
 
     The endpoint row is already account-bound and signature-verified by the
@@ -44349,7 +44423,11 @@ async def _https_mirror_refresh_registered_health(env, node):
         )
         if not row:
             return False
-        accepted = await _https_mirror_accepted_forkmesh_refs(env)
+        accepted = (
+            frozenset(accepted_refs)
+            if accepted_refs is not None
+            else await _https_mirror_accepted_forkmesh_refs(env)
+        )
         if not accepted:
             return False
         return bool(await _https_mirror_health_one(env, row, accepted))

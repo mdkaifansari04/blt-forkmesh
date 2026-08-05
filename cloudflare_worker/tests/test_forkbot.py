@@ -551,7 +551,7 @@ def test_forkbot_uses_workers_ai_for_issue_title_and_body_when_available():
     ))
 
     assert response["status"] == 201
-    assert ai.model == "@cf/meta/llama-3.1-8b-instruct"
+    assert ai.model == ns["FORKBOT_AI_DEFAULT_MODEL"]
     assert ai.payload["messages"][0]["role"] == "system"
     assert calls["inserted"][0][1]["titleIfNew"] == "Make logs searchable"
     # No sender in the request -> the footer still credits ForkBot/the source.
@@ -721,6 +721,20 @@ def test_forkbot_model_catalog_lists_the_deployed_default():
     assert all(model_id.startswith("@cf/") for model_id in ids)
     assert len(set(ids)) == len(ids)
     assert WRANGLER_DATA["vars"]["FORKBOT_AI_MODEL"] in ids
+    assert ns["FORKBOT_AI_DEFAULT_MODEL"] == \
+        WRANGLER_DATA["vars"]["FORKBOT_AI_MODEL"]
+    assert set(ids) == {
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "@cf/meta/llama-4-scout-17b-16e-instruct",
+        "@cf/google/gemma-4-26b-a4b-it",
+        "@cf/zai-org/glm-4.7-flash",
+        "@cf/meta/llama-3.1-8b-instruct-fast",
+    }
+    # Cloudflare retired both of these on 2026-05-30. Keep an explicit guard
+    # so the server and offline desktop picker cannot accidentally reintroduce
+    # an id that looks valid but no longer answers.
+    assert "@cf/meta/llama-3.1-8b-instruct" not in ids
+    assert "@cf/google/gemma-3-12b-it" not in ids
 
 
 def test_forkbot_model_options_put_the_configured_default_first():
@@ -856,40 +870,91 @@ def test_ai_ask_sends_the_prompt_to_the_picked_model():
     assert calls["aiAskRate"] == ["bi:jett"]
 
 
-def test_ai_ask_rejects_unpublished_model():
-    class _AI:
-        async def run(self, _model, _payload):
-            raise AssertionError("AI should not be called for unknown model")
+def test_ai_ask_dispatches_to_every_published_model():
+    ns = _load_forkbot()
+    for model_id, _label, _description in ns["FORKBOT_AI_MODEL_CHOICES"]:
+        class _AI:
+            async def run(self, model, payload):
+                self.model = model
+                self.payload = payload
+                return {"response": "answer from " + model}
 
-    env, calls, ns = _env_and_calls(ai=_AI())
+        ai = _AI()
+        env, _calls, loaded = _env_and_calls(ai=ai)
+        response = asyncio.run(loaded["ai_ask_handler"](
+            env,
+            _ask_request(_signed_ask_body(
+                loaded, "identify yourself", model_id)),
+        ))
+        assert response["status"] == 200, model_id
+        assert response["data"]["model"] == model_id
+        assert response["data"]["reply"] == "answer from " + model_id
+        assert ai.model == model_id
+        assert ai.payload["messages"][1] == {
+            "role": "user", "content": "identify yourself"}
+
+
+def test_ai_ask_reads_current_chat_completion_response_shapes():
+    responses = {
+        "@cf/zai-org/glm-4.7-flash": {
+            "choices": [{"message": {"content": "GLM answered."}}]},
+        "@cf/google/gemma-4-26b-a4b-it": {
+            "choices": [{"message": {"content": [
+                {"type": "text", "text": "Gemma "},
+                {"type": "text", "text": "answered."},
+            ]}}]},
+    }
+
+    class _AI:
+        async def run(self, model, _payload):
+            return responses[model]
+
+    for model_id, expected in (
+        ("@cf/zai-org/glm-4.7-flash", "GLM answered."),
+        ("@cf/google/gemma-4-26b-a4b-it", "Gemma answered."),
+    ):
+        env, _calls, ns = _env_and_calls(ai=_AI())
+        response = asyncio.run(ns["ai_ask_handler"](
+            env,
+            _ask_request(_signed_ask_body(ns, "hello", model_id)),
+        ))
+        assert response["status"] == 200
+        assert response["data"]["model"] == model_id
+        assert response["data"]["reply"] == expected
+
+
+def test_ai_ask_falls_back_without_running_an_unpublished_model():
+    class _AI:
+        async def run(self, model, _payload):
+            self.model = model
+            return {"response": "Answered by the published default."}
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(ai=ai)
     response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
         _signed_ask_body(ns, "why is build flaky?",
                          "@cf/ghost/llama-999"))))
-    assert response["status"] == 404
-    assert response["data"] == {
-        "error": "not_found",
-        "model": "@cf/ghost/llama-999",
-    }
-    # Unknown model picks should not bill or enter the AI usage window.
-    assert calls["aiAskRate"] == []
+    assert response["status"] == 200
+    assert response["data"]["model"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert ai.model == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert ai.model != "@cf/ghost/llama-999"
+    assert calls["aiAskRate"] == ["bi:jett"]
 
 
-def test_ai_ask_maps_cloudflare_model_not_found_to_not_found():
+def test_ai_ask_reports_all_published_models_missing():
     class _AI:
         async def run(self, _model, _payload):
-            raise RuntimeError("Cloudflare model @cf/meta/llama-4-scout-17b-16e-instruct "
-                               "was not found")
+            raise RuntimeError("5007: No such model or task")
 
     env, calls, ns = _env_and_calls(ai=_AI())
     response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
         _signed_ask_body(ns, "why is build flaky?",
                          "@cf/meta/llama-4-scout-17b-16e-instruct"))))
-    assert response["status"] == 404
-    assert response["data"] == {
-        "error": "not_found",
-        "model": "@cf/meta/llama-4-scout-17b-16e-instruct",
-    }
-    assert calls["aiAskRate"] == []
+    assert response["status"] == 502
+    assert response["data"]["error"] == "model_not_found"
+    assert calls["aiAskRate"] == ["bi:jett"]
+
+
 def test_ai_ask_retries_with_fallback_model_on_model_not_found():
     class _AI:
         def __init__(self):
@@ -946,7 +1011,7 @@ def test_ai_ask_answers_a_pick_this_relay_does_not_allowlist():
         ai=_AI(), signed_model=None)
     assert asyncio.run(resolved_ns["ai_ask_handler"](
         resolved_env, _ask_request(_signed_ask_body(
-            resolved_ns, "hello", "@cf/google/gemma-3-12b-it"))
+            resolved_ns, "hello", "@cf/google/gemma-4-26b-a4b-it"))
     ))["status"] == 200
 
 
@@ -1063,15 +1128,17 @@ def test_qt_composer_picks_a_cloudflare_model_for_the_prompt():
     assert '"/api/ai/ask"' in chat
     assert "forkmesh-ai-ask-v1" in chat
     assert "QCryptographicHash::Sha256" in chat
+    assert "responseModel" in chat and "answeringModel" in chat
+    assert "Cloudflare AI fell back from %1 to %2" in chat
     # The quick-add submit path answers instead of starting an agent.
     assert "agentIsCloudflareAiProvider(quickAddProvider)" in issues
-    assert "sendPromptToCloudflareAi(title, model)" in issues
+    assert "if (!sendPromptToCloudflareAi(title, model))" in issues
     # Every static fallback id is one the relay's allowlist actually offers.
     ns = _load_forkbot()
     allowed = {entry[0] for entry in ns["FORKBOT_AI_MODEL_CHOICES"]}
     fallback = re.findall(r'QStringLiteral\("(@cf/[^"]+)"\)', internal)
     assert fallback
-    assert set(fallback) <= allowed
+    assert set(fallback) == allowed
 
 
 def test_web_composers_offer_the_cloudflare_model_picker():
@@ -1081,6 +1148,7 @@ def test_web_composers_offer_the_cloudflare_model_picker():
     assert 'const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";' in CHAT_TEXT
     assert "async function loadForkbotModels()" in CHAT_TEXT
     assert "model: forkbotModel()," in CHAT_TEXT
+    assert "forkbotModelSelect?.value" in CHAT_TEXT
     assert 'id="chat-forkbot-model"' in CHAT_HTML_TEXT
     assert ".chat-forkbot-model {" in CHAT_CSS_TEXT
     # Dashboard chat shares the same stored pick.
@@ -1092,6 +1160,7 @@ def test_web_composers_offer_the_cloudflare_model_picker():
         DASHBOARD_TEXT
     assert "async function loadHomeForkbotModels()" in DASHBOARD_TEXT
     assert "model: forkbotModelPick()," in DASHBOARD_TEXT
+    assert '$("[data-home-agent-model]")?.value' in DASHBOARD_TEXT
     assert "data-home-agent-model" in DASHBOARD_HOME_TEXT
     assert "data-home-agent-model" in DASHBOARD_TEXT
 
@@ -1102,10 +1171,17 @@ def test_web_chats_forward_mentions_and_broadcast_bot_replies():
         assert "FORKBOT_MENTION_RE" in script
         assert "async function maybeAskForkbot(text)" in script
         assert "fetch(FORKBOT_ENDPOINT" in script
-        assert 'sender: "forkbot"' in script
-        assert 'senderId: FORKBOT_SENDER_ID' in script
-        assert "broadcastForkbotMessage(data.botMessage)" in script
-        assert "maybeAskForkbot(clipped)" in script
+        assert "FORKBOT_SENDER_ID" in script
+        assert (
+            'sender: "forkbot"' in script and
+            "senderId: FORKBOT_SENDER_ID" in script and
+            "broadcastForkbotMessage(data.botMessage)" in script
+        ) or (
+            "sender = FORKBOT_SENDER_ID" in script and
+            "senderId: botName" in script and
+            "broadcastBotMessage(data.botMessage)" in script
+        )
+        assert script.count("maybeAskForkbot(") >= 2
         # Recent conversation is buffered and forwarded so ForkBot has context.
         assert "rememberContext(" in script
         assert "context" in script
