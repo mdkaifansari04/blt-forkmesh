@@ -161,6 +161,8 @@ void MainWindow::restartMirrorSyncTimer()
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
     logStartup(QStringLiteral("MainWindow ctor begin"));
+    const bool externalMirrorBridge =
+        qEnvironmentVariableIsSet("FORKMESH_EXTERNAL_MIRROR_NODE");
     // traceStep() scopes one unit of construction work in the startup trace: it
     // opens a StartupTraceStep, runs the work, and closes it on the way out. It
     // is deliberately NOT named startupStep — the coarse
@@ -455,32 +457,38 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // click and the first Code/Issues switch below a frame-scale budget instead
     // of freezing an already-visible window for ~230ms each. Less common repo
     // tabs remain lazy.
-    startupStep(QStringLiteral("Warming the Code and Issues surfaces"));
-    ensureRepoDetailSectionBuilt();
-    ensureRepoDetailTabBuilt(0); // Code (also owns Branches/Worktrees panels)
-    ensureRepoDetailTabBuilt(2); // Issues
-    logStartup(QStringLiteral("core repository surfaces warmed"));
+    if (!externalMirrorBridge) {
+        startupStep(QStringLiteral("Warming the Code and Issues surfaces"));
+        ensureRepoDetailSectionBuilt();
+        ensureRepoDetailTabBuilt(0); // Code (also owns Branches/Worktrees panels)
+        ensureRepoDetailTabBuilt(2); // Issues
+        logStartup(QStringLiteral("core repository surfaces warmed"));
+    }
     startupStep(QStringLiteral("Loading repositories"));
-    initializeWorldSpeechBridge();
+    if (!externalMirrorBridge)
+        initializeWorldSpeechBridge();
     loadRepositories();
-    refreshRepositoryList();
+    if (!externalMirrorBridge)
+        refreshRepositoryList();
     logStartup(QStringLiteral("repositories loaded"));
     startupDetail(
         QStringLiteral("%1 repositor%2 on this node")
             .arg(m_repositories.size())
             .arg(m_repositories.size() == 1 ? QStringLiteral("y")
                                             : QStringLiteral("ies")));
-    startupStep(QStringLiteral("Restoring actions and agent sessions"));
-    initActions();
-    initAgents();
-    logStartup(QStringLiteral("actions + agents initialized"));
+    if (!externalMirrorBridge) {
+        startupStep(QStringLiteral("Restoring actions and agent sessions"));
+        initActions();
+        initAgents();
+        logStartup(QStringLiteral("actions + agents initialized"));
+    }
     if (!m_agentQueue.isEmpty())
         startupDetail(QStringLiteral("%1 agent session(s) queued to resume")
                           .arg(m_agentQueue.size()));
     startupStep(QStringLiteral("Choosing the repository to reopen"));
     const QString lastRepository =
         QSettings().value(kLastRepositorySetting).toString();
-    if (!lastRepository.isEmpty()) {
+    if (!externalMirrorBridge && !lastRepository.isEmpty()) {
         const int slash = lastRepository.indexOf('/');
         if (slash > 0) {
             const int index =
@@ -501,11 +509,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                       : QStringLiteral("Nothing to reopen"));
     startupStep(QStringLiteral("Selecting the active relay"));
     loadActiveServerIntoEdits();
-    updateBreadcrumb();
+    if (!externalMirrorBridge)
+        updateBreadcrumb();
     logStartup(QStringLiteral("active server + breadcrumb"));
     startupStep(QStringLiteral("Fetching relay favicons"));
-    for (int i = 0; i < m_servers.size(); ++i)
-        fetchFavicon(i);
+    if (!externalMirrorBridge)
+        for (int i = 0; i < m_servers.size(); ++i)
+            fetchFavicon(i);
     logStartup(QStringLiteral("favicons fetched"));
 
     startupStep(QStringLiteral("Arming background timers"));
@@ -519,7 +529,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // stays current (this also persists accumulated uptime via updateHomeStats).
     connect(m_homeStatsTimer, &QTimer::timeout, this,
             &MainWindow::refreshRepositoryList);
-    m_homeStatsTimer->start(60000);
+    if (!externalMirrorBridge)
+        m_homeStatsTimer->start(60000);
     logStartup(QStringLiteral("  timer armed: home/repository stats every 60s"));
 
     // The activity rail's Git badge has to be right whichever repo tab is on
@@ -534,7 +545,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         if (m_railGitButton && m_railGitButton->isVisible())
             refreshRepoChangeBadge();
     });
-    m_repoChangeBadgeTimer->start(10000);
+    if (!externalMirrorBridge)
+        m_repoChangeBadgeTimer->start(10000);
     logStartup(QStringLiteral("  timer armed: Git rail status every 10s"));
 
     // Footer diagnostics + UI-stall watchdog. Deferred one event-loop turn so the
