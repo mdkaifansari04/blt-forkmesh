@@ -2729,6 +2729,56 @@ int main(int argc, char *argv[])
                 break;
         }
     }
+    // The Agents prompt is a real full-width footer rather than the compact
+    // overlay used elsewhere. Its reserved page margin keeps the transcript and
+    // session list above it instead of letting their last lines hide underneath.
+    {
+        QWidget *agentsPage = window.findChild<QWidget *>(
+            QStringLiteral("agentsPage"));
+        QWidget *footerDock = window.findChild<QWidget *>(
+            QStringLiteral("logDock"));
+        QWidget *promptHost = window.findChild<QWidget *>(
+            QStringLiteral("promptOverlayHost"));
+        const QMargins dockMargins =
+            footerDock && footerDock->layout()
+                ? footerDock->layout()->contentsMargins()
+                : QMargins();
+        check(agentsPage && agentsPage->layout() && footerDock && promptHost &&
+                  promptHost->isVisibleTo(&window) &&
+                  promptHost->geometry().left() == dockMargins.left() &&
+                  promptHost->geometry().right() ==
+                      footerDock->rect().right() - dockMargins.right() &&
+                  agentsPage->layout()->contentsMargins().bottom() ==
+                      footerDock->height(),
+              QStringLiteral("Agents docks the full-width prompt below its "
+                             "transcript"));
+
+        QPushButton *avatar = window.findChild<QPushButton *>(
+            QStringLiteral("serverFooterButton"));
+        QWidget *promptWrapper = window.findChild<QWidget *>(
+            QStringLiteral("promptWrapper"));
+        if (avatar && promptWrapper && agentsPage && agentsPage->layout() &&
+            footerDock && promptHost) {
+            avatar->click();
+            QApplication::processEvents();
+            check(!promptWrapper->isVisible() &&
+                      promptHost->size() == QSize(34, 34) &&
+                      promptHost->geometry().right() >= footerDock->width() - 12 &&
+                      agentsPage->layout()->contentsMargins().bottom() == 0,
+                  QStringLiteral("collapsing the Agents prompt leaves its circular "
+                                 "avatar at the bottom-right"));
+
+            QEvent enter(QEvent::Enter);
+            QApplication::sendEvent(avatar, &enter);
+            QApplication::processEvents();
+            check(promptWrapper->isVisible() &&
+                      promptHost->geometry().left() == dockMargins.left() &&
+                      promptHost->geometry().right() ==
+                          footerDock->rect().right() - dockMargins.right(),
+                  QStringLiteral("hovering the Agents avatar restores the "
+                                 "full-width prompt"));
+        }
+    }
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
