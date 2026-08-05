@@ -1026,6 +1026,9 @@ public:
     {
         return m_agentDiffStats.value(sessionId).files;
     }
+    QStringList testAgentOwnedDiffPaths(const QString &gitDir,
+                                        const QString &base,
+                                        const QString &branch) const;
     bool testAgentSessionMerged(int sessionId) const;
     void testApplyCodexRateLimits(const QJsonObject &rateLimits)
     {
@@ -7734,10 +7737,11 @@ private:
     // and stacking multi-second stalls (the renderAgentDiff<-renderAgentDiff
     // frames all over ~/.forkmesh/diagnostics/stalls.log).
     struct AgentDiffProbe {
-        QByteArray patch;        // git diff <base>
+        QByteArray patch;        // git diff <base>, limited to agent-owned paths
         bool patchOk = false;    // that read succeeded (else keep the old view)
         QSet<QString> uncommitted; // paths with working-tree changes / untracked
-        QStringList commitLines; // "abc1234 subject" per commit ahead of base
+        QSet<QString> ownedPaths;  // paths from patch-unique, non-merge commits
+        QStringList commitLines; // patch-unique "abc1234 subject" entries
         int behind = 0;          // commits the base branch has that we don't
         int pending = 0;         // async probes still in flight
     };
