@@ -658,6 +658,12 @@ void MainWindow::onAvatar(const QString &peerId, const QByteArray &pngData)
     }
     // Repaint the users column so its avatar tile picks up the image.
     refreshChatMembers();
+    // PR-linked entries in the Agents list use the pull author's avatar as
+    // their leading badge. Refresh those rows too when a peer picture arrives,
+    // replacing their deterministic fallback without waiting for another agent
+    // event or a tab switch.
+    if (m_agentTable)
+        refreshAgentTable();
 }
 
 void MainWindow::onTypingChanged(const QString &conversation, const QString &peerId,
