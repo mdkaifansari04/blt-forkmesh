@@ -5266,10 +5266,13 @@ void MainWindow::rebuildGlobalSearchResults()
         {"Hosts", "server", 7},
         {"Relays", "broadcast", 8},
         {"Network", "workflow", kNetworkDiagnosticsSectionIndex},
+        {"Users", "people", kUsersSectionIndex},
         {"Settings", "gear", 1},
     };
     bool header = false;
     for (const Sec &s : kSections) {
+        if (s.index == kUsersSectionIndex && !m_isAdmin)
+            continue;
         if (!QString::fromLatin1(s.label).toLower().contains(needle))
             continue;
         if (!header) { addHeader(QStringLiteral("Go to")); header = true; }
@@ -6048,6 +6051,9 @@ QString MainWindow::navPlaceLabel(const NavPlace &place) const
                 place.subTab < m_networkTabs->count())
                 destination = QStringLiteral("Network · %1")
                                   .arg(m_networkTabs->tabText(place.subTab));
+            break;
+        case kUsersSectionIndex:
+            destination = QStringLiteral("Users");
             break;
         default:
             destination = QStringLiteral("Home");
@@ -10453,8 +10459,11 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // controls + diff; page 1 is the selected commit metadata/actions + diff.
     auto *changesPage = new QWidget;
     auto *changesLayout = new QVBoxLayout(changesPage);
-    changesLayout->setContentsMargins(16, 12, 16, 16);
-    changesLayout->setSpacing(8);
+    // The diff owns this whole right-hand surface. Its document blocks already
+    // provide their own boundaries, so no outer gutter belongs above, below, or
+    // beside the changes viewer.
+    changesLayout->setContentsMargins(0, 0, 0, 0);
+    changesLayout->setSpacing(0);
     m_scmDiff = new QTextBrowser;
     m_scmDiff->setObjectName("diffView");
     registerDiffView(m_scmDiff);
@@ -10581,9 +10590,17 @@ void MainWindow::startButtonSpin(QPushButton *button)
         // Re-read the hourglass flag every tick so a caller can flip a spin
         // already in progress between the refresh-arrows and hourglass looks
         // (see setRestartSpinHourglass) without restarting the timer.
-        const QPixmap frame = button->property("fmSpinHourglass").toBool()
-                                   ? hourglassPixmap(QColor(Theme::kRunning), *angle, size)
-                                   : refreshPixmap(QColor(Theme::kRunning), *angle, size);
+        const QVariant restartProgress = button->property("fmRestartProgress");
+        const QPixmap frame = restartProgress.isValid()
+                                  ? restartProgressPixmap(
+                                        QColor(Theme::kRunning), *angle, size,
+                                        restartProgress.toInt(),
+                                        button->property("fmSpinHourglass").toBool())
+                                  : (button->property("fmSpinHourglass").toBool()
+                                         ? hourglassPixmap(QColor(Theme::kRunning), *angle,
+                                                           size)
+                                         : refreshPixmap(QColor(Theme::kRunning), *angle,
+                                                         size));
         button->setIcon(QIcon(frame));
     });
     timer->start(60);
@@ -10600,6 +10617,7 @@ void MainWindow::stopButtonSpin(QPushButton *button)
     button->setIcon(button->property("fmSpinIcon").value<QIcon>());
     button->setProperty("fmSpinning", false);
     button->setProperty("fmSpinHourglass", false);
+    button->setProperty("fmRestartProgress", QVariant());
 }
 
 void MainWindow::startRestartSpin(QPushButton *button)
@@ -10608,15 +10626,23 @@ void MainWindow::startRestartSpin(QPushButton *button)
         return;
     stopRestartSpin();
     m_restartSpinButton = button;
+    button->setProperty("fmRestartProgress", 0);
     startButtonSpin(button);
 }
 
 void MainWindow::stopRestartSpin()
 {
+    stopRestartCautionFlash();
     if (!m_restartSpinButton)
         return;
     stopButtonSpin(m_restartSpinButton);
     m_restartSpinButton = nullptr;
+}
+
+void MainWindow::setRestartSpinProgress(int percent)
+{
+    if (m_restartSpinButton)
+        m_restartSpinButton->setProperty("fmRestartProgress", qBound(0, percent, 100));
 }
 
 // Switches the in-progress restart spin (if any) between the refresh-arrows

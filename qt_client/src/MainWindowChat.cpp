@@ -1454,7 +1454,7 @@ QWidget *MainWindow::buildChatPage()
     for (int index = 3; index <= 8; ++index)
         addDeferredSection();
     m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
-    for (int index = 10; index <= 16; ++index)
+    for (int index = 10; index <= 17; ++index)
         addDeferredSection();
     logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
@@ -1520,7 +1520,7 @@ QWidget *MainWindow::buildChatPage()
     // the bottom utility group, Tasks directly above Pings (adhoc #97).
     for (QPushButton *button :
          {m_agentsNavButton, m_reposNavButton, m_chatButton,
-          m_controlNodeNavButton, m_networkNavButton})
+          m_controlNodeNavButton, m_networkNavButton, m_usersNavButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
     // Repo is redundant with the contextual Code entry. Keep the hidden button
     // as section 0's QButtonGroup state carrier for programmatic navigation.
@@ -1741,8 +1741,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerDock = dock;
     dock->setObjectName("logDock");
 
-    // A three-line wrapping box (adhoc #12, #107), not a single-line edit, so the
-    // typed prompt is actually visible on three lines. Enter sends / Shift+Enter
+    // A four-line wrapping box (adhoc #12, #107), not a single-line edit, so the
+    // typed prompt is actually visible on four lines. Enter sends / Shift+Enter
     // adds a newline (handled in the event filter); Up/Down walk prompt history.
     m_issueQuickAdd = new QPlainTextEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
@@ -1750,17 +1750,17 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     m_issueQuickAdd->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_issueQuickAdd->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Pin the field to a fixed number of prompt lines (adhoc #107) so it stays
+    // Pin the field to four prompt lines (adhoc #107) so it stays
     // compact instead of stretching to fill the whole footer; longer prompts
     // scroll within it. Moving the send column out to the side (adhoc #115) freed
     // the vertical space the toolbar used to reserve for the stacked buttons, and
     // dropping the surrounding card and the "Agents:" strip (adhoc #60) freed two
-    // more rows, so the box now shows six lines and the prompt frame fills the
+    // more rows, so the box now shows four lines and the prompt frame fills the
     // footer top to bottom the way the log panel beside it does.
-    m_issueQuickAdd->document()->setDocumentMargin(3);
-    // 6 rows + the QSS vertical padding (8px top/bottom) + document margins.
+    m_issueQuickAdd->document()->setDocumentMargin(2);
+    // Four rows + the QSS vertical padding (4px top/bottom) + document margins.
     const int kQuickAddRowH = m_issueQuickAdd->fontMetrics().lineSpacing();
-    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 6 + 16 + 6);
+    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 4 + 8 + 4);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is capped at the same length as the Claude prompt / message input
@@ -2606,7 +2606,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     dockRow->addWidget(promptOverlayHost, 1, Qt::AlignRight | Qt::AlignBottom);
 
     // Pin the footer to just the compact prompt's height (adhoc #107): the dock
-    // margins plus the six-line prompt and its controls. With the card padding
+    // margins plus the four-line prompt and its controls. With the card padding
     // and the "Agents:" strip gone (adhoc #60) the prompt frame is the tallest
     // thing in the row, so the log panel beside it is exactly as tall as the
     // prompt and nothing reflows.
@@ -3621,7 +3621,8 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // Rows read as the bare model name (adhoc #1204): "Opus 5", not "Opus 5 · Claude
 // Code". Which CLI runs a model follows from the model, so the suffix was the
 // same handful of words repeated down the whole menu; the tooltip still carries
-// it. Models are ordered strongest-first by agentModelPowerRank().
+// it. Models the user has run most often lead the list; power is a stable
+// tie-breaker for models with the same history.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -3644,14 +3645,23 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         QString provider;
         QString model;
         QString agentName; // which CLI/API runs it, for the tooltip
-        int rank = 0;      // higher sorts nearer the top
+        int useCount = 0;  // higher sorts nearer the top
+        int powerRank = 0; // stable tie-breaker for equally-used models
     };
+    QHash<QString, int> modelUseCounts;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        const QString model = session.model.trimmed().toLower();
+        if (!model.isEmpty())
+            ++modelUseCounts[session.provider + QLatin1Char('\x1f') + model];
+    }
     QList<Choice> models;
-    auto addModel = [&models](
+    auto addModel = [&models, &modelUseCounts](
                         const QIcon &icon, const QString &label,
                         const QString &provider, const QString &model,
                         const QString &agentName) {
-        models.append(Choice{icon, label, provider, model, agentName,
+        const int useCount = modelUseCounts.value(
+            provider + QLatin1Char('\x1f') + model.trimmed().toLower());
+        models.append(Choice{icon, label, provider, model, agentName, useCount,
                              agentModelPowerRank(model, label)});
     };
 
@@ -3685,29 +3695,25 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                  QStringLiteral("Codex"));
     }
 
-    // Strongest first. Rank ties (Opus 4.8 and Sonnet 5 score the same) keep the
-    // order the provider catalog listed them in, so the menu never reshuffles
-    // between two equally-ranked models from one refresh to the next.
+    // Most-used first. Power ties (Opus 4.8 and Sonnet 5 score the same) keep
+    // the provider catalog order, so the menu never reshuffles between two
+    // otherwise-equal models from one refresh to the next.
     std::stable_sort(models.begin(), models.end(),
                      [](const Choice &a, const Choice &b) {
-                         return a.rank > b.rank;
+                         if (a.useCount != b.useCount)
+                             return a.useCount > b.useCount;
+                         return a.powerRank > b.powerRank;
                      });
 
     auto addChoice = [this](const QIcon &icon, const QString &label,
                             const QString &provider, const QString &model,
-                            const QString &tooltip,
-                            const QString &status = QString()) {
+                            const QString &tooltip) {
         const int row = m_quickAddAgentModelSelector->count();
         m_quickAddAgentModelSelector->addItem(icon, label, provider);
         m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
         if (!tooltip.isEmpty())
             m_quickAddAgentModelSelector->setItemData(row, tooltip,
                                                       Qt::ToolTipRole);
-        // The label already ends in this state's glyph; the role is what tells
-        // the delegate to paint that glyph green or red.
-        if (!status.isEmpty())
-            m_quickAddAgentModelSelector->setItemData(row, status,
-                                                      kAgentChoiceStatusRole);
     };
     addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
               QStringLiteral("manual"), QString(),
@@ -3723,23 +3729,9 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
     QHash<QString, QString> providerIdentities;
     for (const Choice &choice : models) {
-        const ModelChoiceOutcome outcome =
-            quickAddModelChoiceSummary(m_agentSessions, choice.provider,
-                                      choice.model);
-        const QString statusGlyph = agentChoiceStatusGlyph(outcome.state);
-        const QString usageCountdown =
-            quickAddUsageLimitCountdownText(choice.provider);
-        const QString usageRemaining =
-            quickAddUsageLimitRemainingText(choice.provider);
-        // "Opus 5 (2h 5m) ✓" — the outcome glyph is always the last thing on the
-        // row, which is what lets the delegate repaint that one character in the
-        // colour of the outcome while the label stays in the theme's own.
-        QString label =
-            usageRemaining.isEmpty()
-                ? choice.label
-                : QStringLiteral("%1 (%2)").arg(choice.label, usageRemaining);
-        if (!statusGlyph.isEmpty())
-            label += QLatin1Char(' ') + statusGlyph;
+        // The open list is intentionally just model names: status, account,
+        // provider, and quota details belong in the tooltip, not every row.
+        const QString label = choice.label;
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
         if (!providerIdentities.contains(choice.provider)) {
@@ -3754,15 +3746,7 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(chosenIdentity, toolTip);
-        // The glyph on its own says only "good" or "bad": the tooltip is where
-        // the row says which run it is reporting and why it failed.
-        if (!outcome.detail.isEmpty())
-            toolTip += QStringLiteral("\n%1").arg(outcome.detail);
-        if (!usageCountdown.isEmpty())
-            toolTip +=
-                QStringLiteral("\nLimit status: %1").arg(usageCountdown);
-        addChoice(choice.icon, label, choice.provider, choice.model, toolTip,
-                  outcome.state);
+        addChoice(choice.icon, label, choice.provider, choice.model, toolTip);
     }
 
     // These API agents do not expose a per-run model chooser in this composer,
@@ -3828,20 +3812,6 @@ void MainWindow::refreshQuickAddAgentModelSelector()
 void MainWindow::testRefreshQuickAddAgentModelSelector()
 {
     refreshQuickAddAgentModelSelector();
-}
-
-QString MainWindow::testQuickAddAgentModelStatus(const QString &model) const
-{
-    if (!m_quickAddAgentModelSelector)
-        return QString();
-    for (int row = 0; row < m_quickAddAgentModelSelector->count(); ++row) {
-        if (m_quickAddAgentModelSelector->itemData(row, Qt::UserRole + 1)
-                .toString() == model)
-            return m_quickAddAgentModelSelector
-                ->itemData(row, kAgentChoiceStatusRole)
-                .toString();
-    }
-    return QString();
 }
 
 QString MainWindow::testQuickAddAgentModelLabel(const QString &model) const
@@ -7848,6 +7818,23 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_networkNavButton, &QPushButton::clicked, this,
             [this] { showSection(kNetworkDiagnosticsSectionIndex); });
 
+    // Users sits directly under Network because it is the account-level view
+    // of the same mesh. Admin status arrives asynchronously on the heartbeat,
+    // so create it with the rest of the stable rail and reveal it only when the
+    // relay confirms m_isAdmin.
+    m_usersNavButton = new ActivityRailButton(QStringLiteral("people"),
+                                              QStringLiteral("Users"));
+    m_usersNavButton->setObjectName(QStringLiteral("usersNavButton"));
+    m_usersNavButton->setCheckable(true);
+    m_usersNavButton->setCursor(Qt::PointingHandCursor);
+    m_usersNavButton->setToolTip(
+        QStringLiteral("Users - World profile and activity statistics"));
+    setOcticon(m_usersNavButton, "people", 16);
+    m_navGroup->addButton(m_usersNavButton, kUsersSectionIndex);
+    connect(m_usersNavButton, &QPushButton::clicked, this,
+            [this] { showSection(kUsersSectionIndex); });
+    m_usersNavButton->setVisible(m_isAdmin);
+
     // Small, icon-only rebuild+restart button, right-aligned under the avatar on
     // the section-nav row. Hidden unless opted in via Settings (off by default);
     // it's a dev-iteration shortcut for the same fast rebuild as the profile panel.
@@ -7909,15 +7896,23 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // One compact four-quadrant chart for the debug line: CPU/memory above
     // swap/disk. It receives one sample per second from updateFooterDiagnostics.
-    // CPU, swap and disk open diagnostics; memory opens the culprit list.
+    // CPU and swap open diagnostics; disk opens the Size map scanner; memory
+    // opens the culprit list.
     auto *resourceChart = new ResourceQuadrantSparkline;
     for (ResourceQuadrantSparkline::Resource resource : {
-             ResourceQuadrantSparkline::Cpu, ResourceQuadrantSparkline::Swap,
-             ResourceQuadrantSparkline::Disk}) {
+             ResourceQuadrantSparkline::Cpu, ResourceQuadrantSparkline::Swap}) {
         resourceChart->setClickHandler(resource, [this] { showDiagnosticsDialog(); });
     }
     resourceChart->setClickHandler(ResourceQuadrantSparkline::Memory,
                                    [this] { showHighMemoryProcessPanel(); });
+    resourceChart->setClickHandler(ResourceQuadrantSparkline::Disk, [this] {
+        showSection(0);
+        if (m_repoDetailTabs && m_sizeMapTabIndex >= 0) {
+            if (QAbstractButton *sizeMapTab =
+                    m_repoDetailTabs->button(m_sizeMapTabIndex))
+                sizeMapTab->click();
+        }
+    });
     m_resourceChart = resourceChart;
 
     // The thirty-day SIZE/LOC/FILES repository trends and the Ratchet mode
@@ -8261,10 +8256,18 @@ void MainWindow::updateConnectionStatus()
 
 void MainWindow::updateAdminCrownBadge()
 {
-    if (!m_adminCrownBadge)
-        return;
-    m_adminCrownBadge->setVisible(m_isAdmin);
-    m_adminCrownBadge->setToolTip(m_isAdmin ? QStringLiteral("Admin") : QString());
+    if (m_adminCrownBadge) {
+        m_adminCrownBadge->setVisible(m_isAdmin);
+        m_adminCrownBadge->setToolTip(
+            m_isAdmin ? QStringLiteral("Admin") : QString());
+    }
+    if (m_usersNavButton)
+        m_usersNavButton->setVisible(m_isAdmin);
+    // If a heartbeat revokes admin status while this page is open, leave it at
+    // once; hiding the entry alone would strand privileged UI on screen.
+    if (!m_isAdmin && m_sectionStack &&
+        m_sectionStack->currentIndex() == kUsersSectionIndex)
+        showSection(kUsersSectionIndex);
 }
 
 // Flip this node online/offline from the profile toggle. "Offline" keeps the user
@@ -9620,42 +9623,51 @@ bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
     if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists())
         return false;
 
-    // The branch must track a remote whose URL resolves to the ForkMesh relay.
+    // Prefer the configured upstream when one exists: a normal fork may push to
+    // that remote, while relay-backed checkouts must publish through their
+    // served mirror. A managed/public checkout can legitimately have no
+    // tracking branch, though; its RepositoryRecord mirror is then the only
+    // publish target and should not be rejected as an upstream configuration
+    // error.
     QByteArray upstreamOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
-                        QStringLiteral("--symbolic-full-name"),
-                        QStringLiteral("@{upstream}")},
-                       &upstreamOut, nullptr))
+    const bool hasUpstream =
+        runGitCapture(repo.localPath,
+                      {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                       QStringLiteral("--symbolic-full-name"),
+                       QStringLiteral("@{upstream}")},
+                      &upstreamOut, nullptr);
+    if (hasUpstream) {
+        const QString upstream = QString::fromUtf8(upstreamOut).trimmed();
+        const int slash = upstream.indexOf('/');
+        if (slash <= 0)
+            return false;
+        QByteArray urlOut;
+        if (!runGitCapture(repo.localPath,
+                           {QStringLiteral("remote"), QStringLiteral("get-url"),
+                            upstream.left(slash)},
+                           &urlOut, nullptr))
+            return false;
+        QString relayHost =
+            serverHost(QSettings().value(kServerUrlSetting).toString().trimmed());
+        if (relayHost.isEmpty())
+            relayHost = serverHost(kDefaultServerUrl);
+        const QString remoteUrl = QString::fromUtf8(urlOut).trimmed();
+        const bool isRelay =
+            !relayHost.isEmpty() && QUrl(remoteUrl).host() == relayHost;
+        // Or the upstream is this repo's own served mirror (a local bare repo):
+        // then "publish" must force-sync that mirror from the working copy via
+        // syncRepository, never a raw `git push`. The mirror is also advanced by
+        // the app's own background sync (and agents pushing branches into it), so
+        // a plain push to its `main` races and gets "[remote rejected] main" (a
+        // ref-lock / non-fast-forward).
+        const bool isOwnMirror =
+            !remoteUrl.isEmpty() && QUrl(remoteUrl).host().isEmpty() &&
+            QDir(remoteUrl).absolutePath() == QDir(repo.mirrorPath).absolutePath();
+        if (!isRelay && !isOwnMirror)
+            return false;
+    } else if (!repo.publishToNetwork) {
         return false;
-    const QString upstream = QString::fromUtf8(upstreamOut).trimmed();
-    const int slash = upstream.indexOf('/');
-    if (slash <= 0)
-        return false;
-    QByteArray urlOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("remote"), QStringLiteral("get-url"),
-                        upstream.left(slash)},
-                       &urlOut, nullptr))
-        return false;
-    QString relayHost =
-        serverHost(QSettings().value(kServerUrlSetting).toString().trimmed());
-    if (relayHost.isEmpty())
-        relayHost = serverHost(kDefaultServerUrl);
-    const QString remoteUrl = QString::fromUtf8(urlOut).trimmed();
-    const bool isRelay =
-        !relayHost.isEmpty() && QUrl(remoteUrl).host() == relayHost;
-    // Or the upstream is this repo's own served mirror (a local bare repo): then
-    // "publish" must force-sync that mirror from the working copy via
-    // syncRepository, never a raw `git push`. The mirror is also advanced by the
-    // app's own background sync (and agents pushing branches into it), so a plain
-    // push to its `main` races and gets "[remote rejected] main" (a ref-lock /
-    // non-fast-forward).
-    const bool isOwnMirror =
-        !remoteUrl.isEmpty() && QUrl(remoteUrl).host().isEmpty() &&
-        QDir(remoteUrl).absolutePath() == QDir(repo.mirrorPath).absolutePath();
-    if (!isRelay && !isOwnMirror)
-        return false;
+    }
 
     // Local branch + commits not yet folded into the served mirror. The mirror's
     // HEAD commit always exists in the working copy (the mirror is fetched from
@@ -10717,6 +10729,7 @@ void MainWindow::ensureSectionBuilt(int index)
     case 14: section = buildControlNodeSection(); break;
     case 15: section = buildOrganizationTasksSection(); break;
     case 16: section = buildNotesSection(); break;
+    case 17: section = buildUsersSection(); break;
     default: break;
     }
     if (!section)
@@ -10728,6 +10741,16 @@ void MainWindow::ensureSectionBuilt(int index)
 
 void MainWindow::showSection(int index)
 {
+    // The rail button is only one half of the boundary: stale saved navigation
+    // or an internal caller must not be able to land on the admin page after
+    // this account loses administrator status.
+    if (index == kUsersSectionIndex && !m_isAdmin) {
+        if (m_sectionStack &&
+            m_sectionStack->currentIndex() == kUsersSectionIndex)
+            index = kNetworkDiagnosticsSectionIndex;
+        else
+            return;
+    }
     if (index == 9)
         index = kNetworkDiagnosticsSectionIndex;
     // Hosts (7), Relays (8) and Nodes (13) are tabs of the Network section now
@@ -10798,6 +10821,8 @@ void MainWindow::showSection(int index)
         refreshOrganizationTasks();
     } else if (index == kNotesSectionIndex) {
         refreshNotes();
+    } else if (index == kUsersSectionIndex) {
+        refreshUsersPage();
     }
 }
 
@@ -16180,7 +16205,273 @@ QWidget *networkTabPage()
     return page;
 }
 
+enum UsersColumn {
+    kUsersColName = 0,
+    kUsersColVerified,
+    kUsersColStatus,
+    kUsersColJoined,
+    kUsersColWorldActivity,
+    kUsersColActivityRecency,
+    kUsersColLastEmail,
+    kUsersColEmailDelivery,
+    kUsersColCountry,
+    kUsersColBrowser,
+    kUsersColOs,
+    kUsersColNodes,
+    kUsersColCount,
+};
+
+QStringList usersTableHeaders()
+{
+    return {QStringLiteral("User"), QStringLiteral("Email verified"),
+            QStringLiteral("Status"), QStringLiteral("Joined"),
+            QStringLiteral("World activity"),
+            QStringLiteral("Activity recency"), QStringLiteral("Last email"),
+            QStringLiteral("Email delivery"), QStringLiteral("Country"),
+            QStringLiteral("Browser"), QStringLiteral("OS"),
+            QStringLiteral("Nodes")};
+}
+
+SortTableWidgetItem *usersTableItem(const QString &text,
+                                    const QVariant &sortValue)
+{
+    auto *item = new SortTableWidgetItem(text);
+    item->setData(kTableSortRole, sortValue);
+    return item;
+}
+
+QString usersTimestamp(qint64 timestampMs)
+{
+    if (timestampMs <= 0)
+        return QStringLiteral("Not reported");
+    return QDateTime::fromMSecsSinceEpoch(timestampMs)
+        .toLocalTime()
+        .toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+}
+
+QPair<QString, int> usersActivityRecency(const QString &bucket)
+{
+    if (bucket == QLatin1String("hour"))
+        return {QStringLiteral("Within 1 hour"), 0};
+    if (bucket == QLatin1String("5h"))
+        return {QStringLiteral("Within 5 hours"), 1};
+    if (bucket == QLatin1String("24h"))
+        return {QStringLiteral("Within 24 hours"), 2};
+    if (bucket == QLatin1String("3d"))
+        return {QStringLiteral("Within 3 days"), 3};
+    if (bucket == QLatin1String("5d"))
+        return {QStringLiteral("Within 5 days"), 4};
+    if (bucket == QLatin1String("10d"))
+        return {QStringLiteral("Within 10 days"), 5};
+    if (bucket == QLatin1String("stale"))
+        return {QStringLiteral("More than 10 days"), 6};
+    return {QStringLiteral("Not reported"), 7};
+}
+
 } // namespace
+
+QWidget *MainWindow::buildUsersSection()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setSpacing(12);
+
+    auto *header = new QHBoxLayout;
+    header->setContentsMargins(0, 0, 0, 0);
+    header->setSpacing(10);
+
+    auto *title = new QLabel(QStringLiteral("Users"));
+    title->setObjectName(QStringLiteral("sectionTitle"));
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    header->addWidget(title);
+    header->addWidget(makeInlineHelpButton(
+        QStringLiteral("About user statistics"),
+        QStringLiteral(
+            "Administrator-only directory of the privacy-filtered account "
+            "facts displayed on World avatar chests. Raw activity timestamps, "
+            "email addresses, IP addresses, and device details are not included.")));
+
+    m_usersStatus = new QLabel(QStringLiteral("Loading users..."));
+    m_usersStatus->setObjectName(QStringLiteral("mutedLabel"));
+    header->addWidget(m_usersStatus, 1);
+
+    m_usersRefreshButton = new QPushButton(QStringLiteral("Refresh"));
+    m_usersRefreshButton->setObjectName(QStringLiteral("repoAction"));
+    m_usersRefreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_usersRefreshButton, "sync", 14);
+    connect(m_usersRefreshButton, &QPushButton::clicked, this,
+            [this] { refreshUsersPage(/*force=*/true); });
+    header->addWidget(m_usersRefreshButton);
+    outer->addLayout(header);
+
+    m_usersTable = new QTableWidget(0, kUsersColCount);
+    installColumnHeaderMenu(m_usersTable);
+    m_usersTable->setObjectName(QStringLiteral("usersTable"));
+    m_usersTable->setHorizontalHeaderLabels(usersTableHeaders());
+    m_usersTable->verticalHeader()->setVisible(false);
+    m_usersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_usersTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_usersTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_usersTable->setAlternatingRowColors(true);
+    m_usersTable->setShowGrid(false);
+    m_usersTable->setSortingEnabled(true);
+    networkPrepareFullTable(m_usersTable);
+    for (int column = 0; column < m_usersTable->columnCount(); ++column)
+        m_usersTable->horizontalHeader()->setSectionResizeMode(
+            column, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_usersTable);
+    outer->addWidget(m_usersTable, 1);
+
+    renderUsersPage(m_usersDirectoryPayload);
+    return page;
+}
+
+void MainWindow::refreshUsersPage(bool force)
+{
+    if (!m_isAdmin || !m_usersTable || !m_usersStatus)
+        return;
+    if (m_chatDirectoryLoaded)
+        renderUsersPage(m_usersDirectoryPayload);
+    if (force)
+        m_chatDirectoryFetchedMs = 0;
+    if (force || !m_chatDirectoryLoaded)
+        m_usersStatus->setText(QStringLiteral("Loading users..."));
+    refreshChatUserDirectory();
+}
+
+void MainWindow::renderUsersPage(const QJsonArray &users)
+{
+    if (!m_usersTable)
+        return;
+
+    const int sortColumn = qBound(
+        0, m_usersTable->horizontalHeader()->sortIndicatorSection(),
+        m_usersTable->columnCount() - 1);
+    const Qt::SortOrder sortOrder =
+        m_usersTable->horizontalHeader()->sortIndicatorOrder();
+    TableRepaintGuard repaintGuard(m_usersTable);
+    m_usersTable->setSortingEnabled(false);
+    m_usersTable->setRowCount(0);
+
+    for (const QJsonValue &value : users) {
+        const QJsonObject user = value.toObject();
+        if (user.value(QStringLiteral("kind"))
+                .toString(QStringLiteral("user")) != QLatin1String("user"))
+            continue;
+        const QString name =
+            user.value(QStringLiteral("name"))
+                .toString(user.value(QStringLiteral("nodeName")).toString())
+                .trimmed();
+        if (name.isEmpty())
+            continue;
+
+        const int row = m_usersTable->rowCount();
+        m_usersTable->insertRow(row);
+
+        auto *nameItem = usersTableItem(name, name.toLower());
+        const auto avatar = m_avatars.constFind(
+            QStringLiteral("user:") + name.toLower());
+        if (avatar != m_avatars.constEnd())
+            nameItem->setIcon(QIcon(*avatar));
+        m_usersTable->setItem(row, kUsersColName, nameItem);
+
+        const bool verified =
+            user.value(QStringLiteral("emailVerified")).toBool();
+        m_usersTable->setItem(
+            row, kUsersColVerified,
+            usersTableItem(verified ? QStringLiteral("Yes")
+                                    : QStringLiteral("No"),
+                           verified ? 1 : 0));
+
+        const QString status =
+            user.value(QStringLiteral("status")).toString(QStringLiteral("active"));
+        m_usersTable->setItem(
+            row, kUsersColStatus, usersTableItem(status, status.toLower()));
+
+        const qint64 joined = static_cast<qint64>(
+            user.value(QStringLiteral("createdAt")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColJoined, usersTableItem(usersTimestamp(joined), joined));
+
+        const qint64 totalActiveMs = static_cast<qint64>(
+            user.value(QStringLiteral("totalActiveMs")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColWorldActivity,
+            usersTableItem(formatDuration(totalActiveMs), totalActiveMs));
+
+        const auto recency = usersActivityRecency(
+            user.value(QStringLiteral("activityBucket")).toString());
+        m_usersTable->setItem(
+            row, kUsersColActivityRecency,
+            usersTableItem(recency.first, recency.second));
+
+        const qint64 lastEmail = static_cast<qint64>(
+            user.value(QStringLiteral("lastEmailAt")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColLastEmail,
+            usersTableItem(lastEmail > 0 ? usersTimestamp(lastEmail)
+                                         : QStringLiteral("Never"),
+                           lastEmail));
+
+        const QString delivery =
+            user.value(QStringLiteral("lastEmailStatus")).toString();
+        m_usersTable->setItem(
+            row, kUsersColEmailDelivery,
+            usersTableItem(delivery.isEmpty() ? QStringLiteral("Not sent")
+                                              : delivery,
+                           delivery.toLower()));
+
+        const QString country =
+            user.value(QStringLiteral("countryCode")).toString();
+        const QString browser = user.value(QStringLiteral("browser")).toString();
+        const QString os = user.value(QStringLiteral("os")).toString();
+        m_usersTable->setItem(
+            row, kUsersColCountry,
+            usersTableItem(country.isEmpty() ? QStringLiteral("Not shared")
+                                             : country,
+                           country));
+        m_usersTable->setItem(
+            row, kUsersColBrowser,
+            usersTableItem(browser.isEmpty() ? QStringLiteral("Not shared")
+                                             : browser,
+                           browser));
+        m_usersTable->setItem(
+            row, kUsersColOs,
+            usersTableItem(os.isEmpty() ? QStringLiteral("Not shared") : os,
+                           os));
+
+        QStringList nodes;
+        for (const QJsonValue &nodeValue :
+             user.value(QStringLiteral("nodes")).toArray()) {
+            const QString node = nodeValue.toString().trimmed();
+            if (!node.isEmpty())
+                nodes.append(node);
+        }
+        const QString nodeText =
+            nodes.isEmpty()
+                ? QStringLiteral("0")
+                : QStringLiteral("%1 - %2").arg(nodes.size()).arg(
+                      nodes.join(QStringLiteral(", ")));
+        auto *nodesItem = usersTableItem(nodeText, nodes.size());
+        if (!nodes.isEmpty())
+            nodesItem->setToolTip(nodes.join(QLatin1Char('\n')));
+        m_usersTable->setItem(row, kUsersColNodes, nodesItem);
+    }
+
+    m_usersTable->setSortingEnabled(true);
+    m_usersTable->sortItems(sortColumn, sortOrder);
+    if (m_usersStatus) {
+        m_usersStatus->setText(
+            QStringLiteral("%1 privacy-filtered %2 - same facts as World avatar chests")
+                .arg(m_usersTable->rowCount())
+                .arg(m_usersTable->rowCount() == 1 ? QStringLiteral("user")
+                                                   : QStringLiteral("users")));
+    }
+}
 
 void MainWindow::updateNetworkCounts(int relays, int nodes, int hosts)
 {

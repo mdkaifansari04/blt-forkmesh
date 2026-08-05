@@ -11,6 +11,9 @@
 #include "PacmanProgress.h"
 
 #include <QComboBox>
+#include <QDateTime>
+#include <QFile>
+#include <QFileInfo>
 #include <QPointer>
 #include <QQueue>
 #include <QTimer>
@@ -25,6 +28,28 @@ using namespace forkmesh::ui;
 // loadBranchesPanel can probe each branch for merge conflicts.
 static QString branchMergeTree(const QString &dir, const QString &base,
                                const QString &branch);
+
+// A crashed ref update can leave HEAD.lock behind indefinitely. Every later
+// merge then computes cleanly and fails only while publishing the new HEAD,
+// which used to be misreported as a content conflict. HEAD locks are normally
+// held for milliseconds, so only recover an orphan that has been untouched for
+// at least a minute; a fresh lock still belongs to a potentially live writer.
+static QString removeStaleHeadLock(const QString &worktree)
+{
+    QByteArray gitDirOut;
+    if (!runGitCapture(worktree,
+                       {QStringLiteral("rev-parse"),
+                        QStringLiteral("--absolute-git-dir")},
+                       &gitDirOut, nullptr))
+        return {};
+    const QString gitDir = QString::fromUtf8(gitDirOut).trimmed();
+    const QString lockPath = QDir(gitDir).filePath(QStringLiteral("HEAD.lock"));
+    const QFileInfo lock(lockPath);
+    if (!lock.exists() ||
+        lock.lastModified().msecsTo(QDateTime::currentDateTime()) < 60000)
+        return {};
+    return QFile::remove(lockPath) ? lockPath : QString();
+}
 
 // Suffix the Status cell / detail label carry for a branch that can't be merged
 // into base cleanly. Shared so the background probe (adhoc #416) appends exactly
@@ -1523,10 +1548,33 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     const QString base = repoDefaultBranch(repoBranches());
     if (branch.isEmpty() || branch == base || dir.isEmpty())
         return false;
+    // Never race a live agent's checkout. It can advance the branch between the
+    // merge command and the containment safety check, which used to surface as
+    // the misleading "couldn't merge cleanly" message even when merge-tree said
+    // the tips were conflict-free. Keep the branch/worktree intact and let the
+    // completed-session refresh enable merging once the producer is done.
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.branchName != branch)
+            continue;
+        if (session.status == AgentStatus::Running ||
+            session.status == AgentStatus::Waiting ||
+            session.status == AgentStatus::Queued) {
+            setRepoDetailNotice(
+                QStringLiteral("Agent #%1 is still working on %2. Wait for it to "
+                               "finish before merging so its final commit is included.")
+                    .arg(session.id)
+                    .arg(branch),
+                true);
+            return false;
+        }
+    }
     if (!repoHasWorkingTree()) {
         setRepoDetailNotice("Read-only mirror — nothing to merge into here.", true);
         return false;
     }
+    if (const QString staleLock = removeStaleHeadLock(dir); !staleLock.isEmpty())
+        logSystem(QStringLiteral("Git: removed orphaned lock %1 before merging %2.")
+                      .arg(staleLock, branch));
     // Uncommitted work in the checkout blocks the merge outright — check it first,
     // because it is also the only thing that makes the branch switch below unsafe.
     QByteArray st;

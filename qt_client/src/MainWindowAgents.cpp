@@ -23,6 +23,8 @@
 #include <QFrame>
 #include <QShowEvent>
 
+#include <algorithm>
+
 using namespace forkmesh::ui;
 
 // ---- Agents ---------------------------------------------------------------
@@ -367,7 +369,7 @@ QString agentStatusBadgeToolTip(const AgentSession &session)
     if (const QString usageLine = agentUsageLimitCountdownText(session);
         !usageLine.isEmpty())
         details << usageLine;
-    details << QStringLiteral("Click to show session details.");
+    details << QStringLiteral("Hover or click to show session details.");
     return details.join(QLatin1Char('\n'));
 }
 
@@ -412,6 +414,58 @@ void summarizeAgentNumstat(const QByteArray &numstat, AgentDiffStat *stat)
     stat->files = files;
     stat->added = added;
     stat->removed = removed;
+}
+
+// Return the paths touched by commits that are genuinely unique to the agent
+// side.  `base..branch` is not sufficient after main is rewritten: every commit
+// from the former main lineage then appears branch-only, which made a two-file
+// task claim tens or hundreds of unrelated files.  Git's cherry comparison
+// removes patch-equivalent base commits even when their object ids changed.
+void parseAgentOwnedLog(const QByteArray &output, QSet<QString> *paths,
+                        QStringList *commits = nullptr)
+{
+    if (!paths)
+        return;
+    for (const QString &raw : QString::fromUtf8(output).split(
+             QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QString line = raw.trimmed();
+        if (line.isEmpty())
+            continue;
+        if (line.startsWith(QChar(0x1e))) {
+            if (commits)
+                commits->append(line.mid(1));
+            continue;
+        }
+        paths->insert(line);
+    }
+}
+
+bool readAgentOwnedPaths(const QString &gitDir, const QString &base,
+                         const QString &branch, QSet<QString> *paths)
+{
+    if (!paths || gitDir.isEmpty() || base.isEmpty() || branch.isEmpty())
+        return false;
+    QByteArray out;
+    if (!runGitCapture(
+            gitDir,
+            {QStringLiteral("log"), QStringLiteral("--no-merges"),
+             QStringLiteral("--cherry-pick"), QStringLiteral("--right-only"),
+             QStringLiteral("--format=%x1e%h %s"),
+             QStringLiteral("--name-only"),
+             base + QStringLiteral("...") + branch},
+            &out, nullptr))
+        return false;
+    parseAgentOwnedLog(out, paths);
+    return true;
+}
+
+QStringList literalPathspecs(const QSet<QString> &paths)
+{
+    QStringList sorted = paths.values();
+    std::sort(sorted.begin(), sorted.end());
+    for (QString &path : sorted)
+        path.prepend(QStringLiteral(":(literal)"));
+    return sorted;
 }
 
 QString backgroundDefaultBranch(const QString &gitDir, QString configured,
@@ -491,11 +545,34 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
         // a small branch claim dozens of unrelated files.
         QByteArray liveDiff;
         QString liveError;
-        if (runGitCapture(gitDir,
-                          {QStringLiteral("diff"), QStringLiteral("--numstat"),
-                           base + QStringLiteral("...") + session.branchName},
-                          &liveDiff, &liveError))
+        QSet<QString> ownedPaths;
+        const bool ownedPathsOk =
+            readAgentOwnedPaths(gitDir, base, session.branchName, &ownedPaths);
+        if (ownedPathsOk) {
+            // A live branch is authoritative over an old stored patch.  Limit
+            // the net comparison to files touched by the branch's unique task
+            // commits so rewritten/merged base history cannot leak into the
+            // agent badge.
+            stat.files = 0;
+            stat.added = 0;
+            stat.removed = 0;
+            if (!ownedPaths.isEmpty()) {
+                QStringList diffArgs{QStringLiteral("diff"),
+                                     QStringLiteral("--numstat"), base,
+                                     session.branchName, QStringLiteral("--")};
+                diffArgs.append(literalPathspecs(ownedPaths));
+                if (runGitCapture(gitDir, diffArgs, &liveDiff, &liveError))
+                    summarizeAgentNumstat(liveDiff, &stat);
+            }
+        } else if (runGitCapture(
+                       gitDir,
+                       {QStringLiteral("diff"), QStringLiteral("--numstat"),
+                        base + QStringLiteral("...") + session.branchName},
+                       &liveDiff, &liveError)) {
+            // Preserve a useful fallback for unusual repositories whose refs
+            // cannot be cherry-compared (for example, shallow clones).
             summarizeAgentNumstat(liveDiff, &stat);
+        }
         QByteArray counts;
         if (runGitCapture(gitDir,
                           {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
@@ -953,14 +1030,9 @@ QString agentStatusCellIconName(const AgentSession &s)
     return QString();
 }
 
-// Which agent actually ran a session, as one small glyph for the "#" cell's
-// leading edge (adhoc #1443): the list said what a run did and how it went, but
-// never who did it, and the four providers behave differently enough that it is
-// the first thing asked of a row. The shape says how it ran — a terminal for the
-// CLI providers that drive a real checkout, a cloud for the raw API scripts —
-// and the tint says whose model answered: Anthropic's clay for the Claude
-// family, OpenAI's green for Codex/OpenAI. A session with no recorded (or an
-// unrecognised) provider gets no glyph rather than a wrong one.
+// Which agent actually ran a session, as text in the hover card. The visual at
+// the leading edge is the model artwork itself (or the PR author's avatar), so
+// this remains useful context without duplicating a provider glyph in the row.
 struct AgentProviderGlyph {
     QString icon; // empty: nothing to draw and nothing to say
     QColor tint;
@@ -986,33 +1058,36 @@ AgentProviderGlyph agentProviderGlyph(const QString &provider)
     return {QString(), QColor(), QString()};
 }
 
-// Sizes of the two glyphs at the head of every "#" cell. The provider rides a
-// touch smaller than the status: it says who, which is context for the state,
-// not the state itself.
-constexpr int kAgentStatusGlyphPx = 14;
-constexpr int kAgentProviderGlyphPx = 12;
-constexpr int kAgentProviderGapPx = 3;
-constexpr int kAgentLeadGlyphsPx =
-    kAgentProviderGlyphPx + kAgentProviderGapPx + kAgentStatusGlyphPx;
+// A single identity badge now owns the far-left position in every Agents row:
+// model artwork for agent sessions, and the PR author's avatar for PR-linked
+// sessions. Status is a coloured stroke around that badge, rather than a second
+// competing icon, so the first mark answers who/what and the border answers how
+// it is going.
+constexpr int kAgentLeadGlyphsPx = 20;
+constexpr int kAgentIdentityArtworkPx = 14;
 
-// The "#" cell's leading decoration: the provider glyph, then the run-state
-// glyph. A table item carries exactly one icon, so the pair is composed into a
-// single pixmap here rather than spending a column on the provider — the
-// provider sits left of the status, where the eye starts the row. Sessions
-// without a provider glyph keep the bare status pixmap, so their status stays
-// on the same vertical line as everyone else's.
-QPixmap agentLeadGlyphPixmap(const QString &provider, const QPixmap &status)
+QPixmap agentLeadGlyphPixmap(const AgentSession &session,
+                             const QPixmap &pullAuthorAvatar = QPixmap())
 {
-    const AgentProviderGlyph badge = agentProviderGlyph(provider);
-    if (badge.icon.isEmpty())
-        return status;
-    QPixmap out = crispIconPixmap(kAgentLeadGlyphsPx, kAgentStatusGlyphPx,
+    QPixmap artwork = pullAuthorAvatar;
+    if (artwork.isNull())
+        artwork = agentControlIcon(agentStatusModelIconIndex(session)).pixmap(
+            kAgentIdentityArtworkPx, kAgentIdentityArtworkPx);
+    if (artwork.isNull())
+        return QPixmap();
+    QPixmap out = crispIconPixmap(kAgentLeadGlyphsPx, kAgentLeadGlyphsPx,
                                   iconDevicePixelRatio());
     QPainter p(&out);
-    p.drawPixmap(0, (kAgentStatusGlyphPx - kAgentProviderGlyphPx) / 2,
-                 tintedOcticonPixmap(badge.icon, badge.tint, kAgentProviderGlyphPx));
-    if (!status.isNull())
-        p.drawPixmap(kAgentProviderGlyphPx + kAgentProviderGapPx, 0, status);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const int inset = (kAgentLeadGlyphsPx - kAgentIdentityArtworkPx) / 2;
+    p.drawPixmap(QRect(inset, inset, kAgentIdentityArtworkPx,
+                       kAgentIdentityArtworkPx), artwork);
+    QPen statusRing(agentStatusIconColor(session), 2.0);
+    statusRing.setJoinStyle(Qt::RoundJoin);
+    p.setPen(statusRing);
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QRectF(1.0, 1.0, kAgentLeadGlyphsPx - 2.0,
+                         kAgentLeadGlyphsPx - 2.0));
     p.end();
     return out;
 }
@@ -1043,7 +1118,8 @@ QString agentHoverRow(const QString &icon, const QColor &tint, const QString &te
 // the title column has the rest of the list to itself.
 void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                           const AgentDiffStat &stat = AgentDiffStat(),
-                          const QString &base = QString(), int sessionId = 0)
+                          const QString &base = QString(), int sessionId = 0,
+                          const QPixmap &pullAuthorAvatar = QPixmap())
 {
     // What the cell reads is the session's age, not its number (adhoc #84): the
     // separate "Updated" column is gone and its value moved in here, while the
@@ -1057,19 +1133,12 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                                 : QStringLiteral("-"));
     cell->setData(Qt::UserRole, s.id);
     cell->setData(kTableSortRole, s.id);
-    // Provider glyph then status glyph (adhoc #1443 put the provider in front of
-    // the state — see agentLeadGlyphPixmap). Status (issue #108): a blue spinner
-    // while running (adhoc #23/#50), a purple merge mark once it lands, a green
-    // check on success, a red stop sign when halted, an orange hand while it waits
-    // on the user, and a red X circle on failure (issue #322). The running glyph is
-    // seeded at frame 0 here; animateRunningAgentIcons() spins it.
+    // The leading identity badge is model artwork for ordinary sessions or the
+    // author's face for a PR. Its status is the surrounding stroke: blue while
+    // running, purple once merged, green on success, red when halted/failed and
+    // amber while queued or waiting.
     const QString statusIcon = agentStatusCellIconName(s);
-    const QPixmap statusPixmap =
-        statusIcon.isEmpty()
-            ? QPixmap()
-            : tintedOcticonPixmap(statusIcon, agentStatusIconColor(s),
-                                  kAgentStatusGlyphPx);
-    const QPixmap lead = agentLeadGlyphPixmap(s.provider, statusPixmap);
+    const QPixmap lead = agentLeadGlyphPixmap(s, pullAuthorAvatar);
     cell->setIcon(lead.isNull() ? QIcon() : QIcon(lead));
     // The branch drives the cell's branch button (adhoc #377); AgentBranchButton-
     // Delegate paints it and opens the branch on click, so a session without one
@@ -1251,23 +1320,6 @@ QString agentSpeedText(const AgentSession &s, qint64 tokens)
 // time, so thinking and tool calls drag the average down), which is the point:
 // the lights should still visibly differentiate an ordinary run from a fast one.
 constexpr double kAgentFastTokensPerSecond = 30.0;
-
-// How far a running session's "sync" spinner turns per animation tick (adhoc
-// #50): the glyph spins at the speed the model is actually producing, from a
-// slow turn on a barely-emitting run up to a fast one at
-// kAgentFastTokensPerSecond, on the same 0..1 throughput scale the fleet
-// matrix's activity lights use. A session with no rate yet still creeps, so a
-// just-started run never reads as frozen. Degrees are per kAgentSpinTickMs tick.
-constexpr double kAgentSpinSlowDegrees = 12.0;  // ~0.55 rev/s
-constexpr double kAgentSpinFastDegrees = 66.0;  // ~3.0 rev/s
-
-double agentSpinStepDegrees(const AgentSession &s, qint64 tokens)
-{
-    const double throughput = qBound(
-        0.0, agentTokensPerSecond(s, tokens) / kAgentFastTokensPerSecond, 1.0);
-    return kAgentSpinSlowDegrees +
-           throughput * (kAgentSpinFastDegrees - kAgentSpinSlowDegrees);
-}
 
 // What an agent changed, as words — the number of files its patch touched, the
 // lines it added and removed, and how far its branch sits ahead of / behind base
@@ -1908,6 +1960,20 @@ private:
 
 } // namespace
 
+#ifdef FORKMESH_WINDOW_TESTS
+QStringList MainWindow::testAgentOwnedDiffPaths(const QString &gitDir,
+                                                const QString &base,
+                                                const QString &branch) const
+{
+    QSet<QString> paths;
+    if (!readAgentOwnedPaths(gitDir, base, branch, &paths))
+        return {};
+    QStringList sorted = paths.values();
+    std::sort(sorted.begin(), sorted.end());
+    return sorted;
+}
+#endif
+
 QWidget *MainWindow::buildAgentsTab()
 {
     auto *page = new QWidget;
@@ -2303,6 +2369,7 @@ QWidget *MainWindow::buildAgentsTab()
     // rich-text label in a QWidgetAction.
     m_agentMetaPopup = new QFrame(this, Qt::Popup);
     m_agentMetaPopup->setObjectName("agentMetaPopup"); // themed like #reactionPicker
+    m_agentMetaPopup->installEventFilter(this);
     auto *metaPopupLayout = new QVBoxLayout(m_agentMetaPopup);
     metaPopupLayout->setContentsMargins(12, 10, 12, 10);
     metaPopupLayout->addWidget(m_agentMeta);
@@ -2488,31 +2555,9 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStatusPill->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_agentStatusPill->setIconSize(QSize(18, 18));
     m_agentStatusPill->setCursor(Qt::PointingHandCursor);
-    connect(m_agentStatusPill, &QToolButton::clicked, this, [this] {
-        if (!m_agentMetaPopup)
-            return;
-        if (m_agentMetaPopup->isVisible()) {
-            m_agentMetaPopup->hide();
-            return;
-        }
-        m_agentMetaPopup->adjustSize();
-        QPoint at = m_agentStatusPill->mapToGlobal(
-            QPoint(0, m_agentStatusPill->height() + 4));
-        // The list is as wide as its longest branch/worktree value now (adhoc
-        // #68), so a session deep in the screen's right half would otherwise open
-        // partly off it. Slide it back in.
-        const QScreen *screen = m_agentMetaPopup->screen()
-                                    ? m_agentMetaPopup->screen()
-                                    : QGuiApplication::primaryScreen();
-        if (screen) {
-            const QRect avail = screen->availableGeometry();
-            at.setX(qBound(avail.left(),
-                           qMin(at.x(), avail.right() - m_agentMetaPopup->width() + 1),
-                           avail.right()));
-        }
-        m_agentMetaPopup->move(at);
-        m_agentMetaPopup->show();
-    });
+    m_agentStatusPill->installEventFilter(this);
+    connect(m_agentStatusPill, &QToolButton::clicked, this,
+            &MainWindow::toggleAgentMetaPopup);
 
     // Branch / Worktree in the output toolbar (adhoc #51): a click opens that
     // branch in the Git view (adhoc #131 — switchToAgentBranch points the view at
@@ -6826,7 +6871,7 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     // edge; adhoc #84 — the age took the session number's place in the text).
     // Sortable because the cell no longer displays the number it sorts by.
     applyAgentStatusCell(sortable(kAgentIdColumn), session, diffStat, agentBase,
-                         session.id);
+                         session.id, agentSessionPullAvatar(session));
     // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
     // conflict auto-fixer, issueNumber 0) just show their title.
     QString title = session.issueNumber > 0 ? QStringLiteral("#%1 %2")
@@ -6871,6 +6916,34 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     // created/started/finished/merged now reads as the "#" cell's own text, with
     // the full timestamp in that cell's tooltip — see applyAgentStatusCell, which
     // also carries what the "Diff" column used to hold (adhoc #92).
+}
+
+QPixmap MainWindow::agentSessionPullAvatar(const AgentSession &session)
+{
+    if (session.prNumber <= 0)
+        return QPixmap();
+    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+        if (pr.number != session.prNumber)
+            continue;
+        // The same avatar precedence as a PR conversation: a peer's published
+        // picture, then this user's chosen profile picture, then a stable face
+        // for an author whose image has not reached this node yet.
+        const QPixmap cached = m_avatars.value(pr.author);
+        if (!cached.isNull())
+            return roundedRectPixmap(cached, kAgentIdentityArtworkPx,
+                                     kAgentIdentityArtworkPx / 2.0);
+        if (!pr.author.isEmpty() && pr.author == m_profileIdentity.publicKey())
+            return roundedAvatar(effectiveUserAvatar(), kAgentIdentityArtworkPx,
+                                 0.5);
+        const QString author = pr.authorName.trimmed().isEmpty()
+                                   ? (pr.author.isEmpty()
+                                          ? QString::number(pr.number)
+                                          : pr.author)
+                                   : pr.authorName.trimmed();
+        return roundedAvatar(forkMeshAvatarPng(author.toLower()),
+                             kAgentIdentityArtworkPx, 0.5);
+    }
+    return QPixmap();
 }
 
 AgentSession *MainWindow::findAgentSession(int sessionId)
@@ -11932,7 +12005,9 @@ void MainWindow::updateAgentStatusCell(int sessionId)
         // Reuse the memoised diff stat so the branch chip keeps its files/dirty/
         // worktree badges across a bare status flip without re-shelling git here
         // (an absent entry simply leaves the badges off until the next refresh).
-        applyAgentStatusCell(idItem, *s, m_agentDiffStats.value(sessionId));
+        applyAgentStatusCell(idItem, *s, m_agentDiffStats.value(sessionId),
+                             QString(), sessionId,
+                             agentSessionPullAvatar(*s));
         break;
     }
     // Keep the top-bar fleet matrix's per-session square in step with every
@@ -11989,7 +12064,8 @@ void MainWindow::applyAgentDiffStatResult(int generation, int repoIndex,
         if (!item || item->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker blocker(m_agentTable);
-        applyAgentStatusCell(item, *session, stat);
+        applyAgentStatusCell(item, *session, stat, QString(), sessionId,
+                             agentSessionPullAvatar(*session));
         m_agentTable->viewport()->update(m_agentTable->visualItemRect(item));
         break;
     }
@@ -12015,6 +12091,49 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     m_agentStatusPill->show();
 }
 
+void MainWindow::showAgentMetaPopup()
+{
+    if (!m_agentStatusPill || !m_agentMetaPopup)
+        return;
+    m_agentMetaPopup->adjustSize();
+    QPoint at = m_agentStatusPill->mapToGlobal(
+        QPoint(0, m_agentStatusPill->height() + 4));
+    // The list is as wide as its longest branch/worktree value now (adhoc #68),
+    // so a session deep in the screen's right half would otherwise open partly
+    // off it. Slide it back in.
+    const QScreen *screen = m_agentMetaPopup->screen()
+                                ? m_agentMetaPopup->screen()
+                                : QGuiApplication::primaryScreen();
+    if (screen) {
+        const QRect avail = screen->availableGeometry();
+        at.setX(qBound(avail.left(),
+                       qMin(at.x(), avail.right() - m_agentMetaPopup->width() + 1),
+                       avail.right()));
+    }
+    m_agentMetaPopup->move(at);
+    m_agentMetaPopup->show();
+}
+
+void MainWindow::toggleAgentMetaPopup()
+{
+    if (!m_agentMetaPopup)
+        return;
+    if (m_agentMetaPopup->isVisible()) {
+        m_agentMetaPopup->hide();
+        return;
+    }
+    showAgentMetaPopup();
+}
+
+void MainWindow::hideAgentMetaPopupIfPointerAway()
+{
+    if (!m_agentMetaPopup || !m_agentMetaPopup->isVisible())
+        return;
+    if ((!m_agentStatusPill || !m_agentStatusPill->underMouse()) &&
+        !m_agentMetaPopup->underMouse())
+        m_agentMetaPopup->hide();
+}
+
 // Spin the blue "sync" glyph on every running row's "#" cell so the agents
 // list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
 // ticks while a session is running, so finished rows keep their static icon.
@@ -12036,23 +12155,6 @@ void MainWindow::animateRunningAgentIcons()
         const AgentSession *s = findAgentSession(idItem->data(Qt::UserRole).toInt());
         if (!s || s->merged || s->status != AgentStatus::Running)
             continue;
-        // The spinner sits on the "#" cell (adhoc #29 — see applyAgentRowCells for
-        // the column layout).
-        double &angle = m_agentRowSpinAngles[s->id];
-        angle = std::fmod(angle + agentSpinStepDegrees(*s, sessionTokenTotal(*s)),
-                          360.0);
-        // A genie turns its own violet sparkle rather than the shared sync
-        // arrows (adhoc #38), so its glyph survives the animation instead of
-        // being overwritten frame by frame.
-        // The provider glyph rides in front of the spinner (adhoc #1443), so it
-        // has to be recomposed every frame — the cell carries one icon, and this
-        // path overwrites it.
-        idItem->setIcon(QIcon(agentLeadGlyphPixmap(
-            s->provider,
-            rotatedTintedOcticonPixmap(
-                s->genie ? "sparkle" : "sync",
-                QColor(s->genie ? Theme::kGenie : Theme::kRunning),
-                kAgentStatusGlyphPx, angle))));
         // Tick the detail header's run stats (elapsed time, and the live tok/s
         // figure whose run duration grows against the wall clock — issue #245,
         // moved here from the table by adhoc #35) for the open session — meta
@@ -12468,29 +12570,45 @@ void MainWindow::scheduleAgentFilesDiff(int sessionId)
             // subprocesses; render once, when the last one lands. A late result
             // for a session the user has since clicked away from is dropped.
             auto probe = std::make_shared<AgentDiffProbe>();
-            probe->pending = base.isEmpty() ? 2 : 4; // ahead/behind need a base
-            const auto finish = [this, sid, probe] {
+            // Status contributes uncommitted paths; the cherry-aware log
+            // contributes paths owned by patch-unique task commits.  Wait for
+            // those (and the behind count) before starting the one path-limited
+            // diff, otherwise a rewritten main can make an agent appear to own
+            // every file from the former base lineage.
+            probe->pending = base.isEmpty() ? 1 : 3;
+            const auto inputsDone = [this, sid, dir, base, probe] {
                 if (--probe->pending > 0)
                     return;
-                // A failed diff read (worktree vanished mid-run) keeps the last
-                // rendered view rather than blanking it, matching the old path.
-                if (probe->patchOk && sid == m_selectedAgentSessionId)
-                    renderAgentDiff(sid, *probe);
+                QSet<QString> visiblePaths = probe->ownedPaths;
+                visiblePaths.unite(probe->uncommitted);
+                if (!base.isEmpty() && visiblePaths.isEmpty()) {
+                    probe->patchOk = true;
+                    probe->patch.clear();
+                    if (sid == m_selectedAgentSessionId)
+                        renderAgentDiff(sid, *probe);
+                    return;
+                }
+                QStringList args{QStringLiteral("diff")};
+                if (!base.isEmpty()) {
+                    args << base << QStringLiteral("--");
+                    args.append(literalPathspecs(visiblePaths));
+                }
+                runGitDetached(
+                    dir, args,
+                    [this, sid, probe](bool ok, const QByteArray &out) {
+                        probe->patchOk = ok;
+                        if (ok)
+                            probe->patch = out;
+                        // A failed diff read (worktree vanished mid-run) keeps
+                        // the last rendered view rather than blanking it.
+                        if (ok && sid == m_selectedAgentSessionId)
+                            renderAgentDiff(sid, *probe);
+                    });
             };
-            QStringList args{QStringLiteral("diff")};
-            if (!base.isEmpty())
-                args << base;
-            runGitDetached(dir, args,
-                           [probe, finish](bool ok, const QByteArray &out) {
-                               probe->patchOk = ok;
-                               if (ok)
-                                   probe->patch = out;
-                               finish();
-                           });
             // One `status --porcelain` covers what used to be two reads (tracked
             // edits vs HEAD + untracked files): the ● "uncommitted" markers.
             runGitDetached(dir, {QStringLiteral("status"), QStringLiteral("--porcelain")},
-                           [probe, finish](bool ok, const QByteArray &out) {
+                           [probe, inputsDone](bool ok, const QByteArray &out) {
                                if (ok)
                                    for (QString line : QString::fromUtf8(out).split(
                                             QLatin1Char('\n'), Qt::SkipEmptyParts)) {
@@ -12504,29 +12622,34 @@ void MainWindow::scheduleAgentFilesDiff(int sessionId)
                                            p = p.mid(1, p.size() - 2);
                                        probe->uncommitted.insert(p.trimmed());
                                    }
-                               finish();
+                               inputsDone();
                            });
             if (!base.isEmpty()) {
-                // The commits this branch adds (list + count in one read)…
+                // Collect only patch-unique non-merge commits and the paths
+                // they own. This stays accurate when main is rebased/recreated
+                // and its equivalent commits acquire different object ids.
                 runGitDetached(dir,
-                               {QStringLiteral("log"), QStringLiteral("--format=%h %s"),
-                                base + QStringLiteral("..HEAD")},
-                               [probe, finish](bool ok, const QByteArray &out) {
+                               {QStringLiteral("log"), QStringLiteral("--no-merges"),
+                                QStringLiteral("--cherry-pick"),
+                                QStringLiteral("--right-only"),
+                                QStringLiteral("--format=%x1e%h %s"),
+                                QStringLiteral("--name-only"),
+                                base + QStringLiteral("...HEAD")},
+                               [probe, inputsDone](bool ok, const QByteArray &out) {
                                    if (ok)
-                                       probe->commitLines =
-                                           QString::fromUtf8(out).split(
-                                               QLatin1Char('\n'), Qt::SkipEmptyParts);
-                                   finish();
+                                       parseAgentOwnedLog(out, &probe->ownedPaths,
+                                                          &probe->commitLines);
+                                   inputsDone();
                                });
                 // …and how far it trails the base branch's live tip.
                 runGitDetached(dir,
                                {QStringLiteral("rev-list"), QStringLiteral("--count"),
                                 QStringLiteral("HEAD..") + base},
-                               [probe, finish](bool ok, const QByteArray &out) {
+                               [probe, inputsDone](bool ok, const QByteArray &out) {
                                    if (ok)
                                        probe->behind =
                                            QString::fromUtf8(out).trimmed().toInt();
-                                   finish();
+                                   inputsDone();
                                });
             }
         });

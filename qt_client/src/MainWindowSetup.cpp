@@ -1246,6 +1246,64 @@ QStringList MainWindow::testNodeDirectoryNames() const
     return names;
 }
 
+bool MainWindow::testUsersNavButtonVisible() const
+{
+    return m_usersNavButton && !m_usersNavButton->isHidden();
+}
+
+QStringList MainWindow::testUsersColumns() const
+{
+    QStringList labels;
+    if (!m_usersTable)
+        return labels;
+    for (int column = 0; column < m_usersTable->columnCount(); ++column) {
+        if (QTableWidgetItem *item =
+                m_usersTable->horizontalHeaderItem(column))
+            labels.append(item->text());
+    }
+    return labels;
+}
+
+QString MainWindow::testUsersCellText(int row, const QString &header) const
+{
+    if (!m_usersTable || row < 0 || row >= m_usersTable->rowCount())
+        return QString();
+    for (int column = 0; column < m_usersTable->columnCount(); ++column) {
+        const QTableWidgetItem *label =
+            m_usersTable->horizontalHeaderItem(column);
+        if (!label || label->text() != header)
+            continue;
+        const QTableWidgetItem *item = m_usersTable->item(row, column);
+        return item ? item->text() : QString();
+    }
+    return QString();
+}
+
+QStringList MainWindow::testSortUsersBy(const QString &header,
+                                        Qt::SortOrder order)
+{
+    QStringList names;
+    if (!m_usersTable)
+        return names;
+    int sortColumn = -1;
+    for (int column = 0; column < m_usersTable->columnCount(); ++column) {
+        const QTableWidgetItem *item =
+            m_usersTable->horizontalHeaderItem(column);
+        if (item && item->text() == header) {
+            sortColumn = column;
+            break;
+        }
+    }
+    if (sortColumn < 0)
+        return names;
+    m_usersTable->sortItems(sortColumn, order);
+    for (int row = 0; row < m_usersTable->rowCount(); ++row) {
+        if (const QTableWidgetItem *item = m_usersTable->item(row, 0))
+            names.append(item->text());
+    }
+    return names;
+}
+
 QStringList MainWindow::testChatMemberNames(const QString &conversation)
 {
     const QString saved = m_currentConversation;
@@ -1446,6 +1504,7 @@ void MainWindow::startSession()
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
+        updateAdminCrownBadge();
         QSettings().remove(kAuthedAccountSetting);
     }
 
@@ -1541,6 +1600,7 @@ void MainWindow::startSession()
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
+        updateAdminCrownBadge();
         QSettings().remove(kAuthedAccountSetting);
     }
     m_accountName = name;
@@ -3150,6 +3210,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
+        updateAdminCrownBadge();
         QSettings().remove(kAuthedAccountSetting);
     }
     int status = 0;
@@ -4214,6 +4275,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
 
 void MainWindow::runQuickUpdate()
 {
+    startRestartCautionFlash();
     beginRestartLog();
     showUpdateLog();
     logRestart(QStringLiteral("quick update started"));
@@ -4267,9 +4329,11 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
                                 ? QCoreApplication::applicationFilePath()
                                 : relaunchPath;
     const QString buildDir = clientDir + "/build";
+    setRestartSpinProgress(35);
     setUpdateStatus("Configuring...");
     runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
                       clientDir, [this, buildDir, appPath] {
+        setRestartSpinProgress(60);
         setUpdateStatus("Rebuilding...");
         runUpdateStepUser("cmake",
                           {"--build", buildDir, "-j",
@@ -4316,6 +4380,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
     // permanently killed every flag-launched node that completed the v0.6.2
     // update.
     const QStringList relaunchArgs = QCoreApplication::arguments().mid(1);
+    setRestartSpinProgress(80);
 
     if (!m_updateAsUser.isEmpty()) {
         // Install and relaunch as the user so the binary is theirs, not root's.
@@ -4340,6 +4405,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
         }
         runUpdateStep("sudo", {"-u", m_updateAsUser, "-H", "sh", "-c", script},
                       QDir::tempPath(), [this, appPath, relaunchArgs] {
+            setRestartSpinProgress(100);
             setUpdateStatus("Relaunching...");
             const QString user = m_updateAsUser;
             // Release the instance lock first so the replacement process (which
@@ -4395,6 +4461,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
                               QFile::ExeGroup | QFile::ReadOther |
                               QFile::ExeOther);
     }
+    setRestartSpinProgress(100);
     setUpdateStatus("Relaunching...");
     // Release the instance lock before spawning the replacement process, or it
     // bounces off the still-held lock (this process hasn't unwound yet) and
@@ -4614,6 +4681,7 @@ bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
 void MainWindow::installPrebuiltAndRelaunch(const QString &artifactPath,
                                             const QString &tag)
 {
+    startRestartCautionFlash();
     // Stage a private executable copy — the CAS blob is not executable and
     // may sit on a different filesystem than the installed binary.
     const QString staged =
@@ -4644,12 +4712,14 @@ void MainWindow::installPrebuiltAndRelaunch(const QString &artifactPath,
 
 void MainWindow::updateRebuildRestart()
 {
+    startRestartCautionFlash();
     beginRestartLog();
     showUpdateLog();
     logRestart(QStringLiteral("update, rebuild & restart started"));
     logSystem(QStringLiteral("=== Update, rebuild & restart started ==="));
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
+    setRestartSpinProgress(5);
 
     // Under sudo, target the invoking user's home so nothing is written to /root.
     const QString user = invokingNonRootUser();
@@ -4709,6 +4779,7 @@ void MainWindow::updateRebuildRestart()
     };
 
     if (haveCheckout) {
+        setRestartSpinProgress(20);
         setUpdateStatus("Pulling a fresh copy from " + installUrl + "...");
         // Repoint origin at the freshly resolved live mirror, then fast-forward.
         runUpdateStepUser("git", {"-C", repoDir, "remote", "set-url", "origin",
@@ -4727,6 +4798,7 @@ void MainWindow::updateRebuildRestart()
             });
         });
     } else {
+        setRestartSpinProgress(20);
         setUpdateStatus("Downloading a fresh copy from " + installUrl + "...");
         recloneFromMirror();
     }
