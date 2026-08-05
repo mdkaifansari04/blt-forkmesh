@@ -31,11 +31,17 @@ def test_debug_bar_is_a_live_metric_pill_with_graded_health_dots():
     assert 'data-world-diagnostics-chart-line="memory"' in WORLD
     assert "function diagnosticsChartPoints(" in WORLD
     assert 'this.renderDiagnosticsChart(snapshot)' in WORLD
+    assert 'diagnosticsChartPoints(history, "triangles", {\n          zeroBased: false,' in WORLD
+    assert "verticalInset = 1.5" in WORLD
+    assert "const drawableHeight = Math.max(0, height - inset * 2);" in WORLD
+    assert "A one-point polyline paints nothing" in WORLD
     assert "memoryMB: snapshot.memory.chartUsedMB" in WORLD
     assert 'chartSource: Number.isFinite(heapMB) ? "JS heap" : "estimated renderer"' in WORLD
     assert '.world-diagnostics-orb > span[data-level="good"]' in CSS
     assert '.world-diagnostics-orb > span[data-level="caution"]' in CSS
     assert '.world-diagnostics-orb > span[data-level="high"]' in CSS
+    assert "border: 1px solid rgb(139 148 158 / 0.18);" in CSS
+    assert "background:\n    linear-gradient(to bottom" in CSS
     assert "const dotLevels = {" in WORLD
 
 
