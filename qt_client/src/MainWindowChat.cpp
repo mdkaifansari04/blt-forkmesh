@@ -1430,21 +1430,28 @@ QWidget *MainWindow::buildChatPage()
     root->setSpacing(0);
     root->addWidget(header);
     root->addWidget(lower, 1);
-    // Thin one-line strip under everything else, spanning the rail as well as
-    // the content shell so it reads as the window's own bottom edge (adhoc #2).
+    // One-line status strip plus its opt-in debug row, spanning the rail and
+    // content shell so both read as window chrome rather than page content.
     root->addWidget(buildStatusBar());
     return page;
 }
 
-// A single text line tall: the branch switcher and the repo's git identity (both
-// of which used to sit inside the repo Code overview) plus the on-disk location
-// of the running executable. The widgets are created here, not in the repo pages
+// One text line tall while collapsed: the branch switcher and the repo's git
+// identity (both of which used to sit inside the repo Code overview) plus the
+// on-disk location of the running executable. The widgets are created here,
+// not in the repo pages
 // they came from, because those pages build lazily on first navigation while the
 // strip has to be populated from the first frame; setRepoBranch /
 // loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before,
 // and updateFooterCommitInfo adds the commit that branch is on.
 QWidget *MainWindow::buildStatusBar()
 {
+    auto *statusArea = new QWidget;
+    statusArea->setObjectName(QStringLiteral("appStatusArea"));
+    auto *statusAreaLayout = new QVBoxLayout(statusArea);
+    statusAreaLayout->setContentsMargins(0, 0, 0, 0);
+    statusAreaLayout->setSpacing(0);
+
     auto *bar = new QWidget;
     bar->setObjectName("appStatusBar");
 
@@ -1488,6 +1495,15 @@ QWidget *MainWindow::buildStatusBar()
         QStringLiteral("Running app: %1\nWorking directory: %2")
             .arg(appPath, QDir::toNativeSeparators(QDir::currentPath())));
 
+    // The build number belongs beside the path it identifies. It is also the
+    // intentionally-small disclosure control for the diagnostics row below.
+    auto *versionButton = new QPushButton(QStringLiteral("v" FORKMESH_VERSION));
+    versionButton->setObjectName(QStringLiteral("statusVersionButton"));
+    versionButton->setCheckable(true);
+    versionButton->setCursor(Qt::PointingHandCursor);
+    versionButton->setAccessibleName(QStringLiteral("Toggle debug bar"));
+    versionButton->setToolTip(QStringLiteral("Show debug activity and resource use"));
+
     // Background work rides the middle of the strip (adhoc #1389): one small
     // rotating icon per kind of job in flight, in place of the "Background" panel
     // that used to take a column out of the footer. A stretch on either side
@@ -1510,13 +1526,67 @@ QWidget *MainWindow::buildStatusBar()
     row->addWidget(m_statusBackgroundHost);
     row->addStretch(1);
     row->addWidget(m_statusAppPath);
+    row->addWidget(versionButton);
 
     // One line, nothing more: the tallest child (the branch button) is capped to
     // the strip so the menu indicator can't push the bar taller.
     const int rowHeight = qMax(20, bar->fontMetrics().height() + 6);
     bar->setFixedHeight(rowHeight);
     m_branchButton->setMaximumHeight(rowHeight - 2);
-    return bar;
+    statusAreaLayout->addWidget(bar);
+
+    // A horizontally scrollable debug row keeps every category in one labeled
+    // line without imposing a desktop-sized minimum width on small screens.
+    auto *debugBar = new QFrame;
+    m_debugBar = debugBar;
+    debugBar->setObjectName(QStringLiteral("debugBar"));
+    auto *debugBarLayout = new QHBoxLayout(debugBar);
+    debugBarLayout->setContentsMargins(0, 0, 0, 0);
+    debugBarLayout->setSpacing(0);
+
+    auto *debugScroll = new QScrollArea;
+    debugScroll->setObjectName(QStringLiteral("debugBarScroll"));
+    debugScroll->setFrameShape(QFrame::NoFrame);
+    debugScroll->setWidgetResizable(true);
+    debugScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    debugScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // 40px content + 4px vertical inset + the narrow 7px scrollbar when a
+    // laptop-width window needs it. No resource or caption is clipped then.
+    debugScroll->setFixedHeight(51);
+
+    auto *debugContent = new QWidget;
+    debugContent->setObjectName(QStringLiteral("debugBarContent"));
+    auto *debugRow = new QHBoxLayout(debugContent);
+    debugRow->setContentsMargins(8, 2, 8, 2);
+    debugRow->setSpacing(8);
+    debugRow->setSizeConstraint(QLayout::SetMinimumSize);
+    if (m_resourceChart) {
+        m_resourceChart->setObjectName(QStringLiteral("debugResourceChart"));
+        m_resourceChart->setFixedSize(40, 40);
+        debugRow->addWidget(m_resourceChart, 0, Qt::AlignVCenter);
+    }
+    auto *separator = new QFrame;
+    separator->setObjectName(QStringLiteral("debugBarSeparator"));
+    separator->setFrameShape(QFrame::VLine);
+    separator->setFixedHeight(32);
+    debugRow->addWidget(separator, 0, Qt::AlignVCenter);
+    if (m_logActivityLights)
+        debugRow->addWidget(m_logActivityLights, 0, Qt::AlignVCenter);
+    debugRow->addStretch(1);
+    debugScroll->setWidget(debugContent);
+    debugBarLayout->addWidget(debugScroll);
+    debugBar->hide();
+    statusAreaLayout->addWidget(debugBar);
+
+    connect(versionButton, &QPushButton::toggled, this,
+            [this, versionButton](bool expanded) {
+                if (m_debugBar)
+                    m_debugBar->setVisible(expanded);
+                versionButton->setToolTip(
+                    expanded ? QStringLiteral("Hide debug activity and resource use")
+                             : QStringLiteral("Show debug activity and resource use"));
+            });
+    return statusArea;
 }
 
 // kFooterLogSeedLines (MainWindowInternal.h) bounds both the startup seed and
@@ -2371,13 +2441,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     leftRegionLayout->setSpacing(8);
     leftRegionLayout->addWidget(logPanel, 1);
 
-    // State one: all thirty log-category icons start grey, become solid on their
-    // first occurrence, and blink on later occurrences. Hover exposes the count.
-    // A click reveals the recent-line overlay; clicking a line there opens the
-    // existing full Log page (state three).
-    // Keep the compact icons outside the box layout so a collapsed log occupies
-    // no layout width. The expanded header above takes over inside the panel.
-    m_logActivityLights = new LogActivityLights(LogActivityLights::Compact, dock);
+    // State one now lives in the version-controlled debug row: all thirty icons
+    // stay in one labeled line with their counts on the icon corners. Clicking
+    // a category still reveals this recent-line overlay; clicking a line there
+    // opens the existing full Log page (state three).
+    m_logActivityLights = new LogActivityLights(LogActivityLights::Debug, dock);
     m_logActivityLights->onClicked = [this] {
         if (!m_sectionStack || m_sectionStack->currentIndex() != 4)
             setLogOverlayExpanded(!m_logOverlayExpanded);
@@ -2391,7 +2459,7 @@ QWidget *MainWindow::buildNetworkLogDock()
         lights->onStallContextMenu = [this] { showDiagnosticsDialog(); };
     }
 
-    // The compact log owns the lower-left and the prompt owns the lower-right.
+    // The expanded log owns the lower-left and the prompt owns the lower-right.
     // The stretch between them is transparent and masked out below so neither
     // overlay blocks the workspace behind it.
     auto *dockRow = new QHBoxLayout(dock);
@@ -2475,20 +2543,7 @@ void MainWindow::positionGlobalFooterOverlays()
     // middle so the overlay never steals clicks from the page underneath.
     if (QLayout *layout = m_footerDock->layout())
         layout->activate();
-    if (m_logActivityLights) {
-        const bool fullLog =
-            m_sectionStack && m_sectionStack->currentIndex() == 4;
-        const bool showCompact = fullLog || !m_logOverlayExpanded;
-        m_logActivityLights->move(
-            0,
-            qMax(0, m_footerDock->height() - m_logActivityLights->height()));
-        m_logActivityLights->setVisible(showCompact);
-        if (showCompact)
-            m_logActivityLights->raise();
-    }
     QRegion interactive;
-    if (m_logActivityLights && m_logActivityLights->isVisible())
-        interactive += m_logActivityLights->geometry();
     if (m_footerLeftRegion && m_footerLeftRegion->isVisible())
         interactive += m_footerLeftRegion->geometry();
     if (m_promptOverlayHost && m_promptOverlayHost->isVisible())
@@ -7652,7 +7707,7 @@ QWidget *MainWindow::buildBreadcrumb()
         resize(1280, 720);
     });
 
-    // One compact four-quadrant chart on the chrome line: CPU/memory above
+    // One compact four-quadrant chart for the debug line: CPU/memory above
     // swap/disk. It receives one sample per second from updateFooterDiagnostics.
     // CPU, swap and disk open diagnostics; memory opens the culprit list.
     auto *resourceChart = new ResourceQuadrantSparkline;
@@ -7673,10 +7728,6 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-
-    auto *appVersionLabel = new QLabel(QStringLiteral("v" FORKMESH_VERSION));
-    appVersionLabel->setObjectName("chromeVersionLabel");
-    appVersionLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
 
     auto *chrome = new WindowChromeBar;
     auto *chromeRow = new QHBoxLayout(chrome);
@@ -7725,13 +7776,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
     // #124) — its colour moved to the dot above the instance logo and its
     // node blips to the node dots beside the agent fleet.
-    // Live CPU/MEM/SWAP/DISK sparklines, combined into one chart on the
-    // window-chrome line next to the minimize/maximize/close buttons.
-    chromeRow->addWidget(resourceChart);
-    // UI stalls now use the STALL category icon inside the bottom-left log
-    // control, where its count and blink have the same language as every other
-    // event. The chrome keeps only the version and opt-in restart action.
-    chromeRow->addWidget(appVersionLabel, 0, Qt::AlignVCenter);
+    // Resource traces and the version moved to the opt-in debug/status rows at
+    // the bottom, leaving this chrome cluster for window-level actions only.
     chromeRow->addWidget(m_navRebuildButton, 0, Qt::AlignVCenter);
     chromeRow->addSpacing(8);
 
@@ -12358,6 +12404,8 @@ QWidget *MainWindow::buildHostsSection()
     m_vultrStatus = new QLabel;
     m_vultrStatus->setObjectName("mutedLabel");
     m_vultrStatus->setWordWrap(true);
+    m_vultrStatus->setStyleSheet(
+        QStringLiteral("color:#c9d1d9; font-size:11px;"));
     vultrRow->addWidget(m_vultrStatus, 1);
     vultrCol->addLayout(vultrRow);
     // --- Live session / install output ------------------------------------
@@ -18158,16 +18206,20 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
     if (m_vultrCreateButton)
         m_vultrCreateButton->setText(ok ? QStringLiteral("Create another mirror")
                                         : QStringLiteral("Retry deployment"));
-    if (m_vultrStatus)
-        m_vultrStatus->setText(
-            (ok ? QString::fromUtf8("\xE2\x9C\x94 ")
-                : QString::fromUtf8("\xE2\x9C\x98 ")) + message);
+    if (!ok && m_vultrStatus)
+        m_vultrStatus->setText(QString::fromUtf8("\xE2\x9C\x98 ") + message);
     if (!message.isEmpty())
         appendHostInstallLog(
             (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
                 : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
             message + QStringLiteral("\n"));
     pingVultrProvisionStage(m_vultrProvisionStage, ok, message);
+    if (ok) {
+        if (m_vultrNameEdit)
+            m_vultrNameEdit->clear();
+        if (m_vultrStatus)
+            m_vultrStatus->clear();
+    }
     saveVultrProvisionLog();
     m_vultrProvisionActive = false;
     m_vultrResumeRequested = !ok;

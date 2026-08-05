@@ -8818,11 +8818,17 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-shot-text-input {
   position: absolute;
   min-width: 160px;
+  min-height: 72px;
   border: 1px dashed var(--world-mint);
   background: rgb(7 17 15 / 0.86);
   padding: 4px 8px;
+  box-sizing: border-box;
+  resize: both;
+  overflow: auto;
+  line-height: 1.2;
   font-size: 0.85rem;
   font-weight: 600;
+  color: inherit;
 }
 
 .world-shot-text-input:focus {
