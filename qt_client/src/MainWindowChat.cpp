@@ -9628,42 +9628,51 @@ bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
     if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists())
         return false;
 
-    // The branch must track a remote whose URL resolves to the ForkMesh relay.
+    // Prefer the configured upstream when one exists: a normal fork may push to
+    // that remote, while relay-backed checkouts must publish through their
+    // served mirror. A managed/public checkout can legitimately have no
+    // tracking branch, though; its RepositoryRecord mirror is then the only
+    // publish target and should not be rejected as an upstream configuration
+    // error.
     QByteArray upstreamOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
-                        QStringLiteral("--symbolic-full-name"),
-                        QStringLiteral("@{upstream}")},
-                       &upstreamOut, nullptr))
+    const bool hasUpstream =
+        runGitCapture(repo.localPath,
+                      {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                       QStringLiteral("--symbolic-full-name"),
+                       QStringLiteral("@{upstream}")},
+                      &upstreamOut, nullptr);
+    if (hasUpstream) {
+        const QString upstream = QString::fromUtf8(upstreamOut).trimmed();
+        const int slash = upstream.indexOf('/');
+        if (slash <= 0)
+            return false;
+        QByteArray urlOut;
+        if (!runGitCapture(repo.localPath,
+                           {QStringLiteral("remote"), QStringLiteral("get-url"),
+                            upstream.left(slash)},
+                           &urlOut, nullptr))
+            return false;
+        QString relayHost =
+            serverHost(QSettings().value(kServerUrlSetting).toString().trimmed());
+        if (relayHost.isEmpty())
+            relayHost = serverHost(kDefaultServerUrl);
+        const QString remoteUrl = QString::fromUtf8(urlOut).trimmed();
+        const bool isRelay =
+            !relayHost.isEmpty() && QUrl(remoteUrl).host() == relayHost;
+        // Or the upstream is this repo's own served mirror (a local bare repo):
+        // then "publish" must force-sync that mirror from the working copy via
+        // syncRepository, never a raw `git push`. The mirror is also advanced by
+        // the app's own background sync (and agents pushing branches into it), so
+        // a plain push to its `main` races and gets "[remote rejected] main" (a
+        // ref-lock / non-fast-forward).
+        const bool isOwnMirror =
+            !remoteUrl.isEmpty() && QUrl(remoteUrl).host().isEmpty() &&
+            QDir(remoteUrl).absolutePath() == QDir(repo.mirrorPath).absolutePath();
+        if (!isRelay && !isOwnMirror)
+            return false;
+    } else if (!repo.publishToNetwork) {
         return false;
-    const QString upstream = QString::fromUtf8(upstreamOut).trimmed();
-    const int slash = upstream.indexOf('/');
-    if (slash <= 0)
-        return false;
-    QByteArray urlOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("remote"), QStringLiteral("get-url"),
-                        upstream.left(slash)},
-                       &urlOut, nullptr))
-        return false;
-    QString relayHost =
-        serverHost(QSettings().value(kServerUrlSetting).toString().trimmed());
-    if (relayHost.isEmpty())
-        relayHost = serverHost(kDefaultServerUrl);
-    const QString remoteUrl = QString::fromUtf8(urlOut).trimmed();
-    const bool isRelay =
-        !relayHost.isEmpty() && QUrl(remoteUrl).host() == relayHost;
-    // Or the upstream is this repo's own served mirror (a local bare repo): then
-    // "publish" must force-sync that mirror from the working copy via
-    // syncRepository, never a raw `git push`. The mirror is also advanced by the
-    // app's own background sync (and agents pushing branches into it), so a plain
-    // push to its `main` races and gets "[remote rejected] main" (a ref-lock /
-    // non-fast-forward).
-    const bool isOwnMirror =
-        !remoteUrl.isEmpty() && QUrl(remoteUrl).host().isEmpty() &&
-        QDir(remoteUrl).absolutePath() == QDir(repo.mirrorPath).absolutePath();
-    if (!isRelay && !isOwnMirror)
-        return false;
+    }
 
     // Local branch + commits not yet folded into the served mirror. The mirror's
     // HEAD commit always exists in the working copy (the mirror is fetched from
