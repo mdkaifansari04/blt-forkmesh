@@ -3621,7 +3621,8 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // Rows read as the bare model name (adhoc #1204): "Opus 5", not "Opus 5 · Claude
 // Code". Which CLI runs a model follows from the model, so the suffix was the
 // same handful of words repeated down the whole menu; the tooltip still carries
-// it. Models are ordered strongest-first by agentModelPowerRank().
+// it. Models the user has run most often lead the list; power is a stable
+// tie-breaker for models with the same history.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -3644,14 +3645,23 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         QString provider;
         QString model;
         QString agentName; // which CLI/API runs it, for the tooltip
-        int rank = 0;      // higher sorts nearer the top
+        int useCount = 0;  // higher sorts nearer the top
+        int powerRank = 0; // stable tie-breaker for equally-used models
     };
+    QHash<QString, int> modelUseCounts;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        const QString model = session.model.trimmed().toLower();
+        if (!model.isEmpty())
+            ++modelUseCounts[session.provider + QLatin1Char('\x1f') + model];
+    }
     QList<Choice> models;
-    auto addModel = [&models](
+    auto addModel = [&models, &modelUseCounts](
                         const QIcon &icon, const QString &label,
                         const QString &provider, const QString &model,
                         const QString &agentName) {
-        models.append(Choice{icon, label, provider, model, agentName,
+        const int useCount = modelUseCounts.value(
+            provider + QLatin1Char('\x1f') + model.trimmed().toLower());
+        models.append(Choice{icon, label, provider, model, agentName, useCount,
                              agentModelPowerRank(model, label)});
     };
 
@@ -3685,29 +3695,25 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                  QStringLiteral("Codex"));
     }
 
-    // Strongest first. Rank ties (Opus 4.8 and Sonnet 5 score the same) keep the
-    // order the provider catalog listed them in, so the menu never reshuffles
-    // between two equally-ranked models from one refresh to the next.
+    // Most-used first. Power ties (Opus 4.8 and Sonnet 5 score the same) keep
+    // the provider catalog order, so the menu never reshuffles between two
+    // otherwise-equal models from one refresh to the next.
     std::stable_sort(models.begin(), models.end(),
                      [](const Choice &a, const Choice &b) {
-                         return a.rank > b.rank;
+                         if (a.useCount != b.useCount)
+                             return a.useCount > b.useCount;
+                         return a.powerRank > b.powerRank;
                      });
 
     auto addChoice = [this](const QIcon &icon, const QString &label,
                             const QString &provider, const QString &model,
-                            const QString &tooltip,
-                            const QString &status = QString()) {
+                            const QString &tooltip) {
         const int row = m_quickAddAgentModelSelector->count();
         m_quickAddAgentModelSelector->addItem(icon, label, provider);
         m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
         if (!tooltip.isEmpty())
             m_quickAddAgentModelSelector->setItemData(row, tooltip,
                                                       Qt::ToolTipRole);
-        // The label already ends in this state's glyph; the role is what tells
-        // the delegate to paint that glyph green or red.
-        if (!status.isEmpty())
-            m_quickAddAgentModelSelector->setItemData(row, status,
-                                                      kAgentChoiceStatusRole);
     };
     addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
               QStringLiteral("manual"), QString(),
@@ -3723,23 +3729,9 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
     QHash<QString, QString> providerIdentities;
     for (const Choice &choice : models) {
-        const ModelChoiceOutcome outcome =
-            quickAddModelChoiceSummary(m_agentSessions, choice.provider,
-                                      choice.model);
-        const QString statusGlyph = agentChoiceStatusGlyph(outcome.state);
-        const QString usageCountdown =
-            quickAddUsageLimitCountdownText(choice.provider);
-        const QString usageRemaining =
-            quickAddUsageLimitRemainingText(choice.provider);
-        // "Opus 5 (2h 5m) ✓" — the outcome glyph is always the last thing on the
-        // row, which is what lets the delegate repaint that one character in the
-        // colour of the outcome while the label stays in the theme's own.
-        QString label =
-            usageRemaining.isEmpty()
-                ? choice.label
-                : QStringLiteral("%1 (%2)").arg(choice.label, usageRemaining);
-        if (!statusGlyph.isEmpty())
-            label += QLatin1Char(' ') + statusGlyph;
+        // The open list is intentionally just model names: status, account,
+        // provider, and quota details belong in the tooltip, not every row.
+        const QString label = choice.label;
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
         if (!providerIdentities.contains(choice.provider)) {
@@ -3754,15 +3746,7 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(chosenIdentity, toolTip);
-        // The glyph on its own says only "good" or "bad": the tooltip is where
-        // the row says which run it is reporting and why it failed.
-        if (!outcome.detail.isEmpty())
-            toolTip += QStringLiteral("\n%1").arg(outcome.detail);
-        if (!usageCountdown.isEmpty())
-            toolTip +=
-                QStringLiteral("\nLimit status: %1").arg(usageCountdown);
-        addChoice(choice.icon, label, choice.provider, choice.model, toolTip,
-                  outcome.state);
+        addChoice(choice.icon, label, choice.provider, choice.model, toolTip);
     }
 
     // These API agents do not expose a per-run model chooser in this composer,
@@ -3828,20 +3812,6 @@ void MainWindow::refreshQuickAddAgentModelSelector()
 void MainWindow::testRefreshQuickAddAgentModelSelector()
 {
     refreshQuickAddAgentModelSelector();
-}
-
-QString MainWindow::testQuickAddAgentModelStatus(const QString &model) const
-{
-    if (!m_quickAddAgentModelSelector)
-        return QString();
-    for (int row = 0; row < m_quickAddAgentModelSelector->count(); ++row) {
-        if (m_quickAddAgentModelSelector->itemData(row, Qt::UserRole + 1)
-                .toString() == model)
-            return m_quickAddAgentModelSelector
-                ->itemData(row, kAgentChoiceStatusRole)
-                .toString();
-    }
-    return QString();
 }
 
 QString MainWindow::testQuickAddAgentModelLabel(const QString &model) const

@@ -4412,64 +4412,46 @@ int main(int argc, char *argv[])
                   canonicalModel->currentData().toString() == concreteClaudeModel,
               QStringLiteral("one combined-menu click updates provider and model state"));
 
-        // adhoc #1445: every model row wears the outcome of the run that finished
-        // most recently on it, as a ✓ / ✗ the delegate paints green or red. Two
-        // fixtures for the ways the mark used to go stale: a failure that was
-        // *created* after the success it precedes (the list is ordered by
-        // creation, so it sorted first), and a failure on a sibling model that
-        // used to stamp every row of the same family.
+        // The composer puts most-used models first and keeps the open row to the
+        // model name alone: no last-run ✓ / ✗, quota countdown, or provider text.
         {
             const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-            const auto addOutcome = [&seeded](int id, const QString &model,
-                                              const QString &status,
-                                              qint64 createdAtMs,
-                                              qint64 finishedAtMs) {
+            const auto addUse = [&seeded](int id, const QString &model,
+                                          qint64 createdAtMs) {
                 AgentSession session;
                 session.id = id;
                 session.owner = QStringLiteral("me");
                 session.name = QStringLiteral("provider-picker");
-                session.prompt = QStringLiteral("Model status fixture");
+                session.prompt = QStringLiteral("Model frequency fixture");
                 session.provider = QStringLiteral("claude-code");
                 session.model = model;
-                session.status = status;
+                session.status = AgentStatus::Success;
                 session.createdAtMs = createdAtMs;
                 session.startedAtMs = createdAtMs;
-                session.finishedAtMs = finishedAtMs;
-                if (status == AgentStatus::Failed)
-                    session.lastError = QStringLiteral("credit balance too low");
+                session.finishedAtMs = createdAtMs + 1000;
                 seeded.testAddAgentSession(session);
             };
-            // Newest finish, oldest creation: a long run that was resumed and has
-            // just succeeded.
-            addOutcome(144501, QStringLiteral("claude-opus-4-8"),
-                       AgentStatus::Success, nowMs - 36000000, nowMs - 60000);
-            addOutcome(144502, QStringLiteral("claude-opus-4-8"),
-                       AgentStatus::Failed, nowMs - 18000000, nowMs - 14400000);
-            // No run of its own on Sonnet 4.6, so that row still reports its
-            // family's last outcome.
-            addOutcome(144503, QStringLiteral("claude-sonnet-4-5"),
-                       AgentStatus::Failed, nowMs - 7200000, nowMs - 7100000);
+            for (int i = 0; i < 4; ++i)
+                addUse(144501 + i, QStringLiteral("claude-sonnet-4-6"),
+                       nowMs - (i + 1) * 60000);
+            for (int i = 0; i < 2; ++i)
+                addUse(144505 + i, QStringLiteral("claude-opus-4-8"),
+                       nowMs - (i + 5) * 60000);
             seeded.testRefreshQuickAddAgentModelSelector();
             QApplication::processEvents();
-            const QString opusStatus = seeded.testQuickAddAgentModelStatus(
-                QStringLiteral("claude-opus-4-8"));
             const QString opusLabel = seeded.testQuickAddAgentModelLabel(
                 QStringLiteral("claude-opus-4-8"));
-            const QString sonnetStatus = seeded.testQuickAddAgentModelStatus(
+            const QString sonnetLabel = seeded.testQuickAddAgentModelLabel(
                 QStringLiteral("claude-sonnet-4-6"));
-            const QString haikuStatus = seeded.testQuickAddAgentModelStatus(
-                QStringLiteral("claude-haiku-4-5"));
-            check(opusStatus == QStringLiteral("ok") &&
-                      opusLabel.startsWith(QStringLiteral("Opus 4.8")) &&
-                      opusLabel.endsWith(QString::fromUtf8("\xE2\x9C\x93")) &&
-                      sonnetStatus == QStringLiteral("failed") &&
-                      haikuStatus.isEmpty(),
-                  QString("the model menu marks a model by its newest finished run "
-                          "(Opus %1 \"%2\", Sonnet %3, Haiku %4)")
-                      .arg(opusStatus, opusLabel, sonnetStatus,
-                           haikuStatus.isEmpty() ? QStringLiteral("unmarked")
-                                                 : haikuStatus));
-            for (int id = 144501; id <= 144503; ++id)
+            const int sonnetRow = quickAgentModel->findText(sonnetLabel);
+            const int opusRow = quickAgentModel->findText(opusLabel);
+            check(sonnetRow >= 0 && opusRow > sonnetRow &&
+                      sonnetLabel == QStringLiteral("Sonnet 4.6") &&
+                      opusLabel == QStringLiteral("Opus 4.8"),
+                  QString("the model menu orders by use frequency and shows only "
+                          "model names (Sonnet row %1, Opus row %2)")
+                      .arg(sonnetRow).arg(opusRow));
+            for (int id = 144501; id <= 144506; ++id)
                 seeded.testRemoveAgentSession(id);
             seeded.testRefreshQuickAddAgentModelSelector();
             QApplication::processEvents();
