@@ -5311,6 +5311,19 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (handleFramelessResizeEvent(obj, event))
         return true;
 
+    // The agent detail's status control is both a compact status indicator and
+    // the entry point for its full metadata. Hover should expose the same popup
+    // as click, while a short deferred leave check lets the pointer travel from
+    // the pill into the popup without making it disappear underneath the user.
+    if (obj == m_agentStatusPill || obj == m_agentMetaPopup) {
+        if (event->type() == QEvent::Enter && obj == m_agentStatusPill) {
+            showAgentMetaPopup();
+        } else if (event->type() == QEvent::Leave) {
+            QTimer::singleShot(100, this,
+                               &MainWindow::hideAgentMetaPopupIfPointerAway);
+        }
+    }
+
     // Notification bubbles are deliberately transient, but reading, selecting,
     // copying, or sending one back to the prompt must never race its countdown.
     // The deferred leave check avoids a false resume while the pointer moves from

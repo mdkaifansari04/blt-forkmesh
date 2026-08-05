@@ -311,21 +311,16 @@ def test_two_cloned_lod_quadcopters_fly_on_three_axes():
         assert contract in scene
 
 
-def test_avatar_lod_reuses_buffers_without_disposing_shared_far_materials():
+def test_avatar_full_detail_reuses_buffers_without_camera_lod():
     scene = source()
     avatar = scene.split("function createAvatar(THREE, identity", 1)[1].split(
         "function applyAvatarLookDirection", 1
     )[0]
-    far_model = scene.split("function cloneAvatarFarModel(THREE)", 1)[1].split(
-        "function createAvatar(THREE, identity", 1
-    )[0]
-    assert "const avatarLod = new THREE.LOD();" in avatar
-    assert "avatarLod.addLevel(highDetail, 0, 0.12);" in avatar
-    assert "avatarLod.addLevel(farDetail, AVATAR_LOD_DISTANCE, 0.18);" in avatar
+    assert 'highDetail.name = "avatar-full-detail"' in avatar
+    assert "group.add(highDetail);" in avatar
+    assert "new THREE.LOD()" not in avatar
+    assert "cloneAvatarFarModel" not in scene
     assert "cloneSharedMesh(" in avatar
-    assert "prototype.clone(true)" in far_model
-    assert "bodyMaterial.userData.forkmeshSharedResource = true;" in far_model
-    assert "darkMaterial.userData.forkmeshSharedResource = true;" in far_model
     assert "function disposeOwnedMaterial(material, disposeMap = false)" in scene
     assert "disposeOwnedMaterial(child.material, true);" in scene
 
