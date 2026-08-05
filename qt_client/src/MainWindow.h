@@ -441,6 +441,13 @@ public:
     {
         flashMessage(text, error);
     }
+    void testSetRestartCautionFlash(bool active)
+    {
+        if (active)
+            startRestartCautionFlash();
+        else
+            stopRestartCautionFlash();
+    }
     void testShowPromptBubble(const QString &prompt, const QString &status)
     {
         showPromptBubble(prompt, -1, status);
@@ -3245,6 +3252,11 @@ private:
     // Flash a red border around the whole window for a moment — the desktop
     // twin of the World's world-admin-error-arrival effect (adhoc #77).
     void flashErrorBorder();
+    // While an update/rebuild is preparing to relaunch this process, pulse an
+    // amber border at the window edge so the long-running restart is visible
+    // even when its originating button or status panel is off-screen.
+    void startRestartCautionFlash();
+    void stopRestartCautionFlash();
     // Open the screen/item a notification points at (issue/PR/discussion/commit).
     void openNotificationLink(const NotificationLink &link);
     void showNotifications();
@@ -4277,6 +4289,9 @@ private:
     // centralised failure handler (runUpdateStep) agnostic to which one it was.
     void startRestartSpin(QPushButton *button);
     void stopRestartSpin();
+    // Advance the determinate ring around the active restart spinner. This is
+    // intentionally phase-based: build output is not a portable progress signal.
+    void setRestartSpinProgress(int percent);
     // Flips an in-progress restart spin between the refresh-arrows look (a
     // rebuild actually running) and a spinning hourglass (queued behind other
     // agent actions, not doing anything itself yet).
@@ -5453,6 +5468,11 @@ private:
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
     QTimer *m_errorBorderTimer = nullptr;
+    // Amber counterpart to the transient red error border.  This stays active
+    // for the full restart operation, blinking to distinguish caution from an
+    // error state.
+    QWidget *m_restartCautionBorderOverlay = nullptr;
+    QTimer *m_restartCautionBorderTimer = nullptr;
     bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
     QHash<QString, qint64> m_repoPinAutoHealAtMs; // owner/name -> last automatic pin re-attest (rate-limits the source-of-truth auto-heal in refreshRepoPinBanner)
 
