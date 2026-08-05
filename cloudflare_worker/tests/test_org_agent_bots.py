@@ -32,16 +32,13 @@ def test_org_agents_are_separate_member_scoped_encrypted_records():
     assert "await encrypt_row(env, record)" in ENTRY
     assert "await encrypt_row(env, job)" in ENTRY
     assert "privacyBoundary" in ENTRY
-    assert (
-        '"organization-owner-or-engineering-encrypted-at-rest"'
-        in ENTRY
-    )
+    assert '"engineering-team-encrypted-at-rest"' in ENTRY
     assert "engineering_team_required" in ENTRY
     assert "team='engineering'" in ENTRY
     assert '"canQueueAgent": True' in ENTRY
     assert '"canViewAgentSessions": True' in ENTRY
-    assert 'if role != "owner" and not is_engineering:' in ENTRY
-    assert "organization_owner" in ENTRY
+    assert "if not is_engineering:" in ENTRY
+    assert '"accessBasis": "engineering_team"' in ENTRY
     assert "await _contribution_run_batch(env, [" in ENTRY
     assert ENTRY.count("context, error = await _org_agent_member_context(") >= 1
 
@@ -94,6 +91,12 @@ def test_agents_ui_chat_and_world_expose_both_fixed_bot_identities():
     assert "exciteAgentBot" in SCENE
     assert "onAgentBotChat" in SCENE
     assert "refreshOrgAgentBots" in WORLD
+    assert "reconcileSessionAgentBots" in SCENE
+    assert "createAgentBotAvatar" in SCENE
+    assert "removeAgentBotAvatar" in SCENE
+    assert "repositoryAgentSession = session" in SCENE
+    assert "spawnedAt: performance.now()" in SCENE
+    assert 'status === "running"' in SCENE
     assert "mirrorNodeAgentSessionsHTML" in WORLD
     assert "wireMirrorNodeAgentWorkspace" in WORLD
     assert "data-world-agent-followup" in WORLD

@@ -533,6 +533,9 @@ public:
     }
     void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
+    QString testWorkingClientDir() const;
+    QString testRunningClientDir() const;
+    QString testRunningClientExecutable() const;
     // Issue #214: the ordered "Build & preview" command pipeline — checkout into a
     // throwaway worktree, CMake configure, build — as "<program> <args…>" lines.
     QStringList testBuildAndPreviewSteps(const QString &gitDir,
