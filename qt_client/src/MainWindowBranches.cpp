@@ -11,6 +11,9 @@
 #include "PacmanProgress.h"
 
 #include <QComboBox>
+#include <QDateTime>
+#include <QFile>
+#include <QFileInfo>
 #include <QPointer>
 #include <QQueue>
 #include <QTimer>
@@ -25,6 +28,28 @@ using namespace forkmesh::ui;
 // loadBranchesPanel can probe each branch for merge conflicts.
 static QString branchMergeTree(const QString &dir, const QString &base,
                                const QString &branch);
+
+// A crashed ref update can leave HEAD.lock behind indefinitely. Every later
+// merge then computes cleanly and fails only while publishing the new HEAD,
+// which used to be misreported as a content conflict. HEAD locks are normally
+// held for milliseconds, so only recover an orphan that has been untouched for
+// at least a minute; a fresh lock still belongs to a potentially live writer.
+static QString removeStaleHeadLock(const QString &worktree)
+{
+    QByteArray gitDirOut;
+    if (!runGitCapture(worktree,
+                       {QStringLiteral("rev-parse"),
+                        QStringLiteral("--absolute-git-dir")},
+                       &gitDirOut, nullptr))
+        return {};
+    const QString gitDir = QString::fromUtf8(gitDirOut).trimmed();
+    const QString lockPath = QDir(gitDir).filePath(QStringLiteral("HEAD.lock"));
+    const QFileInfo lock(lockPath);
+    if (!lock.exists() ||
+        lock.lastModified().msecsTo(QDateTime::currentDateTime()) < 60000)
+        return {};
+    return QFile::remove(lockPath) ? lockPath : QString();
+}
 
 // Suffix the Status cell / detail label carry for a branch that can't be merged
 // into base cleanly. Shared so the background probe (adhoc #416) appends exactly
@@ -1547,6 +1572,9 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         setRepoDetailNotice("Read-only mirror — nothing to merge into here.", true);
         return false;
     }
+    if (const QString staleLock = removeStaleHeadLock(dir); !staleLock.isEmpty())
+        logSystem(QStringLiteral("Git: removed orphaned lock %1 before merging %2.")
+                      .arg(staleLock, branch));
     // Uncommitted work in the checkout blocks the merge outright — check it first,
     // because it is also the only thing that makes the branch switch below unsafe.
     QByteArray st;
