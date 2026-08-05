@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785962667270,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "## Objective\n\nConvert the existing coding harness into a production-quality coding agent that uses **Cloudflare Workers AI** as its LLM backend instead of the current provider.\n\nThe design should be modular so additional providers can be added later.\n\n---\n\n## Primary References\n\n### Cloudflare Workers AI\n\nDocumentation\n\nhttps://developers.cloudflare.com/workers-ai/\n\nBindings\n\nhttps://developers.cloudflare.com/workers-ai/configuration/bindings/\n\nModels\n\nhttps://developers.cloudflare.com/workers-ai/models/\n\nOpenAI-compatible API\n\nhttps://developers.cloudflare.com/workers-ai/configuration/open-ai-compatible-api/\n\n---\n\n### Cloudflare Agents SDK\n\nhttps://developers.cloudflare.com/agents/\n\nGitHub\n\nhttps://github.com/cloudflare/agents\n\nStudy the architecture but do not depend on this SDK unless it clearly simplifies the implementation.\n\n---\n\n### OpenCode\n\nGitHub\n\nhttps://github.com/anomalyco/opencode\n\nStudy:\n\n* provider abstraction\n* tool execution\n* planning loop\n* conversation management\n* session persistence\n* shell execution\n* file editing\n\nUse this as the primary architectural reference.\n\n---\n\n### OpenAI Codex (Open Source)\n\nhttps://github.com/openai/codex\n\nStudy:\n\n* coding workflow\n* agent loop\n* tool calling\n* patch generation\n* repository editing\n* command execution\n\n---\n\n## Requirements\n\nImplement a provider named:\n\nCloudflareProvider\n\nResponsibilities:\n\n* chat completions\n* streaming responses\n* tool calling\n* retry logic\n* cancellation\n* model selection\n* configurable API endpoint\n* configurable API token\n\nSupport models such as:\n\n* Gemma\n* Llama\n* future Workers AI models\n\nNo model names should be hardcoded.\n\n---\n\n## Agent Architecture\n\nImplement the following components.\n\nAgent\n\nPlanner\n\nConversation\n\nMemory\n\nSession\n\nToolRegistry\n\nCloudflareProvider\n\nPromptBuilder\n\nCommandExecutor\n\nGitManager\n\nFileEditor\n\nSearchEngine\n\nEach should be independently testable.\n\n---\n\n## Tool Calling\n\nSupport tools including:\n\n* read_file\n* write_file\n* replace_text\n* search_files\n* grep\n* list_directory\n* execute_command\n* git_status\n* git_diff\n* git_commit\n* run_tests\n* lint_project\n\nTools should use JSON schemas where appropriate and be extensible.\n\n---\n\n## Agent Loop\n\nImplement the standard loop:\n\n1. Receive user request.\n2. Send conversation and available tools to Workers AI.\n3. If the model requests a tool:\n\n   * execute it\n   * append the result to the conversation\n   * continue.\n4. Repeat until the model produces a final answer.\n5. Stream intermediate reasoning only if explicitly enabled.\n\nThe loop should be reusable and independent of the UI.\n\n---\n\n## Memory\n\nImplement:\n\n* conversation history\n* repository context\n* project summary\n* recently edited files\n* token budgeting\n* automatic summarization of long sessions\n\n---\n\n## Prompt Management\n\nSeparate:\n\nsystem prompt\n\ndeveloper prompt\n\nconversation\n\ntool responses\n\nNever concatenate prompts manually throughout the codebase.\n\n---\n\n## Editing\n\nSupport:\n\n* whole file replacement\n* patch-based edits\n* multi-file edits\n* preview before applying\n* undo support\n\n---\n\n## Git Integration\n\nProvide helpers for:\n\nstatus\n\ndiff\n\ncommit\n\nbranch\n\nstash\n\nrestore\n\nThe agent should use Git information when planning edits.\n\n---\n\n## Configuration\n\nAllow configuration of:\n\n* Cloudflare API token\n* API endpoint\n* model\n* temperature\n* max tokens\n* timeout\n* streaming\n* retry count\n\nNo values should be compiled into the application.\n\n---\n\n## Code Quality\n\nUse dependency injection where possible.\n\nAvoid global state.\n\nWrite unit tests for all core components.\n\nDocument all public interfaces.\n\nUse asynchronous networking.\n\nKeep the provider isolated so additional providers can be added later.\n\n---\n\n## Deliverables\n\n1. CloudflareProvider implementation.\n2. Agent loop.\n3. Tool execution framework.\n4. Prompt management.\n5. Memory management.\n6. Streaming support.\n7. Configuration system.\n8. Tests.\n9. Documentation.\n10. Example demonstrating a complete coding session using Gemma on Cloudflare Workers AI.\n\nThe implementation should be production-ready, maintainable, and designed for future extension.",
+            "id": "open-576",
+            "sig": "zVQoJXFXchRPU7KKqDAhrVQgZWyTAyl5KVEfVLDe7_qoFnbBORUhmqAf4omAUwHY6PtaBgiqOi6kmI_WF_LACA",
+            "title": "Build a Cloudflare Workers AI Coding Agent",
+            "ts": 1785962667270,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 576,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Build a Cloudflare Workers AI Coding Agent",
+    "updatedAt": 1785962667270,
+    "votes": 0
+}
