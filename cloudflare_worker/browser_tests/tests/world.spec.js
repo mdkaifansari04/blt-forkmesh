@@ -6477,6 +6477,28 @@ test("local diagnostics report renderer and existing socket state without new te
   await page.waitForTimeout(1150);
 
   const diagnostics = page.locator("[data-world-diagnostics]");
+  const liveChart = diagnostics.locator("[data-world-diagnostics-chart]");
+  await expect(diagnostics).not.toHaveAttribute("open", "");
+  await expect(liveChart).toBeVisible();
+  await expect(
+    liveChart.locator('[data-world-diagnostics-chart-value="fps"]'),
+  ).not.toHaveText("—");
+  await expect(
+    liveChart.locator('[data-world-diagnostics-chart-value="triangles"]'),
+  ).not.toHaveText("—");
+  await expect(
+    liveChart.locator('[data-world-diagnostics-chart-value="memory"]'),
+  ).toContainText("MB");
+  for (const metric of ["fps", "triangles", "memory"]) {
+    await expect(
+      liveChart.locator(
+        `[data-world-diagnostics-chart-line="${metric}"]`,
+      ),
+    ).toHaveAttribute("points", /\d+\.\d,\d+\.\d \d+\.\d,\d+\.\d/);
+  }
+  const collapsedBox = await diagnostics.boundingBox();
+  expect(collapsedBox?.width).toBeGreaterThan(240);
+  expect(collapsedBox?.height).toBeGreaterThanOrEqual(54);
   await expect(diagnostics.locator("summary")).toContainText("FPS");
   await expect(diagnostics.locator("summary")).toContainText("N online");
   await expect(diagnostics.locator("summary")).toContainText("1p");
@@ -6518,6 +6540,12 @@ test("local diagnostics report renderer and existing socket state without new te
   expect(snapshot.renderer.frameTimeMs).toBeGreaterThan(0);
   expect(snapshot.renderer.calls).toBeGreaterThan(0);
   expect(snapshot.renderer.triangles).toBeGreaterThan(0);
+  expect(snapshot.history.length).toBeGreaterThanOrEqual(2);
+  expect(snapshot.history.at(-1)).toMatchObject({
+    fps: expect.any(Number),
+    triangles: expect.any(Number),
+    memoryMB: expect.any(Number),
+  });
   expect(snapshot.connection).toMatchObject({
     state: "online",
     peers: 1,
