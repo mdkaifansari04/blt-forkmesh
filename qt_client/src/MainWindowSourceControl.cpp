@@ -287,8 +287,7 @@ void MainWindow::scrollBranchDiffToFile(const QString &path)
     if (index < 0 || index >= m_branchDiffFileAnchors.size())
         return;
     m_lastSourceControlDiffPath = path;
-    flushDiffStream(m_branchDiffView);
-    m_branchDiffView->scrollToAnchor(m_branchDiffFileAnchors.at(index));
+    scrollDiffToAnchor(m_branchDiffView, m_branchDiffFileAnchors.at(index));
     m_branchDiffView->setFocus();
 }
 
@@ -1852,7 +1851,7 @@ void MainWindow::showScmDiffAll(bool staged)
     const QString prefix = staged ? QStringLiteral("s|") : QStringLiteral("u|");
     for (int i = 0; i < m_scmSectionKeys.size(); ++i) {
         if (m_scmSectionKeys.at(i).startsWith(prefix)) {
-            m_scmDiff->scrollToAnchor(m_scmSectionAnchors.at(i));
+            scrollDiffToAnchor(m_scmDiff, m_scmSectionAnchors.at(i));
             updateScmDiffScrollState();
             return;
         }
@@ -1872,7 +1871,7 @@ void MainWindow::scrollScmDiffToFile(const QString &path, bool staged)
     if (idx < 0)
         return;
     m_lastSourceControlDiffPath = path;
-    m_scmDiff->scrollToAnchor(m_scmSectionAnchors.at(idx));
+    scrollDiffToAnchor(m_scmDiff, m_scmSectionAnchors.at(idx));
     updateScmDiffScrollState();
 }
 

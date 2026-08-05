@@ -102,6 +102,66 @@ bool lineLooksLikeError(const QString &line)
     return false;
 }
 
+// Turn the compact, heartbeat-safe finding into useful operator guidance. The
+// wire message stays deliberately small; every client can expand the stable
+// check id locally without making presence frames larger.
+QString remediationFor(const QString &id)
+{
+    if (id == QLatin1String("disk-trend"))
+        return QStringLiteral(
+            "Check which repositories, logs, artifacts, or temporary packs are "
+            "growing on the node; confirm the trend with filesystem usage over "
+            "time, then free space or expand the volume before syncing again.");
+    if (id == QLatin1String("disk-inodes"))
+        return QStringLiteral(
+            "Check inode usage by directory (not only free bytes), remove safe "
+            "small-file caches or stale worktrees, and verify the node can create "
+            "a file in its data directory afterward.");
+    if (id == QLatin1String("data-dir"))
+        return QStringLiteral(
+            "Inspect the data-directory owner, mode, mount flags, and available "
+            "space. Restore write access for the ForkMesh service account, then "
+            "verify a mirror fetch and served-repository update both succeed.");
+    if (id == QLatin1String("file-descriptors"))
+        return QStringLiteral(
+            "Inspect open descriptors by type and repeated target, check for "
+            "leaked sockets/files or an unexpectedly low process limit, and "
+            "verify the count remains stable during reconnect and clone traffic.");
+    if (id == QLatin1String("zombie-processes"))
+        return QStringLiteral(
+            "Identify the unreaped child commands and their parent launch path; "
+            "ensure every Git or agent helper is waited for on success, failure, "
+            "timeout, and cancellation, then verify the zombie count returns to zero.");
+    if (id == QLatin1String("log-errors"))
+        return QStringLiteral(
+            "Read the surrounding node log entries, preserve the first causal "
+            "error rather than only the final failure, reproduce that operation, "
+            "and verify a clean retry no longer adds matching errors.");
+    if (id == QLatin1String("ui-stalls"))
+        return QStringLiteral(
+            "Inspect the UI-stall backtraces and app log, find blocking work on "
+            "the GUI thread, move slow Git/network/disk work off that thread, and "
+            "verify the operation remains responsive under the same load.");
+    if (id == QLatin1String("relay-flap"))
+        return QStringLiteral(
+            "Correlate disconnect times with relay, DNS, TLS, proxy, sleep, and "
+            "network logs; fix the first failing layer and verify heartbeats stay "
+            "connected through several refresh intervals.");
+    if (id == QLatin1String("relay-backpressure"))
+        return QStringLiteral(
+            "Inspect outbound queue growth and slow socket writes, bound or "
+            "coalesce bursty messages, and verify sustained traffic produces no "
+            "additional dropped frames.");
+    if (id == QLatin1String("clock-skew"))
+        return QStringLiteral(
+            "Check the timezone-independent system clock and time-sync service, "
+            "correct the drift, then verify signed heartbeats and mirror leases "
+            "are accepted without timestamp errors.");
+    return QStringLiteral(
+        "Inspect the node log around the report time, reproduce the affected "
+        "operation, correct the root cause, and rerun the self-check to verify it clears.");
+}
+
 qint64 nowOr(qint64 nowMs)
 {
     return nowMs > 0 ? nowMs : QDateTime::currentMSecsSinceEpoch();
@@ -304,9 +364,12 @@ QString summaryLabel(const QList<Finding> &findings, bool reported)
 QString detailText(const QList<Finding> &findings)
 {
     QStringList lines;
-    for (const Finding &f : findings)
-        lines << severityName(f.severity) + QStringLiteral(": ") + f.message;
-    return lines.join(QStringLiteral("\n"));
+    for (const Finding &f : findings) {
+        lines << QStringLiteral("%1 [%2]: %3\nNext: %4")
+                     .arg(severityName(f.severity), f.id, f.message,
+                          remediationFor(f.id));
+    }
+    return lines.join(QStringLiteral("\n\n"));
 }
 
 QJsonArray toJson(const QList<Finding> &findings)

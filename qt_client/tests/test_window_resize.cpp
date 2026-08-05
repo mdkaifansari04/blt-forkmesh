@@ -3125,6 +3125,11 @@ int main(int argc, char *argv[])
             newIdentity.ownerUser = QStringLiteral("alice");
             newIdentity.diskUsedBytes = 40 * 1024 * 1024;
             newIdentity.diskTotalBytes = 100 * 1024 * 1024;
+            newIdentity.diagnostics = {
+                NodeDiagnostics::Finding{QStringLiteral("relay-flap"),
+                                         NodeDiagnostics::Warning,
+                                         QStringLiteral("Relay link dropped 6 times in the last 30m")}};
+            newIdentity.diagnosticsMs = QDateTime::currentMSecsSinceEpoch();
             advert.worktreeCount = 3;
             newIdentity.mirrorDetails.append(advert);
             MemberInfo offlineNode = testMember(QStringLiteral("offline-key"),
@@ -3182,6 +3187,24 @@ int main(int argc, char *argv[])
             check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 21) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
+            const QString healthTip = window.testMirrorNodeCellToolTip(
+                QStringLiteral("mirror1"), 13);
+            check(healthTip.contains(QStringLiteral("Warning [relay-flap]")) &&
+                      healthTip.contains(QStringLiteral("Correlate disconnect times")) &&
+                      healthTip.contains(QStringLiteral("draft a troubleshooting prompt")),
+                  QStringLiteral("Mirror nodes Health explains the finding, next checks, "
+                                 "and its prompt action"));
+            check(window.testDraftMirrorNodeDiagnostics(QStringLiteral("mirror1")),
+                  QStringLiteral("activating Mirror nodes Health drafts its diagnostic prompt"));
+            const QString diagnosticPrompt = window.testQuickAddText();
+            check(diagnosticPrompt.contains(QStringLiteral("Node: mirror1")) &&
+                      diagnosticPrompt.contains(QStringLiteral("Node id: mirror1-new-key")) &&
+                      diagnosticPrompt.contains(QStringLiteral("Platform: linux")) &&
+                      diagnosticPrompt.contains(QStringLiteral("Repository mirrored:")) &&
+                      diagnosticPrompt.contains(QStringLiteral("Warning [relay-flap]")) &&
+                      diagnosticPrompt.contains(QStringLiteral("Find the root cause")),
+                  QStringLiteral("the mirror diagnostic prompt carries actionable node, repo, "
+                                 "and finding context"));
             window.testSetMirrorNodesOnlineOnly(false);
             QApplication::processEvents();
             const QStringList unfilteredRows = window.testMirrorNodeRows();
