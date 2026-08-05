@@ -728,6 +728,31 @@ int main(int argc, char *argv[])
     const QString testApplicationName =
         QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
     app.setApplicationName(testApplicationName);
+
+    // Synchronous helper callers still receive a result immediately, but the
+    // process and wait must be owned by a worker rather than the QApplication
+    // thread. The activity bus exposes the actual lane used by waitForGit.
+    std::atomic<int> gitWorkerStarts{0};
+    std::atomic<int> gitUiStarts{0};
+    forkmesh::BackgroundActivity::setListener(
+        [&gitWorkerStarts, &gitUiStarts](
+            quint64, const QString &kind, const QString &,
+            forkmesh::ActionTelemetry::Execution execution, bool started) {
+            if (!started || kind != QLatin1String("git"))
+                return;
+            if (execution == forkmesh::ActionTelemetry::Execution::Worker)
+                ++gitWorkerStarts;
+            if (execution == forkmesh::ActionTelemetry::Execution::UiBlocking)
+                ++gitUiStarts;
+        });
+    QByteArray gitVersion;
+    const bool gitVersionOk = forkmesh::ui::runGitCapture(
+        QDir::tempPath(), {QStringLiteral("--version")}, &gitVersion, nullptr);
+    forkmesh::BackgroundActivity::setListener(nullptr);
+    check(gitVersionOk && gitVersion.startsWith("git version") &&
+              gitWorkerStarts.load() == 1 && gitUiStarts.load() == 0,
+          QStringLiteral("synchronous Git helpers execute and wait on a worker"));
+
     const QString darkTheme = QString::fromLatin1(Theme::styleSheetForDark(true));
     const QString lightTheme = QString::fromLatin1(Theme::styleSheetForDark(false));
     check(darkTheme.contains(QStringLiteral(
