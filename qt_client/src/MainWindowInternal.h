@@ -4431,6 +4431,8 @@ inline QString codexChatGptModelId(const QString &model)
     const QString trimmed = model.trimmed();
     if (trimmed.isEmpty())
         return QStringLiteral("gpt-5.5");
+    if (trimmed == QLatin1String("gpt-5.3-codex-spark"))
+        return QStringLiteral("gpt-5.3-spark");
     if (trimmed == QLatin1String("gpt-5.5-codex"))
         return QStringLiteral("gpt-5.5");
     if (trimmed == QLatin1String("gpt-5.4"))
@@ -4721,6 +4723,10 @@ inline QString agentModelLabel(const QString &model)
         {QStringLiteral("gpt-5"), QStringLiteral("GPT-5")},
         {QStringLiteral("gpt-5.1"), QStringLiteral("GPT-5.1")},
         {QStringLiteral("gpt-5.1-codex"), QStringLiteral("GPT-5.1 Codex")},
+        {QStringLiteral("gpt-5.3"), QStringLiteral("GPT-5.3")},
+        {QStringLiteral("gpt-5.3-spark"), QStringLiteral("GPT-5.3 Spark")},
+        {QStringLiteral("gpt-5.3-codex-spark"),
+         QStringLiteral("GPT-5.3 Codex Spark")},
         {QStringLiteral("gpt-5.4"), QStringLiteral("GPT-5.4")},
         {QStringLiteral("gpt-5.4-mini"), QStringLiteral("GPT-5.4-Mini")},
         {QStringLiteral("gpt-5.5"), QStringLiteral("GPT-5.5")},
@@ -4753,6 +4759,8 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
         combo->addItem(QStringLiteral("GPT-5.5 Codex"),
                        QStringLiteral("gpt-5.5-codex"));
+        combo->addItem(QStringLiteral("GPT-5.3 Codex Spark"),
+                       QStringLiteral("gpt-5.3-codex-spark"));
         combo->addItem(QStringLiteral("GPT-5.1 Codex"),
                        QStringLiteral("gpt-5.1-codex"));
         combo->addItem(QStringLiteral("GPT-5.1"), QStringLiteral("gpt-5.1"));
