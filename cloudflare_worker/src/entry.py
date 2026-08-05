@@ -38209,12 +38209,13 @@ async def _org_agent_member_context(env, request, org, repo, data=None):
         org_bi, str(account_bi),
     )
     is_engineering = bool(engineering)
-    if role != "owner" and not is_engineering:
+    if not is_engineering:
         response = _org_agent_error(
             "engineering_team_required",
             (
-                "Only organization owners or members of the Engineering team "
-                "can view or queue repository agents."
+                "Only members of the Engineering team can view or queue "
+                "repository agents. Organization owners must explicitly join "
+                "Engineering before this encrypted workspace is decrypted."
             ),
             403,
             required_action="join_engineering_team",
@@ -38246,9 +38247,7 @@ async def _org_agent_member_context(env, request, org, repo, data=None):
         "actor": actor,
         "role": role,
         "engineeringAccess": is_engineering,
-        "accessBasis": (
-            "organization_owner" if role == "owner" else "engineering_team"
-        ),
+        "accessBasis": "engineering_team",
     }, None
 
 
@@ -38518,9 +38517,7 @@ async def org_agent_bots_handler(env, request, org, repo):
             "canViewAgentSessions": True,
             "accessBasis": context["accessBasis"],
             "accessReason": (
-                "Organization owner access for the linked desktop."
-                if context["role"] == "owner"
-                else "Engineering team access for eligible agent mirrors."
+                "Engineering team access for eligible agent mirrors."
             ),
             "providers": list(ORG_AGENT_PROVIDERS),
             "models": {
@@ -38529,7 +38526,7 @@ async def org_agent_bots_handler(env, request, org, repo):
             },
             "sessions": sessions,
             "privacyBoundary": (
-                "organization-owner-or-engineering-encrypted-at-rest"
+                "engineering-team-encrypted-at-rest"
             ),
             "securityGate": "claude-haiku-tool-free-fail-closed",
         }, cache_control="no-store")
