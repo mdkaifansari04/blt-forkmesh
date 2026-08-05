@@ -312,14 +312,12 @@ void logRestart(const QString &phase)
 
 namespace {
 
-// Progressive diff rendering (adhoc #421), see the declarations in
-// MainWindowInternal.h. Above this many chars of HTML a diff is laid out one
-// batch at a time instead of in a single blocking pass. The 70k-char batches
-// still produced 0.5–7s QTextDocument layouts in the stall log; keep a turn
-// below roughly one small file and let the rest arrive on subsequent turns.
+// Progressive, paged diff rendering (adhoc #421/#1380), see the declarations in
+// MainWindowInternal.h. Keep each GUI-thread insertion below roughly one small
+// file, then cap the resident QTextDocument at a modest collection of those
+// fragments. Page navigation makes every row available without the old
+// "content omitted" placeholders or an ever-growing rich-text document.
 constexpr qsizetype kDiffFirstPaintChars = 12'000;
-// Chars of HTML per streamed batch. Each batch is a separate GUI-thread layout,
-// so this trades how fast the rest lands against how long any one turn blocks.
 constexpr qsizetype kDiffStreamBatchChars = 12'000;
 
 // Split rendered diff HTML into its self-contained per-file blocks. Each file's
@@ -345,13 +343,132 @@ QStringList splitDiffFileBlocks(const QString &html)
     return blocks;
 }
 
+// Split one file's rich-text table into independently valid fragments. The
+// first fragment keeps the original header/image preview; continuations repeat
+// the compact file header and table opening so every fragment can be parsed on
+// its own. Rows are moved verbatim and exactly once.
+QStringList splitDiffFileFragments(const QString &block)
+{
+    if (block.size() <= kDiffFragmentChars)
+        return {block};
+
+    const QString tableMarker = QStringLiteral("<table class='difftable'");
+    const int table = block.indexOf(tableMarker);
+    const int tableOpenEnd = table < 0 ? -1 : block.indexOf(QLatin1Char('>'), table);
+    const int tableClose = block.lastIndexOf(QStringLiteral("</table>"));
+    if (table < 0 || tableOpenEnd < 0 || tableClose <= tableOpenEnd)
+        return {block}; // binary/collapsed/image-only block: already atomic
+
+    const int anchorEnd = block.indexOf(QStringLiteral("</a>"));
+    const int headerEnd = block.indexOf(QStringLiteral("</div>"),
+                                        qMax(0, anchorEnd));
+    if (anchorEnd < 0 || headerEnd < 0 || headerEnd >= table)
+        return {block};
+
+    const QString firstPrefix = block.left(tableOpenEnd + 1);
+    const QString continuationPrefix =
+        block.mid(anchorEnd + 4, headerEnd + 6 - (anchorEnd + 4)) +
+        QStringLiteral("<div class='diffcontinuation'>continued</div>") +
+        block.mid(table, tableOpenEnd - table + 1);
+    const QString closing = QStringLiteral("</table></div>");
+    const QString finalSuffix = block.mid(tableClose);
+
+    QStringList rows;
+    int cursor = tableOpenEnd + 1;
+    while (cursor < tableClose) {
+        const int rowEnd = block.indexOf(QStringLiteral("</tr>"), cursor);
+        if (rowEnd < 0 || rowEnd >= tableClose)
+            break;
+        const int after = rowEnd + 5;
+        rows.append(block.mid(cursor, after - cursor));
+        cursor = after;
+    }
+    // Unexpected table markup is safer left atomic than accidentally losing
+    // bytes. Normal unified/split renderers always produce complete <tr> rows.
+    if (rows.isEmpty() || cursor != tableClose)
+        return {block};
+
+    QStringList fragments;
+    QString current = firstPrefix;
+    bool hasRows = false;
+    for (const QString &row : rows) {
+        if (hasRows && current.size() + row.size() + closing.size() >
+                           kDiffFragmentChars) {
+            current += closing;
+            fragments.append(std::move(current));
+            current = continuationPrefix;
+            hasRows = false;
+        }
+        current += row;
+        hasRows = true;
+    }
+    current += finalSuffix;
+    fragments.append(std::move(current));
+    return fragments;
+}
+
+QList<QStringList> paginateDiffHtml(const QString &html)
+{
+    QStringList fragments;
+    for (const QString &block : splitDiffFileBlocks(html))
+        fragments.append(splitDiffFileFragments(block));
+    if (fragments.isEmpty())
+        fragments.append(QString());
+
+    QList<QStringList> pages;
+    QStringList page;
+    qsizetype pageChars = 0;
+    for (QString &fragment : fragments) {
+        if (!page.isEmpty() && pageChars + fragment.size() > kDiffPageChars) {
+            pages.append(std::move(page));
+            page.clear();
+            pageChars = 0;
+        }
+        pageChars += fragment.size();
+        page.append(std::move(fragment));
+    }
+    if (!page.isEmpty())
+        pages.append(std::move(page));
+    return pages;
+}
+
+QString diffPaginationHtml(int page, int count)
+{
+    if (count <= 1)
+        return QString();
+    const QString previous =
+        page > 0
+            ? QStringLiteral("<a href='forkmesh-diff-page:%1'>&larr; Previous</a>")
+                  .arg(page - 1)
+            : QStringLiteral("<span>&larr; Previous</span>");
+    const QString next =
+        page + 1 < count
+            ? QStringLiteral("<a href='forkmesh-diff-page:%1'>Next &rarr;</a>")
+                  .arg(page + 1)
+            : QStringLiteral("<span>Next &rarr;</span>");
+    return QStringLiteral(
+               "<div class='diffpagination'>%1 &nbsp; Page %2 of %3 &nbsp; %4"
+               "<br><span>All diff content is available across these pages.</span>"
+               "</div>")
+        .arg(previous)
+        .arg(page + 1)
+        .arg(count)
+        .arg(next);
+}
+
 struct DiffStreamState {
+    QList<QStringList> pages;
     QStringList pending;
     // Bumped on every render (and by a flush) so a batch queued for a diff that
     // has since been replaced bails instead of writing into the new document.
     int gen = 0;
+    int page = 0;
+    QString styleSheet;
+    QString pendingAnchor;
     QList<std::function<void()>> finishedHooks;
 };
+
+void renderDiffPage(QTextEdit *view, int page);
 
 // Per-view stream state. Keyed by pointer and dropped when the view dies; all of
 // this runs on the GUI thread.
@@ -369,6 +486,20 @@ DiffStreamState &diffStreamState(QTextEdit *view)
         return *it;
     QObject::connect(view, &QObject::destroyed, qApp,
                      [view] { diffStreams().remove(view); });
+    if (auto *browser = qobject_cast<QTextBrowser *>(view)) {
+        QObject::connect(browser, &QTextBrowser::anchorClicked, browser,
+                         [view](const QUrl &url) {
+                             if (url.scheme() !=
+                                 QLatin1String("forkmesh-diff-page"))
+                                 return;
+                             bool ok = false;
+                             const int page = url.toString()
+                                                  .section(QLatin1Char(':'), 1)
+                                                  .toInt(&ok);
+                             if (ok)
+                                 showDiffPage(view, page);
+                         });
+    }
     return streams[view];
 }
 
@@ -410,6 +541,20 @@ void appendDiffStreamBatch(QTextEdit *view, const QString &batch)
     cur.insertHtml(batch);
 }
 
+void scrollLoadedDiffAnchor(QTextEdit *view, DiffStreamState &state,
+                            const QString &batch)
+{
+    if (state.pendingAnchor.isEmpty())
+        return;
+    const QString marker = QStringLiteral("name=\"") + state.pendingAnchor +
+                           QStringLiteral("\"");
+    if (!batch.contains(marker))
+        return;
+    if (auto *browser = qobject_cast<QTextBrowser *>(view))
+        browser->scrollToAnchor(state.pendingAnchor);
+    state.pendingAnchor.clear();
+}
+
 void scheduleDiffStreamBatch(QTextEdit *view, int gen)
 {
     QPointer<QTextEdit> guard(view);
@@ -433,6 +578,7 @@ void scheduleDiffStreamBatch(QTextEdit *view, int gen)
         appendDiffStreamBatch(guard, batch);
         if (!guard)
             return;
+        scrollLoadedDiffAnchor(guard, *it, batch);
         if (done)
             finishDiffStream(guard);
         else
@@ -449,6 +595,25 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
         return;
     DiffStreamState &state = diffStreamState(view);
     ++state.gen; // supersede any batches still queued from a previous render
+    state.pending.clear();
+    state.pages = paginateDiffHtml(html);
+    state.page = 0;
+    state.styleSheet = styleSheet;
+    state.pendingAnchor.clear();
+    renderDiffPage(view, 0);
+}
+
+namespace {
+
+void renderDiffPage(QTextEdit *view, int page)
+{
+    if (!view)
+        return;
+    DiffStreamState &state = diffStreamState(view);
+    if (state.pages.isEmpty())
+        return;
+    state.page = qBound(0, page, int(state.pages.size()) - 1);
+    ++state.gen;
     state.pending.clear();
     const int gen = state.gen;
 
@@ -468,6 +633,12 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
             first += blocks.takeFirst();
         state.pending = blocks;
     }
+    QString first;
+    while (!blocks.isEmpty() &&
+           (first.isEmpty() ||
+            first.size() + blocks.first().size() <= kDiffFirstPaintChars))
+        first += blocks.takeFirst();
+    state.pending = blocks;
     const bool streaming = !state.pending.isEmpty();
     {
         BlockingCallScope crumb(QStringLiteral("diff html layout (%1 chars, %2)")
@@ -483,13 +654,83 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
                          ? QStringLiteral("unnamed view")
                          : view->objectName()),
             forkmesh::ActionTelemetry::Execution::UiBlocking);
-        view->document()->setDefaultStyleSheet(styleSheet);
+        view->document()->setDefaultStyleSheet(state.styleSheet);
         view->setHtml(first);
     }
+    scrollLoadedDiffAnchor(view, state, first);
     if (streaming)
         scheduleDiffStreamBatch(view, gen);
     else
         finishDiffStream(view);
+}
+
+} // namespace
+
+bool restyleDiffStreamed(QTextEdit *view, const QString &styleSheet)
+{
+    auto it = diffStreams().find(view);
+    if (it == diffStreams().end() || it->pages.isEmpty())
+        return false;
+    it->styleSheet = styleSheet;
+    renderDiffPage(view, it->page);
+    return true;
+}
+
+int diffPageCount(QTextEdit *view)
+{
+    const auto it = diffStreams().constFind(view);
+    return it == diffStreams().cend() ? 0 : int(it->pages.size());
+}
+
+int diffCurrentPage(QTextEdit *view)
+{
+    const auto it = diffStreams().constFind(view);
+    return it == diffStreams().cend() ? -1 : it->page;
+}
+
+void showDiffPage(QTextEdit *view, int page)
+{
+    auto it = diffStreams().find(view);
+    if (it == diffStreams().end() || page < 0 || page >= int(it->pages.size()) ||
+        page == it->page)
+        return;
+    it->pendingAnchor.clear();
+    renderDiffPage(view, page);
+    if (QScrollBar *bar = view->verticalScrollBar())
+        bar->setValue(0);
+}
+
+void scrollDiffToAnchor(QTextEdit *view, const QString &anchor)
+{
+    if (!view || anchor.isEmpty())
+        return;
+    auto it = diffStreams().find(view);
+    if (it == diffStreams().end() || it->pages.isEmpty()) {
+        if (auto *browser = qobject_cast<QTextBrowser *>(view))
+            browser->scrollToAnchor(anchor);
+        return;
+    }
+    const QString marker = QStringLiteral("name=\"") + anchor +
+                           QStringLiteral("\"");
+    int targetPage = -1;
+    for (int page = 0; page < int(it->pages.size()) && targetPage < 0; ++page) {
+        for (const QString &fragment : it->pages.at(page)) {
+            if (fragment.contains(marker)) {
+                targetPage = page;
+                break;
+            }
+        }
+    }
+    if (targetPage < 0) {
+        if (auto *browser = qobject_cast<QTextBrowser *>(view))
+            browser->scrollToAnchor(anchor);
+        return;
+    }
+    it->pendingAnchor = anchor;
+    if (targetPage != it->page)
+        renderDiffPage(view, targetPage);
+    else if (auto *browser = qobject_cast<QTextBrowser *>(view))
+        browser->scrollToAnchor(anchor);
 }
 
 void flushDiffStream(QTextEdit *view)
@@ -1785,6 +2026,14 @@ QString diffStyleSheet(int fontPt)
                ".threadsystem { color:%2; font-size:11px; margin-top:6px; }"
                ".threadactions { margin-top:8px; }"
                ".threadactions a { color:#58a6ff; text-decoration:none; }"
+               ".diffpagination { color:%2; text-align:center; padding:10px; "
+               "border:1px solid %7; background:%1; }"
+               ".diffpagination a { color:#58a6ff; text-decoration:none; "
+               "font-weight:700; }"
+               ".diffpagination span { color:%2; }"
+               ".diffcontinuation { color:%2; padding:4px 12px; "
+               "border-left:1px solid %7; border-right:1px solid %7; "
+               "background:%1; font-size:11px; font-style:italic; }"
                ".suggestion { background:%9; border:1px solid %7; color:%8; "
                "padding:8px; margin-top:6px; white-space:pre; }"
                ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }")
