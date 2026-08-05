@@ -14,14 +14,25 @@ SCENE = (ROOT / "public/world/world-scene.js").read_text(encoding="utf-8")
 BUILD_BOARD = (ROOT / "src/world_build_board.py").read_text(encoding="utf-8")
 
 
-def test_debug_bar_is_a_logo_sized_orb_with_graded_metric_dots():
+def test_debug_bar_is_a_live_metric_pill_with_graded_health_dots():
     assert 'class="world-diagnostics-orb"' in WORLD
     for metric in (
         "fps", "frame", "draw", "input", "network", "traffic", "queue",
         "build", "world",
     ):
         assert f'data-diagnostic-dot="{metric}"' in WORLD
-    assert "width: 56px;" in CSS
+    assert "width: min(310px, calc(100vw - 24px));" in CSS
+    assert "width: min(310px, calc(100vw - 92px));" in CSS
+    assert 'data-world-diagnostics-chart-metric="fps"' in WORLD
+    assert 'data-world-diagnostics-chart-metric="triangles"' in WORLD
+    assert 'data-world-diagnostics-chart-metric="memory"' in WORLD
+    assert 'data-world-diagnostics-chart-line="fps"' in WORLD
+    assert 'data-world-diagnostics-chart-line="triangles"' in WORLD
+    assert 'data-world-diagnostics-chart-line="memory"' in WORLD
+    assert "function diagnosticsChartPoints(" in WORLD
+    assert 'this.renderDiagnosticsChart(snapshot)' in WORLD
+    assert "memoryMB: snapshot.memory.chartUsedMB" in WORLD
+    assert 'chartSource: Number.isFinite(heapMB) ? "JS heap" : "estimated renderer"' in WORLD
     assert '.world-diagnostics-orb > span[data-level="good"]' in CSS
     assert '.world-diagnostics-orb > span[data-level="caution"]' in CSS
     assert '.world-diagnostics-orb > span[data-level="high"]' in CSS
@@ -111,8 +122,8 @@ def test_hud_popouts_keep_close_controls_sticky_and_dismiss_outside():
     assert '"[data-world-detail], [data-world-detail-resize]"' in WORLD
 
 
-def test_corner_launchers_match_and_debug_stays_open_until_outside_click():
-    assert "width: 56px;" in CSS
+def test_corner_launchers_stay_clear_and_debug_stays_open_until_outside_click():
+    assert "width: min(310px, calc(100vw - 24px));" in CSS
     assert ".fm-world .world-shirt-badge" in CSS
     assert 'diagnostics.addEventListener("pointerenter"' in WORLD
     assert 'diagnostics?.addEventListener("focusin"' in WORLD

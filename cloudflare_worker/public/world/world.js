@@ -509,6 +509,42 @@ function frameHistorySparkline(history) {
     .join("");
 }
 
+// SVG points for the collapsed diagnostics pill. Each entry is one local
+// one-second sample; the newest 60 readings fill the tiny chart from left to
+// right. Memory uses its own visible range so small heap changes do not look
+// artificially flat, while FPS and triangles retain a zero baseline.
+function diagnosticsChartPoints(
+  history,
+  key,
+  { width = 72, height = 16, zeroBased = true } = {},
+) {
+  const samples = (Array.isArray(history) ? history : [])
+    .slice(-60)
+    .map((sample, index) => ({ index, value: Number(sample?.[key]) }))
+    .filter((sample) => Number.isFinite(sample.value) && sample.value >= 0);
+  if (!samples.length) return "";
+  const values = samples.map((sample) => sample.value);
+  let low = zeroBased ? 0 : Math.min(...values);
+  let high = Math.max(...values);
+  if (!zeroBased) {
+    const padding = Math.max((high - low) * 0.08, high * 0.015, 0.1);
+    low = Math.max(0, low - padding);
+    high += padding;
+  }
+  if (high <= low) high = low + Math.max(1, high * 0.05);
+  const retainedCount = (Array.isArray(history) ? history : []).slice(
+    -60,
+  ).length;
+  const denominator = Math.max(1, retainedCount - 1);
+  return samples
+    .map(({ index, value }) => {
+      const x = (index / denominator) * width;
+      const y = height - ((value - low) / (high - low)) * height;
+      return `${x.toFixed(1)},${Math.max(0, Math.min(height, y)).toFixed(1)}`;
+    })
+    .join(" ");
+}
+
 // Turn one diagnostics sample into concrete, ranked advice. Every suggestion
 // names the reading that triggered it and, where the Elements tab can prove
 // the theory, the heaviest currently-enabled candidates to switch off first.
@@ -4577,6 +4613,31 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span data-diagnostic-dot="build" data-level="caution"></span>
               <span data-diagnostic-dot="world" data-level="good"></span>
             </span>
+            <span
+              class="world-diagnostics-chart"
+              data-world-diagnostics-chart
+              title="Live performance · one sample per second · newest at right"
+              aria-hidden="true"
+            >
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="fps">
+                <span><b>FPS</b><output data-world-diagnostics-chart-value="fps">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="fps" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="triangles">
+                <span><b>VISIBLE △</b><output data-world-diagnostics-chart-value="triangles">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="triangles" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="memory" title="JS heap; ~ means estimated renderer assets">
+                <span><b>MEM</b><output data-world-diagnostics-chart-value="memory">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="memory" points=""></polyline>
+                </svg>
+              </span>
+            </span>
             <strong>WORLD DEBUG</strong>
             <span class="world-diagnostics-compact" data-world-diagnostics-summary>
               <span data-world-diagnostics-renderer-compact title="Renderer">R starting</span>
@@ -5797,8 +5858,9 @@ class ForkMeshWorld extends HTMLElement {
     this.diagnosticsInboundSample = 0;
     this.diagnosticsOutboundSample = 0;
     this.lastDiagnosticsSnapshot = null;
-    // Rolling one-second samples for the Debug tab's frame-history sparkline
-    // and the heap-growth trend; both stay small and device-local.
+    // Rolling one-second samples for the visible diagnostics chart, the Debug
+    // tab's frame-history sparkline, and the heap-growth trend. All stay small
+    // and device-local.
     this.diagnosticsFrameHistory = [];
     this.diagnosticsHeapHistory = [];
     this.rendererRecoveryTimer = 0;
@@ -26713,6 +26775,12 @@ class ForkMeshWorld extends HTMLElement {
     const playerPosition = this.world?.getPosition?.() || null;
     const sceneStats = scene?.sceneStats || null;
     const sceneOutput = scene?.output || null;
+    const estimatedRendererMemoryMB = sceneStats
+      ? (clampCount(sceneStats.geometryBytes, 1_000_000_000_000) +
+          clampCount(sceneStats.textureBytes, 1_000_000_000_000) +
+          clampCount(sceneStats.renderTargetBytes, 1_000_000_000_000)) /
+        (1024 * 1024)
+      : NaN;
     const snapshot = {
       renderer: scene
         ? {
@@ -26935,6 +27003,15 @@ class ForkMeshWorld extends HTMLElement {
         heapUsedMB: Number.isFinite(heapMB)
           ? Math.max(0, Math.min(1_000_000, heapMB))
           : NaN,
+        estimatedRendererMB: Number.isFinite(estimatedRendererMemoryMB)
+          ? Math.max(0, Math.min(1_000_000, estimatedRendererMemoryMB))
+          : NaN,
+        chartUsedMB: Number.isFinite(heapMB)
+          ? Math.max(0, Math.min(1_000_000, heapMB))
+          : Number.isFinite(estimatedRendererMemoryMB)
+            ? Math.max(0, Math.min(1_000_000, estimatedRendererMemoryMB))
+            : NaN,
+        chartSource: Number.isFinite(heapMB) ? "JS heap" : "estimated renderer",
         heapTrendMBPerMin: Number.isFinite(heapTrendMBPerMin)
           ? Math.max(-100_000, Math.min(100_000, heapTrendMBPerMin))
           : NaN,
@@ -27010,9 +27087,12 @@ class ForkMeshWorld extends HTMLElement {
       },
       build: { ...this.buildDiagnostics },
     };
-    // Sixty seconds of one-second frame samples back the history sparkline.
+    // Sixty seconds of one-second renderer samples back both live charts.
     if (snapshot.renderer && !snapshot.renderer.paused) {
       this.diagnosticsFrameHistory.push({
+        fps: snapshot.renderer.fps,
+        triangles: snapshot.renderer.triangles,
+        memoryMB: snapshot.memory.chartUsedMB,
         frameTimeMs: snapshot.renderer.frameTimeMs,
         longestFrameMs: snapshot.renderer.longestFrameMs,
         longFrames: snapshot.renderer.longFrames,
@@ -27068,6 +27148,7 @@ class ForkMeshWorld extends HTMLElement {
     if (debugPane) this.renderDebugSettingsPane(debugPane, snapshot);
     if (!floatingVisible) return;
     const { renderer, connection, traffic, queues, build } = snapshot;
+    this.renderDiagnosticsChart(snapshot);
     const formatRate = (value) =>
       `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
     const formatCompactCount = (value) => {
@@ -27203,6 +27284,62 @@ class ForkMeshWorld extends HTMLElement {
     })) {
       const detail = this.$(`[data-world-diagnostics-${slot}]`);
       if (detail) detail.innerHTML = html;
+    }
+  }
+
+  renderDiagnosticsChart(snapshot) {
+    const chart = this.$("[data-world-diagnostics-chart]");
+    if (!chart) return;
+    const renderer = snapshot?.renderer;
+    const memoryMB = Number(snapshot?.memory?.chartUsedMB);
+    const estimatedMemory = snapshot?.memory?.chartSource === "estimated renderer";
+    const history = Array.isArray(snapshot?.history) ? snapshot.history : [];
+    const compactCount = (value) => {
+      const count = Math.max(0, Number(value) || 0);
+      if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}m`;
+      if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+      return `${Math.round(count)}`;
+    };
+    const metrics = {
+      fps: {
+        value: renderer?.paused
+          ? "PAUSED"
+          : renderer
+            ? renderer.fps.toFixed(0)
+            : "—",
+        points: diagnosticsChartPoints(history, "fps"),
+        level: renderer ? diagnosticLevel("fps", renderer.fps) : "high",
+      },
+      triangles: {
+        value: renderer ? compactCount(renderer.triangles) : "—",
+        points: diagnosticsChartPoints(history, "triangles"),
+        level: renderer
+          ? diagnosticLevel("triangles", renderer.triangles)
+          : "high",
+      },
+      memory: {
+        value: Number.isFinite(memoryMB)
+          ? `${estimatedMemory ? "~" : ""}${memoryMB.toFixed(0)} MB`
+          : "N/A",
+        points: diagnosticsChartPoints(history, "memoryMB", {
+          zeroBased: false,
+        }),
+        level: Number.isFinite(memoryMB) ? "good" : "unavailable",
+      },
+    };
+    for (const [metric, reading] of Object.entries(metrics)) {
+      const group = chart.querySelector(
+        `[data-world-diagnostics-chart-metric="${metric}"]`,
+      );
+      const value = group?.querySelector(
+        `[data-world-diagnostics-chart-value="${metric}"]`,
+      );
+      const line = group?.querySelector(
+        `[data-world-diagnostics-chart-line="${metric}"]`,
+      );
+      if (group) group.dataset.level = reading.level;
+      if (value) value.textContent = reading.value;
+      if (line) line.setAttribute("points", reading.points);
     }
   }
 
