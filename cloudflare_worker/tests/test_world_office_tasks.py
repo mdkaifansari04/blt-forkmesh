@@ -1414,6 +1414,7 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
                 "mode": "Auto mode",
                 "strength": "XHIGH",
                 "sessionId": "418",
+                "status": "queued",
                 "finishedBy": "",
             },
         }),
@@ -1431,6 +1432,7 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
         "mode": "Auto mode",
         "strength": "xhigh",
         "sessionId": "418",
+        "status": "queued",
     }
     stored = runtime.db.execute(
         "SELECT data FROM organization_tasks WHERE task_id=?",
@@ -1438,6 +1440,18 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     ).fetchone()[0]
     assert "claude-code@workstation" not in stored
     assert "Auto mode" not in stored
+
+    waiting = await tasks_api.handle(
+        runtime.use("POST", "wendy", {"status": "waiting"}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/agent-status",
+    )
+    assert waiting["status"] == 200
+    assert waiting["data"]["task"]["agent"]["status"] == "waiting"
+    denied_status = await tasks_api.handle(
+        runtime.use("POST", "carol", {"status": "running"}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/agent-status",
+    )
+    assert denied_status["status"] == 403
 
     # The bot has no member assignee_bi, so the desktop that opened the task —
     # a plain member without manager rights — reports the run as finished.
@@ -1447,6 +1461,7 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
             "agent": {
                 "finishedBy": "claude-code@workstation",
                 "model": "sonnet",
+                "status": "success",
             },
         }),
         f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/complete",
@@ -1460,6 +1475,7 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     assert finished["agent"]["model"] == "sonnet"
     assert finished["agent"]["mode"] == "Auto mode"
     assert finished["agent"]["strength"] == "xhigh"
+    assert finished["agent"]["status"] == "success"
 
     # An unrelated member still cannot close somebody else's agent run out.
     other = await tasks_api.handle(

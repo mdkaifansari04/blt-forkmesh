@@ -91,6 +91,10 @@ function normalizedAgentRun(agent) {
     mode: text(agent.mode, 40),
     strength: text(agent.strength, 32).toLowerCase(),
     sessionId: text(agent.sessionId, 64),
+    status: ["queued", "running", "waiting", "success", "failed", "stopped"]
+      .includes(String(agent.status || "").toLowerCase())
+      ? String(agent.status).toLowerCase()
+      : "",
   };
   return Object.values(run).some(Boolean) ? run : null;
 }
@@ -476,6 +480,28 @@ export function createWorldOfficeTasksController({
   }
 
   function physicalState(state, message = "") {
+    world.updateDesktopAgentBots?.(
+      tasks
+        .filter((task) => task.agent?.sessionId)
+        .slice()
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .slice(0, 24)
+        .map((task) => ({
+          id: task.agent.sessionId,
+          taskId: task.id,
+          title: task.title,
+          provider: task.agent.provider,
+          model: task.agent.model,
+          strength: task.agent.strength,
+          status:
+            task.agent.status ||
+            (task.status === "done"
+              ? "success"
+              : task.status === "active"
+                ? "running"
+                : "queued"),
+        })),
+    );
     world.updateOfficeMarketingTasks?.({
       authorized,
       state,

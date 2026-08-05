@@ -4377,6 +4377,15 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button
               class="world-top-link"
               type="button"
+              data-world-agent-summon
+              aria-label="Summon desktop agents into a status grid"
+              title="Summon desktop agents into a status grid"
+            >
+              <span aria-hidden="true">🤖</span><span class="world-top-link-label">Summon agents</span>
+            </button>
+            <button
+              class="world-top-link"
+              type="button"
               data-world-camera-toggle
               aria-pressed="false"
               aria-label="Enter first-person view"
@@ -7211,8 +7220,12 @@ class ForkMeshWorld extends HTMLElement {
         }
       }, WORLD_QA_POLL_MS);
       void this.refreshOrgAgentBots();
+      void this.refreshDesktopAgentBots();
       this.orgAgentTimer = window.setInterval(
-        () => void this.refreshOrgAgentBots(),
+        () => {
+          void this.refreshOrgAgentBots();
+          void this.refreshDesktopAgentBots();
+        },
         WORLD_AGENT_BOT_POLL_MS,
       );
       this.sessionWatchTimer = window.setInterval(
@@ -8336,6 +8349,53 @@ class ForkMeshWorld extends HTMLElement {
         String(error?.message || "The QA result could not be saved."),
       );
       return false;
+    }
+  }
+
+  async refreshDesktopAgentBots() {
+    if (
+      this.destroyed ||
+      !this.sessionAuthenticated ||
+      !validWorldSession()
+    ) {
+      this.world?.updateDesktopAgentBots?.([]);
+      return [];
+    }
+    try {
+      const payload = await this.fetchJSON("/api/tasks", {
+        timeout: 10_000,
+        cache: "no-store",
+        dedupe: true,
+      });
+      const sessions = (Array.isArray(payload?.tasks) ? payload.tasks : [])
+        .filter((task) => task?.agent?.sessionId)
+        .sort(
+          (left, right) =>
+            Number(right?.createdAt || 0) - Number(left?.createdAt || 0),
+        )
+        .slice(0, 24)
+        .map((task) => ({
+          id: String(task.agent.sessionId).slice(0, 64),
+          taskId: String(task.id || "").slice(0, 64),
+          title: String(task.title || "").slice(0, 120),
+          provider: String(task.agent.provider || "").slice(0, 40),
+          model: String(task.agent.model || "").slice(0, 64),
+          strength: String(task.agent.strength || "").slice(0, 16),
+          status:
+            String(task.agent.status || "").toLowerCase() ||
+            (task.status === "done"
+              ? "success"
+              : task.status === "active"
+                ? "running"
+                : "queued"),
+        }));
+      this.world?.updateDesktopAgentBots?.(sessions);
+      return sessions;
+    } catch (error) {
+      if ([401, 403].includes(Number(error?.status || 0))) {
+        this.world?.updateDesktopAgentBots?.([]);
+      }
+      return [];
     }
   }
 
@@ -11167,6 +11227,22 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-camera-toggle]")) {
         this.toggleWorldCameraMode();
+        return;
+      }
+      if (event.target.closest("[data-world-agent-summon]")) {
+        const announce = () => {
+          const count = Number(this.world?.summonDesktopAgentBots?.() || 0);
+          this.toast(
+            count
+              ? `${count} desktop agent${count === 1 ? "" : "s"} summoned.`
+              : "No desktop agent runs are available to summon yet.",
+          );
+        };
+        if (Number(this.world?.desktopAgentBotCount?.() || 0) > 0) {
+          announce();
+        } else {
+          void this.refreshDesktopAgentBots().then(announce);
+        }
         return;
       }
       if (event.target.closest("[data-world-jetpack-toggle]")) {

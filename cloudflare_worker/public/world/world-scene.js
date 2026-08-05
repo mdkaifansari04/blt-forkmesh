@@ -351,6 +351,64 @@ const WORLD_AGENT_BOTS = Object.freeze([
     glow: "#8fffe0",
   },
 ]);
+const DESKTOP_AGENT_MODEL_ART = Object.freeze({
+  sol: Object.freeze({
+    label: "Sol",
+    icon: "/world/assets/agent-model-sol.webp",
+    shell: "#d98224",
+  }),
+  luna: Object.freeze({
+    label: "Luna",
+    icon: "/world/assets/agent-model-luna.webp",
+    shell: "#2763a8",
+  }),
+  terra: Object.freeze({
+    label: "Terra",
+    icon: "/world/assets/agent-model-terra.webp",
+    shell: "#3d8a4c",
+  }),
+  opus: Object.freeze({
+    label: "Opus",
+    icon: "/world/assets/agent-model-opus.webp",
+    shell: "#147d82",
+  }),
+  fable: Object.freeze({
+    label: "Fable",
+    icon: "/world/assets/agent-model-fable.webp",
+    shell: "#5d3a94",
+  }),
+  sonnet: Object.freeze({
+    label: "Sonnet",
+    icon: "/world/assets/agent-model-sonnet.webp",
+    shell: "#8a2f82",
+  }),
+});
+const DESKTOP_AGENT_STATUS = Object.freeze({
+  queued: Object.freeze({ label: "Queued", color: "#d6a84b" }),
+  running: Object.freeze({ label: "Working", color: "#48d597" }),
+  waiting: Object.freeze({ label: "Waiting", color: "#ffb45f" }),
+  success: Object.freeze({ label: "Done", color: "#62d98b" }),
+  failed: Object.freeze({ label: "Failed", color: "#ff667a" }),
+  stopped: Object.freeze({ label: "Stopped", color: "#91a0a8" }),
+});
+const DESKTOP_AGENT_DROP_HEIGHT = 16;
+const DESKTOP_AGENT_DROP_MS = 900;
+const DESKTOP_AGENT_GRID_SPACING = 3.1;
+
+function desktopAgentModel(model, provider = "") {
+  const value = String(model || "").toLowerCase();
+  for (const key of ["fable", "opus", "sonnet", "luna", "terra", "sol"]) {
+    if (value.includes(key)) return DESKTOP_AGENT_MODEL_ART[key];
+  }
+  return String(provider || "").toLowerCase().includes("claude")
+    ? DESKTOP_AGENT_MODEL_ART.sonnet
+    : DESKTOP_AGENT_MODEL_ART.sol;
+}
+
+function desktopAgentStatus(status) {
+  return DESKTOP_AGENT_STATUS[String(status || "").toLowerCase()] ||
+    DESKTOP_AGENT_STATUS.queued;
+}
 // The public World has one shared ground plane plus three regional labels.
 // Deprecated off-world destinations are deliberately not valid spawn spaces.
 const WORLD_SPACE_FLOORS = Object.freeze({
@@ -8078,6 +8136,78 @@ function createAgentRobot(THREE, bot, id) {
   group.add(label);
   group.userData.core = core;
   setShadows(group);
+  return group;
+}
+
+function createDesktopAgentRobot(THREE, session, textureLoader) {
+  const appearance = desktopAgentModel(session?.model, session?.provider);
+  const status = desktopAgentStatus(session?.status);
+  const group = new THREE.Group();
+  group.name = `desktop-agent:${String(session?.id || "unknown")}`;
+  group.userData.infrastructureKind = "desktop-agent";
+
+  const ball = new THREE.Mesh(
+    new THREE.SphereGeometry(0.52, 22, 15),
+    makeMaterial(THREE, "#14272c", {
+      metalness: 0.72,
+      roughness: 0.24,
+      emissive: appearance.shell,
+      emissiveIntensity: 0.2,
+    }),
+  );
+  ball.position.y = 0.56;
+  group.add(ball);
+
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.55, 0.62, 0.82, 20),
+    makeMaterial(THREE, appearance.shell, {
+      metalness: 0.5,
+      roughness: 0.28,
+      emissive: appearance.shell,
+      emissiveIntensity: 0.26,
+    }),
+  );
+  body.position.y = 1.15;
+  group.add(body);
+
+  const portrait = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: textureLoader.load(appearance.icon),
+      transparent: true,
+      toneMapped: false,
+      depthWrite: false,
+    }),
+  );
+  portrait.name = "desktop-agent-model-symbol";
+  portrait.scale.set(0.72, 0.72, 1);
+  portrait.position.set(0, 1.16, 0.58);
+  group.add(portrait);
+
+  const mast = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035, 0.035, 0.42, 8),
+    makeMaterial(THREE, "#bed9d2", { metalness: 0.65, roughness: 0.28 }),
+  );
+  mast.position.y = 1.78;
+  group.add(mast);
+  const light = new THREE.Mesh(
+    new THREE.SphereGeometry(0.12, 14, 10),
+    makeMaterial(THREE, status.color, {
+      emissive: status.color,
+      emissiveIntensity: 2,
+    }),
+  );
+  light.position.y = 2.02;
+  group.add(light);
+
+  group.userData.rollingBall = ball;
+  group.userData.body = body;
+  group.userData.portrait = portrait;
+  group.userData.statusLight = light;
+  group.userData.modelKey = `${appearance.label}|${appearance.icon}`;
+  group.userData.label = null;
+  setShadows(group);
+  portrait.castShadow = false;
+  portrait.receiveShadow = false;
   return group;
 }
 
@@ -19647,6 +19777,8 @@ export function createWorldScene({
   // mirror; these avatars are only a visible chat/status surface.
   const agentBots = new Map();
   const agentBotStates = new Map();
+  const desktopAgentBots = new Map();
+  const desktopAgentTextureLoader = new THREE.TextureLoader();
   let agentBotAccessAllowed = false;
   let repositoryIssueAgentPicker = null;
   // A mirror-push socket frame is only a doorbell. It may arm a short-lived
@@ -27517,6 +27649,188 @@ export function createWorldScene({
     return agentBotAccessAllowed;
   }
 
+  function paintDesktopAgentBot(state) {
+    const { avatar, session } = state;
+    const appearance = desktopAgentModel(session.model, session.provider);
+    const status = desktopAgentStatus(session.status);
+    avatar.userData.body.material.color.set(appearance.shell);
+    avatar.userData.body.material.emissive.set(appearance.shell);
+    avatar.userData.rollingBall.material.emissive.set(appearance.shell);
+    const modelKey = `${appearance.label}|${appearance.icon}`;
+    if (avatar.userData.modelKey !== modelKey) {
+      avatar.userData.portrait.material.map?.dispose?.();
+      avatar.userData.portrait.material.map =
+        desktopAgentTextureLoader.load(appearance.icon);
+      avatar.userData.portrait.material.needsUpdate = true;
+      avatar.userData.modelKey = modelKey;
+    }
+    avatar.userData.statusLight.material.color.set(status.color);
+    avatar.userData.statusLight.material.emissive.set(status.color);
+    const effort = String(session.strength || "default").slice(0, 16);
+    const labelKey = `${appearance.label}|${effort}|${status.label}`;
+    if (avatar.userData.labelKey === labelKey) return;
+    if (avatar.userData.label) {
+      avatar.remove(avatar.userData.label);
+      disposeObject3D(avatar.userData.label);
+    }
+    const label = makeLabelSprite(
+      THREE,
+      appearance.label,
+      `${effort} effort · ${status.label}`,
+      status.color,
+    );
+    label.name = "desktop-agent-status-label";
+    label.scale.set(2.55, 0.85, 1);
+    label.position.y = 2.86;
+    avatar.add(label);
+    avatar.userData.label = label;
+    avatar.userData.labelKey = labelKey;
+  }
+
+  function defaultDesktopAgentTarget(index, total) {
+    const columns = Math.max(1, Math.ceil(Math.sqrt(total)));
+    const row = Math.floor(index / columns);
+    const column = index % columns;
+    return new THREE.Vector3(
+      FORKBOT_HOME[0] + 7 +
+        (column - (columns - 1) / 2) * DESKTOP_AGENT_GRID_SPACING,
+      FORKBOT_HOME[1],
+      FORKBOT_HOME[2] + 5 + row * DESKTOP_AGENT_GRID_SPACING,
+    );
+  }
+
+  function updateDesktopAgentBots(sessions = []) {
+    const safe = (Array.isArray(sessions) ? sessions : [])
+      .filter((session) =>
+        String(session?.taskId || "").trim() &&
+        String(session?.id || "").trim(),
+      )
+      .slice(0, 24);
+    const seen = new Set();
+    const now = performance.now();
+    safe.forEach((session, index) => {
+      const key = String(session.taskId).trim().slice(0, 64);
+      seen.add(key);
+      let state = desktopAgentBots.get(key);
+      if (!state) {
+        const avatar = createDesktopAgentRobot(
+          THREE,
+          session,
+          desktopAgentTextureLoader,
+        );
+        const target = defaultDesktopAgentTarget(index, safe.length);
+        state = {
+          avatar,
+          session: { ...session },
+          target,
+          dropAt: now + index * 90,
+          phase: hashNumber(key) * 0.0001,
+        };
+        avatar.position.set(
+          target.x,
+          target.y + DESKTOP_AGENT_DROP_HEIGHT,
+          target.z,
+        );
+        desktopAgentBots.set(key, state);
+        world.add(avatar);
+        const registeredAvatar = avatar;
+        registerWorldElement(
+          "agent-npcs",
+          "Desktop agent bots",
+          "Avatars & bots",
+          avatar,
+          () => desktopAgentBots.get(key)?.avatar === registeredAvatar,
+        );
+      } else {
+        state.session = { ...session };
+      }
+      paintDesktopAgentBot(state);
+    });
+    for (const [key, state] of desktopAgentBots.entries()) {
+      if (seen.has(key)) continue;
+      world.remove(state.avatar);
+      disposeObject3D(state.avatar);
+      desktopAgentBots.delete(key);
+    }
+    return desktopAgentBots.size;
+  }
+
+  function summonDesktopAgentBots() {
+    const states = Array.from(desktopAgentBots.values());
+    if (!states.length) return 0;
+    const columns = Math.max(1, Math.ceil(Math.sqrt(states.length)));
+    const rows = Math.ceil(states.length / columns);
+    const heading = player.rotation.y;
+    const forward = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
+    const right = new THREE.Vector3(Math.cos(heading), 0, -Math.sin(heading));
+    const center = player.position.clone().addScaledVector(forward, 6.5);
+    const now = performance.now();
+    states.forEach((state, index) => {
+      const row = Math.floor(index / columns);
+      const column = index % columns;
+      state.target.copy(center)
+        .addScaledVector(
+          right,
+          (column - (columns - 1) / 2) * DESKTOP_AGENT_GRID_SPACING,
+        )
+        .addScaledVector(
+          forward,
+          (row - (rows - 1) / 2) * DESKTOP_AGENT_GRID_SPACING,
+        );
+      state.target.y = currentFloorY;
+      state.dropAt = now + index * 110;
+      state.avatar.position.set(
+        state.target.x,
+        state.target.y + DESKTOP_AGENT_DROP_HEIGHT,
+        state.target.z,
+      );
+      state.avatar.visible = true;
+    });
+    return states.length;
+  }
+
+  function updateDesktopAgentBotMotion(delta, time) {
+    const now = performance.now();
+    for (const state of desktopAgentBots.values()) {
+      const { avatar, target } = state;
+      if (state.dropAt) {
+        const elapsed = now - state.dropAt;
+        if (elapsed < 0) {
+          avatar.visible = false;
+          continue;
+        }
+        avatar.visible = true;
+        const progress = reducedMotion
+          ? 1
+          : clamp(elapsed / DESKTOP_AGENT_DROP_MS, 0, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        avatar.position.x = target.x;
+        avatar.position.z = target.z;
+        avatar.position.y =
+          target.y + (1 - eased) * DESKTOP_AGENT_DROP_HEIGHT +
+          Math.sin(progress * Math.PI * 3) * (1 - progress) * 0.55;
+        if (progress >= 1) state.dropAt = 0;
+      } else {
+        const dx = target.x - avatar.position.x;
+        const dz = target.z - avatar.position.z;
+        const distance = Math.hypot(dx, dz);
+        if (distance > 0.03) {
+          const step = Math.min(distance, FORKBOT_SPEED * delta);
+          avatar.position.x += (dx / distance) * step;
+          avatar.position.z += (dz / distance) * step;
+          avatar.userData.rollingBall.rotation.x -= step * 1.8;
+          avatar.rotation.y = Math.atan2(dx, dz);
+        }
+        avatar.position.y = target.y +
+          (reducedMotion ? 0 : Math.sin(time * 0.0025 + state.phase) * 0.035);
+      }
+      const light = avatar.userData.statusLight;
+      const speed = state.session.status === "running" ? 0.014 : 0.007;
+      light.material.emissiveIntensity =
+        0.65 + (Math.sin(time * speed + state.phase) + 1) * 1.15;
+    }
+  }
+
   function paintForkbotScreen(state) {
     const canvas = forkbotScreenTexture.image;
     drawForkbotScreen(canvas.getContext("2d"), canvas, state);
@@ -34327,7 +34641,10 @@ export function createWorldScene({
     // can measure exactly what that population costs.
     if (worldElementEnabled("remote-avatars")) updateRemotePlayers(delta, time);
     if (worldElementEnabled("forkbot")) updateForkbot(delta, time);
-    if (worldElementEnabled("agent-npcs")) updateAgentBots(delta, time);
+    if (worldElementEnabled("agent-npcs")) {
+      updateAgentBots(delta, time);
+      updateDesktopAgentBotMotion(delta, time);
+    }
     const repositoryLoadingTail = world.userData.repositorySizeLoadingTail;
     if (repositoryLoadingTail?.visible) {
       repositoryLoadingTail.rotation.z = time * 0.008;
@@ -35405,6 +35722,9 @@ export function createWorldScene({
     exciteAgentBot,
     completeAgentTask,
     showAgentTaskBubble,
+    updateDesktopAgentBots,
+    summonDesktopAgentBots,
+    desktopAgentBotCount: () => desktopAgentBots.size,
     updateRewardPool,
     playRewardEvent,
     setPaused,

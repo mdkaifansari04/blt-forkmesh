@@ -119,7 +119,6 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
-class AgentBotFleetOverlay;
 class NodeDotMatrix;
 class RelaySpeedDot;
 class ActionRunStrip;
@@ -128,7 +127,6 @@ class ElidingStatusLabel;
 }
 using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
-using forkmesh::ui::AgentBotFleetOverlay;
 using forkmesh::ui::AgentDotMatrix;
 using forkmesh::ui::ElidingStatusLabel;
 using forkmesh::ui::NodeDotMatrix;
@@ -843,11 +841,6 @@ public:
     void testOpenAgentsOverview() { openAgentsOverview(); }
     void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
     int testAgentDotCount() const;
-    void testRefreshAgentBotFleet() { refreshAgentBotFleet(); }
-    int testAgentBotCount() const;
-    QString testAgentBotSummary(int sessionId) const;
-    void testSummonAllAgentBots();
-    void testSummonAgentBot(int sessionId) { summonAgentBot(sessionId); }
     void testSetAgentSessionStatus(int sessionId, const QString &status);
     void testRemoveAgentSession(int sessionId);
     // A transport can disappear while the persisted session is still marked
@@ -3034,11 +3027,6 @@ private:
     // per session, tinted like its status icon, with the live output meter of
     // each running session driving its night-rider pulse.
     void refreshAgentDotMatrix();
-    // Keep the summonable bot grid in step with the session roster. Fresh
-    // launches call summonAgentBot() to play that bot's drop-in animation.
-    void refreshAgentBotFleet();
-    void summonAgentBot(int sessionId);
-    void schedulePendingAgentBotSummon();
     // Repaints the strip beside that matrix: the most recent action runs, one
     // square each, tinted with actionStatusColor() (adhoc #70).
     void refreshActionRunStrip();
@@ -5421,12 +5409,6 @@ private:
     // line, followed there by the recent action-run strip.
     QPushButton *m_agentsNavButton = nullptr;
     AgentDotMatrix *m_agentDotMatrix = nullptr;
-    AgentBotFleetOverlay *m_agentBotFleet = nullptr;
-    QPushButton *m_agentSummonAllButton = nullptr;
-    // Launches can precede the lazy Agents page or happen while it is hidden.
-    // Hold those bots until the page is visible so their sky-drops are never
-    // spent off-screen.
-    QList<int> m_pendingAgentBotSummonIds;
     // One dot per node on the network, immediately right of the agent squares
     // with a faint divider between the two groups (adhoc #124).
     NodeDotMatrix *m_nodeDotMatrix = nullptr;
@@ -7684,6 +7666,10 @@ private:
     // status through the same authenticated lease after the run finishes.  The
     // same object is persisted on AgentSession for restart recovery.
     QHash<int, QJsonObject> m_orgAgentBindings;
+    // Last live state mirrored into the World task for each local session.
+    // reloadAgents() is intentionally chatty; this cache turns unchanged rows
+    // into no-ops while still republishing once after an app restart.
+    QHash<int, QString> m_orgTaskAgentStatusSent;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
@@ -7935,6 +7921,7 @@ private:
     // POST /api/tasks for a freshly created session and record the id it gets
     // back on the session. No-op unless session.orgTask is set.
     void openOrgTaskForSession(const AgentSession &session);
+    void syncOrgTaskAgentStatus(int sessionId);
     // POST /api/tasks/<id>/complete once the run reaches a terminal status,
     // stamping the finishing bot. No-op without an org task, while the run is
     // still going, or once finishedByBot is already set.
