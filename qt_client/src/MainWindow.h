@@ -1451,7 +1451,7 @@ private:
     void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
-    // One-line strip pinned to the very bottom of the window (adhoc #2).
+    // One-line strip pinned to the bottom, plus its version-toggled debug row.
     QWidget *buildStatusBar();
     // Compact footer queue between the live log and agent prompt. It is always on
     // screen (reading "idle" when nothing is running) and gives each kind of job
@@ -5378,6 +5378,9 @@ private:
     // every workspace, including Git, so users can prompt an agent from a diff.
     QWidget *m_footerDock = nullptr;
     QWidget *m_footerLeftRegion = nullptr;
+    // Version-controlled strip below the one-line status bar. It owns the live
+    // resource chart, labeled log counters and newest website minute states.
+    QWidget *m_debugBar = nullptr;
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
@@ -6108,7 +6111,7 @@ private:
     // it is obvious which build/checkout the open window came from.
     QLabel *m_statusAppPath = nullptr;
     // Live one-per-second moving sparklines for CPU, host memory, swap and disk
-    // usage (adhoc #17), combined into four quadrants on the chrome line. Held
+    // usage (adhoc #17), combined into four quadrants in the debug bar. Held
     // as QWidget* and poked via static_cast since the compact chart widget lives
     // in MainWindowInternal.h.
     QWidget *m_resourceChart = nullptr;
