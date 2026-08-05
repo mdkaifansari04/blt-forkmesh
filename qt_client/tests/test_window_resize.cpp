@@ -2409,6 +2409,8 @@ int main(int argc, char *argv[])
             scmMargins = scmPanel->layout()->contentsMargins();
         check(scmPanel && scmMargins.left() <= 6 && scmMargins.right() <= 6,
               QStringLiteral("source-control controls sit close to both pane edges"));
+        check(window.testScmDiffUsesFullSurface(),
+              QStringLiteral("working-tree diff has no outer or document padding"));
 
         QPlainTextEdit *draft = window.findChild<QPlainTextEdit *>(
             QStringLiteral("scmMessageInput"));
@@ -3011,6 +3013,11 @@ int main(int argc, char *argv[])
                   .arg(stagedWaiting)
                   .arg(window.testSourceControlPaths().join(QStringLiteral(", ")),
                        controls));
+        check(window.testClickSourceControlPath(QStringLiteral("commit-waiting.txt")) &&
+                  window.testScmDiffFilePinnedToTop(
+                      QStringLiteral("commit-waiting.txt")),
+              QStringLiteral("clicking a working-tree file pins its sticky filename "
+                             "at the top of the diff"));
 
         // …and once that change is committed the row hands itself back to Sync,
         // which is the behaviour the swap was there for in the first place.
@@ -5912,9 +5919,24 @@ int main(int argc, char *argv[])
         other.prNumber = 0;
         window.testAddAgentSession(other);
 
+        // A prior crashed ref publication must not poison every later branch
+        // merge. Model the orphaned lock from the reported failure; a lock this
+        // old cannot belong to a live HEAD update and is safe to recover.
+        const QString staleHeadLock =
+            cleanupRepo.path() + QStringLiteral("/.git/HEAD.lock");
+        QFile staleLock(staleHeadLock);
+        if (staleLock.open(QIODevice::WriteOnly)) {
+            staleLock.setFileTime(QDateTime::currentDateTime().addSecs(-120),
+                                  QFileDevice::FileModificationTime);
+            staleLock.close();
+        }
+
         check(window.testMergeBranchAndCleanUp(cleanBranch),
               QStringLiteral("\"Merge & clean up\" lands the agent branch in the "
                              "default branch"));
+        check(!QFileInfo::exists(staleHeadLock),
+              QStringLiteral("merge recovers an orphaned HEAD.lock instead of "
+                             "misreporting a content conflict"));
         check(gitOutput(cleanupRepo.path(), {"branch", "--list", cleanBranch})
                   .isEmpty(),
               QStringLiteral("\"Merge & clean up\" deletes the merged branch"));

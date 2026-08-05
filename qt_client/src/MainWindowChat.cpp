@@ -1741,8 +1741,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerDock = dock;
     dock->setObjectName("logDock");
 
-    // A three-line wrapping box (adhoc #12, #107), not a single-line edit, so the
-    // typed prompt is actually visible on three lines. Enter sends / Shift+Enter
+    // A four-line wrapping box (adhoc #12, #107), not a single-line edit, so the
+    // typed prompt is actually visible on four lines. Enter sends / Shift+Enter
     // adds a newline (handled in the event filter); Up/Down walk prompt history.
     m_issueQuickAdd = new QPlainTextEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
@@ -1750,17 +1750,17 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     m_issueQuickAdd->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_issueQuickAdd->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Pin the field to a fixed number of prompt lines (adhoc #107) so it stays
+    // Pin the field to four prompt lines (adhoc #107) so it stays
     // compact instead of stretching to fill the whole footer; longer prompts
     // scroll within it. Moving the send column out to the side (adhoc #115) freed
     // the vertical space the toolbar used to reserve for the stacked buttons, and
     // dropping the surrounding card and the "Agents:" strip (adhoc #60) freed two
-    // more rows, so the box now shows six lines and the prompt frame fills the
+    // more rows, so the box now shows four lines and the prompt frame fills the
     // footer top to bottom the way the log panel beside it does.
-    m_issueQuickAdd->document()->setDocumentMargin(3);
-    // 6 rows + the QSS vertical padding (8px top/bottom) + document margins.
+    m_issueQuickAdd->document()->setDocumentMargin(2);
+    // Four rows + the QSS vertical padding (4px top/bottom) + document margins.
     const int kQuickAddRowH = m_issueQuickAdd->fontMetrics().lineSpacing();
-    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 6 + 16 + 6);
+    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 4 + 8 + 4);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is capped at the same length as the Claude prompt / message input
@@ -2606,7 +2606,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     dockRow->addWidget(promptOverlayHost, 1, Qt::AlignRight | Qt::AlignBottom);
 
     // Pin the footer to just the compact prompt's height (adhoc #107): the dock
-    // margins plus the six-line prompt and its controls. With the card padding
+    // margins plus the four-line prompt and its controls. With the card padding
     // and the "Agents:" strip gone (adhoc #60) the prompt frame is the tallest
     // thing in the row, so the log panel beside it is exactly as tall as the
     // prompt and nothing reflows.
@@ -7909,15 +7909,23 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // One compact four-quadrant chart for the debug line: CPU/memory above
     // swap/disk. It receives one sample per second from updateFooterDiagnostics.
-    // CPU, swap and disk open diagnostics; memory opens the culprit list.
+    // CPU and swap open diagnostics; disk opens the Size map scanner; memory
+    // opens the culprit list.
     auto *resourceChart = new ResourceQuadrantSparkline;
     for (ResourceQuadrantSparkline::Resource resource : {
-             ResourceQuadrantSparkline::Cpu, ResourceQuadrantSparkline::Swap,
-             ResourceQuadrantSparkline::Disk}) {
+             ResourceQuadrantSparkline::Cpu, ResourceQuadrantSparkline::Swap}) {
         resourceChart->setClickHandler(resource, [this] { showDiagnosticsDialog(); });
     }
     resourceChart->setClickHandler(ResourceQuadrantSparkline::Memory,
                                    [this] { showHighMemoryProcessPanel(); });
+    resourceChart->setClickHandler(ResourceQuadrantSparkline::Disk, [this] {
+        showSection(0);
+        if (m_repoDetailTabs && m_sizeMapTabIndex >= 0) {
+            if (QAbstractButton *sizeMapTab =
+                    m_repoDetailTabs->button(m_sizeMapTabIndex))
+                sizeMapTab->click();
+        }
+    });
     m_resourceChart = resourceChart;
 
     // The thirty-day SIZE/LOC/FILES repository trends and the Ratchet mode

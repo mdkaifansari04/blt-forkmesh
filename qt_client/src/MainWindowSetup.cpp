@@ -4268,9 +4268,11 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
                                 ? QCoreApplication::applicationFilePath()
                                 : relaunchPath;
     const QString buildDir = clientDir + "/build";
+    setRestartSpinProgress(35);
     setUpdateStatus("Configuring...");
     runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
                       clientDir, [this, buildDir, appPath] {
+        setRestartSpinProgress(60);
         setUpdateStatus("Rebuilding...");
         runUpdateStepUser("cmake",
                           {"--build", buildDir, "-j",
@@ -4317,6 +4319,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
     // permanently killed every flag-launched node that completed the v0.6.2
     // update.
     const QStringList relaunchArgs = QCoreApplication::arguments().mid(1);
+    setRestartSpinProgress(80);
 
     if (!m_updateAsUser.isEmpty()) {
         // Install and relaunch as the user so the binary is theirs, not root's.
@@ -4341,6 +4344,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
         }
         runUpdateStep("sudo", {"-u", m_updateAsUser, "-H", "sh", "-c", script},
                       QDir::tempPath(), [this, appPath, relaunchArgs] {
+            setRestartSpinProgress(100);
             setUpdateStatus("Relaunching...");
             const QString user = m_updateAsUser;
             // Release the instance lock first so the replacement process (which
@@ -4396,6 +4400,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
                               QFile::ExeGroup | QFile::ReadOther |
                               QFile::ExeOther);
     }
+    setRestartSpinProgress(100);
     setUpdateStatus("Relaunching...");
     // Release the instance lock before spawning the replacement process, or it
     // bounces off the still-held lock (this process hasn't unwound yet) and
@@ -4653,6 +4658,7 @@ void MainWindow::updateRebuildRestart()
     logSystem(QStringLiteral("=== Update, rebuild & restart started ==="));
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
+    setRestartSpinProgress(5);
 
     // Under sudo, target the invoking user's home so nothing is written to /root.
     const QString user = invokingNonRootUser();
@@ -4712,6 +4718,7 @@ void MainWindow::updateRebuildRestart()
     };
 
     if (haveCheckout) {
+        setRestartSpinProgress(20);
         setUpdateStatus("Pulling a fresh copy from " + installUrl + "...");
         // Repoint origin at the freshly resolved live mirror, then fast-forward.
         runUpdateStepUser("git", {"-C", repoDir, "remote", "set-url", "origin",
@@ -4730,6 +4737,7 @@ void MainWindow::updateRebuildRestart()
             });
         });
     } else {
+        setRestartSpinProgress(20);
         setUpdateStatus("Downloading a fresh copy from " + installUrl + "...");
         recloneFromMirror();
     }

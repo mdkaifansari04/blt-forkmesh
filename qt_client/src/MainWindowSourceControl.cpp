@@ -1036,6 +1036,7 @@ void MainWindow::refreshSourceControl(bool force)
         m_scmSectionAnchors.clear();
         m_scmSectionPaths.clear();
         m_scmStickyLabelHtml.clear();
+        m_scmPendingScrollKey.clear();
         m_scmFileTops.clear();
         m_scmStickySection.clear();
         if (m_scmStickyHeader)
@@ -1851,15 +1852,40 @@ void MainWindow::showScmDiffAll(bool staged)
     const QString prefix = staged ? QStringLiteral("s|") : QStringLiteral("u|");
     for (int i = 0; i < m_scmSectionKeys.size(); ++i) {
         if (m_scmSectionKeys.at(i).startsWith(prefix)) {
+            const QString key = m_scmSectionKeys.at(i);
             scrollDiffToAnchor(m_scmDiff, m_scmSectionAnchors.at(i));
-            updateScmDiffScrollState();
+            if (pinScmDiffSectionToTop(i))
+                m_scmPendingScrollKey.clear();
+            else
+                m_scmPendingScrollKey = key;
             return;
         }
     }
 }
 
-// Scroll the combined diff so this file's section sits at the top. A path that is
-// both staged and further modified renders twice, so `staged` picks the side.
+// Scroll one rendered section precisely to the viewport's top edge. QTextBrowser
+// only promises that scrollToAnchor() makes an anchor visible, which can leave a
+// clicked file anywhere in the viewport; re-read its absolute document y after
+// that visibility jump and set the scrollbar explicitly.
+bool MainWindow::pinScmDiffSectionToTop(int sectionIndex)
+{
+    if (!m_scmDiff || sectionIndex < 0 ||
+        sectionIndex >= m_scmSectionAnchors.size())
+        return false;
+    m_scmDiff->scrollToAnchor(m_scmSectionAnchors.at(sectionIndex));
+    m_scmFileTops.clear();
+    computeScmFileTops();
+    const int top = m_scmFileTops.value(sectionIndex, -1);
+    QScrollBar *vbar = m_scmDiff->verticalScrollBar();
+    if (top < 0 || !vbar)
+        return false;
+    vbar->setValue(qBound(vbar->minimum(), top, vbar->maximum()));
+    updateScmDiffScrollState();
+    return true;
+}
+
+// Scroll the combined diff so this file's section sits at the top. A path that
+// is both staged and further modified renders twice, so `staged` picks the side.
 void MainWindow::scrollScmDiffToFile(const QString &path, bool staged)
 {
     if (!m_scmDiff)
@@ -1871,8 +1897,16 @@ void MainWindow::scrollScmDiffToFile(const QString &path, bool staged)
     if (idx < 0)
         return;
     m_lastSourceControlDiffPath = path;
+    // Do not force a streamed diff to finish synchronously just to service a
+    // click. If this file has not been appended yet, onDiffStreamFinished()
+    // retries the same exact pin after the bounded background batches land.
+    flushDiffStream(m_scmDiff);
+    const QString key = m_scmSectionKeys.at(idx);
     scrollDiffToAnchor(m_scmDiff, m_scmSectionAnchors.at(idx));
-    updateScmDiffScrollState();
+    if (pinScmDiffSectionToTop(idx))
+        m_scmPendingScrollKey.clear();
+    else
+        m_scmPendingScrollKey = key;
 }
 
 // The changes-tree row for a path on the staged / unstaged side, or nullptr.
@@ -2135,6 +2169,31 @@ void MainWindow::updateScmViewedCount()
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
+bool MainWindow::testScmDiffUsesFullSurface() const
+{
+    if (!m_scmDiff || !m_scmDiff->parentWidget() ||
+        !m_scmDiff->parentWidget()->layout())
+        return false;
+    const QMargins margins = m_scmDiff->parentWidget()->layout()->contentsMargins();
+    return margins.left() == 0 && margins.top() == 0 && margins.right() == 0 &&
+           margins.bottom() == 0 && m_scmDiff->document()->documentMargin() == 0;
+}
+
+bool MainWindow::testScmDiffFilePinnedToTop(const QString &path) const
+{
+    if (!m_scmDiff || !m_scmStickyHeader)
+        return false;
+    const int index = m_scmSectionPaths.indexOf(path);
+    QScrollBar *vbar = m_scmDiff->verticalScrollBar();
+    if (index < 0 || index >= m_scmFileTops.size() || !vbar)
+        return false;
+    const int top = m_scmFileTops.at(index);
+    const int expected = qBound(vbar->minimum(), top, vbar->maximum());
+    return top >= 0 && vbar->value() == expected &&
+           m_scmStickySection == m_scmSectionKeys.value(index) &&
+           m_scmStickyHeader->geometry().top() == 0;
+}
+
 bool MainWindow::testScmAutoViewedRoundTrip()
 {
     const QStringList keys{QStringLiteral("u|a"), QStringLiteral("u|b")};

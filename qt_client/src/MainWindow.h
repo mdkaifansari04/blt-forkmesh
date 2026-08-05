@@ -944,6 +944,12 @@ public:
     // Select a CHANGES row and report whether the right-hand diff navigation
     // targeted that exact file.
     bool testClickSourceControlPath(const QString &path);
+    // The working-tree viewer reaches every edge of its right-hand surface — no
+    // inherited layout or document gutter remains around the diff.
+    bool testScmDiffUsesFullSurface() const;
+    // After selecting a file in CHANGES, its header is pinned at the viewport's
+    // top (or the furthest possible position for the document's final file).
+    bool testScmDiffFilePinnedToTop(const QString &path) const;
     // Which page each half of the Git view's left column shows. Both stay on the
     // universal source-control panel and commit graph for every diff kind.
     int testGitFilesSlotPage() const;
@@ -4098,6 +4104,10 @@ private:
     // Scroll the combined diff so this file's section sits at the top. Staged and
     // unstaged copies of one path render as separate sections; `staged` picks it.
     void scrollScmDiffToFile(const QString &path, bool staged);
+    // Put one rendered section's file header exactly at the top of the diff
+    // viewport. Returns false while that section is still waiting in a streamed
+    // portion of the document.
+    bool pinScmDiffSectionToTop(int sectionIndex);
     // Follow the combined diff's scroll: keep the sticky header on the topmost
     // visible file, advance its read-progress chart / percentage, and select that
     // file in the tree. Cheap (no re-render); runs on every scroll tick.
@@ -4279,6 +4289,9 @@ private:
     // centralised failure handler (runUpdateStep) agnostic to which one it was.
     void startRestartSpin(QPushButton *button);
     void stopRestartSpin();
+    // Advance the determinate ring around the active restart spinner. This is
+    // intentionally phase-based: build output is not a portable progress signal.
+    void setRestartSpinProgress(int percent);
     // Flips an in-progress restart spin between the refresh-arrows look (a
     // rebuild actually running) and a spinning hourglass (queued behind other
     // agent actions, not doing anything itself yet).
@@ -6829,6 +6842,9 @@ private:
     QStringList m_scmSectionPaths;   // repo-relative path per section
     QList<int> m_scmFileTops;        // cached absolute y of each section header
     QHash<QString, QString> m_scmStickyLabelHtml; // section key -> sticky label
+    // A click may target a section whose HTML is still streaming. Keep its key
+    // so onDiffStreamFinished() can pin it as soon as the anchor is laid out.
+    QString m_scmPendingScrollKey;
     QString m_scmDiffRenderKey;      // skip the re-layout when nothing changed
     // …and the inputs behind it (patch, viewed set, stylesheet, split toggle), so
     // an unchanged working tree skips rebuilding the diff HTML too and not just
