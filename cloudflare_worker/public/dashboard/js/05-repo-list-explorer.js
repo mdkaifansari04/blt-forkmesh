@@ -973,18 +973,21 @@
     renderHomeAgentSessions();
   }
 
-  // The repo groups the profile pages list: the whole catalog on the
-  // session's own dashboard, but ONLY the viewed account's repos in
-  // public-profile mode (/@name).
+  // The repo groups the profile pages list: ONLY the viewed account's own
+  // repos - the signed-in session on /dashboard/profile, the fetched account
+  // in public-profile mode (/@name). profileRepositoryAliases() already
+  // defaults to that subject. The authenticated catalog deliberately returns
+  // every public repo plus the private repos shared WITH the viewer, so the
+  // profile has to scope by owner itself; without it "Your repositories"
+  // listed the whole mesh and counted other people's repos as the account's
+  // own (#538). An account with no resolvable identity owns nothing.
   function profileRepositoryGroups() {
-    let groups = groupRepositories(state.repositories || []);
-    if (state.publicProfile) {
-      const aliases = profileRepositoryAliases(state.publicProfile);
-      groups = groups.filter((group) =>
-        repoBelongsToProfile(sourceOfTruth(group), aliases) ||
-        (group.members || []).some((member) => repoBelongsToProfile(member, aliases)));
-    }
-    return groups;
+    const groups = groupRepositories(state.repositories || []);
+    const aliases = profileRepositoryAliases();
+    if (!aliases.size) return [];
+    return groups.filter((group) =>
+      repoBelongsToProfile(sourceOfTruth(group), aliases) ||
+      (group.members || []).some((member) => repoBelongsToProfile(member, aliases)));
   }
 
   function renderProfileRepositories() {
