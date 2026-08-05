@@ -1551,21 +1551,49 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     // Never race a live agent's checkout. It can advance the branch between the
     // merge command and the containment safety check, which used to surface as
     // the misleading "couldn't merge cleanly" message even when merge-tree said
-    // the tips were conflict-free. Keep the branch/worktree intact and let the
-    // completed-session refresh enable merging once the producer is done.
+    // the tips were conflict-free. The operator may explicitly stop a local
+    // agent and merge its committed work so far; retry from a fresh stack after
+    // the stop because it reloads the session list.
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
         if (session.branchName != branch)
             continue;
         if (session.status == AgentStatus::Running ||
             session.status == AgentStatus::Waiting ||
             session.status == AgentStatus::Queued) {
-            setRepoDetailNotice(
-                QStringLiteral("Agent #%1 is still working on %2. Wait for it to "
-                               "finish before merging so its final commit is included.")
-                    .arg(session.id)
-                    .arg(branch),
-                true);
-            return false;
+            const int sessionId = session.id;
+            if (m_headless || isExternalSession(sessionId)) {
+                setRepoDetailNotice(
+                    QStringLiteral("Agent #%1 is still working on %2. Stop it, then "
+                                   "merge so its committed work is included.")
+                        .arg(sessionId)
+                        .arg(branch),
+                    true);
+                return false;
+            }
+            QMessageBox box(this);
+            box.setIcon(QMessageBox::Warning);
+            box.setWindowTitle(QStringLiteral("Agent is still working"));
+            box.setText(QStringLiteral("Agent #%1 is still working on %2.")
+                            .arg(sessionId)
+                            .arg(branch));
+            box.setInformativeText(
+                QStringLiteral("Stop it and merge its committed work now? Any "
+                               "uncommitted work or later commits will not be included."));
+            QPushButton *stopAndMerge = box.addButton(
+                QStringLiteral("Stop agent && merge"), QMessageBox::AcceptRole);
+            box.addButton(QMessageBox::Cancel);
+            box.exec();
+            if (box.clickedButton() != stopAndMerge)
+                return false;
+            if (!stopAgentSessionById(sessionId)) {
+                setRepoDetailNotice(
+                    QStringLiteral("Couldn't stop Agent #%1; its branch was left "
+                                   "unchanged.")
+                        .arg(sessionId),
+                    true);
+                return false;
+            }
+            return mergeWorktreeIntoMain(branch, worktreePath, deleteAgent);
         }
     }
     if (!repoHasWorkingTree()) {
@@ -1614,12 +1642,13 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         logSystem(QStringLiteral("Git: switched the checkout to %1 to merge %2 into it.")
                       .arg(base, branch));
     }
-    // No confirmation dialog on any merge path (adhoc #441, extending #130's "just
-    // do the merge in the background, don't jump around"): every entry point here is
-    // an explicit click on a button that spells out what it deletes, so a modal over
-    // the view only adds a keystroke. The cleanup stays safe without it — a worktree
-    // with uncommitted changes bails out below, and a merge that conflicts keeps the
-    // worktree and branch instead of deleting them.
+    // No confirmation dialog on a normal merge path (adhoc #441, extending #130's
+    // "just do the merge in the background, don't jump around"): every entry point
+    // here is an explicit click on a button that spells out what it deletes. The
+    // active-agent Stop & merge choice above is the exception because it interrupts
+    // work that may not be committed. The cleanup stays safe without another modal —
+    // a worktree with uncommitted changes bails out below, and a merge that conflicts
+    // keeps the worktree and branch instead of deleting them.
 
     // The merge checks out files, then removeWorktree recursively deletes the
     // worktree folder (slow when it holds build artifacts), then two panels reload
