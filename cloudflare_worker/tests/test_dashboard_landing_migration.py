@@ -1721,6 +1721,34 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
     assert "fetchJson(`${repoApiBase(repo)}/pulls" not in dashboard_js
 
 
+def test_dashboard_pull_timeline_includes_commits_and_live_branch_agents():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    # The conversation is a chronological activity feed, not merely the signed
+    # review-comment files. Pull-specific commits are read from the metadata
+    # branch, and a branch-matched organization agent contributes safe lifecycle
+    # status rows that poll only while it is active.
+    for marker in (
+        "function parsePullCommitMbox(mbox)",
+        'path: `pulls/${number}/commits.mbox`, ref: metadataRef,',
+        "function buildRepoPullTimeline(values, conversation, commits, agents)",
+        "function pullAgentActivityEvent(session, number, headBranch)",
+        "function refreshRepoPullActivity(repo, number)",
+        "function scheduleRepoPullActivityRefresh(repo, number)",
+        "data-repo-pull-timeline-count",
+        "repoAgentStatusSnapshot(session)",
+    ):
+        assert marker in dashboard_js
+
+    refresh = dashboard_js[
+        dashboard_js.index("async function refreshRepoPullActivity")
+        : dashboard_js.index("async function loadRepoPullConversation")
+    ]
+    assert "loadRepoPullCommits" in refresh
+    assert "loadRepoPullAgentActivity" in refresh
+    assert "document.hidden ? 15000 : 3000" in refresh
+
+
 def test_dashboard_never_loads_a_diff_for_non_open_pulls():
     guard = 'String(values?.status || "open").toLowerCase() !== "open"'
     assert guard in _read(PUBLIC / "dashboard.js")
