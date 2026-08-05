@@ -319,6 +319,8 @@ namespace {
 // "content omitted" placeholders or an ever-growing rich-text document.
 constexpr qsizetype kDiffFirstPaintChars = 12'000;
 constexpr qsizetype kDiffStreamBatchChars = 12'000;
+constexpr qsizetype kDiffFragmentChars = 12'000;
+constexpr qsizetype kDiffPageChars = 180'000;
 
 // Split rendered diff HTML into its self-contained per-file blocks. Each file's
 // block begins with its `<a name="file-N"></a>` anchor (see diffFileHeaderHtml)
@@ -336,8 +338,7 @@ QStringList splitDiffFileBlocks(const QString &html)
         blocks.append(html.left(pos)); // preamble before the first file (if any)
     while (pos >= 0) {
         const int next = html.indexOf(marker, pos + marker.size());
-        QString block = html.mid(pos, next < 0 ? -1 : next - pos);
-        blocks.append(std::move(block));
+        blocks.append(html.mid(pos, next < 0 ? -1 : next - pos));
         pos = next;
     }
     return blocks;
@@ -533,7 +534,11 @@ void appendDiffStreamBatch(QTextEdit *view, const QString &batch)
             .arg(batch.size())
             .arg(view->objectName().isEmpty() ? QStringLiteral("unnamed view")
                                                : view->objectName()),
-        forkmesh::ActionTelemetry::Execution::UiBlocking);
+        // QTextDocument is GUI-owned, so insertion itself cannot run on a
+        // worker. scheduleDiffStreamBatch() bounds it and posts one batch per
+        // event-loop turn; distinguish that deferred apply from computation
+        // that actually blocks the UI thread.
+        forkmesh::ActionTelemetry::Execution::UiDeferred);
     // Append at the document's end via a private cursor so the user's current
     // scroll position is left untouched as the rest fills in below.
     QTextCursor cur(view->document());
@@ -617,21 +622,11 @@ void renderDiffPage(QTextEdit *view, int page)
     state.pending.clear();
     const int gen = state.gen;
 
-    QString first = html;
-    // Always split anchored diffs, even when there is only one file: a single
-    // generated lockfile/API snapshot was the worst multi-megabyte stall in the
-    // diagnostics log, and the old `blocks.size() > 1` condition bypassed
-    // progressive handling for exactly that case.
-    QStringList blocks = splitDiffFileBlocks(html);
-    if (!(blocks.size() == 1 && blocks.first() == html)) {
-        first.clear();
-        // Same no-overshoot rule as the streamed batches: the first paint used
-        // to take one block too many and lay out up to ~130k chars in one turn.
-        while (!blocks.isEmpty() &&
-               (first.isEmpty() ||
-                first.size() + blocks.first().size() <= kDiffFirstPaintChars))
-            first += blocks.takeFirst();
-        state.pending = blocks;
+    QStringList blocks = state.pages.at(state.page);
+    const QString nav = diffPaginationHtml(state.page, int(state.pages.size()));
+    if (!nav.isEmpty()) {
+        blocks.first().prepend(nav);
+        blocks.last().append(nav);
     }
     QString first;
     while (!blocks.isEmpty() &&
@@ -653,7 +648,9 @@ void renderDiffPage(QTextEdit *view, int page)
                 .arg(view->objectName().isEmpty()
                          ? QStringLiteral("unnamed view")
                          : view->objectName()),
-            forkmesh::ActionTelemetry::Execution::UiBlocking);
+            // The expensive preparation/splitting is complete. This is the
+            // bounded GUI-owned document apply, deferred from streamed work.
+            forkmesh::ActionTelemetry::Execution::UiDeferred);
         view->document()->setDefaultStyleSheet(state.styleSheet);
         view->setHtml(first);
     }
@@ -1921,10 +1918,10 @@ QString renderDiffHtmlSplit(bool split, const QString &patch,
                             const QHash<QString, QString> &lineNotes,
                             const QSet<QString> &viewedFiles)
 {
-    return split ? renderSplitDiffHtml(patch, files, dir, base, head, anchorFile,
-                                       lineNotes, viewedFiles)
-                 : renderUnifiedDiffHtml(patch, files, dir, base, head, anchorFile,
-                                         lineNotes, viewedFiles);
+    return split ? renderSplitDiffHtml(patch, files, dir, base, head,
+                                       anchorFile, lineNotes, viewedFiles)
+                 : renderUnifiedDiffHtml(patch, files, dir, base, head,
+                                         anchorFile, lineNotes, viewedFiles);
 }
 
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
