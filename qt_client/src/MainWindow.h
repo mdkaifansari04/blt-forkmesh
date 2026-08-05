@@ -708,11 +708,9 @@ public:
     QStringList testQuickAddModelLabels() const;
     bool testQuickAddModelVisible() const;
     bool testQuickAddModelEditable() const;
-    // adhoc #1445: rebuild the combined agent/model menu, then read back one
-    // row's label and the outcome state behind its coloured ✓ / ✗, so a test can
-    // prove a model that has just succeeded stops wearing an older run's mark.
+    // Rebuild the combined agent/model menu, then read back a row label for UI
+    // tests of ordering and the model-only visible text.
     void testRefreshQuickAddAgentModelSelector();
-    QString testQuickAddAgentModelStatus(const QString &model) const;
     QString testQuickAddAgentModelLabel(const QString &model) const;
     // issue #272: open the Worktrees tab on a branch, rebuild the panel (as an
     // "Update from main" merge does), and read back which worktree stays selected
