@@ -1454,7 +1454,7 @@ QWidget *MainWindow::buildChatPage()
     for (int index = 3; index <= 8; ++index)
         addDeferredSection();
     m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
-    for (int index = 10; index <= 16; ++index)
+    for (int index = 10; index <= 17; ++index)
         addDeferredSection();
     logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
@@ -1520,7 +1520,7 @@ QWidget *MainWindow::buildChatPage()
     // the bottom utility group, Tasks directly above Pings (adhoc #97).
     for (QPushButton *button :
          {m_agentsNavButton, m_reposNavButton, m_chatButton,
-          m_controlNodeNavButton, m_networkNavButton})
+          m_controlNodeNavButton, m_networkNavButton, m_usersNavButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
     // Repo is redundant with the contextual Code entry. Keep the hidden button
     // as section 0's QButtonGroup state carrier for programmatic navigation.
@@ -7818,6 +7818,23 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_networkNavButton, &QPushButton::clicked, this,
             [this] { showSection(kNetworkDiagnosticsSectionIndex); });
 
+    // Users sits directly under Network because it is the account-level view
+    // of the same mesh. Admin status arrives asynchronously on the heartbeat,
+    // so create it with the rest of the stable rail and reveal it only when the
+    // relay confirms m_isAdmin.
+    m_usersNavButton = new ActivityRailButton(QStringLiteral("people"),
+                                              QStringLiteral("Users"));
+    m_usersNavButton->setObjectName(QStringLiteral("usersNavButton"));
+    m_usersNavButton->setCheckable(true);
+    m_usersNavButton->setCursor(Qt::PointingHandCursor);
+    m_usersNavButton->setToolTip(
+        QStringLiteral("Users - World profile and activity statistics"));
+    setOcticon(m_usersNavButton, "people", 16);
+    m_navGroup->addButton(m_usersNavButton, kUsersSectionIndex);
+    connect(m_usersNavButton, &QPushButton::clicked, this,
+            [this] { showSection(kUsersSectionIndex); });
+    m_usersNavButton->setVisible(m_isAdmin);
+
     // Small, icon-only rebuild+restart button, right-aligned under the avatar on
     // the section-nav row. Hidden unless opted in via Settings (off by default);
     // it's a dev-iteration shortcut for the same fast rebuild as the profile panel.
@@ -8239,10 +8256,18 @@ void MainWindow::updateConnectionStatus()
 
 void MainWindow::updateAdminCrownBadge()
 {
-    if (!m_adminCrownBadge)
-        return;
-    m_adminCrownBadge->setVisible(m_isAdmin);
-    m_adminCrownBadge->setToolTip(m_isAdmin ? QStringLiteral("Admin") : QString());
+    if (m_adminCrownBadge) {
+        m_adminCrownBadge->setVisible(m_isAdmin);
+        m_adminCrownBadge->setToolTip(
+            m_isAdmin ? QStringLiteral("Admin") : QString());
+    }
+    if (m_usersNavButton)
+        m_usersNavButton->setVisible(m_isAdmin);
+    // If a heartbeat revokes admin status while this page is open, leave it at
+    // once; hiding the entry alone would strand privileged UI on screen.
+    if (!m_isAdmin && m_sectionStack &&
+        m_sectionStack->currentIndex() == kUsersSectionIndex)
+        showSection(kUsersSectionIndex);
 }
 
 // Flip this node online/offline from the profile toggle. "Offline" keeps the user
@@ -10704,6 +10729,7 @@ void MainWindow::ensureSectionBuilt(int index)
     case 14: section = buildControlNodeSection(); break;
     case 15: section = buildOrganizationTasksSection(); break;
     case 16: section = buildNotesSection(); break;
+    case 17: section = buildUsersSection(); break;
     default: break;
     }
     if (!section)
@@ -10715,6 +10741,16 @@ void MainWindow::ensureSectionBuilt(int index)
 
 void MainWindow::showSection(int index)
 {
+    // The rail button is only one half of the boundary: stale saved navigation
+    // or an internal caller must not be able to land on the admin page after
+    // this account loses administrator status.
+    if (index == kUsersSectionIndex && !m_isAdmin) {
+        if (m_sectionStack &&
+            m_sectionStack->currentIndex() == kUsersSectionIndex)
+            index = kNetworkDiagnosticsSectionIndex;
+        else
+            return;
+    }
     if (index == 9)
         index = kNetworkDiagnosticsSectionIndex;
     // Hosts (7), Relays (8) and Nodes (13) are tabs of the Network section now
@@ -10785,6 +10821,8 @@ void MainWindow::showSection(int index)
         refreshOrganizationTasks();
     } else if (index == kNotesSectionIndex) {
         refreshNotes();
+    } else if (index == kUsersSectionIndex) {
+        refreshUsersPage();
     }
 }
 
@@ -16167,7 +16205,273 @@ QWidget *networkTabPage()
     return page;
 }
 
+enum UsersColumn {
+    kUsersColName = 0,
+    kUsersColVerified,
+    kUsersColStatus,
+    kUsersColJoined,
+    kUsersColWorldActivity,
+    kUsersColActivityRecency,
+    kUsersColLastEmail,
+    kUsersColEmailDelivery,
+    kUsersColCountry,
+    kUsersColBrowser,
+    kUsersColOs,
+    kUsersColNodes,
+    kUsersColCount,
+};
+
+QStringList usersTableHeaders()
+{
+    return {QStringLiteral("User"), QStringLiteral("Email verified"),
+            QStringLiteral("Status"), QStringLiteral("Joined"),
+            QStringLiteral("World activity"),
+            QStringLiteral("Activity recency"), QStringLiteral("Last email"),
+            QStringLiteral("Email delivery"), QStringLiteral("Country"),
+            QStringLiteral("Browser"), QStringLiteral("OS"),
+            QStringLiteral("Nodes")};
+}
+
+SortTableWidgetItem *usersTableItem(const QString &text,
+                                    const QVariant &sortValue)
+{
+    auto *item = new SortTableWidgetItem(text);
+    item->setData(kTableSortRole, sortValue);
+    return item;
+}
+
+QString usersTimestamp(qint64 timestampMs)
+{
+    if (timestampMs <= 0)
+        return QStringLiteral("Not reported");
+    return QDateTime::fromMSecsSinceEpoch(timestampMs)
+        .toLocalTime()
+        .toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+}
+
+QPair<QString, int> usersActivityRecency(const QString &bucket)
+{
+    if (bucket == QLatin1String("hour"))
+        return {QStringLiteral("Within 1 hour"), 0};
+    if (bucket == QLatin1String("5h"))
+        return {QStringLiteral("Within 5 hours"), 1};
+    if (bucket == QLatin1String("24h"))
+        return {QStringLiteral("Within 24 hours"), 2};
+    if (bucket == QLatin1String("3d"))
+        return {QStringLiteral("Within 3 days"), 3};
+    if (bucket == QLatin1String("5d"))
+        return {QStringLiteral("Within 5 days"), 4};
+    if (bucket == QLatin1String("10d"))
+        return {QStringLiteral("Within 10 days"), 5};
+    if (bucket == QLatin1String("stale"))
+        return {QStringLiteral("More than 10 days"), 6};
+    return {QStringLiteral("Not reported"), 7};
+}
+
 } // namespace
+
+QWidget *MainWindow::buildUsersSection()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setSpacing(12);
+
+    auto *header = new QHBoxLayout;
+    header->setContentsMargins(0, 0, 0, 0);
+    header->setSpacing(10);
+
+    auto *title = new QLabel(QStringLiteral("Users"));
+    title->setObjectName(QStringLiteral("sectionTitle"));
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    header->addWidget(title);
+    header->addWidget(makeInlineHelpButton(
+        QStringLiteral("About user statistics"),
+        QStringLiteral(
+            "Administrator-only directory of the privacy-filtered account "
+            "facts displayed on World avatar chests. Raw activity timestamps, "
+            "email addresses, IP addresses, and device details are not included.")));
+
+    m_usersStatus = new QLabel(QStringLiteral("Loading users..."));
+    m_usersStatus->setObjectName(QStringLiteral("mutedLabel"));
+    header->addWidget(m_usersStatus, 1);
+
+    m_usersRefreshButton = new QPushButton(QStringLiteral("Refresh"));
+    m_usersRefreshButton->setObjectName(QStringLiteral("repoAction"));
+    m_usersRefreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_usersRefreshButton, "sync", 14);
+    connect(m_usersRefreshButton, &QPushButton::clicked, this,
+            [this] { refreshUsersPage(/*force=*/true); });
+    header->addWidget(m_usersRefreshButton);
+    outer->addLayout(header);
+
+    m_usersTable = new QTableWidget(0, kUsersColCount);
+    installColumnHeaderMenu(m_usersTable);
+    m_usersTable->setObjectName(QStringLiteral("usersTable"));
+    m_usersTable->setHorizontalHeaderLabels(usersTableHeaders());
+    m_usersTable->verticalHeader()->setVisible(false);
+    m_usersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_usersTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_usersTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_usersTable->setAlternatingRowColors(true);
+    m_usersTable->setShowGrid(false);
+    m_usersTable->setSortingEnabled(true);
+    networkPrepareFullTable(m_usersTable);
+    for (int column = 0; column < m_usersTable->columnCount(); ++column)
+        m_usersTable->horizontalHeader()->setSectionResizeMode(
+            column, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_usersTable);
+    outer->addWidget(m_usersTable, 1);
+
+    renderUsersPage(m_usersDirectoryPayload);
+    return page;
+}
+
+void MainWindow::refreshUsersPage(bool force)
+{
+    if (!m_isAdmin || !m_usersTable || !m_usersStatus)
+        return;
+    if (m_chatDirectoryLoaded)
+        renderUsersPage(m_usersDirectoryPayload);
+    if (force)
+        m_chatDirectoryFetchedMs = 0;
+    if (force || !m_chatDirectoryLoaded)
+        m_usersStatus->setText(QStringLiteral("Loading users..."));
+    refreshChatUserDirectory();
+}
+
+void MainWindow::renderUsersPage(const QJsonArray &users)
+{
+    if (!m_usersTable)
+        return;
+
+    const int sortColumn = qBound(
+        0, m_usersTable->horizontalHeader()->sortIndicatorSection(),
+        m_usersTable->columnCount() - 1);
+    const Qt::SortOrder sortOrder =
+        m_usersTable->horizontalHeader()->sortIndicatorOrder();
+    TableRepaintGuard repaintGuard(m_usersTable);
+    m_usersTable->setSortingEnabled(false);
+    m_usersTable->setRowCount(0);
+
+    for (const QJsonValue &value : users) {
+        const QJsonObject user = value.toObject();
+        if (user.value(QStringLiteral("kind"))
+                .toString(QStringLiteral("user")) != QLatin1String("user"))
+            continue;
+        const QString name =
+            user.value(QStringLiteral("name"))
+                .toString(user.value(QStringLiteral("nodeName")).toString())
+                .trimmed();
+        if (name.isEmpty())
+            continue;
+
+        const int row = m_usersTable->rowCount();
+        m_usersTable->insertRow(row);
+
+        auto *nameItem = usersTableItem(name, name.toLower());
+        const auto avatar = m_avatars.constFind(
+            QStringLiteral("user:") + name.toLower());
+        if (avatar != m_avatars.constEnd())
+            nameItem->setIcon(QIcon(*avatar));
+        m_usersTable->setItem(row, kUsersColName, nameItem);
+
+        const bool verified =
+            user.value(QStringLiteral("emailVerified")).toBool();
+        m_usersTable->setItem(
+            row, kUsersColVerified,
+            usersTableItem(verified ? QStringLiteral("Yes")
+                                    : QStringLiteral("No"),
+                           verified ? 1 : 0));
+
+        const QString status =
+            user.value(QStringLiteral("status")).toString(QStringLiteral("active"));
+        m_usersTable->setItem(
+            row, kUsersColStatus, usersTableItem(status, status.toLower()));
+
+        const qint64 joined = static_cast<qint64>(
+            user.value(QStringLiteral("createdAt")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColJoined, usersTableItem(usersTimestamp(joined), joined));
+
+        const qint64 totalActiveMs = static_cast<qint64>(
+            user.value(QStringLiteral("totalActiveMs")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColWorldActivity,
+            usersTableItem(formatDuration(totalActiveMs), totalActiveMs));
+
+        const auto recency = usersActivityRecency(
+            user.value(QStringLiteral("activityBucket")).toString());
+        m_usersTable->setItem(
+            row, kUsersColActivityRecency,
+            usersTableItem(recency.first, recency.second));
+
+        const qint64 lastEmail = static_cast<qint64>(
+            user.value(QStringLiteral("lastEmailAt")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColLastEmail,
+            usersTableItem(lastEmail > 0 ? usersTimestamp(lastEmail)
+                                         : QStringLiteral("Never"),
+                           lastEmail));
+
+        const QString delivery =
+            user.value(QStringLiteral("lastEmailStatus")).toString();
+        m_usersTable->setItem(
+            row, kUsersColEmailDelivery,
+            usersTableItem(delivery.isEmpty() ? QStringLiteral("Not sent")
+                                              : delivery,
+                           delivery.toLower()));
+
+        const QString country =
+            user.value(QStringLiteral("countryCode")).toString();
+        const QString browser = user.value(QStringLiteral("browser")).toString();
+        const QString os = user.value(QStringLiteral("os")).toString();
+        m_usersTable->setItem(
+            row, kUsersColCountry,
+            usersTableItem(country.isEmpty() ? QStringLiteral("Not shared")
+                                             : country,
+                           country));
+        m_usersTable->setItem(
+            row, kUsersColBrowser,
+            usersTableItem(browser.isEmpty() ? QStringLiteral("Not shared")
+                                             : browser,
+                           browser));
+        m_usersTable->setItem(
+            row, kUsersColOs,
+            usersTableItem(os.isEmpty() ? QStringLiteral("Not shared") : os,
+                           os));
+
+        QStringList nodes;
+        for (const QJsonValue &nodeValue :
+             user.value(QStringLiteral("nodes")).toArray()) {
+            const QString node = nodeValue.toString().trimmed();
+            if (!node.isEmpty())
+                nodes.append(node);
+        }
+        const QString nodeText =
+            nodes.isEmpty()
+                ? QStringLiteral("0")
+                : QStringLiteral("%1 - %2").arg(nodes.size()).arg(
+                      nodes.join(QStringLiteral(", ")));
+        auto *nodesItem = usersTableItem(nodeText, nodes.size());
+        if (!nodes.isEmpty())
+            nodesItem->setToolTip(nodes.join(QLatin1Char('\n')));
+        m_usersTable->setItem(row, kUsersColNodes, nodesItem);
+    }
+
+    m_usersTable->setSortingEnabled(true);
+    m_usersTable->sortItems(sortColumn, sortOrder);
+    if (m_usersStatus) {
+        m_usersStatus->setText(
+            QStringLiteral("%1 privacy-filtered %2 - same facts as World avatar chests")
+                .arg(m_usersTable->rowCount())
+                .arg(m_usersTable->rowCount() == 1 ? QStringLiteral("user")
+                                                   : QStringLiteral("users")));
+    }
+}
 
 void MainWindow::updateNetworkCounts(int relays, int nodes, int hosts)
 {
