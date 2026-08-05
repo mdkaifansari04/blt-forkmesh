@@ -13798,7 +13798,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     for (let index = 0; index < 5; index += 1) {
       const fraction = aquariumSeedFraction(seed, index);
       const mesh = new THREE.Mesh(
-        new THREE.IcosahedronGeometry(1, 2),
+        new THREE.IcosahedronGeometry(1, 0),
         material,
       );
       mesh.position.set(
@@ -13850,11 +13850,12 @@ function createOfficeMarineAquarium(THREE, animated) {
           0.16 * scale,
           0.1 * scale,
           materials.base,
+          6,
         ),
       );
       if (to >= 4) {
         const tip = new THREE.Mesh(
-          new THREE.SphereGeometry(0.145 * scale, 14, 10),
+          new THREE.SphereGeometry(0.145 * scale, 8, 6),
           materials.tip,
         );
         tip.position.copy(end);
@@ -13873,7 +13874,7 @@ function createOfficeMarineAquarium(THREE, animated) {
           (1.06 - index * 0.14) * scale,
           (0.9 - index * 0.12) * scale,
           0.1 * scale,
-          32,
+          12,
         ),
         index === 3 ? materials.tip : materials.base,
       );
@@ -13895,7 +13896,7 @@ function createOfficeMarineAquarium(THREE, animated) {
   function createBrainCoral(THREE, materials, scale) {
     const coral = new THREE.Group();
     const core = new THREE.Mesh(
-      new THREE.SphereGeometry(scale, 24, 16),
+      new THREE.SphereGeometry(scale, 12, 8),
       materials.base,
     );
     core.scale.set(1, 0.62, 0.86);
@@ -13905,8 +13906,8 @@ function createOfficeMarineAquarium(THREE, animated) {
         new THREE.TorusGeometry(
           scale * (0.38 + index * 0.085),
           scale * 0.035,
-          8,
-          28,
+          4,
+          12,
         ),
         materials.tip,
       );
@@ -13920,7 +13921,7 @@ function createOfficeMarineAquarium(THREE, animated) {
   function createSeaFan(THREE, materials, scale, seed) {
     const fan = new THREE.Group();
     const origin = new THREE.Vector3(0, 0, 0);
-    for (let index = 0; index < 11; index += 1) {
+    for (let index = 0; index < 8; index += 1) {
       const angle = -1.15 + index * 0.23;
       const length = 1.35 + aquariumSeedFraction(seed, index) * 0.6;
       const end = new THREE.Vector3(
@@ -13936,7 +13937,7 @@ function createOfficeMarineAquarium(THREE, animated) {
           0.04 * scale,
           0.018 * scale,
           index % 2 ? materials.base : materials.tip,
-          7,
+          5,
         ),
       );
       const crossEnd = end.clone().multiplyScalar(0.78);
@@ -13950,7 +13951,7 @@ function createOfficeMarineAquarium(THREE, animated) {
           0.024 * scale,
           0.012 * scale,
           materials.tip,
-          6,
+          4,
         ),
       );
     }
@@ -13959,11 +13960,11 @@ function createOfficeMarineAquarium(THREE, animated) {
 
   function createSoftCoral(THREE, materials, scale, seed) {
     const coral = new THREE.Group();
-    for (let index = 0; index < 9; index += 1) {
+    for (let index = 0; index < 7; index += 1) {
       const length =
         (0.42 + aquariumSeedFraction(seed, index) * 0.52) * scale;
       const lobe = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.12 * scale, length, 6, 12),
+        new THREE.CapsuleGeometry(0.12 * scale, length, 4, 6),
         index % 3 ? materials.base : materials.tip,
       );
       lobe.position.set(
@@ -13980,17 +13981,17 @@ function createOfficeMarineAquarium(THREE, animated) {
   function createAquariumAnemone(THREE, materials, scale, seed) {
     const anemone = new THREE.Group();
     const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.48 * scale, 20, 12),
+      new THREE.SphereGeometry(0.48 * scale, 12, 8),
       materials.base,
     );
     core.scale.y = 0.34;
     anemone.add(core);
-    for (let index = 0; index < 24; index += 1) {
-      const angle = (index / 24) * Math.PI * 2;
+    for (let index = 0; index < 16; index += 1) {
+      const angle = (index / 16) * Math.PI * 2;
       const length =
         (0.52 + aquariumSeedFraction(seed, index) * 0.46) * scale;
       const tentacle = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.038 * scale, length, 5, 8),
+        new THREE.CapsuleGeometry(0.038 * scale, length, 4, 5),
         index % 4 ? materials.base : materials.tip,
       );
       tentacle.position.set(
@@ -14012,11 +14013,11 @@ function createOfficeMarineAquarium(THREE, animated) {
 
   function createSeaGrass(THREE, materials, scale, seed) {
     const grass = new THREE.Group();
-    for (let index = 0; index < 14; index += 1) {
+    for (let index = 0; index < 10; index += 1) {
       const length =
         (0.52 + aquariumSeedFraction(seed, index) * 0.68) * scale;
       const blade = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.018 * scale, length, 4, 6),
+        new THREE.CapsuleGeometry(0.018 * scale, length, 3, 4),
         index % 3 ? materials.base : materials.tip,
       );
       blade.position.set(
@@ -14035,7 +14036,7 @@ function createOfficeMarineAquarium(THREE, animated) {
   function createAquariumStarfish(THREE, material, scale) {
     const starfish = new THREE.Group();
     const center = new THREE.Mesh(
-      new THREE.SphereGeometry(0.13 * scale, 14, 10),
+      new THREE.SphereGeometry(0.13 * scale, 8, 6),
       material,
     );
     center.scale.y = 0.34;
@@ -14054,7 +14055,7 @@ function createOfficeMarineAquarium(THREE, animated) {
           0.105 * scale,
           0.025 * scale,
           material,
-          7,
+          5,
         ),
       );
     }
@@ -14067,8 +14068,8 @@ function createOfficeMarineAquarium(THREE, animated) {
       const shell = new THREE.Mesh(
         new THREE.SphereGeometry(
           0.32 * scale,
-          18,
           10,
+          6,
           0,
           Math.PI * 2,
           0,
@@ -14284,7 +14285,7 @@ function createOfficeMarineAquarium(THREE, animated) {
   });
   for (let index = 0; index < 14; index += 1) {
     const rubble = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.16 + (index % 3) * 0.04, 1),
+      new THREE.IcosahedronGeometry(0.16 + (index % 3) * 0.04, 0),
       index % 4 === 0 ? sandMaterial : rubbleMaterial,
     );
     rubble.position.set(
