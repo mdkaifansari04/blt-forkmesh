@@ -694,11 +694,9 @@ public:
     QStringList testQuickAddModelLabels() const;
     bool testQuickAddModelVisible() const;
     bool testQuickAddModelEditable() const;
-    // adhoc #1445: rebuild the combined agent/model menu, then read back one
-    // row's label and the outcome state behind its coloured ✓ / ✗, so a test can
-    // prove a model that has just succeeded stops wearing an older run's mark.
+    // Rebuild the combined agent/model menu, then read back a row label for UI
+    // tests of ordering and the model-only visible text.
     void testRefreshQuickAddAgentModelSelector();
-    QString testQuickAddAgentModelStatus(const QString &model) const;
     QString testQuickAddAgentModelLabel(const QString &model) const;
     // issue #272: open the Worktrees tab on a branch, rebuild the panel (as an
     // "Update from main" merge does), and read back which worktree stays selected
@@ -2693,6 +2691,9 @@ private:
     // message re-refreshes it (adhoc #74).
     void applyAgentRowCells(int row, const AgentSession &session,
                             const QString &agentGitDir, const QString &agentBase);
+    // PR-linked sessions use the pull author's face in the leading identity
+    // badge; ordinary sessions use their selected model artwork.
+    QPixmap agentSessionPullAvatar(const AgentSession &session);
     // Files-changed + branch ahead/behind summary for a session's Diff cell.
     // This is deliberately a cache-only UI accessor: cold disk/git probes are
     // gathered by refreshAgentTable() on its worker and delivered later.
@@ -2706,6 +2707,9 @@ private:
                                   const AgentDiffStat &stat,
                                   const QString &signature);
     void refreshAgentStatusPill(int sessionId); // in-place detail-header pill update
+    void showAgentMetaPopup(); // open the detail metadata from hover or click
+    void toggleAgentMetaPopup(); // click handler for the detail metadata popup
+    void hideAgentMetaPopupIfPointerAway(); // preserve the popup while entering it
     void animateRunningAgentIcons();           // spins running rows' Status glyph
     // Pulse a session's night-rider light so the agents-list activity column
     // sweeps while its raw output is streaming; onScannerTick drives the frames.
@@ -7283,11 +7287,7 @@ private:
     // refresh — git log, per-PR apply checks, branch reload — once per event,
     // serially blocking the UI. The timer collapses a burst into one refresh.
     QTimer *m_openRepoRefreshTimer = nullptr;
-    QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
-    // Spinner angle in degrees, per session id (adhoc #50): each running session
-    // advances at its own tok/s-derived rate, so the rows can't share one frame
-    // counter.
-    QHash<int, double> m_agentRowSpinAngles;
+    QTimer *m_agentsSpinTimer = nullptr; // refreshes live Agents metadata
     int m_agentSpinTicks = 0; // paces the detail header's run-stat refresh
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;
