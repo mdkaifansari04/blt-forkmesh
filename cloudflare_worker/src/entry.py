@@ -2541,7 +2541,9 @@ STATUS_MIRROR_MAX = 50
 # These nodes have been intentionally retired and are being removed from the
 # fleet. Keep historical D1 rows from resurrecting them on the public status
 # page while their registrations age out.
-STATUS_RETIRED_MIRRORS = frozenset(("mirror6", "mirror7", "mirror8"))
+STATUS_RETIRED_MIRRORS = frozenset((
+    "mirror2", "mirror3", "mirror6", "mirror7", "mirror8", "mirror11",
+))
 FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
 FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
 INSTALLER_MONITOR_ID = "installer-delivery"
@@ -43857,6 +43859,14 @@ async def https_mirror_endpoint_handler(env, request):
     if not await _https_mirror_manifest_ok(registration):
         return json_response({"error": "invalid_manifest"}, status=400)
 
+    # Snapshot the accepted state set before resetting this endpoint's lease.
+    # Two independently signed pending proofs can form the quorum that admits
+    # a new fleet state. Clearing this row first reduced that quorum back to
+    # one on every renewal and left both honest nodes stuck in `pending` until
+    # the slow background sweep happened to challenge one of them.
+    accepted_before_registration = (
+        await _https_mirror_accepted_forkmesh_refs(env))
+
     now = int(Date.now())
     node_bi = await blind_index(env, registration["node"])
     region = world_request_country(request)
@@ -43904,7 +43914,12 @@ async def https_mirror_endpoint_handler(env, request):
     # proxied DNS, the registered Ed25519 key, and the canonical repository
     # state pin, so acceptance here does not grant trust by itself.
     health_active = await _https_mirror_refresh_registered_health(
-        env, registration["node"])
+        env,
+        registration["node"],
+        accepted_refs=(
+            accepted_before_registration
+            if accepted_before_registration else None),
+    )
     return json_response({
         "ok": True,
         "node": registration["node"],
@@ -44387,7 +44402,8 @@ def _https_mirror_refs_match(refs_digest, accepted_refs):
     )
 
 
-async def _https_mirror_refresh_registered_health(env, node):
+async def _https_mirror_refresh_registered_health(
+        env, node, accepted_refs=None):
     """Best-effort activation for one exact registered endpoint.
 
     The endpoint row is already account-bound and signature-verified by the
@@ -44407,7 +44423,11 @@ async def _https_mirror_refresh_registered_health(env, node):
         )
         if not row:
             return False
-        accepted = await _https_mirror_accepted_forkmesh_refs(env)
+        accepted = (
+            frozenset(accepted_refs)
+            if accepted_refs is not None
+            else await _https_mirror_accepted_forkmesh_refs(env)
+        )
         if not accepted:
             return False
         return bool(await _https_mirror_health_one(env, row, accepted))

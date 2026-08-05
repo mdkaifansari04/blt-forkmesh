@@ -743,15 +743,15 @@ int main(int argc, char *argv[])
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
     if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly)
-        check(detailedStartupSteps >= 20 &&
+        check(detailedStartupSteps >= 7 &&
               startupLog.contains(QStringLiteral(
-                  "BEGIN MainWindow: load repository catalog from settings")) &&
+                  "BEGIN MainWindow: read connection state and cached model list")) &&
               startupLog.contains(QStringLiteral(
-                  "DONE  MainWindow: load repository catalog from settings (")) &&
+                  "DONE  MainWindow: read connection state and cached model list (")) &&
               startupLog.contains(QStringLiteral(
-                  "BEGIN MainWindow: warm Code, Branches and Worktrees UI")) &&
+                  "BEGIN MainWindow: populate Hosts navigation count")) &&
               startupLog.contains(QStringLiteral(
-                  "DONE  MainWindow: warm Code, Branches and Worktrees UI (")) &&
+                  "DONE  MainWindow: populate Hosts navigation count (")) &&
               startupLog.contains(QStringLiteral(
                   "startup job scheduled: initial mirror synchronization in "
                   "1000ms")),
@@ -1038,6 +1038,8 @@ int main(int argc, char *argv[])
                   QStringLiteral("status bar shows the running app's location"));
             QPushButton *version = statusBar->findChild<QPushButton *>(
                 QStringLiteral("statusVersionButton"));
+            statusBar->layout()->activate();
+            QApplication::processEvents();
             check(version && appPath && version->geometry().left() >=
                                                appPath->geometry().right(),
                   QStringLiteral("clickable version sits to the right of the app path"));
@@ -2454,6 +2456,17 @@ int main(int argc, char *argv[])
         for (int id = 133901; id < 133978; ++id)
             window.testRemoveAgentSession(id);
     }
+
+    // The source-of-truth inbox count is one response shared by all three
+    // collaboration tabs. Each action must surface its own value before the
+    // user opens the review list.
+    window.testSetPendingInboxCounts(3, 2, 4);
+    check(window.testIssueInboxBadgeCount() == 3 &&
+              window.testPullInboxBadgeCount() == 2 &&
+              window.testDiscussionInboxButtonText().contains(
+                  QStringLiteral("4")),
+          QStringLiteral("issue, PR, and discussion inbox actions show their "
+                         "pending submission counts"));
 
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
