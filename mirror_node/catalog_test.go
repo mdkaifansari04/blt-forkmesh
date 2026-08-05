@@ -148,3 +148,15 @@ func TestCPUPercentUsesDeltaAndBoundsInput(t *testing.T) {
 		t.Fatal("accepted non-CPU stat line")
 	}
 }
+
+func TestMemoryUsageExcludesReclaimableLinuxCache(t *testing.T) {
+	oldRead := readMemInfo
+	t.Cleanup(func() { readMemInfo = oldRead })
+	readMemInfo = func() ([]byte, error) {
+		return []byte("MemTotal:       1000000 kB\nMemFree:         100000 kB\nMemAvailable:    650000 kB\nCached:          500000 kB\n"), nil
+	}
+	used, total := memoryUsage()
+	if total != 1000000*1024 || used != 350000*1024 {
+		t.Fatalf("used=%d total=%d", used, total)
+	}
+}

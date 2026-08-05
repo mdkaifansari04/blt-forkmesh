@@ -212,6 +212,28 @@ var filepathWalk = func(root string, visit func(os.FileInfo)) error {
 }
 
 func memoryUsage() (uint64, uint64) {
+	if raw, err := readMemInfo(); err == nil {
+		var total, available uint64
+		for _, line := range strings.Split(string(raw), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			value, err := strconv.ParseUint(fields[1], 10, 64)
+			if err != nil {
+				continue
+			}
+			switch fields[0] {
+			case "MemTotal:":
+				total = value * 1024
+			case "MemAvailable:":
+				available = value * 1024
+			}
+		}
+		if total > 0 && available <= total {
+			return total - available, total
+		}
+	}
 	var info syscall.Sysinfo_t
 	if syscall.Sysinfo(&info) != nil {
 		return 0, 0
@@ -220,6 +242,8 @@ func memoryUsage() (uint64, uint64) {
 	free := (info.Freeram + info.Bufferram) * uint64(info.Unit)
 	return total - free, total
 }
+
+var readMemInfo = func() ([]byte, error) { return os.ReadFile("/proc/meminfo") }
 
 func diskUsage(path string) (uint64, uint64) {
 	var info syscall.Statfs_t
