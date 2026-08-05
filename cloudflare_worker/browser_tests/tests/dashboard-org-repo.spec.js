@@ -254,29 +254,37 @@ test("organization repository alias resolves its linked mirror catalog group", a
   await page.locator('[data-dashboard-repo-tab="mirrors"]').click();
   const mirrorPanel = page.locator('[data-dashboard-repo-tab-panel="mirrors"]');
   await expect(mirrorPanel).toBeVisible();
-  await expect(page.locator("[data-mirror-summary]")).toContainText("Registered nodes");
-  await expect(page.locator("[data-mirror-summary]")).toContainText("Online now");
-  const mirrorCards = page.locator("[data-mirror-card]");
-  await expect(mirrorCards).toHaveCount(3);
-  await expect(mirrorCards.first()).toContainText("Revision");
-  await expect(mirrorCards.first()).toContainText("Connection");
-  await expect(mirrorCards.first()).toContainText("Repository contents");
-  await expect(mirrorCards.first()).toContainText("Local activity");
+  const mirrorTable = page.locator("[data-mirror-table]");
+  const mirrorRows = page.locator("[data-mirror-row]");
+  await expect(mirrorTable).toBeVisible();
+  await expect(mirrorRows).toHaveCount(3);
+  await expect(mirrorRows.first()).toContainText("mirror2");
+  await expect(mirrorTable.locator('thead th[title="Node"] [data-lucide="server"]')).toBeVisible();
+  await expect(mirrorTable.locator('thead th[title="Revision"] [data-lucide="git-commit-horizontal"]')).toBeVisible();
+  await expect(mirrorTable.locator('thead th[title="Website requests"] [data-lucide="mouse-pointer-click"]')).toBeVisible();
 
-  const desktopCardBoxes = await mirrorCards.evaluateAll((cards) =>
-    cards.map((card) => card.getBoundingClientRect().toJSON()),
+  const desktopRowBoxes = await mirrorRows.evaluateAll((rows) =>
+    rows.map((row) => row.getBoundingClientRect().toJSON()),
   );
-  expect(Math.abs(desktopCardBoxes[0].y - desktopCardBoxes[1].y)).toBeLessThanOrEqual(1);
-  expect(desktopCardBoxes[2].y).toBeGreaterThan(desktopCardBoxes[0].y);
+  expect(desktopRowBoxes[1].y).toBeGreaterThan(desktopRowBoxes[0].y);
+  expect(desktopRowBoxes[2].y).toBeGreaterThan(desktopRowBoxes[1].y);
+  expect(desktopRowBoxes.every((box) => box.height <= 28)).toBe(true);
+  expect(
+    await mirrorTable.evaluate((table) => getComputedStyle(table).borderTopWidth),
+  ).toBe("0px");
+  expect(
+    await mirrorPanel.evaluate((panel) => getComputedStyle(panel).marginTop),
+  ).toBe("0px");
   expect(
     await mirrorPanel.evaluate((panel) => panel.scrollWidth <= panel.clientWidth + 1),
   ).toBe(true);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  const mobileCardBoxes = await mirrorCards.evaluateAll((cards) =>
-    cards.map((card) => card.getBoundingClientRect().toJSON()),
+  const mobileRowBoxes = await mirrorRows.evaluateAll((rows) =>
+    rows.map((row) => row.getBoundingClientRect().toJSON()),
   );
-  expect(mobileCardBoxes[1].y).toBeGreaterThan(mobileCardBoxes[0].y);
+  expect(mobileRowBoxes[1].y).toBeGreaterThan(mobileRowBoxes[0].y);
+  expect(mobileRowBoxes.every((box) => box.height <= 28)).toBe(true);
   expect(
     await mirrorPanel.evaluate((panel) => panel.scrollWidth <= panel.clientWidth + 1),
   ).toBe(true);
