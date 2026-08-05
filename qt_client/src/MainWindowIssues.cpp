@@ -3922,6 +3922,7 @@ void MainWindow::updateIssueActionState()
         m_issueListNewButton->setEnabled(writable || issuesRepoIndex() >= 0);
     if (m_issueSyncButton)
         m_issueSyncButton->setEnabled(writable);
+    refreshPendingInboxBadges();
     if (m_issueTitleEditButton)
         m_issueTitleEditButton->setEnabled(writable && haveIssue);
     if (m_issueTitleEditor)
@@ -4373,7 +4374,11 @@ void MainWindow::quickAddIssue()
             logSystem(QStringLiteral("Cloudflare AI answers text only; %1 "
                                      "attached image(s) were not sent.")
                           .arg(m_quickAddImages.size()));
-        sendPromptToCloudflareAi(title, model);
+        // Keep an unsent prompt in the composer when authentication is missing
+        // or another Workers AI request is still in flight. The old void path
+        // cleared it even though no request had started.
+        if (!sendPromptToCloudflareAi(title, model))
+            return;
         m_issueQuickAdd->clear();
         clearQuickAddImages();
         return;
@@ -5341,6 +5346,13 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                     applyLiveClaudeModelsToCombos();
             }
         }
+    }
+    // The collapsed prompt leaves only the account avatar at the footer's
+    // lower-right corner. Hovering that launcher should restore the composer
+    // immediately, so the prompt can be reopened without a second click.
+    if (obj == m_userAvatarNavButton && event->type() == QEvent::Enter &&
+        m_promptOverlayCollapsed) {
+        setPromptOverlayCollapsed(false);
     }
     // Ctrl + mouse wheel over any registered diff viewer zooms its text size,
     // mirroring the +/- buttons (issue #254). Consume so the view doesn't scroll.
@@ -8129,27 +8141,29 @@ void MainWindow::syncIssuesInbox()
     const int idx = issuesRepoIndex();
     if (idx < 0)
         return;
-    drainIssuesInboxFor(m_repositories.at(idx), /*interactive=*/true);
+    showPendingInbox(m_repositories.at(idx), QStringLiteral("issues"));
 }
 
-void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
+void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
+                                     bool forceMirrorIntake)
 {
     // The source of truth writes into its normal working copy. A public mirror
-    // with no checkout uses a short-lived linked worktree below, commits onto
-    // the served branch, and acknowledges with ?mirror=1 — a real drain: the
-    // merged submission now lives in the repo itself and propagates across the
-    // mirror mesh, so the relay deletes the row instead of holding it pending
-    // for the source of truth.
+    // uses a short-lived linked worktree below even when it also keeps a normal
+    // browsing checkout, commits onto the served branch, and acknowledges with
+    // ?mirror=1 — a real drain: the merged submission now lives in the repo
+    // itself and propagates across the mirror mesh, so the relay deletes the
+    // row instead of holding it pending for the source of truth.
     const RepositoryRecord writable = writableRecordFor(repo);
     bool ownerIntake = false;
     {
         IssueStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
                          m_userName);
-        ownerIntake = probe.canWrite();
+        ownerIntake = !forceMirrorIntake && probe.canWrite();
     }
     const QString mirrorPath = repo.mirrorPath.trimmed();
     const bool mirrorIntake =
-        !ownerIntake && !repo.previewOnly && !repo.isPrivate &&
+        (forceMirrorIntake || !ownerIntake) && !repo.previewOnly &&
+        !repo.isPrivate &&
         repo.publishToNetwork && !mirrorPath.isEmpty() &&
         QDir(mirrorPath).exists();
     if (!ownerIntake && !mirrorIntake)
@@ -8319,6 +8333,12 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
 
 void MainWindow::pollMirrorIssueInboxes()
 {
+    // Browsing a public mirror on a desktop does not make the signed-in user a
+    // registered mirror endpoint. Sending ?mirror=1 from those sessions caused
+    // the repeated HTTP/2 "Host requires authentication" warnings. Only a
+    // provisioned headless node may compete for mirror intake leases.
+    if (!m_headless)
+        return;
     if (!m_networkAccess || !hasOwnerSigningCapability(accountOwner()))
         return;
     QSet<QString> seen;
@@ -8327,20 +8347,21 @@ void MainWindow::pollMirrorIssueInboxes()
             repo.mirrorPath.trimmed().isEmpty() ||
             !QDir(repo.mirrorPath).exists())
             continue;
-        const RepositoryRecord writable = writableRecordFor(repo);
-        IssueStore probe(writable.localPath, writable.mirrorPath,
-                         &m_profileIdentity, m_userName);
-        if (probe.canWrite())
-            continue;
         const QString key =
             repo.owner.trimmed().toLower() + QLatin1Char('/') +
             repo.name.trimmed().toLower();
         if (seen.contains(key))
             continue;
         seen.insert(key);
-        drainIssuesInboxFor(repo, /*interactive=*/false);
-        drainPullsInboxFor(repo, /*interactive=*/false);
-        drainDiscussionsInboxFor(repo, /*interactive=*/false);
+        // A browsing checkout does not make a peer the source of truth. Force
+        // the signed mirror path here so mirrors with a writable cache can
+        // compete for and permanently materialize relay leases.
+        drainIssuesInboxFor(repo, /*interactive=*/false,
+                            /*forceMirrorIntake=*/true);
+        drainPullsInboxFor(repo, /*interactive=*/false,
+                           /*forceMirrorIntake=*/true);
+        drainDiscussionsInboxFor(repo, /*interactive=*/false,
+                                 /*forceMirrorIntake=*/true);
     }
 }
 

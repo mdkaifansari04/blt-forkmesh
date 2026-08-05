@@ -321,6 +321,9 @@ constexpr qsizetype kDiffFirstPaintChars = 12'000;
 // Chars of HTML per streamed batch. Each batch is a separate GUI-thread layout,
 // so this trades how fast the rest lands against how long any one turn blocks.
 constexpr qsizetype kDiffStreamBatchChars = 12'000;
+constexpr qsizetype kDiffMaxSourceChars = 2 * 1024 * 1024;
+constexpr qsizetype kDiffMaxFileBlockChars = 180 * 1024;
+constexpr qsizetype kDiffMaxDocumentChars = 1024 * 1024;
 
 // QTextDocument is not virtualized: inserting another row can relayout the
 // entire table already above it. Multi-megabyte generated HTML therefore gets
@@ -329,8 +332,21 @@ constexpr qsizetype kDiffStreamBatchChars = 12'000;
 // for every file, and a clear placeholder points readers to the full patch.
 QString responsiveDiffBlock(const QString &block, bool headerOnly)
 {
-    Q_UNUSED(headerOnly);
-    return block;
+    if (!headerOnly && block.size() <= kDiffMaxFileBlockChars)
+        return block;
+    // Keep the anchor and file header, but never feed one generated file's
+    // multi-megabyte table into QTextDocument. It is not virtualized: even a
+    // 12k streamed append relayouts everything above it, and diagnostics caught
+    // single appends between 176M and 189M characters taking two minutes.
+    int body = block.indexOf(QStringLiteral("<table"));
+    if (body < 0)
+        body = block.indexOf(QStringLiteral("<pre"));
+    QString prefix = body > 0 ? block.left(body) : QString();
+    return prefix +
+           QStringLiteral(
+               "<div class='diffomitted'>Diff content omitted from this preview "
+               "to keep the app responsive. The complete patch remains attached "
+               "to the open pull request.</div></div>");
 }
 
 // Split rendered diff HTML into its self-contained per-file blocks. Each file's
@@ -471,6 +487,20 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
     // progressive/bounded handling for exactly that case.
     QStringList blocks = splitDiffFileBlocks(html);
     if (!(blocks.size() == 1 && blocks.first() == html)) {
+        qsizetype retained = 0;
+        bool documentCapped = false;
+        for (int i = 0; i < blocks.size(); ++i) {
+            if (retained + blocks.at(i).size() > kDiffMaxDocumentChars) {
+                blocks[i] = responsiveDiffBlock(blocks.at(i), true);
+                documentCapped = true;
+            }
+            retained += blocks.at(i).size();
+            if (retained > kDiffMaxDocumentChars + kDiffMaxFileBlockChars) {
+                blocks.erase(blocks.begin() + i + 1, blocks.end());
+                break;
+            }
+        }
+        Q_UNUSED(documentCapped);
         first.clear();
         // Same no-overshoot rule as the streamed batches: the first paint used
         // to take one block too many and lay out up to ~130k chars in one turn.
@@ -1692,10 +1722,29 @@ QString renderDiffHtmlSplit(bool split, const QString &patch,
                             const QHash<QString, QString> &lineNotes,
                             const QSet<QString> &viewedFiles)
 {
-    return split ? renderSplitDiffHtml(patch, files, dir, base, head, anchorFile,
-                                       lineNotes, viewedFiles)
-                 : renderUnifiedDiffHtml(patch, files, dir, base, head, anchorFile,
-                                         lineNotes, viewedFiles);
+    QString boundedPatch = patch;
+    const bool sourceCapped = patch.size() > kDiffMaxSourceChars;
+    if (sourceCapped) {
+        qsizetype end = patch.lastIndexOf(QStringLiteral("\ndiff --git "),
+                                          kDiffMaxSourceChars);
+        if (end < kDiffMaxSourceChars / 2)
+            end = patch.lastIndexOf(QLatin1Char('\n'), kDiffMaxSourceChars);
+        if (end < 0)
+            end = kDiffMaxSourceChars;
+        boundedPatch = patch.left(end);
+    }
+    QString html =
+        split ? renderSplitDiffHtml(boundedPatch, files, dir, base, head,
+                                    anchorFile, lineNotes, viewedFiles)
+              : renderUnifiedDiffHtml(boundedPatch, files, dir, base, head,
+                                      anchorFile, lineNotes, viewedFiles);
+    if (sourceCapped) {
+        html += QStringLiteral(
+            "<div class='diffomitted'>Additional diff content omitted from this "
+            "preview to keep the app responsive. The complete patch remains "
+            "attached to the open pull request.</div>");
+    }
+    return html;
 }
 
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,

@@ -3967,7 +3967,11 @@
         const loadedLogo = await loadNativeRepositoryLogo(
           nativeRepositoryLogoEndpoint(repo),
         );
-        const logoUrl = String(loadedLogo?.dataUrl || "");
+        // The relay resolves this in the same precedence order users expect:
+        // an owner-selected logo first, then the project's root logo.png, then
+        // generated artwork. Do not bypass it with the generated-logo endpoint.
+        const logoUrl = nativeRepositoryLogoDataUrl(body.logoUrl)
+          || String(loadedLogo?.dataUrl || "");
         const fallbackUrl = String(loadedLogo?.fallbackDataUrl || "");
         if (logoUrl) {
           logo.decoding = "async";

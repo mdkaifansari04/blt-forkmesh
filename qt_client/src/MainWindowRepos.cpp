@@ -1067,6 +1067,11 @@ QStringList MainWindow::mentionCandidateNames() const
 
 void MainWindow::refreshRepositoryList()
 {
+    // A service-managed mirror companion has no visible repository UI.  In
+    // particular, directory and status callbacks must not reconstruct the
+    // repo switcher and implicitly select/open a repository every minute.
+    if (qEnvironmentVariableIsSet("FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     // Re-entrancy guard (adhoc #247): the periodic m_homeStatsTimer fires this once
     // a minute, which can land inside another heavy refresh's GitKeepAlive pump.
     // Running the per-repo git reads (mirror head/commit/size) plus
@@ -3861,6 +3866,12 @@ void MainWindow::scheduleCatalogPublish(const QString &key,
 
 void MainWindow::publishRepository(int index, bool showDialogOnError)
 {
+    // A service-managed mirror publishes signed catalog state from the small Go
+    // daemon. Keep this Qt process only for the relay/inbox bridge; duplicate
+    // publishers race on updatedAt and make node state flap.
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     if (index < 0 || index >= m_repositories.size())
         return;
     if (m_repositories.at(index).previewOnly)
@@ -5154,6 +5165,11 @@ bool isTransientSyncError(const QString &errors)
 
 void MainWindow::autoSyncMirrorsIfRelayHealthy()
 {
+    // Stable-ref fetching, gateway repinning, and catalog publication move out
+    // of the GUI event loop when the dedicated mirror daemon is installed.
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     // Periodic safety-net path only — the explicit "sync now" action
     // (headlessSyncNow) calls autoSyncMirrors() directly and stays ungated.
     // The git fetch/clone subprocesses below never pass through
@@ -5174,6 +5190,9 @@ void MainWindow::autoSyncMirrorsIfRelayHealthy()
 
 void MainWindow::autoSyncMirrors()
 {
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     // Retry the flagship-repo bootstrap here too, not just the one-shot timer
     // shortly after launch: if the catalog wasn't reachable yet at that single
     // attempt (network still coming up right after a fresh install, relay
@@ -7043,6 +7062,9 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
 
 void MainWindow::syncRepository(int index, bool quiet)
 {
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     if (index < 0 || index >= m_repositories.size() ||
         m_syncingRepos.contains(index))
         return;
@@ -7225,6 +7247,9 @@ void MainWindow::syncRepository(int index, bool quiet)
 // clone/fetch completion must reach this helper (adhoc #116).
 bool MainWindow::completePendingRepoAutoOpen(int index)
 {
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return false;
     if (index < 0 || index >= m_repositories.size() ||
         m_pendingAutoOpenRepoKey.isEmpty())
         return false;

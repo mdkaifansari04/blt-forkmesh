@@ -161,6 +161,8 @@ void MainWindow::restartMirrorSyncTimer()
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
     logStartup(QStringLiteral("MainWindow ctor begin"));
+    const bool externalMirrorBridge =
+        qEnvironmentVariableIsSet("FORKMESH_EXTERNAL_MIRROR_NODE");
     // traceStep() scopes one unit of construction work in the startup trace: it
     // opens a StartupTraceStep, runs the work, and closes it on the way out. It
     // is deliberately NOT named startupStep — the coarse
@@ -455,32 +457,38 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // click and the first Code/Issues switch below a frame-scale budget instead
     // of freezing an already-visible window for ~230ms each. Less common repo
     // tabs remain lazy.
-    startupStep(QStringLiteral("Warming the Code and Issues surfaces"));
-    ensureRepoDetailSectionBuilt();
-    ensureRepoDetailTabBuilt(0); // Code (also owns Branches/Worktrees panels)
-    ensureRepoDetailTabBuilt(2); // Issues
-    logStartup(QStringLiteral("core repository surfaces warmed"));
+    if (!externalMirrorBridge) {
+        startupStep(QStringLiteral("Warming the Code and Issues surfaces"));
+        ensureRepoDetailSectionBuilt();
+        ensureRepoDetailTabBuilt(0); // Code (also owns Branches/Worktrees panels)
+        ensureRepoDetailTabBuilt(2); // Issues
+        logStartup(QStringLiteral("core repository surfaces warmed"));
+    }
     startupStep(QStringLiteral("Loading repositories"));
-    initializeWorldSpeechBridge();
+    if (!externalMirrorBridge)
+        initializeWorldSpeechBridge();
     loadRepositories();
-    refreshRepositoryList();
+    if (!externalMirrorBridge)
+        refreshRepositoryList();
     logStartup(QStringLiteral("repositories loaded"));
     startupDetail(
         QStringLiteral("%1 repositor%2 on this node")
             .arg(m_repositories.size())
             .arg(m_repositories.size() == 1 ? QStringLiteral("y")
                                             : QStringLiteral("ies")));
-    startupStep(QStringLiteral("Restoring actions and agent sessions"));
-    initActions();
-    initAgents();
-    logStartup(QStringLiteral("actions + agents initialized"));
+    if (!externalMirrorBridge) {
+        startupStep(QStringLiteral("Restoring actions and agent sessions"));
+        initActions();
+        initAgents();
+        logStartup(QStringLiteral("actions + agents initialized"));
+    }
     if (!m_agentQueue.isEmpty())
         startupDetail(QStringLiteral("%1 agent session(s) queued to resume")
                           .arg(m_agentQueue.size()));
     startupStep(QStringLiteral("Choosing the repository to reopen"));
     const QString lastRepository =
         QSettings().value(kLastRepositorySetting).toString();
-    if (!lastRepository.isEmpty()) {
+    if (!externalMirrorBridge && !lastRepository.isEmpty()) {
         const int slash = lastRepository.indexOf('/');
         if (slash > 0) {
             const int index =
@@ -501,11 +509,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                       : QStringLiteral("Nothing to reopen"));
     startupStep(QStringLiteral("Selecting the active relay"));
     loadActiveServerIntoEdits();
-    updateBreadcrumb();
+    if (!externalMirrorBridge)
+        updateBreadcrumb();
     logStartup(QStringLiteral("active server + breadcrumb"));
     startupStep(QStringLiteral("Fetching relay favicons"));
-    for (int i = 0; i < m_servers.size(); ++i)
-        fetchFavicon(i);
+    if (!externalMirrorBridge)
+        for (int i = 0; i < m_servers.size(); ++i)
+            fetchFavicon(i);
     logStartup(QStringLiteral("favicons fetched"));
 
     startupStep(QStringLiteral("Arming background timers"));
@@ -519,7 +529,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // stays current (this also persists accumulated uptime via updateHomeStats).
     connect(m_homeStatsTimer, &QTimer::timeout, this,
             &MainWindow::refreshRepositoryList);
-    m_homeStatsTimer->start(60000);
+    if (!externalMirrorBridge)
+        m_homeStatsTimer->start(60000);
     logStartup(QStringLiteral("  timer armed: home/repository stats every 60s"));
 
     // The activity rail's Git badge has to be right whichever repo tab is on
@@ -534,7 +545,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         if (m_railGitButton && m_railGitButton->isVisible())
             refreshRepoChangeBadge();
     });
-    m_repoChangeBadgeTimer->start(10000);
+    if (!externalMirrorBridge)
+        m_repoChangeBadgeTimer->start(10000);
     logStartup(QStringLiteral("  timer armed: Git rail status every 10s"));
 
     // Footer diagnostics + UI-stall watchdog. Deferred one event-loop turn so the
@@ -802,9 +814,13 @@ void MainWindow::runDeferredStartup()
     if (QWindow *handle = windowHandle())
         handle->removeEventFilter(this);
 
+    const bool externalMirrorBridge =
+        m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE");
     bool headlessBootstrapQueued = false;
     auto runHeadlessBootstrap = [this, &headlessBootstrapQueued] {
-        if (!m_headless)
+        if (!m_headless || qEnvironmentVariableIsSet(
+                               "FORKMESH_EXTERNAL_MIRROR_NODE"))
             return;
         headlessBootstrapQueued = true;
         forkmesh::StartupTraceStep step(
@@ -848,8 +864,10 @@ void MainWindow::runDeferredStartup()
                 {
                     forkmesh::StartupTraceStep step(
                         QStringLiteral("deferred startup: start mesh session"));
-                    startupStep(QStringLiteral("Connecting to the mesh"));
-                    startSession();
+                    if (!externalMirrorBridge) {
+                        startupStep(QStringLiteral("Connecting to the mesh"));
+                        startSession();
+                    }
                 }
                 runHeadlessBootstrap();
             } else {
@@ -877,7 +895,7 @@ void MainWindow::runDeferredStartup()
                             "deferred startup: headless silent authentication"));
                         authenticateSilently(name);
                     }
-                    {
+                    if (!externalMirrorBridge) {
                         forkmesh::StartupTraceStep step(QStringLiteral(
                             "deferred startup: start headless mesh session"));
                         startSession();
@@ -907,7 +925,7 @@ void MainWindow::runDeferredStartup()
 
     // Restore the last open repository (for a desktop this comes first,
     // matching the old scheduling order).
-    if (m_pendingRestoreRepoIndex >= 0 &&
+    if (!externalMirrorBridge && m_pendingRestoreRepoIndex >= 0 &&
         m_pendingRestoreRepoIndex < m_repositories.size()) {
         const int index = m_pendingRestoreRepoIndex;
         logStartup(QStringLiteral("restoring saved repository index %1")
@@ -962,7 +980,7 @@ void MainWindow::runDeferredStartup()
         logStartup(QStringLiteral(
             "  scheduling background issue metadata reload after restore"));
         reloadIssuesInBackground();
-    } else if (m_repoDetailIndex < 0) {
+    } else if (!externalMirrorBridge && m_repoDetailIndex < 0) {
         // No saved repository to restore: land on the selected node's first repo
         // (if any) so a fresh session opens on real content, not an empty panel.
         int firstRepo = -1;
@@ -989,7 +1007,7 @@ void MainWindow::runDeferredStartup()
     // the transcripts that reference them keep their thumbnails past the next
     // reboot (adhoc #66). Deferred: it touches the disk and nothing on screen
     // needs it before the first frame.
-    {
+    if (!externalMirrorBridge) {
         forkmesh::StartupTraceStep step(QStringLiteral(
             "deferred startup: migrate legacy prompt image attachments"));
         startupStep(QStringLiteral("Checking prompt attachments"));
@@ -1002,7 +1020,7 @@ void MainWindow::runDeferredStartup()
     // with its assign-time jump to the Agents tab — a full cold openRepoDetail()
     // (~2s of git reads) before the window could paint, which the restore above
     // then redid. Quiet mode keeps the resumed runs from stealing the view.
-    if (!m_agentQueue.isEmpty()) {
+    if (!externalMirrorBridge && !m_agentQueue.isEmpty()) {
         forkmesh::StartupTraceStep step(
             QStringLiteral("deferred startup: resume %1 queued agent session(s)")
                 .arg(m_agentQueue.size()));
@@ -1028,7 +1046,7 @@ void MainWindow::runDeferredStartup()
     // has no equivalent oauth/usage-style endpoint; its chart already
     // recomputes from the locally tracked window on every launch via
     // buildBreadcrumb's refreshCodexUsageRemaining() call).
-    {
+    if (!externalMirrorBridge) {
         forkmesh::StartupTraceStep step(
             QStringLiteral("deferred startup: refresh Claude Code usage"));
         startupStep(QStringLiteral("Refreshing Claude Code usage"));

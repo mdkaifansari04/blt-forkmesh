@@ -5233,6 +5233,21 @@ void MainWindow::rebuildGlobalSearchResults()
         ++total;
         return true;
     };
+    auto addResultWithIcon = [&](const QIcon &icon, const QString &text, int kind,
+                                const QString &s1, const QString &s2, int num) -> bool {
+        if (total >= kMaxTotal)
+            return false;
+        auto *it = new QListWidgetItem(text);
+        if (!icon.isNull())
+            it->setIcon(icon);
+        it->setData(kGsKindRole, kind);
+        it->setData(kGsStr1Role, s1);
+        it->setData(kGsStr2Role, s2);
+        it->setData(kGsNumRole, num);
+        m_globalSearchPopup->addItem(it);
+        ++total;
+        return true;
+    };
 
     // Always-first row: run the full, streaming search over files, commit
     // messages and the diff history (this is what Enter triggers).
@@ -5379,8 +5394,9 @@ void MainWindow::rebuildGlobalSearchResults()
             if (hit.count > 0)
                 label += QString::fromUtf8("   \xC2\xB7  %1 in transcript")
                              .arg(hit.count);
-            if (!addResult("dependabot", agentStatusIconColor(session), label,
-                           GsAgent, QString(), QString(), session.id))
+            if (!addResultWithIcon(agentStatusOcticon(session, 15), label,
+                                  GsAgent, QString(), QString(),
+                                  session.id))
                 break;
         }
 
@@ -8567,6 +8583,8 @@ QString MainWindow::repoHeadBranch() const
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return QString();
+    if (const QString branch = headBranchFromFile(dir); !branch.isEmpty())
+        return branch;
     QByteArray out;
     if (!runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &out, nullptr))
         return QString();

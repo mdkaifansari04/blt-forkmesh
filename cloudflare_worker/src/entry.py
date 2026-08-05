@@ -331,7 +331,7 @@ FORKBOT_AUTHOR = "forkbot"
 FORKBOT_DEFAULT_OWNER = "forkmesh"
 FORKBOT_DEFAULT_REPO = "forkmesh"
 FORKBOT_MAX_COMMAND = 4000
-FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 USERNAME_MODERATION_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
 # Cloudflare Workers AI text models a client may pick for its own ForkBot
 # prompt (GET /api/forkbot/models lists these; POST /api/forkbot/chat honors
@@ -344,18 +344,18 @@ FORKBOT_AI_MODEL_CHOICES = (
     ("@cf/meta/llama-3.3-70b-instruct-fp8-fast",
      "Llama 3.3 70B (fast)",
      "Best intent detection and JSON mode. The deployed default."),
-    ("@cf/meta/llama-3.1-8b-instruct",
-     "Llama 3.1 8B",
-     "Small and cheap; solid at plainly phrased requests."),
-    ("@cf/meta/llama-3.1-8b-instruct-fast",
-     "Llama 3.1 8B (fast)",
-     "Lowest latency; least reliable at subtle phrasing."),
     ("@cf/meta/llama-4-scout-17b-16e-instruct",
      "Llama 4 Scout 17B",
      "Strong reasoning with a long context window."),
-    ("@cf/google/gemma-3-12b-it",
-     "Gemma 3 12B",
-     "Concise summaries; terser issue titles."),
+    ("@cf/google/gemma-4-26b-a4b-it",
+     "Gemma 4 26B",
+     "Efficient reasoning, coding, and a long context window."),
+    ("@cf/zai-org/glm-4.7-flash",
+     "GLM 4.7 Flash",
+     "Fast multilingual instruction following and coding."),
+    ("@cf/meta/llama-3.1-8b-instruct-fast",
+     "Llama 3.1 8B (fast)",
+     "Low-latency answers for straightforward prompts."),
 )
 # POST /api/ai/ask: send one prompt to a picked Workers AI model and get the
 # answer back. Used by the desktop composer's "Cloudflare AI" provider, where
@@ -2439,6 +2439,7 @@ async def network_overview(env):
 #     "realtime" without adding one actionable Worker-error row per reconnect.
 STATUS_SYSTEMS = [
     ("website", "Website"),
+    ("status_page", "Status page API"),
     ("api", "API"),
     ("errors", "Worker errors"),
     ("database", "Database"),
@@ -2459,6 +2460,11 @@ STATUS_SYSTEM_CHECKS = {
         "real index document returns HTTP 200 with the ForkMesh homepage "
         "marker. Worker page-route errors are also included, so either a "
         "failed request or a server-side rendering failure turns this row red."),
+    "status_page": (
+        "Runs the same cached status-history response used by /api/status "
+        "once a minute. Passes only when that response returns HTTP 200, so "
+        "a broken status page is visible and paged even if the other service "
+        "checks remain green."),
     "api": (
         "Scans the last minute of the worker error log for unhandled "
         "exceptions or 5xx responses on /api/* routes. 502/503/504 on "
@@ -2535,7 +2541,9 @@ STATUS_MIRROR_MAX = 50
 # These nodes have been intentionally retired and are being removed from the
 # fleet. Keep historical D1 rows from resurrecting them on the public status
 # page while their registrations age out.
-STATUS_RETIRED_MIRRORS = frozenset(("mirror6", "mirror7", "mirror8"))
+STATUS_RETIRED_MIRRORS = frozenset((
+    "mirror2", "mirror3", "mirror6", "mirror7", "mirror8", "mirror11",
+))
 FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
 FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
 INSTALLER_MONITOR_ID = "installer-delivery"
@@ -2566,6 +2574,11 @@ STATUS_MONITOR_GUIDANCE = {
         "Cloudflare Worker API logs, especially the path named in the reason",
         "Replay the failing API request, inspect its D1 or upstream call, and "
         "fix or roll back the responsible handler."),
+    "status_page": (
+        "Cloudflare Worker logs and the /api/status cache and history query",
+        "Open /api/status without a cached browser response, inspect the "
+        "first Worker exception, and fix or roll back the failing status "
+        "history or cache path."),
     "errors": (
         "the first qualifying entry in Cloudflare Worker and ForkMesh error "
         "logs, including its route and status",
@@ -3103,7 +3116,10 @@ def _status_monitor_alert_setting(settings, system_id, channel):
         return bool(settings.get("statusEmails", False))
     if channel == "pings":
         return bool(settings.get("statusPings", True))
-    return system_id == "website" if channel == "continual" else False
+    # The public status page is the operator's visibility into every other
+    # monitor. Its outage must keep paging by default even when all of those
+    # individual checks remain green.
+    return system_id in ("website", "status_page") if channel == "continual" else False
 
 
 async def _repo_alert_settings_bi(env, owner, repo):
@@ -4163,6 +4179,22 @@ async def _homepage_status_probe(env):
     return True, ""
 
 
+async def _status_page_api_probe(env):
+    """Exercise the same cached response path served by ``/api/status``.
+
+    The status document is the operator's view of every other monitor, so it
+    needs an independent health row rather than relying on the generic API
+    error bucket.  Calling the cached handler directly avoids an unreliable
+    scheduled-worker hairpin through the public hostname while still covering
+    the cache lookup and the status-history work that the route performs.
+    """
+    response = await cached_status_history(env, "full")
+    status = int(getattr(response, "status", 0) or 0)
+    if status != 200:
+        return False, "Status API returned HTTP %d" % status
+    return True, ""
+
+
 async def record_status_sample(env):
     # Called once a minute by the platform Cron Trigger (scheduled()) and by
     # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
@@ -4189,6 +4221,15 @@ async def record_status_sample(env):
     except Exception as exc:
         ok["website"] = False
         reason["website"] = "Homepage probe failed: " + str(exc)[:160]
+
+    try:
+        status_page_ok, status_page_reason = await _status_page_api_probe(env)
+        ok["status_page"] = status_page_ok
+        if not status_page_ok:
+            reason["status_page"] = status_page_reason
+    except Exception as exc:
+        ok["status_page"] = False
+        reason["status_page"] = "Status API probe failed: " + str(exc)[:160]
 
     try:
         await d1_first(env, "SELECT 1 AS ok")
@@ -15691,6 +15732,20 @@ async def repo_mirrors_handler(env, request, owner, repo):
         )
     }
     reachable_nodes = set(reachable_seen)
+    routing_verified_nodes = {
+        node_name
+        for node_name, row in endpoint_by_node.items()
+        if (
+            int(row.get("checked_at") or 0)
+            >= now - HTTPS_MIRROR_STATUS_FRESH_MS
+            and int(row.get("forkmesh_verified_at") or 0)
+            >= now - HTTPS_MIRROR_STATUS_FRESH_MS
+            and bool(int(row.get("healthy") or 0))
+            and bool(int(row.get("forkmesh_active") or 0))
+            and str(row.get("integrity") or "") == "ok"
+            and not bool(int(row.get("abuse_blocked") or 0))
+        )
+    }
     presence = {}
     for row in catalog_rows:
         record = row.get("data") or {}
@@ -15743,6 +15798,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         history,
         linked_canonical=bool(linked_row),
         reachable_nodes=reachable_nodes,
+        routing_verified_nodes=routing_verified_nodes,
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
@@ -34251,18 +34307,6 @@ def _forkbot_resolve_ai_model(env, requested=""):
     return _forkbot_ai_default_model(env)
 
 
-def _forkbot_is_allowed_ai_model(env, wanted=""):
-    """Return True when the caller-supplied model pick is an explicit allowlist
-    pick for this relay."""
-    wanted = clean_string(wanted or "", 120).strip()
-    if not wanted:
-        return False
-    for option in _forkbot_ai_model_options(env):
-        if option["id"] == wanted:
-            return True
-    return False
-
-
 def _forkbot_ai_model_not_found_error(error):
     text = _safe_error_text(error).lower()
     if not text:
@@ -34536,6 +34580,37 @@ async def _forkbot_run_ai(
             # JSON mode returns the parsed object under "response".
             if isinstance(value, dict):
                 return value
+        # Current Workers AI chat models such as GLM 4.7 Flash and Gemma 4
+        # return the OpenAI Chat Completions shape instead of the older
+        # top-level {"response": "..."} shape. Accept the first usable choice
+        # and both content encodings Cloudflare documents: a string or an array
+        # of typed text parts.
+        choices = result.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                value = choice.get("text")
+                if isinstance(value, str) and value.strip():
+                    return value
+                message = choice.get("message")
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+                if isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if isinstance(part, str):
+                            parts.append(part)
+                        elif isinstance(part, dict):
+                            text = part.get("text")
+                            if isinstance(text, str):
+                                parts.append(text)
+                    joined = "".join(parts)
+                    if joined.strip():
+                        return joined
         # Some bindings return the parsed object directly rather than a text
         # field; hand the dict back so the caller can read fields off it.
         return result
@@ -35553,6 +35628,12 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
     The caller signs with the account-bound key registered for its endpoint.
     Repository membership comes from the same owner-pinned public mirror group
     used by direct reads, so merely being an online ForkMesh node is not enough.
+    Intake deliberately requires fresh endpoint health and integrity rather
+    than the clone router's exact full-ref generation: active agent branches can
+    move between otherwise healthy peers, and collaboration rows must land on
+    any available group mirror instead of waiting for every auxiliary ref to be
+    byte-identical. The mirror's signed post-merge attestation pins the state it
+    actually materialized before the row is acknowledged.
     """
     if await _repo_is_private(env, owner, repo):
         return "", ""
@@ -35573,24 +35654,39 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
             safe_segment(original.group(1)) if original else owner)
         public_repo = (
             safe_segment(original.group(2)) if original else repo)
+        flagship_owner = (
+            await _org_repo_node(env, "forkmesh", "forkmesh")
+            or "forkmesh"
+        )
+        flagship_intake = bool(
+            public_repo == "forkmesh"
+            and public_owner in ("forkmesh", flagship_owner)
+        )
         context = await _https_mirror_public_context(
             env, public_owner, public_repo)
     except Exception:
         context = None
-    if not context:
+        flagship_intake = False
+    if not context and not flagship_intake:
         return "", ""
+    # Membership comes from the signed catalog's mirror group, while freshness
+    # and state integrity come from the exact endpoint row below. Requiring the
+    # catalog record itself to carry the same current pin as the endpoint made
+    # intake race every successful sync: the fresh endpoint challenge passed,
+    # but its asynchronous catalog publication lagged by one generation and
+    # the relay returned 401. A node outside the group is still rejected, and a
+        # group member cannot drain without a fresh identity-bound health proof
+        # and an integrity-clean repository endpoint.
     allowed_nodes = {
         str(value or "").strip().lower()
-        for value in context.get("nodes", set())
+        for value in (context or {}).get("groupNodes", set())
     }
     now = int(Date.now())
     rows = await d1_all(
         env,
         """SELECT node_name,public_key FROM mirror_https_endpoints
-            WHERE checked_at>=? AND forkmesh_verified_at>=?
-              AND healthy=1 AND forkmesh_active=1
+            WHERE checked_at>=? AND healthy=1
               AND integrity='ok' AND abuse_blocked=0""",
-        now - HTTPS_MIRROR_STATUS_FRESH_MS,
         now - HTTPS_MIRROR_STATUS_FRESH_MS,
     )
     canonical = (
@@ -35601,7 +35697,7 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
             row.get("node_name", ""), MAX_NODE_NAME).strip().lower()
         public_key = clean_string(row.get("public_key", ""), 160).strip()
         if (
-            node not in allowed_nodes
+            (not flagship_intake and node not in allowed_nodes)
             or not valid_node_pubkey(public_key)
             or public_key not in await _claimed_node_signing_pubkeys(env, node)
         ):
@@ -43763,6 +43859,14 @@ async def https_mirror_endpoint_handler(env, request):
     if not await _https_mirror_manifest_ok(registration):
         return json_response({"error": "invalid_manifest"}, status=400)
 
+    # Snapshot the accepted state set before resetting this endpoint's lease.
+    # Two independently signed pending proofs can form the quorum that admits
+    # a new fleet state. Clearing this row first reduced that quorum back to
+    # one on every renewal and left both honest nodes stuck in `pending` until
+    # the slow background sweep happened to challenge one of them.
+    accepted_before_registration = (
+        await _https_mirror_accepted_forkmesh_refs(env))
+
     now = int(Date.now())
     node_bi = await blind_index(env, registration["node"])
     region = world_request_country(request)
@@ -43810,7 +43914,12 @@ async def https_mirror_endpoint_handler(env, request):
     # proxied DNS, the registered Ed25519 key, and the canonical repository
     # state pin, so acceptance here does not grant trust by itself.
     health_active = await _https_mirror_refresh_registered_health(
-        env, registration["node"])
+        env,
+        registration["node"],
+        accepted_refs=(
+            accepted_before_registration
+            if accepted_before_registration else None),
+    )
     return json_response({
         "ok": True,
         "node": registration["node"],
@@ -44145,6 +44254,71 @@ async def _https_mirror_expected_forkmesh_refs(env):
         return ""
 
 
+async def _https_mirror_flagship_quorum(env, allowed_nodes=None, now=None):
+    """Return fresh repository states independently attested by two mirrors.
+
+    The organization alias still has a durable catalog row for permissions and
+    repository identity, but that row must not make its hosting machine the
+    fleet's availability authority.  A new flagship state therefore joins the
+    accepted set once two distinct, healthy group endpoints return matching
+    node-signed repository proofs.  One compromised or divergent mirror cannot
+    repin the route by itself, while removing the former catalog host leaves
+    the remaining agreeing mirrors able to advance normally.
+    """
+    try:
+        now = int(now if now is not None else Date.now())
+        allowed = (
+            {
+                clean_string(node, MAX_NODE_NAME).strip().lower()
+                for node in allowed_nodes
+                if valid_node_name(
+                    clean_string(node, MAX_NODE_NAME).strip().lower())
+            }
+            if allowed_nodes is not None else None
+        )
+        rows = await d1_all(
+            env,
+            """SELECT node_name,checked_at,forkmesh_refs_sha256,
+                      forkmesh_operations_json
+                 FROM mirror_https_endpoints
+                WHERE healthy=1 AND integrity='ok' AND abuse_blocked=0
+                  AND checked_at>=?""",
+            now - https_routing.ENDPOINT_STALE_MS,
+        )
+        by_digest = {}
+        node_digest = {}
+        for row in rows or []:
+            node = clean_string(
+                row.get("node_name", ""), MAX_NODE_NAME).strip().lower()
+            digest = clean_string(
+                row.get("forkmesh_refs_sha256", ""), 64).strip().lower()
+            try:
+                operations = set(json.loads(
+                    str(row.get("forkmesh_operations_json") or "[]")))
+            except Exception:
+                operations = set()
+            if (
+                not valid_node_name(node)
+                or (allowed is not None and node not in allowed)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or not HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS.issubset(
+                    operations)
+            ):
+                continue
+            by_digest.setdefault(digest, set()).add(node)
+            node_digest[node] = digest
+        pins = frozenset(
+            digest for digest, nodes in by_digest.items() if len(nodes) >= 2)
+        return {
+            "pins": pins,
+            "nodes": frozenset(
+                node for digest in pins for node in by_digest[digest]),
+            "nodeDigests": node_digest,
+        }
+    except Exception:
+        return {"pins": frozenset(), "nodes": frozenset(), "nodeDigests": {}}
+
+
 async def _https_mirror_accepted_forkmesh_refs(env):
     """Current and recent source-attested states accepted during convergence.
 
@@ -44182,6 +44356,30 @@ async def _https_mirror_accepted_forkmesh_refs(env):
                 item.get("state_hash", ""), 64).strip().lower()
             if re.fullmatch(r"[0-9a-f]{64}", digest):
                 pins.add(digest)
+        # Mirror2 historically supplied the organization alias's catalog row.
+        # Keep its signed current/history states as a safe bootstrap, then let
+        # the independently signed mirror group advance without depending on
+        # that machine remaining online.
+        try:
+            catalog_rows = await _decrypted_public_catalog(
+                env, int(Date.now()))
+            target = record
+            group_nodes = set()
+            for catalog_row in catalog_rows or []:
+                candidate = (catalog_row or {}).get("data") or {}
+                if not repo_mirror_same_group(target, candidate):
+                    continue
+                node = clean_string(
+                    candidate.get("machineName")
+                    or candidate.get("owner", ""),
+                    MAX_NODE_NAME,
+                ).strip().lower()
+                if valid_node_name(node):
+                    group_nodes.add(node)
+            quorum = await _https_mirror_flagship_quorum(env, group_nodes)
+            pins.update(quorum.get("pins", ()))
+        except Exception:
+            pass
         return frozenset(pins)
     except Exception:
         return frozenset()
@@ -44204,7 +44402,8 @@ def _https_mirror_refs_match(refs_digest, accepted_refs):
     )
 
 
-async def _https_mirror_refresh_registered_health(env, node):
+async def _https_mirror_refresh_registered_health(
+        env, node, accepted_refs=None):
     """Best-effort activation for one exact registered endpoint.
 
     The endpoint row is already account-bound and signature-verified by the
@@ -44224,7 +44423,11 @@ async def _https_mirror_refresh_registered_health(env, node):
         )
         if not row:
             return False
-        accepted = await _https_mirror_accepted_forkmesh_refs(env)
+        accepted = (
+            frozenset(accepted_refs)
+            if accepted_refs is not None
+            else await _https_mirror_accepted_forkmesh_refs(env)
+        )
         if not accepted:
             return False
         return bool(await _https_mirror_health_one(env, row, accepted))
@@ -44819,11 +45022,21 @@ async def _https_mirror_public_context(env, owner, repo):
             owner_l,
             repo_l,
         )
-        if (
-            linked_target
-            and str(target.get("source") or "").strip().lower()
-            == "remote-clone"
-        ):
+        catalog_group_nodes = set()
+        for row in members:
+            record = row.get("data") or {}
+            node = clean_string(
+                record.get("machineName") or record.get("owner", ""),
+                MAX_NODE_NAME,
+            ).strip().lower()
+            if valid_node_name(node):
+                catalog_group_nodes.add(node)
+        quorum = {
+            "pins": frozenset(),
+            "nodes": frozenset(),
+            "nodeDigests": {},
+        }
+        if linked_target:
             pins = set()
             current_pins = set()
             target_state = clean_string(
@@ -44836,6 +45049,14 @@ async def _https_mirror_public_context(env, owner, repo):
                 state = clean_string(state, 64).lower()
                 if re.fullmatch(r"[0-9a-f]{64}", state):
                     pins.add(state)
+            # The linked row establishes the stable organization identity, not
+            # a preferred endpoint. Two fresh, independently signed matching
+            # group proofs may advance the flagship state even when that row's
+            # original host (historically mirror2) has been removed.
+            quorum = await _https_mirror_flagship_quorum(
+                env, catalog_group_nodes)
+            pins.update(quorum.get("pins", ()))
+            current_pins.update(quorum.get("pins", ()))
             pins = pins or None
         else:
             pins = clone_state_pins(
@@ -44869,10 +45090,11 @@ async def _https_mirror_public_context(env, owner, repo):
             if not valid_node_name(node):
                 continue
             group_nodes.add(node)
-            if pins and state not in pins:
+            endpoint_state = quorum.get("nodeDigests", {}).get(node, "")
+            if pins and state not in pins and endpoint_state not in pins:
                 continue
             allowed.add(node)
-            if state in current_pins:
+            if state in current_pins or endpoint_state in current_pins:
                 current_nodes.add(node)
             if (
                 source is None
@@ -44911,6 +45133,10 @@ async def _https_mirror_public_context(env, owner, repo):
             # refs state. Historical pins may serve as temporary failover but
             # can never populate a current-generation immutable cache entry.
             "currentPins": set(current_pins),
+            # Organization aliases identify a logical repository. They never
+            # nominate their linked catalog host as a traffic endpoint: every
+            # fresh integrity-approved member participates in one cursor ring.
+            "roundRobinAll": bool(linked_target),
             "repoBi": await blind_index(
                 env, canonical_owner + "/" + canonical_repo.lower()),
         }
@@ -44952,36 +45178,39 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
         env, "SELECT cursor FROM edge_route_cursor WHERE repo_bi=?",
         context["repoBi"])
     cursor = int((cursor_row or {}).get("cursor") or 0)
-    current_nodes = {
-        str(node or "").lower()
-        for node in context.get("currentNodes", set())
-    }
-    # Catalog identities can nominate one preferred current host even when
-    # several healthy endpoints carry the exact same signed refs digest. Treat
-    # those byte-identical copies as equally current so this preference sort
-    # does not undo the cursor rotation and pin every request to one node.
-    current_nodes = https_routing.equivalent_current_endpoint_nodes(
-        records, current_nodes, context.get("currentPins", set())
-    )
-    # Select current-generation mirrors before applying the bounded failover
-    # limit. Selecting from the whole historical set first could truncate all
-    # current mirrors and leave only stale archive generations.
-    current_records = [
-        record for record in records
-        if str(record.get("node") or "").lower() in current_nodes
-    ]
-    historical_records = [
-        record for record in records
-        if str(record.get("node") or "").lower() not in current_nodes
-    ]
     now = int(Date.now())
-    selected = https_routing.select_endpoints(
-        current_records, now,
-        preferred_region=preferred_region, cursor=cursor)
-    selected.extend(https_routing.select_endpoints(
-        historical_records, now,
-        preferred_region=preferred_region, cursor=cursor))
-    selected = selected[:https_routing.MAX_FAILOVER_ATTEMPTS]
+    if context.get("roundRobinAll"):
+        # One ring over the complete live group. The cursor is reduced modulo
+        # the current member count by select_endpoints, so adding or removing a
+        # mirror cannot strand the route or require a cursor reset.
+        selected = https_routing.select_endpoints(
+            records, now,
+            preferred_region=preferred_region, cursor=cursor)
+    else:
+        current_nodes = {
+            str(node or "").lower()
+            for node in context.get("currentNodes", set())
+        }
+        # Catalog identities can nominate one preferred current host even when
+        # several healthy endpoints carry the exact same signed refs digest.
+        current_nodes = https_routing.equivalent_current_endpoint_nodes(
+            records, current_nodes, context.get("currentPins", set())
+        )
+        current_records = [
+            record for record in records
+            if str(record.get("node") or "").lower() in current_nodes
+        ]
+        historical_records = [
+            record for record in records
+            if str(record.get("node") or "").lower() not in current_nodes
+        ]
+        selected = https_routing.select_endpoints(
+            current_records, now,
+            preferred_region=preferred_region, cursor=cursor)
+        selected.extend(https_routing.select_endpoints(
+            historical_records, now,
+            preferred_region=preferred_region, cursor=cursor))
+        selected = selected[:https_routing.MAX_FAILOVER_ATTEMPTS]
     sticky = str(sticky or "").lower()
     if sticky:
         selected.sort(key=lambda item: 0 if item["node"] == sticky else 1)

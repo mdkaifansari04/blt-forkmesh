@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Focused repository issue/pull workbench contracts.
 
-The repository dome deliberately has no in-world PR or issue towers. Record
+The open repository district deliberately has no in-world PR or issue towers. Record
 work stays in the signed web workbench, which keeps the scene legible while
 retaining the same commit-pinned record access.
 """

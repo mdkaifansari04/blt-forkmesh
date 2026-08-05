@@ -88,23 +88,28 @@ const WORLD_PATH_SURFACE_Y = 0.105;
 const WORLD_PATH_CENTER_Y =
   WORLD_PATH_SURFACE_Y - WORLD_PATH_HEIGHT / 2;
 const DISTRICT_GROUND_RADIUS = 48;
-const LEADERBOARD_COVER_SIDES = 8;
-const LEADERBOARD_COVER_WALL_HEIGHT = 25.5;
-const LEADERBOARD_COVER_ROOF_HEIGHT = 9.5;
-const LEADERBOARD_COVER_APOTHEM = DISTRICT_GROUND_RADIUS + 0.6;
-const LEADERBOARD_DOOR_WIDTH = 8;
-const LEADERBOARD_DOOR_HEIGHT = 7.5;
-const NODE_COVER_SIDES = 10;
-const NODE_COVER_APOTHEM = 28.5;
-const NODE_COVER_WALL_HEIGHT = 16;
-const NODE_COVER_ROOF_HEIGHT = 7;
-const NODE_DOOR_WIDTH = 8;
-const NODE_DOOR_HEIGHT = 7.5;
+// The mirror-node yard is open to the rest of the World. Its rich pool and
+// cabinet displays are only useful when the camera approaches, while distant
+// cabinets need just enough silhouette to keep the live node ring legible.
+// Hysteresis keeps the two representations from flickering while zooming.
+const NODE_DETAIL_ENTER_DISTANCE = 58;
+const NODE_DETAIL_EXIT_DISTANCE = 70;
+const NODE_PLAZA_MAX_RADIUS = 28;
+const NODE_LOD_MAX_INSTANCES = 64;
 const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
+// Detailed people are the heaviest repeating scene object. Every avatar uses
+// the same cloned geometry, then swaps to a shared low-poly silhouette when
+// its camera distance crosses this boundary.
+const AVATAR_LOD_DISTANCE = 42;
+const OFFICE_EXTERIOR_LOD_DISTANCE = 235;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
-const PLAYER_MAX_SPEED = 13;
+const PLAYER_MAX_SPEED = 17;
+// Walking input accelerates from base pace into a higher "running" pace over a
+// short interval so holding a direction grows into a smooth speed gradient.
+const PLAYER_SPEED_GRADIENT_UP_TIME = 0.85;
+const PLAYER_SPEED_GRADIENT_DOWN_TIME = 0.25;
 // Holding either Shift key is an explicit sprint: fast enough to cross the
 // World quickly, while still using the ordinary collision and presence path.
 const PLAYER_SPRINT_MULTIPLIER = 2.6;
@@ -121,6 +126,10 @@ const QUADCOPTER_VERTICAL_SPEED = 28;
 const QUADCOPTER_MAX_ALTITUDE = 480;
 const QUADCOPTER_MOUNT_DISTANCE = 7;
 const QUADCOPTER_RIDING_ACTIVITY = "flying the World quadcopter";
+const DRONE_COURSE_RING_COUNT = 10;
+const DRONE_COURSE_RADIUS = 500;
+const DRONE_COURSE_DETAIL_ENTER_DISTANCE = 150;
+const DRONE_COURSE_COARSE_DISTANCE = 190;
 const JETPACK_HORIZONTAL_SPEED = 30;
 const JETPACK_VERTICAL_SPEED = 22;
 const JETPACK_MAX_ALTITUDE = 480;
@@ -417,100 +426,6 @@ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   );
 }
 
-function leaderboardCoverContainsWorldPoint(x, z, margin = 0) {
-  const localX = Number(x) - LEADERBOARD_ISLAND_CENTER_X;
-  const localZ = Number(z);
-  const limit = LEADERBOARD_COVER_APOTHEM - Number(margin || 0);
-  if (!Number.isFinite(localX) || !Number.isFinite(localZ) || limit <= 0) {
-    return false;
-  }
-  for (let index = 0; index < LEADERBOARD_COVER_SIDES; index += 1) {
-    const angle = (index / LEADERBOARD_COVER_SIDES) * Math.PI * 2;
-    if (
-      localX * Math.cos(angle) + localZ * Math.sin(angle) > limit
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function leaderboardDoorCrossingIsClear(previous, current) {
-  const doorwayX =
-    LEADERBOARD_ISLAND_CENTER_X + LEADERBOARD_COVER_APOTHEM;
-  const travelX = Number(current?.x) - Number(previous?.x);
-  if (!Number.isFinite(travelX) || Math.abs(travelX) < 1e-6) return false;
-  const crossing = (doorwayX - Number(previous?.x)) / travelX;
-  if (!Number.isFinite(crossing) || crossing < 0 || crossing > 1) return false;
-  const crossingZ =
-    Number(previous?.z) +
-    (Number(current?.z) - Number(previous?.z)) * crossing;
-  return (
-    Number.isFinite(crossingZ) &&
-    Math.abs(crossingZ) <= LEADERBOARD_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS
-  );
-}
-
-function nodeCoverContainsWorldPoint(x, z, margin = 0) {
-  const localX = Number(z);
-  const localZ = -Number(x);
-  const limit = NODE_COVER_APOTHEM - Number(margin || 0);
-  if (!Number.isFinite(localX) || !Number.isFinite(localZ) || limit <= 0) {
-    return false;
-  }
-  for (let index = 0; index < NODE_COVER_SIDES; index += 1) {
-    const angle = (index / NODE_COVER_SIDES) * Math.PI * 2;
-    if (localX * Math.cos(angle) + localZ * Math.sin(angle) > limit) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function nodeDoorCrossingIsClear(previous, current) {
-  const travelZ = Number(current?.z) - Number(previous?.z);
-  if (!Number.isFinite(travelZ) || Math.abs(travelZ) < 1e-6) return false;
-  const crossing = (NODE_COVER_APOTHEM - Number(previous?.z)) / travelZ;
-  if (!Number.isFinite(crossing) || crossing < 0 || crossing > 1) return false;
-  const crossingX =
-    Number(previous?.x) +
-    (Number(current?.x) - Number(previous?.x)) * crossing;
-  return (
-    Number.isFinite(crossingX) &&
-    Math.abs(crossingX) <= NODE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS
-  );
-}
-
-function circularDoorCrossingIsClear(
-  previous,
-  current,
-  centerX,
-  centerZ,
-  radius,
-  doorWidth,
-  axis,
-  direction,
-) {
-  const coordinate = axis === "x" ? "x" : "z";
-  const lateral = coordinate === "x" ? "z" : "x";
-  const threshold =
-    (coordinate === "x" ? Number(centerX) : Number(centerZ)) +
-    Number(direction) * Number(radius);
-  const travel = Number(current?.[coordinate]) - Number(previous?.[coordinate]);
-  if (!Number.isFinite(travel) || Math.abs(travel) < 1e-6) return false;
-  const crossing = (threshold - Number(previous?.[coordinate])) / travel;
-  if (!Number.isFinite(crossing) || crossing < 0 || crossing > 1) return false;
-  const crossingLateral =
-    Number(previous?.[lateral]) +
-    (Number(current?.[lateral]) - Number(previous?.[lateral])) * crossing;
-  const centerLateral = lateral === "x" ? Number(centerX) : Number(centerZ);
-  return (
-    Number.isFinite(crossingLateral) &&
-    Math.abs(crossingLateral - centerLateral) <=
-      Number(doorWidth) / 2 - OFFICE_AVATAR_RADIUS
-  );
-}
-
 export function circularRideCameraYaw(
   currentYaw,
   previousHeading,
@@ -703,13 +618,6 @@ const REPOSITORY_SIZE_MAP_MAX_RINGS = 4;
 const REPOSITORY_SIZE_MAP_MAX_SEGMENTS = 420;
 const REPOSITORY_CATALOG_MAX = 200;
 const REPOSITORY_EDGE_RADIUS = 68;
-const REPOSITORY_DOME_RADIUS = REPOSITORY_GROUND_RADIUS - 1.5;
-const REPOSITORY_DOME_DETAIL = 2;
-// Reveal the dome interior only after the avatar has fully crossed the shell.
-// A small exit margin prevents repeated visibility flips while walking along
-// the geodesic boundary.
-const REPOSITORY_DOME_ENTER_RADIUS = REPOSITORY_DOME_RADIUS - 0.75;
-const REPOSITORY_DOME_EXIT_RADIUS = REPOSITORY_DOME_RADIUS + 0.75;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -3479,7 +3387,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:lobby-community-kiosk-row", task: "Align lobby community kiosks", detail: "Feedback, task bounties, Link Lab, and Link Rewards form one readable row on the Office clock wall immediately to its left, keeping Noah and the lobby route clear.", estimate: "implemented · focused QA", done: true },
   { key: "task:district-ground-paths", task: "Clean repository + leaderboard districts", detail: "Removed the ground-level VIEW placards, centered repository imports, added efficient textured district circles, and rebuilt every town connector from one solid concrete slab specification with flush endpoints.", estimate: "implemented · focused QA", done: true },
   { key: "task:lobby-task-bounties", task: "Lobby task bounty bidding desk", detail: "Organization members can propose scoped work in the lobby, name an exact SOL compensation request, and publish the encrypted record into the shared task catalog as a clearly labeled bid. The request is non-custodial and records no transfer or reserved funds.", estimate: "implemented · focused QA", done: true },
-  { key: "task:world-orb-hud", task: "Compact debug + unified activity orbs", detail: "Replaced the bottom bars with logo-sized status circles. DEBUG summarizes every performance grade as green, yellow, or red dots and expands on hover or focus. CHAT shows the latest speaker and unread count, then opens a translucent channel composer with image attachment, separate chat/task actions, human-or-agent routing, team categorization, and a ten-second unified activity stream.", estimate: "deployed · ready for QA", done: true },
+  { key: "task:world-orb-hud", task: "Live debug pill + unified activity orb", detail: "DEBUG stays visible as a compact pill with one-second FPS, visible-triangle, and memory charts alongside green, yellow, or red health dots, then expands on hover or focus. CHAT shows the latest speaker and unread count, then opens a translucent channel composer with image attachment, separate chat/task actions, human-or-agent routing, team categorization, and a ten-second unified activity stream.", estimate: "deployed · ready for QA", done: true },
   { key: "task:avatar-hud-launcher", task: "Restore circular avatar HUD launcher", detail: "The account avatar is again a round launcher: hover or focus fans fixed-size tool boxes out without resizing the HUD, notification/error/task counts form a compact actionable row beside it and return to their matching icons when expanded, touch uses a first tap to reveal controls, and player movement or an outside click closes the launcher.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:fixed-square-hud-shortcuts", task: "Fixed square World HUD shortcuts", detail: "The avatar is clipped into a true circle. Its right rail is one non-expanding column with only Office, Campfire, Share view, Remember, and square saved thumbnails; reward-pool navigation stays in the World. Dashboard uses a globe, Tasks uses a list, Capture uses a crop frame, and Wave now sits beside chat.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
@@ -4764,6 +4672,59 @@ function makeMaterial(THREE, color, options = {}) {
   return new THREE.MeshStandardMaterial(parameters);
 }
 
+// Repeated people, placards, vehicles, and props clone one immutable mesh
+// prototype per geometry key. Clones keep independent transforms/materials
+// while sharing the expensive vertex/index buffers. Shared buffers live for
+// the scene lifetime; removing one remote avatar must not dispose a buffer
+// still used by every other avatar.
+const sharedMeshPrototypeCaches = new WeakMap();
+function cloneSharedMesh(THREE, key, geometryFactory, material) {
+  let cache = sharedMeshPrototypeCaches.get(THREE);
+  if (!cache) {
+    cache = new Map();
+    sharedMeshPrototypeCaches.set(THREE, cache);
+  }
+  let prototype = cache.get(key);
+  if (!prototype) {
+    const geometry = geometryFactory();
+    geometry.userData.forkmeshSharedResource = true;
+    prototype = new THREE.Mesh(geometry, null);
+    prototype.userData.forkmeshSharedMeshKey = key;
+    cache.set(key, prototype);
+  }
+  const mesh = prototype.clone(false);
+  mesh.material = material;
+  mesh.userData.forkmeshSharedMeshKey = key;
+  return mesh;
+}
+
+function cloneSharedPlane(THREE, width, height, material) {
+  return cloneSharedMesh(
+    THREE,
+    `plane:${width}:${height}`,
+    () => new THREE.PlaneGeometry(width, height),
+    material,
+  );
+}
+
+function avatarDetailParent(avatar) {
+  return avatar?.userData?.highDetail || avatar;
+}
+
+function disposeOwnedGeometry(geometry) {
+  if (!geometry || geometry.userData?.forkmeshSharedResource === true) {
+    return false;
+  }
+  geometry?.dispose?.();
+  return true;
+}
+
+function disposeOwnedMaterial(material, disposeMap = false) {
+  if (material?.userData?.forkmeshSharedResource === true) return;
+  if (disposeMap) material?.map?.dispose?.();
+  material?.dispose?.();
+}
+
 function setShadows(object, cast = true, receive = true) {
   object.traverse((child) => {
     if (!child.isMesh) return;
@@ -4782,13 +4743,14 @@ function disposeObject3D(object) {
       ? child.material
       : [child.material];
     childMaterials.filter(Boolean).forEach((material) => {
+      if (material.userData?.forkmeshSharedResource === true) return;
       materials.add(material);
       if (material.map) textures.add(material.map);
     });
   });
   textures.forEach((texture) => texture.dispose?.());
-  materials.forEach((material) => material.dispose?.());
-  geometries.forEach((geometry) => geometry.dispose?.());
+  materials.forEach((material) => disposeOwnedMaterial(material));
+  geometries.forEach(disposeOwnedGeometry);
 }
 
 function removeInteractiveObject(interactive, object) {
@@ -4849,8 +4811,10 @@ function makeOfficeWallPlacard(
   width = 22,
   height = 3.6,
 ) {
-  const placard = new THREE.Mesh(
-    new THREE.PlaneGeometry(width, height),
+  const placard = cloneSharedPlane(
+    THREE,
+    width,
+    height,
     new THREE.MeshBasicMaterial({
       map: wordTexture(THREE, title, subtitle, color),
       toneMapped: false,
@@ -4858,76 +4822,6 @@ function makeOfficeWallPlacard(
   );
   placard.userData.officeWallMounted = true;
   return placard;
-}
-
-// Branded onto the plank itself (the seat's top face texture) instead of a
-// floating sign, so an empty bench still says whose seat it is: the account
-// it belongs to, and whether they are represented here or out walking the
-// world. An unclaimed seat reads as the open guest bench. Canvas aspect
-// (480x180) matches the seat top's width:depth ratio (1.6:0.6) so the wood
-// grain and lettering aren't stretched.
-function drawCampfireSeatPlate(
-  context,
-  name,
-  state = "seated",
-  x = 0,
-  y = 0,
-  width = 480,
-  height = 180,
-) {
-  const label = String(name || "").trim().slice(0, 18);
-  const away = state === "away";
-  const represented = state === "seated";
-  const manageable = state === "manage";
-  const glow = label
-    ? away
-      ? "#ffd479"
-      : represented
-        ? "#9ef7c6"
-        : manageable
-          ? "#80e8ff"
-          : "#d6d9d8"
-    : "#77d9ff";
-  context.save();
-  context.translate(x, y);
-  context.scale(width / 480, height / 180);
-  context.fillStyle = "#8a5a33";
-  context.fillRect(0, 0, 480, 180);
-  context.strokeStyle = "rgba(63,38,17,0.35)";
-  context.lineWidth = 2;
-  for (let grain = 20; grain < 180; grain += 24) {
-    context.beginPath();
-    context.moveTo(0, grain);
-    context.bezierCurveTo(120, grain - 5, 360, grain + 5, 480, grain);
-    context.stroke();
-  }
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  embossPlankText(
-    context,
-    label || "OPEN SEAT",
-    240,
-    74,
-    '700 52px "ForkMesh Favorit", system-ui, sans-serif',
-    glow,
-  );
-  embossPlankText(
-    context,
-    label
-      ? away
-        ? "OUT AND ABOUT"
-        : represented
-          ? "AT THE FIRE"
-          : manageable
-            ? "CLICK · ASSIGN TEAMS"
-            : "ROSTER BENCH"
-      : "GUESTS WELCOME",
-    240,
-    124,
-    '400 24px "ForkMesh Mono", ui-monospace, monospace',
-    glow,
-  );
-  context.restore();
 }
 
 function campfireDirtTexture(THREE) {
@@ -5334,7 +5228,7 @@ function newestMemberName(members) {
   return newest;
 }
 
-function membersYurtDoorTexture(THREE, total, newest = "") {
+function membersCircleInfoTexture(THREE, total, newest = "") {
   const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
   const latest = String(newest || "").trim().slice(0, 18);
   return canvasTexture(THREE, 1024, 512, (context) => {
@@ -5368,20 +5262,6 @@ function membersYurtDoorTexture(THREE, total, newest = "") {
       390,
     );
   });
-}
-
-// Carves rather than paints: a dark shadow above and a warm highlight below
-// read as a groove branded into the wood instead of ink sitting on top of it.
-function embossPlankText(context, text, x, y, font, glow) {
-  context.font = font;
-  context.fillStyle = "rgba(20,10,4,0.6)";
-  context.fillText(text, x, y - 1.4);
-  context.fillStyle = glow;
-  context.globalAlpha = 0.5;
-  context.fillText(text, x, y + 1.4);
-  context.globalAlpha = 1;
-  context.fillStyle = "#2a160a";
-  context.fillText(text, x, y);
 }
 
 // Straight-legged pitches (standing, walking) leave the knees locked, so the
@@ -6209,10 +6089,10 @@ function syncOperatorBelt(THREE, avatar, nodesOrCount) {
     avatar.userData?.operatorBeltLights?.[0]?.parent ||
     avatar.getObjectByName("forkmesh-operator-belt");
   if (previous) {
-    avatar.remove(previous);
+    previous.parent?.remove(previous);
     previous.traverse((child) => {
-      child.geometry?.dispose?.();
-      child.material?.dispose?.();
+      disposeOwnedGeometry(child.geometry);
+      disposeOwnedMaterial(child.material);
     });
   }
   if (avatar.userData) avatar.userData.operatorBeltLights = null;
@@ -6228,8 +6108,10 @@ function syncOperatorBelt(THREE, avatar, nodesOrCount) {
   }
   const beltGroup = new THREE.Group();
   beltGroup.name = "forkmesh-operator-belt";
-  const belt = new THREE.Mesh(
-    new THREE.BoxGeometry(1.12, 0.18, 0.66),
+  const belt = cloneSharedMesh(
+    THREE,
+    "avatar-operator-belt",
+    () => new THREE.BoxGeometry(1.12, 0.18, 0.66),
     makeMaterial(THREE, "#d6a44d", {
       metalness: 0.42,
       roughness: 0.4,
@@ -6239,8 +6121,10 @@ function syncOperatorBelt(THREE, avatar, nodesOrCount) {
   beltGroup.add(belt);
   for (let index = 0; index < count; index += 1) {
     const visual = mirrorNodeVisualState(nodes[index]);
-    const light = new THREE.Mesh(
-      new THREE.SphereGeometry(0.055, 10, 8),
+    const light = cloneSharedMesh(
+      THREE,
+      "avatar-operator-light",
+      () => new THREE.SphereGeometry(0.055, 10, 8),
       makeMaterial(THREE, visual.color, {
         emissive: visual.color,
         emissiveIntensity: 1.2,
@@ -6254,7 +6138,7 @@ function syncOperatorBelt(THREE, avatar, nodesOrCount) {
     light.position.set(-0.4 + index * 0.16, 1.43, -0.35);
     beltGroup.add(light);
   }
-  avatar.add(beltGroup);
+  avatarDetailParent(avatar).add(beltGroup);
   if (avatar.userData) {
     avatar.userData.nodeCount = count;
     // Cached for the per-frame blink pass — a recursive getObjectByName over
@@ -6338,12 +6222,67 @@ function createAvatarJetpack(THREE) {
   return group;
 }
 
+const avatarFarModelPrototypes = new WeakMap();
+function cloneAvatarFarModel(THREE) {
+  let prototype = avatarFarModelPrototypes.get(THREE);
+  if (!prototype) {
+    prototype = new THREE.Group();
+    prototype.name = "avatar-camera-lod-far";
+    const bodyMaterial = makeMaterial(THREE, "#4d8171", {
+      roughness: 0.86,
+    });
+    const darkMaterial = makeMaterial(THREE, "#13231e", {
+      roughness: 0.9,
+    });
+    bodyMaterial.userData.forkmeshSharedResource = true;
+    darkMaterial.userData.forkmeshSharedResource = true;
+    const head = cloneSharedMesh(
+      THREE,
+      "avatar-lod-head",
+      () => new THREE.OctahedronGeometry(0.62, 0),
+      bodyMaterial,
+    );
+    head.position.y = 3.35;
+    prototype.add(head);
+    const torso = cloneSharedMesh(
+      THREE,
+      "avatar-lod-torso",
+      () => new THREE.BoxGeometry(1.05, 1.45, 0.58),
+      bodyMaterial,
+    );
+    torso.position.y = 2.15;
+    prototype.add(torso);
+    [-0.32, 0.32].forEach((x) => {
+      const leg = cloneSharedMesh(
+        THREE,
+        "avatar-lod-leg",
+        () => new THREE.BoxGeometry(0.32, 1.45, 0.36),
+        darkMaterial,
+      );
+      leg.position.set(x, 0.78, 0);
+      prototype.add(leg);
+    });
+    avatarFarModelPrototypes.set(THREE, prototype);
+  }
+  const clone = prototype.clone(true);
+  clone.name = "avatar-camera-lod-far";
+  return clone;
+}
+
 function createAvatar(THREE, identity, options = {}) {
   const seed = hashNumber(identity.id || identity.name);
   const group = new THREE.Group();
   group.name = `avatar:${identity.id || identity.name}`;
   const scale = options.scale || 1;
   const remote = Boolean(options.remote);
+  const highDetail = new THREE.Group();
+  highDetail.name = "avatar-camera-lod-near";
+  const avatarLod = new THREE.LOD();
+  avatarLod.name = "avatar-camera-lod";
+  const farDetail = cloneAvatarFarModel(THREE);
+  avatarLod.addLevel(highDetail, 0, 0.12);
+  avatarLod.addLevel(farDetail, AVATAR_LOD_DISTANCE, 0.18);
+  group.add(avatarLod);
 
   // Unlit so the head sphere renders the sampled emoji colour exactly, with
   // no lighting term to pull it off the flat decal wrapped over it.
@@ -6358,12 +6297,14 @@ function createAvatar(THREE, identity, options = {}) {
   const dark = makeMaterial(THREE, "#101d19", { roughness: 0.85 });
   const shoe = makeMaterial(THREE, "#07100e", { roughness: 0.82 });
 
-  const torso = new THREE.Mesh(
-    rotateBoxTopUVs(new THREE.BoxGeometry(1.1, 1.5, 0.62)),
+  const torso = cloneSharedMesh(
+    THREE,
+    "avatar-torso",
+    () => rotateBoxTopUVs(new THREE.BoxGeometry(1.1, 1.5, 0.62)),
     shirt,
   );
   torso.position.y = 2.15;
-  group.add(torso);
+  highDetail.add(torso);
 
   // Rounded everywhere except the front, which is cut off flat to carry the
   // face disc: the two share AVATAR_FACE_DEPTH so the cut and the disc are the
@@ -6371,9 +6312,11 @@ function createAvatar(THREE, identity, options = {}) {
   const headRig = new THREE.Group();
   headRig.name = "avatar-head-look-rig";
   headRig.position.y = 3.36;
-  group.add(headRig);
-  const head = new THREE.Mesh(
-    flattenSphereFront(
+  highDetail.add(headRig);
+  const head = cloneSharedMesh(
+    THREE,
+    "avatar-head",
+    () => flattenSphereFront(
       new THREE.SphereGeometry(AVATAR_HEAD_RADIUS, 32, 24),
       AVATAR_FACE_DEPTH,
     ),
@@ -6387,8 +6330,10 @@ function createAvatar(THREE, identity, options = {}) {
   // smile), or the visitor's avatar photo. It is a flat disc filling the cut
   // front of the head, so the picture is shown square-on and unwarped rather
   // than wrapped around a curve; syncAvatarFace keeps its texture current.
-  const faceMesh = new THREE.Mesh(
-    new THREE.CircleGeometry(AVATAR_FACE_RADIUS, 48),
+  const faceMesh = cloneSharedMesh(
+    THREE,
+    "avatar-face",
+    () => new THREE.CircleGeometry(AVATAR_FACE_RADIUS, 48),
     // The canvas is flooded opaque, so the decal renders in the solid pass and
     // never sorts against the head it is lying on.
     new THREE.MeshBasicMaterial({}),
@@ -6398,8 +6343,10 @@ function createAvatar(THREE, identity, options = {}) {
   faceMesh.rotation.y = Math.PI;
   headRig.add(faceMesh);
 
-  const activityRing = new THREE.Mesh(
-    new THREE.RingGeometry(
+  const activityRing = cloneSharedMesh(
+    THREE,
+    "avatar-activity-ring",
+    () => new THREE.RingGeometry(
       AVATAR_FACE_RADIUS - 0.05,
       AVATAR_FACE_RADIUS - 0.012,
       64,
@@ -6420,16 +6367,20 @@ function createAvatar(THREE, identity, options = {}) {
   activityRing.renderOrder = 6;
   headRig.add(activityRing);
 
-  const limbGeometry = rotateBoxTopUVs(new THREE.BoxGeometry(0.29, 1.25, 0.32));
-  const leftArm = new THREE.Mesh(limbGeometry, shirt);
+  const leftArm = cloneSharedMesh(
+    THREE,
+    "avatar-limb",
+    () => rotateBoxTopUVs(new THREE.BoxGeometry(0.29, 1.25, 0.32)),
+    shirt,
+  );
   leftArm.position.set(-0.73, 2.08, 0);
-  group.add(leftArm);
+  highDetail.add(leftArm);
   const rightArm = leftArm.clone();
   rightArm.position.x = 0.73;
-  group.add(rightArm);
+  highDetail.add(rightArm);
 
-  const jetpack = createAvatarJetpack(THREE);
-  group.add(jetpack);
+  const jetpack = remote ? null : createAvatarJetpack(THREE);
+  if (jetpack) highDetail.add(jetpack);
 
   // Mouse activity reads as a small antenna riding on the visitor's shoulder
   // that blinks solid green, faster the more their mouse is moving.
@@ -6453,7 +6404,7 @@ function createAvatar(THREE, identity, options = {}) {
   antenna.rotation.x = 0.1;
   antenna.rotation.z = -0.35;
   antenna.visible = identity.inputActive === true;
-  group.add(antenna);
+  highDetail.add(antenna);
 
   // Each leg is a hip pivot carrying a thigh, and a knee pivot carrying the
   // shin plus that leg's shoe. Standing (every pitch at zero) the two segments
@@ -6461,24 +6412,37 @@ function createAvatar(THREE, identity, options = {}) {
   // a sitter fold the thigh forward and keep the shin and foot under the knee
   // instead of swinging one rigid block — and shoes now travel with the leg
   // they belong to rather than staying planted on the plank.
-  const legGeometry = new THREE.BoxGeometry(0.42, AVATAR_LEG_SEGMENT, 0.45);
-  const shoeGeometry = new THREE.BoxGeometry(0.46, AVATAR_SHOE_HEIGHT, 0.7);
   const buildLeg = (side) => {
     const hip = new THREE.Group();
     hip.position.set(side * 0.3, AVATAR_HIP_Y, 0);
-    const thigh = new THREE.Mesh(legGeometry, dark);
+    const thigh = cloneSharedMesh(
+      THREE,
+      "avatar-leg-segment",
+      () => new THREE.BoxGeometry(0.42, AVATAR_LEG_SEGMENT, 0.45),
+      dark,
+    );
     thigh.position.y = -AVATAR_LEG_SEGMENT / 2;
     hip.add(thigh);
     const knee = new THREE.Group();
     knee.position.y = -AVATAR_LEG_SEGMENT;
-    const shin = new THREE.Mesh(legGeometry, dark);
+    const shin = cloneSharedMesh(
+      THREE,
+      "avatar-leg-segment",
+      () => new THREE.BoxGeometry(0.42, AVATAR_LEG_SEGMENT, 0.45),
+      dark,
+    );
     shin.position.y = -AVATAR_LEG_SEGMENT / 2;
     knee.add(shin);
-    const foot = new THREE.Mesh(shoeGeometry, shoe);
+    const foot = cloneSharedMesh(
+      THREE,
+      "avatar-shoe",
+      () => new THREE.BoxGeometry(0.46, AVATAR_SHOE_HEIGHT, 0.7),
+      shoe,
+    );
     foot.position.set(0, AVATAR_SHOE_Y - AVATAR_HIP_Y + AVATAR_LEG_SEGMENT, -0.09);
     knee.add(foot);
     hip.add(knee);
-    group.add(hip);
+    highDetail.add(hip);
     return { hip, knee };
   };
   const leftLegRig = buildLeg(-1);
@@ -6486,8 +6450,10 @@ function createAvatar(THREE, identity, options = {}) {
   const leftLeg = leftLegRig.hip;
   const rightLeg = rightLegRig.hip;
 
-  const badge = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.88, 0.88),
+  const badge = cloneSharedPlane(
+    THREE,
+    0.88,
+    0.88,
     new THREE.MeshBasicMaterial({
       map: badgeTexture(
         THREE,
@@ -6502,10 +6468,12 @@ function createAvatar(THREE, identity, options = {}) {
   badge.position.set(0, 2.3, -0.316);
   badge.rotation.y = Math.PI;
   badge.userData.chestBadge = true;
-  group.add(badge);
+  highDetail.add(badge);
 
-  const backName = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.72, 0.806),
+  const backName = cloneSharedPlane(
+    THREE,
+    1.72,
+    0.806,
     new THREE.MeshBasicMaterial({
       transparent: true,
       depthWrite: false,
@@ -6515,10 +6483,12 @@ function createAvatar(THREE, identity, options = {}) {
   backName.name = "avatar-back-username";
   backName.position.set(0, 2.94, 0.68);
   backName.renderOrder = 5;
-  group.add(backName);
+  highDetail.add(backName);
 
-  const verifiedPin = new THREE.Mesh(
-    new THREE.CircleGeometry(0.105, 24),
+  const verifiedPin = cloneSharedMesh(
+    THREE,
+    "avatar-verified-pin",
+    () => new THREE.CircleGeometry(0.105, 24),
     new THREE.MeshBasicMaterial({
       map: emailVerificationPinTexture(THREE, identity.emailVerified === true),
       transparent: true,
@@ -6530,7 +6500,7 @@ function createAvatar(THREE, identity, options = {}) {
   verifiedPin.rotation.y = Math.PI;
   verifiedPin.renderOrder = 5;
   verifiedPin.userData.verified = identity.emailVerified === true;
-  group.add(verifiedPin);
+  highDetail.add(verifiedPin);
 
   group.scale.setScalar(scale);
   group.userData = {
@@ -6577,6 +6547,8 @@ function createAvatar(THREE, identity, options = {}) {
     backName,
     verifiedPin,
     jetpack,
+    highDetail,
+    avatarLod,
   };
   syncOperatorBelt(THREE, group, identity.nodes || []);
   syncAvatarBackName(THREE, group, identity);
@@ -6585,6 +6557,7 @@ function createAvatar(THREE, identity, options = {}) {
   syncAvatarWallet(THREE, group, identity);
   syncAvatarVerifiedPin(THREE, group, identity);
   setShadows(group, true, true);
+  setShadows(farDetail, false, false);
   return group;
 }
 
@@ -6767,8 +6740,10 @@ function setAvatarWorkBadge(THREE, avatar, board, visible = true) {
     return badge || null;
   }
   if (!badge) {
-    badge = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.06, 1.32),
+    badge = cloneSharedPlane(
+      THREE,
+      1.06,
+      1.32,
       new THREE.MeshBasicMaterial({ toneMapped: false }),
     );
     badge.name = "forkmesh-self-work-back-badge";
@@ -6777,7 +6752,7 @@ function setAvatarWorkBadge(THREE, avatar, board, visible = true) {
     // pixels. Both panels clear the jetpack on one shared rear reading plane.
     badge.position.set(0, 1.92, 0.68);
     badge.renderOrder = 4;
-    avatar.add(badge);
+    avatarDetailParent(avatar).add(badge);
     avatar.userData.selfWorkBadge = badge;
   }
   const previous = badge.material.map;
@@ -8086,6 +8061,27 @@ function createMirrorServerCabinet(THREE, node, id) {
   return group;
 }
 
+function createMirrorNodeBoxLod(THREE) {
+  // Every distant cabinet reuses this one geometry/material pair and is drawn
+  // by one InstancedMesh. At range the node yard therefore costs one mesh and
+  // exposes no panels, text textures, rails, lights, or animated detail.
+  const boxes = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(2.24, 3.28, 1.42),
+    makeMaterial(THREE, "#ffffff", {
+      metalness: 0.58,
+      roughness: 0.48,
+    }),
+    NODE_LOD_MAX_INSTANCES,
+  );
+  boxes.name = "forkmesh-node-box-lod";
+  boxes.count = 0;
+  boxes.castShadow = false;
+  boxes.receiveShadow = false;
+  boxes.userData.nodeBoxLod = true;
+  boxes.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  return boxes;
+}
+
 function createAgentRobot(THREE, bot, id) {
   const group = new THREE.Group();
   group.name = `verified-agent-object:${id}`;
@@ -8997,185 +8993,6 @@ function createDistrictGroundCircle(
   return ground;
 }
 
-function createOpaqueDistrictCover(
-  THREE,
-  {
-    name,
-    interactiveKind,
-    sides,
-    wallHeight,
-    roofHeight,
-    apothem,
-    doorWidth,
-    doorHeight,
-    color = "#102b27",
-  },
-) {
-  const radius = apothem / Math.cos(Math.PI / sides);
-  const positions = [];
-  const point = (index, y) => {
-    const angle = ((index + 0.5) / sides) * Math.PI * 2;
-    return [Math.cos(angle) * radius, y, Math.sin(angle) * radius];
-  };
-  const addTriangle = (...vertices) => {
-    vertices.forEach((vertex) => positions.push(...vertex));
-  };
-  const addQuad = (lower, upper, nextLower, nextUpper) => {
-    addTriangle(lower, upper, nextLower);
-    addTriangle(nextLower, upper, nextUpper);
-  };
-  const apex = [0, wallHeight + roofHeight, 0];
-  for (let index = 0; index < sides; index += 1) {
-    const lower = point(index, 0);
-    const upper = point(index, wallHeight);
-    const nextLower = point(index + 1, 0);
-    const nextUpper = point(index + 1, wallHeight);
-    if (index === sides - 1) {
-      const halfDoor = doorWidth / 2;
-      const lowerLeft = [apothem, 0, -halfDoor];
-      const upperLeft = [apothem, wallHeight, -halfDoor];
-      const lowerRight = [apothem, 0, halfDoor];
-      const upperRight = [apothem, wallHeight, halfDoor];
-      addQuad(lower, upper, lowerLeft, upperLeft);
-      addQuad(lowerRight, upperRight, nextLower, nextUpper);
-      addQuad(
-        [apothem, doorHeight, -halfDoor],
-        upperLeft,
-        [apothem, doorHeight, halfDoor],
-        upperRight,
-      );
-    } else {
-      addQuad(lower, upper, nextLower, nextUpper);
-    }
-    addTriangle(upper, apex, nextUpper);
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(positions, 3),
-  );
-  geometry.computeVertexNormals();
-  const cover = new THREE.Mesh(
-    geometry,
-    makeMaterial(THREE, color, {
-      metalness: 0.02,
-      roughness: 0.94,
-      transparent: false,
-      opacity: 1,
-      depthWrite: true,
-      // The shell remains present while its interior scene is active. Draw
-      // both faces so visitors can read the walls and find the doorway again
-      // from inside instead of looking out into an empty scene.
-      side: THREE.DoubleSide,
-    }),
-  );
-  cover.name = name;
-  cover.userData.interactive = interactiveKind;
-  cover.userData.enclosureShell = true;
-
-  const halfDoor = doorWidth / 2;
-  const doorFrameGeometry = new THREE.BufferGeometry();
-  doorFrameGeometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(
-      [
-        apothem + 0.025, 0.04, -halfDoor,
-        apothem + 0.025, doorHeight, -halfDoor,
-        apothem + 0.025, doorHeight, -halfDoor,
-        apothem + 0.025, doorHeight, halfDoor,
-        apothem + 0.025, doorHeight, halfDoor,
-        apothem + 0.025, 0.04, halfDoor,
-      ],
-      3,
-    ),
-  );
-  const doorFrame = new THREE.LineSegments(
-    doorFrameGeometry,
-    new THREE.LineBasicMaterial({ color: "#9ef7c6", toneMapped: false }),
-  );
-  doorFrame.name = `${name}-door-frame`;
-  cover.add(doorFrame);
-
-  const doorPanelWidth = doorWidth / 2;
-  const doorPanelGeometry = new THREE.PlaneGeometry(
-    doorPanelWidth,
-    doorHeight,
-  );
-  const doorPanelMaterial = new THREE.MeshBasicMaterial({
-    color: "#173c35",
-    transparent: false,
-    opacity: 1,
-    depthWrite: true,
-    side: THREE.DoubleSide,
-  });
-  const doorPanels = [-1, 1].map((side) => {
-    const door = new THREE.Mesh(doorPanelGeometry, doorPanelMaterial);
-    door.name = `${name}-door-${side < 0 ? "left" : "right"}`;
-    door.rotation.y = Math.PI / 2;
-    door.position.set(
-      apothem + 0.01,
-      doorHeight / 2,
-      side * doorPanelWidth / 2,
-    );
-    door.userData.closedZ = side * doorPanelWidth / 2;
-    door.userData.openZ = side * (halfDoor + doorPanelWidth / 2 + 0.12);
-    cover.add(door);
-    return door;
-  });
-  cover.userData.doorPanels = doorPanels;
-  return cover;
-}
-
-function createLeaderboardOpaqueCover(THREE) {
-  return createOpaqueDistrictCover(THREE, {
-    name: "forkmesh-leaderboard-opaque-cover",
-    interactiveKind: "leaderboard-cover",
-    sides: LEADERBOARD_COVER_SIDES,
-    wallHeight: LEADERBOARD_COVER_WALL_HEIGHT,
-    roofHeight: LEADERBOARD_COVER_ROOF_HEIGHT,
-    apothem: LEADERBOARD_COVER_APOTHEM,
-    doorWidth: LEADERBOARD_DOOR_WIDTH,
-    doorHeight: LEADERBOARD_DOOR_HEIGHT,
-  });
-}
-
-function createNodeOpaqueCover(THREE) {
-  const cover = createOpaqueDistrictCover(THREE, {
-    name: "forkmesh-node-opaque-cover",
-    interactiveKind: "node-cover",
-    sides: NODE_COVER_SIDES,
-    wallHeight: NODE_COVER_WALL_HEIGHT,
-    roofHeight: NODE_COVER_ROOF_HEIGHT,
-    apothem: NODE_COVER_APOTHEM,
-    doorWidth: NODE_DOOR_WIDTH,
-    doorHeight: NODE_DOOR_HEIGHT,
-    color: "#172d3d",
-  });
-  cover.rotation.y = -Math.PI / 2;
-  return cover;
-}
-
-function setOpaqueCoverDoorOpen(cover, open) {
-  const amount = open ? 1 : 0;
-  (cover?.userData?.doorPanels || []).forEach((panel) => {
-    panel.position.z =
-      panel.userData.closedZ +
-      (panel.userData.openZ - panel.userData.closedZ) * amount;
-  });
-  if (cover?.userData) cover.userData.doorOpen = Boolean(open);
-}
-
-function setSlidingEnclosureDoorOpen(door, open) {
-  const amount = open ? 1 : 0;
-  (door?.userData?.slidingPanels || []).forEach((panel) => {
-    const axis = panel.userData.slideAxis === "x" ? "x" : "z";
-    panel.position[axis] =
-      panel.userData.closedOffset +
-      (panel.userData.openOffset - panel.userData.closedOffset) * amount;
-  });
-  if (door?.userData) door.userData.doorOpen = Boolean(open);
-}
-
 const START_HERE_STEPS = Object.freeze([
   Object.freeze({ id: "start", label: "Find yourself on this map" }),
   Object.freeze({ id: "people", label: "Meet people at the Members Circle" }),
@@ -9821,6 +9638,7 @@ function createFountain(THREE, position, interactive, animated) {
   });
   setShadows(group);
   animated.push((time) => {
+    if (!group.parent?.visible) return;
     sun.rotation.y = time * 0.00045;
     sun.rotation.x = Math.sin(time * 0.0004) * 0.12;
     sun.position.y = sun.userData.baseY + Math.sin(time * 0.0012) * 0.16;
@@ -11174,232 +10992,22 @@ function repositoryWedgeGeometry(
   return geometry;
 }
 
-function createRepositoryGeodesicDome(THREE) {
-  const dome = new THREE.Group();
-  dome.name = "repository-geodesic-dome";
-
-  const source = new THREE.IcosahedronGeometry(
-    REPOSITORY_DOME_RADIUS,
-    REPOSITORY_DOME_DETAIL,
-  );
-  const vertices = source.getAttribute("position");
-  const shellPositions = [];
-  const strutPositions = [];
-  const seenEdges = new Set();
-  const floorCutoff = -REPOSITORY_DOME_RADIUS * 0.04;
-  const readVertex = (index) => ({
-    x: vertices.getX(index),
-    y: vertices.getY(index),
-    z: vertices.getZ(index),
-  });
-  const vertexKey = (vertex) =>
-    `${vertex.x.toFixed(3)}:${vertex.y.toFixed(3)}:${vertex.z.toFixed(3)}`;
-  const addStrut = (left, right) => {
-    if (left.y < floorCutoff || right.y < floorCutoff) return;
-    const middleX = (left.x + right.x) / 2;
-    const middleY = (left.y + right.y) / 2;
-    const middleZ = (left.z + right.z) / 2;
-    if (
-      middleX <= -REPOSITORY_DOME_RADIUS * 0.82 &&
-      middleY <= 8.4 &&
-      Math.abs(middleZ) <= 5.2
-    ) {
-      return;
-    }
-    const leftKey = vertexKey(left);
-    const rightKey = vertexKey(right);
-    const key = leftKey < rightKey
-      ? `${leftKey}|${rightKey}`
-      : `${rightKey}|${leftKey}`;
-    if (seenEdges.has(key)) return;
-    seenEdges.add(key);
-    strutPositions.push(
-      left.x,
-      left.y,
-      left.z,
-      right.x,
-      right.y,
-      right.z,
-    );
-  };
-  for (let index = 0; index < vertices.count; index += 3) {
-    const triangle = [
-      readVertex(index),
-      readVertex(index + 1),
-      readVertex(index + 2),
-    ];
-    const triangleHeight = triangle.reduce(
-      (total, vertex) => total + vertex.y,
-      0,
-    ) / triangle.length;
-    const triangleX = triangle.reduce(
-      (total, vertex) => total + vertex.x,
-      0,
-    ) / triangle.length;
-    const triangleZ = triangle.reduce(
-      (total, vertex) => total + vertex.z,
-      0,
-    ) / triangle.length;
-    const inWestDoorway =
-      triangleX <= -REPOSITORY_DOME_RADIUS * 0.82 &&
-      triangleHeight <= 8.4 &&
-      Math.abs(triangleZ) <= 5.2;
-    if (triangleHeight >= floorCutoff && !inWestDoorway) {
-      triangle.forEach((vertex) => {
-        shellPositions.push(vertex.x, vertex.y, vertex.z);
-      });
-    }
-    addStrut(triangle[0], triangle[1]);
-    addStrut(triangle[1], triangle[2]);
-    addStrut(triangle[2], triangle[0]);
-  }
-  source.dispose();
-
-  const shellGeometry = new THREE.BufferGeometry();
-  shellGeometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(shellPositions, 3),
-  );
-  shellGeometry.computeVertexNormals();
-  const shell = new THREE.Mesh(
-    shellGeometry,
-    makeMaterial(THREE, "#ffffff", {
-      emissive: "#4a4a4a",
-      emissiveIntensity: 0.16,
-      metalness: 0,
-      roughness: 0.78,
-      transparent: false,
-      opacity: 1,
-      depthWrite: true,
-      side: THREE.DoubleSide,
-      flatShading: true,
-    }),
-  );
-  shell.name = "repository-geodesic-dome-shell";
-  shell.userData.repositoryDomeFrame = true;
-  dome.add(shell);
-
-  const strutGeometry = new THREE.CylinderGeometry(0.032, 0.032, 1, 6);
-  const strutMaterial = makeMaterial(THREE, "#ffffff", {
-    emissive: "#666666",
-    emissiveIntensity: 0.2,
-    transparent: false,
-    opacity: 1,
-    depthWrite: true,
-    roughness: 0.5,
-  });
-  const struts = new THREE.InstancedMesh(
-    strutGeometry,
-    strutMaterial,
-    strutPositions.length / 6,
-  );
-  struts.name = "repository-geodesic-dome-struts";
-  struts.userData.repositoryDomeFrame = true;
-  const strutTransform = new THREE.Object3D();
-  const strutStart = new THREE.Vector3();
-  const strutEnd = new THREE.Vector3();
-  const strutDirection = new THREE.Vector3();
-  const strutCenter = new THREE.Vector3();
-  const strutUp = new THREE.Vector3(0, 1, 0);
-  for (let index = 0; index < strutPositions.length; index += 6) {
-    strutStart.fromArray(strutPositions, index);
-    strutEnd.fromArray(strutPositions, index + 3);
-    strutDirection.subVectors(strutEnd, strutStart);
-    const length = strutDirection.length();
-    if (!(length > 0)) continue;
-    strutCenter.addVectors(strutStart, strutEnd).multiplyScalar(0.5);
-    strutTransform.position.copy(strutCenter);
-    strutTransform.quaternion.setFromUnitVectors(
-      strutUp,
-      strutDirection.normalize(),
-    );
-    strutTransform.scale.set(1, length, 1);
-    strutTransform.updateMatrix();
-    struts.setMatrixAt(index / 6, strutTransform.matrix);
-  }
-  struts.instanceMatrix.needsUpdate = true;
-  struts.computeBoundingSphere();
-  dome.add(struts);
-
-  const foundation = new THREE.Mesh(
-    new THREE.TorusGeometry(
-      REPOSITORY_DOME_RADIUS,
-      0.09,
-      8,
-      144,
-    ),
-    makeMaterial(THREE, "#ffffff", {
-      emissive: "#666666",
-      emissiveIntensity: 0.2,
-      transparent: false,
-      opacity: 1,
-      roughness: 0.5,
-    }),
-  );
-  foundation.name = "repository-geodesic-dome-foundation";
-  foundation.userData.repositoryDomeFrame = true;
-  foundation.rotation.x = Math.PI / 2;
-  dome.add(foundation);
-
-  const doors = new THREE.Group();
-  doors.name = "repository-geodesic-dome-doors";
-  const doorMaterial = makeMaterial(THREE, "#f5f7f6", {
-    transparent: false,
-    opacity: 1,
-    depthWrite: true,
-    roughness: 0.82,
-    side: THREE.DoubleSide,
-  });
-  const doorPanels = [-1, 1].map((side) => {
-    const door = new THREE.Mesh(
-      new THREE.PlaneGeometry(4, 8),
-      doorMaterial,
-    );
-    door.name = `repository-geodesic-dome-door-${
-      side < 0 ? "left" : "right"
-    }`;
-    door.rotation.y = Math.PI / 2;
-    door.position.set(
-      -REPOSITORY_DOME_RADIUS - 0.04,
-      4,
-      side * 2,
-    );
-    door.userData.slideAxis = "z";
-    door.userData.closedOffset = side * 2;
-    door.userData.openOffset = side * 6.15;
-    doors.add(door);
-    return door;
-  });
-  doors.userData.slidingPanels = doorPanels;
-  dome.add(doors);
-  dome.userData.doorPanels = doors;
-
-  dome.position.y = REPOSITORY_DOME_RADIUS * 0.041;
-  return dome;
-}
-
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
-  const interior = new THREE.Group();
-  interior.name = "repository-geodesic-dome-interior";
-  interior.visible = false;
-  interior.userData.repositoryDomeInterior = true;
-  group.add(interior);
+  const content = new THREE.Group();
+  content.name = "repository-district-content";
+  group.add(content);
   // Match the concrete apron to the live repository ring instead of leaving
   // an oversized blue foundation behind at the former landmark position.
-  interior.add(
+  content.add(
     createDistrictGroundCircle(
       THREE,
       "repositories",
       REPOSITORY_GROUND_RADIUS,
     ),
   );
-  // Repository portals are laid out on the east island's local ring. Enclose
-  // that circle before the dynamic catalog is added to the world, so every
-  // native or imported repository appears inside the same geodesic dome.
-  const dome = createRepositoryGeodesicDome(THREE);
-  group.add(dome);
-  group.userData.repositoryDome = dome;
+  // Repository portals stay open on the east island so their charts remain
+  // readable without an enclosure or doorway transition.
   const ringMaterial = makeMaterial(THREE, "#77d9ff", {
     metalness: 0.2,
     roughness: 0.28,
@@ -11472,14 +11080,14 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   // globe/ring/upright centerpiece from the district.
   portal.visible = false;
   portal.userData.legacyPortalHidden = true;
-  interior.add(portal);
+  content.add(portal);
 
   group.position.set(...position);
   group.userData.landmark = "repositories";
   group.userData.fileMeshes = files;
   group.userData.legacyFiles = legacyFiles;
   group.userData.portal = portal;
-  group.userData.repositoryDomeInterior = interior;
+  group.userData.repositoryContent = content;
   portal.userData.repositoryCore = repositoryCore;
   portal.userData.repositoryOrbitLayer = null;
   portal.userData.repositorySizeLayer = null;
@@ -11578,7 +11186,7 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   kioskSign.scale.set(2.8, 0.78, 1);
   kioskSign.position.set(0, 4.35, 0);
   importKiosk.add(kioskSign);
-  interior.add(importKiosk);
+  content.add(importKiosk);
   group.userData.repositoryImportKiosk = importKiosk;
   importKiosk.userData.importBeam = importBeam;
   importKiosk.userData.importSpark = importSpark;
@@ -11586,15 +11194,10 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   group.traverse((child) => {
     if (child.isMesh) {
       child.userData.landmark = "repositories";
-      if (!child.userData.repositoryDomeFrame) interactive.push(child);
+      interactive.push(child);
     }
   });
   setShadows(group);
-  dome.traverse((child) => {
-    if (!child.isMesh) return;
-    child.castShadow = false;
-    child.receiveShadow = false;
-  });
   animated.push((time) => {
     portal.rotation.y = portal.userData.repositorySizeLayer
       ? -0.12
@@ -16002,17 +15605,20 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     metalness: 0.48,
     roughness: 0.42,
   });
-  const facade = makeMaterial(THREE, "#173c32", {
-    metalness: 0.22,
-    roughness: 0.74,
+  const facade = makeMaterial(THREE, "#9ef7c6", {
+    transparent: true,
+    opacity: 0.24,
+    metalness: 0,
+    roughness: 0.62,
+    depthWrite: false,
   });
-  facade.name = "forkmesh-office-opaque-facade";
+  facade.name = "forkmesh-office-clear-glass";
   const doorMaterial = makeMaterial(THREE, "#c9fff3", {
-    transparent: false,
-    opacity: 1,
+    transparent: true,
+    opacity: 0.3,
     metalness: 0,
     roughness: 0.38,
-    depthWrite: true,
+    depthWrite: false,
   });
   const elevatorFacadeMinX =
     OFFICE_ELEVATOR_CENTER_X -
@@ -16224,8 +15830,10 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(floor.label.toUpperCase(), 150, 88, 580);
     });
-    const plaque = new THREE.Mesh(
-      new THREE.PlaneGeometry(12, 2.75),
+    const plaque = cloneSharedPlane(
+      THREE,
+      12,
+      2.75,
       new THREE.MeshBasicMaterial({
         map: plaqueTexture,
         toneMapped: false,
@@ -16252,8 +15860,10 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     context.fillStyle = "#d9ffea";
     context.fillText("FORKMESH OFFICE", 512, 96);
   });
-  const sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(8.2, 1.35),
+  const sign = cloneSharedPlane(
+    THREE,
+    8.2,
+    1.35,
     new THREE.MeshBasicMaterial({
       map: signTexture,
       transparent: false,
@@ -16271,8 +15881,10 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   const doorClosedX = doorWidth / 4;
   const doorOpenX = doorWidth / 2 + doorPanelWidth / 2 + 0.18;
   const doorPanels = [-1, 1].map((side) => {
-    const panel = new THREE.Mesh(
-      new THREE.BoxGeometry(doorPanelWidth, doorHeight, 0.18),
+    const panel = cloneSharedMesh(
+      THREE,
+      "office-sliding-door-panel",
+      () => new THREE.BoxGeometry(doorPanelWidth, doorHeight, 0.18),
       doorMaterial,
     );
     panel.name =
@@ -16290,8 +15902,10 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   // A status panel rides on the glass but never participates in collision.
   // Access hydration is intentionally background-only; this makes that
   // network activity visible without turning the doorway into a loading gate.
-  const doorStatus = new THREE.Mesh(
-    new THREE.PlaneGeometry(4.6, 0.72),
+  const doorStatus = cloneSharedPlane(
+    THREE,
+    4.6,
+    0.72,
     new THREE.MeshBasicMaterial({
       map: officeDoorStatusTexture(THREE, "open"),
       transparent: true,
@@ -16319,8 +15933,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     interactive.push(child);
   });
   setShadows(group);
-  // The entry glazing does not cast shadows, while the opaque facade retains
-  // its normal depth and shadow treatment to conceal interior activity.
+  // Clear glazing and door panes do not cast or receive opaque shadows.
   group.traverse((child) => {
     if (!child.isMesh || !child.material?.transparent) return;
     child.castShadow = false;
@@ -17735,8 +17348,10 @@ export function createWorldScene({
       metalness: 0.45,
       roughness: 0.52,
     });
-    const seat = new THREE.Mesh(
-      new THREE.BoxGeometry(4.2, 0.22, 1.05),
+    const seat = cloneSharedMesh(
+      THREE,
+      "world-bench-seat",
+      () => new THREE.BoxGeometry(4.2, 0.22, 1.05),
       wood,
     );
     seat.name = `${name}-seat`;
@@ -17746,15 +17361,19 @@ export function createWorldScene({
     seat.userData.worldSeatActivity = activity;
     bench.add(seat);
     interactive.push(seat);
-    const back = new THREE.Mesh(
-      new THREE.BoxGeometry(4.2, 1.25, 0.2),
+    const back = cloneSharedMesh(
+      THREE,
+      "world-bench-back",
+      () => new THREE.BoxGeometry(4.2, 1.25, 0.2),
       wood,
     );
     back.position.set(0, 1.72, 0.46);
     bench.add(back);
     for (const xOffset of [-1.55, 1.55]) {
-      const leg = new THREE.Mesh(
-        new THREE.BoxGeometry(0.22, 1.05, 0.72),
+      const leg = cloneSharedMesh(
+        THREE,
+        "world-bench-leg",
+        () => new THREE.BoxGeometry(0.22, 1.05, 0.72),
         metal,
       );
       leg.position.set(xOffset, 0.54, 0);
@@ -17816,8 +17435,10 @@ export function createWorldScene({
     const wheels = [];
     for (const xOffset of [-1.72, 1.72]) {
       for (const zOffset of [-2.05, 2.05]) {
-        const wheel = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.58, 0.58, 0.34, 20),
+        const wheel = cloneSharedMesh(
+          THREE,
+          "beach-car-wheel",
+          () => new THREE.CylinderGeometry(0.58, 0.58, 0.34, 20),
           makeMaterial(THREE, "#101418", { roughness: 0.88 }),
         );
         wheel.rotation.z = Math.PI / 2;
@@ -17850,14 +17471,15 @@ export function createWorldScene({
   }
   addBeachCar();
 
-  // One lightweight, person-sized quadcopter waits beside the Town Square.
-  // It is deliberately built from a handful of low-segment primitives: the
-  // rotors remain legible nearby without adding meaningful cost to aerial or
-  // map-scale views.
+  // Both rideable quadcopters are deep clones of one prototype. Object3D
+  // cloning shares immutable geometry, materials, and sign textures while
+  // retaining independent transforms and rotor animation state.
   const quadcopterStates = [];
-  function addWorldQuadcopter() {
-    const quadcopter = new THREE.Group();
-    quadcopter.name = "forkmesh-world-quadcopter";
+  function createWorldQuadcopterPrototype() {
+    const quadcopterLod = new THREE.LOD();
+    quadcopterLod.name = "forkmesh-world-quadcopter-prototype";
+    const near = new THREE.Group();
+    near.name = "forkmesh-world-quadcopter-near";
     const frameMaterial = makeMaterial(THREE, "#1f6feb", {
       metalness: 0.62,
       roughness: 0.28,
@@ -17871,53 +17493,65 @@ export function createWorldScene({
       emissiveIntensity: 1.15,
       roughness: 0.22,
     });
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.25, 1.45, 0.58, 12),
+    const body = cloneSharedMesh(
+      THREE,
+      "quadcopter-body",
+      () => new THREE.CylinderGeometry(1.25, 1.45, 0.58, 12),
       frameMaterial,
     );
     body.position.y = 0.52;
-    quadcopter.add(body);
-    const seat = new THREE.Mesh(
-      new THREE.BoxGeometry(0.82, 0.18, 0.92),
+    near.add(body);
+    const seat = cloneSharedMesh(
+      THREE,
+      "quadcopter-seat",
+      () => new THREE.BoxGeometry(0.82, 0.18, 0.92),
       darkMaterial,
     );
+    seat.name = "forkmesh-world-quadcopter-seat";
     seat.position.set(0, 0.94, 0);
-    quadcopter.add(seat);
-    const rotors = [];
-    for (const [x, z] of [
+    near.add(seat);
+    for (const [rotorIndex, [x, z]] of [
       [-2.25, -2.25],
       [2.25, -2.25],
       [-2.25, 2.25],
       [2.25, 2.25],
-    ]) {
-      const arm = new THREE.Mesh(
-        new THREE.BoxGeometry(0.18, 0.14, 3.05),
+    ].entries()) {
+      const arm = cloneSharedMesh(
+        THREE,
+        "quadcopter-arm",
+        () => new THREE.BoxGeometry(0.18, 0.14, 3.05),
         frameMaterial,
       );
       arm.position.set(x * 0.5, 0.62, z * 0.5);
       arm.rotation.y = Math.atan2(x, z);
-      quadcopter.add(arm);
-      const motor = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.32, 0.38, 0.34, 10),
+      near.add(arm);
+      const motor = cloneSharedMesh(
+        THREE,
+        "quadcopter-motor",
+        () => new THREE.CylinderGeometry(0.32, 0.38, 0.34, 10),
         darkMaterial,
       );
       motor.position.set(x, 0.72, z);
-      quadcopter.add(motor);
-      const rotor = new THREE.Mesh(
-        new THREE.BoxGeometry(3.1, 0.045, 0.16),
+      near.add(motor);
+      const rotor = cloneSharedMesh(
+        THREE,
+        "quadcopter-rotor",
+        () => new THREE.BoxGeometry(3.1, 0.045, 0.16),
         lightMaterial,
       );
+      rotor.name = `forkmesh-world-quadcopter-rotor-${rotorIndex + 1}`;
       rotor.position.set(x, 0.96, z);
-      rotor.userData.quadcopterIndex = 0;
-      quadcopter.add(rotor);
-      rotors.push(rotor);
+      rotor.userData.quadcopterRotor = true;
+      near.add(rotor);
     }
-    const landingLight = new THREE.Mesh(
-      new THREE.SphereGeometry(0.22, 10, 7),
+    const landingLight = cloneSharedMesh(
+      THREE,
+      "quadcopter-landing-light",
+      () => new THREE.SphereGeometry(0.22, 10, 7),
       lightMaterial,
     );
     landingLight.position.set(0, 0.34, -1.32);
-    quadcopter.add(landingLight);
+    near.add(landingLight);
     const hint = makeLabelSprite(
       THREE,
       "FLY QUADCOPTER",
@@ -17927,17 +17561,57 @@ export function createWorldScene({
     hint.name = "forkmesh-world-quadcopter-control-hint";
     hint.position.set(0, 4.45, 0);
     hint.scale.set(7.2, 2.4, 1);
-    quadcopter.add(hint);
-    quadcopter.position.set(-34, 0.24, -42);
+    near.add(hint);
+
+    // The far clone is 44 triangles and carries no sign or separate motors.
+    const far = new THREE.Group();
+    far.name = "forkmesh-world-quadcopter-far";
+    const farBody = cloneSharedMesh(
+      THREE,
+      "quadcopter-far-body",
+      () => new THREE.OctahedronGeometry(1.25, 0),
+      frameMaterial,
+    );
+    farBody.position.y = 0.62;
+    far.add(farBody);
+    for (const rotation of [Math.PI / 4, -Math.PI / 4]) {
+      const rotorCross = cloneSharedMesh(
+        THREE,
+        "quadcopter-far-rotor-cross",
+        () => new THREE.BoxGeometry(6.2, 0.08, 0.18),
+        lightMaterial,
+      );
+      rotorCross.position.y = 0.94;
+      rotorCross.rotation.y = rotation;
+      far.add(rotorCross);
+    }
+    quadcopterLod.addLevel(near, 0, 0.12);
+    quadcopterLod.addLevel(far, 68, 0.18);
+    return quadcopterLod;
+  }
+  const quadcopterPrototype = createWorldQuadcopterPrototype();
+
+  function addWorldQuadcopter(index, position) {
+    const quadcopter = quadcopterPrototype.clone(true);
+    quadcopter.name = `forkmesh-world-quadcopter-${index + 1}`;
+    quadcopter.position.set(...position);
+    const rotors = [];
     quadcopter.traverse((child) => {
       if (!child.isMesh) return;
-      child.userData.quadcopterIndex = 0;
+      child.userData.quadcopterIndex = index;
+      if (child.userData.quadcopterRotor) rotors.push(child);
       interactive.push(child);
     });
+    const seat = quadcopter.getObjectByName("forkmesh-world-quadcopter-seat");
+    const hint = quadcopter.getObjectByName(
+      "forkmesh-world-quadcopter-control-hint",
+    );
     setShadows(quadcopter);
+    const far = quadcopter.getObjectByName("forkmesh-world-quadcopter-far");
+    if (far) setShadows(far, false, false);
     world.add(quadcopter);
     registerWorldElement(
-      "quadcopter", "Quadcopter", "Vehicles & rides", quadcopter,
+      "quadcopter", "Quadcopters", "Vehicles & rides", quadcopter,
     );
     quadcopterStates.push({
       quadcopter,
@@ -17947,7 +17621,118 @@ export function createWorldScene({
       moving: false,
     });
   }
-  addWorldQuadcopter();
+  addWorldQuadcopter(0, [-34, 0.24, -42]);
+  addWorldQuadcopter(1, [34, 0.24, -42]);
+
+  function createDroneRaceCourse() {
+    const course = new THREE.LOD();
+    course.name = "forkmesh-drone-race-course";
+    course.position.z = CONTINUOUS_CITY_CENTER_Z;
+    const colors = [
+      "#79c0ff", "#9ef7c6", "#f7c96b", "#ff8ab6", "#c7a0ff",
+    ];
+    const ringCenters = Array.from(
+      { length: DRONE_COURSE_RING_COUNT },
+      (_, index) => {
+        const angle = (index / DRONE_COURSE_RING_COUNT) * Math.PI * 2;
+        return new THREE.Vector3(
+          Math.cos(angle) * DRONE_COURSE_RADIUS,
+          58 + Math.sin(angle * 2) * 22 + Math.cos(angle * 3) * 8,
+          Math.sin(angle) * DRONE_COURSE_RADIUS,
+        );
+      },
+    );
+    const buildRingBatch = (geometry, name, opacity) => {
+      const material = makeMaterial(THREE, "#ffffff", {
+        emissive: "#1f6feb",
+        emissiveIntensity: 1.35,
+        metalness: 0.24,
+        roughness: 0.3,
+        transparent: opacity < 1,
+        opacity,
+        depthWrite: opacity >= 1,
+      });
+      const rings = new THREE.InstancedMesh(
+        geometry,
+        material,
+        DRONE_COURSE_RING_COUNT,
+      );
+      rings.name = name;
+      rings.castShadow = false;
+      rings.receiveShadow = false;
+      const transform = new THREE.Object3D();
+      const normal = new THREE.Vector3(0, 0, 1);
+      const tangent = new THREE.Vector3();
+      for (let index = 0; index < DRONE_COURSE_RING_COUNT; index += 1) {
+        const angle = (index / DRONE_COURSE_RING_COUNT) * Math.PI * 2;
+        const heightDerivative =
+          Math.cos(angle * 2) * 44 - Math.sin(angle * 3) * 24;
+        transform.position.copy(ringCenters[index]);
+        tangent.set(
+          -Math.sin(angle) * DRONE_COURSE_RADIUS,
+          heightDerivative,
+          Math.cos(angle) * DRONE_COURSE_RADIUS,
+        ).normalize();
+        transform.quaternion.setFromUnitVectors(normal, tangent);
+        transform.scale.set(1, 1, 1);
+        transform.updateMatrix();
+        rings.setMatrixAt(index, transform.matrix);
+        rings.setColorAt(index, new THREE.Color(colors[index % colors.length]));
+      }
+      rings.instanceMatrix.needsUpdate = true;
+      if (rings.instanceColor) rings.instanceColor.needsUpdate = true;
+      rings.computeBoundingSphere();
+      return rings;
+    };
+    const detailedRings = buildRingBatch(
+      new THREE.TorusGeometry(8, 0.55, 4, 12),
+      "forkmesh-drone-race-rings-detailed",
+      1,
+    );
+    const coarseRings = buildRingBatch(
+      new THREE.TorusGeometry(8, 0.72, 3, 8),
+      "forkmesh-drone-race-rings-coarse",
+      0.82,
+    );
+    course.addLevel(detailedRings, 0, 0.12);
+    course.addLevel(coarseRings, DRONE_COURSE_COARSE_DISTANCE, 0.16);
+    course.userData.ringCount = DRONE_COURSE_RING_COUNT;
+    const cameraCoursePosition = new THREE.Vector3();
+    let detailedVisible = true;
+    // The LOD root is at the World centre while its rings sit 500 units out.
+    // Select against the nearest ring centre so flying close to any gate gets
+    // the detailed batch and a camera over the central town keeps all ten in
+    // the 48-triangle coarse representation.
+    course.update = (activeCamera) => {
+      activeCamera.getWorldPosition(cameraCoursePosition);
+      course.worldToLocal(cameraCoursePosition);
+      let nearestDistance = Infinity;
+      ringCenters.forEach((center) => {
+        nearestDistance = Math.min(
+          nearestDistance,
+          cameraCoursePosition.distanceTo(center),
+        );
+      });
+      const boundary = detailedVisible
+        ? DRONE_COURSE_COARSE_DISTANCE
+        : DRONE_COURSE_DETAIL_ENTER_DISTANCE;
+      detailedVisible = nearestDistance <= boundary;
+      detailedRings.visible = detailedVisible;
+      coarseRings.visible = !detailedVisible;
+      course._currentLevel = detailedVisible ? 0 : 1;
+      course.userData.detailDistance = nearestDistance;
+      course.userData.detailLevel = detailedVisible ? "detailed" : "coarse";
+    };
+    return course;
+  }
+  const droneRaceCourse = createDroneRaceCourse();
+  world.add(droneRaceCourse);
+  registerWorldElement(
+    "drone-race-course",
+    "World drone race · 10 rings",
+    "Vehicles & rides",
+    droneRaceCourse,
+  );
 
   // Every repository imported from an external provider lives on its own
   // district, whether it is already hosted by a mirror or remains an external
@@ -18015,18 +17800,12 @@ export function createWorldScene({
   leaderboardDistrict.position.set(LEADERBOARD_ISLAND_CENTER_X, 0, 0);
   const leaderboardInterior = new THREE.Group();
   leaderboardInterior.name = "forkmesh-leaderboard-interior";
-  leaderboardInterior.visible = false;
   leaderboardInterior.userData.leaderboardInterior = true;
   leaderboardInterior.add(
     createDistrictGroundCircle(THREE, "leaderboards"),
   );
   leaderboardDistrict.add(leaderboardInterior);
   leaderboardDistrict.userData.leaderboardInterior = leaderboardInterior;
-  const leaderboardCover = createLeaderboardOpaqueCover(THREE);
-  leaderboardDistrict.add(leaderboardCover);
-  // The same one-sided surface that hides the boards also prevents selecting
-  // them through the shell. Rays cast from inside hit only its culled backs.
-  interactive.push(leaderboardCover);
   const leaderboardBeacon = new THREE.Mesh(
     new THREE.CylinderGeometry(3.1, 4.2, 0.7, 24),
     makeMaterial(THREE, "#173c35", {
@@ -18658,30 +18437,30 @@ export function createWorldScene({
   campfireGround.receiveShadow = true;
   campfire.add(campfireGround);
 
-  const MEMBERS_YURT_RADIUS = 12;
-  const MEMBERS_YURT_MEMBER_RINGS = [
+  const MEMBER_CLEARING_RADIUS = 12;
+  const MEMBER_CIRCLE_RINGS = [
     { radius: 4.4, capacity: 10 },
     { radius: 7.1, capacity: 16 },
     { radius: 9.7, capacity: 22 },
   ];
-  const MEMBERS_YURT_VISIBLE_MEMBER_LIMIT = MEMBERS_YURT_MEMBER_RINGS.reduce(
+  const MEMBER_CIRCLE_VISIBLE_LIMIT = MEMBER_CIRCLE_RINGS.reduce(
     (total, ring) => total + ring.capacity,
     0,
   );
-  function membersYurtMemberPosition(index, total) {
+  function memberCirclePosition(index, total) {
     const boundedTotal = Math.max(
       0,
-      Math.min(MEMBERS_YURT_VISIBLE_MEMBER_LIMIT, Math.round(Number(total) || 0)),
+      Math.min(MEMBER_CIRCLE_VISIBLE_LIMIT, Math.round(Number(total) || 0)),
     );
     let ringStart = 0;
-    for (const ring of MEMBERS_YURT_MEMBER_RINGS) {
+    for (const ring of MEMBER_CIRCLE_RINGS) {
       const ringCount = Math.min(
         ring.capacity,
         Math.max(0, boundedTotal - ringStart),
       );
       if (index < ringStart + ringCount) {
-        // Leave a doorway-wide aisle on -Z, then distribute this ring over the
-        // remaining arc. Sparse directories still spread around the hearth.
+        // Keep a clear approach from Town while spreading directory members
+        // around the open hearth in bounded, camera-LOD avatars.
         const entranceGap = Math.min(Math.PI / 2, 3.6 / ring.radius);
         const usableArc = Math.PI * 2 - entranceGap;
         const slot = index - ringStart;
@@ -18698,182 +18477,63 @@ export function createWorldScene({
     }
     return new THREE.Vector3();
   }
-  campfireGround.scale.setScalar(MEMBERS_YURT_RADIUS + 0.8);
-  const membersYurt = new THREE.Group();
-  membersYurt.name = "members-center-yurt";
-  const yurtWallMaterial = makeMaterial(THREE, "#d9c49a", {
-    roughness: 0.92,
-    transparent: false,
-    opacity: 1,
-    depthWrite: true,
+  campfireGround.scale.setScalar(MEMBER_CLEARING_RADIUS + 0.8);
+
+  // The roster total remains useful without an enclosure. Mount it on a
+  // freestanding, low-triangle sign at the open circle's Town-side approach.
+  const memberCircleInfo = new THREE.Group();
+  memberCircleInfo.name = "members-circle-info-sign";
+  memberCircleInfo.position.set(0, 0, -MEMBER_CLEARING_RADIUS - 1.1);
+  const memberCircleSignMaterial = new THREE.MeshBasicMaterial({
+    transparent: true,
+    toneMapped: false,
     side: THREE.DoubleSide,
+    forceSinglePass: true,
   });
-  const yurtWallPositions = [];
-  for (let segment = 0; segment < 40; segment += 1) {
-    const start = (segment / 40) * Math.PI * 2;
-    const end = ((segment + 1) / 40) * Math.PI * 2;
-    const middle = (start + end) / 2;
-    const doorway =
-      Math.sin(middle) < -0.9 &&
-      Math.abs(Math.cos(middle) * MEMBERS_YURT_RADIUS) < 1.95;
-    if (doorway) continue;
-    const lowerStart = [
-      Math.cos(start) * MEMBERS_YURT_RADIUS,
-      -2.9,
-      Math.sin(start) * MEMBERS_YURT_RADIUS,
-    ];
-    const upperStart = [lowerStart[0], 2.9, lowerStart[2]];
-    const lowerEnd = [
-      Math.cos(end) * MEMBERS_YURT_RADIUS,
-      -2.9,
-      Math.sin(end) * MEMBERS_YURT_RADIUS,
-    ];
-    const upperEnd = [lowerEnd[0], 2.9, lowerEnd[2]];
-    yurtWallPositions.push(
-      ...lowerStart,
-      ...upperStart,
-      ...lowerEnd,
-      ...lowerEnd,
-      ...upperStart,
-      ...upperEnd,
+  const memberCircleInfoFace = cloneSharedPlane(
+    THREE,
+    6.2,
+    3.1,
+    memberCircleSignMaterial,
+  );
+  memberCircleInfoFace.name = "members-circle-member-info";
+  memberCircleInfoFace.position.y = 3.25;
+  memberCircleInfoFace.rotation.y = Math.PI;
+  memberCircleInfoFace.renderOrder = 12;
+  memberCircleInfoFace.userData.interactive = "member-circle-info";
+  interactive.push(memberCircleInfoFace);
+  memberCircleInfo.add(memberCircleInfoFace);
+  const memberCirclePostMaterial = makeMaterial(THREE, "#6e421f", {
+    roughness: 0.9,
+  });
+  [-2.65, 2.65].forEach((x) => {
+    const post = cloneSharedMesh(
+      THREE,
+      "member-circle-sign-post",
+      () => new THREE.BoxGeometry(0.24, 3.5, 0.3),
+      memberCirclePostMaterial,
     );
-  }
-  const yurtWallGeometry = new THREE.BufferGeometry();
-  yurtWallGeometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(yurtWallPositions, 3),
-  );
-  yurtWallGeometry.computeVertexNormals();
-  const yurtWalls = new THREE.Mesh(yurtWallGeometry, yurtWallMaterial);
-  yurtWalls.name = "members-yurt-walls";
-  yurtWalls.position.y = 2.95;
-  yurtWalls.castShadow = true;
-  yurtWalls.receiveShadow = true;
-  membersYurt.add(yurtWalls);
-
-  // Horizontal bands and roof ribs keep the large, low-cost shell readable as
-  // a traditional round tent without adding any roster-dependent geometry.
-  [0.8, 2.4, 4.2, 5.65].forEach((height, index) => {
-    const band = new THREE.Mesh(
-      new THREE.TorusGeometry(MEMBERS_YURT_RADIUS + 0.035, 0.09, 6, 40),
-      makeMaterial(THREE, index % 2 ? "#895429" : "#a86d35", {
-        roughness: 0.9,
-      }),
-    );
-    band.name = `members-yurt-wall-band-${index + 1}`;
-    band.rotation.x = Math.PI / 2;
-    band.position.y = height;
-    membersYurt.add(band);
+    post.position.set(x, 1.75, 0.08);
+    memberCircleInfo.add(post);
   });
-  const yurtRoof = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.68, MEMBERS_YURT_RADIUS + 0.45, 5.2, 40, 1, true),
-    makeMaterial(THREE, "#8f3429", {
-      roughness: 0.88,
-      side: THREE.DoubleSide,
-    }),
-  );
-  yurtRoof.name = "members-yurt-roof";
-  yurtRoof.position.y = 8.45;
-  yurtRoof.castShadow = true;
-  yurtRoof.receiveShadow = true;
-  membersYurt.add(yurtRoof);
+  campfire.add(memberCircleInfo);
 
-  const yurtDoor = new THREE.Group();
-  yurtDoor.name = "members-yurt-door";
-  yurtDoor.position.set(0, 2.25, -MEMBERS_YURT_RADIUS - 0.12);
-  yurtDoor.userData.membersYurtDoor = true;
-  const yurtDoorMaterial = makeMaterial(THREE, "#29180f", {
-    roughness: 0.95,
-  });
-  const yurtDoorPanels = [-1, 1].map((side) => {
-    const panel = new THREE.Mesh(
-      new THREE.BoxGeometry(1.75, 4.5, 0.32),
-      yurtDoorMaterial,
-    );
-    panel.name = `members-yurt-door-${side < 0 ? "left" : "right"}`;
-    panel.position.x = side * 0.875;
-    panel.userData.slideAxis = "x";
-    panel.userData.closedOffset = side * 0.875;
-    panel.userData.openOffset = side * 2.775;
-    panel.userData.membersYurtDoor = true;
-    interactive.push(panel);
-    yurtDoor.add(panel);
-    return panel;
-  });
-  yurtDoor.userData.slidingPanels = yurtDoorPanels;
-  membersYurt.add(yurtDoor);
-  membersYurt.userData.enclosureShell = true;
-  [-1.95, 1.95].forEach((x) => {
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.3, 5, 0.38),
-      makeMaterial(THREE, "#6e421f", { roughness: 0.9 }),
-    );
-    post.position.set(x, 2.5, -MEMBERS_YURT_RADIUS - 0.3);
-    post.castShadow = true;
-    membersYurt.add(post);
-  });
-  const lintel = new THREE.Mesh(
-    new THREE.BoxGeometry(4.25, 0.34, 0.42),
-    makeMaterial(THREE, "#6e421f", { roughness: 0.9 }),
-  );
-  lintel.position.set(0, 4.88, -MEMBERS_YURT_RADIUS - 0.3);
-  lintel.castShadow = true;
-  membersYurt.add(lintel);
-
-  const memberDoorInfo = new THREE.Mesh(
-    new THREE.PlaneGeometry(6.2, 3.1),
-    new THREE.MeshBasicMaterial({
-      transparent: true,
-      toneMapped: false,
-      side: THREE.DoubleSide,
-    }),
-  );
-  memberDoorInfo.name = "members-yurt-door-member-info";
-  memberDoorInfo.position.set(4.95, 3.9, -MEMBERS_YURT_RADIUS - 0.5);
-  // PlaneGeometry's front faces +Z. The plaque sits on the yurt's -Z side,
-  // so approaching visitors otherwise see its mirrored back face.
-  memberDoorInfo.rotation.y = Math.PI;
-  memberDoorInfo.renderOrder = 12;
-  membersYurt.add(memberDoorInfo);
-
-  // The flue rises directly over the central fire. It is fixed geometry, so
-  // member growth changes only the entrance texture rather than draw count.
-  const yurtChimney = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.58, 0.72, 5.8, 18),
-    makeMaterial(THREE, "#353638", {
-      roughness: 0.72,
-      metalness: 0.32,
-    }),
-  );
-  yurtChimney.name = "members-yurt-central-chimney";
-  yurtChimney.position.y = 12.45;
-  yurtChimney.castShadow = true;
-  membersYurt.add(yurtChimney);
-  const chimneyCap = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.86, 0.68, 0.24, 18),
-    makeMaterial(THREE, "#242527", { roughness: 0.78, metalness: 0.3 }),
-  );
-  chimneyCap.position.y = 15.45;
-  membersYurt.add(chimneyCap);
-  campfire.add(membersYurt);
-
-  let memberDoorInfoShown = "";
-  function setMembersYurtDoorInfo(total, newest = "") {
+  let memberCircleInfoShown = "";
+  function setMemberCircleInfo(total, newest = "") {
     const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
     const latest = String(newest || "").trim().slice(0, 18);
     const key = `${count}|${latest}`;
-    if (memberDoorInfoShown === key) return;
-    memberDoorInfoShown = key;
-    memberDoorInfo.material.map?.dispose?.();
-    memberDoorInfo.material.map = membersYurtDoorTexture(
+    if (memberCircleInfoShown === key) return;
+    memberCircleInfoShown = key;
+    memberCircleInfoFace.material.map?.dispose?.();
+    memberCircleInfoFace.material.map = membersCircleInfoTexture(
       THREE,
       count,
       latest,
     );
-    memberDoorInfo.material.needsUpdate = true;
+    memberCircleInfoFace.material.needsUpdate = true;
   }
-  setMembersYurtDoorInfo(0, "");
-
+  setMemberCircleInfo(0, "");
   const firePit = new THREE.Mesh(
     new THREE.CylinderGeometry(1.45, 1.65, 0.22, 16),
     makeMaterial(THREE, "#4a4038", { roughness: 0.9 }),
@@ -18956,16 +18616,15 @@ export function createWorldScene({
   fireLight.castShadow = false;
   campfire.add(fireLight);
   let memberCountShown = "";
-  // Headline member data belongs at the entrance. Nothing over the fire
-  // changes with the roster, and no per-member logs, benches, or labels grow
-  // outside the yurt.
+  // Headline member data belongs at the approach sign. Nothing over the fire
+  // changes with the roster, and the directory population remains bounded.
   function setCampfireMemberCount(total, newest = "") {
     const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
     const latest = String(newest || "").trim().slice(0, 18);
     const key = `${count}|${latest}`;
     if (memberCountShown === key) return;
     memberCountShown = key;
-    setMembersYurtDoorInfo(count, latest);
+    setMemberCircleInfo(count, latest);
   }
   animated.push((time) => {
     const seconds = time * 0.001;
@@ -19025,338 +18684,13 @@ export function createWorldScene({
       Math.sin(time * 0.0033 + slowFlicker * 1.4) * 0.11,
     );
   });
-  // Benches sit back far enough from the pit to leave a wide walkable ring
-  // between the seats and the stones (and to clear the log pile at ~2.6). The
-  // circle carries one wooden bench per registered member — occupied by a
-  // seated directory figure while the member is away, left empty (and
-  // sittable) while they walk the world as a live avatar — plus one bench
-  // that always stays open so an arriving guest has a spot by the fire, and
-  // widens whenever a new account joins so everyone still fits.
-  const CAMPFIRE_BENCH_RADIUS = 9;
-  // Bench height is set by the sitters, not the other way round: the plank top
-  // lands SEATED_SEAT_TO_SOLE above the walking plane so a seated avatar's
-  // shins reach the ground instead of dangling (or folding through it).
-  const CAMPFIRE_SEAT_HALF_THICKNESS = 0.07;
-  const CAMPFIRE_SEAT_TOP_Y = WORLD_WALKING_PLANE_Y + SEATED_SEAT_TO_SOLE;
-  const CAMPFIRE_SEAT_Y = CAMPFIRE_SEAT_TOP_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
-  const CAMPFIRE_BENCH_LEG_HEIGHT = CAMPFIRE_SEAT_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
-  const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
-  const CAMPFIRE_CIRCLE_MAX_SEATS = 500;
-  const CAMPFIRE_MEMBERS_PER_ROW = 25;
-  const CAMPFIRE_ROW_SPACING = 2.8;
-  const CAMPFIRE_SEAT_SPACING = 2.1;
-  // The ring never closes all the way round: a doorway-wide span of it is kept
-  // bench-free so visitors can walk straight in to the fire and back out again
-  // instead of climbing over the planks, however many members the circle has
-  // grown to. The radius reserves this arc alongside the seats, so widening the
-  // ring for a new account never eats the opening.
-  const CAMPFIRE_ENTRANCE_WIDTH = 3.4;
-  // On a small ring the raw arc would swallow a third of the circle; cap it so
-  // the seats still read as a ring rather than a horseshoe.
-  const CAMPFIRE_ENTRANCE_MAX_ANGLE = Math.PI / 3;
-  // The gap faces back toward the town centre, the side visitors arrive from,
-  // wherever the fire's landmark stands.
-  const CAMPFIRE_ENTRANCE_ANGLE = Math.atan2(
-    -campfire.position.z,
-    -campfire.position.x,
-  );
-  let campfireSeatLabelsDirty = false;
-  function rebuildCampfireCircle(neededSeats) {
-    const count = Math.max(
-      CAMPFIRE_CIRCLE_MIN_SEATS,
-      Math.min(
-        CAMPFIRE_CIRCLE_MAX_SEATS,
-        Math.round(Number(neededSeats) || 0),
-      ),
-    );
-    if (campfire.userData.seatCount === count) {
-      return campfire.userData.seatOffsets;
-    }
-    const previous = campfire.userData.seatRing;
-    if (previous) {
-      previous.traverse((child) => {
-        const interactiveIndex = interactive.indexOf(child);
-        if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
-      });
-      campfire.remove(previous);
-      disposeObject3D(previous);
-    }
-    const ring = new THREE.Group();
-    ring.name = "campfire-member-circle";
-    // Hundreds of individual six-material seat boxes and separate legs made
-    // the lifetime account count scale into thousands of draw submissions.
-    // The shared wood is two instanced draws and every name plate is merged
-    // into one atlas-backed mesh. Invisible meshes preserve precise seat
-    // raycasting without becoming renderer submissions themselves.
-    const seatGeometry = new THREE.BoxGeometry(1.6, 0.14, 0.6);
-    const seatMaterial = makeMaterial(THREE, "#8a5a33", {
-      roughness: 0.86,
-    });
-    const seatInstances = new THREE.InstancedMesh(
-      seatGeometry,
-      seatMaterial,
-      count,
-    );
-    seatInstances.name = "campfire-member-bench-seats";
-    const legGeometry = new THREE.BoxGeometry(
-      0.16,
-      CAMPFIRE_BENCH_LEG_HEIGHT,
-      0.5,
-    );
-    const legMaterial = makeMaterial(THREE, "#4f3018", {
-      roughness: 0.9,
-    });
-    const legInstances = new THREE.InstancedMesh(
-      legGeometry,
-      legMaterial,
-      count * 2,
-    );
-    legInstances.name = "campfire-member-bench-legs";
-    const labelGeometry = new THREE.BufferGeometry();
-    const labelMaterial = new THREE.MeshBasicMaterial({
-      toneMapped: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
-    });
-    const labelMesh = new THREE.Mesh(labelGeometry, labelMaterial);
-    labelMesh.name = "campfire-member-bench-label-atlas";
-    labelMesh.visible = false;
-    labelMesh.castShadow = false;
-    labelMesh.receiveShadow = false;
-    const labelPositions = [];
-    const labelUvs = [];
-    const labelIndices = [];
-    const labelMatrix = new THREE.Matrix4();
-    const labelCorner = new THREE.Vector3();
-    const instanceTransform = new THREE.Object3D();
-    ring.add(seatInstances, legInstances, labelMesh);
-    const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);
-    const outerRadius =
-      CAMPFIRE_BENCH_RADIUS + Math.max(0, rowCount - 1) * CAMPFIRE_ROW_SPACING;
-    campfireGround.scale.setScalar(outerRadius + 1.45);
-    const seatOffsets = [];
-    const benches = [];
-    for (let index = 0; index < count; index += 1) {
-      const row = Math.floor(index / CAMPFIRE_MEMBERS_PER_ROW);
-      const rowStart = row * CAMPFIRE_MEMBERS_PER_ROW;
-      const seatsInRow = Math.min(
-        CAMPFIRE_MEMBERS_PER_ROW,
-        count - rowStart,
-      );
-      const positionInRow = index - rowStart;
-      const radius = CAMPFIRE_BENCH_RADIUS + row * CAMPFIRE_ROW_SPACING;
-      // Every row reserves the same doorway toward town. The usable arc is
-      // evenly spaced, while rows stop at 25 so avatars never collapse into
-      // one ever-expanding crowded ring.
-      const entranceAngle = Math.min(
-        CAMPFIRE_ENTRANCE_MAX_ANGLE,
-        CAMPFIRE_ENTRANCE_WIDTH / radius,
-      );
-      const seatStep = (Math.PI * 2 - entranceAngle) / seatsInRow;
-      const angle =
-        CAMPFIRE_ENTRANCE_ANGLE +
-        entranceAngle / 2 +
-        (positionInRow + 0.5) * seatStep;
-      const bench = new THREE.Group();
-      bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-      // Long axis tangent to the ring so every bench fronts the flames.
-      bench.rotation.y = -angle + Math.PI / 2;
-      instanceTransform.position.set(
-        bench.position.x,
-        CAMPFIRE_SEAT_Y,
-        bench.position.z,
-      );
-      instanceTransform.rotation.set(0, bench.rotation.y, 0);
-      instanceTransform.updateMatrix();
-      seatInstances.setMatrixAt(index, instanceTransform.matrix);
-
-      const seat = new THREE.Mesh(seatGeometry, seatMaterial);
-      seat.position.y = CAMPFIRE_SEAT_Y;
-      seat.visible = false;
-      // Seat coordinates are read from the live world matrix at click time, so a
-      // relocated campfire needs no bookkeeping and the seats can never drift.
-      seat.userData.campfireBench = true;
-      seat.userData.raycastProxy = true;
-      interactive.push(seat);
-      bench.add(seat);
-      [-0.62, 0.62].forEach((end, legIndex) => {
-        instanceTransform.position.set(
-          bench.position.x + Math.cos(bench.rotation.y) * end,
-          CAMPFIRE_BENCH_LEG_HEIGHT / 2,
-          bench.position.z - Math.sin(bench.rotation.y) * end,
-        );
-        instanceTransform.rotation.set(0, bench.rotation.y, 0);
-        instanceTransform.updateMatrix();
-        legInstances.setMatrixAt(index * 2 + legIndex, instanceTransform.matrix);
-      });
-      // A resource-free child remains as the per-member chat-bubble anchor.
-      // The visible quad is written into the single merged atlas mesh below.
-      const label = new THREE.Object3D();
-      label.name = `campfire-member-bench-label-${index + 1}`;
-      label.position.y = CAMPFIRE_SEAT_TOP_Y + 0.002;
-      label.rotation.x = -Math.PI / 2;
-      bench.add(label);
-      bench.updateMatrix();
-      label.updateMatrix();
-      labelMatrix.multiplyMatrices(bench.matrix, label.matrix);
-      const vertex = index * 4;
-      for (const [x, y] of [
-        [-0.8, 0.3],
-        [0.8, 0.3],
-        [-0.8, -0.3],
-        [0.8, -0.3],
-      ]) {
-        labelCorner.set(x, y, 0).applyMatrix4(labelMatrix);
-        labelPositions.push(labelCorner.x, labelCorner.y, labelCorner.z);
-      }
-      labelUvs.push(0, 1, 1, 1, 0, 0, 1, 0);
-      labelIndices.push(
-        vertex,
-        vertex + 2,
-        vertex + 1,
-        vertex + 2,
-        vertex + 3,
-        vertex + 1,
-      );
-      benches.push({ bench, seat, label, labelKey: null });
-      ring.add(bench);
-      // Offsets carry the top of the plank; sitters are placed by their hips
-      // off it (seatedAvatarY), the same way the local player is.
-      seatOffsets.push(
-        new THREE.Vector3(
-          bench.position.x,
-          seat.position.y + CAMPFIRE_SEAT_HALF_THICKNESS,
-          bench.position.z,
-        ),
-      );
-    }
-    seatInstances.instanceMatrix.needsUpdate = true;
-    legInstances.instanceMatrix.needsUpdate = true;
-    labelGeometry.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(labelPositions, 3),
-    );
-    labelGeometry.setAttribute(
-      "uv",
-      new THREE.Float32BufferAttribute(labelUvs, 2),
-    );
-    labelGeometry.setIndex(labelIndices);
-    labelGeometry.computeBoundingSphere();
-    seatInstances.castShadow = true;
-    seatInstances.receiveShadow = true;
-    legInstances.castShadow = true;
-    legInstances.receiveShadow = true;
-    campfire.add(ring);
-    campfire.userData.seatRing = ring;
-    campfire.userData.seatCount = count;
-    campfire.userData.seatRadius = outerRadius;
-    campfire.userData.seatRadii = Array.from(
-      { length: rowCount },
-      (_, row) => CAMPFIRE_BENCH_RADIUS + row * CAMPFIRE_ROW_SPACING,
-    );
-    campfire.userData.seatOffsets = seatOffsets;
-    campfire.userData.seatBenches = benches;
-    campfire.userData.seatLabelMesh = labelMesh;
-    campfireSeatLabelsDirty = true;
-    return seatOffsets;
-  }
-
-  // Rebrands one bench's plank top, skipping the canvas work when the seat
-  // already shows this name and away state. The ring is not built until the
-  // first updateMemberLounge, so an earlier call simply finds no bench.
-  function setCampfireSeatLabel(index, name, state = "seated") {
-    const bench = (campfire.userData.seatBenches || [])[index];
-    if (!bench) return;
-    const key = `${name} ${state}`;
-    if (bench.labelKey === key) return;
-    bench.labelKey = key;
-    bench.label.userData.name = String(name || "Campfire").slice(0, 32);
-    bench.labelName = String(name || "");
-    bench.labelState = state;
-    campfireSeatLabelsDirty = true;
-  }
-
-  function repaintCampfireSeatLabels() {
-    if (!campfireSeatLabelsDirty) return;
-    campfireSeatLabelsDirty = false;
-    const benches = campfire.userData.seatBenches || [];
-    const labelMesh = campfire.userData.seatLabelMesh;
-    const uvAttribute = labelMesh?.geometry?.attributes?.uv;
-    if (!labelMesh?.material || !uvAttribute || !benches.length) return;
-    const cellWidth = compactRenderer ? 128 : 160;
-    const cellHeight = compactRenderer ? 48 : 60;
-    const columns = Math.min(
-      20,
-      Math.max(1, Math.ceil(Math.sqrt(benches.length * 0.375))),
-    );
-    const rows = Math.ceil(benches.length / columns);
-    const atlasWidth = columns * cellWidth;
-    const atlasHeight = rows * cellHeight;
-    const texture = canvasTexture(
-      THREE,
-      atlasWidth,
-      atlasHeight,
-      (context) => {
-        benches.forEach((bench, index) => {
-          drawCampfireSeatPlate(
-            context,
-            bench.labelName,
-            bench.labelState,
-            (index % columns) * cellWidth,
-            Math.floor(index / columns) * cellHeight,
-            cellWidth,
-            cellHeight,
-          );
-        });
-      },
-    );
-    const uvs = uvAttribute.array;
-    benches.forEach((_bench, index) => {
-      const column = index % columns;
-      const row = Math.floor(index / columns);
-      const u0 = (column * cellWidth) / atlasWidth;
-      const u1 = ((column + 1) * cellWidth) / atlasWidth;
-      const v1 = 1 - (row * cellHeight) / atlasHeight;
-      const v0 = 1 - ((row + 1) * cellHeight) / atlasHeight;
-      uvs.set([u0, v1, u1, v1, u0, v0, u1, v0], index * 8);
-    });
-    uvAttribute.needsUpdate = true;
-    labelMesh.material.map?.dispose?.();
-    labelMesh.material.map = texture;
-    labelMesh.material.needsUpdate = true;
-    labelMesh.visible = true;
-    labelMesh.userData.atlasWidth = atlasWidth;
-    labelMesh.userData.atlasHeight = atlasHeight;
-  }
-
-  function setCampfireSeatOrgTeamAction(index, assignment, peerId, name) {
-    const seat = (campfire.userData.seatBenches || [])[index]?.seat;
-    if (!seat) return;
-    orgTeamActions.delete(seat);
-    if (assignment?.canManage !== true) return;
-    orgTeamActions.set(seat, {
-      org: assignment.org,
-      member: assignment.member,
-      peerId,
-      name,
-    });
-  }
-  const membersYurtInterior = new THREE.Group();
-  membersYurtInterior.name = "members-yurt-interior";
-  membersYurtInterior.visible = false;
-  membersYurtInterior.userData.membersYurtInterior = true;
-  [...campfire.children].forEach((child) => {
-    if (child !== membersYurt) membersYurtInterior.add(child);
-  });
-  campfire.add(membersYurtInterior);
-  campfire.userData.membersYurtInterior = membersYurtInterior;
-  campfire.userData.membersYurtShell = membersYurt;
   // The landmark is complete before directory data arrives; the first member
-  // refresh only repaints its entrance plaque.
+  // refresh only repaints its freestanding information sign.
   setShadows(campfire);
   world.add(campfire);
-  registerWorldElement("campfire", "Members Center yurt", "Districts", campfire);
+  registerWorldElement(
+    "campfire", "Members Circle campfire", "Districts", campfire,
+  );
   landmarkObjects.set("campfire", campfire);
 
   // A wooden swing set beside the Office garden gym: three swings hang from
@@ -19902,16 +19236,21 @@ export function createWorldScene({
   nodeInterior.name = "forkmesh-node-interior";
   nodeInterior.visible = false;
   nodeInterior.userData.nodeInterior = true;
-  const nodeCover = createNodeOpaqueCover(THREE);
+  const nodeBoxLod = createMirrorNodeBoxLod(THREE);
+  const nodeBoxLodTransform = new THREE.Object3D();
+  const nodeBoxLodOnlineColor = new THREE.Color("#264e40");
+  const nodeBoxLodOfflineColor = new THREE.Color("#454d49");
   const fountainLandmark = landmarkObjects.get("fountain");
   if (fountainLandmark) nodeInterior.add(fountainLandmark);
-  nodeDistrict.add(nodeInterior, nodeCover);
+  nodeDistrict.add(nodeInterior, nodeBoxLod);
   nodeDistrict.userData.nodeInterior = nodeInterior;
-  nodeDistrict.userData.nodeCover = nodeCover;
+  nodeDistrict.userData.nodeBoxLod = nodeBoxLod;
   world.add(nodeDistrict);
-  interactive.push(nodeCover);
   registerWorldElement(
-    "node-district", "Mirror node hall", "Districts", nodeDistrict,
+    "node-district", "Mirror node yard", "Districts", nodeDistrict,
+  );
+  registerWorldElement(
+    "node-cabinets", "Mirror node cabinets", "Infrastructure", nodeBoxLod,
   );
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
 
@@ -19935,10 +19274,8 @@ export function createWorldScene({
     : Math.PI;
   world.add(player);
   registerWorldElement("player-avatar", "Your avatar", "Avatars & bots", player);
-  let repositoryDomeOccupied = false;
-  let leaderboardCircleOccupied = false;
-  let nodeCoverOccupied = false;
-  let membersYurtOccupied = false;
+  let nodeDetailVisible = false;
+  const nodeDetailWorldPosition = new THREE.Vector3();
   let officeSceneMode = "town";
   let beachSceneActive = false;
   const activeWalkSurfaceContains = (x, z, radius = OFFICE_AVATAR_RADIUS) =>
@@ -20004,9 +19341,12 @@ export function createWorldScene({
         });
       });
     });
-    geometries.forEach((geometry) => geometry.dispose());
+    let releasedGeometries = 0;
+    geometries.forEach((geometry) => {
+      if (disposeOwnedGeometry(geometry)) releasedGeometries += 1;
+    });
     textures.forEach((texture) => texture.dispose());
-    return { geometries: geometries.size, textures: textures.size };
+    return { geometries: releasedGeometries, textures: textures.size };
   }
 
   function syncCompactDistrictRoot(district, root) {
@@ -20015,16 +19355,9 @@ export function createWorldScene({
     root.visible =
       resident &&
       (
-        root.userData.repositoryDomeInterior !== true ||
-        repositoryDomeOccupied
-      ) &&
-      (
-        root.userData.membersYurtInterior !== true ||
-        membersYurtOccupied
-      ) &&
-      (
         root.userData.officeInterior !== true ||
-        officeSceneMode !== "town"
+        officeSceneMode !== "town" ||
+        world.userData.officeExteriorDetailLevel === "furnished"
       ) &&
       (
         root.userData.beachScene !== true ||
@@ -20060,9 +19393,17 @@ export function createWorldScene({
         player.position.z - district.z,
       );
       // The active Office floor must remain resident even if an unusual saved
-      // pose temporarily lies beyond the outdoor boundary.
+      // pose temporarily lies beyond the outdoor boundary. A camera-close
+      // exterior view also stays resident so the clear glass can reveal its
+      // furnished LOD on compact renderers.
       const required =
-        (id === "office" && officeSceneMode !== "town") ||
+        (
+          id === "office" &&
+          (
+            officeSceneMode !== "town" ||
+            world.userData.officeExteriorDetailLevel === "furnished"
+          )
+        ) ||
         (id === "beach" && beachSceneActive);
       const nextResident =
         required || district.resident === true
@@ -20076,16 +19417,9 @@ export function createWorldScene({
           const shouldDraw =
             nextResident &&
             (
-              root.userData.repositoryDomeInterior !== true ||
-              repositoryDomeOccupied
-            ) &&
-            (
-              root.userData.membersYurtInterior !== true ||
-              membersYurtOccupied
-            ) &&
-            (
               root.userData.officeInterior !== true ||
-              officeSceneMode !== "town"
+              officeSceneMode !== "town" ||
+              world.userData.officeExteriorDetailLevel === "furnished"
             ) &&
             (
               root.userData.beachScene !== true ||
@@ -20103,146 +19437,40 @@ export function createWorldScene({
     });
   }
 
-  function updateRepositoryDomeOccupancy(force = false) {
-    const district = landmarkObjects.get("repositories");
-    if (!district) return false;
-    const distance = Math.hypot(
-      player.position.x - district.position.x,
-      player.position.z - district.position.z,
-    );
-    const boundary = repositoryDomeOccupied
-      ? REPOSITORY_DOME_EXIT_RADIUS
-      : REPOSITORY_DOME_ENTER_RADIUS;
-    const occupied = distance <= boundary;
-    if (!force && occupied === repositoryDomeOccupied) return occupied;
-    repositoryDomeOccupied = occupied;
-    world.userData.repositoryDomeOccupied = occupied;
-    const interior = district.userData.repositoryDomeInterior;
-    if (interior) interior.visible = occupied;
-    const dome = district.userData.repositoryDome;
-    // Keep the enclosure around the active interior. Its double-sided shell
-    // and open, still-visible door give the visitor a readable route out.
-    if (dome) dome.visible = true;
-    const catalog = world.userData.repositoryCatalogLayer;
-    if (catalog) {
-      if (compactRenderer) {
-        syncCompactDistrictRoot(
-          compactDistricts.get("repositories"),
-          catalog,
-        );
-      } else {
-        catalog.visible = occupied;
+  function updateNodeDetailLevel(force = false) {
+    nodeDistrict.getWorldPosition(nodeDetailWorldPosition);
+    const distance = camera.position.distanceTo(nodeDetailWorldPosition);
+    world.userData.nodeDetailDistance = distance;
+    world.userData.nodeDetailSource = "camera";
+    const boundary = nodeDetailVisible
+      ? NODE_DETAIL_EXIT_DISTANCE
+      : NODE_DETAIL_ENTER_DISTANCE;
+    const detailed = distance <= boundary;
+    if (!force && detailed === nodeDetailVisible) return detailed;
+    nodeDetailVisible = detailed;
+    world.userData.nodeDetailLevel = detailed ? "detailed" : "boxes";
+    nodeInterior.visible = detailed;
+    // Raycaster targets are stored as individual meshes and Three.js does not
+    // reject them merely because an ancestor is hidden. Park their own
+    // visibility while the coarse LOD is active so an invisible cabinet panel
+    // or fountain control cannot still be clicked from across the World.
+    nodeInterior.traverse((child) => {
+      if (!child.userData?.interactive && !child.userData?.nodeCabinet) return;
+      if (detailed) {
+        if (!Object.hasOwn(child.userData, "nodeLodVisible")) return;
+        child.visible = child.userData.nodeLodVisible;
+        delete child.userData.nodeLodVisible;
+        return;
       }
-    }
-    return occupied;
-  }
-
-  function updateLeaderboardCircleOccupancy(force = false) {
-    // Enter only after the full avatar clears the jamb, and keep the contents
-    // resident until the full avatar clears it again while exiting.
-    const margin = leaderboardCircleOccupied
-      ? -OFFICE_AVATAR_RADIUS
-      : OFFICE_AVATAR_RADIUS;
-    const occupied = leaderboardCoverContainsWorldPoint(
-      player.position.x,
-      player.position.z,
-      margin,
-    );
-    if (!force && occupied === leaderboardCircleOccupied) return occupied;
-    leaderboardCircleOccupied = occupied;
-    world.userData.leaderboardCircleOccupied = occupied;
-    leaderboardInterior.visible = occupied;
-    leaderboardCover.visible = true;
-    return occupied;
-  }
-
-  function updateNodeCoverOccupancy(force = false) {
-    const margin = nodeCoverOccupied
-      ? -OFFICE_AVATAR_RADIUS
-      : OFFICE_AVATAR_RADIUS;
-    const occupied = nodeCoverContainsWorldPoint(
-      player.position.x,
-      player.position.z,
-      margin,
-    );
-    if (!force && occupied === nodeCoverOccupied) return occupied;
-    nodeCoverOccupied = occupied;
-    world.userData.nodeCoverOccupied = occupied;
-    nodeInterior.visible = occupied;
-    nodeCover.visible = true;
-    return occupied;
-  }
-
-  function updateMembersYurtOccupancy(force = false) {
-    const distance = Math.hypot(
-      player.position.x - campfire.position.x,
-      player.position.z - campfire.position.z,
-    );
-    const boundary = MEMBERS_YURT_RADIUS +
-      (membersYurtOccupied ? OFFICE_AVATAR_RADIUS : -OFFICE_AVATAR_RADIUS);
-    const occupied = distance <= boundary;
-    if (!force && occupied === membersYurtOccupied) return occupied;
-    membersYurtOccupied = occupied;
-    world.userData.membersYurtOccupied = occupied;
-    membersYurtInterior.visible = occupied;
-    membersYurt.visible = true;
-    loungeMembers.forEach((figure) => {
-      figure.visible = occupied;
+      if (Object.hasOwn(child.userData, "nodeLodVisible")) return;
+      child.userData.nodeLodVisible = child.visible;
+      child.visible = false;
     });
-    return occupied;
-  }
-
-  function syncEnclosureDoors() {
-    setOpaqueCoverDoorOpen(
-      nodeCover,
-      nodeCoverOccupied ||
-        Math.hypot(player.position.x, player.position.z - NODE_COVER_APOTHEM) < 7,
-    );
-    setOpaqueCoverDoorOpen(
-      leaderboardCover,
-      leaderboardCircleOccupied ||
-        Math.hypot(
-          player.position.x -
-            (LEADERBOARD_ISLAND_CENTER_X + LEADERBOARD_COVER_APOTHEM),
-          player.position.z,
-        ) < 7,
-    );
-    const yurtDoorDistance = Math.hypot(
-      player.position.x - campfire.position.x,
-      player.position.z -
-        (campfire.position.z - MEMBERS_YURT_RADIUS),
-    );
-    setSlidingEnclosureDoorOpen(
-      yurtDoor,
-      membersYurtOccupied || yurtDoorDistance < 6,
-    );
-    const repositoryDistrict = landmarkObjects.get("repositories");
-    const repositoryDoors = repositoryDistrict?.userData?.repositoryDome
-      ?.userData?.doorPanels;
-    if (repositoryDoors) {
-      const repositoryDoorDistance = Math.hypot(
-        player.position.x -
-          (repositoryDistrict.position.x - REPOSITORY_DOME_RADIUS),
-        player.position.z - repositoryDistrict.position.z,
-      );
-      repositoryDoors.visible = true;
-      setSlidingEnclosureDoorOpen(
-        repositoryDoors,
-        repositoryDomeOccupied || repositoryDoorDistance < 7,
-      );
-    }
+    nodeBoxLod.visible = !detailed && nodeBoxLod.count > 0;
+    return detailed;
   }
 
   function enclosureSceneRoots(mode) {
-    if (mode === "nodes") return [nodeDistrict];
-    if (mode === "leaderboards") return [leaderboardDistrict];
-    if (mode === "repositories") {
-      return [
-        landmarkObjects.get("repositories"),
-        world.userData.repositoryCatalogLayer,
-      ].filter(Boolean);
-    }
-    if (mode === "members") return [campfire, ...loungeMembers.values()];
     if (mode === "office") return [officeInterior];
     if (mode === "beach") return [beachScene];
     return [];
@@ -20252,16 +19480,8 @@ export function createWorldScene({
     const next = beachSceneActive
       ? "beach"
       : officeSceneMode !== "town"
-      ? "office"
-      : nodeCoverOccupied
-        ? "nodes"
-        : leaderboardCircleOccupied
-          ? "leaderboards"
-          : repositoryDomeOccupied
-            ? "repositories"
-            : membersYurtOccupied
-              ? "members"
-              : "";
+        ? "office"
+        : "";
     if (force || next !== activeEnclosureScene) {
       enclosureHiddenWorldRoots.forEach((visible, root) => {
         root.visible = visible;
@@ -20333,9 +19553,6 @@ export function createWorldScene({
     officeLandscaping,
   ]);
   registerCompactDistrictRoot("beach", beachScene);
-  updateRepositoryDomeOccupancy(true);
-  updateLeaderboardCircleOccupancy(true);
-  updateNodeCoverOccupancy(true);
   syncEnclosureSceneVisibility(true);
   // The camera used to start at CAMERA_OFFSET relative to the world origin
   // even though the avatar starts elsewhere. It then spent the first visible
@@ -20346,6 +19563,7 @@ export function createWorldScene({
     player.position.y + FIRST_PERSON_EYE_HEIGHT + CAMERA_OFFSET[1],
     player.position.z + CAMERA_OFFSET[2],
   );
+  updateNodeDetailLevel(true);
   const playerLabel = makePlayerLabel(player, labelLayer);
 
   // ForkBot is a compact rolling droid, rather than another humanoid avatar.
@@ -20590,6 +19808,7 @@ export function createWorldScene({
   officeInterior.visible = false;
   officeInterior.userData.officeInterior = true;
   world.add(officeInterior);
+  const officeLodWorldPosition = new THREE.Vector3();
   registerWorldElement(
     "office-interior", "Office interior", "Districts", officeInterior,
   );
@@ -21230,8 +20449,8 @@ export function createWorldScene({
     portalLabel.scale.set(6.4, 2.4, 1);
     lobbyPortal.add(portalLabel);
     floorGroup.add(lobbyPortal);
-    // The opaque tower keeps work areas out of exterior view until visitors
-    // enter the building.
+    // Exterior visibility is camera-LOD controlled so nearby visitors can see
+    // furnished floors through the glass without paying for them at distance.
     floorGroup.visible = true;
     officeInterior.add(floorGroup);
     officeFloorGroups.set(floor.id, floorGroup);
@@ -24114,10 +23333,11 @@ export function createWorldScene({
   let jumpQueued = false;
   let officeRoofJumping = false;
   let roofParachute = null;
-  // Per-device movement tuning scales the shared speed. Digital movement is
-  // deliberately immediate; there is no acceleration state to delay input.
+  // Per-device movement tuning scales the shared speed. Keyboard movement uses a
+  // blend state so holding direction ramps to the selected top speed.
   let moveSpeedScale = 1;
   let keyboardMovementSpeed = PLAYER_SPEED;
+  let keyboardMovementRamp = 0;
   let dashTarget = null;
   // Set while the player is sitting on a campfire bench: the seat pose is held
   // every frame until the visitor walks, dashes or jumps away from it.
@@ -24274,16 +23494,27 @@ export function createWorldScene({
   }
 
   function syncOfficeFloorVisibility() {
-    // Story changes are independent of camera zoom. In particular, a lobby
-    // doorway warp and an elevator arrival can both happen while the camera
-    // remains on the same near/far LOD side. Keep this explicit so a skipped
-    // LOD sample can never leave the newly selected floor hidden behind the
-    // last floor's visibility state.
-    officeInterior.visible = officeSceneMode !== "town";
+    officeInterior.getWorldPosition(officeLodWorldPosition);
+    const cameraDistance = camera.position.distanceTo(officeLodWorldPosition);
+    const exteriorDetailDistance = compactRenderer
+      ? OFFICE_EXTERIOR_LOD_DISTANCE * 0.55
+      : OFFICE_EXTERIOR_LOD_DISTANCE;
+    const exteriorDetailed =
+      officeSceneMode === "town" &&
+      farSceneDetail !== true &&
+      cameraDistance <= exteriorDetailDistance;
+    world.userData.officeExteriorDetailDistance = cameraDistance;
+    world.userData.officeExteriorDetailLevel = exteriorDetailed
+      ? "furnished"
+      : "shell";
+    // Story changes are independent of camera zoom. A doorway warp and an
+    // elevator arrival must still expose the selected floor immediately.
+    officeInterior.visible = officeSceneMode !== "town" || exteriorDetailed;
     for (const [floorId, floorGroup] of officeFloorGroups) {
       if (floorId === "lobby") continue;
-      floorGroup.visible =
-        officeSceneMode !== "town" && floorId === officeCurrentFloorId;
+      floorGroup.visible = officeSceneMode === "town"
+        ? exteriorDetailed
+        : floorId === officeCurrentFloorId;
     }
   }
 
@@ -24293,6 +23524,7 @@ export function createWorldScene({
       cameraMode === "third-person" &&
       cameraZoom >= (compactRenderer ? 1.12 : 1.32);
     if (!force && farSceneDetail === far) {
+      syncOfficeFloorVisibility();
       updateCompactDistrictResidency();
       updateLocalPointLightBudget(far);
       return;
@@ -24430,16 +23662,38 @@ export function createWorldScene({
       (input.ridingCar ? CAR_RIDE_SPEED_MULTIPLIER : 1);
     const topSpeed = PLAYER_MAX_SPEED * moveSpeedScale * sprintScale;
     const inputStrength = Math.max(0, Number(input.inputStrength) || 0);
-    // Digital input has no acceleration ramp: the first rendered movement
-    // frame reaches the selected speed. Analog touch keeps its proportional
-    // strength, which preserves fine positioning without making WASD feel
-    // sticky after a stop.
-    keyboardMovementSpeed =
-      input.keyboardActive
-        ? topSpeed
-        : Number(input.touchStrength) > 0
-          ? topSpeed * inputStrength
-          : baseMoveSpeed() * sprintScale;
+    const touchStrength = Math.max(0, Number(input.touchStrength) || 0);
+    const rawDelta = Math.max(0, Number(delta) || 0);
+
+    if (input.keyboardActive) {
+      const rampRate = 1 / PLAYER_SPEED_GRADIENT_UP_TIME;
+      const targetRamp = 1;
+      const blendStep = rampRate * rawDelta;
+      keyboardMovementRamp = clamp(
+        keyboardMovementRamp +
+          (targetRamp - keyboardMovementRamp) * Math.min(1, blendStep),
+        0,
+        1,
+      );
+      const baseSpeed = baseMoveSpeed() * sprintScale;
+      keyboardMovementSpeed = baseSpeed + (topSpeed - baseSpeed) * keyboardMovementRamp;
+      return keyboardMovementSpeed;
+    }
+
+    if (touchStrength > 0) {
+      keyboardMovementRamp = 0;
+      keyboardMovementSpeed = topSpeed * inputStrength;
+      return keyboardMovementSpeed;
+    }
+
+    const rampRate = 1 / PLAYER_SPEED_GRADIENT_DOWN_TIME;
+    const blendStep = rampRate * rawDelta;
+    keyboardMovementRamp = clamp(
+      keyboardMovementRamp * Math.max(0, 1 - blendStep),
+      0,
+      1,
+    );
+    keyboardMovementSpeed = baseMoveSpeed() * sprintScale;
     return keyboardMovementSpeed;
   }
 
@@ -24819,110 +24073,6 @@ export function createWorldScene({
       return false;
     }
     return warpToOfficeFloor(doorway.floorId);
-  }
-
-  function constrainLeaderboardCover(previousPosition) {
-    if (officeSceneMode !== "town" || !previousPosition) return false;
-    const wasInside = leaderboardCoverContainsWorldPoint(
-      previousPosition.x,
-      previousPosition.z,
-    );
-    const isInside = leaderboardCoverContainsWorldPoint(
-      player.position.x,
-      player.position.z,
-    );
-    if (wasInside === isInside) return false;
-    if (leaderboardDoorCrossingIsClear(previousPosition, player.position)) {
-      return false;
-    }
-    // Every opaque face is a wall. Only the east doorway can change which
-    // side the avatar occupies, so an attempted wall crossing is rolled back.
-    player.position.x = previousPosition.x;
-    player.position.z = previousPosition.z;
-    cancelDash();
-    return true;
-  }
-
-  function constrainNodeCover(previousPosition) {
-    if (officeSceneMode !== "town" || !previousPosition) return false;
-    const wasInside = nodeCoverContainsWorldPoint(
-      previousPosition.x,
-      previousPosition.z,
-    );
-    const isInside = nodeCoverContainsWorldPoint(
-      player.position.x,
-      player.position.z,
-    );
-    if (wasInside === isInside) return false;
-    if (nodeDoorCrossingIsClear(previousPosition, player.position)) return false;
-    player.position.x = previousPosition.x;
-    player.position.z = previousPosition.z;
-    cancelDash();
-    return true;
-  }
-
-  function constrainMembersYurt(previousPosition) {
-    if (officeSceneMode !== "town" || !previousPosition) return false;
-    const wasInside = Math.hypot(
-      previousPosition.x - campfire.position.x,
-      previousPosition.z - campfire.position.z,
-    ) <= MEMBERS_YURT_RADIUS;
-    const isInside = Math.hypot(
-      player.position.x - campfire.position.x,
-      player.position.z - campfire.position.z,
-    ) <= MEMBERS_YURT_RADIUS;
-    if (wasInside === isInside) return false;
-    if (
-      circularDoorCrossingIsClear(
-        previousPosition,
-        player.position,
-        campfire.position.x,
-        campfire.position.z,
-        MEMBERS_YURT_RADIUS,
-        3.5,
-        "z",
-        -1,
-      )
-    ) {
-      return false;
-    }
-    player.position.x = previousPosition.x;
-    player.position.z = previousPosition.z;
-    cancelDash();
-    return true;
-  }
-
-  function constrainRepositoryDome(previousPosition) {
-    if (officeSceneMode !== "town" || !previousPosition) return false;
-    const district = landmarkObjects.get("repositories");
-    if (!district) return false;
-    const wasInside = Math.hypot(
-      previousPosition.x - district.position.x,
-      previousPosition.z - district.position.z,
-    ) <= REPOSITORY_DOME_RADIUS;
-    const isInside = Math.hypot(
-      player.position.x - district.position.x,
-      player.position.z - district.position.z,
-    ) <= REPOSITORY_DOME_RADIUS;
-    if (wasInside === isInside) return false;
-    if (
-      circularDoorCrossingIsClear(
-        previousPosition,
-        player.position,
-        district.position.x,
-        district.position.z,
-        REPOSITORY_DOME_RADIUS,
-        8,
-        "x",
-        -1,
-      )
-    ) {
-      return false;
-    }
-    player.position.x = previousPosition.x;
-    player.position.z = previousPosition.z;
-    cancelDash();
-    return true;
   }
 
   function constrainTownOfficeWalls(previousPosition) {
@@ -25562,9 +24712,8 @@ export function createWorldScene({
       unregisterAvatarChestControls(avatar);
       officeInterior.remove(avatar);
       avatar.traverse((child) => {
-        child.geometry?.dispose?.();
-        child.material?.map?.dispose?.();
-        child.material?.dispose?.();
+        disposeOwnedGeometry(child.geometry);
+        disposeOwnedMaterial(child.material, true);
       });
       officeParticipants.delete(id);
       officeParticipantLabels.get(id)?.remove();
@@ -26634,12 +25783,15 @@ export function createWorldScene({
       movement.addScaledVector(right, touchMovement.x);
     }
 
-    // Retain the programmatic directional API for older controllers, but the
-    // coarse-pointer UI now uses the proportional analog vector above.
-    if (touchKeys.has("KeyW")) movement.z -= 1;
-    if (touchKeys.has("KeyS")) movement.z += 1;
-    if (touchKeys.has("KeyA")) movement.x -= 1;
-    if (touchKeys.has("KeyD")) movement.x += 1;
+    // Retain the programmatic directional API for older controllers. It must
+    // use the same view-relative basis as keyboard and analog input so a
+    // mounted quadcopter flies where its rider is facing.
+    const legacyForwardInput =
+      Number(touchKeys.has("KeyW")) - Number(touchKeys.has("KeyS"));
+    const legacyRightInput =
+      Number(touchKeys.has("KeyD")) - Number(touchKeys.has("KeyA"));
+    movement.addScaledVector(forward, legacyForwardInput);
+    movement.addScaledVector(right, legacyRightInput);
     const keyboardActive = Boolean(forwardInput || rightInput);
     const bikeDirection = clamp(
       forwardInput +
@@ -27756,14 +26908,14 @@ export function createWorldScene({
   }
 
   // Keep the historical method name as the app-facing navigation contract,
-  // but take visitors to the yurt entrance now that roster benches are gone.
+  // but take visitors to the edge of the open member clearing.
   // Leaving the Office remains a deliberate walk through its own door.
   function returnToCampfireBench(name) {
     if (officeSceneMode !== "town") return false;
     const entrance = new THREE.Vector3(
       campfire.position.x,
       WORLD_WALKING_PLANE_Y,
-      campfire.position.z - MEMBERS_YURT_RADIUS - 3.2,
+      campfire.position.z - MEMBER_CLEARING_RADIUS - 3.2,
     );
     currentSpace = "town-square";
     currentFloorY = 0.38;
@@ -27782,13 +26934,13 @@ export function createWorldScene({
       heading: Number(player.rotation.y.toFixed(3)),
       space: currentSpace,
       moving: false,
-      activity: "visiting the Members Center yurt",
+      activity: "visiting the Members Circle",
     });
     return true;
   }
 
   // Old saved bench coordinates are restored as ordinary standing positions;
-  // there is no roster-dependent ring to reconstruct inside the yurt.
+  // there is no roster-dependent bench ring to reconstruct.
   function restoreCampfireSeatIfNearby(spawn, name) {
     return false;
   }
@@ -27977,10 +27129,6 @@ export function createWorldScene({
       cancelDash();
     }
     if (!superJumping) {
-      constrainNodeCover(previousHorizontalPosition);
-      constrainMembersYurt(previousHorizontalPosition);
-      constrainRepositoryDome(previousHorizontalPosition);
-      constrainLeaderboardCover(previousHorizontalPosition);
       constrainTownOfficeWalls(previousHorizontalPosition);
     }
     if (carRide) {
@@ -29197,7 +28345,7 @@ export function createWorldScene({
         const interactiveIndex = interactive.indexOf(child);
         if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
       });
-      avatar.remove(controls);
+      controls.parent?.remove(controls);
       disposeObject3D(controls);
       delete avatar.userData.moderationControls;
     }
@@ -29266,7 +28414,7 @@ export function createWorldScene({
       });
       interactive.push(control);
     });
-    avatar.add(controls);
+    avatarDetailParent(avatar).add(controls);
     avatar.userData.moderationControls = controls;
     moderationControlKeys.set(peerId, key);
   }
@@ -29279,7 +28427,7 @@ export function createWorldScene({
         const interactiveIndex = interactive.indexOf(child);
         if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
       });
-      avatar.remove(controls);
+      controls.parent?.remove(controls);
       disposeObject3D(controls);
       delete avatar.userData.orgTeamControls;
     }
@@ -29344,7 +28492,7 @@ export function createWorldScene({
         });
         interactive.push(control);
       });
-      avatar.add(controls);
+      avatarDetailParent(avatar).add(controls);
       avatar.userData.orgTeamControls = controls;
     }
     if (assignment.teams.length && avatar.userData.leftArm) {
@@ -29536,14 +28684,14 @@ export function createWorldScene({
       avatar.userData.campfireSeated =
         String(remote.activity || "") === CAMPFIRE_SEATED_ACTIVITY;
       if (useRegisteredLounge) {
-        // Live idle peers keep their presence avatar in the small entrance
-        // plaza. Offline directory members have their own bounded interior
-        // figures, so the same account is never duplicated inside the yurt.
+        // Live idle peers keep their presence avatar just outside the open
+        // member circle. Directory figures use the inner rings, so the same
+        // account is never represented twice in the clearing.
         const place = hashNumber(remote.id) % 8;
         avatar.userData.targetPosition.set(
           campfire.position.x - 3.15 + (place % 4) * 2.1,
           WORLD_WALKING_PLANE_Y,
-          campfire.position.z - MEMBERS_YURT_RADIUS -
+          campfire.position.z - MEMBER_CLEARING_RADIUS -
             4.5 - Math.floor(place / 4) * 1.7,
         );
         avatar.userData.targetHeading = Math.PI;
@@ -29584,9 +28732,8 @@ export function createWorldScene({
       unregisterAvatarChestControls(avatar);
       world.remove(avatar);
       avatar.traverse((child) => {
-        child.geometry?.dispose?.();
-        child.material?.map?.dispose?.();
-        child.material?.dispose?.();
+        disposeOwnedGeometry(child.geometry);
+        disposeOwnedMaterial(child.material, true);
       });
       remotePlayers.delete(id);
       remoteLabels.get(id)?.remove();
@@ -29749,7 +28896,7 @@ export function createWorldScene({
     // name of whoever joined last so the newest member is visible at a glance.
     setCampfireMemberCount(total, newestMemberName(members));
     // Refresh the badge facts a live presence frame cannot carry, so the same
-    // account reads identically on its bench, on its walking avatar, and in
+    // account reads identically in the circle, on its walking avatar, and in
     // an office meeting.
     memberFacts.clear();
     (Array.isArray(members) ? members : []).forEach((member) => {
@@ -29801,11 +28948,9 @@ export function createWorldScene({
     leaderboardGridState.members = leaderboardMembers;
     repaintLeaderboardGrid();
 
-    // Populate the yurt interior with the directory members who are not
-    // already represented by a live World avatar. The opaque front faces of
-    // the yurt shell conceal these figures from outside; once a visitor walks
-    // through the entrance, the shell's culled back faces reveal the roster.
-    if (membersYurt) {
+    // Populate the open member-circle rings with directory members who are
+    // not already represented by a live World avatar.
+    {
       const interiorNames = new Set();
       const interiorMembers = (Array.isArray(members) ? members : [])
         .filter((member) => {
@@ -29816,7 +28961,7 @@ export function createWorldScene({
           interiorNames.add(name);
           return true;
         })
-        .slice(0, MEMBERS_YURT_VISIBLE_MEMBER_LIMIT);
+        .slice(0, MEMBER_CIRCLE_VISIBLE_LIMIT);
       const seen = new Set();
       interiorMembers.forEach((member, index) => {
         const name = String(member.name).trim().slice(0, 32);
@@ -29837,11 +28982,11 @@ export function createWorldScene({
           countryCode: memberCountry,
           browser: String(member.browser || "Hidden"),
           os: String(member.os || "Hidden"),
-          status: "inside the Members Center yurt",
+          status: "gathering in the open Members Circle",
           accountStatus: "Registered",
           emailVerified: member.emailVerified === true,
           localTime: "",
-          activityCategory: "visiting-members-yurt",
+          activityCategory: "visiting-members-circle",
           inputActive: false,
           visitCount: Math.max(
             0,
@@ -29871,8 +29016,8 @@ export function createWorldScene({
             { remote: true, scale: 0.78 },
           );
           figure.userData.badgeKey = badgeKey;
-          figure.userData.membersYurtInterior = true;
-          figure.visible = membersYurtOccupied;
+          figure.userData.memberCircleFigure = true;
+          figure.visible = true;
           world.add(figure);
           registerCompactDistrictRoot("members", figure);
           loungeMembers.set(id, figure);
@@ -29893,7 +29038,7 @@ export function createWorldScene({
           accountStatus: "Registered",
           orgTeam: member?.orgTeam,
         });
-        const slot = membersYurtMemberPosition(index, interiorMembers.length);
+        const slot = memberCirclePosition(index, interiorMembers.length);
         figure.position.set(
           campfire.position.x + slot.x,
           WORLD_WALKING_PLANE_Y,
@@ -29918,212 +29063,6 @@ export function createWorldScene({
       campfire.userData.detailedMemberFigures = seen.size;
       campfire.userData.seatedMemberFigures = 0;
       return;
-    }
-
-    // Legacy bench-circle implementation retained for pre-yurt scene variants.
-    // Registered members sit in a circle around the campfire facing the
-    // flames. Every account in the directory owns one numbered bench for the
-    // whole session — a member out walking the world leaves theirs visibly
-    // empty, with their name still on it — and the ring carries one bench
-    // that always stays open for the next guest plus one more for every
-    // guest already here, so the circle grows as people arrive.
-    const roster = (Array.isArray(members) ? members : []).filter((member) =>
-      String(member?.name || "").trim(),
-    );
-    const seatedMemberIds = new Set(
-      roster
-        .slice(0, CAMPFIRE_CIRCLE_MAX_SEATS)
-        .filter((member) => member?.away !== true)
-        .map(
-          (member) =>
-            `member:${String(member?.name || "").trim().toLowerCase()}`,
-        ),
-    );
-    const guestSeats = Math.max(0, Math.min(64, Math.round(Number(guests) || 0)));
-    const previousSeatRadius = Number(campfire.userData.seatRadius) || 0;
-    const seats = rebuildCampfireCircle(
-      Math.max(total, roster.length) + guestSeats + 1,
-    );
-    const seen = new Set();
-    const seatByName = new Map();
-    roster
-      .slice(0, Math.max(1, seats.length))
-      .forEach((member, index) => {
-        const name = String(member.name).trim().slice(0, 32);
-        const id = `member:${name.toLowerCase()}`;
-        if (seatByName.has(name.toLowerCase())) {
-          // Two rows for one account: leave the extra bench open.
-          setCampfireSeatLabel(index, "", "open");
-          setCampfireSeatOrgTeamAction(index, null, id, name);
-          return;
-        }
-        seatByName.set(name.toLowerCase(), index);
-        // The bench keeps the member's name whether or not they are on it,
-        // so the empty seats read as "who is out and about" rather than as
-        // unclaimed furniture.
-        const represented = seatedMemberIds.has(id);
-        const assignment = sanitizedOrgTeamAssignment({
-          id,
-          name,
-          accountStatus: "Registered",
-          orgTeam: member?.orgTeam,
-        });
-        const labelState = member.away === true
-          ? "away"
-          : represented
-            ? "seated"
-            : assignment?.canManage === true
-              ? "manage"
-              : "roster";
-        setCampfireSeatLabel(index, name, labelState);
-        setCampfireSeatOrgTeamAction(
-          index,
-          !represented && member.away !== true ? assignment : null,
-          id,
-          name,
-        );
-        if (member.away === true || !represented) {
-          const parked = loungeMembers.get(id);
-          if (parked) {
-            removeRemoteOrgTeamControl(parked, id);
-            unregisterAvatarChestControls(parked);
-            world.remove(parked);
-            disposeObject3D(parked);
-            loungeMembers.delete(id);
-          }
-          return;
-        }
-        seen.add(id);
-        const memberCountry = /^[A-Z]{2}$/.test(
-          String(member.countryCode || "").toUpperCase(),
-        )
-          ? String(member.countryCode).toUpperCase()
-          : "";
-        const joinedAt = Number(member.createdAt) || 0;
-        const memberIdentity = {
-          id,
-          name,
-          flag:
-            String(member.flag || "") ||
-            (memberCountry ? flagEmoji(memberCountry) : "◌"),
-          countryCode: memberCountry,
-          browser: String(member.browser || "Hidden"),
-          os: String(member.os || "Hidden"),
-          status: "sitting around the campfire",
-          accountStatus: "Registered",
-          emailVerified: member.emailVerified === true,
-          lastEmailAt: Math.max(0, Number(member.lastEmailAt) || 0),
-          lastEmailStatus: String(member.lastEmailStatus || ""),
-          localTime: "",
-          activityCategory: "sitting-at-member-fire",
-          inputActive: false,
-          visitCount: Math.max(
-            0,
-            Math.min(999, Number(member.visitCount) || 0),
-          ),
-          firstVisitAge: joinedAt > 0 ? "this-session" : "hidden",
-          firstSeenMinutes: firstSeenMinutesBucket(joinedAt),
-          joinedAt,
-          totalActiveMs: Math.max(
-            0,
-            Number(member.totalActiveMs ?? member.activeMs) || 0,
-          ),
-          nodes: Array.isArray(member.nodes)
-            ? member.nodes.slice(0, 6)
-            : [],
-          statusEmoji: "",
-          statusNote: String(member.status || ""),
-          activityBucket: member.activityBucket || "",
-          lastEmailAt: Math.max(0, Number(member.lastEmailAt) || 0),
-          lastEmailStatus: String(member.lastEmailStatus || ""),
-          lastEmailPrivate: false,
-        };
-        let figure = loungeMembers.get(id);
-        if (!figure) {
-          // The directory carries the coarse country/browser/OS the member
-          // saved on their account, so an away member's bench figure wears
-          // their own flag shirt and client badge instead of a blank one.
-          figure = createAvatar(
-            THREE,
-            memberIdentity,
-            { remote: true, scale: 0.88 },
-          );
-          world.add(figure);
-          registerCompactDistrictRoot("members", figure);
-          loungeMembers.set(id, figure);
-          // Directory figures are real accounts, so their chest tabs work the
-          // same way a live peer's do.
-          registerAvatarChestControls(figure, id);
-        } else {
-          const badgeKey = JSON.stringify(memberIdentity);
-          if (figure.userData.badgeKey !== badgeKey) {
-            updateAvatarBadge(THREE, figure, memberIdentity, true);
-            syncOperatorBelt(
-              THREE,
-              figure,
-              memberIdentity.nodes,
-            );
-            figure.userData.badgeKey = badgeKey;
-          }
-        }
-        // The 30s directory refresh can age a seated member's recency bucket
-        // without recreating the figure, so re-sync the chest light in place.
-        syncAvatarActivity(figure, {
-          inputActive: false,
-          accountStatus: "Registered",
-          activityBucket: member.activityBucket || "",
-        });
-        // Directory figures stand in for registered accounts that are not
-        // currently present. Give them the same viewer-local organization
-        // control as a live avatar so admins can assign teams independent of
-        // whether the target member is logged in.
-        syncRemoteOrgTeamControl(figure, {
-          id,
-          name,
-          accountStatus: "Registered",
-          orgTeam: member?.orgTeam,
-        });
-        const seat = seats[index % Math.max(1, seats.length)];
-        figure.position.copy(campfire.position);
-        if (seat) figure.position.add(seat);
-        figure.position.y = seatedAvatarY(
-          campfire.position.y + (seat ? seat.y : 0),
-          figure.scale.x,
-        );
-        // Face the fire at the circle's centre and hold a seated pose on the
-        // bench, matching the local player's bench-seat legs. Avatar fronts
-        // face local -Z, so the inward heading is atan2(x, z), matching
-        // sitOnCampfireBench.
-        figure.rotation.y = seat ? Math.atan2(seat.x, seat.z) : 0;
-        applySeatedLegPose(figure);
-        figure.userData.ambientInteraction = null;
-      });
-    // Benches past the roster are the open guest seats.
-    for (let index = roster.length; index < seats.length; index += 1) {
-      setCampfireSeatLabel(index, "", "open");
-      setCampfireSeatOrgTeamAction(index, null, "", "");
-    }
-    repaintCampfireSeatLabels();
-    campfire.userData.seatByName = seatByName;
-    campfire.userData.memberFigureCount = Math.min(roster.length, seats.length);
-    campfire.userData.detailedMemberFigures = seen.size;
-    campfire.userData.seatedMemberFigures = seen.size;
-    loungeMembers.forEach((figure, id) => {
-      if (seen.has(id)) return;
-      removeRemoteOrgTeamControl(figure, id);
-      unregisterAvatarChestControls(figure);
-      world.remove(figure);
-      unregisterCompactDistrictRoot("members", figure);
-      disposeObject3D(figure);
-      loungeMembers.delete(id);
-    });
-    // The member ring grows with the roster. Recompute automatic cabinet
-    // slots only when its physical radius changed, preserving a walkway
-    // without doing layout work on every identical directory refresh.
-    if (
-      previousSeatRadius !== (Number(campfire.userData.seatRadius) || 0)
-    ) {
-      relayoutNetworkNodes();
     }
   }
 
@@ -30343,7 +29282,7 @@ export function createWorldScene({
         0,
       );
       const plazaRadius = Math.min(
-        NODE_COVER_APOTHEM - 0.5,
+        NODE_PLAZA_MAX_RADIUS,
         Math.max(14, farthestRadius + 3.2),
       );
       nodeYardConcrete.scale.set(plazaRadius, 1, plazaRadius);
@@ -30414,6 +29353,17 @@ export function createWorldScene({
         routingX - slot.x,
         routingZ - slot.z,
       );
+      nodeBoxLodTransform.position.set(slot.x, 2.02, slot.z);
+      nodeBoxLodTransform.rotation.set(0, cabinet.rotation.y, 0);
+      nodeBoxLodTransform.scale.set(1, 1, 1);
+      nodeBoxLodTransform.updateMatrix();
+      nodeBoxLod.setMatrixAt(nodeIndex, nodeBoxLodTransform.matrix);
+      nodeBoxLod.setColorAt(
+        nodeIndex,
+        mirrorNodeIsOnline(node)
+          ? nodeBoxLodOnlineColor
+          : nodeBoxLodOfflineColor,
+      );
       if (focusFollowsCabinet) {
         cameraFocus.copy(cabinet.position);
         cameraFocus.y += 1.65;
@@ -30454,6 +29404,15 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+    nodeBoxLod.count = Math.min(usableNodes.length, NODE_LOD_MAX_INSTANCES);
+    nodeBoxLod.instanceMatrix.needsUpdate = true;
+    if (nodeBoxLod.instanceColor) nodeBoxLod.instanceColor.needsUpdate = true;
+    nodeBoxLod.computeBoundingBox?.();
+    nodeBoxLod.computeBoundingSphere?.();
+    // A catalog refresh can add new interactive panels while the detailed
+    // root is already far away. Reapply the active LOD so those new meshes are
+    // parked before the next raycast.
+    updateNodeDetailLevel(true);
     // The cabinets standing in the ring are exactly what the tally counts.
     setRewardPoolMirrorCount(
       usableNodes.length,
@@ -31995,10 +30954,9 @@ export function createWorldScene({
       });
     });
 
-    layer.userData.repositoryDomeInterior = true;
+    layer.userData.repositoryCatalogLayer = true;
     world.add(layer);
     registerCompactDistrictRoot("repositories", layer);
-    updateRepositoryDomeOccupancy(true);
     Object.values(materials).forEach((material) => {
       if (!usedMaterials.has(material)) material.dispose();
     });
@@ -32488,7 +31446,7 @@ export function createWorldScene({
 
     // Repository issues and pull requests belong in their focused web
     // workbenches. Keeping these tall in-world columns made the repository
-    // dome read like two data towers, and obscured both the portal circle and
+    // district read like two data towers and obscured the portal circle and
     // the new frame. This compatibility entry point deliberately only clears
     // a previously rendered desk while callers migrate through the shared
     // repository scene refresh path.
@@ -33415,36 +32373,20 @@ export function createWorldScene({
     return showAvatarChatBubble(avatar, text);
   }
 
-  // A registered member who is not in the world as a live peer still owns a
-  // named campfire bench. Detailed figures anchor their own lines; roster-only
-  // benches anchor a bubble at the name plate so high account counts do not
-  // make public chat disappear or require a full avatar per account.
+  // Open-circle directory figures anchor member chat even when the account is
+  // not represented by a live peer.
   function showMemberChatBubble(name, text) {
     const wanted = String(name || "").trim().toLowerCase();
     if (!wanted) return false;
     if (loungeMembers.has(`member:${wanted}`)) {
       return showChatBubble(`member:${wanted}`, text);
     }
-    const seatByName = campfire.userData.seatByName;
-    const benches = campfire.userData.seatBenches || [];
-    const showAtBench = (index) => {
-      const anchor = benches[index]?.label;
-      return anchor ? showAvatarChatBubble(anchor, text) : false;
-    };
-    if (seatByName instanceof Map && seatByName.has(wanted)) {
-      return showAtBench(seatByName.get(wanted));
-    }
     // The public room truncates asserted names to 16 characters, so a
-    // truncated sender may only be a prefix of the seated member's name.
+    // truncated sender may only be a prefix of the member figure's name.
     if (wanted.length < 16) return false;
     for (const id of loungeMembers.keys()) {
       if (id.slice("member:".length).startsWith(wanted)) {
         return showChatBubble(id, text);
-      }
-    }
-    if (seatByName instanceof Map) {
-      for (const [memberName, index] of seatByName) {
-        if (memberName.startsWith(wanted)) return showAtBench(index);
       }
     }
     return false;
@@ -34699,10 +33641,6 @@ export function createWorldScene({
       });
       return;
     }
-    if (hit?.object?.userData?.membersYurtDoor) {
-      focusCampfireCircle();
-      return;
-    }
     if (hit?.object?.userData?.campfireLog) {
       hit.object.userData.campfireCarried = true;
       hit.object.material.emissive?.set?.("#d88a43");
@@ -35380,11 +34318,6 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
-    updateRepositoryDomeOccupancy();
-    updateLeaderboardCircleOccupancy();
-    updateNodeCoverOccupancy();
-    updateMembersYurtOccupancy();
-    syncEnclosureDoors();
     syncEnclosureSceneVisibility();
     if (officeSceneMode === "town") {
       const insideInstanceBooth =
@@ -35469,16 +34402,18 @@ export function createWorldScene({
       // healing nodes carry a sweep, and it turns rather than fades, so the
       // colour itself stays legible in a still frame.
       if (worldElementEnabled("node-cabinets")) {
-        nodeInfrastructure.forEach((cabinet) => {
-          const sweep = cabinet.userData?.beaconSweep;
-          if (sweep) sweep.rotation.y = time * 0.0038;
-          const actionPulse = cabinet.userData?.actionPulseMaterial;
-          if (actionPulse) {
-            const base = cabinet.userData?.actionPulseAttention ? 0.62 : 0.44;
-            actionPulse.opacity =
-              base + (Math.sin(time * 0.0065) + 1) * 0.16;
-          }
-        });
+        if (nodeDetailVisible) {
+          nodeInfrastructure.forEach((cabinet) => {
+            const sweep = cabinet.userData?.beaconSweep;
+            if (sweep) sweep.rotation.y = time * 0.0038;
+            const actionPulse = cabinet.userData?.actionPulseMaterial;
+            if (actionPulse) {
+              const base = cabinet.userData?.actionPulseAttention ? 0.62 : 0.44;
+              actionPulse.opacity =
+                base + (Math.sin(time * 0.0065) + 1) * 0.16;
+            }
+          });
+        }
       }
       if (worldElementEnabled("directory-bots")) {
         botAgents.forEach((robot, id) => {
@@ -35689,6 +34624,10 @@ export function createWorldScene({
       }
     }
     updateCamera(delta);
+    // District detail follows the view, not the player's feet. Sampling after
+    // the chase/zoom camera update makes wheel, pinch, and orbit changes take
+    // effect on the same rendered frame.
+    updateNodeDetailLevel();
     if (worldElementEnabled("sky")) worldSky.tick(Date.now(), camera.position);
     tickStoreElements(time);
     // Spatial scans and DOM-adjacent controls do not need monitor refresh
@@ -36320,15 +35259,13 @@ export function createWorldScene({
     touchKeys.clear();
     touchMovement.set(0, 0);
     scene.traverse((child) => {
-      child.geometry?.dispose?.();
+      disposeOwnedGeometry(child.geometry);
       if (Array.isArray(child.material)) {
         child.material.forEach((material) => {
-          material.map?.dispose?.();
-          material.dispose?.();
+          disposeOwnedMaterial(material, true);
         });
       } else {
-        child.material?.map?.dispose?.();
-        child.material?.dispose?.();
+        disposeOwnedMaterial(child.material, true);
       }
     });
     renderer.dispose();
@@ -36516,7 +35453,7 @@ export function createWorldScene({
       baseSpeed: baseMoveSpeed(),
       maxSpeed: PLAYER_MAX_SPEED * moveSpeedScale,
       speedScale: moveSpeedScale,
-      immediateDigitalInput: true,
+      immediateDigitalInput: false,
       keyboardActive: [...keys].some((code) => MOVEMENT_KEYS.has(code)),
       touchActive: touchMovement.lengthSq() > 0,
       touchStrength: touchMovement.length(),

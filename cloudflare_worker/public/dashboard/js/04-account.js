@@ -1531,6 +1531,38 @@
   function renderHeaderContext(section = currentSection()) {
     const headerContext = $("[data-dashboard-header-context]");
     if (!headerContext) return;
+    const repoMeta = $("[data-repo-header-meta]");
+    const repoVisibility = $("[data-repo-header-visibility]");
+    const repoTerms = $("[data-repo-header-terms]");
+    const repoAvailability = $("[data-repo-availability-status]");
+    const repo = section === "explore" ? state.selectedRepo : null;
+    if (repo) {
+      const live = repoIsLive(repo);
+      const viaMirror = repoServedByMirror(repo);
+      headerContext.innerHTML = `<a href="${escapeHtml(repoPathUrl(repo))}" class="hover:underline">${escapeHtml(repoDisplayKey(repo))}</a>`;
+      repoMeta?.classList.add("sm:flex");
+      if (repoVisibility) {
+        repoVisibility.textContent = repo.isPrivate ? "private" : "public";
+      }
+      if (repoTerms) repoTerms.innerHTML = repositoryTermsBadge(repo, true);
+      if (repoAvailability) {
+        const servedBy = String(state.repoServedBy?.name || "").trim();
+        repoAvailability.textContent = servedBy
+          ? `served by ${servedBy}`
+          : viaMirror
+            ? "served by mirror"
+          : live
+            ? "mirror online"
+            : "mirror offline";
+        repoAvailability.classList.toggle("text-primary", live);
+        repoAvailability.classList.toggle("text-muted-foreground", !live);
+      }
+      return;
+    }
+    repoMeta?.classList.remove("sm:flex");
+    if (repoVisibility) repoVisibility.textContent = "";
+    if (repoTerms) repoTerms.innerHTML = "";
+    if (repoAvailability) repoAvailability.textContent = "";
     if (section === "profile-overview" || section === "profile-repositories") {
       const renderedName = ($("[data-profile-page-node-name]")?.textContent || "").trim();
       headerContext.textContent = state.session?.nodeName || state.session?.email || renderedName || "Profile";

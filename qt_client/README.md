@@ -1,15 +1,16 @@
 # ForkMesh Qt client
 
-Build and launch from this directory:
+Build and launch from the repository root so ForkMesh records the whole checkout
+as its workspace:
 
 ```sh
-./run.sh
+./qt_client/run.sh
 ```
 
 Run the sub-minute critical client contracts:
 
 ```sh
-./run.sh test
+./qt_client/run.sh test
 ```
 
 For dependencies, first-run setup, UI workflows, pull requests, headless mode,

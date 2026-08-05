@@ -597,9 +597,20 @@
 
   function repoCanonicalIdentity(repo) {
     const source = String(repo?.source || "").trim();
-    if (source === "remote-clone") {
-      const parsed = parseCloneUrlIdentity(repo?.cloneUrl);
-      if (parsed) return parsed;
+    const parsed = parseCloneUrlIdentity(repo?.cloneUrl);
+    // A locally served copy can still be a clone of another ForkMesh route.
+    // Keep the upstream's canonical name in that case; otherwise a serving
+    // node such as jett would relabel forkmesh/forkmesh as jett/forkmesh.
+    let isThisForkMeshOrigin = false;
+    try {
+      const cloneUrl = new URL(String(repo?.cloneUrl || ""), location.origin);
+      isThisForkMeshOrigin = cloneUrl.origin === location.origin;
+    } catch (_) {}
+    if (parsed && (
+      source === "remote-clone"
+      || (source === "local-node" && isThisForkMeshOrigin)
+    )) {
+      return parsed;
     }
     return {
       owner: String(repo?.owner || "").trim(),
@@ -3537,6 +3548,38 @@
   function renderHeaderContext(section = currentSection()) {
     const headerContext = $("[data-dashboard-header-context]");
     if (!headerContext) return;
+    const repoMeta = $("[data-repo-header-meta]");
+    const repoVisibility = $("[data-repo-header-visibility]");
+    const repoTerms = $("[data-repo-header-terms]");
+    const repoAvailability = $("[data-repo-availability-status]");
+    const repo = section === "explore" ? state.selectedRepo : null;
+    if (repo) {
+      const live = repoIsLive(repo);
+      const viaMirror = repoServedByMirror(repo);
+      headerContext.innerHTML = `<a href="${escapeHtml(repoPathUrl(repo))}" class="hover:underline">${escapeHtml(repoDisplayKey(repo))}</a>`;
+      repoMeta?.classList.add("sm:flex");
+      if (repoVisibility) {
+        repoVisibility.textContent = repo.isPrivate ? "private" : "public";
+      }
+      if (repoTerms) repoTerms.innerHTML = repositoryTermsBadge(repo, true);
+      if (repoAvailability) {
+        const servedBy = String(state.repoServedBy?.name || "").trim();
+        repoAvailability.textContent = servedBy
+          ? `served by ${servedBy}`
+          : viaMirror
+            ? "served by mirror"
+          : live
+            ? "mirror online"
+            : "mirror offline";
+        repoAvailability.classList.toggle("text-primary", live);
+        repoAvailability.classList.toggle("text-muted-foreground", !live);
+      }
+      return;
+    }
+    repoMeta?.classList.remove("sm:flex");
+    if (repoVisibility) repoVisibility.textContent = "";
+    if (repoTerms) repoTerms.innerHTML = "";
+    if (repoAvailability) repoAvailability.textContent = "";
     if (section === "profile-overview" || section === "profile-repositories") {
       const renderedName = ($("[data-profile-page-node-name]")?.textContent || "").trim();
       headerContext.textContent = state.session?.nodeName || state.session?.email || renderedName || "Profile";
@@ -6134,7 +6177,7 @@
     const url = String(value || "");
     return (
       /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
-      || /^\/api\/repo\/[^/?#]+\/[^/?#]+\/raw\?[^#]+$/i.test(url)
+      || /^\/api\/repo\/[^/?#]+\/[^/?#]+\/(?:raw\?[^#]+|media\/logo\.png(?:\?[^#]*)?)$/i.test(url)
     )
       ? url
       : "";
@@ -7276,41 +7319,13 @@
       })).join(" ");
   }
 
-  function servedMirrorStats(name) {
-    const servedName = String(name || "").trim().toLowerCase();
-    if (!servedName) return "";
-    const mirror = (state.repoMirrors || []).find((candidate) => {
-      const mirrorName = String(candidate.owner || candidate.node || candidate.name || "").trim().toLowerCase();
-      return mirrorName && mirrorName === servedName;
-    });
-    if (!mirror) return "";
-    const counters = [];
-    const clones = normalizedCount(mirror.clonesServed);
-    const website = normalizedCount(mirror.websiteServed);
-    if (clones !== null) counters.push(`${formatCount(clones)} clones`);
-    if (website !== null) counters.push(`${formatCount(website)} website requests`);
-    return counters.join(" - ");
-  }
-
   function renderRepoServedBy(node, tookMs) {
     const name = String(node || "").trim();
     state.repoServedBy = name ? { name, tookMs: Number(tookMs) || 0 } : null;
-    const badge = $("[data-repo-detail]")?.querySelector("[data-repo-served-by]");
-    if (badge) {
-      if (!name) {
-        badge.hidden = true;
-        badge.textContent = "";
-      } else {
-        // Confirms the page loaded from a live mirror and which one (the
-        // router round-robins browse traffic across every online mirror of
-        // the repo).
-        const speed = formatServeSpeed(tookMs);
-        badge.textContent = [`served by ${name}`, speed, servedMirrorStats(name)]
-          .filter(Boolean)
-          .join(" - ");
-        badge.hidden = false;
-      }
-    }
+    // This status belongs with the repository identity. Keeping it in the
+    // header avoids a duplicate, easily missed status line beside the file
+    // breadcrumb while preserving the exact mirror that served the request.
+    renderHeaderContext("explore");
     // Re-render the repo's mirror lists so the node that just answered gets
     // its green "serving this request" highlight without waiting on a fresh
     // /mirrors fetch.
@@ -12041,7 +12056,11 @@
         const loadedLogo = await loadNativeRepositoryLogo(
           nativeRepositoryLogoEndpoint(repo),
         );
-        const logoUrl = String(loadedLogo?.dataUrl || "");
+        // The relay resolves this in the same precedence order users expect:
+        // an owner-selected logo first, then the project's root logo.png, then
+        // generated artwork. Do not bypass it with the generated-logo endpoint.
+        const logoUrl = nativeRepositoryLogoDataUrl(body.logoUrl)
+          || String(loadedLogo?.dataUrl || "");
         const fallbackUrl = String(loadedLogo?.fallbackDataUrl || "");
         if (logoUrl) {
           logo.decoding = "async";
@@ -14161,94 +14180,59 @@
     return Number(ref) >= 0 && Number(value) >= 0 && Number(value) !== Number(ref);
   }
 
-  // One metadata chip. `mismatch` underlines it (amber) and notes the canonical
-  // value in the tooltip, matching the desktop panel's underline of a cell that
-  // doesn't match the source of truth.
-  function mirrorChip(label, value, mismatch, note) {
-    const shown = value === "" || value === undefined || value === null ? "-" : value;
-    return `
-        <span class="inline-flex items-center gap-1 rounded-md border ${mismatch ? "border-amber-500/50" : "border-border"} px-1.5 py-0.5 text-[10px] font-mono"${mismatch && note ? ` title="${escapeHtml(note)}"` : ""}>
-          <span class="text-muted-foreground">${escapeHtml(label)}</span>
-          <span class="${mismatch ? "text-amber-600 underline decoration-amber-500/60" : "text-foreground"}">${escapeHtml(shown)}</span>
-        </span>`;
-  }
-
-  // Potentially long lists stay out of the row layout. The chip carries only
-  // the item count; hovering it reveals the complete, one-item-per-line list.
-  // Keeping it focusable gives keyboard users the same native tooltip and an
-  // explicit accessible label without adding a second visual row.
-  function mirrorListChip(label, values) {
-    const list = (Array.isArray(values) ? values : [])
-      .map((value) => String(value || "").trim())
-      .filter(Boolean);
-    if (!list.length) return mirrorChip(label, "", false, "");
-    const tooltip = `${label}:\n${list.map((value) => `\u2022 ${value}`).join("\n")}`;
-    return `
-        <span class="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-mono" tabindex="0" aria-label="${escapeHtml(`${label}: ${list.join(", ")}`)}" title="${escapeHtml(tooltip)}">
-          <span class="text-muted-foreground">${escapeHtml(label)}</span>
-          <span class="text-foreground">${formatCount(list.length)}</span>
-        </span>`;
-  }
-
-  // The metadata columns the desktop Mirror nodes panel shows, rendered as chips
-  // under each mirror row: commit + sync freshness, on-disk size, and the mirrored
-  // issue/commit/branch/pull/discussion/worktree/clone/website/artifact tallies.
-  // Content columns that don't match the source of truth are underlined.
-  function mirrorDetailChips(mirror, refMirror) {
-    const commit = String(mirror.commit || "").trim();
-    const refCommit = String(refMirror?.commit || "").trim();
-    const branch = String(mirror.branch || "").trim();
-    const commitLabel = commit
-      ? commit.slice(0, 7) + (branch ? ` (${branch})` : "")
-      : "";
-    const operations = Array.isArray(mirror.operations)
-      ? mirror.operations.map((value) => String(value || "").trim()).filter(Boolean)
-      : [];
-    let endpointHost = "";
-    try {
-      endpointHost = mirror.endpoint ? new URL(String(mirror.endpoint)).host : "";
-    } catch (_) {
-      endpointHost = "";
-    }
-    const chips = [
-      mirrorChip(
-        "Commit",
-        commitLabel,
-        Boolean(commit && refCommit && commit !== refCommit),
-        refCommit ? `Source of truth is at ${refCommit.slice(0, 7)}` : "",
-      ),
-      mirrorChip("Synced", mirror.lastSync ? formatTimeAgo(mirror.lastSync) : "", false, ""),
-      mirrorChip("Endpoint", endpointHost, false, ""),
-      mirrorChip("Health checked", mirror.checkedAt ? formatTimeAgo(mirror.checkedAt) : "", false, ""),
-      mirrorChip("Latency", Number.isFinite(Number(mirror.latencyMs)) ? `${Math.max(0, Number(mirror.latencyMs))} ms` : "", false, ""),
-      mirrorChip("Region", mirror.region || "", false, ""),
-      mirrorChip("Endpoint integrity", mirror.endpointIntegrity || "", mirror.endpointIntegrity && mirror.endpointIntegrity !== "ok", ""),
-      mirrorListChip("Capabilities", operations),
-      mirrorChip("Size", mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "", false, ""),
-      mirrorChip("Issues", mirrorCountText(mirror.issueCount), mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), `Source: ${mirrorCountText(refMirror?.issueCount)}`),
-      mirrorChip("Commits", mirrorCountText(mirror.commitCount), mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), `Source: ${mirrorCountText(refMirror?.commitCount)}`),
-      mirrorChip("Branches", mirrorCountText(mirror.branchCount), mirrorCountMismatch(mirror.branchCount, refMirror?.branchCount), `Source: ${mirrorCountText(refMirror?.branchCount)}`),
-      mirrorChip("Pulls", mirrorCountText(mirror.pullCount), mirrorCountMismatch(mirror.pullCount, refMirror?.pullCount), `Source: ${mirrorCountText(refMirror?.pullCount)}`),
-      mirrorChip("Discussions", mirrorCountText(mirror.discussionCount), mirrorCountMismatch(mirror.discussionCount, refMirror?.discussionCount), `Source: ${mirrorCountText(refMirror?.discussionCount)}`),
-      mirrorChip("Worktrees", mirrorCountText(mirror.worktreeCount), false, ""),
-      mirrorChip("Clones", mirrorCountText(mirror.clonesServed), false, ""),
-      mirrorChip("Website", mirrorCountText(mirror.websiteServed), false, ""),
-      mirrorChip("Artifacts", mirrorCountText(mirror.artifactCount), mirrorCountMismatch(mirror.artifactCount, refMirror?.artifactCount), `Source: ${mirrorCountText(refMirror?.artifactCount)}`),
-    ];
-    return chips.join("");
-  }
-
   // Counts arrive as -1 when a node hasn't reported them; show a dash for those
-  // (a distinct state from a real 0) so a chip never reads a misleading "0".
+  // (a distinct state from a real 0) so a cell never reads a misleading "0".
   function mirrorCountText(value) {
     const number = Number(value);
     return Number.isFinite(number) && number >= 0 ? formatCount(number) : "";
   }
 
-  // The full Mirrors-tab row stays on one line: identity, state, metadata, and
-  // reachability all share one non-wrapping strip. The surrounding list scrolls
-  // horizontally on narrow screens; unbounded list data is condensed by
-  // mirrorListChip and remains available on hover/focus.
+  function mirrorTableHeader(icon, label, wide = false) {
+    return `
+        <th scope="col" class="${wide ? "" : "w-px"} whitespace-nowrap px-1 py-1 text-center text-muted-foreground" title="${escapeHtml(label)}">
+          <i data-lucide="${icon}" class="inline-block h-3 w-3" aria-hidden="true"></i>
+          <span class="sr-only">${escapeHtml(label)}</span>
+        </th>`;
+  }
+
+  function mirrorTableCell(value, options = {}) {
+    const shown = value === "" || value === undefined || value === null ? "-" : value;
+    const mismatch = options.mismatch === true;
+    const title = options.title || String(shown);
+    return `
+        <td class="w-px max-w-28 truncate whitespace-nowrap px-1 py-1 text-[10px] font-mono ${mismatch ? "text-amber-600 underline decoration-amber-500/60" : "text-muted-foreground"}" title="${escapeHtml(title)}">${escapeHtml(shown)}</td>`;
+  }
+
+  function mirrorTableHead() {
+    const columns = [
+      ["server", "Node", true],
+      ["radio", "Status"],
+      ["activity", "Activity"],
+      ["package", "Version"],
+      ["git-commit-horizontal", "Revision"],
+      ["refresh-cw", "Last synced"],
+      ["globe", "Endpoint"],
+      ["heart-pulse", "Health checked"],
+      ["gauge", "Latency"],
+      ["map-pin", "Region"],
+      ["shield-check", "Endpoint integrity"],
+      ["list-checks", "Capabilities"],
+      ["hard-drive", "Repository size"],
+      ["circle-dot", "Issues"],
+      ["git-commit-horizontal", "Commits"],
+      ["git-branch", "Branches"],
+      ["git-pull-request", "Pull requests"],
+      ["messages-square", "Discussions"],
+      ["package-open", "Artifacts"],
+      ["trees", "Worktrees"],
+      ["copy", "Clones served"],
+      ["mouse-pointer-click", "Website requests"],
+    ];
+    return columns.map(([icon, label, wide]) => mirrorTableHeader(icon, label, wide)).join("");
+  }
+
+  // Every node is a single compact table row. Long values stay on that line and
+  // the borderless table scrolls horizontally instead of turning into cards.
   function renderMirrorTabRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
@@ -14272,35 +14256,58 @@
       serving: "serving",
       offline: "offline",
     }[activity] || "";
-    const activityClass =
-      activity === "integrity-blocked"
-        ? "border-destructive/40 bg-destructive/10 text-destructive"
-        : ["syncing", "verifying", "awaiting-verification"].includes(activity)
-          ? "border-amber-500/40 bg-amber-500/10 text-amber-600"
-          : "border-primary/40 bg-primary/10 text-primary";
-    const dotColor = !online
-      ? "text-muted-foreground"
-      : behind
-        ? "text-amber-500"
-        : "text-primary";
+    const operations = Array.isArray(mirror.operations)
+      ? mirror.operations.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    let endpointHost = "";
+    try {
+      endpointHost = mirror.endpoint ? new URL(String(mirror.endpoint)).host : "";
+    } catch (_) {
+      endpointHost = "";
+    }
+    const commitLabel = commit
+      ? commit.slice(0, 7) + (mirror.branch ? `/${mirror.branch}` : "")
+      : "";
     const rowClass = isServing
-      ? "flex min-w-max flex-nowrap items-center gap-1.5 whitespace-nowrap border-t border-border px-4 py-2 text-sm ring-1 ring-inset ring-primary bg-primary/5"
-      : "flex min-w-max flex-nowrap items-center gap-1.5 whitespace-nowrap border-t border-border px-4 py-2 text-sm hover:bg-secondary/40 transition-colors";
+      ? "bg-primary/10"
+      : behind
+        ? "bg-amber-500/10"
+        : "transition-colors hover:bg-secondary/40";
+    const statusIcon = online ? "radio" : "circle";
+    const statusColor = online ? (behind ? "text-amber-500" : "text-primary") : "text-muted-foreground";
+    const nodeFlags = [
+      isSource ? '<i data-lucide="database" class="inline-block h-3 w-3 text-primary" title="Source of truth"></i><span class="sr-only">Source of truth</span>' : "",
+      behind ? '<i data-lucide="git-compare-arrows" class="inline-block h-3 w-3 text-amber-500" title="Out of sync"></i><span class="sr-only">Out of sync</span>' : "",
+      integrityRejected ? '<i data-lucide="shield-alert" class="inline-block h-3 w-3 text-destructive" title="Failing integrity pin"></i><span class="sr-only">Failing integrity pin</span>' : "",
+    ].join("");
+    const capabilityTitle = operations.length
+      ? `Capabilities: ${operations.join(", ")}`
+      : "Capabilities not reported";
     return `
-        <div class="${rowClass}">
-          <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
-          <span class="shrink-0 font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
-          ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
-          ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
-          ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
-          ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
-          ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
-          ${mirrorDetailChips(mirror, refMirror)}
-          <span class="ml-auto flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
-            ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
-            ${escapeHtml(mirror.status || "unknown")}
-          </span>
-        </div>`;
+        <tr data-mirror-row data-mirror-state="${online ? "online" : "offline"}" class="${rowClass}">
+          <th scope="row" class="max-w-28 truncate whitespace-nowrap px-1 py-1 text-left text-[11px] font-medium text-foreground font-mono">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")} ${nodeFlags}</th>
+          <td class="w-px whitespace-nowrap px-1 py-1 text-center" title="${escapeHtml(mirror.status || "unknown")}"><i data-lucide="${statusIcon}" class="inline-block h-3 w-3 ${statusColor}" aria-hidden="true"></i><span class="sr-only">${escapeHtml(mirror.status || "unknown")}</span></td>
+          ${mirrorTableCell(activityLabel || "", { title: activityLabel || "Activity not reported" })}
+          ${mirrorTableCell(version)}
+          ${mirrorTableCell(commitLabel, { mismatch: behind, title: behind && refCommit ? `Source of truth is at ${refCommit.slice(0, 7)}` : commitLabel })}
+          ${mirrorTableCell(mirror.lastSync ? formatTimeAgo(mirror.lastSync) : "")}
+          ${mirrorTableCell(endpointHost)}
+          ${mirrorTableCell(mirror.checkedAt ? formatTimeAgo(mirror.checkedAt) : "")}
+          ${mirrorTableCell(Number.isFinite(Number(mirror.latencyMs)) ? `${Math.max(0, Number(mirror.latencyMs))} ms` : "")}
+          ${mirrorTableCell(mirror.region || "")}
+          ${mirrorTableCell(mirror.endpointIntegrity || "", { mismatch: Boolean(mirror.endpointIntegrity && mirror.endpointIntegrity !== "ok") })}
+          ${mirrorTableCell(operations.length ? formatCount(operations.length) : "", { title: capabilityTitle })}
+          ${mirrorTableCell(mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "")}
+          ${mirrorTableCell(mirrorCountText(mirror.issueCount), { mismatch: mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), title: `Source: ${mirrorCountText(refMirror?.issueCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.commitCount), { mismatch: mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), title: `Source: ${mirrorCountText(refMirror?.commitCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.branchCount), { mismatch: mirrorCountMismatch(mirror.branchCount, refMirror?.branchCount), title: `Source: ${mirrorCountText(refMirror?.branchCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.pullCount), { mismatch: mirrorCountMismatch(mirror.pullCount, refMirror?.pullCount), title: `Source: ${mirrorCountText(refMirror?.pullCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.discussionCount), { mismatch: mirrorCountMismatch(mirror.discussionCount, refMirror?.discussionCount), title: `Source: ${mirrorCountText(refMirror?.discussionCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.artifactCount), { mismatch: mirrorCountMismatch(mirror.artifactCount, refMirror?.artifactCount), title: `Source: ${mirrorCountText(refMirror?.artifactCount) || "-"}` })}
+          ${mirrorTableCell(mirrorCountText(mirror.worktreeCount))}
+          ${mirrorTableCell(mirrorCountText(mirror.clonesServed), { title: speed ? `${mirrorCountText(mirror.clonesServed) || "-"} clones · ${speed}` : `${mirrorCountText(mirror.clonesServed) || "-"} clones` })}
+          ${mirrorTableCell(mirrorCountText(mirror.websiteServed))}
+        </tr>`;
   }
 
   function renderMirrorRow(mirror, servedBy, refMirror) {
@@ -14362,9 +14369,9 @@
           (Number(b.lastSync) || 0) - (Number(a.lastSync) || 0) ||
           String(a.node || a.owner || a.name || "").localeCompare(String(b.node || b.owner || b.name || "")),
       );
-      tabContainer.innerHTML = `<div class="overflow-x-auto">${ordered
+      tabContainer.innerHTML = `<div data-mirror-table-wrap class="overflow-x-auto"><table data-mirror-table class="min-w-full border-separate border-spacing-0 whitespace-nowrap text-left"><caption class="sr-only">Mirror node health</caption><thead class="sticky top-0 z-10 bg-background"><tr>${mirrorTableHead()}</tr></thead><tbody>${ordered
         .map((mirror) => renderMirrorTabRow(mirror, servedBy, refMirror))
-        .join("")}</div>`;
+        .join("")}</tbody></table></div>`;
     }
     renderRepoLiveMirrorList(mirrors, servedBy);
     window.lucide?.createIcons();
@@ -14395,7 +14402,10 @@
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
       repoMirrorLoadedKey = key;
       repoMirrorLoadedAt = Date.now();
-      const mirrorCount = normalizedCount(data.summary?.mirrors) ?? mirrors.length;
+      // The list is the authoritative membership response.  Its summary can
+      // lag a node update, which previously left the Mirrors action badge at
+      // the stale summary count even while all returned nodes were rendered.
+      const mirrorCount = mirrors.length;
       const onlineMirrors = mirrors.filter(
         (mirror) =>
           mirror?.status === "online" &&
@@ -14413,7 +14423,7 @@
         }
       }
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
-      setRepoTabCount("mirrors", mirrors.length);
+      setRepoTabCount("mirrors", mirrorCount);
       state.repoMirrors = mirrors;
       // Older gateways reported commit dates at day precision. When the
       // signed mirror record names the same commit, its exact commitAt is the
@@ -15099,16 +15109,13 @@
         ? `${repoPathUrl(repo)}/${routeKind}`
         : repoPathUrl(repo, routeKind === "blob" ? "blob" : "tree", routePath);
     navigateHistory(detailPath);
-    const crumb = $("[data-repo-detail-crumb]");
-    if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
     const branch = repoSelectedBranch(repo);
     const issuesCount = repoCount(repo, ["issueCount", "issues", "issuesCount", "openIssues"]);
     const pullsCount = repoCount(repo, ["pullCount", "pulls", "pullsCount", "openPulls", "pullRequests"]);
     const discussionsCount = repoCount(repo, ["discussions", "discussionCount"]);
     const commitsCount = repoCount(repo, ["commits", "commitCount", "commitHistory"]);
     const mirrorsCount = repoCount(repo, ["mirrors", "mirrorCount", "hosts"]);
-    const live = repoIsLive(repo);
-    const viaMirror = repoServedByMirror(repo);
+    renderHeaderContext("explore");
     const canEditAbout = sessionOwnsRepo(repo);
     const readmePath = "README.md";
     const readmeHref = repoPathUrl(repo, "blob", readmePath);
@@ -15122,7 +15129,6 @@
       projects: { label: "Projects", icon: "chart-gantt", count: "" },
       pulls: { label: "Pull requests", icon: "git-pull-request", count: pullsCount },
       discussions: { label: "Discussions", icon: "message-square", count: discussionsCount },
-      mirrors: { label: "Mirrors", icon: "radio", count: mirrorsCount },
       agents: { label: "Agents", icon: "bot", count: "" },
       settings: { label: "Settings", icon: "settings", count: "" },
     };
@@ -15183,55 +15189,9 @@
       </section>` : "";
     detail.innerHTML = `
       <div data-repo-layout="github-like" class="min-w-0">
-        <div data-repo-github-header class="rounded-t-lg border border-border bg-background">
-          <div class="grid gap-4 border-b border-border p-4 lg:grid-cols-[minmax(0,1fr)_auto]">
-            <div class="min-w-0">
-              <div class="flex min-w-0 flex-wrap items-center gap-2">
-                <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
-                <h2 class="min-w-0 truncate text-lg font-semibold text-foreground"><span class="text-muted-foreground"><a href="/@${encodeURIComponent(String(repo.owner || "").toLowerCase())}" data-repo-owner-link class="hover:text-foreground hover:underline">${escapeHtml(repo.owner || "owner")}</a>/</span>${escapeHtml(repo.name || "repository")}</h2>
-                <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${repo.isPrivate ? "private" : "public"}</span>
-                ${repositoryTermsBadge(repo)}
-                <span data-repo-availability-status class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "served by mirror" : live ? "mirror online" : "mirror offline"}</span>
-              </div>
-              <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
-            </div>
-            <div aria-label="Repository facts" class="flex flex-wrap items-start gap-2 lg:justify-end">
-              <div data-repo-watch-wrap class="relative">
-                <button type="button" data-repo-action-watch class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                  <i data-lucide="eye" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                  Watch
-                  <span data-repo-watch-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">–</span>
-                  <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
-                </button>
-                <div data-repo-watch-menu class="absolute right-0 z-30 mt-1 hidden w-72 rounded-lg border border-border bg-background p-3 text-left shadow-xl">
-                  <p class="text-xs font-semibold text-foreground">Watch on the fediverse</p>
-                  <p class="mt-1 text-[11px] leading-5 text-muted-foreground">Follow this repository from Mastodon (or any ActivityPub app) to get new issues, pull requests, discussions and releases in your feed.</p>
-                  <div class="mt-2 flex items-center gap-2">
-                    <code data-repo-watch-handle class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(fediHandle)}</code>
-                    <button type="button" data-dashboard-copy="${escapeHtml(fediHandle)}" aria-label="Copy fediverse handle" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>
-                  </div>
-                  <p class="mt-2 text-[11px] text-muted-foreground"><span data-repo-watch-followers class="font-mono text-foreground">–</span> fediverse watchers</p>
-                  <p data-repo-watch-disabled class="mt-1 hidden text-[11px] text-yellow-500">Federation is turned off for this repository.</p>
-                  <div data-repo-watch-list class="mt-2 hidden max-h-44 overflow-auto rounded-md border border-border bg-secondary/40 p-2"></div>
-                  <a data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-2 inline-flex items-center gap-1.5 text-[11px] hover:underline"><i data-lucide="external-link" class="h-3.5 w-3.5 shrink-0"></i>View on Mastodon</a>
-                </div>
-              </div>
-              <button type="button" data-repo-action-fork class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                <i data-lucide="git-fork" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                Fork
-                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(forkCount)}</span>
-                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
-              </button>
-              <button type="button" data-repo-action-star data-repo-key="${escapeHtml(actionSeed)}" aria-pressed="false" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
-                <span data-repo-star-label>Star</span>
-                <span data-repo-star-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(0)}</span>
-              </button>
-              <button type="button" data-dashboard-repo-tab="mirrors" aria-label="Show repository mirror status" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="radio" class="h-3.5 w-3.5 text-muted-foreground"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${tabCountLabel(mirrorsCount)}</span></button>
-            </div>
-          </div>
-          <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : []), ...(canSeeSettingsTab ? ["settings"] : [])].map((tab) => {
+        <div data-repo-github-header class="border-b border-border bg-background">
+          <div class="mx-auto flex w-full max-w-7xl min-w-0 overflow-x-auto px-3 sm:px-6" role="tablist" aria-label="Repository sections">
+            ${["code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", ...(canSeeAgentsTab ? ["agents"] : []), ...(canSeeSettingsTab ? ["settings"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const isDiscussions = tab === "discussions";
               const discussionCount = Number(meta.count);
@@ -15249,11 +15209,12 @@
               const pendingBadge = ["issues", "pulls", "discussions"].includes(tab)
                 ? `<span data-dashboard-repo-tab-pending="${tab}" class="hidden rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-mono text-yellow-500"></span>`
                 : "";
-              return `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" aria-selected="${tab === "code" ? "true" : "false"}" class="relative inline-flex h-12 items-center gap-2 border-b-2 px-3 text-xs font-medium transition-colors ${tab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"}"><i ${iconAttr} class="h-3.5 w-3.5"></i><span>${meta.label}</span>${isDiscussions || meta.count !== "" ? `<span data-dashboard-repo-tab-count="${tab}" class="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground${hideDiscussionsBadge ? " hidden" : ""}">${tabCountLabel(meta.count)}</span>` : ""}${pendingBadge}</button>`;
+              const showTabCount = tab !== "commits" && (isDiscussions || meta.count !== "");
+              return `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" aria-selected="${tab === "code" ? "true" : "false"}" class="relative inline-flex h-11 items-center gap-1.5 border-b-2 px-3 text-xs font-medium transition-colors ${tab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"}"><i ${iconAttr} class="h-3.5 w-3.5"></i><span>${meta.label}</span>${showTabCount ? `<span data-dashboard-repo-tab-count="${tab}" class="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground${hideDiscussionsBadge ? " hidden" : ""}">${tabCountLabel(meta.count)}</span>` : ""}${pendingBadge}</button>`;
             }).join("")}
           </div>
         </div>
-	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+	        <div data-repo-content-grid class="grid min-w-0 gap-5 px-3 pb-3 pt-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
 		          <div class="min-w-0">
 		            <section data-dashboard-repo-tab-panel="code">
 		              <div data-repo-root-toolbar class="grid gap-2 md:grid-cols-[auto_minmax(0,1fr)_auto_auto]">
@@ -15263,10 +15224,7 @@
 		                ${renderRepoCodeButton(repo, false)}
 		              </div>
 		              <div data-repo-pathbar class="my-3 flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
-			                <div class="flex min-w-0 items-center gap-2">
-			                  <div class="min-w-0 truncate text-xs text-muted-foreground" data-repo-breadcrumb></div>
-			                  <span data-repo-served-by hidden title="Mirror node that served this page (round-robined across online mirrors)" class="shrink-0 items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 font-mono text-[10px] text-muted-foreground"></span>
-			                </div>
+	                <div class="min-w-0 truncate text-xs text-muted-foreground" data-repo-breadcrumb></div>
 		                <div data-repo-focus-actions class="hidden flex shrink-0 flex-wrap items-center gap-2">
 		                  <button type="button" data-repo-file-finder-open class="inline-flex h-8 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"><i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Go to file</span><span class="ml-auto rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">T</span></button>
 		                  <button type="button" aria-disabled="true" class="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="plus" class="h-3.5 w-3.5 text-muted-foreground"></i>Add file</button>
@@ -15295,7 +15253,7 @@
 	                      </div>
 	                      <span data-repo-commit-hash class="font-mono text-muted-foreground"><span class="inline-block h-3.5 w-14 animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
 	                      <span data-repo-commit-date class="font-mono text-muted-foreground"><span class="inline-block h-3.5 w-16 animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
-	                      <button type="button" data-dashboard-history-button aria-label="Open commit history" class="inline-flex items-center gap-1 font-medium text-foreground hover:text-primary transition-colors"><i data-lucide="history" class="h-3.5 w-3.5 text-muted-foreground"></i>History</button>
+	                      <a href="${escapeHtml(`${repoPathUrl(repo)}/commits`)}" data-dashboard-history-button aria-label="Open commit history" class="inline-flex items-center gap-1 font-medium text-foreground transition-colors hover:text-primary"><i data-lucide="history" class="h-3.5 w-3.5 text-muted-foreground"></i><span>History</span><span data-dashboard-repo-count="commits" data-dashboard-repo-tab-count="commits" class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground">${tabCountLabel(commitsCount)}</span></a>
 	                    </div>
 	                    <div data-repo-tree></div>
 	                  </div>
@@ -15329,7 +15287,7 @@
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
             <section data-dashboard-repo-tab-panel="sizemap" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-pie" class="h-3.5 w-3.5 text-primary"></i>Size map</span><span class="font-mono text-[10px] text-muted-foreground">directory sizes · default branch</span></div><div data-repo-sizemap class="p-4"></div></div></section>
-            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">reachable mirror health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a ping; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
+            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div data-mirror-request hidden class="py-2"><label class="block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md bg-secondary px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="text-[11px] text-muted-foreground">They get a ping; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-workshop-agent-context hidden></div><div data-repo-agents></div></div></section>` : ""}
             ${settingsPanel}
           </div>
@@ -15352,6 +15310,50 @@
                 : `<i data-lucide="pencil" class="h-3.5 w-3.5 text-muted-foreground"></i>`}
             </div>
             <p data-repo-about-description class="mt-3 text-sm leading-6 text-foreground">${escapeHtml(repo.description || "No description published.")}</p>
+            <div data-repo-about-actions aria-label="Repository actions" class="mt-4 flex items-start justify-between gap-2 border-y border-border py-3">
+              <div data-repo-watch-wrap class="relative min-w-0 flex-1">
+                <button type="button" data-repo-action-watch aria-label="Watch repository" class="flex w-full flex-col items-center gap-1 rounded-md py-1 text-[10px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+                  <span class="relative inline-flex h-8 w-8 items-center justify-center rounded-md bg-secondary text-foreground">
+                    <i data-lucide="eye" class="h-4 w-4"></i>
+                    <span data-repo-watch-count class="absolute -right-0.5 -top-0.5 inline-flex min-w-3 items-center justify-center rounded-full border border-border bg-background px-1 font-mono text-[10px] leading-4 text-muted-foreground">–</span>
+                  </span>
+                  <span>Watch</span>
+                </button>
+                <div data-repo-watch-menu class="absolute left-0 top-full z-30 mt-1 hidden w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-background p-3 text-left shadow-xl">
+                  <p class="text-xs font-semibold text-foreground">Watch on the fediverse</p>
+                  <p class="mt-1 text-[11px] leading-5 text-muted-foreground">Follow this repository from Mastodon (or any ActivityPub app) to get new issues, pull requests, discussions and releases in your feed.</p>
+                  <div class="mt-2 flex items-center gap-2">
+                    <code data-repo-watch-handle class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(fediHandle)}</code>
+                    <button type="button" data-dashboard-copy="${escapeHtml(fediHandle)}" aria-label="Copy fediverse handle" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>
+                  </div>
+                  <p class="mt-2 text-[11px] text-muted-foreground"><span data-repo-watch-followers class="font-mono text-foreground">–</span> fediverse watchers</p>
+                  <p data-repo-watch-disabled class="mt-1 hidden text-[11px] text-yellow-500">Federation is turned off for this repository.</p>
+                  <div data-repo-watch-list class="mt-2 hidden max-h-44 overflow-auto rounded-md border border-border bg-secondary/40 p-2"></div>
+                  <a data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-2 inline-flex items-center gap-1.5 text-[11px] hover:underline"><i data-lucide="external-link" class="h-3.5 w-3.5 shrink-0"></i>View on Mastodon</a>
+                </div>
+              </div>
+              <button type="button" data-repo-action-fork aria-label="Fork repository" class="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-md py-1 text-[10px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+                <span class="relative inline-flex h-8 w-8 items-center justify-center rounded-md bg-secondary text-foreground">
+                  <i data-lucide="git-fork" class="h-4 w-4"></i>
+                  <span class="absolute -right-0.5 -top-0.5 inline-flex min-w-3 items-center justify-center rounded-full border border-border bg-background px-1 font-mono text-[10px] leading-4 text-muted-foreground">${formatCount(forkCount)}</span>
+                </span>
+                <span>Fork</span>
+              </button>
+              <button type="button" data-repo-action-star data-repo-key="${escapeHtml(actionSeed)}" aria-pressed="false" aria-label="Star repository" class="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-md py-1 text-[10px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+                <span class="relative inline-flex h-8 w-8 items-center justify-center rounded-md bg-secondary text-foreground">
+                  <i data-lucide="star" data-repo-star-icon class="h-4 w-4 text-muted-foreground"></i>
+                  <span data-repo-star-count class="absolute -right-0.5 -top-0.5 inline-flex min-w-3 items-center justify-center rounded-full border border-border bg-background px-1 font-mono text-[10px] leading-4 text-muted-foreground">${formatCount(0)}</span>
+                </span>
+                <span data-repo-star-label>Star</span>
+              </button>
+              <button type="button" data-dashboard-repo-tab="mirrors" aria-label="Show repository mirror status" class="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-md py-1 text-[10px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+                <span class="relative inline-flex h-8 w-8 items-center justify-center rounded-md bg-secondary text-foreground">
+                  <i data-lucide="radio" class="h-4 w-4"></i>
+                  <span data-dashboard-repo-count="mirrors" data-dashboard-repo-tab-count="mirrors" class="absolute -right-0.5 -top-0.5 inline-flex min-w-3 items-center justify-center rounded-full border border-border bg-background px-1 font-mono text-[10px] leading-4 text-muted-foreground">${tabCountLabel(mirrorsCount)}</span>
+                </span>
+                <span>Mirrors</span>
+              </button>
+            </div>
             <a data-repo-about-website href="#" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-1 hidden min-w-0 items-center gap-1.5 text-xs hover:underline"><i data-lucide="globe" class="h-3.5 w-3.5 shrink-0"></i><span data-repo-about-website-label class="min-w-0 truncate"></span></a>
             <form data-repo-about-form class="mt-3 hidden grid gap-2">
               <textarea data-repo-about-input rows="4" maxlength="240" class="min-h-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(repo.description || "")}</textarea>
@@ -16203,6 +16205,10 @@
   const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";
 
   function forkbotModelPick() {
+    // Send the live picker value even when private-mode storage rejects the
+    // persistence write. localStorage is only the cross-page default.
+    const selected = String($("[data-home-agent-model]")?.value || "").trim();
+    if (selected) return selected;
     try {
       return localStorage.getItem(FORKBOT_MODEL_KEY) || "";
     } catch (_) {
@@ -16514,8 +16520,8 @@
   async function initRepoPage() {
     const requested = requestedRepoKey();
     const detail = $("[data-repo-detail]");
-    const crumb = $("[data-repo-detail-crumb]");
-    if (crumb && requested) crumb.textContent = requested;
+    const headerContext = $("[data-dashboard-header-context]");
+    if (headerContext && requested) headerContext.textContent = requested;
     if (detail && requested) {
       detail.innerHTML = `<p class="text-sm text-muted-foreground">${loadingHtml("Loading repository…")}</p>`;
     }
@@ -16863,7 +16869,8 @@
 
       const historyButton = event.target.closest("[data-dashboard-history-button]");
       if (historyButton) {
-        setRepoTab("commits");
+        event.preventDefault();
+        activateRepoTab("commits");
         return;
       }
 

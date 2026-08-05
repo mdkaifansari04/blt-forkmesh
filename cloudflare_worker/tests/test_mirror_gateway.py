@@ -102,6 +102,23 @@ def make_bare_repository(tmp_path):
     return bare, commit
 
 
+def test_routing_generation_ignores_auxiliary_heads_but_tracks_default_and_tags(
+    tmp_path,
+):
+    bare, main_commit = make_bare_repository(tmp_path)
+    routing_before = gateway.routing_refs_sha256(bare)
+    full_before = gateway.refs_sha256(bare)
+
+    run([
+        "git", "update-ref", "refs/heads/agent/in-flight", main_commit,
+    ], bare)
+    assert gateway.refs_sha256(bare) != full_before
+    assert gateway.routing_refs_sha256(bare) == routing_before
+
+    run(["git", "tag", "v1-routing-test", main_commit], bare)
+    assert gateway.routing_refs_sha256(bare) != routing_before
+
+
 def test_runtime_cleanup_removes_only_gateway_materializations(tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=0o700)
@@ -695,7 +712,8 @@ def test_signed_repository_health_proof_binds_forkmesh_identity_and_refs(
     repository = app.repositories[("alice", "project")]
     assert proof["available"] is True
     assert proof["integrity"] == "ok"
-    assert proof["refsSha256"] == gateway.refs_sha256(repository.git_dir)
+    assert proof["refsSha256"] == gateway.routing_refs_sha256(
+        repository.git_dir)
     assert {"git-info-refs", "git-upload-pack", "tree", "raw"} <= set(
         proof["operations"]
     )
@@ -714,6 +732,51 @@ def test_signed_repository_health_proof_binds_forkmesh_identity_and_refs(
     assert payload["challenge"]["messageType"] == (
         "forkmesh-https-health-repository-v1"
     )
+
+
+def test_health_tolerates_auxiliary_head_churn_but_not_main_changes(application):
+    app, _commit, _release_hash, _logs = application
+    repository = app.repositories[("alice", "project")]
+    trusted_routing = gateway.routing_refs_sha256(repository.git_dir)
+    main_commit = run(
+        ["git", "rev-parse", "refs/heads/main"], repository.git_dir)
+
+    run([
+        "git", "update-ref", "refs/heads/agent/in-flight", main_commit,
+    ], repository.git_dir)
+    response = app.dispatch(
+        "GET",
+        (
+            f"/health?nonce=auxiliary-proof-01&issuedAt={NOW}"
+            "&owner=alice&repo=project"
+        ),
+        {},
+        b"",
+    )
+    proof = decode_json(response)["repositoryProof"]
+    assert proof["available"] is True
+    assert proof["refsSha256"] == trusted_routing
+
+    divergent = run(
+        ["git", "rev-parse", "refs/heads/forkmesh/pulls"],
+        repository.git_dir,
+    )
+    assert divergent != main_commit
+    run([
+        "git", "update-ref", "refs/heads/main", divergent,
+    ], repository.git_dir)
+    response = app.dispatch(
+        "GET",
+        (
+            f"/health?nonce=default-change-01&issuedAt={NOW}"
+            "&owner=alice&repo=project"
+        ),
+        {},
+        b"",
+    )
+    proof = decode_json(response)["repositoryProof"]
+    assert proof["available"] is False
+    assert proof["integrity"] == "unavailable"
 
 
 def test_unknown_and_private_health_proofs_are_uniform_signed_unavailable(

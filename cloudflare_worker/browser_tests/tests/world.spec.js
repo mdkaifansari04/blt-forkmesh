@@ -6477,6 +6477,28 @@ test("local diagnostics report renderer and existing socket state without new te
   await page.waitForTimeout(1150);
 
   const diagnostics = page.locator("[data-world-diagnostics]");
+  const liveChart = diagnostics.locator("[data-world-diagnostics-chart]");
+  await expect(diagnostics).not.toHaveAttribute("open", "");
+  await expect(liveChart).toBeVisible();
+  await expect(
+    liveChart.locator('[data-world-diagnostics-chart-value="fps"]'),
+  ).not.toHaveText("—");
+  await expect(
+    liveChart.locator('[data-world-diagnostics-chart-value="triangles"]'),
+  ).not.toHaveText("—");
+  await expect(
+    liveChart.locator('[data-world-diagnostics-chart-value="memory"]'),
+  ).toContainText("MB");
+  for (const metric of ["fps", "triangles", "memory"]) {
+    await expect(
+      liveChart.locator(
+        `[data-world-diagnostics-chart-line="${metric}"]`,
+      ),
+    ).toHaveAttribute("points", /\d+\.\d,\d+\.\d \d+\.\d,\d+\.\d/);
+  }
+  const collapsedBox = await diagnostics.boundingBox();
+  expect(collapsedBox?.width).toBeGreaterThan(240);
+  expect(collapsedBox?.height).toBeGreaterThanOrEqual(54);
   await expect(diagnostics.locator("summary")).toContainText("FPS");
   await expect(diagnostics.locator("summary")).toContainText("N online");
   await expect(diagnostics.locator("summary")).toContainText("1p");
@@ -6518,6 +6540,12 @@ test("local diagnostics report renderer and existing socket state without new te
   expect(snapshot.renderer.frameTimeMs).toBeGreaterThan(0);
   expect(snapshot.renderer.calls).toBeGreaterThan(0);
   expect(snapshot.renderer.triangles).toBeGreaterThan(0);
+  expect(snapshot.history.length).toBeGreaterThanOrEqual(2);
+  expect(snapshot.history.at(-1)).toMatchObject({
+    fps: expect.any(Number),
+    triangles: expect.any(Number),
+    memoryMB: expect.any(Number),
+  });
   expect(snapshot.connection).toMatchObject({
     state: "online",
     peers: 1,
@@ -9087,7 +9115,7 @@ test("the authenticated member appears immediately and active time advances loca
   expect(stillPaused).toBeCloseTo(paused.totalActiveMs, 3);
 });
 
-test("the Members Center shows its roster inside and places arrivals at its door", async ({
+test("the open Members Circle shows its roster and places arrivals beside it", async ({
   page,
 }) => {
   const session = {
@@ -9118,7 +9146,7 @@ test("the Members Center shows its roster inside and places arrivals at its door
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return Boolean(
-      shell?.world?.scene?.getObjectByName("members-yurt-door-member-info")
+      shell?.world?.scene?.getObjectByName("members-circle-member-info")
         ?.material?.map &&
         shell?.world?.scene?.getObjectByName("avatar:member:alice") &&
         shell?.world?.scene?.getObjectByName("avatar:member:bob"),
@@ -9127,16 +9155,16 @@ test("the Members Center shows its roster inside and places arrivals at its door
 
   const arrival = await page.locator("forkmesh-world").evaluate((shell) => {
     const player = shell.world.player;
-    const yurt = shell.world.scene.getObjectByName("members-center-yurt");
-    const door = shell.world.scene.getObjectByName("members-yurt-door");
-    const info = shell.world.scene.getObjectByName(
-      "members-yurt-door-member-info",
-    );
-    const chimney = shell.world.scene.getObjectByName(
-      "members-yurt-central-chimney",
-    );
-    const dirt = shell.world.scene.getObjectByName(
+    const circle = shell.world.scene.getObjectByName(
       "campfire-member-circle-dirt",
+    );
+    const sign = shell.world.scene.getObjectByName("members-circle-info-sign");
+    const info = shell.world.scene.getObjectByName(
+      "members-circle-member-info",
+    );
+    const center = circle.getWorldPosition(circle.position.clone());
+    const removedYurt = shell.world.scene.getObjectByName(
+      "members-center-yurt",
     );
     const startHere = shell.world.scene.getObjectByName(
       "forkmesh-start-here-map",
@@ -9150,8 +9178,8 @@ test("the Members Center shows its roster inside and places arrivals at its door
         y: position.y,
         z: position.z,
         radius: Math.hypot(
-          position.x - yurt.parent.position.x,
-          position.z - yurt.parent.position.z,
+          position.x - center.x,
+          position.z - center.z,
         ),
       };
     });
@@ -9162,19 +9190,20 @@ test("the Members Center shows its roster inside and places arrivals at its door
       y: player.position.y,
       z: player.position.z,
       leftKnee: player.userData.leftKnee.rotation.x,
-      yurtPresent: Boolean(yurt),
-      doorPosition: door.position.toArray(),
+      circlePresent: Boolean(circle),
+      circleVisible: circle.visible,
+      yurtPresent: Boolean(removedYurt),
+      signPosition: sign.position.toArray(),
       infoPosition: info.position.toArray(),
       infoRotation: info.rotation.y,
       infoHasTexture: Boolean(info.material.map),
-      chimneyPosition: chimney.position.toArray(),
       memberBenchesPresent: Boolean(
         shell.world.scene.getObjectByName("campfire-member-circle"),
       ),
-      directoryFigures: yurt.parent.userData.detailedMemberFigures || 0,
+      directoryFigures: circle.parent.userData.detailedMemberFigures || 0,
       memberPositions,
-      dirtY: dirt.position.y,
-      signPresent: Boolean(
+      dirtY: circle.position.y,
+      oldPathSignPresent: Boolean(
         shell.world.scene.getObjectByName(
           "forkmesh-members-circle-path-sign",
         ),
@@ -9188,19 +9217,19 @@ test("the Members Center shows its roster inside and places arrivals at its door
   });
 
   expect(arrival.placed).toBe(true);
-  expect(arrival.activity).toBe("visiting the Members Center yurt");
+  expect(arrival.activity).toBe("visiting the Members Circle");
   expect(arrival.x).toBeCloseTo(0, 5);
   expect(arrival.z).toBeCloseTo(114.8, 5);
   expect(arrival.y).toBeCloseTo(0.38, 5);
   expect(arrival.leftKnee).toBeCloseTo(0, 5);
-  expect(arrival.yurtPresent).toBe(true);
-  expect(arrival.doorPosition[2]).toBeLessThan(-12);
-  expect(arrival.infoPosition[0]).toBeGreaterThan(4);
+  expect(arrival.circlePresent).toBe(true);
+  expect(arrival.circleVisible).toBe(true);
+  expect(arrival.yurtPresent).toBe(false);
+  expect(arrival.signPosition[2]).toBeLessThan(-12);
+  expect(arrival.infoPosition[0]).toBe(0);
+  expect(arrival.infoPosition[1]).toBeGreaterThan(3);
   expect(arrival.infoRotation).toBeCloseTo(Math.PI, 5);
   expect(arrival.infoHasTexture).toBe(true);
-  expect(arrival.chimneyPosition[0]).toBe(0);
-  expect(arrival.chimneyPosition[2]).toBe(0);
-  expect(arrival.chimneyPosition[1]).toBeGreaterThan(10);
   expect(arrival.memberBenchesPresent).toBe(false);
   expect(arrival.directoryFigures).toBe(2);
   expect(arrival.memberPositions).toHaveLength(2);
@@ -9210,7 +9239,7 @@ test("the Members Center shows its roster inside and places arrivals at its door
     expect(member.radius).toBeLessThan(10);
   }
   expect(arrival.dirtY).toBeGreaterThan(0.105);
-  expect(arrival.signPresent).toBe(false);
+  expect(arrival.oldPathSignPresent).toBe(false);
   expect(arrival.startHere.x).toBe(0);
   expect(arrival.startHere.z).toBe(168);
   expect(arrival.startHere.rotation).toBeCloseTo(Math.PI, 5);
@@ -9230,7 +9259,7 @@ test("the Members Center shows its roster inside and places arrivals at its door
   expect(reloaded.leftKnee).toBeCloseTo(0, 5);
 });
 
-test("enclosed districts keep their inside walls and open exits visible", async ({
+test("camera LOD swaps node boxes while open districts keep displays visible", async ({
   page,
 }) => {
   await prepareWorldPage(page, "visible-enclosure-exits");
@@ -9246,86 +9275,281 @@ test("enclosed districts keep their inside walls and open exits visible", async 
     }, objectName);
     await page.waitForFunction(
       (expected) =>
-        document.querySelector("forkmesh-world")?.world?.scene?.userData
+        document.querySelector("forkmesh-world")?.world?.player?.parent?.userData
           ?.activeEnclosureScene === expected,
       mode,
     );
   };
 
-  await visit("forkmesh-node-district", "nodes");
-  const nodes = await page.locator("forkmesh-world").evaluate((shell) => {
-    const cover = shell.world.scene.getObjectByName(
-      "forkmesh-node-opaque-cover",
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(60, 0.38, 0);
+  });
+  await page.waitForFunction(() =>
+    document.querySelector("forkmesh-world")?.world?.player?.parent?.userData
+      ?.nodeDetailLevel === "boxes",
+  );
+  const farNodes = await page.locator("forkmesh-world").evaluate((shell) => {
+    const boxes = shell.world.scene.getObjectByName("forkmesh-node-box-lod");
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-node-interior",
     );
     return {
-      visible: cover.visible,
-      insideFacing: cover.material.side === 2,
-      doorOpen: cover.userData.doorOpen,
+      cover: shell.world.scene.getObjectByName("forkmesh-node-opaque-cover"),
+      boxesVisible: boxes.visible,
+      boxInstances: boxes.count,
+      detailedVisible: interior.visible,
+      panelTargetVisible: shell.world.scene.getObjectByName(
+        "mirror-server-front-panel",
+      )?.visible,
+      activeEnclosure: shell.world.player.parent.userData.activeEnclosureScene,
     };
   });
-  expect(nodes).toEqual({ visible: true, insideFacing: true, doorOpen: true });
+  expect(farNodes.cover).toBeUndefined();
+  expect(farNodes.boxesVisible).toBe(true);
+  expect(farNodes.boxInstances).toBeGreaterThan(0);
+  expect(farNodes.detailedVisible).toBe(false);
+  expect(farNodes.panelTargetVisible).toBe(false);
+  expect(farNodes.activeEnclosure).toBe("");
 
-  await visit("forkmesh-leaderboard-district", "leaderboards");
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(0, 0.38, 0);
+  });
+  await page.waitForFunction(() =>
+    document.querySelector("forkmesh-world")?.world?.player?.parent?.userData
+      ?.nodeDetailLevel === "detailed",
+  );
+  const nearNodes = await page.locator("forkmesh-world").evaluate((shell) => ({
+    boxesVisible: shell.world.scene.getObjectByName("forkmesh-node-box-lod")
+      .visible,
+    detailedVisible: shell.world.scene.getObjectByName(
+      "forkmesh-node-interior",
+    ).visible,
+    panelTargetVisible: shell.world.scene.getObjectByName(
+      "mirror-server-front-panel",
+    ).visible,
+  }));
+  expect(nearNodes).toEqual({
+    boxesVisible: false,
+    detailedVisible: true,
+    panelTargetVisible: true,
+  });
+
+  await visit("forkmesh-leaderboard-district", "");
   const leaderboards = await page.locator("forkmesh-world").evaluate((shell) => {
+    const district = shell.world.scene.getObjectByName(
+      "forkmesh-leaderboard-district",
+    );
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-leaderboard-interior",
+    );
     const cover = shell.world.scene.getObjectByName(
       "forkmesh-leaderboard-opaque-cover",
     );
     return {
-      visible: cover.visible,
-      insideFacing: cover.material.side === 2,
-      doorOpen: cover.userData.doorOpen,
+      districtVisible: district.visible,
+      contentVisible: interior.visible,
+      coverPresent: Boolean(cover),
+      activeEnclosure: shell.world.player.parent.userData.activeEnclosureScene,
     };
   });
   expect(leaderboards).toEqual({
-    visible: true,
-    insideFacing: true,
-    doorOpen: true,
+    districtVisible: true,
+    contentVisible: true,
+    coverPresent: false,
+    activeEnclosure: "",
   });
 
-  await visit("repository-geodesic-dome", "repositories");
+  await visit("repository-district-content", "");
   const repositories = await page.locator("forkmesh-world").evaluate((shell) => {
-    const dome = shell.world.scene.getObjectByName("repository-geodesic-dome");
-    const walls = shell.world.scene.getObjectByName(
-      "repository-geodesic-dome-shell",
+    const content = shell.world.scene.getObjectByName(
+      "repository-district-content",
     );
-    const door = shell.world.scene.getObjectByName(
-      "repository-geodesic-dome-doors",
+    const dome = shell.world.scene.getObjectByName(
+      "repository-geodesic-dome",
     );
     return {
-      visible: dome.visible,
-      insideFacing: walls.material.side === 2,
-      doorVisible: door.visible,
-      doorOpen: door.userData.doorOpen,
+      districtVisible: content.parent.visible,
+      contentVisible: content.visible,
+      importKioskVisible: shell.world.scene.getObjectByName(
+        "repository-import-kiosk",
+      ).visible,
+      domePresent: Boolean(dome),
+      activeEnclosure: shell.world.player.parent.userData.activeEnclosureScene,
     };
   });
   expect(repositories).toEqual({
-    visible: true,
-    insideFacing: true,
-    doorVisible: true,
-    doorOpen: true,
+    districtVisible: true,
+    contentVisible: true,
+    importKioskVisible: true,
+    domePresent: false,
+    activeEnclosure: "",
   });
 
-  await visit("members-center-yurt", "members");
+  await visit("members-circle-info-sign", "");
   const members = await page.locator("forkmesh-world").evaluate((shell) => {
-    const yurt = shell.world.scene.getObjectByName("members-center-yurt");
-    const walls = shell.world.scene.getObjectByName("members-yurt-walls");
-    const roof = shell.world.scene.getObjectByName("members-yurt-roof");
-    const door = shell.world.scene.getObjectByName("members-yurt-door");
+    const circle = shell.world.scene.getObjectByName(
+      "campfire-member-circle-dirt",
+    );
+    const sign = shell.world.scene.getObjectByName("members-circle-info-sign");
+    const info = shell.world.scene.getObjectByName(
+      "members-circle-member-info",
+    );
     return {
-      visible: yurt.visible,
-      wallsInsideFacing: walls.material.side === 2,
-      roofInsideFacing: roof.material.side === 2,
-      doorVisible: door.visible,
-      doorOpen: door.userData.doorOpen,
+      circleVisible: circle.visible,
+      signVisible: sign.visible,
+      infoHasTexture: Boolean(info.material.map),
+      yurtPresent: Boolean(
+        shell.world.scene.getObjectByName("members-center-yurt"),
+      ),
+      activeEnclosure: shell.world.player.parent.userData.activeEnclosureScene,
     };
   });
   expect(members).toEqual({
-    visible: true,
-    wallsInsideFacing: true,
-    roofInsideFacing: true,
-    doorVisible: true,
-    doorOpen: true,
+    circleVisible: true,
+    signVisible: true,
+    infoHasTexture: true,
+    yurtPresent: false,
+    activeEnclosure: "",
   });
+});
+
+test("scene repeats share geometry and use camera-driven LOD", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "scene-camera-lod", {
+    directoryUsers: [
+      {
+        name: "lod-member",
+        nodes: [],
+        createdAt: FIXED_NOW - 2_000,
+      },
+    ],
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    const scene = shell?.world?.scene;
+    const player = shell?.world?.player;
+    return Boolean(
+      scene?.getObjectByName("avatar:member:lod-member") &&
+        scene?.getObjectByName("forkmesh-world-quadcopter-1") &&
+        scene?.getObjectByName("forkmesh-world-quadcopter-2") &&
+        scene?.getObjectByName("forkmesh-drone-race-course") &&
+        player?.parent?.userData?.nodeDetailSource === "camera",
+    );
+  });
+
+  const contract = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const player = shell.world.player;
+    const member = scene.getObjectByName("avatar:member:lod-member");
+    const quadcopters = [1, 2].map((index) =>
+      scene.getObjectByName(`forkmesh-world-quadcopter-${index}`),
+    );
+    const course = scene.getObjectByName("forkmesh-drone-race-course");
+    const sharedGeometries = (root) => {
+      const geometries = new Set();
+      root.traverse((child) => {
+        if (child.geometry?.userData?.forkmeshSharedResource === true) {
+          geometries.add(child.geometry);
+        }
+      });
+      return geometries;
+    };
+    const sharedMaterials = (root) => {
+      const materials = new Set();
+      root.traverse((child) => {
+        const childMaterials = Array.isArray(child.material)
+          ? child.material
+          : child.material
+            ? [child.material]
+            : [];
+        childMaterials.forEach((material) => materials.add(material));
+      });
+      return materials;
+    };
+    const intersects = (left, right) =>
+      [...left].some((entry) => right.has(entry));
+    const playerGeometry = sharedGeometries(player);
+    const memberGeometry = sharedGeometries(member);
+    const firstQuadGeometry = sharedGeometries(quadcopters[0]);
+    const secondQuadGeometry = sharedGeometries(quadcopters[1]);
+    const firstQuadMaterials = sharedMaterials(quadcopters[0]);
+    const secondQuadMaterials = sharedMaterials(quadcopters[1]);
+    const worldRoot = player.parent;
+
+    return {
+      avatars: {
+        bothUseLod:
+          player.userData.avatarLod?.isLOD === true &&
+          member.userData.avatarLod?.isLOD === true,
+        bothHaveTwoLevels:
+          player.userData.avatarLod?.levels?.length === 2 &&
+          member.userData.avatarLod?.levels?.length === 2,
+        sharedGeometryMarked:
+          playerGeometry.size > 0 && memberGeometry.size > 0,
+        shareGeometry: intersects(playerGeometry, memberGeometry),
+      },
+      quadcopters: {
+        rootCount: quadcopters.filter(Boolean).length,
+        distinctRoots: quadcopters[0] !== quadcopters[1],
+        bothAreWorldRoots: quadcopters.every(
+          (quadcopter) => quadcopter.parent === worldRoot,
+        ),
+        bothUseLod: quadcopters.every(
+          (quadcopter) => quadcopter.isLOD && quadcopter.levels.length === 2,
+        ),
+        sharedGeometryMarked:
+          firstQuadGeometry.size > 0 && secondQuadGeometry.size > 0,
+        shareGeometry: intersects(firstQuadGeometry, secondQuadGeometry),
+        shareMaterials: intersects(firstQuadMaterials, secondQuadMaterials),
+      },
+      course: {
+        isWorldRoot: course.parent === worldRoot,
+        isLod: course.isLOD === true,
+        levelCount: course.levels.length,
+        ringCount: course.userData.ringCount,
+        instancedCounts: course.levels.map((level) => ({
+          instanced: level.object.isInstancedMesh === true,
+          count: level.object.count,
+        })),
+      },
+      nodes: {
+        source: worldRoot.userData.nodeDetailSource,
+        distanceFinite: Number.isFinite(worldRoot.userData.nodeDetailDistance),
+        level: worldRoot.userData.nodeDetailLevel,
+      },
+    };
+  });
+
+  expect(contract.avatars).toEqual({
+    bothUseLod: true,
+    bothHaveTwoLevels: true,
+    sharedGeometryMarked: true,
+    shareGeometry: true,
+  });
+  expect(contract.quadcopters).toEqual({
+    rootCount: 2,
+    distinctRoots: true,
+    bothAreWorldRoots: true,
+    bothUseLod: true,
+    sharedGeometryMarked: true,
+    shareGeometry: true,
+    shareMaterials: true,
+  });
+  expect(contract.course).toEqual({
+    isWorldRoot: true,
+    isLod: true,
+    levelCount: 2,
+    ringCount: 10,
+    instancedCounts: [
+      { instanced: true, count: 10 },
+      { instanced: true, count: 10 },
+    ],
+  });
+  expect(contract.nodes.source).toBe("camera");
+  expect(contract.nodes.distanceFinite).toBe(true);
+  expect(["boxes", "detailed"]).toContain(contract.nodes.level);
 });
 
 test("the System Status board countdown advances between minute syncs", async ({

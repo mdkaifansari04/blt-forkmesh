@@ -3246,6 +3246,11 @@ async function broadcastForkbotMessage(text) {
 }
 
 function forkbotModel() {
+  // The open composer's value is authoritative. Persistence is best-effort:
+  // browsers can deny localStorage while still allowing a person to select and
+  // send a model for this prompt.
+  const selected = String(forkbotModelSelect?.value || "").trim();
+  if (selected) return selected;
   try {
     return localStorage.getItem(FORKBOT_MODEL_KEY) || "";
   } catch (error) {

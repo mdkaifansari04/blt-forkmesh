@@ -178,4 +178,8 @@ def test_mirror_nodes_header_labels_cover_every_column():
         f"{len(columns)} columns but {labels.count(chr(34)) // 2} header labels"
     )
     assert '"Node", "Sync", "Owner"' in labels
-    assert labels.rstrip().rstrip(";").rstrip().endswith('"Reachability"})')
+    # The compact three-row card is a final presentation-only column; the
+    # sortable reachability data remains immediately before it.
+    assert labels.rstrip().rstrip(";").rstrip().endswith(
+        '"Reachability", "Mirror node"})'
+    )

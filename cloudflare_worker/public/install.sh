@@ -1207,6 +1207,24 @@ _install_binary() {
   return 0
 }
 
+_install_mirror_node_binary() {
+  local candidate="$1" expected_hash="$2" destination="$BIN_DIR/forkmesh-mirror-node"
+  local got staged
+  got="$(_sha256_file "$candidate")"
+  [ "$got" = "$expected_hash" ] || {
+    warn "Go mirror-node companion failed its authenticated SHA-256 check."
+    return 1
+  }
+  staged="$(mktemp "$BIN_DIR/.forkmesh-mirror-node.XXXXXX" 2>/dev/null)" || return 1
+  if ! install -m 0755 "$candidate" "$staged" 2>/dev/null ||
+     [ "$(_sha256_file "$staged")" != "$expected_hash" ] ||
+     ! mv -f "$staged" "$destination"; then
+    rm -f "$staged"
+    return 1
+  fi
+  say "Installed native Go mirror-node companion to $destination"
+}
+
 # Install the prebuilt binary for this platform. New model (issue #304): release
 # binaries are NOT committed to git. The installer reads the tiny committed
 # release manifest (SHASUMS256.txt, fetched over the git proxy) to learn the
@@ -1219,6 +1237,7 @@ install_prebuilt_release() {
   command -v git >/dev/null 2>&1 || return 1
   ensure_mirror_candidates
   local tmp repo sums manifest signature canon hash url bin got attempt attempt_url
+  local mirror_name mirror_hash mirror_url mirror_bin
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
   # Standalone `curl | bash` installs need an independent trust anchor too.
   # Materialize ForkMesh's release-only public key inside this private staging
@@ -1290,6 +1309,24 @@ install_prebuilt_release() {
             rm -f "$bin"
             continue
           elif _install_binary "$bin" "$hash"; then
+            mirror_name="forkmesh-mirror-node-${ASSET_OS}-${ASSET_ARCH}"
+            [ "$ASSET_OS" = "windows" ] && mirror_name="${mirror_name}.exe"
+            mirror_hash="$(awk -v n="$mirror_name" '$2==n {print $1; exit}' "$tmp/$sums" 2>/dev/null)"
+            if ! printf '%s' "$mirror_hash" | grep -Eq '^[0-9a-f]{64}$'; then
+              # Releases published before the native service existed remain
+              # installable. Every newly published release includes this asset;
+              # the warning tells an operator to update before deploying Vultr.
+              warn "This older release has no Go mirror-node companion for ${ASSET_OS}/${ASSET_ARCH}."
+            else
+              mirror_url="${FORKMESH_HOST%/}/api/repo/${RELEASE_REPO_OWNER}/${RELEASE_REPO_NAME}/releases/blob/sha256/${mirror_hash}"
+              mirror_bin="$tmp/mirror-node.bin"
+              if ! curl -fsSL -H 'Cache-Control: no-cache' "$mirror_url" -o "$mirror_bin" 2>/dev/null ||
+                 [ ! -s "$mirror_bin" ] ||
+                 ! _install_mirror_node_binary "$mirror_bin" "$mirror_hash"; then
+                warn "Could not install the native Go mirror-node companion."
+                return 1
+              fi
+            fi
             REPO="$repo"; rm -rf "$tmp"
             say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
             return 0
