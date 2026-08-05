@@ -887,6 +887,21 @@ int main(int argc, char *argv[])
     MainWindow window;
     qInstallMessageHandler(startupPrevious);
     g_capturedMessages = nullptr;
+
+    // The shared branch/PR/working-tree renderer leaves room to scroll the
+    // final changed lines clear of the viewport and ends with an explicit dark
+    // terminator (adhoc #1450).
+    QList<forkmesh::ui::DiffFileEntry> footerFiles;
+    const QString footerHtml = forkmesh::ui::renderDiffHtmlSplit(
+        false,
+        QStringLiteral("diff --git a/a.txt b/a.txt\n"
+                       "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"),
+        footerFiles, QString(), QStringLiteral("main"),
+        QStringLiteral("feature"), QString(), {}, {});
+    check(footerHtml.contains(QStringLiteral("class='diffendspacer'")) &&
+              footerHtml.endsWith(
+                  QStringLiteral("<div class='diffend'>END OF DIFF</div>")),
+          QStringLiteral("diffs have bottom review space and an explicit end bar"));
     const QString startupLog = startupMessages.join(QLatin1Char('\n'));
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(

@@ -1918,10 +1918,20 @@ QString renderDiffHtmlSplit(bool split, const QString &patch,
                             const QHash<QString, QString> &lineNotes,
                             const QSet<QString> &viewedFiles)
 {
-    return split ? renderSplitDiffHtml(patch, files, dir, base, head,
-                                       anchorFile, lineNotes, viewedFiles)
-                 : renderUnifiedDiffHtml(patch, files, dir, base, head,
-                                         anchorFile, lineNotes, viewedFiles);
+    QString html =
+        split ? renderSplitDiffHtml(patch, files, dir, base, head,
+                                    anchorFile, lineNotes, viewedFiles)
+              : renderUnifiedDiffHtml(patch, files, dir, base, head,
+                                      anchorFile, lineNotes, viewedFiles);
+    // Leave a deliberate review runway after the final file so its last lines
+    // can be scrolled above the viewport edge, then make the actual end
+    // unmistakable. A full-width dark terminator works in both themes and is
+    // included by the shared renderer for branch, PR and working-tree diffs.
+    html += QStringLiteral(
+        "<table class='diffendspacer' width='100%' cellspacing='0' "
+        "cellpadding='0'><tr><td height='160'>&nbsp;</td></tr></table>"
+        "<div class='diffend'>END OF DIFF</div>");
+    return html;
 }
 
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
@@ -2033,7 +2043,11 @@ QString diffStyleSheet(int fontPt)
                "background:%1; font-size:11px; font-style:italic; }"
                ".suggestion { background:%9; border:1px solid %7; color:%8; "
                "padding:8px; margin-top:6px; white-space:pre; }"
-               ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }")
+               ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }"
+               ".diffendspacer { background:%9; border:0; }"
+               ".diffend { background:#000000; color:#ffffff; "
+               "font-family:sans-serif; font-size:11px; font-weight:700; "
+               "letter-spacing:2px; text-align:center; padding:10px; }")
         .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg, border, fg, gutterBg)
         .arg(qBound(8, fontPt, 28));
 }
