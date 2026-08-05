@@ -2662,9 +2662,10 @@ int main(int argc, char *argv[])
                 break;
         }
     }
-    // The Agents prompt is a real full-width footer rather than the compact
-    // overlay used elsewhere. Its reserved page margin keeps the transcript and
-    // session list above it instead of letting their last lines hide underneath.
+    // The Agents prompt occupies the right half of the footer, matching the
+    // transcript pane to the right of the page's middle splitter divider. Its
+    // reserved page margin keeps the transcript and session list above it
+    // instead of letting their last lines hide underneath.
     {
         QWidget *agentsPage = window.findChild<QWidget *>(
             QStringLiteral("agentsPage"));
@@ -2676,15 +2677,24 @@ int main(int argc, char *argv[])
             footerDock && footerDock->layout()
                 ? footerDock->layout()->contentsMargins()
                 : QMargins();
+        const int dockContentWidth =
+            footerDock ? footerDock->width() - dockMargins.left() -
+                             dockMargins.right()
+                       : 0;
         check(agentsPage && agentsPage->layout() && footerDock && promptHost &&
-                  promptHost->isVisibleTo(&window) &&
-                  promptHost->geometry().left() == dockMargins.left() &&
+                  promptHost->isVisibleTo(&window) && dockContentWidth > 0 &&
+                  promptHost->geometry().left() >=
+                      dockMargins.left() + dockContentWidth / 2 - 2 &&
+                  promptHost->geometry().left() <=
+                      dockMargins.left() + dockContentWidth / 2 + 2 &&
                   promptHost->geometry().right() ==
                       footerDock->rect().right() - dockMargins.right() &&
+                  promptHost->width() >= dockContentWidth / 2 - 2 &&
+                  promptHost->width() <= dockContentWidth / 2 + 2 &&
                   agentsPage->layout()->contentsMargins().bottom() ==
                       footerDock->height(),
-              QStringLiteral("Agents docks the full-width prompt below its "
-                             "transcript"));
+              QStringLiteral("Agents docks the prompt in the right half below "
+                             "its transcript"));
 
         QPushButton *avatar = window.findChild<QPushButton *>(
             QStringLiteral("serverFooterButton"));
@@ -2705,11 +2715,14 @@ int main(int argc, char *argv[])
             QApplication::sendEvent(avatar, &enter);
             QApplication::processEvents();
             check(promptWrapper->isVisible() &&
-                      promptHost->geometry().left() == dockMargins.left() &&
+                      promptHost->geometry().left() >=
+                          dockMargins.left() + dockContentWidth / 2 - 2 &&
+                      promptHost->geometry().left() <=
+                          dockMargins.left() + dockContentWidth / 2 + 2 &&
                       promptHost->geometry().right() ==
                           footerDock->rect().right() - dockMargins.right(),
                   QStringLiteral("hovering the Agents avatar restores the "
-                                 "full-width prompt"));
+                                 "right-half prompt"));
         }
     }
     check(window.testAgentListChromeHidden(),

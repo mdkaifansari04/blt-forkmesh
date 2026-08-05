@@ -2654,14 +2654,18 @@ void MainWindow::positionGlobalFooterOverlays()
         m_repoDetailStack->currentIndex() == kRepoAgentsTab;
     const bool dockAgentPrompt = onAgents && !m_promptOverlayCollapsed;
 
-    // Agents is the one conversation-first workspace: dock the composer across
-    // its entire foot and keep the transcript/list layout above it. Everywhere
-    // else the same widget remains a compact lower-right overlay, with the live
-    // log able to occupy the opposite corner.
+    // Agents is the one conversation-first workspace: dock the composer in the
+    // transcript pane's half of the foot and keep the transcript/list layout
+    // above it. The equal-width spacer mirrors the Agents splitter, while the
+    // same widget remains a compact lower-right overlay everywhere else.
     if (m_footerLeftRegion)
         m_footerLeftRegion->setVisible(m_logOverlayExpanded && !onAgents);
     if (auto *dockRow = qobject_cast<QHBoxLayout *>(m_footerDock->layout())) {
-        dockRow->setStretch(1, dockAgentPrompt ? 0 : 1); // transparent spacer
+        // On Agents the left pane is hidden from this overlay, so keep a spacer
+        // equal to the prompt's stretch and line the composer up with the
+        // splitter's middle divider. Elsewhere the spacer lets the log and
+        // prompt remain independent lower-corner overlays.
+        dockRow->setStretch(1, 1); // transparent spacer
         dockRow->setAlignment(
             m_promptOverlayHost,
             dockAgentPrompt ? Qt::AlignBottom
