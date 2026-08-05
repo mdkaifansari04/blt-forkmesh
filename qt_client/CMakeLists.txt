@@ -536,6 +536,9 @@ install(PROGRAMS
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/forkmesh_mcp_server.py"
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/tools")
 install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../packaging/systemd/forkmesh-mirror-node.service"
+    DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/packaging/systemd")
+install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/wrangler.toml"
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/pyproject.toml"
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/uv.lock"

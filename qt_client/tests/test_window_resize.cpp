@@ -1246,6 +1246,30 @@ int main(int argc, char *argv[])
                       "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256=")),
               QStringLiteral(
                   "direct controller uploads pin the exact local binary SHA-256"));
+
+        qsizetype mirrorUploadBytes = -1;
+        QString mirrorUploadError;
+        const QString mirrorCommand =
+            window.testVultrGoMirrorInstallRemoteCommand(
+                &mirrorUploadBytes, &mirrorUploadError);
+        check(!mirrorCommand.isEmpty() && mirrorUploadError.isEmpty() &&
+                  mirrorUploadBytes > 0 &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "systemctl enable --now forkmesh-mirror-node.service")) &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "Go mirror-node installed and running (no Qt/GTK packages)")) &&
+                  !mirrorCommand.contains(QStringLiteral("install.sh")),
+              QStringLiteral(
+                  "Vultr uses one native Go mirror package without the desktop installer"));
+        QProcess mirrorSyntax;
+        mirrorSyntax.start(QStringLiteral("bash"),
+                           {QStringLiteral("-n"), QStringLiteral("-c"),
+                            mirrorCommand});
+        const bool mirrorSyntaxFinished = mirrorSyntax.waitForFinished(5000);
+        check(mirrorSyntaxFinished &&
+                  mirrorSyntax.exitStatus() == QProcess::NormalExit &&
+                  mirrorSyntax.exitCode() == 0,
+              QStringLiteral("Vultr Go mirror remote command is valid shell syntax"));
     }
     if (fleetBinaryInstallOnly)
         return failures == 0 ? 0 : 1;

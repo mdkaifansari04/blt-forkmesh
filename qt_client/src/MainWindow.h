@@ -741,6 +741,8 @@ public:
                                                 QString *errorOut);
     QString testDirectBinaryInstallRemoteCommand(qsizetype *uploadByteCount,
                                                  QString *errorOut);
+    QString testVultrGoMirrorInstallRemoteCommand(qsizetype *uploadByteCount,
+                                                  QString *errorOut);
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
@@ -1949,6 +1951,10 @@ private:
                                  bool requirePublishedBinary,
                                  QString *remoteCmd, QByteArray *uploadBytes,
                                  QString *errorOut);
+    bool buildVultrMirrorNodeInstallCommand(const QString &node,
+                                            QString *remoteCmd,
+                                            QByteArray *uploadBytes,
+                                            QString *errorOut) const;
     // Save non-sensitive host metadata from the form without running the
     // installer. pass is cached only for the current process; it is never
     // written to QSettings. identityFile records the ForkMesh-managed private

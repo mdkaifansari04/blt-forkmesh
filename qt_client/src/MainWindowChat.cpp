@@ -19312,12 +19312,10 @@ void MainWindow::appendVultrAttemptHistory()
 void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                                        const QString &identityFile)
 {
-    // Two attempts, not a ladder of them: waitForVultrSshReady has already
-    // proven the host answers, so "not reachable yet" is no longer a reason to
-    // repeat a whole-binary upload (adhoc #48). The one retry left is the
-    // switch to uploading this app's own binary when the relay download turns
-    // out to have nothing to serve.
-    constexpr int kMaxInstallAttempts = 2;
+    // The native package is streamed once from this desktop.  It has no
+    // dependency on an already-online mirror, so retrying the general desktop
+    // installer or uploading the much larger Qt executable is never useful.
+    constexpr int kMaxInstallAttempts = 1;
     if (!m_vultrProvisionActive)
         return;
     // Hand off to the shared install path through the form it reads; the
@@ -19356,10 +19354,8 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     if (m_vultrStatus)
         m_vultrStatus->setText(
             QString::fromUtf8(
-                m_vultrInstallUseLocalBinary
-                    ? "Installing ForkMesh (attempt %1 of %2) \xE2\x80\x94 "
-                      "uploading this app's release directly\xE2\x80\xA6"
-                    : "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
+                "Installing the Go mirror server (attempt %1 of %2) \xE2\x80\x94 "
+                "no Qt or GTK packages\xE2\x80\xA6")
                 .arg(m_vultrInstallAttempts)
                 .arg(kMaxInstallAttempts));
     // A first attempt can still fail its way into the local-binary switch
@@ -19429,27 +19425,6 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                 "the network that owns that range); it is saved under Hosts "
                 "\xE2\x80\x94 fix the address there and click Update.")
                 .arg(ip, unroutable));
-            return;
-        }
-        // A brand-new instance has nobody mirroring it yet and may have no
-        // published release for its platform, so a relay download/clone can
-        // never succeed no matter how many times it is retried the same way.
-        // Switch this and every later attempt this run to uploading this app's
-        // own release binary directly over the SSH session instead — that needs
-        // neither an online mirror nor a published release — and retry right
-        // away, since SSH clearly worked.
-        if (!m_vultrInstallUseLocalBinary && !isFinalAttempt &&
-            forkmesh::control::vultrInstallNeedsLocalBinary(
-                m_hostInstallRawTail)) {
-            m_vultrInstallUseLocalBinary = true;
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Nothing published to install from yet \xE2\x80\x94 "
-                    "retrying with this app's own binary uploaded "
-                    "directly\xE2\x80\xA6"));
-            QTimer::singleShot(2000, this, [this, node, ip, identityFile] {
-                startVultrHostInstall(node, ip, identityFile);
-            });
             return;
         }
         // Nothing is left to retry: SSH was proven reachable before this ran,
@@ -19669,6 +19644,26 @@ namespace {
 // (adhoc #67). The remote side discards lines until it sees this marker, so
 // the upload stays intact whether or not sudo actually read the password.
 const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
+const QString kVultrMirrorUploadMarker =
+    QStringLiteral("__FORKMESH_GO_MIRROR_V1__");
+
+QString packagedMirrorFile(const QString &relative)
+{
+    const QStringList candidates{
+        QDir(QStringLiteral(FORKMESH_SOURCE_DIR)).filePath(relative),
+        QDir(QStringLiteral(FORKMESH_SOURCE_DIR))
+            .filePath(QStringLiteral("../") + relative),
+        QDir(QCoreApplication::applicationDirPath()).filePath(relative),
+        QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("../share/forkmesh/") + relative),
+    };
+    for (const QString &candidate : candidates) {
+        const QFileInfo info(candidate);
+        if (info.isFile() && !info.isSymLink())
+            return info.absoluteFilePath();
+    }
+    return {};
+}
 
 QString controllerReleaseManifestDigest(const QString &expectedBuildCommit,
                                         QString *errorOut)
@@ -19750,6 +19745,153 @@ QString controllerReleaseManifestDigest(const QString &expectedBuildCommit,
 }
 } // namespace
 
+bool MainWindow::buildVultrMirrorNodeInstallCommand(
+    const QString &node, QString *remoteCmd, QByteArray *uploadBytes,
+    QString *errorOut) const
+{
+    QString mirrorBinary =
+        QStandardPaths::findExecutable(QStringLiteral("forkmesh-mirror-node"));
+    if (mirrorBinary.isEmpty()) {
+        const QString sibling =
+            QDir(QCoreApplication::applicationDirPath())
+                .filePath(QStringLiteral("forkmesh-mirror-node"));
+        if (QFileInfo(sibling).isExecutable())
+            mirrorBinary = sibling;
+    }
+    if (mirrorBinary.isEmpty()) {
+        const QString sourceBinary =
+            QDir(QStringLiteral(FORKMESH_SOURCE_DIR))
+                .filePath(QStringLiteral("../mirror_node/forkmesh-mirror-node"));
+        if (QFileInfo(sourceBinary).isExecutable())
+            mirrorBinary = sourceBinary;
+    }
+    struct PayloadFile {
+        QString name;
+        QString path;
+        QByteArray data;
+        bool executable = false;
+    };
+    QList<PayloadFile> files{
+        {QStringLiteral("forkmesh-mirror-node"), mirrorBinary, {}, true},
+        {QStringLiteral("mirror_gateway.py"),
+         packagedMirrorFile(QStringLiteral("tools/mirror_gateway.py"))},
+        {QStringLiteral("cloudflare_bootstrap.py"),
+         packagedMirrorFile(QStringLiteral("tools/cloudflare_bootstrap.py"))},
+        {QStringLiteral("cloudflare_tunnel_bootstrap.py"),
+         packagedMirrorFile(
+             QStringLiteral("tools/cloudflare_tunnel_bootstrap.py"))},
+        {QStringLiteral("cloudflared_install.py"),
+         packagedMirrorFile(QStringLiteral("tools/cloudflared_install.py"))},
+        {QStringLiteral("forkmesh-mirror-node.service"),
+         packagedMirrorFile(
+             QStringLiteral("packaging/systemd/forkmesh-mirror-node.service"))},
+    };
+    for (PayloadFile &file : files) {
+        if (file.path.isEmpty()) {
+            if (errorOut)
+                *errorOut = QStringLiteral(
+                    "The Go mirror-node package is incomplete (%1 is missing). "
+                    "Reinstall this ForkMesh release and retry.")
+                                .arg(file.name);
+            return false;
+        }
+        QFile source(file.path);
+        if (!source.open(QIODevice::ReadOnly) ||
+            (file.data = source.readAll()).isEmpty()) {
+            if (errorOut)
+                *errorOut = QStringLiteral("Could not read packaged %1.")
+                                .arg(file.name);
+            return false;
+        }
+    }
+
+    QByteArray payload = kVultrMirrorUploadMarker.toUtf8() + '\n' +
+                         QByteArray::number(files.size()) + '\n';
+    for (const PayloadFile &file : std::as_const(files)) {
+        const QByteArray digest =
+            QCryptographicHash::hash(file.data, QCryptographicHash::Sha256)
+                .toHex();
+        payload += file.name.toUtf8() + '\n' +
+                   QByteArray::number(file.data.size()) + '\n' + digest + '\n';
+        payload += file.data;
+    }
+
+    auto shq = [](QString value) {
+        value.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
+        return QStringLiteral("'") + value + QStringLiteral("'");
+    };
+    const QString hostname = m_vultrDnsHostname.trimmed().toLower();
+    const QString zone = hostname.section(QLatin1Char('.'), 1);
+    const QUrl catalog = catalogApiUrl();
+    QUrl accounts = catalog;
+    accounts.setPath(QStringLiteral("/api/accounts"));
+    accounts.setQuery(QString());
+    const QString relayHost = catalog.host();
+    if (hostname.isEmpty() || zone.isEmpty() || relayHost.isEmpty()) {
+        if (errorOut)
+            *errorOut = QStringLiteral(
+                "The Vultr mirror hostname or relay endpoint is unavailable.");
+        return false;
+    }
+
+    // The remote receives a tiny, length-delimited package on stdin.  It never
+    // runs the desktop installer, downloads Qt, or asks another mirror for the
+    // repository before the service exists.  Repository sync begins inside the
+    // Go daemon and retries the public round-robin endpoint independently.
+    QString pipeline = QStringLiteral(
+        "set -eu; umask 077; IFS= read -r fm_cf_token || exit 68; "
+        "IFS= read -r marker; [ \"$marker\" = %1 ] || exit 69; "
+        "IFS= read -r count; [ \"$count\" = 6 ] || exit 69; "
+        "stage=\"$(mktemp -d /tmp/forkmesh-go-node.XXXXXX)\" || exit 70; "
+        "trap 'rm -rf \"$stage\"; unset fm_cf_token' EXIT HUP INT TERM; "
+        "i=0; while [ \"$i\" -lt \"$count\" ]; do "
+        "IFS= read -r name; IFS= read -r size; IFS= read -r expected; "
+        "case \"$name\" in forkmesh-mirror-node|mirror_gateway.py|cloudflare_bootstrap.py|cloudflare_tunnel_bootstrap.py|cloudflared_install.py|forkmesh-mirror-node.service) ;; *) exit 69;; esac; "
+        "dd iflag=fullblock bs=1 count=\"$size\" of=\"$stage/$name\" status=none; "
+        "actual=\"$(sha256sum \"$stage/$name\")\"; actual=\"${actual%% *}\"; "
+        "[ \"$actual\" = \"$expected\" ] || exit 69; i=$((i+1)); done; "
+        "export DEBIAN_FRONTEND=noninteractive; "
+        "missing=0; for command_name in curl git python3 openssl; do command -v \"$command_name\" >/dev/null 2>&1 || missing=1; done; "
+        "if [ \"$missing\" -ne 0 ]; then apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl git python3 openssl; fi; "
+        "install -m 0755 \"$stage/forkmesh-mirror-node\" /usr/local/bin/forkmesh-mirror-node; "
+        "install -d -m 0755 /usr/local/share/forkmesh/tools; "
+        "for tool in mirror_gateway.py cloudflare_bootstrap.py cloudflare_tunnel_bootstrap.py cloudflared_install.py; do install -m 0644 \"$stage/$tool\" \"/usr/local/share/forkmesh/tools/$tool\"; done; "
+        "install -m 0644 \"$stage/forkmesh-mirror-node.service\" /etc/systemd/system/forkmesh-mirror-node.service; "
+        "id forkmesh-node >/dev/null 2>&1 || useradd --system --home-dir /var/lib/forkmesh --create-home --shell /usr/sbin/nologin forkmesh-node; "
+        "install -d -o forkmesh-node -g forkmesh-node -m 0700 /var/lib/forkmesh /var/lib/forkmesh/tmp /etc/forkmesh; "
+        "router_json=\"$(curl -fsS --max-time 20 %2)\"; "
+        "router_key=\"$(printf '%%s' \"$router_json\" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"routerPublicKey\",\"\"))')\"; "
+        "printf '%%s' \"$router_key\" | grep -Eq '^[A-Za-z0-9_-]{43}$' || exit 71; "
+        "runuser -u forkmesh-node -- /usr/local/bin/forkmesh-mirror-node --init --config /etc/forkmesh/mirror-node.json --state-dir /var/lib/forkmesh --node %3 --owner forkmesh --repository forkmesh --upstream %4 --catalog-url %5 --public-origin %6 --router-public-key \"$router_key\" --version %7 >/tmp/forkmesh-node-public-key; "
+        "node_key=\"$(tr -d '\\r\\n' </tmp/forkmesh-node-public-key)\"; rm -f /tmp/forkmesh-node-public-key; "
+        "python3 /usr/local/share/forkmesh/tools/cloudflared_install.py --destination /usr/local/bin/cloudflared --json-stdout >/dev/null; chmod 0755 /usr/local/bin/cloudflared; "
+        "CLOUDFLARE_API_TOKEN=\"$fm_cf_token\" HOME=/var/lib/forkmesh XDG_DATA_HOME=/var/lib/forkmesh/.local/share runuser -u forkmesh-node -- python3 /usr/local/share/forkmesh/tools/cloudflare_tunnel_bootstrap.py --hostname %8 --zone %9 --node-name %3 --origin-host 127.0.0.1 --origin-port 8790 --gateway-config /var/lib/forkmesh/mirror-gateway/config.json --mirror-public-key=\"$node_key\" --manifest-signer-command '/usr/local/bin/forkmesh-mirror-node --config /etc/forkmesh/mirror-node.json --sign-mirror-manifest' --manifest-output /var/lib/forkmesh/mirror-gateway/forkmesh-mirror.json --tunnel-token-file /var/lib/forkmesh/mirror-gateway/connector.token; "
+        "unset fm_cf_token; link_number=\"$(od -An -N4 -tu4 /dev/urandom)\"; link_number=\"${link_number// /}\"; link_code=\"$(printf '%%06d' $((link_number %% 1000000)))\"; "
+        "printf 'FORKMESH LINK CODE: %%s\\n' \"$link_code\"; "
+        "runuser -u forkmesh-node -- /usr/local/bin/forkmesh-mirror-node --config /etc/forkmesh/mirror-node.json --accounts-url %10 --register-link-code \"$link_code\"; "
+        "systemctl daemon-reload; systemctl enable --now forkmesh-mirror-node.service; "
+        "for n in 1 2 3 4 5 6 7 8 9 10; do curl -fsS http://127.0.0.1:8791/healthz >/dev/null && break; sleep 1; done; "
+        "curl -fsS http://127.0.0.1:8791/healthz >/dev/null; "
+        "printf 'Go mirror-node installed and running (no Qt/GTK packages).\\n'")
+                           .arg(shq(kVultrMirrorUploadMarker))
+                           .arg(shq(QStringLiteral("https://") + relayHost +
+                                    QStringLiteral("/api/mirrors/https")))
+                           .arg(shq(node))
+                           .arg(shq(QStringLiteral("https://") + relayHost +
+                                    QStringLiteral("/forkmesh/forkmesh")))
+                           .arg(shq(catalog.toString()))
+                           .arg(shq(QStringLiteral("https://") + hostname))
+                           .arg(shq(QStringLiteral(FORKMESH_VERSION)))
+                           .arg(shq(hostname))
+                           .arg(shq(zone))
+                           .arg(shq(accounts.toString()));
+    if (remoteCmd)
+        *remoteCmd = pipeline;
+    if (uploadBytes)
+        *uploadBytes = payload;
+    return true;
+}
+
 bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                                          const QString &node, bool uploadBinary,
                                          bool reinstall, bool fromSource,
@@ -19757,6 +19899,10 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                                          QString *remoteCmd, QByteArray *uploadBytes,
                                          QString *errorOut)
 {
+    if (m_vultrProvisionActive) {
+        return buildVultrMirrorNodeInstallCommand(
+            node, remoteCmd, uploadBytes, errorOut);
+    }
     const QString installUrl = installScriptUrl();
     if (installUrl.isEmpty()) {
         if (errorOut)
@@ -20068,6 +20214,7 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
             onFinished(false);
         return;
     }
+    const bool hasUpload = !uploadBytes.isEmpty();
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
@@ -20107,15 +20254,15 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     appendHostInstallLog(
         QStringLiteral("Connecting to %1 as %2 and running %3 ...\n\n")
             .arg(ip, user, installUrl));
-    if (uploadBinary)
+    if (hasUpload)
         appendHostInstallLog(
-            QString::fromUtf8("Uploading this app's release binary (%1 MB) "
+            QString::fromUtf8("Uploading the native mirror package (%1 MB) "
                               "over the SSH session\xE2\x80\xA6\n")
                 .arg(QString::number(uploadBytes.size() / (1024.0 * 1024.0),
                                      'f', 1)));
     if (m_hostInstallStatus)
         m_hostInstallStatus->setText(
-            uploadBinary
+            hasUpload
                 ? QString::fromUtf8(
                       "Uploading the release and installing on %1\xE2\x80\xA6")
                       .arg(ip)
@@ -20240,8 +20387,9 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     // into the temp file until the EOF the channel close below produces.
     // QProcess buffers the write and drains it as ssh accepts it, and
     // closeWriteChannel() only closes once everything queued has been written.
-    if (uploadBinary) {
-        proc->write((kHostUploadMarker + QStringLiteral("\n")).toUtf8());
+    if (hasUpload) {
+        if (!m_vultrProvisionActive)
+            proc->write((kHostUploadMarker + QStringLiteral("\n")).toUtf8());
         proc->write(uploadBytes);
     }
     proc->closeWriteChannel();
@@ -20306,6 +20454,26 @@ QString MainWindow::testDirectBinaryInstallRemoteCommand(
         /*reinstall=*/false, /*fromSource=*/false,
         /*requirePublishedBinary=*/false, &remoteCommand, &uploadBytes,
         &error);
+    if (uploadByteCount)
+        *uploadByteCount = uploadBytes.size();
+    if (errorOut)
+        *errorOut = error;
+    uploadBytes.fill('\0');
+    uploadBytes.clear();
+    return ok ? remoteCommand : QString();
+}
+
+QString MainWindow::testVultrGoMirrorInstallRemoteCommand(
+    qsizetype *uploadByteCount, QString *errorOut)
+{
+    const QString previousHostname = m_vultrDnsHostname;
+    m_vultrDnsHostname = QStringLiteral("mirror17.forkmesh.com");
+    QString remoteCommand;
+    QByteArray uploadBytes;
+    QString error;
+    const bool ok = buildVultrMirrorNodeInstallCommand(
+        QStringLiteral("mirror17"), &remoteCommand, &uploadBytes, &error);
+    m_vultrDnsHostname = previousHostname;
     if (uploadByteCount)
         *uploadByteCount = uploadBytes.size();
     if (errorOut)
