@@ -92,6 +92,34 @@ while True:
 		t.Fatalf("health: %v %+v", err, response)
 	}
 	response.Body.Close()
+	response, err = client.Get("http://" + statusAddress + "/v1/control/sync")
+	if err != nil || response.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("sync GET should be rejected: %v %+v", err, response)
+	}
+	response.Body.Close()
+	beforeSyncCount := status.SyncCount
+	response, err = client.Post(
+		"http://"+statusAddress+"/v1/control/sync", "application/json", nil)
+	if err != nil || response.StatusCode != http.StatusAccepted {
+		t.Fatalf("sync POST: %v %+v", err, response)
+	}
+	response.Body.Close()
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		response, err = client.Get("http://" + statusAddress + "/v1/status")
+		if err == nil {
+			_ = json.NewDecoder(response.Body).Decode(&status)
+			response.Body.Close()
+			if status.SyncCount > beforeSyncCount {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if status.SyncCount <= beforeSyncCount || status.Runtime.Goroutines == 0 ||
+		status.Runtime.HeapBytes == 0 {
+		t.Fatalf("manual sync/runtime stats not reported: %+v", status)
+	}
 	loaded, _, err := loadGatewayConfig(gatewayPath)
 	if err != nil {
 		t.Fatal(err)

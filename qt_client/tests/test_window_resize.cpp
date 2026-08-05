@@ -2840,19 +2840,22 @@ int main(int argc, char *argv[])
             check(mirror1Id == QStringLiteral("mirror1-new-key"),
                   QString("the newer identity wins the deduped Mirror nodes row "
                           "(got id %1)").arg(mirror1Id));
+            check(window.testMirrorNodeCardsAreCompact(),
+                  QStringLiteral("Mirror nodes render as three-row cards with "
+                                 "resource gauges and live node, sync, commit, "
+                                 "health, and reachability controls"));
             check(!sawOffline,
                   QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
             check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 2) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
-            // Columns: Node, Owner, Latest commit, Message, Author, Synced,
-            // Sync delay, Size, Issues, Commits, Branches, Pulls, Discussions,
-            // CPU, RAM, Disk, Platform, … — the sync-delay column pushes
-            // Disk/Platform to 15/16.
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 15)
+            // Hidden data-model columns remain stable behind the card: Node,
+            // Sync, Owner, commit identity, sync facts, repo counts, pending
+            // inbox counts, Health, then CPU/RAM/Disk/Platform.
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 20)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 16) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 21) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             window.testSetMirrorNodesOnlineOnly(false);

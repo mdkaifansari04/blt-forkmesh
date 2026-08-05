@@ -730,6 +730,7 @@ public:
     Q_INVOKABLE QStringList testMirrorNodeRows() const;
     bool testMirrorNodesOnlineOnlyChecked() const;
     void testSetMirrorNodesOnlineOnly(bool checked);
+    bool testMirrorNodeCardsAreCompact() const;
     QString testMirrorNodeCellText(const QString &nodeName, int column) const;
     QString testMirrorNodeCellToolTip(const QString &nodeName, int column) const;
     // Build the exact command used by the fleet-wide binary action without
@@ -1743,6 +1744,15 @@ private:
         QString *error = nullptr, bool restartRunningGateway = false);
     void startDirectMirrorServices();
     void stopDirectMirrorServices();
+    // Desktop companion for the small Go mirror-node supervisor. The daemon
+    // owns serving/sync work; this window only reads its loopback API and sends
+    // explicit local control requests.
+    bool rebuildManagedMirrorNodeConfiguration(QString *error = nullptr);
+    bool startManagedMirrorNodeServer();
+    void stopManagedMirrorNodeServer();
+    void requestManagedMirrorNodeSync();
+    void showMirrorNodeCompanion();
+    void refreshMirrorNodeCompanion();
     // Startup auto-start for provisioned direct HTTPS mirrors (gated by
     // control/autoStartMirrorServices, default on): re-establishes the
     // gateway + Tunnel + registration after a restart without anyone
@@ -3842,6 +3852,8 @@ private:
     // local sync, a live peer via a targeted relay frame, an SSH-fed/offline
     // catalog mirror via the source of truth's push.
     void syncMirrorNodeNow(int row);
+    QWidget *buildMirrorNodeCard(int row);
+    void rebuildMirrorNodeCards();
     // Fetch the worker's catalog mirror list for a repo group so the owner sees
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
@@ -5551,6 +5563,8 @@ private:
     QProcess *m_cloudflareBootstrapProcess = nullptr;
     QProcess *m_cloudflareTunnelBootstrapProcess = nullptr;
     QProcess *m_cloudflaredInstallProcess = nullptr;
+    QProcess *m_mirrorNodeProcess = nullptr;
+    bool m_mirrorNodeStopRequested = false;
     QProcess *m_mirrorGatewayProcess = nullptr;
     QProcess *m_cloudflaredProcess = nullptr;
     QString m_cloudflareActiveSecret;
@@ -5564,6 +5578,14 @@ private:
     bool m_cloudflareInstallVpsAfterDeploy = false;
     QTimer *m_controlNodeRefreshTimer = nullptr;
     QTimer *m_directMirrorRegistrationTimer = nullptr;
+    QDialog *m_mirrorNodeCompanion = nullptr;
+    QLabel *m_mirrorNodeCompanionStatus = nullptr;
+    QLabel *m_mirrorNodeCompanionStats = nullptr;
+    QLabel *m_mirrorNodeCompanionAccount = nullptr;
+    QLabel *m_mirrorNodeCompanionBalance = nullptr;
+    QLabel *m_mirrorNodeCompanionQr = nullptr;
+    QPushButton *m_mirrorNodeCompanionLogout = nullptr;
+    QTimer *m_mirrorNodeCompanionTimer = nullptr;
     // Full encrypted-archive authentication hashes hundreds of megabytes for a
     // large mirror. Keep it off the GUI thread and let the Control page render
     // the most recent completed snapshot.

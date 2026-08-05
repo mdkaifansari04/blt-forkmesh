@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -29,8 +30,16 @@ type Daemon struct {
 	lastSyncOK    bool
 	lastSyncErr   string
 	lastPublishAt time.Time
+	syncCount     int64
 	repoStates    map[string]string
+	syncRequests  chan struct{}
 	server        *http.Server
+}
+
+type RuntimeStats struct {
+	Goroutines int    `json:"goroutines"`
+	HeapBytes  uint64 `json:"heapBytes"`
+	TotalAlloc uint64 `json:"totalAllocBytes"`
 }
 
 type Status struct {
@@ -46,6 +55,8 @@ type Status struct {
 	LastSyncOK    bool              `json:"lastSyncOk"`
 	LastSyncError string            `json:"lastSyncError,omitempty"`
 	LastPublishAt string            `json:"lastPublishAt,omitempty"`
+	SyncCount     int64             `json:"syncCount"`
+	Runtime       RuntimeStats      `json:"runtime"`
 }
 
 func NewDaemon(cfg Config) (*Daemon, error) {
@@ -77,7 +88,16 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 			return nil, err
 		}
 	}
-	return &Daemon{config: cfg, gateway: gateway, identity: identity, supervisor: NewSupervisor(), intake: intake, startedAt: time.Now(), repoStates: map[string]string{}}, nil
+	return &Daemon{
+		config:       cfg,
+		gateway:      gateway,
+		identity:     identity,
+		supervisor:   NewSupervisor(),
+		intake:       intake,
+		startedAt:    time.Now(),
+		repoStates:   map[string]string{},
+		syncRequests: make(chan struct{}, 1),
+	}, nil
 }
 
 func (d *Daemon) Run(ctx context.Context, executable string) error {
@@ -101,6 +121,7 @@ func (d *Daemon) Run(ctx context.Context, executable string) error {
 	mux.HandleFunc("/healthz", d.handleHealth)
 	mux.HandleFunc("/readyz", d.handleReady)
 	mux.HandleFunc("/v1/status", d.handleStatus)
+	mux.HandleFunc("/v1/control/sync", d.handleSync)
 	d.server = &http.Server{Addr: d.config.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	listener, err := net.Listen("tcp", d.config.Listen)
 	if err != nil {
@@ -146,6 +167,8 @@ func (d *Daemon) syncLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			d.syncOnce(ctx)
+		case <-d.syncRequests:
 			d.syncOnce(ctx)
 		}
 	}
@@ -203,6 +226,7 @@ func (d *Daemon) syncOnce(parent context.Context) {
 	}
 	d.mu.Lock()
 	d.lastSyncAt = time.Now()
+	d.syncCount++
 	d.lastSyncOK = len(failures) == 0
 	d.lastSyncErr = boundedText([]byte(strings.Join(failures, "; ")), 1000)
 	d.repoStates = states
@@ -249,7 +273,26 @@ func (d *Daemon) status() Status {
 	ready := d.ready()
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	status := Status{OK: true, Ready: ready, Node: d.gateway.Node.Name, Version: d.config.Version, UptimeSeconds: int64(time.Since(d.startedAt).Seconds()), Processes: running, Restarts: restarts, Repositories: copyMap(d.repoStates), LastSyncOK: d.lastSyncOK, LastSyncError: d.lastSyncErr}
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	status := Status{
+		OK:            true,
+		Ready:         ready,
+		Node:          d.gateway.Node.Name,
+		Version:       d.config.Version,
+		UptimeSeconds: int64(time.Since(d.startedAt).Seconds()),
+		Processes:     running,
+		Restarts:      restarts,
+		Repositories:  copyMap(d.repoStates),
+		LastSyncOK:    d.lastSyncOK,
+		LastSyncError: d.lastSyncErr,
+		SyncCount:     d.syncCount,
+		Runtime: RuntimeStats{
+			Goroutines: runtime.NumGoroutine(),
+			HeapBytes:  memory.HeapAlloc,
+			TotalAlloc: memory.TotalAlloc,
+		},
+	}
 	if !d.lastSyncAt.IsZero() {
 		status.LastSyncAt = d.lastSyncAt.UTC().Format(time.RFC3339)
 	}
@@ -271,6 +314,23 @@ func (d *Daemon) handleReady(w http.ResponseWriter, _ *http.Request) {
 }
 func (d *Daemon) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, d.status())
+}
+
+func (d *Daemon) handleSync(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed,
+			map[string]any{"ok": false, "error": "POST required"})
+		return
+	}
+	select {
+	case d.syncRequests <- struct{}{}:
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "queued": true})
+	default:
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"ok": true, "queued": false, "message": "sync already requested",
+		})
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

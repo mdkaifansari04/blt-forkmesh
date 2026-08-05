@@ -166,6 +166,7 @@ set(FORKMESH_MAIN_WINDOW_SOURCES
     src/MainWindowProjects.cpp
     src/MainWindowBranches.cpp
     src/MainWindowReleases.cpp
+    src/MainWindowMirrorNode.cpp
     src/MainWindowShortcuts.cpp
     src/MainWindowSearch.cpp
     src/MainWindowSettings.cpp
