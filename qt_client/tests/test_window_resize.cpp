@@ -712,6 +712,11 @@ int main(int argc, char *argv[])
         qCritical("FAIL: could not create temporary data directory");
         return 1;
     }
+    // Keep application data inside this suite's writable, isolated temporary
+    // root. QStandardPaths' built-in test mode hardcodes ~/.qttest, which is
+    // read-only on sandboxed builders; XDG isolation gives us the same safety
+    // while allowing AgentStore fixtures to survive navigation reloads.
+    qputenv("XDG_DATA_HOME", dataDir.path().toUtf8());
     struct AppDataCleanup {
         QString path;
         ~AppDataCleanup()
@@ -720,7 +725,6 @@ int main(int argc, char *argv[])
                 QDir(path).removeRecursively();
         }
     } appDataCleanup;
-    QStandardPaths::setTestModeEnabled(true);
 
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
@@ -939,8 +943,6 @@ int main(int argc, char *argv[])
         window.testOpenRepository(botRepoIndex);
         window.resize(1200, 720);
         window.show();
-        window.testOpenAgentsOverview();
-        QApplication::processEvents();
         AgentSession sol;
         sol.id = 133981;
         sol.owner = QStringLiteral("me");
@@ -957,19 +959,38 @@ int main(int argc, char *argv[])
         fable.strength = QStringLiteral("max");
         fable.status = AgentStatus::Waiting;
         window.testAddAgentSession(fable);
+        check(window.testHasAgentSession(sol.id) &&
+                  window.testHasAgentSession(fable.id),
+              QStringLiteral("pre-page bot sessions enter the agent roster"));
+        // A real launch may happen before this lazy tab exists. Queue the Sol
+        // bot first, then navigate: its drop must be deferred until it can be
+        // seen rather than expiring behind the repository overview.
+        window.testSummonAgentBot(sol.id);
+        window.testOpenAgentsOverview();
+        QApplication::processEvents();
+        check(window.testHasAgentSession(sol.id) &&
+                  window.testHasAgentSession(fable.id),
+              QStringLiteral("lazy Agents navigation preserves bot sessions"));
         window.testRefreshAgentBotFleet();
         check(window.testAgentBotCount() == 2 &&
                   window.testAgentBotSummary(sol.id) ==
                       QStringLiteral("Sol|high|Working") &&
                   window.testAgentBotSummary(fable.id) ==
                       QStringLiteral("Fable|max|Waiting"),
-              QStringLiteral("agent bot grid carries model, reasoning, and status"));
-        window.testSummonAllAgentBots();
-        QApplication::processEvents();
+              QStringLiteral("agent bot grid carries model, reasoning, and status "
+                             "(count=%1 sol=%2 fable=%3)")
+                  .arg(window.testAgentBotCount())
+                  .arg(window.testAgentBotSummary(sol.id),
+                       window.testAgentBotSummary(fable.id)));
         QWidget *fleet = window.findChild<QWidget *>(
             QStringLiteral("agentBotFleetOverlay"));
         check(fleet && fleet->isVisibleTo(&window),
-              QStringLiteral("Summon reveals the animated agent bot grid"));
+              QStringLiteral("a pre-page launch drops its bot once Agents is visible"));
+        window.testSummonAllAgentBots(); // hide the launch summon
+        window.testSummonAllAgentBots(); // summon the complete grid
+        QApplication::processEvents();
+        check(fleet && fleet->isVisibleTo(&window),
+              QStringLiteral("Summon reveals the complete animated agent bot grid"));
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }

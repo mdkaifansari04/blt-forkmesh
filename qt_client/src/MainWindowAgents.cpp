@@ -3036,6 +3036,7 @@ QWidget *MainWindow::buildAgentsTab()
         }
     });
     refreshAgentBotFleet();
+    schedulePendingAgentBotSummon();
     return page;
 }
 
@@ -6032,14 +6033,36 @@ void MainWindow::refreshAgentBotFleet()
 
 void MainWindow::summonAgentBot(int sessionId)
 {
-    if (!m_agentBotFleet || sessionId <= 0)
+    if (sessionId <= 0)
         return;
+    // The Agents page is lazy and launches can originate on Issues or elsewhere.
+    // Do not let the 650ms drop animation run behind a hidden ancestor; the next
+    // visible Agents navigation consumes this pending summon instead.
+    if (!m_agentBotFleet || !m_agentBotFleet->parentWidget() ||
+        !m_agentBotFleet->parentWidget()->isVisibleTo(this)) {
+        m_pendingAgentBotSummonId = sessionId;
+        return;
+    }
+    m_pendingAgentBotSummonId = 0;
     refreshAgentBotFleet();
     if (m_agentSummonAllButton) {
         const QSignalBlocker blocker(m_agentSummonAllButton);
         m_agentSummonAllButton->setChecked(true);
     }
     m_agentBotFleet->summonOne(sessionId);
+}
+
+void MainWindow::schedulePendingAgentBotSummon()
+{
+    if (m_pendingAgentBotSummonId <= 0)
+        return;
+    QTimer::singleShot(0, this, [this] {
+        if (m_pendingAgentBotSummonId <= 0)
+            return;
+        const int sessionId = m_pendingAgentBotSummonId;
+        m_pendingAgentBotSummonId = 0;
+        summonAgentBot(sessionId);
+    });
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -9236,6 +9259,7 @@ void MainWindow::switchToAgentsTab(int sessionId)
         m_agentsNavButton->setChecked(true);
     reloadAgents();
     showAgentSession(sessionId);
+    schedulePendingAgentBotSummon();
 }
 
 // Jumping to the Agents view from the nav button (the footer "Agents:" strip

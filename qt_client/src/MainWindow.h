@@ -828,6 +828,7 @@ public:
     int testAgentBotCount() const;
     QString testAgentBotSummary(int sessionId) const;
     void testSummonAllAgentBots();
+    void testSummonAgentBot(int sessionId) { summonAgentBot(sessionId); }
     void testSetAgentSessionStatus(int sessionId, const QString &status);
     void testRemoveAgentSession(int sessionId);
     // A transport can disappear while the persisted session is still marked
@@ -2994,6 +2995,7 @@ private:
     // launches call summonAgentBot() to play that bot's drop-in animation.
     void refreshAgentBotFleet();
     void summonAgentBot(int sessionId);
+    void schedulePendingAgentBotSummon();
     // Repaints the strip beside that matrix: the most recent action runs, one
     // square each, tinted with actionStatusColor() (adhoc #70).
     void refreshActionRunStrip();
@@ -5366,6 +5368,10 @@ private:
     AgentDotMatrix *m_agentDotMatrix = nullptr;
     AgentBotFleetOverlay *m_agentBotFleet = nullptr;
     QPushButton *m_agentSummonAllButton = nullptr;
+    // A launch can precede the lazy Agents page or happen while it is hidden.
+    // Hold that bot until the page is visible so its sky-drop is never spent
+    // off-screen.
+    int m_pendingAgentBotSummonId = 0;
     // One dot per node on the network, immediately right of the agent squares
     // with a faint divider between the two groups (adhoc #124).
     NodeDotMatrix *m_nodeDotMatrix = nullptr;
