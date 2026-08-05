@@ -712,6 +712,10 @@ public:
     // tests of ordering and the model-only visible text.
     void testRefreshQuickAddAgentModelSelector();
     QString testQuickAddAgentModelLabel(const QString &model) const;
+    // Prompt shortcuts can pin a dedicated CLI agent/model in their metadata.
+    // Return the parsed fields plus launch prompt so tests cover both the pin and
+    // removal of configuration headers from what the agent receives.
+    QStringList testShortcutMetadata(const QString &filePath) const;
     // issue #272: open the Worktrees tab on a branch, rebuild the panel (as an
     // "Update from main" merge does), and read back which worktree stays selected
     // so a test can prove the detail pane doesn't go blank after a refresh.
@@ -7493,6 +7497,7 @@ private:
     // agent that edits the PR's branch (reuses the m_aiFix machinery in
     // agentEdit mode).
     void fixCurrentPullFindingsWithAgent();
+    QWidget *m_agentsPage = nullptr; // reserves room for the docked full-width composer
     QTableWidget *m_agentTable = nullptr;
     // Live transcript search behind the top-bar filter. A session whose
     // transcript contains the query stays in the list even when its title says

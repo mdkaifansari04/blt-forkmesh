@@ -887,6 +887,34 @@ int main(int argc, char *argv[])
     MainWindow window;
     qInstallMessageHandler(startupPrevious);
     g_capturedMessages = nullptr;
+
+    // Prompt shortcut headers can dedicate a fresh run to one exact CLI model.
+    // Those routing fields configure the launcher and must not leak into the
+    // task text the model receives.
+    {
+        QTemporaryDir shortcutDir;
+        const QString shortcutPath =
+            shortcutDir.filePath(QStringLiteral("write-update.md"));
+        QFile shortcut(shortcutPath);
+        const bool wrote = shortcut.open(QIODevice::WriteOnly | QIODevice::Text) &&
+                           shortcut.write(
+                               "# name: Write update\n"
+                               "# description: Publish the next update.\n"
+                               "# agent: CODEX\n"
+                               "# model: gpt-5.6-sol\n\n"
+                               "Inspect changes since the last post.\n") > 0;
+        shortcut.close();
+        const QStringList metadata = window.testShortcutMetadata(shortcutPath);
+        check(wrote && metadata.size() == 5 &&
+                  metadata.at(0) == QStringLiteral("Write update") &&
+                  metadata.at(1) == QStringLiteral("Publish the next update.") &&
+                  metadata.at(2) == QStringLiteral("codex") &&
+                  metadata.at(3) == QStringLiteral("gpt-5.6-sol") &&
+                  metadata.at(4) ==
+                      QStringLiteral("Inspect changes since the last post."),
+              QStringLiteral("shortcut metadata pins a dedicated model and is "
+                             "removed from its launch prompt"));
+    }
     const QString startupLog = startupMessages.join(QLatin1Char('\n'));
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
@@ -2632,6 +2660,56 @@ int main(int argc, char *argv[])
             if (span.size() == 2 && span.at(1).toInt() > 0 &&
                 span.at(0).toInt() == span.at(1).toInt())
                 break;
+        }
+    }
+    // The Agents prompt is a real full-width footer rather than the compact
+    // overlay used elsewhere. Its reserved page margin keeps the transcript and
+    // session list above it instead of letting their last lines hide underneath.
+    {
+        QWidget *agentsPage = window.findChild<QWidget *>(
+            QStringLiteral("agentsPage"));
+        QWidget *footerDock = window.findChild<QWidget *>(
+            QStringLiteral("logDock"));
+        QWidget *promptHost = window.findChild<QWidget *>(
+            QStringLiteral("promptOverlayHost"));
+        const QMargins dockMargins =
+            footerDock && footerDock->layout()
+                ? footerDock->layout()->contentsMargins()
+                : QMargins();
+        check(agentsPage && agentsPage->layout() && footerDock && promptHost &&
+                  promptHost->isVisibleTo(&window) &&
+                  promptHost->geometry().left() == dockMargins.left() &&
+                  promptHost->geometry().right() ==
+                      footerDock->rect().right() - dockMargins.right() &&
+                  agentsPage->layout()->contentsMargins().bottom() ==
+                      footerDock->height(),
+              QStringLiteral("Agents docks the full-width prompt below its "
+                             "transcript"));
+
+        QPushButton *avatar = window.findChild<QPushButton *>(
+            QStringLiteral("serverFooterButton"));
+        QWidget *promptWrapper = window.findChild<QWidget *>(
+            QStringLiteral("promptWrapper"));
+        if (avatar && promptWrapper && agentsPage && agentsPage->layout() &&
+            footerDock && promptHost) {
+            avatar->click();
+            QApplication::processEvents();
+            check(!promptWrapper->isVisible() &&
+                      promptHost->size() == QSize(34, 34) &&
+                      promptHost->geometry().right() >= footerDock->width() - 12 &&
+                      agentsPage->layout()->contentsMargins().bottom() == 0,
+                  QStringLiteral("collapsing the Agents prompt leaves its circular "
+                                 "avatar at the bottom-right"));
+
+            QEvent enter(QEvent::Enter);
+            QApplication::sendEvent(avatar, &enter);
+            QApplication::processEvents();
+            check(promptWrapper->isVisible() &&
+                      promptHost->geometry().left() == dockMargins.left() &&
+                      promptHost->geometry().right() ==
+                          footerDock->rect().right() - dockMargins.right(),
+                  QStringLiteral("hovering the Agents avatar restores the "
+                                 "full-width prompt"));
         }
     }
     check(window.testAgentListChromeHidden(),

@@ -196,6 +196,41 @@ RunResult runWorkflow(const QString &repository, const QString &commit,
     return result;
 }
 
+bool destroyWorkflowDuringCheckout(const QString &repository,
+                                   const QString &commit,
+                                   const QString &content,
+                                   ActionStore *store, int runId,
+                                   const ActionSandboxLimits &limits)
+{
+    ActionRun run;
+    run.id = runId;
+    run.owner = QStringLiteral("security");
+    run.name = QStringLiteral("destructor");
+    run.workflowPath = QStringLiteral(".forkmesh/security.yml");
+    run.workflowName = QStringLiteral("Destructor test");
+    run.workflowContent = content;
+    run.commit = commit;
+    run.ref = QStringLiteral("refs/heads/main");
+    QString digestError;
+    if (!ActionStore::repositoryStateDigest(
+            repository, commit, &run.repositoryTree,
+            &run.executionDigest, &digestError))
+        return false;
+    const ActionWorkflow workflow =
+        ActionFile::parse(run.workflowPath, content);
+    if (!workflow.valid)
+        return false;
+
+    ActionRunner runner(store);
+    runner.setSandboxLimitsForTesting(limits);
+    runner.start(run, workflow, repository, QString(),
+                 QMap<QString, QString>{});
+    // Returning destroys the runner immediately while its asynchronous checkout
+    // QProcess is still Starting/Running. The destructor must disconnect, stop,
+    // reap, and delete that child without dispatching an output callback.
+    return runner.busy();
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -651,6 +686,10 @@ int main(int argc, char **argv)
                   reentrant.terminalRefreshCompleted &&
                   reentrant.log.contains(QStringLiteral("final process output")),
               "terminal pull-check refresh cannot outlive the finished process");
+        check(destroyWorkflowDuringCheckout(
+                  repository, reentrantCommit, reentrantWorkflow,
+                  &store, 110, limits),
+              "destroying a runner safely reaps an in-flight checkout process");
         QDir(liveTree).removeRecursively();
     }
 

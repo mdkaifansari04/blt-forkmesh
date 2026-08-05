@@ -511,12 +511,13 @@ function frameHistorySparkline(history) {
 
 // SVG points for the collapsed diagnostics pill. Each entry is one local
 // one-second sample; the newest 60 readings fill the tiny chart from left to
-// right. Memory uses its own visible range so small heap changes do not look
-// artificially flat, while FPS and triangles retain a zero baseline.
+// right. Relative charts use their own visible range so small changes do not
+// look artificially flat. A small vertical inset keeps flat or extreme traces
+// clear of the SVG edge, where they would otherwise look like a missing chart.
 function diagnosticsChartPoints(
   history,
   key,
-  { width = 72, height = 16, zeroBased = true } = {},
+  { width = 72, height = 16, zeroBased = true, verticalInset = 1.5 } = {},
 ) {
   const samples = (Array.isArray(history) ? history : [])
     .slice(-60)
@@ -536,13 +537,22 @@ function diagnosticsChartPoints(
     -60,
   ).length;
   const denominator = Math.max(1, retainedCount - 1);
-  return samples
-    .map(({ index, value }) => {
-      const x = (index / denominator) * width;
-      const y = height - ((value - low) / (high - low)) * height;
-      return `${x.toFixed(1)},${Math.max(0, Math.min(height, y)).toFixed(1)}`;
-    })
-    .join(" ");
+  const inset = Math.max(0, Math.min(height / 2, verticalInset));
+  const drawableHeight = Math.max(0, height - inset * 2);
+  const points = samples.map(({ index, value }) => {
+    const x = (index / denominator) * width;
+    const y = inset + (1 - (value - low) / (high - low)) * drawableHeight;
+    return `${x.toFixed(1)},${Math.max(
+      inset,
+      Math.min(height - inset, y),
+    ).toFixed(1)}`;
+  });
+  // A one-point polyline paints nothing. Stretch the first reading into a
+  // short flat trace so every available metric has a chart immediately.
+  if (points.length === 1) {
+    return `${points[0]} ${width.toFixed(1)},${points[0].split(",")[1]}`;
+  }
+  return points.join(" ");
 }
 
 // Turn one diagnostics sample into concrete, ranked advice. Every suggestion
@@ -3931,7 +3941,11 @@ function normalizeWorldNotifications(payload) {
         /^[a-z0-9][a-z0-9._-]{0,99}$/.test(repoParts[1])
           ? repoCandidate
           : "";
-      const rawNumber = Number(item?.meta?.number);
+      const meta =
+        item?.meta && typeof item.meta === "object" && !Array.isArray(item.meta)
+          ? item.meta
+          : {};
+      const rawNumber = Number(meta.number);
       const number =
         Number.isSafeInteger(rawNumber) &&
         rawNumber > 0 &&
@@ -3941,7 +3955,8 @@ function normalizeWorldNotifications(payload) {
       // Operational pings carry the transition they report. Keeping it lets the
       // stream tell "needs attention" from "recovered" without guessing at the
       // wording of a title.
-      const rawState = String(item?.meta?.state || "");
+      const rawState = String(meta.state || "");
+      const rawStatus = Number(meta.status);
       return {
         id,
         kind: sanitizeNotificationText(item?.kind, "Update", 40),
@@ -3950,6 +3965,15 @@ function normalizeWorldNotifications(payload) {
         repo,
         number,
         state: rawState === "up" || rawState === "down" ? rawState : "",
+        status:
+          Number.isSafeInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599
+            ? rawStatus
+            : 0,
+        method: sanitizePresenceText(meta.method, "", 16).toUpperCase(),
+        path: sanitizeNotificationText(meta.path, "", 500),
+        errorSource: sanitizePresenceText(meta.errorSource, "", 32),
+        actor: sanitizePresenceText(item?.actor, "", 64).toLowerCase(),
+        source: sanitizePresenceText(item?.source, "", 80),
         href: safeNotificationURL(item?.href),
         ts: Math.max(0, Number(item?.ts) || 0),
         readAt: Math.max(0, Number(item?.readAt) || 0),
@@ -5979,6 +6003,7 @@ class ForkMeshWorld extends HTMLElement {
     this.installCelebrationTimer = 0;
     this.lastCelebratedInstallId = "";
     this.notificationsTimer = 0;
+    this.notificationBoardDetailId = "";
     this.adminErrorTimer = 0;
     this.adminErrorLatestId = 0;
     this.adminErrorCount = 0;
@@ -5993,6 +6018,7 @@ class ForkMeshWorld extends HTMLElement {
     this.adminErrorBoardSearch = "";
     this.adminErrorBoardFilter = "all";
     this.adminErrorBoardSort = "newest";
+    this.adminErrorDetailId = 0;
     this.jetpackState = {
       equipped: false,
       altitude: 0,
@@ -11724,6 +11750,24 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
+      const notificationDetail = event.target.closest(
+        "[data-world-notification-detail]",
+      );
+      if (notificationDetail) {
+        this.notificationBoardDetailId =
+          notificationDetail.dataset.worldNotificationDetail || "";
+        this.refreshOpenEventsPanel();
+        const detailId = this.notificationBoardDetailId;
+        window.requestAnimationFrame(() =>
+          this.$(`[data-world-notification-detail="${detailId}"]`)?.focus(),
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-notification-detail-close]")) {
+        this.notificationBoardDetailId = "";
+        this.refreshOpenEventsPanel();
+        return;
+      }
       const notificationOpen = event.target.closest(
         "[data-world-notification-open]",
       );
@@ -11735,6 +11779,16 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-admin-errors-refresh]")) {
         void this.refreshAdminErrorRows();
+        return;
+      }
+      const errorDetail = event.target.closest("[data-world-admin-error-detail]");
+      if (errorDetail) {
+        this.openAdminErrorDetail(errorDetail.dataset.worldAdminErrorDetail);
+        return;
+      }
+      if (event.target.closest("[data-world-admin-error-detail-close]")) {
+        this.adminErrorDetailId = 0;
+        this.renderAdminErrorsOverlay();
         return;
       }
       const errorDelete = event.target.closest("[data-world-admin-error-delete]");
@@ -13489,13 +13543,18 @@ class ForkMeshWorld extends HTMLElement {
           ? String(payload.latestSource)
           : "";
         const latest = [status || "", source].filter(Boolean).join(" · ");
+        const announcedErrorId = this.adminErrorLatestId;
         this.adminErrorPendingAnnounce = 0;
         this.adminErrorAnnouncedAt = Date.now();
         this.toast(
           added === 1
             ? `New error logged${latest ? ` (${latest})` : ""}`
             : `${added} new errors logged${latest ? ` (latest ${latest})` : ""}`,
-          { kind: "error" },
+          {
+            kind: "error",
+            onActivate: () =>
+              void this.openAdminErrors(null, announcedErrorId),
+          },
         );
       }
     } catch (_) {
@@ -13578,6 +13637,9 @@ class ForkMeshWorld extends HTMLElement {
       const status = Number(item.status);
       return status >= 400 && status < 500;
     }).length;
+    const selectedError = this.adminErrors.find(
+      (item) => Number(item.id) === this.adminErrorDetailId,
+    );
     const grouped = this.adminErrorGroups.filter((item) => {
       const status = Number(item.status) || 0;
       if (filter === "server" && status < 500) return false;
@@ -13679,6 +13741,22 @@ class ForkMeshWorld extends HTMLElement {
           <div data-tone="warning"><strong>${total4xx}</strong><span>Client</span></div>
           <div data-tone="cool"><strong>${rows.length}</strong><span>Showing</span></div>
         </div>
+        ${
+          selectedError
+            ? `<section class="world-activity-detail world-activity-detail--error" data-world-admin-error-detail-panel aria-label="Error ${escapeHTML(selectedError.id)} details">
+                <header><div><p class="world-eyebrow">ERROR DETAIL · #${escapeHTML(selectedError.id)}</p><h4>${escapeHTML(selectedError.status || "ERR")} · ${escapeHTML(errorSource(selectedError))}</h4></div><button type="button" data-world-admin-error-detail-close aria-label="Close error details">×</button></header>
+                <p class="world-activity-detail-path"><code>${escapeHTML(selectedError.method || "—")} ${escapeHTML(selectedError.path || "—")}</code></p>
+                <pre>${escapeHTML(selectedError.message || "Logged error")}</pre>
+                <dl>
+                  <div><dt>Logged</dt><dd>${escapeHTML(exactTime(selectedError.ts))}</dd></div>
+                  <div><dt>User</dt><dd>${escapeHTML(selectedError.actor ? `@${selectedError.actor}` : "Anonymous")}</dd></div>
+                  <div><dt>CF-Ray</dt><dd>${escapeHTML(selectedError.ray || "—")}</dd></div>
+                  <div><dt>Source</dt><dd>${escapeHTML(errorSource(selectedError))}</dd></div>
+                </dl>
+                <div class="world-activity-detail-actions"><button type="button" data-world-admin-error-task="${escapeHTML(selectedError.id)}">Create task</button><button type="button" data-world-admin-error-copy="${escapeHTML(selectedError.message || "")}">Copy message</button></div>
+              </section>`
+            : ""
+        }
         <section class="world-error-analytics" aria-labelledby="world-error-analytics-title">
           <h4 id="world-error-analytics-title">Previous 24 hours · ${chartTotal.toLocaleString()} occurrence${chartTotal === 1 ? "" : "s"}</h4>
           <div class="world-error-chart" role="img" aria-label="24-hour error frequency">
@@ -13759,6 +13837,7 @@ class ForkMeshWorld extends HTMLElement {
                       <span class="world-error-single-actor" title="${escapeHTML(actor)}">${escapeHTML(actor.slice(0, 1).toUpperCase())}</span>
                       <span title="${escapeHTML(item.ray || "—")}">${escapeHTML(item.ray || "—")}</span>
                       <span class="world-error-row-actions">
+                        <button type="button" data-world-admin-error-detail="${escapeHTML(item.id)}">Details</button>
                         <button type="button" data-world-admin-error-task="${escapeHTML(item.id)}">Task</button>
                         <button type="button" data-world-admin-error-delete="${escapeHTML(item.id)}">Delete</button>
                       </span>
@@ -13782,13 +13861,16 @@ class ForkMeshWorld extends HTMLElement {
     if (panel) panel.outerHTML = `<div data-world-admin-errors-panel>${this.adminErrorsPanelHTML()}</div>`;
   }
 
-  async refreshAdminErrorRows() {
+  async refreshAdminErrorRows(errorId = this.adminErrorDetailId) {
     if (this.identity?.isAdmin !== true || !validWorldSession()) return;
     this.adminErrorsState = "loading";
     this.renderAdminErrorsOverlay();
     try {
+      const selectedId = Math.max(0, Math.floor(Number(errorId) || 0));
       const payload = await this.fetchJSON(
-        "/api/world/admin/errors?after=0&include=1",
+        `/api/world/admin/errors?after=0&include=1${
+          selectedId ? `&id=${selectedId}` : ""
+        }`,
         { cache: "no-store", timeout: 7000 },
       );
       this.adminErrors = (Array.isArray(payload?.errors) ? payload.errors : [])
@@ -13936,14 +14018,25 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  openAdminErrorDetail(errorId) {
+    const id = Math.max(0, Math.floor(Number(errorId) || 0));
+    if (!this.adminErrors.some((item) => Number(item.id) === id)) return;
+    this.adminErrorDetailId = id;
+    this.renderAdminErrorsOverlay();
+    window.requestAnimationFrame(() =>
+      this.$(`[data-world-admin-error-detail="${id}"]`)?.focus(),
+    );
+  }
+
   async copyAdminErrorMessage(message) {
     if (await copyWorldText(message)) this.toast("Error message copied.");
     else this.toast("The error message could not be copied.");
   }
 
-  async openAdminErrors(returnFocus = null) {
+  async openAdminErrors(returnFocus = null, errorId = 0) {
     if (this.identity?.isAdmin !== true) return;
     this.toggleSettings(false);
+    this.adminErrorDetailId = Math.max(0, Math.floor(Number(errorId) || 0));
     this.storeAdminErrorSeenId(this.adminErrorLatestId);
     this.adminErrorCount = 0;
     this.renderAdminErrors(0);
@@ -18159,6 +18252,42 @@ class ForkMeshWorld extends HTMLElement {
       });
     const globalCount = this.events.length;
     const unreadCount = this.notifications.filter((item) => !item.readAt).length;
+    const selected = rows.find(
+      (item) => item.id === this.notificationBoardDetailId,
+    );
+    const selectedTime = new Date(selected?.when || 0);
+    const pingDetails = selected
+      ? [
+          ["Type", selected.kind || "Update"],
+          ["Scope", selected.source === "global" ? "Global announcement" : "Personal ping"],
+          ["Destination", selected.destination || "—"],
+          [
+            "Reference",
+            selected.repo
+              ? `${selected.repo}${selected.number ? ` #${selected.number}` : ""}`
+              : selected.id,
+          ],
+          ["State", selected.state || "—"],
+          ["Status", selected.status ? String(selected.status) : "—"],
+          ["Method", selected.method || "—"],
+          ["Source", selected.errorSource || selected.source || "—"],
+          ["Actor", selected.actor ? `@${selected.actor}` : "—"],
+          [
+            "Received",
+            Number.isNaN(selectedTime.getTime())
+              ? "Recently"
+              : selectedTime.toLocaleString(),
+          ],
+          [
+            "Read state",
+            selected.source === "global"
+              ? `Ends ${selected.endsAt ? new Date(selected.endsAt).toLocaleString() : "—"}`
+              : selected.unread
+                ? "Unread"
+                : `Read ${selected.readAt ? new Date(selected.readAt).toLocaleString() : "—"}`,
+          ],
+        ].filter(([, value]) => value && value !== "—")
+      : [];
     return `
       <div data-world-events-panel-content>
       <section class="world-activity-board world-activity-board--notifications" aria-label="Pings and announcements">
@@ -18192,6 +18321,17 @@ class ForkMeshWorld extends HTMLElement {
           <div data-tone="cool"><strong>${this.notifications.length}</strong><span>Personal</span></div>
           <div data-tone="success"><strong>${globalCount}</strong><span>Global</span></div>
         </div>
+        ${
+          selected
+            ? `<section class="world-activity-detail" data-world-notification-detail-panel aria-label="Ping details">
+                <header><div><p class="world-eyebrow">PING DETAIL</p><h4>${escapeHTML(selected.title)}</h4></div><button type="button" data-world-notification-detail-close aria-label="Close ping details">×</button></header>
+                ${selected.body ? `<p>${escapeHTML(selected.body)}</p>` : ""}
+                ${selected.path ? `<p class="world-activity-detail-path"><code>${escapeHTML(selected.path)}</code></p>` : ""}
+                <dl>${pingDetails.map(([label, value]) => `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join("")}</dl>
+                ${selected.href ? `<a href="${escapeHTML(selected.href)}" rel="noopener noreferrer">Open destination →</a>` : ""}
+              </section>`
+            : ""
+        }
         <div class="world-notification-table-header" role="row">
           <span>Type</span><span>Title</span><span>Message</span>
           <span>Scope</span><span>Destination</span><span>Reference</span>
@@ -18246,6 +18386,7 @@ class ForkMeshWorld extends HTMLElement {
                         )}</time>
                         <span>${item.unread ? "Unread" : item.source === "global" ? `Ends ${escapeHTML(item.endsAt ? new Date(item.endsAt).toLocaleString() : "—")}` : `Read ${escapeHTML(item.readAt ? new Date(item.readAt).toLocaleString() : "—")}`}</span>
                         <span class="world-activity-row-actions">
+                          <button type="button" data-world-notification-detail="${escapeHTML(item.id)}" aria-label="Show details for ${escapeHTML(item.title)}">Details</button>
                           ${item.href ? `<a href="${escapeHTML(item.href)}" rel="noopener noreferrer">Open</a>` : ""}
                           ${item.source === "personal" ? `<button type="button" data-world-notification-delete="${escapeHTML(item.id)}" aria-label="Delete notification" title="Delete notification">🗑</button>` : ""}
                         </span>
@@ -26542,6 +26683,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   toast(message, { priority = 0, lockMs = 0, kind = "" } = {}) {
+    const onActivate = arguments[1]?.onActivate;
     const now = performance.now();
     const safePriority = Number.isFinite(priority) ? priority : 0;
     if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
@@ -26562,6 +26704,7 @@ class ForkMeshWorld extends HTMLElement {
     this.activityNotice(copy, {
       kind: kind || inferredKind,
       sender: "ForkMesh",
+      onActivate,
     });
     this.toastTimer = window.setTimeout(() => {
       this.toastPriority = 0;
@@ -26587,6 +26730,7 @@ class ForkMeshWorld extends HTMLElement {
       title = "",
       details = [],
       avatarPng = "",
+      onActivate = null,
     } = {},
   ) {
     const copy = String(message || "")
@@ -26669,6 +26813,22 @@ class ForkMeshWorld extends HTMLElement {
       content.append(metadata);
     }
     article.append(icon, content);
+    if (typeof onActivate === "function") {
+      article.tabIndex = 0;
+      article.dataset.actionable = "true";
+      article.setAttribute("role", "button");
+      article.setAttribute("aria-label", `${copy}. Open details`);
+      const activate = () => {
+        article.remove();
+        onActivate();
+      };
+      article.addEventListener("click", activate);
+      article.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        activate();
+      });
+    }
     stream.prepend(article);
     while (stream.childElementCount > 6) stream.lastElementChild?.remove();
     window.setTimeout(() => article.remove(), 10_100);
@@ -27471,7 +27631,9 @@ class ForkMeshWorld extends HTMLElement {
       },
       triangles: {
         value: renderer ? compactCount(renderer.triangles) : "—",
-        points: diagnosticsChartPoints(history, "triangles"),
+        points: diagnosticsChartPoints(history, "triangles", {
+          zeroBased: false,
+        }),
         level: renderer
           ? diagnosticLevel("triangles", renderer.triangles)
           : "high",
