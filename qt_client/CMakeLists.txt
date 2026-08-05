@@ -1014,9 +1014,12 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-upstream-sync-tests
              COMMAND forkmesh-upstream-sync-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
+    add_test(NAME forkmesh-mirror-fleet-window-tests
+             COMMAND forkmesh-window-tests --mirror-fleet-only)
     add_test(NAME forkmesh-perf-tests COMMAND forkmesh-perf-tests)
     add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
-    set_tests_properties(forkmesh-tests forkmesh-window-tests forkmesh-perf-tests PROPERTIES
+    set_tests_properties(forkmesh-tests forkmesh-window-tests
+        forkmesh-mirror-fleet-window-tests forkmesh-perf-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     # The default developer/CI suite stays intentionally small: deployment
     # trust boundaries, private/public mirror encryption, and the agent
@@ -1024,7 +1027,7 @@ if(FORKMESH_BUILD_TESTS)
     set_tests_properties(
         forkmesh-control-tests forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests forkmesh-codex-tests
-        forkmesh-vm-runtime-tests
+        forkmesh-vm-runtime-tests forkmesh-mirror-fleet-window-tests
         PROPERTIES LABELS "critical" TIMEOUT 20)
     # The e2e loop drives real git subprocesses and needs the stub agent's path.
     set_tests_properties(forkmesh-e2e PROPERTIES
