@@ -1141,6 +1141,47 @@ int main(int argc, char *argv[])
     check(!window.testSignInButtonVisible(),
           QStringLiteral("the sign-in pill waits for silent auth to resolve"));
 
+    // An agent's file list is the paths its patch-unique commits own, not the
+    // reverse image of everything main added after the branch forked. This is
+    // also the safe fallback when main was rewritten and equivalent base commits
+    // no longer share object ids.
+    {
+        QTemporaryDir ownedDiffRepo;
+        if (initGitRepo(ownedDiffRepo)) {
+            const QString agentBranch = QStringLiteral("agent/owned-one-file");
+            runGitChecked(ownedDiffRepo.path(), {"checkout", "-q", "-b",
+                                                  agentBranch});
+            QFile agentFile(ownedDiffRepo.path() + QStringLiteral("/agent-owned.txt"));
+            if (agentFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                agentFile.write("belongs to the agent\n");
+                agentFile.close();
+            }
+            runGitChecked(ownedDiffRepo.path(), {"add", "agent-owned.txt"});
+            runGitChecked(ownedDiffRepo.path(), {"commit", "-m",
+                                                  "agent owns one file"});
+            runGitChecked(ownedDiffRepo.path(), {"checkout", "-q", "main"});
+            QDir(ownedDiffRepo.path()).mkpath(QStringLiteral("main-only"));
+            for (int i = 0; i < 23; ++i) {
+                QFile unrelated(
+                    ownedDiffRepo.path() +
+                    QStringLiteral("/main-only/unrelated-%1.txt").arg(i));
+                if (unrelated.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    unrelated.write("belongs to main\n");
+                    unrelated.close();
+                }
+            }
+            runGitChecked(ownedDiffRepo.path(), {"add", "main-only"});
+            runGitChecked(ownedDiffRepo.path(), {"commit", "-m",
+                                                  "main advances independently"});
+            const QStringList owned = window.testAgentOwnedDiffPaths(
+                ownedDiffRepo.path(), QStringLiteral("main"), agentBranch);
+            check(owned == QStringList{QStringLiteral("agent-owned.txt")},
+                  QString("agent diff excludes main's 23 unrelated files "
+                          "(owned = %1)")
+                      .arg(owned.join(QStringLiteral(", "))));
+        }
+    }
+
     // Opening Chat from its unread badge should land directly on the unread
     // conversation carrying the newest message, while preserving the already
     // open conversation when that conversation itself is unread.
