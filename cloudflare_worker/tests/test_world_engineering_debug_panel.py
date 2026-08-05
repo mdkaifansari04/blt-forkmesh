@@ -56,6 +56,8 @@ def test_compact_debug_panel_can_toggle_a_mesh_only_triangle_view():
     for contract in (
         "function setTriangleView(enabled = false)",
         "if (child.isMesh) child.layers.enable(TRIANGLE_VIEW_LAYER)",
+        "if (child.isMesh && child.userData.ground)",
+        "child.layers.disable(TRIANGLE_VIEW_LAYER)",
         "camera.layers.set(TRIANGLE_VIEW_LAYER)",
         "scene.overrideMaterial = triangleViewMaterial",
         "labelLayer.hidden = true",

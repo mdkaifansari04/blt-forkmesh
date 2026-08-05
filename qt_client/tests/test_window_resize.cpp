@@ -1169,6 +1169,47 @@ int main(int argc, char *argv[])
     check(!window.testSignInButtonVisible(),
           QStringLiteral("the sign-in pill waits for silent auth to resolve"));
 
+    // An agent's file list is the paths its patch-unique commits own, not the
+    // reverse image of everything main added after the branch forked. This is
+    // also the safe fallback when main was rewritten and equivalent base commits
+    // no longer share object ids.
+    {
+        QTemporaryDir ownedDiffRepo;
+        if (initGitRepo(ownedDiffRepo)) {
+            const QString agentBranch = QStringLiteral("agent/owned-one-file");
+            runGitChecked(ownedDiffRepo.path(), {"checkout", "-q", "-b",
+                                                  agentBranch});
+            QFile agentFile(ownedDiffRepo.path() + QStringLiteral("/agent-owned.txt"));
+            if (agentFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                agentFile.write("belongs to the agent\n");
+                agentFile.close();
+            }
+            runGitChecked(ownedDiffRepo.path(), {"add", "agent-owned.txt"});
+            runGitChecked(ownedDiffRepo.path(), {"commit", "-m",
+                                                  "agent owns one file"});
+            runGitChecked(ownedDiffRepo.path(), {"checkout", "-q", "main"});
+            QDir(ownedDiffRepo.path()).mkpath(QStringLiteral("main-only"));
+            for (int i = 0; i < 23; ++i) {
+                QFile unrelated(
+                    ownedDiffRepo.path() +
+                    QStringLiteral("/main-only/unrelated-%1.txt").arg(i));
+                if (unrelated.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    unrelated.write("belongs to main\n");
+                    unrelated.close();
+                }
+            }
+            runGitChecked(ownedDiffRepo.path(), {"add", "main-only"});
+            runGitChecked(ownedDiffRepo.path(), {"commit", "-m",
+                                                  "main advances independently"});
+            const QStringList owned = window.testAgentOwnedDiffPaths(
+                ownedDiffRepo.path(), QStringLiteral("main"), agentBranch);
+            check(owned == QStringList{QStringLiteral("agent-owned.txt")},
+                  QString("agent diff excludes main's 23 unrelated files "
+                          "(owned = %1)")
+                      .arg(owned.join(QStringLiteral(", "))));
+        }
+    }
+
     // Opening Chat from its unread badge should land directly on the unread
     // conversation carrying the newest message, while preserving the already
     // open conversation when that conversation itself is unread.
@@ -1764,6 +1805,29 @@ int main(int argc, char *argv[])
                          "disabled non-custodial placeholder"));
     window.show();
     QApplication::processEvents();
+
+    // A rebuild/restart can continue in the background while the initiating
+    // Settings control is no longer visible. Keep a pulsing amber edge around
+    // the real window until that restart finishes or fails.
+    window.testSetRestartCautionFlash(true);
+    QApplication::processEvents();
+    auto *restartCaution = window.findChild<QWidget *>(
+        QStringLiteral("restartCautionBorderOverlay"));
+    const QImage restartCautionImage =
+        restartCaution ? restartCaution->grab().toImage() : QImage();
+    const QColor restartCautionPixel = restartCautionImage.isNull()
+        ? QColor()
+        : restartCautionImage.pixelColor(2, 2);
+    check(restartCaution && restartCaution->isVisible() &&
+              restartCaution->geometry() == window.rect() &&
+              restartCautionPixel.red() > restartCautionPixel.green() &&
+              restartCautionPixel.green() > restartCautionPixel.blue() &&
+              restartCautionPixel.red() > 150,
+          QStringLiteral("a restart flashes an amber caution border around the app"));
+    window.testSetRestartCautionFlash(false);
+    QApplication::processEvents();
+    check(restartCaution && !restartCaution->isVisible(),
+          QStringLiteral("the restart caution border clears when the restart stops"));
 
     // The Log destination is a timeline rather than a second scrolling text
     // feed or a duplicate of the Pings page. Its timeframe presets and direct
@@ -2373,6 +2437,8 @@ int main(int argc, char *argv[])
             scmMargins = scmPanel->layout()->contentsMargins();
         check(scmPanel && scmMargins.left() <= 6 && scmMargins.right() <= 6,
               QStringLiteral("source-control controls sit close to both pane edges"));
+        check(window.testScmDiffUsesFullSurface(),
+              QStringLiteral("working-tree diff has no outer or document padding"));
 
         QPlainTextEdit *draft = window.findChild<QPlainTextEdit *>(
             QStringLiteral("scmMessageInput"));
@@ -2975,6 +3041,11 @@ int main(int argc, char *argv[])
                   .arg(stagedWaiting)
                   .arg(window.testSourceControlPaths().join(QStringLiteral(", ")),
                        controls));
+        check(window.testClickSourceControlPath(QStringLiteral("commit-waiting.txt")) &&
+                  window.testScmDiffFilePinnedToTop(
+                      QStringLiteral("commit-waiting.txt")),
+              QStringLiteral("clicking a working-tree file pins its sticky filename "
+                             "at the top of the diff"));
 
         // …and once that change is committed the row hands itself back to Sync,
         // which is the behaviour the swap was there for in the first place.
@@ -5876,9 +5947,24 @@ int main(int argc, char *argv[])
         other.prNumber = 0;
         window.testAddAgentSession(other);
 
+        // A prior crashed ref publication must not poison every later branch
+        // merge. Model the orphaned lock from the reported failure; a lock this
+        // old cannot belong to a live HEAD update and is safe to recover.
+        const QString staleHeadLock =
+            cleanupRepo.path() + QStringLiteral("/.git/HEAD.lock");
+        QFile staleLock(staleHeadLock);
+        if (staleLock.open(QIODevice::WriteOnly)) {
+            staleLock.setFileTime(QDateTime::currentDateTime().addSecs(-120),
+                                  QFileDevice::FileModificationTime);
+            staleLock.close();
+        }
+
         check(window.testMergeBranchAndCleanUp(cleanBranch),
               QStringLiteral("\"Merge & clean up\" lands the agent branch in the "
                              "default branch"));
+        check(!QFileInfo::exists(staleHeadLock),
+              QStringLiteral("merge recovers an orphaned HEAD.lock instead of "
+                             "misreporting a content conflict"));
         check(gitOutput(cleanupRepo.path(), {"branch", "--list", cleanBranch})
                   .isEmpty(),
               QStringLiteral("\"Merge & clean up\" deletes the merged branch"));

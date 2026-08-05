@@ -441,6 +441,13 @@ public:
     {
         flashMessage(text, error);
     }
+    void testSetRestartCautionFlash(bool active)
+    {
+        if (active)
+            startRestartCautionFlash();
+        else
+            stopRestartCautionFlash();
+    }
     void testShowPromptBubble(const QString &prompt, const QString &status)
     {
         showPromptBubble(prompt, -1, status);
@@ -941,6 +948,12 @@ public:
     // Select a CHANGES row and report whether the right-hand diff navigation
     // targeted that exact file.
     bool testClickSourceControlPath(const QString &path);
+    // The working-tree viewer reaches every edge of its right-hand surface — no
+    // inherited layout or document gutter remains around the diff.
+    bool testScmDiffUsesFullSurface() const;
+    // After selecting a file in CHANGES, its header is pinned at the viewport's
+    // top (or the furthest possible position for the document's final file).
+    bool testScmDiffFilePinnedToTop(const QString &path) const;
     // Which page each half of the Git view's left column shows. Both stay on the
     // universal source-control panel and commit graph for every diff kind.
     int testGitFilesSlotPage() const;
@@ -1030,6 +1043,9 @@ public:
     {
         return m_agentDiffStats.value(sessionId).files;
     }
+    QStringList testAgentOwnedDiffPaths(const QString &gitDir,
+                                        const QString &base,
+                                        const QString &branch) const;
     bool testAgentSessionMerged(int sessionId) const;
     void testApplyCodexRateLimits(const QJsonObject &rateLimits)
     {
@@ -2681,6 +2697,9 @@ private:
     // message re-refreshes it (adhoc #74).
     void applyAgentRowCells(int row, const AgentSession &session,
                             const QString &agentGitDir, const QString &agentBase);
+    // PR-linked sessions use the pull author's face in the leading identity
+    // badge; ordinary sessions use their selected model artwork.
+    QPixmap agentSessionPullAvatar(const AgentSession &session);
     // Files-changed + branch ahead/behind summary for a session's Diff cell.
     // This is deliberately a cache-only UI accessor: cold disk/git probes are
     // gathered by refreshAgentTable() on its worker and delivered later.
@@ -3240,6 +3259,11 @@ private:
     // Flash a red border around the whole window for a moment — the desktop
     // twin of the World's world-admin-error-arrival effect (adhoc #77).
     void flashErrorBorder();
+    // While an update/rebuild is preparing to relaunch this process, pulse an
+    // amber border at the window edge so the long-running restart is visible
+    // even when its originating button or status panel is off-screen.
+    void startRestartCautionFlash();
+    void stopRestartCautionFlash();
     // Open the screen/item a notification points at (issue/PR/discussion/commit).
     void openNotificationLink(const NotificationLink &link);
     void showNotifications();
@@ -4087,6 +4111,10 @@ private:
     // Scroll the combined diff so this file's section sits at the top. Staged and
     // unstaged copies of one path render as separate sections; `staged` picks it.
     void scrollScmDiffToFile(const QString &path, bool staged);
+    // Put one rendered section's file header exactly at the top of the diff
+    // viewport. Returns false while that section is still waiting in a streamed
+    // portion of the document.
+    bool pinScmDiffSectionToTop(int sectionIndex);
     // Follow the combined diff's scroll: keep the sticky header on the topmost
     // visible file, advance its read-progress chart / percentage, and select that
     // file in the tree. Cheap (no re-render); runs on every scroll tick.
@@ -4268,6 +4296,9 @@ private:
     // centralised failure handler (runUpdateStep) agnostic to which one it was.
     void startRestartSpin(QPushButton *button);
     void stopRestartSpin();
+    // Advance the determinate ring around the active restart spinner. This is
+    // intentionally phase-based: build output is not a portable progress signal.
+    void setRestartSpinProgress(int percent);
     // Flips an in-progress restart spin between the refresh-arrows look (a
     // rebuild actually running) and a spinning hourglass (queued behind other
     // agent actions, not doing anything itself yet).
@@ -5444,6 +5475,11 @@ private:
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
     QTimer *m_errorBorderTimer = nullptr;
+    // Amber counterpart to the transient red error border.  This stays active
+    // for the full restart operation, blinking to distinguish caution from an
+    // error state.
+    QWidget *m_restartCautionBorderOverlay = nullptr;
+    QTimer *m_restartCautionBorderTimer = nullptr;
     bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
     QHash<QString, qint64> m_repoPinAutoHealAtMs; // owner/name -> last automatic pin re-attest (rate-limits the source-of-truth auto-heal in refreshRepoPinBanner)
 
@@ -6813,6 +6849,9 @@ private:
     QStringList m_scmSectionPaths;   // repo-relative path per section
     QList<int> m_scmFileTops;        // cached absolute y of each section header
     QHash<QString, QString> m_scmStickyLabelHtml; // section key -> sticky label
+    // A click may target a section whose HTML is still streaming. Keep its key
+    // so onDiffStreamFinished() can pin it as soon as the anchor is laid out.
+    QString m_scmPendingScrollKey;
     QString m_scmDiffRenderKey;      // skip the re-layout when nothing changed
     // …and the inputs behind it (patch, viewed set, stylesheet, split toggle), so
     // an unchanged working tree skips rebuilding the diff HTML too and not just
@@ -7251,11 +7290,7 @@ private:
     // refresh — git log, per-PR apply checks, branch reload — once per event,
     // serially blocking the UI. The timer collapses a burst into one refresh.
     QTimer *m_openRepoRefreshTimer = nullptr;
-    QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
-    // Spinner angle in degrees, per session id (adhoc #50): each running session
-    // advances at its own tok/s-derived rate, so the rows can't share one frame
-    // counter.
-    QHash<int, double> m_agentRowSpinAngles;
+    QTimer *m_agentsSpinTimer = nullptr; // refreshes live Agents metadata
     int m_agentSpinTicks = 0; // paces the detail header's run-stat refresh
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;
@@ -7738,10 +7773,11 @@ private:
     // and stacking multi-second stalls (the renderAgentDiff<-renderAgentDiff
     // frames all over ~/.forkmesh/diagnostics/stalls.log).
     struct AgentDiffProbe {
-        QByteArray patch;        // git diff <base>
+        QByteArray patch;        // git diff <base>, limited to agent-owned paths
         bool patchOk = false;    // that read succeeded (else keep the old view)
         QSet<QString> uncommitted; // paths with working-tree changes / untracked
-        QStringList commitLines; // "abc1234 subject" per commit ahead of base
+        QSet<QString> ownedPaths;  // paths from patch-unique, non-merge commits
+        QStringList commitLines; // patch-unique "abc1234 subject" entries
         int behind = 0;          // commits the base branch has that we don't
         int pending = 0;         // async probes still in flight
     };
