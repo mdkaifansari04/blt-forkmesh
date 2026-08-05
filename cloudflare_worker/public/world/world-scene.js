@@ -19654,14 +19654,54 @@ export function createWorldScene({
   // expectation, but the visual effect is released only after the next signed
   // catalog record confirms that exact node and commit prefix.
   const pendingMirrorPushEffects = new Map();
-  for (const config of WORLD_AGENT_BOTS) {
+  function agentBotProviderConfig(provider) {
+    const wanted = String(provider || "").toLowerCase();
+    return WORLD_AGENT_BOTS.find((config) =>
+      wanted === config.id ||
+      (wanted === "claude-code" && config.id === "claude"),
+    ) || null;
+  }
+
+  function createAgentBotAvatar(session, index) {
+    const providerConfig = agentBotProviderConfig(session?.provider);
+    const sessionId = String(session?.id || "").trim();
+    if (!providerConfig || !sessionId) return null;
+    // Spread a large fleet into a shallow grid around the provider's home. A
+    // session gets a deterministic slot on every refresh, so existing robots
+    // never jump when an older item changes status.
+    const occupiedSlots = new Set(
+      [...agentBotStates.values()]
+        .filter((state) => state.config.id === providerConfig.id)
+        .map((state) => state.slot),
+    );
+    let slot = hashNumber(sessionId) % 64;
+    for (let attempt = 0; occupiedSlots.has(slot) && attempt < 64; attempt += 1) {
+      slot = (slot + 1) % 64;
+    }
+    const lane = Math.floor(slot / 8);
+    const column = slot % 8;
+    const direction = providerConfig.id === "codex" ? 1 : -1;
+    const config = {
+      ...providerConfig,
+      home: [
+        providerConfig.home[0] + direction * lane * 1.65,
+        providerConfig.home[1],
+        providerConfig.home[2] + (column - 3.5) * 1.55,
+      ],
+    };
+    const botKey = `session:${sessionId}`;
     const avatar = new THREE.Group();
-    avatar.name = `${config.id}-agent-droid`;
-    avatar.userData.name = config.label;
-    avatar.userData.id = config.id;
+    avatar.name = `${config.id}-agent-droid-${sessionId}`;
+    avatar.userData.name = `${config.label} ${
+      Number(session?.localAgentId) > 0
+        ? `#${Number(session.localAgentId)}`
+        : `#${index + 1}`
+    }`;
+    avatar.userData.id = botKey;
     avatar.userData.accountStatus = "Organization agent";
-    avatar.userData.phase = hashNumber(config.id) * 0.0001;
+    avatar.userData.phase = hashNumber(sessionId) * 0.0001;
     avatar.position.set(...config.home);
+    avatar.position.y += 7 + (slot % 3) * 0.8;
     avatar.visible = false;
     const ball = new THREE.Mesh(
       new THREE.SphereGeometry(0.5, 22, 15),
@@ -19694,6 +19734,25 @@ export function createWorldScene({
     );
     eye.position.set(0, 1.27, 0.5);
     avatar.add(eye);
+    const statusStem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.025, 0.025, 0.34, 7),
+      makeMaterial(THREE, "#718087", {
+        metalness: 0.6,
+        roughness: 0.34,
+      }),
+    );
+    statusStem.position.set(0, 1.72, 0);
+    avatar.add(statusStem);
+    const statusLight = new THREE.Mesh(
+      new THREE.SphereGeometry(0.085, 10, 7),
+      makeMaterial(THREE, "#d29922", {
+        emissive: "#d29922",
+        emissiveIntensity: 1.2,
+      }),
+    );
+    statusLight.name = `agent-status-light:${sessionId}`;
+    statusLight.position.set(0, 1.94, 0);
+    avatar.add(statusLight);
     const screenTexture = canvasTexture(THREE, 512, 176, (context, canvas) => {
       context.fillStyle = "#071917";
       context.fillRect(0, 0, canvas.width, canvas.height);
@@ -19716,18 +19775,20 @@ export function createWorldScene({
     avatar.traverse((child) => {
       if (!child.isMesh) return;
       child.userData.agentBotChat = config.id;
+      child.userData.repositoryAgentSession = session;
       interactive.push(child);
     });
-    animated.push((time) => {
-      const active = Boolean(agentBotStates.get(config.id)?.excitement);
-      eye.material.emissiveIntensity = active
-        ? 2.1 + (Math.sin(time * 0.025) + 1) * 0.9
-        : 1.2 + (Math.sin(time * 0.007) + 1) * 0.55;
-    });
-    agentBots.set(config.id, avatar);
-    agentBotStates.set(config.id, {
+    agentBots.set(botKey, avatar);
+    agentBotStates.set(botKey, {
       config,
       avatar,
+      botKey,
+      session,
+      status: String(session?.status || "security_pending"),
+      statusLight,
+      eye,
+      slot,
+      spawnedAt: performance.now(),
       target: new THREE.Vector3(...config.home),
       nextWanderAt: 0,
       excitement: null,
@@ -19735,8 +19796,79 @@ export function createWorldScene({
     });
     world.add(avatar);
     registerWorldElement(
-      "agent-npcs", "Agent bot avatars", "Avatars & bots", avatar,
+      "agent-npcs",
+      "Agent bot avatars",
+      "Avatars & bots",
+      avatar,
+      () => agentBots.get(botKey) === avatar,
     );
+    return agentBotStates.get(botKey);
+  }
+
+  function removeAgentBotAvatar(botKey) {
+    const state = agentBotStates.get(botKey);
+    const avatar = state?.avatar;
+    if (!avatar) return;
+    avatar.traverse((child) => {
+      let interactiveIndex = interactive.indexOf(child);
+      while (interactiveIndex >= 0) {
+        interactive.splice(interactiveIndex, 1);
+        interactiveIndex = interactive.indexOf(child);
+      }
+      child.geometry?.dispose?.();
+      if (Array.isArray(child.material)) {
+        child.material.forEach((material) => {
+          material?.map?.dispose?.();
+          material?.dispose?.();
+        });
+      } else {
+        child.material?.map?.dispose?.();
+        child.material?.dispose?.();
+      }
+    });
+    avatar.parent?.remove?.(avatar);
+    agentBots.delete(botKey);
+    agentBotStates.delete(botKey);
+    pruneDeadElementRoots(worldElements.get("agent-npcs"));
+  }
+
+  function agentBotState(botId) {
+    const wanted = String(botId || "").toLowerCase();
+    return agentBotStates.get(wanted) ||
+      [...agentBotStates.values()].find(
+        (state) => state.config.id === wanted,
+      ) || null;
+  }
+
+  function reconcileSessionAgentBots(sessions = []) {
+    const visibleSessions = (Array.isArray(sessions) ? sessions : [])
+      .filter(
+        (session) =>
+          String(session?.id || "").trim() &&
+          agentBotProviderConfig(session?.provider),
+      )
+      .slice(0, 50);
+    const live = new Set();
+    visibleSessions.forEach((session, index) => {
+      const botKey = `session:${String(session.id).trim()}`;
+      live.add(botKey);
+      let state = agentBotStates.get(botKey);
+      if (!state) state = createAgentBotAvatar(session, index);
+      if (!state) return;
+      state.session = session;
+      state.status = String(session?.status || "security_pending");
+      state.avatar.visible = agentBotAccessAllowed;
+      state.avatar.traverse((child) => {
+        if (!child.isMesh) return;
+        child.userData.agentBotChat = agentBotAccessAllowed
+          ? state.config.id
+          : "";
+        child.userData.repositoryAgentSession = session;
+      });
+    });
+    for (const botKey of [...agentBotStates.keys()]) {
+      if (!live.has(botKey)) removeAgentBotAvatar(botKey);
+    }
   }
 
   const remotePlayers = new Map();
@@ -27366,6 +27498,28 @@ export function createWorldScene({
     for (const state of agentBotStates.values()) {
       const { avatar, config } = state;
       if (!agentBotAccessAllowed || !avatar.visible) continue;
+      const status = String(state.status || "security_pending");
+      const statusVisual = status === "running"
+        ? { color: "#3fb950", speed: 0.014, floor: 0.55, range: 2.9 }
+        : ["failed", "rejected"].includes(status)
+          ? { color: "#f85149", speed: 0.009, floor: 0.35, range: 2.5 }
+          : ["queued", "security_pending"].includes(status)
+            ? { color: "#d29922", speed: 0.0045, floor: 0.45, range: 1.8 }
+            : { color: "#58a6ff", speed: 0.0022, floor: 0.6, range: 0.55 };
+      if (state.statusLight.userData.statusColor !== statusVisual.color) {
+        state.statusLight.userData.statusColor = statusVisual.color;
+        state.statusLight.material.color.set(statusVisual.color);
+        state.statusLight.material.emissive.set(statusVisual.color);
+      }
+      const pulse = reducedMotion
+        ? 0.5
+        : (Math.sin(time * statusVisual.speed + avatar.userData.phase) + 1) / 2;
+      state.statusLight.material.emissiveIntensity =
+        statusVisual.floor + pulse * statusVisual.range;
+      const active = status === "running" || Boolean(state.excitement);
+      state.eye.material.emissiveIntensity = active
+        ? 2.1 + (Math.sin(time * 0.025) + 1) * 0.9
+        : 1.2 + (Math.sin(time * 0.007) + 1) * 0.55;
       let target = state.target;
       let speed = FORKBOT_SPEED * 0.9;
       if (state.completion) {
@@ -27412,11 +27566,25 @@ export function createWorldScene({
       if (walking) {
         avatar.userData.rollingBall.rotation.x -= speed * delta * 1.8;
       }
-      avatar.position.y =
-        (state.excitement || state.completion) && !reducedMotion
-          ? config.home[1] +
-            Math.abs(Math.sin(time * 0.011 + avatar.userData.phase)) * 0.12
-          : config.home[1];
+      const dropProgress = Math.min(
+        1,
+        Math.max(0, (performance.now() - state.spawnedAt) / 1150),
+      );
+      if (dropProgress < 1) {
+        // A newly authorized session visibly arrives in the World. Ease the
+        // fall and add a tiny decaying bounce; no physics object or light is
+        // allocated, keeping a 50-agent fleet inexpensive.
+        const remaining = 1 - dropProgress;
+        avatar.position.y =
+          config.home[1] + remaining * remaining * 7 +
+          Math.abs(Math.sin(dropProgress * Math.PI * 3)) * remaining * 0.34;
+      } else {
+        avatar.position.y =
+          (state.excitement || state.completion) && !reducedMotion
+            ? config.home[1] +
+              Math.abs(Math.sin(time * 0.011 + avatar.userData.phase)) * 0.12
+            : config.home[1];
+      }
       if (state.completion && !walking) {
         const taskLabel = state.completion.taskKey.startsWith("issue:")
           ? state.completion.taskKey.replace(/^issue:/, "")
@@ -27441,7 +27609,7 @@ export function createWorldScene({
 
   function exciteAgentBot(peerId, botId, text) {
     if (!agentBotAccessAllowed) return false;
-    const state = agentBotStates.get(String(botId || "").toLowerCase());
+    const state = agentBotState(botId);
     const avatar = worldSpeakerAvatar(peerId);
     const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 90);
     if (!state || !avatar || !message) return false;
@@ -27456,7 +27624,7 @@ export function createWorldScene({
 
   function completeAgentTask(botId, taskKey) {
     if (!agentBotAccessAllowed) return false;
-    const state = agentBotStates.get(String(botId || "").toLowerCase());
+    const state = agentBotState(botId);
     const key = String(taskKey || "");
     if (!state || !key) return false;
     state.excitement = null;
@@ -27476,7 +27644,7 @@ export function createWorldScene({
     // The task board names one general bot, so an unknown id speaks through
     // whichever bot avatar is present rather than staying silent.
     const state =
-      agentBotStates.get(String(botId || "").toLowerCase()) ||
+      agentBotState(botId) ||
       agentBotStates.values().next().value;
     const taskTitle = String(title || "")
       .replace(/\s+/g, " ")
@@ -27497,11 +27665,13 @@ export function createWorldScene({
     agentBotAccessAllowed = allowed === true;
     for (const [botId, avatar] of agentBots.entries()) {
       avatar.visible = agentBotAccessAllowed;
+      const state = agentBotStates.get(botId);
       avatar.traverse((child) => {
         if (!child.isMesh) return;
-        child.userData.agentBotChat = agentBotAccessAllowed ? botId : "";
+        child.userData.agentBotChat = agentBotAccessAllowed
+          ? state?.config?.id || ""
+          : "";
       });
-      const state = agentBotStates.get(botId);
       if (!state || agentBotAccessAllowed) continue;
       state.excitement = null;
       state.completion = null;
@@ -29462,6 +29632,10 @@ export function createWorldScene({
   function updateMirrorAgentTasks(sessions = []) {
     humanTodoSessions = Array.isArray(sessions) ? sessions.slice(0, 80) : [];
     repaintHumanTodoBoard();
+    // The decrypted, engineering-authorized session projection is also the
+    // roster for agent avatars: exactly one lightweight Claude/Codex robot per
+    // session, reconciled away immediately when access or the session vanishes.
+    reconcileSessionAgentBots(sessions);
     const next = new Map();
     const nextByRepository = new Map();
     for (const session of Array.isArray(sessions) ? sessions.slice(0, 80) : []) {
@@ -32338,7 +32512,7 @@ export function createWorldScene({
         ? player
         : peerId === FORKBOT_PEER_ID
           ? forkbot
-          : agentBots.get(String(peerId || "").toLowerCase()) ||
+          : agentBotState(peerId)?.avatar ||
             remotePlayers.get(String(peerId || "")) ||
             loungeMembers.get(String(peerId || ""));
     if (!avatar) return false;
@@ -32346,7 +32520,7 @@ export function createWorldScene({
     if (avatar === forkbot && forkbotExcitement) {
       settleForkbot(performance.now());
     }
-    const agentState = agentBotStates.get(String(peerId || "").toLowerCase());
+    const agentState = agentBotState(peerId);
     if (agentState?.excitement) {
       agentState.excitement = null;
       agentState.target.copy(agentState.avatar.position);
