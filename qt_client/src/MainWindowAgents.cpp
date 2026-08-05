@@ -338,7 +338,7 @@ QString agentStatusBadgeToolTip(const AgentSession &session)
     if (const QString usageLine = agentUsageLimitCountdownText(session);
         !usageLine.isEmpty())
         details << usageLine;
-    details << QStringLiteral("Click to show session details.");
+    details << QStringLiteral("Hover or click to show session details.");
     return details.join(QLatin1Char('\n'));
 }
 
@@ -2334,6 +2334,7 @@ QWidget *MainWindow::buildAgentsTab()
     // rich-text label in a QWidgetAction.
     m_agentMetaPopup = new QFrame(this, Qt::Popup);
     m_agentMetaPopup->setObjectName("agentMetaPopup"); // themed like #reactionPicker
+    m_agentMetaPopup->installEventFilter(this);
     auto *metaPopupLayout = new QVBoxLayout(m_agentMetaPopup);
     metaPopupLayout->setContentsMargins(12, 10, 12, 10);
     metaPopupLayout->addWidget(m_agentMeta);
@@ -2519,31 +2520,9 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStatusPill->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_agentStatusPill->setIconSize(QSize(18, 18));
     m_agentStatusPill->setCursor(Qt::PointingHandCursor);
-    connect(m_agentStatusPill, &QToolButton::clicked, this, [this] {
-        if (!m_agentMetaPopup)
-            return;
-        if (m_agentMetaPopup->isVisible()) {
-            m_agentMetaPopup->hide();
-            return;
-        }
-        m_agentMetaPopup->adjustSize();
-        QPoint at = m_agentStatusPill->mapToGlobal(
-            QPoint(0, m_agentStatusPill->height() + 4));
-        // The list is as wide as its longest branch/worktree value now (adhoc
-        // #68), so a session deep in the screen's right half would otherwise open
-        // partly off it. Slide it back in.
-        const QScreen *screen = m_agentMetaPopup->screen()
-                                    ? m_agentMetaPopup->screen()
-                                    : QGuiApplication::primaryScreen();
-        if (screen) {
-            const QRect avail = screen->availableGeometry();
-            at.setX(qBound(avail.left(),
-                           qMin(at.x(), avail.right() - m_agentMetaPopup->width() + 1),
-                           avail.right()));
-        }
-        m_agentMetaPopup->move(at);
-        m_agentMetaPopup->show();
-    });
+    m_agentStatusPill->installEventFilter(this);
+    connect(m_agentStatusPill, &QToolButton::clicked, this,
+            &MainWindow::toggleAgentMetaPopup);
 
     // Branch / Worktree in the output toolbar (adhoc #51): a click opens that
     // branch in the Git view (adhoc #131 — switchToAgentBranch points the view at
@@ -11933,6 +11912,49 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     m_agentStatusPill->style()->unpolish(m_agentStatusPill);
     m_agentStatusPill->style()->polish(m_agentStatusPill);
     m_agentStatusPill->show();
+}
+
+void MainWindow::showAgentMetaPopup()
+{
+    if (!m_agentStatusPill || !m_agentMetaPopup)
+        return;
+    m_agentMetaPopup->adjustSize();
+    QPoint at = m_agentStatusPill->mapToGlobal(
+        QPoint(0, m_agentStatusPill->height() + 4));
+    // The list is as wide as its longest branch/worktree value now (adhoc #68),
+    // so a session deep in the screen's right half would otherwise open partly
+    // off it. Slide it back in.
+    const QScreen *screen = m_agentMetaPopup->screen()
+                                ? m_agentMetaPopup->screen()
+                                : QGuiApplication::primaryScreen();
+    if (screen) {
+        const QRect avail = screen->availableGeometry();
+        at.setX(qBound(avail.left(),
+                       qMin(at.x(), avail.right() - m_agentMetaPopup->width() + 1),
+                       avail.right()));
+    }
+    m_agentMetaPopup->move(at);
+    m_agentMetaPopup->show();
+}
+
+void MainWindow::toggleAgentMetaPopup()
+{
+    if (!m_agentMetaPopup)
+        return;
+    if (m_agentMetaPopup->isVisible()) {
+        m_agentMetaPopup->hide();
+        return;
+    }
+    showAgentMetaPopup();
+}
+
+void MainWindow::hideAgentMetaPopupIfPointerAway()
+{
+    if (!m_agentMetaPopup || !m_agentMetaPopup->isVisible())
+        return;
+    if ((!m_agentStatusPill || !m_agentStatusPill->underMouse()) &&
+        !m_agentMetaPopup->underMouse())
+        m_agentMetaPopup->hide();
 }
 
 // Spin the blue "sync" glyph on every running row's "#" cell so the agents
