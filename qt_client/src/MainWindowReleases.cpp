@@ -57,6 +57,59 @@ constexpr int kMirrorSyncKindRole = Qt::UserRole;      // "self" | "peer" | "cat
 constexpr int kMirrorSyncNodeIdRole = Qt::UserRole + 1; // relay node id ("" = none)
 constexpr int kMirrorSyncLabelRole = Qt::UserRole + 2;  // display name for messages
 
+constexpr int kMirrorDiagnosticPromptRole = Qt::UserRole + 41;
+
+QString mirrorDiagnosticPrompt(const QString &source, const QString &nodeName,
+                               const QString &nodeId, const QString &owner,
+                               const QString &platform, const QString &version,
+                               const QList<NodeDiagnostics::Finding> &findings,
+                               qint64 diagnosticsMs)
+{
+    QStringList identity;
+    identity << QStringLiteral("Node: %1").arg(
+        nodeName.trimmed().isEmpty() ? QStringLiteral("(unnamed)") : nodeName);
+    if (!nodeId.trimmed().isEmpty())
+        identity << QStringLiteral("Node id: %1").arg(nodeId.trimmed());
+    if (!owner.trimmed().isEmpty())
+        identity << QStringLiteral("Owner: %1").arg(owner.trimmed());
+    if (!platform.trimmed().isEmpty())
+        identity << QStringLiteral("Platform: %1").arg(platform.trimmed());
+    if (!version.trimmed().isEmpty())
+        identity << QStringLiteral("ForkMesh version: %1").arg(version.trimmed());
+
+    QString report;
+    if (diagnosticsMs <= 0) {
+        report = QStringLiteral(
+            "No self-diagnostic report has been received. Determine whether this "
+            "node is on an older build, has self-diagnostics disabled, or cannot "
+            "deliver heartbeat diagnostics, and restore reporting before judging "
+            "the node healthy.");
+    } else {
+        report = QStringLiteral("Reported at: %1\n")
+                     .arg(QDateTime::fromMSecsSinceEpoch(diagnosticsMs)
+                              .toLocalTime()
+                              .toString(Qt::ISODate));
+        report += findings.isEmpty()
+                      ? QStringLiteral("The self-check reported no findings. Verify "
+                                       "the suspected failure independently and add "
+                                       "diagnostic coverage if it was missed.")
+                      : NodeDiagnostics::detailText(findings);
+    }
+
+    const QString repoName = source.trimmed().isEmpty()
+                                 ? QStringLiteral("the open repository")
+                                 : source.trimmed();
+    return QStringLiteral(
+               "Investigate and fix the mirror-node diagnostics below for %1. "
+               "Find the root cause rather than suppressing the check. If the "
+               "cause is in ForkMesh, implement the fix and add or update tests; "
+               "if it is host configuration, give exact safe remediation steps. "
+               "Afterward, rerun or wait for the self-check and verify the finding "
+               "clears without breaking mirror sync, serving, or relay connectivity.\n\n"
+               "%2\nRepository mirrored: %1\n\nDiagnostic report:\n%3")
+        .arg(repoName, identity.join(QLatin1Char('\n')), report);
+}
+
 // Bake a release tag's version into the Qt client's source version — the
 // project(ForkMesh VERSION X.Y.Z ...) line in qt_client/CMakeLists.txt that
 // every "ForkMesh v" FORKMESH_VERSION display reads — and commit it, so cutting
