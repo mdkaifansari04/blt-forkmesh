@@ -9205,7 +9205,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   min-width: 0;
   flex: 1 1 auto;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 5px;
+  gap: 4px;
   font: 700 0.43rem/1 "ForkMesh Mono", ui-monospace, monospace;
 }
 
@@ -9214,6 +9214,10 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   min-width: 0;
   grid-template-rows: auto 16px;
   gap: 2px;
+  padding: 3px 4px;
+  border: 1px solid rgb(139 148 158 / 0.18);
+  border-radius: 5px;
+  background: rgb(1 4 9 / 0.38);
 }
 
 .world-diagnostics-chart-metric > span {
@@ -9242,8 +9246,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: block;
   width: 100%;
   height: 16px;
-  overflow: visible;
-  border-bottom: 1px solid rgb(139 148 158 / 0.2);
+  overflow: hidden;
+  border-radius: 2px;
+  background:
+    linear-gradient(to bottom, transparent 48%, rgb(139 148 158 / 0.12) 50%, transparent 52%),
+    rgb(13 17 23 / 0.42);
 }
 
 .world-diagnostics-chart-metric polyline {

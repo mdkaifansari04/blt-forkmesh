@@ -511,12 +511,13 @@ function frameHistorySparkline(history) {
 
 // SVG points for the collapsed diagnostics pill. Each entry is one local
 // one-second sample; the newest 60 readings fill the tiny chart from left to
-// right. Memory uses its own visible range so small heap changes do not look
-// artificially flat, while FPS and triangles retain a zero baseline.
+// right. Relative charts use their own visible range so small changes do not
+// look artificially flat. A small vertical inset keeps flat or extreme traces
+// clear of the SVG edge, where they would otherwise look like a missing chart.
 function diagnosticsChartPoints(
   history,
   key,
-  { width = 72, height = 16, zeroBased = true } = {},
+  { width = 72, height = 16, zeroBased = true, verticalInset = 1.5 } = {},
 ) {
   const samples = (Array.isArray(history) ? history : [])
     .slice(-60)
@@ -536,13 +537,22 @@ function diagnosticsChartPoints(
     -60,
   ).length;
   const denominator = Math.max(1, retainedCount - 1);
-  return samples
-    .map(({ index, value }) => {
-      const x = (index / denominator) * width;
-      const y = height - ((value - low) / (high - low)) * height;
-      return `${x.toFixed(1)},${Math.max(0, Math.min(height, y)).toFixed(1)}`;
-    })
-    .join(" ");
+  const inset = Math.max(0, Math.min(height / 2, verticalInset));
+  const drawableHeight = Math.max(0, height - inset * 2);
+  const points = samples.map(({ index, value }) => {
+    const x = (index / denominator) * width;
+    const y = inset + (1 - (value - low) / (high - low)) * drawableHeight;
+    return `${x.toFixed(1)},${Math.max(
+      inset,
+      Math.min(height - inset, y),
+    ).toFixed(1)}`;
+  });
+  // A one-point polyline paints nothing. Stretch the first reading into a
+  // short flat trace so every available metric has a chart immediately.
+  if (points.length === 1) {
+    return `${points[0]} ${width.toFixed(1)},${points[0].split(",")[1]}`;
+  }
+  return points.join(" ");
 }
 
 // Turn one diagnostics sample into concrete, ranked advice. Every suggestion
@@ -27545,7 +27555,9 @@ class ForkMeshWorld extends HTMLElement {
       },
       triangles: {
         value: renderer ? compactCount(renderer.triangles) : "—",
-        points: diagnosticsChartPoints(history, "triangles"),
+        points: diagnosticsChartPoints(history, "triangles", {
+          zeroBased: false,
+        }),
         level: renderer
           ? diagnosticLevel("triangles", renderer.triangles)
           : "high",
