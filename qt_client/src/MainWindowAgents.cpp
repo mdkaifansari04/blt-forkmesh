@@ -8718,10 +8718,17 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
                                     "cannot be started."));
         return;
     }
-    // Already running (in its own runner) or queued — nothing to do. Other
-    // sessions may run in parallel, so we don't block on a global "busy".
-    if (session->status == AgentStatus::Running ||
-        session->status == AgentStatus::Queued ||
+    // Do not start a second copy of a genuinely live session.  The persisted
+    // status alone is not a transport liveness signal: after a Codex app-server
+    // window exits or disconnects, a session can still read Running even though
+    // it no longer has a process to receive a prompt.  Treat that stale state as
+    // resumable so Continue and a follow-up prompt reconnect it instead of
+    // silently leaving the message in m_pendingSteerMessage.
+    ClaudeStreamSession *claude = m_streamSessions.value(session->id);
+    CodexAppServerSession *codex = m_codexStreams.value(session->id);
+    const bool liveTransport =
+        (claude && claude->running()) || (codex && codex->running());
+    if (session->status == AgentStatus::Queued || liveTransport ||
         runnerForSession(session->id))
         return;
 
