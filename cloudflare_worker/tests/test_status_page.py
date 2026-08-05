@@ -57,7 +57,7 @@ def _load(*names, extra_globals=None):
         "_status_deploy_semaphore_active",
         "_record_status_deploy_sample",
         "_claim_status_sample_minute",
-        "_email_delivery_status",
+        "_email_delivery_status", "_status_page_api_probe",
     }
     selected = []
     for node in list(urls_tree.body) + list(tree.body):
@@ -93,7 +93,8 @@ class _Clock:
 
 def _sample_env(
         now, error_paths, host_online=True, db_ok=True, error_rows=None,
-        mirror_rows=None, latest_email=None, do_abort_rows=None):
+        mirror_rows=None, latest_email=None, do_abort_rows=None,
+        status_api_ok=True):
     """Stub error rows plus the signed direct-HTTPS mirror health count."""
     inserted = []
     hourly = []
@@ -145,6 +146,12 @@ def _sample_env(
     async def homepage_status(_env):
         return True, ""
 
+    class StatusResponse:
+        status = 200 if status_api_ok else 500
+
+    async def cached_status_history(_env, _view):
+        return StatusResponse()
+
     extra = {
         "Date": _Clock,
         "ensure_schema": noop,
@@ -155,6 +162,7 @@ def _sample_env(
         "_record_status_monitor_transitions": noop,
         "_installer_delivery_status": installer_status,
         "_homepage_status_probe": homepage_status,
+        "cached_status_history": cached_status_history,
         "clean_string": lambda value, limit: str(value or "")[:limit],
     }
     return extra, inserted, hourly, minutely
@@ -163,12 +171,13 @@ def _sample_env(
 def _run_sample(
         error_paths=(), host_online=True, db_ok=True, error_rows=None,
         mirror_rows=None, latest_email=None, email_configured=True,
-        do_abort_rows=None):
+        do_abort_rows=None, status_api_ok=True):
     extra, inserted, hourly, minutely = _sample_env(
         _Clock.value, error_paths, host_online, db_ok,
         error_rows=error_rows, mirror_rows=mirror_rows,
         latest_email=latest_email,
         do_abort_rows=do_abort_rows,
+        status_api_ok=status_api_ok,
     )
     g = _load("record_status_sample", extra_globals=extra)
     env = SimpleNamespace(
@@ -188,11 +197,26 @@ def _run_sample(
 def test_all_systems_recorded_ok_with_no_errors_and_a_live_https_mirror():
     results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=True)
     assert set(results) == {
-        "website", "api", "errors", "database", "flagship_repository",
-        "email", "installer", "git_hosting", "realtime", "durable_objects",
+        "website", "status_page", "api", "errors", "database",
+        "flagship_repository", "email", "installer", "git_hosting",
+        "realtime", "durable_objects",
     }
     assert all(failure == 0 for failure in results.values())
     assert all(reason is None for reason in reasons.values())
+
+
+def test_status_page_api_failure_is_a_dedicated_red_monitor():
+    results, reasons, minutes = _run_sample(status_api_ok=False)
+
+    assert results["status_page"] == 1
+    assert reasons["status_page"] == "Status API returned HTTP 500"
+    assert minutes["status_page"] == (
+        0, "Status API returned HTTP 500")
+
+
+def test_status_page_monitor_pages_continually_by_default():
+    assert '("status_page", "Status page API")' in ENTRY_TEXT
+    assert 'system_id in ("website", "status_page")' in ENTRY_TEXT
 
 
 def test_deploy_semaphore_records_a_neutral_minute_without_alerting():
@@ -1447,7 +1471,7 @@ def test_current_snapshot_survives_a_failing_read():
     assert out["current"]["catalogRepos"] is None
     assert out["current"]["onlineNodes"] == 0
     # systems still rendered despite the failed metric
-    assert len(out["systems"]) == 10
+    assert len(out["systems"]) == 11
 
 
 def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():

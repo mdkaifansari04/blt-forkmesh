@@ -2439,6 +2439,7 @@ async def network_overview(env):
 #     "realtime" without adding one actionable Worker-error row per reconnect.
 STATUS_SYSTEMS = [
     ("website", "Website"),
+    ("status_page", "Status page API"),
     ("api", "API"),
     ("errors", "Worker errors"),
     ("database", "Database"),
@@ -2459,6 +2460,11 @@ STATUS_SYSTEM_CHECKS = {
         "real index document returns HTTP 200 with the ForkMesh homepage "
         "marker. Worker page-route errors are also included, so either a "
         "failed request or a server-side rendering failure turns this row red."),
+    "status_page": (
+        "Runs the same cached status-history response used by /api/status "
+        "once a minute. Passes only when that response returns HTTP 200, so "
+        "a broken status page is visible and paged even if the other service "
+        "checks remain green."),
     "api": (
         "Scans the last minute of the worker error log for unhandled "
         "exceptions or 5xx responses on /api/* routes. 502/503/504 on "
@@ -2566,6 +2572,11 @@ STATUS_MONITOR_GUIDANCE = {
         "Cloudflare Worker API logs, especially the path named in the reason",
         "Replay the failing API request, inspect its D1 or upstream call, and "
         "fix or roll back the responsible handler."),
+    "status_page": (
+        "Cloudflare Worker logs and the /api/status cache and history query",
+        "Open /api/status without a cached browser response, inspect the "
+        "first Worker exception, and fix or roll back the failing status "
+        "history or cache path."),
     "errors": (
         "the first qualifying entry in Cloudflare Worker and ForkMesh error "
         "logs, including its route and status",
@@ -3103,7 +3114,10 @@ def _status_monitor_alert_setting(settings, system_id, channel):
         return bool(settings.get("statusEmails", False))
     if channel == "pings":
         return bool(settings.get("statusPings", True))
-    return system_id == "website" if channel == "continual" else False
+    # The public status page is the operator's visibility into every other
+    # monitor. Its outage must keep paging by default even when all of those
+    # individual checks remain green.
+    return system_id in ("website", "status_page") if channel == "continual" else False
 
 
 async def _repo_alert_settings_bi(env, owner, repo):
@@ -4163,6 +4177,22 @@ async def _homepage_status_probe(env):
     return True, ""
 
 
+async def _status_page_api_probe(env):
+    """Exercise the same cached response path served by ``/api/status``.
+
+    The status document is the operator's view of every other monitor, so it
+    needs an independent health row rather than relying on the generic API
+    error bucket.  Calling the cached handler directly avoids an unreliable
+    scheduled-worker hairpin through the public hostname while still covering
+    the cache lookup and the status-history work that the route performs.
+    """
+    response = await cached_status_history(env, "full")
+    status = int(getattr(response, "status", 0) or 0)
+    if status != 200:
+        return False, "Status API returned HTTP %d" % status
+    return True, ""
+
+
 async def record_status_sample(env):
     # Called once a minute by the platform Cron Trigger (scheduled()) and by
     # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
@@ -4189,6 +4219,15 @@ async def record_status_sample(env):
     except Exception as exc:
         ok["website"] = False
         reason["website"] = "Homepage probe failed: " + str(exc)[:160]
+
+    try:
+        status_page_ok, status_page_reason = await _status_page_api_probe(env)
+        ok["status_page"] = status_page_ok
+        if not status_page_ok:
+            reason["status_page"] = status_page_reason
+    except Exception as exc:
+        ok["status_page"] = False
+        reason["status_page"] = "Status API probe failed: " + str(exc)[:160]
 
     try:
         await d1_first(env, "SELECT 1 AS ok")
