@@ -198,6 +198,32 @@ ActionRunner::ActionRunner(ActionStore *store, QObject *parent)
     });
 }
 
+ActionRunner::~ActionRunner()
+{
+    m_stepTimer->stop();
+    m_jobTimer->stop();
+
+    // QObject destroys children only from its base destructor. At that point
+    // ActionRunner's derived state is already gone, but QProcess::~QProcess()
+    // may wait for an active child and emit readyReadStandardOutput while its
+    // QObject connections still exist. A checkout running during an app
+    // rebuild/restart therefore called our output lambda through a half-
+    // destroyed runner. Retire the process while this object is fully alive,
+    // with every process-to-runner callback disconnected first.
+    QProcess *const process = m_process;
+    if (!process)
+        return;
+    QObject::disconnect(process, nullptr, this, nullptr);
+    if (process->state() != QProcess::NotRunning)
+        terminateCurrentProcess(false);
+    if (process->state() != QProcess::NotRunning) {
+        process->kill();
+        process->waitForFinished(1500);
+    }
+    m_process = nullptr;
+    delete process;
+}
+
 void ActionRunner::setSandboxLimitsForTesting(
     const ActionSandboxLimits &limits)
 {
@@ -1443,9 +1469,11 @@ QString ActionRunner::phaseName() const
     switch (m_phase) {
     case Phase::Idle: return QStringLiteral("idle");
     case Phase::Checkout: return QStringLiteral("checkout");
+    case Phase::WorkspaceClone: return QStringLiteral("workspace clone");
+    case Phase::WorkspaceCheckout: return QStringLiteral("workspace checkout");
     case Phase::Step: return QStringLiteral("step");
     }
-    return QStringLiteral("unknown");
+    return QStringLiteral("invalid phase");
 }
 
 QString ActionRunner::crashContext() const
