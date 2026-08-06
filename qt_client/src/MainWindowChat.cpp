@@ -12357,7 +12357,7 @@ void MainWindow::refreshNetworkReposPage()
     QNetworkRequest request(catalogListUrl());
     request.setRawHeader("accept", "application/json");
     QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, generation] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation, localCatalog] {
         const QByteArray body = reply->readAll();
         const QNetworkReply::NetworkError error = reply->error();
         const QString errorString = reply->errorString();
