@@ -2,6 +2,7 @@
 #define FORKMESH_MAIN_WINDOW_H
 
 #include "ChatBackend.h"
+#include "ClientErrorReports.h"
 #include "DiscussionInboxBackoff.h"
 #include "NetworkBackoff.h"
 #include "DiscussionStore.h"
@@ -3090,6 +3091,19 @@ private:
     // True while sessionId is one "Stop" would act on (running, waiting or
     // queued, and not already merged).
     bool isStoppableAgentSession(int sessionId) const;
+    // True only while sessionId is *actually* executing work: ForkMesh owns a
+    // runner/CLI process for it (or the queue is about to start one) and it has
+    // streamed output recently. The stored Running/Queued status is not proof on
+    // its own — it sticks when a terminal event never lands (adhoc #143/#157) —
+    // so anything that would interrupt the user over a live agent asks this
+    // instead of the status (adhoc #1537).
+    bool agentSessionWorkInFlight(int sessionId) const;
+    // Wall-clock of the last sign of life from a session: the last raw output it
+    // streamed, or its launch while nothing has streamed yet. 0 when unknown.
+    qint64 agentSessionLastLiveMs(int sessionId) const;
+    // How long a session may stay completely silent before a stored "Running" is
+    // treated as stale rather than busy: a working agent streams continuously.
+    static constexpr qint64 kAgentSilentStaleMs = 90'000;
     // "Stop all" read backwards (adhoc #136): the idle sessions — stopped or
     // failed, ours, not merged — that can be resumed, across all repos.
     QList<int> startableAgentSessionIds() const;
@@ -3434,6 +3448,18 @@ private:
     void positionGitPromptOverlay();
     void positionGlobalFooterOverlays();
     void setPromptOverlayCollapsed(bool collapsed);
+    // The composer is a free-floating panel (adhoc #1536): drag its handle to
+    // move it anywhere over the workspace, drag the corner grip to resize it,
+    // and pop it out into a window of its own that can be moved off the app
+    // entirely (a second monitor, beside an editor). All three are persisted.
+    void setPromptOverlayDetached(bool detached);
+    void resetPromptOverlayPlacement();
+    void loadPromptOverlayPlacement();
+    void savePromptOverlayPlacement();
+    // Mouse handling for the drag handle and the resize grip. Positions are
+    // global so they survive the reparenting the two modes do.
+    bool handlePromptPlacementEvent(QObject *object, QEvent *event);
+    void clampPromptOverlayIntoHost();
     void setLogOverlayExpanded(bool expanded);
     void loadRepoFileTree();
     void loadCoveExplorer();
@@ -4964,6 +4990,24 @@ private:
                       const QString &clickHref = QString(),
                       int durationSeconds = 0,
                       const QString &kind = QString(), int actionRunId = -1);
+    // Ping the mesh about the failures this app used to only ever show to itself
+    // (adhoc #1538). Every warning/critical modal (caught by eventFilter's
+    // QEvent::Show branch, so no call site has to remember) and every error toast
+    // is reported to the relay, which records it in the shared operational error
+    // log and pings the administrators the first time a distinct failure appears
+    // — the only way an error on a headless node, or on a machine nobody is
+    // watching, is ever seen. Signed by this node's account; QSettings
+    // kReportUserVisibleErrorsSetting = false turns it off. See
+    // ClientErrorReports.h for the redaction, dedupe and deferral bounds.
+    void reportUserVisibleError(const QString &kind, const QString &title,
+                                const QString &message,
+                                const QString &surface = QString());
+    void sendUserVisibleErrorReport(
+        const forkmesh::ClientErrorReports::Report &report);
+    void flushDeferredErrorReports();
+    void scheduleDeferredErrorReportFlush();
+    forkmesh::ClientErrorReports m_errorReports;
+    QTimer *m_errorReportFlushTimer = nullptr;
     // The presentation half of flashMessage: puts the bubble on screen without
     // recording anything. Split out so an error that reaches the log by some
     // other route (logSystem's alert hook) can raise the same toast without
@@ -5619,6 +5663,26 @@ private:
     forkmesh::ui::LogActivityLights *m_logActivityHeader = nullptr;
     bool m_logOverlayExpanded = false;
     bool m_promptOverlayCollapsed = false;
+    // Free placement of the composer (adhoc #1536). "Floating" means it was
+    // dragged off the footer's lower-right anchor and now sits at
+    // m_promptOverlayPos inside m_globalOverlayHost; "detached" means it was
+    // popped out of the app into m_promptDetachWindow, which the window manager
+    // then moves and resizes like any other window.
+    QWidget *m_promptDragHandle = nullptr;
+    QWidget *m_promptResizeGrip = nullptr;
+    QPushButton *m_promptDetachButton = nullptr;
+    QWidget *m_promptDetachWindow = nullptr;
+    bool m_promptOverlayFloating = false;
+    bool m_promptOverlayDetached = false;
+    QPoint m_promptOverlayPos;  // top-left within m_globalOverlayHost
+    QSize m_promptOverlaySize;  // user-chosen size; invalid means "auto"
+    QRect m_promptDetachGeometry;
+    // Live drag/resize state. The grab point is global so it stays meaningful
+    // while the panel is reparented mid-gesture.
+    bool m_promptPlacementDragging = false;
+    bool m_promptPlacementResizing = false;
+    QPoint m_promptPlacementGrab;
+    QRect m_promptPlacementStartRect;
     bool m_footerWebsiteStatusInFlight = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the

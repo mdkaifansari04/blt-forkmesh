@@ -7,6 +7,7 @@
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
 #include "../src/ChatVisitorPresence.h"
+#include "../src/ClientErrorReports.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
 #include "../src/DirectorySizeScan.h"
@@ -8280,6 +8281,132 @@ int main(int argc, char *argv[])
                          "relay-flap")
                       .severity == Warning,
               "once the interval passes the extra link drops are evaluated");
+    }
+
+    {
+        // --- Error reports the relay turns into a ping (adhoc #1538) --------
+        // A warning dialog or an error toast used to be the *whole* record of a
+        // failure on this machine. Each one now becomes one signed POST, so what
+        // leaves the machine and how often it leaves are both pinned here.
+        using forkmesh::ClientErrorReports;
+        const qint64 t0 = 1'700'000'000'000LL;
+
+        const QString redacted = ClientErrorReports::redact(
+            QStringLiteral(
+                "Could not push to https://forkmesh.com/alice/private-repo "
+                "as alice@example.com from /home/alice/work/private-repo "
+                "(token=abcdef-super-secret)"),
+            ClientErrorReports::kMaxMessageChars);
+        check(!redacted.contains(QStringLiteral("forkmesh.com"))
+                  && redacted.contains(QStringLiteral("<url>")),
+              "a report carries no URL off the machine");
+        check(!redacted.contains(QStringLiteral("alice@example.com"))
+                  && redacted.contains(QStringLiteral("<email>")),
+              "a report carries no address off the machine");
+        check(!redacted.contains(QStringLiteral("/home/alice"))
+                  && redacted.contains(QStringLiteral("<path>")),
+              "a report carries no local path off the machine");
+        check(!redacted.contains(QStringLiteral("super-secret")),
+              "a report carries no credential off the machine");
+        check(redacted.startsWith(QStringLiteral("Could not push to")),
+              "the shape of the failure survives the redaction");
+
+        // The failure from the dialog this was built for: nothing in it is
+        // private, so all of it survives and stays one stable group.
+        const QString relayText = QStringLiteral(
+            "Could not load the pending inbox (HTTP 0): ForkMesh relay is "
+            "rate-limited (HTTP 429); backing off");
+        check(ClientErrorReports::redact(
+                  relayText, ClientErrorReports::kMaxMessageChars)
+                  == relayText,
+              "a relay rate-limit failure is reported verbatim");
+
+        ClientErrorReports reports;
+        const ClientErrorReports::Report first = ClientErrorReports::build(
+            QStringLiteral("dialog"), QString(), QStringLiteral("Sync inbox"),
+            relayText, t0);
+        check(first.surface == QStringLiteral("app"),
+              "a report with no named area defaults to the desktop surface");
+        check(reports.accept(first), "the first sighting is reported");
+        check(!reports.accept(ClientErrorReports::build(
+                  QStringLiteral("dialog"), QString(),
+                  QStringLiteral("Sync inbox"), relayText,
+                  t0 + 30 * 60 * 1000)),
+              "the same failure half an hour later is not reported again");
+        check(reports.accept(ClientErrorReports::build(
+                  QStringLiteral("dialog"), QString(),
+                  QStringLiteral("Sync inbox"), relayText,
+                  t0 + ClientErrorReports::kWindowMs + 1)),
+              "once the dedupe window passes the failure reports again");
+        check(!reports.accept(ClientErrorReports::build(
+                  QStringLiteral("dialog"), QString(), QStringLiteral("Empty"),
+                  QStringLiteral("   "), t0)),
+              "a report with no message left is never sent");
+
+        // A storm of distinct failures is capped, so a broken node cannot spend
+        // its whole hour reporting.
+        ClientErrorReports storm;
+        int sent = 0;
+        for (int i = 0; i < ClientErrorReports::kMaxPerWindow * 3; ++i) {
+            if (storm.accept(ClientErrorReports::build(
+                    QStringLiteral("toast"), QStringLiteral("headless"),
+                    QString(),
+                    QStringLiteral("distinct failure %1").arg(i), t0)))
+                ++sent;
+        }
+        check(sent == ClientErrorReports::kMaxPerWindow,
+              "no node sends more than the hourly cap of distinct reports");
+        check(storm.accept(ClientErrorReports::build(
+                  QStringLiteral("toast"), QStringLiteral("headless"),
+                  QString(), QStringLiteral("a later failure"),
+                  t0 + ClientErrorReports::kWindowMs + 1)),
+              "the cap is a rolling window, not a lifetime budget");
+
+        // The relay refusing the report is the failure most worth reporting:
+        // park it, hand it back once, and give up rather than retry forever.
+        ClientErrorReports parked;
+        check(parked.defer(first) && parked.deferredCount() == 1,
+              "a report the relay cannot take yet is parked");
+        QList<ClientErrorReports::Report> ready = parked.takeDeferred(t0 + 1000);
+        check(ready.size() == 1 && parked.deferredCount() == 0,
+              "the parked report is handed back once the relay is reachable");
+        ClientErrorReports::Report retried = ready.first();
+        check(retried.attempts == 1, "a parked report counts its attempts");
+        for (int i = 0; i < ClientErrorReports::kMaxAttempts + 2; ++i) {
+            if (!parked.defer(retried))
+                break;
+            retried = parked.takeDeferred(t0 + 1000).value(0);
+        }
+        check(!parked.defer(retried) && parked.deferredCount() == 0,
+              "a report is dropped rather than retried forever");
+        check(parked.defer(first)
+                  && parked.takeDeferred(
+                                t0 + ClientErrorReports::kMaxDeferralMs + 1)
+                         .isEmpty(),
+              "a report nobody could deliver all day is dropped, not sent stale");
+
+        ClientErrorReports overflow;
+        for (int i = 0; i < ClientErrorReports::kMaxDeferred + 4; ++i)
+            overflow.defer(ClientErrorReports::build(
+                QStringLiteral("toast"), QStringLiteral("app"), QString(),
+                QStringLiteral("parked failure %1").arg(i), t0));
+        check(overflow.deferredCount() == ClientErrorReports::kMaxDeferred,
+              "the parked queue is bounded");
+        check(overflow.takeDeferred(t0).last().message.contains(
+                  QStringLiteral("%1").arg(
+                      ClientErrorReports::kMaxDeferred + 3)),
+              "an overfull queue keeps the newest reports");
+
+        const QJsonObject body = ClientErrorReports::payload(first);
+        check(body.value(QStringLiteral("kind")).toString()
+                      == QStringLiteral("dialog")
+                  && body.value(QStringLiteral("surface")).toString()
+                         == QStringLiteral("app")
+                  && body.value(QStringLiteral("title")).toString()
+                         == QStringLiteral("Sync inbox")
+                  && body.value(QStringLiteral("message")).toString()
+                         == relayText,
+              "the posted body carries exactly the four fields the relay reads");
     }
 #if defined(Q_OS_LINUX)
     {

@@ -225,6 +225,82 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("hovering the minimized avatar restores the prompt"));
     }
 
+    // The composer is a movable panel (adhoc #1536): dragging its top strip
+    // takes it off the footer anchor and onto the workspace, the corner grip
+    // resizes it, the button pops it out into a window of its own, and
+    // double-clicking the strip snaps everything back.
+    auto *promptHandle =
+        window.findChild<QWidget *>(QStringLiteral("promptDragHandle"));
+    auto *promptGrip =
+        window.findChild<QWidget *>(QStringLiteral("promptResizeGrip"));
+    auto *promptDetach =
+        window.findChild<QPushButton *>(QStringLiteral("promptDetachButton"));
+    if (promptHandle && promptGrip && promptDetach && prompt && dock) {
+        const auto sendMouse = [](QWidget *target, QEvent::Type type,
+                                  const QPoint &global) {
+            QMouseEvent event(type, target->mapFromGlobal(global),
+                              QPointF(global), Qt::LeftButton,
+                              type == QEvent::MouseButtonRelease ? Qt::NoButton
+                                                                 : Qt::LeftButton,
+                              Qt::NoModifier);
+            QApplication::sendEvent(target, &event);
+        };
+        // Global, not parent-relative: the drag reparents the panel out of the
+        // dock, so the two geometries are not in the same coordinate space.
+        const QPoint anchoredTopLeft = prompt->mapToGlobal(QPoint());
+        const QPoint grabAt = promptHandle->mapToGlobal(
+            QPoint(promptHandle->width() / 2, promptHandle->height() / 2));
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-120, -160));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease,
+                  grabAt + QPoint(-120, -160));
+        QApplication::processEvents();
+        check(prompt->parentWidget() != dock &&
+                  prompt->mapToGlobal(QPoint()).y() < anchoredTopLeft.y(),
+              QStringLiteral("dragging the prompt's handle lifts it off the "
+                             "footer anchor and onto the workspace"));
+
+        const QSize dragged = prompt->size();
+        const QPoint gripAt = promptGrip->mapToGlobal(
+            QPoint(promptGrip->width() / 2, promptGrip->height() / 2));
+        sendMouse(promptGrip, QEvent::MouseButtonPress, gripAt);
+        sendMouse(promptGrip, QEvent::MouseMove, gripAt + QPoint(-60, -40));
+        sendMouse(promptGrip, QEvent::MouseButtonRelease, gripAt + QPoint(-60, -40));
+        QApplication::processEvents();
+        check(prompt->width() > dragged.width() &&
+                  prompt->height() > dragged.height(),
+              QStringLiteral("the corner grip resizes the floating prompt"));
+
+        promptDetach->click();
+        QApplication::processEvents();
+        auto *detachWindow =
+            window.findChild<QWidget *>(QStringLiteral("promptDetachWindow"));
+        check(detachWindow && detachWindow->isWindow() &&
+                  prompt->window() == detachWindow &&
+                  promptWrapper && promptWrapper->isVisible(),
+              QStringLiteral("the detach button moves the prompt into a window "
+                             "of its own, outside the app's own window"));
+
+        promptDetach->click();
+        QApplication::processEvents();
+        check(prompt->window() == &window &&
+                  (!detachWindow || !detachWindow->isVisible()),
+              QStringLiteral("pressing detach again brings the prompt back "
+                             "inside the app"));
+
+        QMouseEvent snapBack(QEvent::MouseButtonDblClick,
+                             QPointF(promptHandle->width() / 2.0,
+                                     promptHandle->height() / 2.0),
+                             QPointF(promptHandle->mapToGlobal(QPoint(0, 0))),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(promptHandle, &snapBack);
+        QApplication::processEvents();
+        check(prompt->parentWidget() == dock &&
+                  prompt->geometry().bottom() == dock->rect().bottom(),
+              QStringLiteral("double-clicking the handle snaps the prompt back "
+                             "to the footer anchor"));
+    }
+
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
     check(log && lights && header && log->isVisible() && lights->isVisible() &&
@@ -6244,6 +6320,20 @@ int main(int argc, char *argv[])
         other.associationOnly = false;
         other.prNumber = 0;
         window.testAddAgentSession(other);
+        // adhoc #1537: a session whose stored status never came off "Running" —
+        // a terminal `result` event that never landed, a run killed with the app,
+        // a completion poll still waiting on a background process (adhoc
+        // #143/#157) — must not make the merge insist the user stop an agent that
+        // finished long ago ("Agent #N is still working" over completed work).
+        // Nothing owns a runner, stream or queue slot for this id, so no work can
+        // be in flight; if the gate believed the status anyway its modal would
+        // block this test instead of letting the merge land below.
+        AgentSession staleRunning = ran;
+        staleRunning.id = 13043;
+        staleRunning.status = AgentStatus::Running;
+        staleRunning.startedAtMs =
+            QDateTime::currentMSecsSinceEpoch() - 3600 * 1000;
+        window.testAddAgentSession(staleRunning);
 
         // A prior crashed ref publication must not poison every later branch
         // merge. Model the orphaned lock from the reported failure; a lock this
@@ -6259,7 +6349,9 @@ int main(int argc, char *argv[])
 
         check(window.testMergeBranchAndCleanUp(cleanBranch),
               QStringLiteral("\"Merge & clean up\" lands the agent branch in the "
-                             "default branch"));
+                             "default branch, and a session left stuck on "
+                             "\"Running\" with nothing executing it doesn't hold "
+                             "the merge back (adhoc #1537)"));
         check(!QFileInfo::exists(staleHeadLock),
               QStringLiteral("merge recovers an orphaned HEAD.lock instead of "
                              "misreporting a content conflict"));
@@ -6272,6 +6364,9 @@ int main(int argc, char *argv[])
         check(!window.testHasAgentSession(13041),
               QStringLiteral("\"Merge & clean up\" deletes the branch's "
                              "provenance-only Agent record too"));
+        check(!window.testHasAgentSession(13043),
+              QStringLiteral("\"Merge & clean up\" also clears the session that was "
+                             "stuck on \"Running\" for the merged branch"));
         check(window.testHasAgentSession(13042),
               QStringLiteral("\"Merge & clean up\" keeps agent entries for other "
                              "branches"));

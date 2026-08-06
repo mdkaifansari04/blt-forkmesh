@@ -10864,7 +10864,10 @@
           timer: setTimeout(() => {
             refresh.timer = 0;
             void loadRepoPendingCounts(repo);
-          }, Math.min(30_000, 1500 * (2 ** attempt))),
+            // Ten minutes, matching the endpoint's edge cache: a faster
+            // re-poll only re-reads the same cached counts while adding
+            // load (this loop was a top contributor to /pending traffic).
+          }, Math.min(600_000, 15_000 * (2 ** attempt))),
         };
         state.pendingInboxRefreshes[key] = refresh;
       }

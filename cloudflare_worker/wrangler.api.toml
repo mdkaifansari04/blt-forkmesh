@@ -27,12 +27,12 @@
 # WORKER_ROLE) — tests/test_split_workers.py enforces parity so the two
 # deployments of the same code never diverge in configuration.
 name = "forkmesh-api"
-main = "src/entry.py"
+main = "src_build/entry.py"
 compatibility_flags = [ "python_workers" ]
 compatibility_date = "2026-07-23"
 
 [build]
-command = "python3 tools/build_split_assets.py api"
+command = "python3 tools/build_worker_python.py && python3 tools/build_split_assets.py api"
 
 [assets]
 directory = "./public_api"
@@ -126,13 +126,14 @@ migrations_dir = "migrations"
 pattern = "api.forkmesh.com"
 custom_domain = true
 
-[[routes]]
-pattern = "forkmesh.com/api/*"
-zone_name = "forkmesh.com"
-
-[[routes]]
-pattern = "www.forkmesh.com/api/*"
-zone_name = "forkmesh.com"
+# The forkmesh.com/api/* zone routes are deliberately NOT claimed. This
+# Worker melts its fresh isolates under cold-start churn (NoGilError at
+# initPyInstance), and on 2026-08-06 that broke the SSH gateway's
+# /api/ssh/authorize lookups — the relay had served them reliably for
+# months. api.forkmesh.com stays the diagnostics + opt-in API host; the
+# site's own same-origin API traffic keeps resolving on the relay through
+# its custom-domain catch-all. Re-claim these routes only once entry.py
+# sits comfortably under the startup-memory ceiling.
 
 [observability]
 enabled = true
