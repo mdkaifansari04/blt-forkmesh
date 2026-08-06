@@ -1958,8 +1958,11 @@ int main(int argc, char *argv[])
     window.testShowLogSection();
     QApplication::processEvents();
     check(window.findChild<QPushButton *>(
-              QStringLiteral("cloudflareWorkerLogsButton")) != nullptr,
-          QStringLiteral("network log exposes the Cloudflare live-log viewer"));
+              QStringLiteral("cloudflareWorkerLogsButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("logPopoutButton")) != nullptr,
+          QStringLiteral("the debug strip keeps the Cloudflare live-log viewer "
+                         "and the Log page pops the whole log out"));
     check(window.findChild<QTableWidget *>(
               QStringLiteral("controlPermissionsTable")) != nullptr &&
               window.findChild<QPushButton *>(

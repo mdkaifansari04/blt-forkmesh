@@ -7647,6 +7647,28 @@ public:
     }
 
     int lightCount() const { return categoryCount(); }
+
+    // The category taxonomy this strip paints, published so the Log page's
+    // quick-filter chips can wear the same glyph, in the same order, for the
+    // same badge (adhoc #1559) instead of keeping a second list in step by hand.
+    static QStringList badges()
+    {
+        QStringList names;
+        names.reserve(categoryCount());
+        for (int i = 0; i < categoryCount(); ++i)
+            names << QString::fromLatin1(categories()[i].badge);
+        return names;
+    }
+
+    static QString iconForBadge(const QString &badge)
+    {
+        for (int i = 0; i < categoryCount(); ++i) {
+            if (badge == QLatin1String(categories()[i].badge))
+                return QString::fromLatin1(categories()[i].icon);
+        }
+        return QStringLiteral("info");
+    }
+
     quint64 countFor(const QString &badge) const
     {
         const int lane = categoryIndex(badge);
@@ -7671,6 +7693,7 @@ public:
     bool isDebug() const { return m_presentation == Debug; }
 
     std::function<void(const QString &category)> onCategoryClicked;
+    std::function<void()> onWebsiteClicked;
     std::function<void()> onStallClicked;
     std::function<void()> onStallContextMenu;
     std::function<void()> onClicked;
@@ -7803,6 +7826,9 @@ protected:
                 }
                 if (!status.reason.isEmpty())
                     tip += QLatin1Char('\n') + status.reason;
+                if (onWebsiteClicked)
+                    tip += QStringLiteral("\nClick for the Cloudflare Worker's "
+                                          "live logs");
                 QToolTip::showText(help->globalPos(), tip, this);
                 return true;
             }
@@ -7814,9 +7840,18 @@ protected:
     {
         if (event->button() == Qt::LeftButton && rect().contains(event->pos())) {
             const int lane = categoryAt(event->pos());
-            if (lane == stallCategoryIndex() && onStallClicked)
+            if (lane == stallCategoryIndex() && onStallClicked) {
                 onStallClicked();
-            else if (m_presentation != Header) {
+            } else if (lane < 0) {
+                // Outside the category glyphs. The website dots are the relay's
+                // own health, so they open its live logs (adhoc #1559); nothing
+                // else in the strip claims that area. Reading categories()[-1]
+                // is what this branch used to do.
+                if (websiteStatusAt(event->pos()) >= 0 && onWebsiteClicked)
+                    onWebsiteClicked();
+                else if (onClicked)
+                    onClicked();
+            } else if (m_presentation != Header) {
                 if (onCategoryClicked)
                     onCategoryClicked(categories()[lane].badge);
                 else if (onClicked)
@@ -10773,6 +10808,29 @@ inline QString backgroundTaskWordFromLogMessage(const QString &storedLine)
     return line.left(split < 0 ? line.size() : split).toLower();
 }
 
+// A blank the exact size of an icon. Every log entry reserves the same icon
+// slots whether or not it fills them (adhoc #1559), so timestamps, badges and
+// message text all start in the same column instead of stepping left and right
+// with whichever glyphs a line happened to earn.
+inline QString logIconSpacerTag(QTextEdit *view, int size)
+{
+    if (!view)
+        return QString();
+    static QHash<int, QPixmap> blanks;
+    if (!blanks.contains(size)) {
+        QPixmap blank(size, size);
+        blank.fill(Qt::transparent);
+        blanks.insert(size, blank);
+    }
+    const QString resource = QStringLiteral("logspacer://%1").arg(size);
+    view->document()->addResource(QTextDocument::ImageResource, QUrl(resource),
+                                  blanks.value(size));
+    return QStringLiteral("<img src='%1' width='%2' height='%2' "
+                          "style='vertical-align:middle'>&nbsp;")
+        .arg(resource)
+        .arg(size);
+}
+
 inline QString logBgtaskIconTag(QTextEdit *view, const QString &storedLine)
 {
     if (!view)
@@ -10782,7 +10840,7 @@ inline QString logBgtaskIconTag(QTextEdit *view, const QString &storedLine)
         message = storedLine.mid(21);
     const QString word = backgroundTaskWordFromLogMessage(message);
     if (word.isEmpty())
-        return QString();
+        return logIconSpacerTag(view, 11);
     const QString icon = octiconForBackgroundTaskWord(word);
     const QString resource = QStringLiteral("logbgtask://") + word + QLatin1String("-")
                              + icon;
