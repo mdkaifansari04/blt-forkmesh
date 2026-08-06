@@ -917,6 +917,9 @@ public:
         return 0;
     }
     QString testAgentPrButtonText(int sessionId);
+    // The detail popup's field list as rendered for one session — the surface the
+    // Session row and the "Pop out" hand-off button read from (adhoc #1584).
+    QString testAgentMetaHtml(int sessionId);
     // Take the nav strip's route to the Agents tab, so a test can read that
     // lazily-built list back the way a user reaches it (adhoc #119).
     void testOpenAgentsOverview() { openAgentsOverview(); }
@@ -3068,6 +3071,12 @@ private:
     void refreshAgentAccountUsageMenu(const QString &provider);
     void launchAgentSystemTerminal(const QString &provider,
                                    const QString &mode = QStringLiteral("agent"));
+    // Open the host's terminal emulator on one command, in one directory, with
+    // `extraEnv` layered over an API-key-stripped copy of ForkMesh's own
+    // environment. Flashes its own failure notice; false means nothing started.
+    bool launchSystemTerminal(const QString &program, const QStringList &commandArgs,
+                              const QString &cwd,
+                              const QMap<QString, QString> &extraEnv = {});
     QStringList agentAccountUsageLines(const QString &provider,
                                        const QString &accountId) const;
     // Flash the green (refreshed) / red (refresh failed) box on one of the
@@ -7938,6 +7947,9 @@ private:
     // status control instead of sitting open above the transcript (adhoc #61).
     QLabel *m_agentMeta = nullptr;
     QFrame *m_agentMetaPopup = nullptr;
+    // "Pop out": stop the session here and reopen its CLI conversation in the
+    // user's own terminal, from the popup that shows the session id (adhoc #1584).
+    QPushButton *m_agentPopOutButton = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create PR" — pull requests are user-driven (adhoc #2 follow-up): a run
@@ -8160,6 +8172,26 @@ private:
     // so a stopped agent is picked up with its full context (adhoc #182).
     QString lastClaudeSessionId(int sessionId) const;
     QString lastCodexThreadId(int sessionId) const;
+    // Whichever of the two above belongs to the CLI this session runs under, so
+    // the detail popup can show the conversation id and hand it to a terminal
+    // (adhoc #1584). Empty for API-only providers and for a session whose CLI
+    // has not announced a conversation this account can reach.
+    QString agentCliConversationId(int sessionId);
+    // What it would take to continue one session in the user's own terminal: the
+    // CLI to run, with which arguments, in which directory, under which provider
+    // account. `blocker` says why not when `ok` is false, in words fit to show.
+    struct AgentTerminalHandoff {
+        bool ok = false;
+        QString program;
+        QStringList args;
+        QString cwd;
+        QMap<QString, QString> env;
+        QString conversationId;
+        QString blocker;
+    };
+    AgentTerminalHandoff agentTerminalHandoff(int sessionId);
+    // Stop the session here, then reopen its conversation in a system terminal.
+    void popOutAgentSessionToTerminal(int sessionId);
     void renderTranscriptForSession(int sessionId);
     // Slice the next batch of earlier events off the selected session's
     // already-in-memory buffer (m_streamEvents; loadEvents() reads the whole

@@ -1042,17 +1042,36 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
     }
 
     const QString cwd = repoGitDir().isEmpty() ? QDir::homePath() : repoGitDir();
+    QMap<QString, QString> accountEnv;
+    const AgentAccountProfile account = activeAgentAccount(provider);
+    if (!account.builtIn)
+        accountEnv.insert(codex ? QStringLiteral("CODEX_HOME")
+                                : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                          account.configDir);
+    launchSystemTerminal(program, commandArgs, cwd, accountEnv);
+}
+
+// Open the host's own terminal emulator on `program args` in `cwd`, with the
+// caller's environment overrides (a provider account's CLAUDE_CONFIG_DIR /
+// CODEX_HOME) applied on top of a copy of ForkMesh's environment that has every
+// provider API key stripped: a hand-off terminal must authenticate as the
+// account the user picked, not as whatever key happened to be exported into the
+// app. Split out of launchAgentSystemTerminal so the agent detail's "Pop out"
+// hand-off (adhoc #1584) reaches the same emulator lookup rather than repeating
+// the per-platform table. Reports its own failures and returns false.
+bool MainWindow::launchSystemTerminal(const QString &program,
+                                      const QStringList &commandArgs,
+                                      const QString &cwd,
+                                      const QMap<QString, QString> &extraEnv)
+{
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     environment.remove(QStringLiteral("ANTHROPIC_API_KEY"));
     environment.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
     environment.remove(QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN"));
     environment.remove(QStringLiteral("OPENAI_API_KEY"));
     environment.remove(QStringLiteral("CODEX_API_KEY"));
-    const AgentAccountProfile account = activeAgentAccount(provider);
-    if (!account.builtIn)
-        environment.insert(codex ? QStringLiteral("CODEX_HOME")
-                                 : QStringLiteral("CLAUDE_CONFIG_DIR"),
-                           account.configDir);
+    for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+        environment.insert(it.key(), it.value());
 
     QString terminalProgram;
     QStringList terminalArgs;
@@ -1071,11 +1090,12 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
         return QLatin1Char('\'') + value + QLatin1Char('\'');
     };
     QString command = QStringLiteral("cd %1 && ").arg(shellQuote(cwd));
-    if (!account.builtIn) {
-        command += QStringLiteral("env %1=%2 ")
-                       .arg(codex ? QStringLiteral("CODEX_HOME")
-                                  : QStringLiteral("CLAUDE_CONFIG_DIR"),
-                            shellQuote(account.configDir));
+    // osascript hands the command to a fresh login shell, so the environment
+    // built above cannot reach it — the overrides ride along as an `env` prefix.
+    if (!extraEnv.isEmpty()) {
+        command += QStringLiteral("env ");
+        for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+            command += QStringLiteral("%1=%2 ").arg(it.key(), shellQuote(it.value()));
     }
     command += shellQuote(program);
     for (const QString &argument : commandArgs)
@@ -1104,7 +1124,7 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
 #endif
     if (terminalProgram.isEmpty()) {
         flashMessage(QStringLiteral("No supported system terminal was found."), true);
-        return;
+        return false;
     }
     QProcess launcher;
     launcher.setProgram(terminalProgram);
@@ -1113,8 +1133,9 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
     launcher.setProcessEnvironment(environment);
     if (!launcher.startDetached()) {
         flashMessage(QStringLiteral("Could not launch the system terminal."), true);
-        return;
+        return false;
     }
+    return true;
 }
 
 // -------------------------------------------------------------- server rail
