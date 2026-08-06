@@ -494,6 +494,12 @@ public:
     {
         return applyFooterWebsiteStatusPayload(payload);
     }
+    // Hands one desktop-side edge probe the answer it would have received and
+    // returns the graded state, so Cloudflare-error grading is exercised
+    // without a live network.
+    QString testApplyDesktopWebsiteProbe(const QString &id, int httpStatus,
+                                         const QByteArray &body,
+                                         const QString &transportError = QString());
     // Streams one line through the live-log fan-out (footer strip, category
     // lights and the debug bar's five-line tail) without a real event.
     void testSetFooterUpdateLine(const QString &line)
@@ -1448,6 +1454,19 @@ private:
     // projection once a minute and retain the newest completed minute per row.
     void refreshFooterWebsiteStatus();
     bool applyFooterWebsiteStatusPayload(const QJsonObject &payload);
+    // Two dots the relay cannot honestly produce for itself (adhoc #1564): its
+    // own /status samplers run inside the Worker and deliberately avoid a
+    // hairpin through the public hostname, so a Cloudflare edge failure (520-527,
+    // a 1020 block, a branded 5xx interstitial) never reaches /api/status. These
+    // rows load the site and the /status document from this desktop instead, so
+    // an edge outage is visible here even while every relay-graded row is green.
+    void refreshDesktopWebsiteProbes();
+    void probeDesktopWebsite(const QString &id);
+    void applyDesktopWebsiteProbe(const QString &id, int httpStatus,
+                                  const QByteArray &body,
+                                  const QString &transportError);
+    // Relay-graded rows first, desktop-measured ones after, onto both dot rows.
+    void publishFooterWebsiteStatuses();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
@@ -5775,6 +5794,19 @@ private:
     QPoint m_promptPlacementGrab;
     QRect m_promptPlacementStartRect;
     bool m_footerWebsiteStatusInFlight = false;
+    // The footer dot row is two sources merged: the relay's own compact
+    // /status projection, and the edge probes this desktop runs itself.
+    struct FooterStatusRow {
+        QString id;
+        QString label;
+        QString status;
+        QString reason;
+        qint64 minuteTs = 0;
+        bool local = false; // measured here rather than reported by the relay
+    };
+    QList<FooterStatusRow> m_footerRelayStatuses;
+    QList<FooterStatusRow> m_footerDesktopStatuses;
+    QSet<QString> m_desktopProbesInFlight;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
     // live log and the prompt). One chip per open *kind* of work, not per ticket:
