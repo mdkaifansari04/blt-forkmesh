@@ -4696,10 +4696,6 @@
           Owner-device encrypted
         </div>
         <p class="leading-5 text-muted-foreground">This session, its transcript, and its prompts can be opened only by the owner's ForkMesh desktop key. The browser and relay do not have that key.</p>
-        <div class="grid gap-1">
-          <p class="text-[11px] uppercase tracking-wide text-muted-foreground">Prompt</p>
-          <pre data-repo-agent-transcript class="whitespace-pre-wrap break-words rounded-md border border-border bg-secondary/20 p-2 text-[11px] leading-5 text-foreground">Open this prompt in the ForkMesh desktop app on the owner device.</pre>
-        </div>
         <a href="/desktop" class="inline-flex h-8 w-fit items-center gap-1.5 rounded-md bg-primary px-3 font-medium text-primary-foreground hover:bg-primary/90"><i data-lucide="monitor-down" class="h-3.5 w-3.5"></i>Open desktop downloads</a>
       </div>`;
   }
@@ -4938,7 +4934,7 @@
     const pre = $("[data-repo-agent-transcript]");
     if (!pre || !repo || !agentId) return;
     pre.textContent =
-      "Open this prompt in the ForkMesh desktop app on the owner device.";
+      "Open this transcript in the ForkMesh desktop app on the owner device.";
   }
 
   async function requestRepoAgentsList(repo) {
