@@ -3835,6 +3835,9 @@ constexpr int kNetworkLogSegmentSize = 300;
 // How many lines the always-on footer strip seeds with on startup, and the cap
 // on its live buffer (setFooterUpdateLine drops the oldest block past it).
 constexpr int kFooterLogSeedLines = 300;
+// The debug bar's optional live tail: how many of the newest log lines the
+// window grows by when the bar's Log tool is switched on.
+constexpr int kDebugLogTailLines = 5;
 
 const QString kCodexProvider = QStringLiteral("codex");
 
@@ -9749,8 +9752,8 @@ inline int railItemWidth()
         int widest = kRailItemWidth;
         for (const char *caption :
              {"Agents", "Code", "Git", "Repos", "Chat", "Control", "Network",
-              "Settings", "Log", "Capture", "Resize", "Tasks", "Pings",
-              "Account"})
+              "Settings", "Log", "Capture", "Resize", "Restart", "Tasks",
+              "Pings", "Account"})
             widest = qMax(widest, metrics.horizontalAdvance(
                                       QString::fromLatin1(caption)) + 4);
         return widest;
@@ -9955,8 +9958,15 @@ protected:
         const QRect iconRect((width() - iconPx) / 2,
                              showLabel ? 6 : (height() - iconPx) / 2,
                              iconPx, iconPx);
-        p.drawPixmap(iconRect.topLeft(),
-                     tintedOcticonPixmap(m_iconName, fg, iconPx));
+        // A spin started by startButtonSpin() (the debug bar's rebuild+restart
+        // item) rides on the button's own QIcon. Draw that in place of the
+        // octicon while it runs, otherwise a self-painted item would show no
+        // rotation or restart-progress ring at all.
+        if (property("fmSpinning").toBool() && !icon().isNull())
+            icon().paint(&p, iconRect, Qt::AlignCenter, QIcon::Normal, QIcon::Off);
+        else
+            p.drawPixmap(iconRect.topLeft(),
+                         tintedOcticonPixmap(m_iconName, fg, iconPx));
 
         // An amber upload arrow on the opposite corner from the ordinary count
         // badge makes "commits waiting to sync" visible without hiding dirty
