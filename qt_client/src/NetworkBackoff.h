@@ -31,6 +31,13 @@ public:
         return m_channels.value(channel).nextAllowedMs <= nowMs;
     }
 
+    // How long this channel is still held off, in milliseconds (0 once it is
+    // ready). Lets a caller say "try again in ~2m" instead of only "not now".
+    qint64 msUntilReady(const QString &channel, qint64 nowMs) const
+    {
+        return qMax<qint64>(0, m_channels.value(channel).nextAllowedMs - nowMs);
+    }
+
     // A request succeeded: clear the failure streak so the next poll fires on
     // the normal schedule.
     void noteSuccess(const QString &channel)

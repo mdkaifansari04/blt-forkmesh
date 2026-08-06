@@ -4838,6 +4838,11 @@ private:
     // reviewable list with per-submission and sync-all actions. Counts stay on
     // the three toolbar buttons via the public, content-free /pending endpoint.
     void showPendingInbox(const RepositoryRecord &repo, const QString &kind);
+    // One line for "the relay refused this because it is rate-limited", naming
+    // how long its host-wide cooldown still has to run when that is known. Used
+    // where a request the reader asked for was answered by the backoff instead
+    // of the network, so an alarming modal would only mislead.
+    QString relayCooldownMessage(const QString &host) const;
     void showPendingInboxDialog(const RepositoryRecord &repo,
                                 const QString &kind,
                                 const QJsonArray &pending);
