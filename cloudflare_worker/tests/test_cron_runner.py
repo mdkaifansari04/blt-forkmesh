@@ -128,14 +128,31 @@ def test_trigger_samples_status_directly_then_kicks_the_alarm_runner():
         node for node in tree.body
         if isinstance(node, ast.AsyncFunctionDef)
         and node.name == "_runner_status_sample_is_stale"))
-    assert "claim LIKE 'runner-%'" in stale_gate
+    # The gate must read the runner's HEARTBEAT sentinel, not won claims:
+    # the trigger fires at second :00 and wins the per-minute claim race,
+    # so claim rows can never prove the runner alive. And it must fail
+    # OPEN (stale) so a claim-infrastructure error restores direct
+    # sampling rather than silencing /status.
+    assert "RUNNER_HEARTBEAT_SENTINEL_TS" in stale_gate
     assert "return True" in stale_gate
-    # The maintenance batch keeps its own sample call — tagged as the runner,
-    # which is exactly what the trigger's staleness gate looks for: with the
-    # claim row in record_status_sample exactly one caller records each
-    # minute, and the runner covers minutes where the trigger's Python
+    # The sentinel minute_ts must sit above any real minute forever:
+    # retention prunes `minute_ts < cutoff` and would delete a low sentinel
+    # on every sweep.
+    assert "RUNNER_HEARTBEAT_SENTINEL_TS = 253402300800000" in ENTRY_TEXT
+    heartbeat = ast.unparse(next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_record_runner_status_heartbeat"))
+    assert "ON CONFLICT(minute_ts) DO UPDATE" in heartbeat
+    # The maintenance batch heartbeats BEFORE sampling (proving liveness
+    # even when it loses the minute's claim) and keeps its own sample call:
+    # with the claim row in record_status_sample exactly one caller records
+    # each minute, and the runner covers minutes where the trigger's Python
     # wrapper was killed.
+    assert "_record_runner_status_heartbeat(self.env)" in jobs
     assert "record_status_sample(self.env, source='runner')" in jobs
+    assert jobs.index("_record_runner_status_heartbeat(self.env)") < \
+        jobs.index("record_status_sample(self.env, source='runner')")
     assert "https_mirror_health_cron" in jobs
     assert "_cron_watchdog_completion" in jobs
 

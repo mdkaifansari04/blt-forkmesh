@@ -3823,8 +3823,33 @@ async def _claim_status_sample_minute(env, now, source="trigger"):
     return (not winner) or winner == claim
 
 
+# The runner's liveness heartbeat rides the claim table as one sentinel row.
+# Its minute_ts sits far above any real minute (year 9999) because retention
+# prunes `minute_ts < cutoff`; a low sentinel would be deleted every sweep.
+RUNNER_HEARTBEAT_SENTINEL_TS = 253402300800000
+
+
+async def _record_runner_status_heartbeat(env):
+    """Prove the alarm runner's batch ran, independent of the sample claim.
+
+    The runner usually LOSES the per-minute sample claim to the Cron
+    Trigger (which fires at second :00 while the alarm lands mid-minute),
+    so claim rows alone cannot show the runner is alive — the trigger would
+    keep probing directly forever. This sentinel row is updated on every
+    batch regardless of who won the minute.
+    """
+    await d1_run(
+        env,
+        "INSERT INTO system_status_sample_claim "
+        "(minute_ts, claim, claimed_at) VALUES (?, 'runner-heartbeat', ?) "
+        "ON CONFLICT(minute_ts) DO UPDATE SET "
+        "claimed_at=excluded.claimed_at",
+        RUNNER_HEARTBEAT_SENTINEL_TS, int(Date.now()),
+    )
+
+
 async def _runner_status_sample_is_stale(env, now):
-    """True when the alarm runner has not landed a recent /status sample.
+    """True when the alarm runner has not heartbeated for three minutes.
 
     The Cron Trigger's direct sample exists so a wedged/over-quota Durable
     Object subsystem cannot leave multi-hour fake-downtime gaps on /status.
@@ -3833,22 +3858,22 @@ async def _runner_status_sample_is_stale(env, now):
     request wrapper that long re-triggers the Pyodide "Cannot enter into
     task" wedge that poisoned isolates on the git clone path (2026-08-06).
     So the trigger only probes directly while the runner is provably NOT
-    sampling: no runner-tagged claim for the two preceding minutes. One
-    cheap D1 read replaces the probe run in the steady state; any claim
+    running (heartbeat older than three minutes — at most a three-minute
+    sample gap once, exactly when the independent watchdog already emails).
+    One cheap D1 read replaces the probe run in the steady state; any claim
     infrastructure error fails open into the direct sample.
     """
-    minute_ts = (int(now) // STATUS_SAMPLE_WINDOW_MS) * STATUS_SAMPLE_WINDOW_MS
     try:
         row = await d1_first(
             env,
-            "SELECT COUNT(*) AS landed FROM system_status_sample_claim "
-            "WHERE minute_ts >= ? AND minute_ts < ? "
-            "AND claim LIKE 'runner-%'",
-            minute_ts - 2 * STATUS_SAMPLE_WINDOW_MS, minute_ts,
+            "SELECT claimed_at FROM system_status_sample_claim "
+            "WHERE minute_ts = ?",
+            RUNNER_HEARTBEAT_SENTINEL_TS,
         )
     except Exception:
         return True
-    return int((row or {}).get("landed") or 0) == 0
+    last = int((row or {}).get("claimed_at") or 0)
+    return int(now) - last > 3 * STATUS_SAMPLE_WINDOW_MS
 
 
 async def _email_delivery_status(env, now):
@@ -43413,9 +43438,14 @@ class Default(WorkerEntrypoint):
         # downtime, so a tick that dies partway (cold Pyodide isolate blowing
         # the invocation limits — cron runs in its own colo, where user
         # traffic never warms the isolate) has already landed its samples.
-        # The runner tag on this claim is what lets the Cron Trigger's
-        # scheduled() skip its own direct probe run while this batch is
-        # provably landing minutes (_runner_status_sample_is_stale).
+        # The heartbeat below (not the claim, which the trigger usually wins)
+        # is what lets the Cron Trigger's scheduled() skip its own direct
+        # probe run while this batch is provably alive
+        # (_runner_status_sample_is_stale).
+        try:
+            await _record_runner_status_heartbeat(self.env)
+        except BaseException:
+            pass
         try:
             await record_status_sample(self.env, source="runner")
         except BaseException as error:
