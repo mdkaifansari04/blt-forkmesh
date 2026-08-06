@@ -2,7 +2,7 @@ import ast
 import asyncio
 import importlib.util
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -103,33 +103,64 @@ def test_client_projection_keeps_nesting_and_refilters_instance_blocks():
     async def blind_index(env, value):
         return "context-bi"
 
+    # Rows carry an opaque ciphertext blob, as production does — the handler
+    # memoizes decrypted replies by that exact string, so the harness must not
+    # hand it an already-decrypted dict.
+    blobs = {"blob-1": root, "blob-2": child, "blob-3": blocked}
+
     async def d1_all(env, sql, *args):
         assert "ap_comments" in sql
         return [
-            {"data": root, "ts": 1, "lifecycle": "active"},
-            {"data": child, "ts": 2, "lifecycle": "active"},
-            {"data": blocked, "ts": 3, "lifecycle": "active"},
+            {"data": "blob-1", "ts": 1, "lifecycle": "active"},
+            {"data": "blob-2", "ts": 2, "lifecycle": "active"},
+            {"data": "blob-3", "ts": 3, "lifecycle": "active"},
         ]
 
-    async def decrypt_row(env, value):
-        return value
+    decrypts = []
+
+    async def decrypt_row(env, value, key=None):
+        decrypts.append(value)
+        return blobs.get(value)
 
     async def domain_blocked(env, host):
         return host == "blocked.example"
 
+    async def data_key(env):
+        return "aes-key"
+
+    puts = []
+
+    async def edge_cache_match(cache_key):
+        return None
+
+    async def edge_cache_put(cache_key, response):
+        puts.append((cache_key, response))
+
+    def json_response(data, status=200, cache_seconds=None,
+                      cache_control=None):
+        if cache_control is None and cache_seconds is not None:
+            cache_control = "public, max-age=%d" % cache_seconds
+        return Response(data, status, cache_control)
+
     namespace = {
         "method_name": lambda request: request.method,
-        "json_response": lambda data, status=200, cache_control=None: Response(
-            data, status, cache_control
-        ),
+        "json_response": json_response,
         "ensure_schema": ensure_schema,
         "_repo_is_private": private,
         "parse_qs": parse_qs,
         "urlparse": urlparse,
+        "quote": quote,
         "clean_string": lambda value, limit: str(value)[:limit],
         "blind_index": blind_index,
         "d1_all": d1_all,
         "decrypt_row": decrypt_row,
+        "_data_key": data_key,
+        "edge_cache_match": edge_cache_match,
+        "edge_cache_put": edge_cache_put,
+        "_FEDI_COMMENT_DECRYPT_MEMO": {},
+        "FEDI_COMMENT_DECRYPT_MEMO_MAX": 2048,
+        "FEDI_COMMENT_ROW_LIMIT": 200,
+        "FEDI_COMMENTS_CACHE_TTL": 30,
         "_ap_domain_blocked": domain_blocked,
         "ap_threads": ap_threads,
         "ap": type(
@@ -150,6 +181,18 @@ def test_client_projection_keeps_nesting_and_refilters_instance_blocks():
 
     assert response.status == 200
     assert response.cache_control == "public, max-age=30"
+    # The built response is offered to the colo cache, keyed by the thread.
+    assert len(puts) == 1
+    assert puts[0][0] == (
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/fedi-comments"
+        "?kind=discussion&ref=9"
+    )
+    # A second read of the same thread reuses the memoized plaintext instead of
+    # replaying an AES-GCM decrypt per row — the Worker-CPU (Cloudflare 1102)
+    # guard for busy threads.
+    decrypts.clear()
+    asyncio.run(handler(None, Request(), "forkmesh", "forkmesh"))
+    assert decrypts == []
     comments = response.data["comments"]
     assert [item["remoteId"] for item in comments] == [
         "https://lemmy.example/comment/1",

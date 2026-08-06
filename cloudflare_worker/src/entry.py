@@ -30508,6 +30508,23 @@ async def repo_star_handler(env, request, owner, repo):
     })
 
 
+# Ciphertext -> decrypted reply, memoized per isolate exactly like
+# _CATALOG_ROW_DECRYPT_MEMO (see its comment for the reasoning). A thread read
+# decrypts up to FEDI_COMMENT_ROW_LIMIT rows, and every one is Pyodide CPU
+# (base64 + a JS-boundary AES-GCM crossing per row) charged to a single
+# request. Every open issue/pull view polls this endpoint, so a busy thread
+# replayed that whole pass per poll and tipped the request over the Workers CPU
+# limit — a 503 "Error 1102: Worker exceeded resource limits" on GET
+# .../fedi-comments, the same family as the info/refs overloads. A reply row's
+# blob is rewritten with a fresh IV on every lifecycle update, so an unchanged
+# blob is byte-identical and its previous plaintext is still valid. Records are
+# shared read-only by the projection below and must not be mutated.
+_FEDI_COMMENT_DECRYPT_MEMO = {}
+FEDI_COMMENT_DECRYPT_MEMO_MAX = 2048
+FEDI_COMMENT_ROW_LIMIT = 200
+FEDI_COMMENTS_CACHE_TTL = 30
+
+
 async def fedi_comments_handler(env, request, owner, repo):
     # Remote fediverse replies for one thread, shown alongside (never inside)
     # the Ed25519-signed event log. Public data — same visibility as the
@@ -30523,17 +30540,41 @@ async def fedi_comments_handler(env, request, owner, repo):
         params.get("number", [""])[0] or params.get("ref", [""])[0], 80)
     if kind not in AP_FEDI_KINDS or not ref:
         return json_response({"error": "kind_and_ref_required"}, status=400)
+    # Collapse the poll burst to one origin computation per colo per TTL: the
+    # privacy gate above already ran (a 404 is never cached), and the body
+    # below is public data keyed entirely by the thread it belongs to.
+    cache_key = (
+        "https://forkmesh.internal/api/repo/%s/%s/fedi-comments?kind=%s&ref=%s"
+        % (quote(owner), quote(repo), kind, quote(ref, safe="")))
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
     context_bi = await blind_index(
         env, "ap-context:" + ap.context_key(owner, repo, kind, ref))
     rows = await d1_all(
         env,
         "SELECT data, ts, lifecycle FROM ap_comments WHERE context_bi=?"
-        " ORDER BY ts ASC LIMIT 200",
+        " ORDER BY ts ASC LIMIT %d" % FEDI_COMMENT_ROW_LIMIT,
         context_bi)
     normalized_records = {}
     legacy_comments = []
+    fresh = {}
+    # Resolve the AES key once for the whole pass instead of per row. Empty
+    # threads (the common poll) skip it, and a placeholder/missing DATA_KEY
+    # stays a per-row decrypt failure rather than becoming a 500 here.
+    data_key = None
+    if rows:
+        try:
+            data_key = await _data_key(env)
+        except Exception:
+            data_key = None
     for row in rows or []:
-        rec = await decrypt_row(env, row.get("data"))
+        blob = str(row.get("data") or "")
+        rec = _FEDI_COMMENT_DECRYPT_MEMO.get(blob)
+        if rec is None:
+            rec = await decrypt_row(env, blob, key=data_key)
+            if rec:
+                fresh[blob] = rec
         if not rec:
             continue
         source_instance = (
@@ -30574,14 +30615,27 @@ async def fedi_comments_handler(env, request, owner, repo):
                     "native event log."),
             },
         })
+    # Threads share one isolate-wide memo, so a read merges its newly decrypted
+    # rows rather than rebuilding from the rows just seen — rebuilding would
+    # evict every other thread's plaintext on each read. Only fresh decrypts
+    # count toward the cap, so a fully memoized thread never triggers a clear;
+    # clearing wholesale keeps the memo bounded without a per-entry eviction
+    # scan (the next read of a live thread simply refills it).
+    if fresh:
+        if len(_FEDI_COMMENT_DECRYPT_MEMO) + len(fresh) > \
+                FEDI_COMMENT_DECRYPT_MEMO_MAX:
+            _FEDI_COMMENT_DECRYPT_MEMO.clear()
+        _FEDI_COMMENT_DECRYPT_MEMO.update(fresh)
     comments = legacy_comments + ap_threads.thread_projection(
         normalized_records)
     comments.sort(key=lambda item: (
         int(item.get("ts", 0) or 0),
         str(item.get("published", "")),
         str(item.get("remoteId", ""))))
-    return json_response({"ok": True, "comments": comments},
-                         cache_control="public, max-age=30")
+    resp = json_response({"ok": True, "comments": comments},
+                         cache_seconds=FEDI_COMMENTS_CACHE_TTL)
+    await edge_cache_put(cache_key, resp)
+    return resp
 
 
 async def ap_publish_handler(env, request, owner, repo):
