@@ -5391,6 +5391,21 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         m_promptOverlayCollapsed) {
         setPromptOverlayCollapsed(false);
     }
+    // Dragging the composer's top strip moves it, its corner grip resizes it,
+    // and double-clicking the strip snaps it back to the footer (adhoc #1536).
+    if (handlePromptPlacementEvent(obj, event))
+        return true;
+    // Closing the popped-out prompt window docks the composer rather than
+    // destroying it — the widget inside is the app's one and only composer.
+    if (obj == m_promptDetachWindow && m_promptDetachWindow) {
+        if (event->type() == QEvent::Close) {
+            event->ignore();
+            setPromptOverlayDetached(false);
+            return true;
+        }
+        if (event->type() == QEvent::Move || event->type() == QEvent::Resize)
+            m_promptDetachGeometry = m_promptDetachWindow->geometry();
+    }
     // Ctrl + mouse wheel over any registered diff viewer zooms its text size,
     // mirroring the +/- buttons (issue #254). Consume so the view doesn't scroll.
     if (event->type() == QEvent::Wheel &&

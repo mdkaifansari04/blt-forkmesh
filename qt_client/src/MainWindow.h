@@ -3446,6 +3446,18 @@ private:
     void positionGitPromptOverlay();
     void positionGlobalFooterOverlays();
     void setPromptOverlayCollapsed(bool collapsed);
+    // The composer is a free-floating panel (adhoc #1536): drag its handle to
+    // move it anywhere over the workspace, drag the corner grip to resize it,
+    // and pop it out into a window of its own that can be moved off the app
+    // entirely (a second monitor, beside an editor). All three are persisted.
+    void setPromptOverlayDetached(bool detached);
+    void resetPromptOverlayPlacement();
+    void loadPromptOverlayPlacement();
+    void savePromptOverlayPlacement();
+    // Mouse handling for the drag handle and the resize grip. Positions are
+    // global so they survive the reparenting the two modes do.
+    bool handlePromptPlacementEvent(QObject *object, QEvent *event);
+    void clampPromptOverlayIntoHost();
     void setLogOverlayExpanded(bool expanded);
     void loadRepoFileTree();
     void loadCoveExplorer();
@@ -5637,6 +5649,26 @@ private:
     forkmesh::ui::LogActivityLights *m_logActivityHeader = nullptr;
     bool m_logOverlayExpanded = false;
     bool m_promptOverlayCollapsed = false;
+    // Free placement of the composer (adhoc #1536). "Floating" means it was
+    // dragged off the footer's lower-right anchor and now sits at
+    // m_promptOverlayPos inside m_globalOverlayHost; "detached" means it was
+    // popped out of the app into m_promptDetachWindow, which the window manager
+    // then moves and resizes like any other window.
+    QWidget *m_promptDragHandle = nullptr;
+    QWidget *m_promptResizeGrip = nullptr;
+    QPushButton *m_promptDetachButton = nullptr;
+    QWidget *m_promptDetachWindow = nullptr;
+    bool m_promptOverlayFloating = false;
+    bool m_promptOverlayDetached = false;
+    QPoint m_promptOverlayPos;  // top-left within m_globalOverlayHost
+    QSize m_promptOverlaySize;  // user-chosen size; invalid means "auto"
+    QRect m_promptDetachGeometry;
+    // Live drag/resize state. The grab point is global so it stays meaningful
+    // while the panel is reparented mid-gesture.
+    bool m_promptPlacementDragging = false;
+    bool m_promptPlacementResizing = false;
+    QPoint m_promptPlacementGrab;
+    QRect m_promptPlacementStartRect;
     bool m_footerWebsiteStatusInFlight = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
