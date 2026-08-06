@@ -17,6 +17,13 @@ import {
   normalizeWorldStatusNote,
   sanitizePresenceText,
 } from "./world-data.js";
+import {
+  createWorldBackoff,
+  isRetryableWorldFailure,
+  markWorldHTTPFailure,
+  withWorldBackoff,
+  worldCoolingDownError,
+} from "./world-backoff.js";
 import { buildLiveMirrorNodes } from "./world-mirror-nodes.js";
 import {
   MASTODON_LOOKUP_URL,
@@ -6038,6 +6045,10 @@ class ForkMeshWorld extends HTMLElement {
     this.inflightRequests = new Map();
     this.responseCache = new Map();
     this.requestFailures = new Map();
+    // Every World request — fetchJSON, postJSON, and the handful of raw
+    // keepalive/cross-origin fetches below — shares this one gate, so a
+    // struggling endpoint is backed off once rather than once per panel.
+    this.requestBackoff = createWorldBackoff({ store: this.requestFailures });
     this.buildBoardRepositoryIssues = [];
     this.buildBoardRepositoryRetryAt = 0;
     this.buildBoardRepositoryFailures = 0;
@@ -6287,14 +6298,22 @@ class ForkMeshWorld extends HTMLElement {
 
   recordActivityArrival() {
     if (this.activityArrivalRecorded || this.destroyed) return;
+    // A network failure clears the flag below, so a visitor who keeps moving
+    // would otherwise re-post arrival on every gesture while the endpoint is
+    // down. The gate turns that into one attempt per cooldown step.
+    const key = "POST:/api/world/visitors";
+    if (this.requestBackoff.waitMs(key) > 0) return;
     this.activityArrivalRecorded = true;
-    void fetch("/api/world/visitors", {
-      method: "POST",
-      credentials: "same-origin",
-      keepalive: true,
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    }).catch(() => {
+    void this.watchBackoff(
+      key,
+      fetch("/api/world/visitors", {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    ).catch(() => {
       this.activityArrivalRecorded = false;
     });
   }
@@ -9071,25 +9090,32 @@ class ForkMeshWorld extends HTMLElement {
   reportWorldClientError(message) {
     // Same private operational collector as uncaught exceptions; the Worker
     // redacts, rate-limits, and stores the row for the admin error HUD.
+    // A crashing renderer produces these in bursts, which is exactly when the
+    // collector is least able to take them, so the shared gate applies here too.
+    const key = "POST:/api/client-errors";
+    if (this.requestBackoff.waitMs(key) > 0) return;
     try {
-      fetch("/api/client-errors", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          kind: "crash",
-          surface: "world",
-          // The Worker sanitizes and stores up to 900 characters of this; a
-          // crash report that names the device, the renderer, and the
-          // resident scene needs the room.
-          message: String(message || "").slice(0, 900),
-          stack: "",
-          source: "world.js",
-          line: 0,
-          column: 0,
+      this.watchBackoff(
+        key,
+        fetch("/api/client-errors", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "crash",
+            surface: "world",
+            // The Worker sanitizes and stores up to 900 characters of this; a
+            // crash report that names the device, the renderer, and the
+            // resident scene needs the room.
+            message: String(message || "").slice(0, 900),
+            stack: "",
+            source: "world.js",
+            line: 0,
+            column: 0,
+          }),
+          keepalive: true,
         }),
-        keepalive: true,
-      }).catch(() => {});
+      ).catch(() => {});
     } catch (_) {}
   }
 
@@ -9248,7 +9274,9 @@ class ForkMeshWorld extends HTMLElement {
     const {
       maxAge = 0,
       dedupe = true,
-      backoff = false,
+      // Backoff is the default for every World read. A caller only opts out
+      // when a refused attempt would be worse than a repeated one.
+      backoff = true,
       staleIfError = false,
       ...fetchOptions
     } = options;
@@ -9271,10 +9299,10 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return cached.value;
     }
-    const failure = this.requestFailures.get(requestKey);
-    if (method === "GET" && backoff && failure?.retryAt > now) {
+    const coolingDownMs = backoff ? this.requestBackoff.waitMs(requestKey) : 0;
+    if (coolingDownMs > 0) {
       if (staleIfError && cached) return cached.value;
-      throw new Error(`${path} is cooling down after a failed request`);
+      throw worldCoolingDownError(path, coolingDownMs);
     }
     if (canDedupe && this.inflightRequests.has(requestKey)) {
       return this.inflightRequests.get(requestKey);
@@ -9305,20 +9333,14 @@ class ForkMeshWorld extends HTMLElement {
           parseError = error;
         }
         if (!response.ok) {
-          const error = jsonResponseError(
+          throw markWorldHTTPFailure(
+            jsonResponseError(
+              response,
+              value,
+              `${path} returned ${response.status}.`,
+            ),
             response,
-            value,
-            `${path} returned ${response.status}.`,
           );
-          const retryHeader = String(response.headers.get("retry-after") || "");
-          const retrySeconds = Number(retryHeader);
-          const retryDate = Date.parse(retryHeader);
-          error.retryAfterMs = Number.isFinite(retrySeconds)
-            ? Math.max(0, retrySeconds * 1000)
-            : Number.isFinite(retryDate)
-              ? Math.max(0, retryDate - Date.now())
-              : 0;
-          throw error;
         }
         if (parseError) throw parseError;
         if (method === "GET" && (maxAge > 0 || staleIfError)) {
@@ -9330,26 +9352,15 @@ class ForkMeshWorld extends HTMLElement {
           }
           this.responseCache.set(requestKey, { value, savedAt: Date.now() });
         }
-        if (method === "GET") {
-          this.requestFailures.delete(requestKey);
-        }
+        this.requestBackoff.succeed(requestKey);
         return value;
       } catch (error) {
-        if (method === "GET" && backoff) {
-          const attempts = Math.min(8, Number(failure?.attempts || 0) + 1);
-          const delay = Math.min(
-            5 * 60 * 1000,
-            Math.max(
-              5000 * (2 ** (attempts - 1)),
-              Number(error?.retryAfterMs) || 0,
-              error?.status === 429 ? 60_000 : 0,
-              error?.status === 503 ? 30_000 : 0,
-            ),
-          );
-          this.requestFailures.set(requestKey, {
-            attempts,
-            retryAt: Date.now() + delay,
-          });
+        // A repeated GET is a poll, so any answer it keeps failing on is worth
+        // waiting out. A write is one-shot: only a transport or overload
+        // failure earns a cooldown, because a rejected body stays rejected
+        // until the caller changes it.
+        if (backoff && (method === "GET" || isRetryableWorldFailure(error))) {
+          this.requestBackoff.fail(requestKey, error);
           if (staleIfError && cached) return cached.value;
         }
         throw error;
@@ -9370,44 +9381,80 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async postJSON(path, body, options = {}) {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(
-      () => controller.abort(),
-      options.timeout || 10000,
-    );
-    const headers = new Headers({
-      accept: "application/json",
-      "content-type": "application/json",
-      ...(options.headers || {}),
-    });
-    const session = readSession();
-    if (session?.sessionToken && options.auth !== false) {
-      headers.set("Authorization", `Bearer ${session.sessionToken}`);
-    }
-    try {
-      const response = await fetch(path, {
-        method: options.method || "POST",
-        headers,
-        credentials: "same-origin",
-        cache: "no-store",
-        body: JSON.stringify(body || {}),
-        signal: controller.signal,
+    const method = String(options.method || "POST").toUpperCase();
+    // Writes share the read gate but only cool down on transport and overload
+    // failures: a 400 or 403 is an answer about this body, and the visitor must
+    // stay free to correct it and submit again immediately.
+    const run = async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(
+        () => controller.abort(),
+        options.timeout || 10000,
+      );
+      const headers = new Headers({
+        accept: "application/json",
+        "content-type": "application/json",
+        ...(options.headers || {}),
       });
-      let payload = {};
-      try {
-        payload = await response.json();
-      } catch (_) {}
-      if (!response.ok || payload?.ok === false) {
-        throw jsonResponseError(
-          response,
-          payload,
-          `Request returned ${response.status}.`,
-        );
+      const session = readSession();
+      if (session?.sessionToken && options.auth !== false) {
+        headers.set("Authorization", `Bearer ${session.sessionToken}`);
       }
-      return payload;
-    } finally {
-      window.clearTimeout(timeout);
-    }
+      try {
+        const response = await fetch(path, {
+          method,
+          headers,
+          credentials: "same-origin",
+          cache: "no-store",
+          body: JSON.stringify(body || {}),
+          signal: controller.signal,
+        });
+        let payload = {};
+        try {
+          payload = await response.json();
+        } catch (_) {}
+        if (!response.ok || payload?.ok === false) {
+          throw markWorldHTTPFailure(
+            jsonResponseError(
+              response,
+              payload,
+              `Request returned ${response.status}.`,
+            ),
+            response,
+          );
+        }
+        return payload;
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
+    if (options.backoff === false) return run();
+    return withWorldBackoff(this.requestBackoff, `${method}:${path}`, run, {
+      retryableOnly: true,
+    });
+  }
+
+  // `keepalive` and fire-and-forget requests cannot be awaited by their caller,
+  // so they report their own outcome into the shared gate instead. The returned
+  // promise is the original one, leaving the caller's own handlers intact.
+  watchBackoff(key, request) {
+    request.then(
+      (response) => {
+        if (response && response.ok === false) {
+          this.requestBackoff.fail(
+            key,
+            markWorldHTTPFailure(
+              new Error(`${key} returned ${response.status}.`),
+              response,
+            ),
+          );
+        } else {
+          this.requestBackoff.succeed(key);
+        }
+      },
+      () => this.requestBackoff.fail(key, {}),
+    );
+    return request;
   }
 
   async loadContext() {
@@ -16346,22 +16393,32 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async fetchMastodonJSON(url) {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 10000);
-    try {
-      // Public read-only Mastodon API. No ForkMesh session material is ever
-      // attached to this cross-origin request.
-      const response = await fetch(url, {
-        credentials: "omit",
-        cache: "no-store",
-        headers: { accept: "application/json" },
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`mastodon returned ${response.status}`);
-      return await response.json();
-    } finally {
-      window.clearTimeout(timeout);
-    }
+    // A remote instance rate-limits harder than our own Worker does, so the
+    // kiosk's ten-minute window is a floor, not the whole rule: repeated
+    // failures push the next attempt out on the same shared gate.
+    return withWorldBackoff(this.requestBackoff, `GET:${url}`, async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 10000);
+      try {
+        // Public read-only Mastodon API. No ForkMesh session material is ever
+        // attached to this cross-origin request.
+        const response = await fetch(url, {
+          credentials: "omit",
+          cache: "no-store",
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw markWorldHTTPFailure(
+            new Error(`mastodon returned ${response.status}`),
+            response,
+          );
+        }
+        return await response.json();
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    });
   }
 
   loadMastodonBoard(force = false) {
@@ -16478,15 +16535,27 @@ class ForkMeshWorld extends HTMLElement {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 10000);
       try {
-        const response = await fetch(SOCIAL_POSTS_URL, {
-          credentials: "omit",
-          headers: { accept: "application/json" },
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          throw new Error(`social posts returned ${response.status}`);
-        }
-        this.socialFeedsSnapshot = await response.json();
+        // The ten-minute tick keeps asking regardless of the last outcome, so
+        // the shared gate is what stops a dead feed from being re-read on every
+        // scene rebuild as well.
+        this.socialFeedsSnapshot = await withWorldBackoff(
+          this.requestBackoff,
+          `GET:${SOCIAL_POSTS_URL}`,
+          async () => {
+            const response = await fetch(SOCIAL_POSTS_URL, {
+              credentials: "omit",
+              headers: { accept: "application/json" },
+              signal: controller.signal,
+            });
+            if (!response.ok) {
+              throw markWorldHTTPFailure(
+                new Error(`social posts returned ${response.status}`),
+                response,
+              );
+            }
+            return await response.json();
+          },
+        );
         this.syncSocialBanners();
       } catch (_) {
         // Keep the previous snapshot — or the static signs — on failure.
@@ -22355,6 +22424,12 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async requestRepositoryPullMerge(path, body, sessionToken) {
+    // The caller classifies the status itself rather than throwing, so the
+    // outcome is reported into the gate by hand. Only overload and transport
+    // answers cool down; a refused merge stays immediately retryable.
+    const key = `POST:${path}`;
+    const coolingDownMs = this.requestBackoff.waitMs(key);
+    if (coolingDownMs > 0) throw worldCoolingDownError(path, coolingDownMs);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10000);
     try {
@@ -22370,6 +22445,15 @@ class ForkMeshWorld extends HTMLElement {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+      const overloaded = markWorldHTTPFailure(
+        new Error(`merge returned ${response.status}`),
+        response,
+      );
+      if (isRetryableWorldFailure(overloaded)) {
+        this.requestBackoff.fail(key, overloaded);
+      } else {
+        this.requestBackoff.succeed(key);
+      }
       const announced = Number(response.headers.get("content-length") || 0);
       if (
         Number.isFinite(announced) &&
@@ -22396,6 +22480,11 @@ class ForkMeshWorld extends HTMLElement {
             ? payload
             : {},
       };
+    } catch (error) {
+      // Aborted, offline, or an oversized body: transport failures all belong
+      // in the gate so a stuck merge button cannot re-post every click.
+      if (isRetryableWorldFailure(error)) this.requestBackoff.fail(key, error);
+      throw error;
     } finally {
       window.clearTimeout(timeout);
     }
@@ -24118,14 +24207,21 @@ class ForkMeshWorld extends HTMLElement {
   async logoutFromWorld() {
     const session = readSession();
     try {
-      await fetch("/api/accounts/logout", {
-        method: "POST",
-        headers: session?.sessionToken
-          ? { Authorization: `Bearer ${session.sessionToken}` }
-          : {},
-        credentials: "same-origin",
-        cache: "no-store",
-      });
+      // Revoking the server session is a security action, so this one records
+      // its outcome into the shared gate without ever being refused by it. It
+      // cannot become a storm on its own: the local teardown below invalidates
+      // the session the watcher would re-detect.
+      await this.watchBackoff(
+        "POST:/api/accounts/logout",
+        fetch("/api/accounts/logout", {
+          method: "POST",
+          headers: session?.sessionToken
+            ? { Authorization: `Bearer ${session.sessionToken}` }
+            : {},
+          credentials: "same-origin",
+          cache: "no-store",
+        }),
+      );
     } catch (_) {
       // Local logout must still complete if the network is unavailable.
     }
@@ -24173,17 +24269,26 @@ class ForkMeshWorld extends HTMLElement {
     try {
       const session = validWorldSession();
       const token = String(session?.sessionToken || "");
-      const response = await fetch("/api/accounts/sessions", {
-        headers: {
-          accept: "application/json",
-          ...(token && token !== "cookie"
-            ? { authorization: `Bearer ${token}` }
-            : {}),
-        },
-        credentials: "same-origin",
-        cache: "no-store",
-      });
+      // A recurring watch, so it backs off like every other World poll. Only
+      // an authoritative 401 boots the device, and that answer clears the
+      // record on the way through rather than scheduling a wait.
+      const key = "GET:/api/accounts/sessions";
+      if (this.requestBackoff.waitMs(key) > 0) return false;
+      const response = await this.watchBackoff(
+        key,
+        fetch("/api/accounts/sessions", {
+          headers: {
+            accept: "application/json",
+            ...(token && token !== "cookie"
+              ? { authorization: `Bearer ${token}` }
+              : {}),
+          },
+          credentials: "same-origin",
+          cache: "no-store",
+        }),
+      );
       if (response.status === 401) {
+        this.requestBackoff.succeed(key);
         await this.logoutFromWorld();
         return false;
       }
@@ -28281,13 +28386,20 @@ class ForkMeshWorld extends HTMLElement {
     // The response is intentionally discarded. This authenticated,
     // server-timestamped touch closes the visible interval; the browser never
     // reports an elapsed value. The next visible ticket starts a fresh proof.
-    void fetch("/api/world/ticket", {
-      method: "GET",
-      headers,
-      credentials: "same-origin",
-      cache: "no-store",
-      keepalive: true,
-    }).catch(() => {});
+    // Tab switching can fire this repeatedly, so it shares the ticket endpoint's
+    // cooldown with refreshWorldTicket() below.
+    const key = "GET:/api/world/ticket";
+    if (this.requestBackoff.waitMs(key) > 0) return;
+    void this.watchBackoff(
+      key,
+      fetch("/api/world/ticket", {
+        method: "GET",
+        headers,
+        credentials: "same-origin",
+        cache: "no-store",
+        keepalive: true,
+      }),
+    ).catch(() => {});
   }
 
   async refreshWorldTicket() {
@@ -29487,17 +29599,33 @@ class ForkMeshWorld extends HTMLElement {
         submit.disabled = true;
         if (status) status.textContent = "Sending…";
         try {
-          const response = await fetch("/api/feedback", {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              source: "world",
-              vote: "feedback",
-              path: "/world/#lobby-feedback",
-              message,
-            }),
-          });
+          const response = await withWorldBackoff(
+            this.requestBackoff,
+            "POST:/api/feedback",
+            async () => {
+              const sent = await fetch("/api/feedback", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  source: "world",
+                  vote: "feedback",
+                  path: "/world/#lobby-feedback",
+                  message,
+                }),
+              });
+              if (!sent.ok) {
+                throw markWorldHTTPFailure(
+                  new Error("feedback was not accepted"),
+                  sent,
+                );
+              }
+              return sent;
+            },
+            // A rejected message must stay resendable the moment the visitor
+            // edits it; only an overloaded collector earns a wait.
+            { retryableOnly: true },
+          );
           if (!response.ok) throw new Error("feedback was not accepted");
           form.reset();
           if (status) status.textContent = "Thank you — feedback sent.";

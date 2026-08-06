@@ -10,6 +10,15 @@ import {
   fileToAttachment,
   formatAttachmentSize,
 } from "../chat-attachments.js";
+import {
+  createWorldBackoff,
+  markWorldHTTPFailure,
+  withWorldBackoff,
+} from "./world-backoff.js";
+
+// Room discovery and access run again on every reconnect attempt, so a Worker
+// that is refusing meeting grants must not be asked once per retry.
+const backoff = createWorldBackoff();
 
 const GENERAL_ROOM = Object.freeze({
   id: "general",
@@ -286,13 +295,25 @@ export function createWorldOfficeMeeting({
       return;
     }
     try {
-      const response = await fetch("/api/chat/channels", {
-        headers: sessionHeaders(getSession),
-        credentials: "same-origin",
-        cache: "no-store",
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || "unavailable");
+      const payload = await withWorldBackoff(
+        backoff,
+        "GET:/api/chat/channels",
+        async () => {
+          const response = await fetch("/api/chat/channels", {
+            headers: sessionHeaders(getSession),
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw markWorldHTTPFailure(
+              new Error(body.error || "unavailable"),
+              response,
+            );
+          }
+          return body;
+        },
+      );
       rooms = [
         GENERAL_ROOM,
         ...(Array.isArray(payload.channels) ? payload.channels : [])
@@ -342,33 +363,42 @@ export function createWorldOfficeMeeting({
     ) {
       headers.set(OFFICE_ENTRY_HEADER, entryTicket);
     }
-    const response = await fetch(path, {
-      headers,
-      credentials: "same-origin",
-      cache: "no-store",
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.meetingWebSocketUrl) {
-      const error = new Error(payload.error || "meeting_unavailable");
-      error.code = response.status === 401 ? "auth" : payload.error || "unavailable";
-      throw error;
-    }
-    return payload;
-  }
-
-  async function chatRoomAccess(room) {
-    if (room.kind === "general") {
-      const response = await fetch(PUBLIC_ROOM_KEY_ENDPOINT, {
-        headers: sessionHeaders(getSession),
+    return withWorldBackoff(backoff, `GET:${path}`, async () => {
+      const response = await fetch(path, {
+        headers,
         credentials: "same-origin",
         cache: "no-store",
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.passphrase) {
-        const error = new Error(payload.error || "chat_unavailable");
-        error.code = response.status === 401 ? "auth" : "unavailable";
-        throw error;
+      if (!response.ok || !payload.meetingWebSocketUrl) {
+        const error = new Error(payload.error || "meeting_unavailable");
+        error.code = response.status === 401 ? "auth" : payload.error || "unavailable";
+        throw markWorldHTTPFailure(error, response);
       }
+      return payload;
+    });
+  }
+
+  async function chatRoomAccess(room) {
+    if (room.kind === "general") {
+      const payload = await withWorldBackoff(
+        backoff,
+        `GET:${PUBLIC_ROOM_KEY_ENDPOINT}`,
+        async () => {
+          const response = await fetch(PUBLIC_ROOM_KEY_ENDPOINT, {
+            headers: sessionHeaders(getSession),
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok || !body.passphrase) {
+            const error = new Error(body.error || "chat_unavailable");
+            error.code = response.status === 401 ? "auth" : "unavailable";
+            throw markWorldHTTPFailure(error, response);
+          }
+          return body;
+        },
+      );
       return {
         scope: "public-world-general",
         passphrase: String(payload.passphrase),
