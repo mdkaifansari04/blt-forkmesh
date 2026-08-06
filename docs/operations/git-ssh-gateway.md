@@ -337,13 +337,27 @@ owner node pushes through its own authenticated fleet remotes. That is why
 the Worker allowlist carries `forkmesh/forkmesh=read-only` and no
 `mirror<N>/...` entries.
 
-**Host keys are the one round-robin caveat.** Every member presents its own
-host key, so a client that pinned a single key sees
-`REMOTE HOST IDENTIFICATION HAS CHANGED` when DNS hands it a different
-member. Pin all members (one `known_hosts` line per member, each naming
-`ssh.forkmesh.com` plus the member address), or give the members a shared
-host certificate so they present one identity — the certificate is the
-better long-term answer and is not deployed yet.
+**Host certificates give the members one identity.** Every member keeps its
+own host key — no private key is ever shared between machines — and
+additionally presents a certificate signed by the ForkMesh host CA that
+names `ssh.forkmesh.com` as a principal. Clients trust the CA once instead
+of pinning four keys:
+
+```text
+@cert-authority ssh.forkmesh.com,*.forkmesh.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII5OvM7x8w4o1auHqYiSObIWHaVdAy4tT8dxLOai76Vs
+```
+
+Sign (and later rotate) with:
+
+```bash
+tools/sign_ssh_host_certs.sh <host-ip> [<host-ip> ...]
+```
+
+The CA private key lives only on the operator machine
+(`~/.local/share/ForkMesh/ForkMesh/ssh/host_ca_ed25519`, mode 0600) and is
+never uploaded; certificates are valid one year, so re-run the script well
+before expiry. `HostCertificate` is a global sshd directive and therefore
+gets its own include file, applied only after `sshd -t` accepts it.
 
 Both Python Workers must carry the gateway secrets: `/api/*` is served by
 `forkmesh-api`, so a relay-only `./deploy.sh secrets` leaves the gateway
