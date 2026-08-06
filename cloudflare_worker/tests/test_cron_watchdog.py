@@ -299,7 +299,7 @@ def test_cron_runtime_and_durable_object_are_wired():
     assert "await _cron_watchdog_completion(self.env)" in scheduled
     assert scheduled.index("await _cron_watchdog_completion") > \
         scheduled.index("await _send_feedback_emails")
-    assert 'compatibility_date = "2026-08-05"' in WRANGLER_TEXT
+    assert 'compatibility_date = "2026-07-23"' in WRANGLER_TEXT
     assert 'name = "FORKMESH_CRON_WATCHDOG"' in WRANGLER_TEXT
     assert 'class_name = "ForkMeshCronWatchdog"' in WRANGLER_TEXT
     assert 'tag = "v13"' in WRANGLER_TEXT
