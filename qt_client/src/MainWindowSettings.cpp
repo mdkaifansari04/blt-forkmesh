@@ -5493,6 +5493,12 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_loadStatusShowing = false;
     // Always keep a copy in the network log for history.
     logSystem(text);
+    // An error toast is the whole record of the failure on this machine; report
+    // it so it also becomes an operational record and a ping (adhoc #1538).
+    // Ahead of the m_topMessage guard on purpose: a headless node has no toast
+    // widget at all, and its failures are the ones nobody can see.
+    if (error)
+        reportUserVisibleError(QStringLiteral("toast"), QString(), text);
     if (!m_topMessage)
         return;
 

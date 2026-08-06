@@ -2,6 +2,7 @@
 #define FORKMESH_MAIN_WINDOW_H
 
 #include "ChatBackend.h"
+#include "ClientErrorReports.h"
 #include "DiscussionInboxBackoff.h"
 #include "NetworkBackoff.h"
 #include "DiscussionStore.h"
@@ -4929,6 +4930,24 @@ private:
                       const QString &clickHref = QString(),
                       int durationSeconds = 0,
                       const QString &kind = QString(), int actionRunId = -1);
+    // Ping the mesh about the failures this app used to only ever show to itself
+    // (adhoc #1538). Every warning/critical modal (caught by eventFilter's
+    // QEvent::Show branch, so no call site has to remember) and every error toast
+    // is reported to the relay, which records it in the shared operational error
+    // log and pings the administrators the first time a distinct failure appears
+    // — the only way an error on a headless node, or on a machine nobody is
+    // watching, is ever seen. Signed by this node's account; QSettings
+    // kReportUserVisibleErrorsSetting = false turns it off. See
+    // ClientErrorReports.h for the redaction, dedupe and deferral bounds.
+    void reportUserVisibleError(const QString &kind, const QString &title,
+                                const QString &message,
+                                const QString &surface = QString());
+    void sendUserVisibleErrorReport(
+        const forkmesh::ClientErrorReports::Report &report);
+    void flushDeferredErrorReports();
+    void scheduleDeferredErrorReportFlush();
+    forkmesh::ClientErrorReports m_errorReports;
+    QTimer *m_errorReportFlushTimer = nullptr;
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
     void queueTopMessage(const QString &text, bool error,

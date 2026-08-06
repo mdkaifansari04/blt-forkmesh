@@ -5359,6 +5359,30 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                     applyLiveClaudeModelsToCombos();
             }
         }
+        // Any warning/critical modal, wherever it was raised: report it to the
+        // relay so a failure that only ever appeared on one screen still becomes
+        // an operational record and an administrator ping (adhoc #1538). This
+        // filter is already installed application-wide, so none of the ~150
+        // QMessageBox::warning/critical call sites has to remember to report.
+        if (auto *box = qobject_cast<QMessageBox *>(obj)) {
+            const QMessageBox::Icon icon = box->icon();
+            // A warning that asks something ("Discard changes?" with
+            // Discard/Cancel) is a confirmation prompt, not a failure. Only the
+            // boxes that merely inform are reports of something going wrong.
+            const bool informational =
+                (box->standardButtons()
+                 & ~(QMessageBox::Ok | QMessageBox::Close))
+                == QMessageBox::NoButton;
+            if (informational
+                && (icon == QMessageBox::Warning
+                    || icon == QMessageBox::Critical)) {
+                QString text = box->text();
+                if (!box->informativeText().isEmpty())
+                    text += QLatin1Char(' ') + box->informativeText();
+                reportUserVisibleError(QStringLiteral("dialog"),
+                                       box->windowTitle(), text);
+            }
+        }
     }
     // The collapsed prompt leaves only the account avatar at the footer's
     // lower-right corner. Hovering that launcher should restore the composer
