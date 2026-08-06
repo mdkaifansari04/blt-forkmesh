@@ -1346,6 +1346,44 @@ async function waitForWorldReady(page) {
   await page.evaluate(() => document.fonts?.ready);
 }
 
+test("a guest HUD launcher wears the same painted face as their avatar", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "guest-launcher-face");
+  await waitForWorld(page);
+  const badge = page.locator("[data-world-shirt-avatar]");
+  await expect(badge).toBeVisible();
+  const painted = await page.evaluate(async () => {
+    const shell = document.querySelector("forkmesh-world");
+    const scene = await import("/world/world-scene.js");
+    const image = document.querySelector("[data-world-shirt-avatar]");
+    return {
+      accountStatus: shell.identity.accountStatus,
+      src: image.getAttribute("src").slice(0, 22),
+      decodedWidth: image.naturalWidth,
+      decodedHeight: image.naturalHeight,
+      matchesAvatarFace:
+        image.getAttribute("src") ===
+        scene.proceduralAvatarFaceDataURL(shell.identity.id),
+    };
+  });
+  expect(painted).toEqual({
+    accountStatus: "Guest",
+    src: "data:image/png;base64,",
+    decodedWidth: 128,
+    decodedHeight: 128,
+    matchesAvatarFace: true,
+  });
+  // A one-second identity tick (the local-time privacy badge) must not blank
+  // the portrait back to the empty disc.
+  const afterTick = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.updateIdentityUI();
+    const image = document.querySelector("[data-world-shirt-avatar]");
+    return { hidden: image.hidden, src: image.getAttribute("src").slice(0, 22) };
+  });
+  expect(afterTick).toEqual({ hidden: false, src: "data:image/png;base64," });
+});
+
 test("verified code landings show the publisher avatar and commit context", async ({
   page,
 }) => {
