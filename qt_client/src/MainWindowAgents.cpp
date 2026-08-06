@@ -5608,6 +5608,9 @@ void MainWindow::applyLiveClaudeModelsToCombos()
         m_issueAgentProvider->currentData().toString() == claudeCode)
         mergeLiveClaudeModels(m_issueAgentModel, models);
     refreshQuickAddAgentModelSelector();
+    // The Settings list of which models the composer offers is built from the
+    // same catalog, so a live fetch has to reach it as well (adhoc #1557).
+    refreshComposerModelVisibilityList();
 }
 
 // Re-fetch the live claude-code model list from the provider (GET /v1/models)
@@ -5866,6 +5869,12 @@ void MainWindow::initAgents()
     m_agentSessions = m_agentStore->loadAllSessions();
     seedSessionTokens();
     refreshAgentDotMatrix(); // the top-bar fleet matrix reflects sessions from the start
+    // The composer is built before this runs, so its model menu was ranked and
+    // counted against an empty session list and no store at all — every model
+    // opened on "0 merged" until some later reload happened to refresh it
+    // (adhoc #1565). The tallies are on disk right here; show them from the
+    // first frame instead of blanking a record the user reads as lost.
+    refreshQuickAddAgentModelSelector();
     // The re-queued sessions are NOT started here: initAgents() runs inside the
     // MainWindow constructor, and draining the queue starts Claude transcripts
     // whose assign-time UI jump (switchToAgentsTab → openRepoDetail) fired a
@@ -9115,6 +9124,7 @@ void MainWindow::purgeSessionState(int sessionId)
     m_streamWorktree.remove(sessionId);
     m_streamPending.remove(sessionId);
     m_streamSessionInfo.remove(sessionId);
+    m_streamAccountId.remove(sessionId);
     m_sessionWorkdirCache.remove(sessionId);
     m_pendingSteerMessage.remove(sessionId);
     m_sessionTokens.remove(sessionId);
@@ -10069,6 +10079,14 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         return;
     const int sid = session.id;
     const bool codex = agentIsCodexProvider(session.provider);
+    // The account this run goes out under. Captured once here — rather than read
+    // again from the account menu when the asynchronous worktree checkout lands,
+    // and again as each event arrives — so the config root the CLI is launched
+    // with and the account its conversation is stamped with are always the same
+    // one, however the menu is switched while the run is in flight.
+    const AgentAccountProfile runAccount = activeAgentAccount(session.provider);
+    const QStringList runAccountEnv = activeAgentAccountEnv(session.provider);
+    m_streamAccountId[sid] = runAccount.id;
 
     auto gitOut = [](const QString &dir, const QStringList &args) -> QString {
         QProcess git;
@@ -10152,21 +10170,50 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     const QString resumeId =
         resuming ? (codex ? lastCodexThreadId(sid) : lastClaudeSessionId(sid))
                  : QString();
-    // Continuing under the *other* CLI (the composer's agent dropdown picks who
-    // takes the next turn, adhoc #76 — typically because the one that was
-    // running hit its usage limit) leaves history this provider cannot resume:
-    // the counterpart's conversation id belongs to a different program. Handing
-    // it over anyway is what failed the turn outright; a bare "Continue where
-    // you left off." would be no better, since the new agent has never seen the
-    // task. Replay the original task instead, and say the work is already under
-    // way so it reads the branch rather than starting over.
+    // Nothing this run can resume. There are two ways to get here with real work
+    // already on the branch, and both replay the original task with a note that
+    // it is under way — a bare "Continue where you left off." would be no better
+    // than silence, since whoever takes over has never seen the task.
+    const QList<QJsonObject> events = m_streamEvents.value(sid);
+    // First: the same CLI, but the turns so far belong to one of its *other*
+    // accounts — usually because the account that was running hit its usage limit
+    // and the user picked another one before hitting add. Each account is its own
+    // config root (CLAUDE_CONFIG_DIR / CODEX_HOME) and each CLI keeps its
+    // conversations inside it, so that history simply isn't there for this login
+    // and `--resume` on it fails the turn outright. The branch is still there and
+    // still the point, so hand the work over rather than dropping it.
+    QString handoffAccount;
+    if (resuming && resumeId.isEmpty()) {
+        const QString ownerId =
+            forkmesh::agents::resumeConversationAccountId(events, codex);
+        if (!ownerId.isEmpty() && ownerId != runAccount.id) {
+            handoffAccount = QStringLiteral("another account");
+            for (const AgentAccountProfile &profile :
+                 agentAccountProfiles(session.provider)) {
+                if (profile.id != ownerId)
+                    continue;
+                if (!profile.label.trimmed().isEmpty())
+                    handoffAccount = profile.label.trimmed();
+                break;
+            }
+        }
+    }
+    // Second: continuing under the *other* CLI (the composer's agent dropdown
+    // picks who takes the next turn, adhoc #76 — again, typically because the one
+    // that was running hit its usage limit). The counterpart's conversation id
+    // belongs to a different program; handing it over anyway is what failed the
+    // turn outright. Only asked when this CLI has no unreachable history of its
+    // own: that is the failure the resume just hit, and the more useful of the
+    // two to name. The lookups here run unfiltered on purpose — what matters is
+    // whether the other CLI ran at all, not which of its accounts is selected.
     const QString handoffFrom =
-        resuming && resumeId.isEmpty()
-            ? (codex ? (lastClaudeSessionId(sid).isEmpty()
+        resuming && resumeId.isEmpty() && handoffAccount.isEmpty()
+            ? (codex ? (forkmesh::agents::claudeResumeSessionId(events).isEmpty()
                             ? QString()
                             : QStringLiteral("Claude Code"))
-                     : (lastCodexThreadId(sid).isEmpty() ? QString()
-                                                         : QStringLiteral("Codex")))
+                     : (forkmesh::agents::codexResumeThreadId(events).isEmpty()
+                            ? QString()
+                            : QStringLiteral("Codex")))
             : QString();
     if (!resumeId.isEmpty()) {
         if (steer.isEmpty()) {
@@ -10198,6 +10245,30 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                          .arg(codex ? QStringLiteral("Codex")
                                     : QStringLiteral("Claude Code"),
                               handoffFrom)}});
+        } else if (!handoffAccount.isEmpty()) {
+            prompt = QStringLiteral(
+                         "You are taking over this session from a different %1 "
+                         "account, whose conversation this login cannot open. "
+                         "Work is already in progress on the current branch — "
+                         "read what is there before changing anything, then "
+                         "carry on from that point.\n\nOriginal task:\n%2")
+                         .arg(codex ? QStringLiteral("Codex")
+                                    : QStringLiteral("Claude Code"),
+                              originalTaskPrompt);
+            applyTranscriptEvent(
+                sid,
+                QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("_local_notice")},
+                    {QStringLiteral("text"),
+                     QStringLiteral(
+                         "Continuing as %1. The earlier turns belong to %2, and "
+                         "one account can't open another's conversation, so the "
+                         "original task was re-sent with the branch as its "
+                         "context.")
+                         .arg(runAccount.label.trimmed().isEmpty()
+                                  ? QStringLiteral("the selected account")
+                                  : runAccount.label.trimmed(),
+                              handoffAccount)}});
         }
         if (!steer.isEmpty()) {
             // No context to resume — fold the steer into the replayed prompt as
@@ -10508,7 +10579,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     const QString routeTask = lead;
     auto launch = [this, sid, prompt, codexResumeFallbackPrompt, autoMode,
                    branchName, resumeId, selectedModel, routeTask, codex,
-                   sessionMode, sessionStrength](const QString &workdir) {
+                   sessionMode, sessionStrength,
+                   runAccountEnv](const QString &workdir) {
         if (codex) {
             CodexAppServerSession *live = m_codexStreams.value(sid);
             if (!live)
@@ -10540,7 +10612,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                  QStringLiteral("CODEX_API_KEY"),
                                  QStringLiteral("OPENAI_ACCESS_TOKEN"),
                                  QStringLiteral("OPENAI_ADMIN_KEY")};
-            codexEnv << activeAgentAccountEnv(QStringLiteral("codex"));
+            codexEnv << runAccountEnv;
             // Jail (adhoc #236): private scratch env + memory cap for this run.
             int jailMb = 0;
             if (QSettings().value(kAgentJailSetting, false).toBool()) {
@@ -10565,7 +10637,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             << QStringLiteral("ANTHROPIC_AUTH_TOKEN")
             << QStringLiteral("ANTHROPIC_ADMIN_KEY")
             << QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
-        env << activeAgentAccountEnv(QStringLiteral("claude-code"));
+        env << runAccountEnv;
         if (!forkmesh::vm::active()) {
             if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
                 if (bridge->start(workdir))
@@ -11519,10 +11591,20 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
     // enter a UI buffer, the persistent transcript store, an owner-sealed sync
     // snapshot, or a copyable raw-output surface.  This is intentionally at the
     // common ingestion point so future stream providers cannot bypass it.
-    const QJsonObject ev =
+    QJsonObject ev =
         redactProviderCredentials(
             QJsonValue(event), localProviderCredentialValues())
             .toObject();
+    // Record which provider account produced this conversation. Each account is
+    // its own CLI config root, so the id below is only resumable by the account
+    // that created it — see AgentResumeIdentity.h. Only events that actually
+    // carry a conversation id are stamped; nothing else is ever consulted.
+    if (const QString accountId = m_streamAccountId.value(sessionId);
+        !accountId.isEmpty() &&
+        (!ev.value(QStringLiteral("session_id")).toString().isEmpty() ||
+         !ev.value(QStringLiteral("thread_id")).toString().isEmpty())) {
+        ev.insert(forkmesh::agents::resumeAccountKey(), accountId);
+    }
     const QString type = ev.value(QStringLiteral("type")).toString();
     m_streamEvents[sessionId].append(ev);
     // Persist the turn so the transcript survives an app restart (issue #41).
@@ -11837,19 +11919,26 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
 // (ensureStreamEventsLoaded), so this is the authoritative source after a
 // restart too. Synthetic `_local_user` turns carry no id and are skipped, as are
 // any turns the *other* CLI produced — see AgentResumeIdentity.h for why
-// handing Claude Code a Codex thread id fails the whole run.
+// handing Claude Code a Codex thread id fails the whole run. Turns belonging to
+// a Claude Code account other than the one now selected are skipped for the same
+// reason: that conversation lives in the other account's config root.
 QString MainWindow::lastClaudeSessionId(int sessionId) const
 {
-    return forkmesh::agents::claudeResumeSessionId(m_streamEvents.value(sessionId));
+    return forkmesh::agents::claudeResumeSessionId(
+        m_streamEvents.value(sessionId),
+        activeAgentAccount(QStringLiteral("claude-code")).id);
 }
 
 // Codex app-server threads are the native conversation identity used by the
 // official IDE extension. The transport records it on the normalized init
 // event, so a ForkMesh restart can resume the real thread rather than replaying
-// a clipped plain-text transcript into a new process.
+// a clipped plain-text transcript into a new process. Scoped to the selected
+// Codex account, as above.
 QString MainWindow::lastCodexThreadId(int sessionId) const
 {
-    return forkmesh::agents::codexResumeThreadId(m_streamEvents.value(sessionId));
+    return forkmesh::agents::codexResumeThreadId(
+        m_streamEvents.value(sessionId),
+        activeAgentAccount(kCodexProvider).id);
 }
 
 // The session started working again — a resumed CLI announced itself, or a new

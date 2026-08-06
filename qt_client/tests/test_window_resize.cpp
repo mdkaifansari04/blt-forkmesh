@@ -205,6 +205,62 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("the debug row appends labeled green/red website "
                              "minute states"));
 
+        // adhoc #1564: the relay grades itself from inside Cloudflare, so the
+        // last two dots are checked here instead — the site and the /status
+        // page loaded over the real public hostname. A Cloudflare edge failure
+        // (520-527, a branded interstitial, a challenge) must land red/amber on
+        // these rows even though every relay-reported row above is green.
+        const QByteArray homepage =
+            "<!doctype html><html><head><title>ForkMesh</title></head>";
+        const QByteArray statusPage =
+            "<!doctype html><html><head><title>Status \xc2\xb7 ForkMesh</title>"
+            "</head><body><h1 id=\"status-title\">Is ForkMesh working?</h1>";
+        const QByteArray cloudflareError =
+            "<!doctype html><html><head><title>forkmesh.com | 521: Web server "
+            "is down</title></head><body>Cloudflare Ray ID: abc123</body>";
+        check(window.testApplyDesktopWebsiteProbe(
+                  QStringLiteral("desktop_website"), 200, homepage) ==
+                      QStringLiteral("operational") &&
+                  window.testApplyDesktopWebsiteProbe(
+                      QStringLiteral("desktop_status_page"), 206, statusPage) ==
+                      QStringLiteral("operational") &&
+                  lights->websiteStatusCount() == 4 &&
+                  lights->websiteStatusFor(QStringLiteral("desktop_website")) ==
+                      QStringLiteral("operational"),
+              QStringLiteral("the desktop-side site and /status checks append "
+                             "two more dots to the relay's own rows"));
+
+        check(window.testApplyDesktopWebsiteProbe(
+                  QStringLiteral("desktop_website"), 521, cloudflareError) ==
+                      QStringLiteral("down") &&
+                  window.testApplyDesktopWebsiteProbe(
+                      QStringLiteral("desktop_website"), 200, cloudflareError) ==
+                      QStringLiteral("down") &&
+                  window.testApplyDesktopWebsiteProbe(
+                      QStringLiteral("desktop_website"), 429, homepage) ==
+                      QStringLiteral("degraded") &&
+                  lights->websiteStatusCount() == 4,
+              QStringLiteral("a Cloudflare edge status, a branded error document "
+                             "served as HTTP 200, and a rate-limit each fail the "
+                             "website check without adding a row"));
+
+        // A host with no link of its own reports grey rather than a false
+        // outage, so an offline test machine is allowed that verdict here.
+        const QString unreachable = window.testApplyDesktopWebsiteProbe(
+            QStringLiteral("desktop_status_page"), 0, QByteArray(),
+            QStringLiteral("Host not found"));
+        check(window.testApplyDesktopWebsiteProbe(
+                  QStringLiteral("desktop_status_page"), 500, QByteArray()) ==
+                      QStringLiteral("down") &&
+                  window.testApplyDesktopWebsiteProbe(
+                      QStringLiteral("desktop_status_page"), 200, homepage) ==
+                      QStringLiteral("degraded") &&
+                  (unreachable == QStringLiteral("down") ||
+                   unreachable == QStringLiteral("unknown")),
+              QStringLiteral("the /status check fails on a server error, on a "
+                             "document that isn't the status page, and when the "
+                             "page cannot be fetched at all"));
+
         // Rebuild+restart came down from the window-chrome line and Resize came
         // out of the navigation rail: both now sit in the debug bar's own tool
         // cluster at the right edge, outside the scrolling category row, each
@@ -2210,6 +2266,65 @@ int main(int argc, char *argv[])
         check(!executable.startsWith(workingRoot),
               QStringLiteral("updated executable is separate from the working copy"));
     }
+    // adhoc #1563: a rebuild used to run the compiler with the default TMPDIR,
+    // so a full RAM-backed /tmp killed it mid-compile ("No space left on
+    // device") even with room on the build disk, and the status label showed a
+    // fixed 300-character slice of the error tail that landed mid-word
+    // ("Update failed: vice"). The scratch now lives inside the build tree and
+    // the summary picks the real diagnostic.
+    {
+        check(forkmesh::ui::buildScratchDir(QStringLiteral("/opt/forkmesh/qt_client/build")) ==
+                  QStringLiteral("/opt/forkmesh/qt_client/build/.forkmesh-tmp"),
+              QStringLiteral("compiler scratch stays inside the build tree (#1563)"));
+
+        // Free space is read from the nearest existing ancestor, so a build
+        // directory CMake has not created yet still reports its future volume
+        // instead of the "unknown" sentinel (which would skip the pre-flight).
+        QTemporaryDir spaceProbe;
+        if (spaceProbe.isValid()) {
+            const QString buildDir = spaceProbe.filePath(QStringLiteral("build"));
+            check(forkmesh::ui::freeBytesForPath(
+                      buildDir + QStringLiteral("/nested/not-yet")) > 0,
+                  QStringLiteral("free space walks up to an existing ancestor (#1563)"));
+
+            // An unbuilt tree has to fit the whole ~2 GB of objects; one that
+            // already has them overwrites in place, so demanding the full
+            // figure again would block a viable incremental update.
+            const qint64 fresh = forkmesh::ui::rebuildFreeBytesRequired(buildDir);
+            check(QDir().mkpath(buildDir + QStringLiteral("/CMakeFiles/forkmesh.dir")),
+                  QStringLiteral("test can stage an existing build tree (#1563)"));
+            check(forkmesh::ui::rebuildFreeBytesRequired(buildDir) < fresh,
+                  QStringLiteral("an existing build tree needs less free space (#1563)"));
+        }
+
+        const QString diskFull =
+            QStringLiteral("[ 24%] Building CXX object MainWindowNotes.cpp.o\n"
+                           "src/MainWindowNotes.cpp:894:1: fatal error: error "
+                           "writing to /tmp/ccIQExpV.s: No space left on device\n"
+                           "gmake: *** [Makefile:136: all] Error 2");
+        check(forkmesh::ui::updateFailureSummary(diskFull).contains(QStringLiteral("disk filled up")),
+              QStringLiteral("a full disk is reported as a full disk (#1563)"));
+        check(!forkmesh::ui::updateFailureSummary(diskFull).contains(QStringLiteral("gmake")),
+              QStringLiteral("a full disk is not reported as the make exit code (#1563)"));
+
+        const QString compileError =
+            QStringLiteral("[ 12%] Building CXX object MainWindow.cpp.o\n"
+                           "src/MainWindow.cpp:12:3: error: no member named 'nope'\n"
+                           "gmake[1]: *** [CMakeFiles/Makefile2:126] Error 2\n"
+                           "gmake: *** [Makefile:136: all] Error 2");
+        check(forkmesh::ui::updateFailureSummary(compileError) ==
+                  QStringLiteral("src/MainWindow.cpp:12:3: error: no member named 'nope'"),
+              QStringLiteral("the first diagnostic beats the make tail (#1563)"));
+
+        // No recognisable diagnostic: the tail is cut on a line boundary rather
+        // than mid-word, which is what produced "Update failed: vice".
+        const QString noisy = QStringLiteral("%1\nthe last whole line")
+                                  .arg(QString(400, QLatin1Char('x')));
+        const QString summary = forkmesh::ui::updateFailureSummary(noisy);
+        check(summary == QStringLiteral("the last whole line"),
+              QStringLiteral("an unrecognised tail is cut on a line boundary (#1563)"));
+    }
+
     if (updateIsolationOnly) {
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
@@ -4845,18 +4960,13 @@ int main(int argc, char *argv[])
                                        QStringLiteral("GPT-5.5"),
                                        Qt::MatchStartsWith)
                                  : -1;
-        // Rows keep the model name plus an explicit merged-success count; the
-        // tooltip still says which agent runs the model.
+        // Rows are the bare model name — the merged-success count is painted
+        // beside it in the open popup only — and the tooltip still says which
+        // agent runs the model.
         check(quickAgentModel && quickAgentModel->isVisible() &&
                   quickAgentModel->maxVisibleItems() >= quickAgentModel->count() &&
-                  std::any_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
-                              [](const QString &label) {
-                                  return label.startsWith(QStringLiteral("Auto · "));
-                              }) &&
-                  std::any_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
-                              [](const QString &label) {
-                                  return label.startsWith(QStringLiteral("GPT-5.5 · "));
-                              }) &&
+                  agentModelLabels.contains(QStringLiteral("Auto")) &&
+                  agentModelLabels.contains(QStringLiteral("GPT-5.5")) &&
                   agentModelLabels.contains(QStringLiteral("OpenAI API")) &&
                   agentModelLabels.contains(QStringLiteral("Claude API")) &&
                   std::none_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
@@ -4866,12 +4976,20 @@ int main(int argc, char *argv[])
                                           label.endsWith(QStringLiteral("Codex"));
                                }) &&
                   gpt55Row >= 0 &&
+                  // The tooltip opens with the account the run would use, so the
+                  // model/agent line and its merged tally sit below that.
                   quickAgentModel->itemData(gpt55Row, Qt::ToolTipRole).toString()
-                      .startsWith(QStringLiteral("GPT-5.5 · Codex\nMerged success:")) &&
+                      .contains(QStringLiteral("GPT-5.5 · Codex\nMerged success:")) &&
                   allAgentModelsHaveIcons && agentModelIconsAreClean && quickProvider &&
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
-              QString("one icon-rich composer dropdown combines agents and models (%1)")
-                  .arg(agentModelLabels.join(QStringLiteral(", "))));
+              QString("one icon-rich composer dropdown combines agents and models "
+                      "(%1 | GPT-5.5 tooltip: %2)")
+                  .arg(agentModelLabels.join(QStringLiteral(", ")),
+                       gpt55Row >= 0
+                           ? quickAgentModel->itemData(gpt55Row, Qt::ToolTipRole)
+                                 .toString()
+                                 .replace(QLatin1Char('\n'), QLatin1Char('|'))
+                           : QStringLiteral("missing")));
         // Only the top model lines wear the World's robot portraits. Everything
         // below them — the raw API agents, the Cloudflare chat models — keeps the
         // abstract mark it always had, so the menu does not read as one wall of
@@ -4939,16 +5057,32 @@ int main(int argc, char *argv[])
                 continue;
             rankedLabels << quickAgentModel->itemText(i);
         }
-        check(rankedLabels == QStringList({QStringLiteral("Auto · 0 merged"),
-                                           QStringLiteral("Fable 5 · 0 merged"),
-                                           QStringLiteral("Opus 4.8 · 0 merged"),
-                                           QStringLiteral("Sonnet 4.6 · 0 merged"),
-                                           QStringLiteral("Haiku 4.5 · 0 merged"),
-                                           QStringLiteral("GPT-5.5 · 0 merged"),
-                                           QStringLiteral("GPT-5.4 · 0 merged"),
-                                           QStringLiteral("GPT-5.4-Mini · 0 merged")}),
-              QString("composer models show merged counts and sort strongest first when tied (%1)")
+        check(rankedLabels == QStringList({QStringLiteral("Auto"),
+                                           QStringLiteral("Fable 5"),
+                                           QStringLiteral("Opus 5"),
+                                           QStringLiteral("Sonnet 5"),
+                                           QStringLiteral("Opus 4.8"),
+                                           QStringLiteral("Opus 4.7"),
+                                           QStringLiteral("Opus 4.6"),
+                                           QStringLiteral("Opus 4.5"),
+                                           QStringLiteral("Sonnet 4.6"),
+                                           QStringLiteral("Sonnet 4.5"),
+                                           QStringLiteral("Haiku 4.5"),
+                                           QStringLiteral("GPT-5.5"),
+                                           QStringLiteral("GPT-5.4"),
+                                           QStringLiteral("GPT-5.4-Mini")}),
+              QString("composer model rows are bare model names, sorted strongest first when tied (%1)")
                   .arg(rankedLabels.join(QStringLiteral(", "))));
+        // The merged tally rides the popup-only description role, so the badge on
+        // the prompt stays the model name alone (adhoc #1565).
+        check(seeded.testQuickAddAgentModelMergedNote(
+                  QStringLiteral("claude-opus-4-8")) ==
+                      QStringLiteral("0 merged") &&
+                  !seeded.testQuickAddAgentModelLabel(
+                       QStringLiteral("claude-opus-4-8"))
+                       .contains(QStringLiteral("merged")),
+              QStringLiteral("merged counts live in the popup rows, not the "
+                             "closed model badge"));
         QComboBox *canonicalModel =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
         int concreteClaudeChoice = -1;
@@ -5011,11 +5145,66 @@ int main(int argc, char *argv[])
             const int sonnetRow = quickAgentModel->findText(sonnetLabel);
             const int opusRow = quickAgentModel->findText(opusLabel);
             check(sonnetRow >= 0 && opusRow > sonnetRow &&
-                      sonnetLabel == QStringLiteral("Sonnet 4.6 · 3 merged") &&
-                      opusLabel == QStringLiteral("Opus 4.8 · 1 merged"),
+                      sonnetLabel == QStringLiteral("Sonnet 4.6") &&
+                      opusLabel == QStringLiteral("Opus 4.8") &&
+                      seeded.testQuickAddAgentModelMergedNote(
+                          QStringLiteral("claude-sonnet-4-6")) ==
+                          QStringLiteral("3 merged") &&
+                      seeded.testQuickAddAgentModelMergedNote(
+                          QStringLiteral("claude-opus-4-8")) ==
+                          QStringLiteral("1 merged"),
                   QString("the model menu orders by merged success and shows "
                           "the count (Sonnet row %1, Opus row %2)")
                       .arg(sonnetRow).arg(opusRow));
+            // The record has to be on the menu from the first frame (adhoc
+            // #1565). The composer is built before initAgents() reads the
+            // sessions off disk, so a restart used to open with every model on
+            // "0 merged" until some later reload happened to refresh the menu —
+            // the user's whole merged history, apparently wiped.
+            {
+                // Same window proves the composer comes back to its corner: a
+                // prompt left floating mid-workspace in the last session must not
+                // be where the next launch opens (adhoc #1565).
+                QSettings placement;
+                placement.setValue(QStringLiteral("prompt/floating"), true);
+                placement.setValue(QStringLiteral("prompt/floatPos"),
+                                   QPoint(24, 48));
+                placement.setValue(QStringLiteral("prompt/floatSize"),
+                                   QSize(320, 200));
+                MainWindow restarted;
+                const QString restartedSonnet =
+                    restarted.testQuickAddAgentModelMergedNote(
+                        QStringLiteral("claude-sonnet-4-6"));
+                const QString restartedOpus =
+                    restarted.testQuickAddAgentModelMergedNote(
+                        QStringLiteral("claude-opus-4-8"));
+                check(restartedSonnet == QStringLiteral("3 merged") &&
+                          restartedOpus == QStringLiteral("1 merged"),
+                      QString("a fresh window shows the stored merged counts "
+                              "without waiting for a reload (Sonnet %1, Opus %2)")
+                          .arg(restartedSonnet, restartedOpus));
+                restarted.resize(1200, 720);
+                restarted.show();
+                QApplication::processEvents();
+                auto *restartedDock =
+                    restarted.findChild<QWidget *>(QStringLiteral("logDock"));
+                auto *restartedPrompt = restarted.findChild<QWidget *>(
+                    QStringLiteral("promptOverlayHost"));
+                check(restarted.testPromptOverlayPlacement() ==
+                              QStringLiteral("anchored") &&
+                          restartedDock && restartedPrompt &&
+                          restartedPrompt->parentWidget() == restartedDock &&
+                          restartedPrompt->geometry().center().x() >
+                              restartedDock->rect().center().x() &&
+                          restartedPrompt->geometry().bottom() ==
+                              restartedDock->rect().bottom() &&
+                          !placement.value(QStringLiteral("prompt/floating"))
+                               .toBool(),
+                      QString("a launch pins the prompt to the lower-right corner "
+                              "however it was left (placement %1)")
+                          .arg(restarted.testPromptOverlayPlacement()));
+                stopChildProcesses(restarted);
+            }
             for (int id = 144501; id <= 144506; ++id)
                 seeded.testRemoveAgentSession(id);
             seeded.testRefreshQuickAddAgentModelSelector();
@@ -5213,9 +5402,104 @@ int main(int argc, char *argv[])
               QStringLiteral("combined picker stays visible for API-only providers"));
 
         // The default-agent control belongs to the independently deferred
-        // Settings page. Visit it before driving the combo like a user.
+        // Settings page. Visit it before driving the combo like a user. Start
+        // the composer-model visibility check below from a clean sheet: the
+        // list is filled as the page is built, so the setting has to be cleared
+        // before that happens, not after.
+        QSettings().remove(QStringLiteral("agents/composerHiddenModels"));
         seeded.testShowSettingsSection();
         QApplication::processEvents();
+
+        // adhoc #1557: Settings → Agents chooses which of the catalog's models
+        // the composer's prompt dropdown lists. Unticking one drops it from the
+        // menu and persists that choice; the model the composer is currently set
+        // to stays listed even when unticked, so the picker can always show what
+        // the next run would launch; re-ticking brings it back.
+        {
+            QListWidget *modelVisibility = seeded.findChild<QListWidget *>(
+                QStringLiteral("composerModelVisibilityList"));
+            const auto menuRow = [quickAgentModel](const QString &provider,
+                                                   const QString &model) {
+                for (int i = 0; quickAgentModel && i < quickAgentModel->count();
+                     ++i) {
+                    if (quickAgentModel->itemData(i).toString() == provider &&
+                        quickAgentModel->itemData(i, Qt::UserRole + 1)
+                                .toString() == model)
+                        return i;
+                }
+                return -1;
+            };
+            // Put the composer back on a concrete Claude model so the rule that
+            // the *selected* row survives being unticked has something to hold.
+            const int claudeRow =
+                menuRow(QStringLiteral("claude-code"), concreteClaudeModel);
+            if (claudeRow >= 0)
+                quickAgentModel->setCurrentIndex(claudeRow);
+            QApplication::processEvents();
+
+            const QString codexKey = forkmesh::ui::composerModelKey(
+                QStringLiteral("codex"), QStringLiteral("gpt-5.4-mini"));
+            const QString selectedKey = forkmesh::ui::composerModelKey(
+                QStringLiteral("claude-code"), concreteClaudeModel);
+            const auto rowFor = [modelVisibility](const QString &key) {
+                for (int i = 0; modelVisibility && i < modelVisibility->count();
+                     ++i) {
+                    if (modelVisibility->item(i)->data(Qt::UserRole).toString() ==
+                        key)
+                        return modelVisibility->item(i);
+                }
+                return static_cast<QListWidgetItem *>(nullptr);
+            };
+            QListWidgetItem *codexRow = rowFor(codexKey);
+            QListWidgetItem *selectedRow = rowFor(selectedKey);
+            const bool startsTicked =
+                codexRow && codexRow->checkState() == Qt::Checked &&
+                selectedRow && selectedRow->checkState() == Qt::Checked &&
+                menuRow(QStringLiteral("codex"),
+                        QStringLiteral("gpt-5.4-mini")) >= 0;
+            if (codexRow)
+                codexRow->setCheckState(Qt::Unchecked);
+            QApplication::processEvents();
+            const bool hiddenAfterUntick =
+                menuRow(QStringLiteral("codex"),
+                        QStringLiteral("gpt-5.4-mini")) < 0 &&
+                QSettings()
+                    .value(QStringLiteral("agents/composerHiddenModels"))
+                    .toStringList()
+                    .contains(codexKey);
+            // The composer is sitting on this Claude model; hiding it must not
+            // take the row that shows what is selected out of the menu.
+            if (selectedRow)
+                selectedRow->setCheckState(Qt::Unchecked);
+            QApplication::processEvents();
+            const bool selectedStaysListed =
+                menuRow(QStringLiteral("claude-code"), concreteClaudeModel) >= 0 &&
+                seeded.testQuickAddAgentProvider() ==
+                    QStringLiteral("claude-code");
+            if (codexRow)
+                codexRow->setCheckState(Qt::Checked);
+            if (selectedRow)
+                selectedRow->setCheckState(Qt::Checked);
+            QApplication::processEvents();
+            const bool restored =
+                menuRow(QStringLiteral("codex"),
+                        QStringLiteral("gpt-5.4-mini")) >= 0 &&
+                QSettings()
+                    .value(QStringLiteral("agents/composerHiddenModels"))
+                    .toStringList()
+                    .isEmpty();
+            check(modelVisibility && codexRow && selectedRow && startsTicked &&
+                      hiddenAfterUntick && selectedStaysListed && restored,
+                  QString("Settings picks which models the composer dropdown "
+                          "lists (ticked %1, hidden %2, selection kept %3, "
+                          "restored %4)")
+                      .arg(startsTicked)
+                      .arg(hiddenAfterUntick)
+                      .arg(selectedStaysListed)
+                      .arg(restored));
+            QSettings().remove(QStringLiteral("agents/composerHiddenModels"));
+        }
+
         seeded.testSetDefaultAgentProvider(QStringLiteral("claude-api"));
         check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-api") &&
                   seeded.testIssueAgentProvider() == QStringLiteral("claude-api"),

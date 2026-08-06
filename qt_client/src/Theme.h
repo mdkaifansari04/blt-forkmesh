@@ -720,9 +720,9 @@ QPushButton#agentQueueLimitDecreaseButton:disabled {
     font-weight: 700;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(139,148,158,0.3); border-radius: 4px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(139,148,158,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #3fb950;
     padding: 4px; border-radius: 4px;
@@ -1125,10 +1125,10 @@ QPushButton#promptDetachButton {
     border-radius: 8px;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(139,148,158,0.3); border-radius: 4px;
     min-height: 38px; max-height: 38px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(139,148,158,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #3fb950;
     padding: 4px; border-radius: 4px;
@@ -2159,9 +2159,9 @@ QPushButton#agentQueueLimitDecreaseButton:disabled {
     font-weight: 700;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(87,96,106,0.3); border-radius: 4px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(87,96,106,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #1a7f37;
     padding: 4px; border-radius: 4px;
@@ -2566,10 +2566,10 @@ QPushButton#promptDetachButton {
     border-radius: 8px;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(87,96,106,0.3); border-radius: 4px;
     min-height: 38px; max-height: 38px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(87,96,106,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #1a7f37;
     padding: 4px; border-radius: 4px;
