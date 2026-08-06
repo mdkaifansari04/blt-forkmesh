@@ -6097,6 +6097,11 @@ private:
     QSet<QString> m_mirrorIssueIntakeInFlight;
     QTimer *m_autoUpdateTimer = nullptr; // periodic check for maybeAutoUpdate()
     bool m_autoUpdateChecking = false;   // a background "git fetch" check is in flight
+    // Set once closeEvent() runs; installAndRelaunch() checks this right before
+    // spawning the replacement process so a background auto-update that finishes
+    // its multi-minute clone/build chain right as the user closes the window
+    // can't win the race and pop a brand new window back up after they quit.
+    bool m_closingDown = false;
 
     // Issues section widgets
     QLineEdit *m_issueSearch = nullptr;
