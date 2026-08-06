@@ -1542,39 +1542,93 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     // merge command and the containment safety check, which used to surface as
     // the misleading "couldn't merge cleanly" message even when merge-tree said
     // the tips were conflict-free. The operator may explicitly stop a local
-    // agent and merge its committed work so far; retry from a fresh stack after
-    // the stop because it reloads the session list.
+    // agent and merge its committed work so far.
+    //
+    // Only a session that is *actually* executing counts (adhoc #1537). A stored
+    // Running/Waiting/Queued status goes stale on its own — the family of adhoc
+    // #143/#157: a terminal `result` that never landed, a run killed with the app,
+    // a completion poll still waiting on some background process the agent left
+    // behind. Trusting it meant merging a finished agent's branch demanded the user
+    // "stop" it first: "Agent #1535 is still working" about work that was complete
+    // and, that time, already merged. A session whose work has landed, or one from
+    // another repository that happens to share the branch name, is not this merge's
+    // business either.
+    QString detailOwner;
+    QString detailName;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        detailOwner = m_repositories.at(m_repoDetailIndex).owner;
+        detailName = m_repositories.at(m_repoDetailIndex).name;
+    }
+    // Collect the ids before touching anything: stopping a session reloads
+    // m_agentSessions, which would invalidate an iteration over it.
+    QList<int> liveSessionIds;
+    bool anyExternal = false;
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
-        if (session.branchName != branch)
+        if (session.branchName != branch || session.merged)
             continue;
-        if (session.status == AgentStatus::Running ||
-            session.status == AgentStatus::Waiting ||
-            session.status == AgentStatus::Queued) {
-            const int sessionId = session.id;
-            if (m_headless || isExternalSession(sessionId)) {
-                setRepoDetailNotice(
-                    QStringLiteral("Agent #%1 is still working on %2. Stop it, then "
-                                   "merge so its committed work is included.")
-                        .arg(sessionId)
-                        .arg(branch),
-                    true);
-                return false;
-            }
-            QMessageBox box(this);
-            box.setIcon(QMessageBox::Warning);
-            box.setWindowTitle(QStringLiteral("Agent is still working"));
-            box.setText(QStringLiteral("Agent #%1 is still working on %2.")
-                            .arg(sessionId)
-                            .arg(branch));
-            box.setInformativeText(
-                QStringLiteral("Stop it and merge its committed work now? Any "
-                               "uncommitted work or later commits will not be included."));
-            QPushButton *stopAndMerge = box.addButton(
-                QStringLiteral("Stop agent && merge"), QMessageBox::AcceptRole);
-            box.addButton(QMessageBox::Cancel);
-            box.exec();
-            if (box.clickedButton() != stopAndMerge)
-                return false;
+        if (session.owner != detailOwner || session.name != detailName)
+            continue;
+        if (session.status != AgentStatus::Running &&
+            session.status != AgentStatus::Waiting &&
+            session.status != AgentStatus::Queued)
+            continue;
+        if (!agentSessionWorkInFlight(session.id)) {
+            logSystem(QStringLiteral("Git: Agent #%1's status still reads \"%2\" but "
+                                     "nothing is executing it — merging %3 without "
+                                     "stopping it.")
+                          .arg(session.id)
+                          .arg(session.status, branch));
+            continue;
+        }
+        liveSessionIds << session.id;
+        anyExternal = anyExternal || isExternalSession(session.id);
+    }
+    if (!liveSessionIds.isEmpty()) {
+        const QStringList names = [&liveSessionIds] {
+            QStringList out;
+            for (const int id : std::as_const(liveSessionIds))
+                out << QStringLiteral("#%1").arg(id);
+            return out;
+        }();
+        const QString who = liveSessionIds.size() == 1
+                                ? QStringLiteral("Agent %1 is").arg(names.first())
+                                : QStringLiteral("Agents %1 are")
+                                      .arg(names.join(QStringLiteral(", ")));
+        // Headless has nobody to ask, and a watch-only row is somebody else's CLI
+        // (its own Stop runs its own confirmation) — report instead of prompting.
+        if (m_headless || anyExternal) {
+            setRepoDetailNotice(
+                QStringLiteral("%1 still working on %2. %3, then merge so %4 "
+                               "committed work is included.")
+                    .arg(who, branch,
+                         liveSessionIds.size() == 1 ? QStringLiteral("Stop it")
+                                                    : QStringLiteral("Stop them"),
+                         liveSessionIds.size() == 1 ? QStringLiteral("its")
+                                                    : QStringLiteral("their")),
+                true);
+            return false;
+        }
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Warning);
+        box.setWindowTitle(QStringLiteral("Agent is still working"));
+        box.setText(QStringLiteral("%1 still working on %2.").arg(who, branch));
+        box.setInformativeText(
+            liveSessionIds.size() == 1
+                ? QStringLiteral("Stop it and merge its committed work now? Any "
+                                 "uncommitted work or later commits will not be "
+                                 "included.")
+                : QStringLiteral("Stop them and merge their committed work now? Any "
+                                 "uncommitted work or later commits will not be "
+                                 "included."));
+        QPushButton *stopAndMerge = box.addButton(
+            liveSessionIds.size() == 1 ? QStringLiteral("Stop agent && merge")
+                                       : QStringLiteral("Stop agents && merge"),
+            QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.exec();
+        if (box.clickedButton() != stopAndMerge)
+            return false;
+        for (const int sessionId : std::as_const(liveSessionIds)) {
             if (!stopAgentSessionById(sessionId)) {
                 setRepoDetailNotice(
                     QStringLiteral("Couldn't stop Agent #%1; its branch was left "
@@ -1583,8 +1637,11 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                     true);
                 return false;
             }
-            return mergeWorktreeIntoMain(branch, worktreePath, deleteAgent);
         }
+        // Retry from a fresh stack: the stops above reloaded the session list, and
+        // every id that blocked this merge is Stopped now, so the gate can only
+        // fall through on the way back in.
+        return mergeWorktreeIntoMain(branch, worktreePath, deleteAgent);
     }
     if (!repoHasWorkingTree()) {
         setRepoDetailNotice("Read-only mirror — nothing to merge into here.", true);
