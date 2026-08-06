@@ -288,6 +288,10 @@ test("dashboard chat shares clipboard images and documents", async ({ page }) =>
     "Connected",
   );
 
+  // The composer defaults to "Send to bot"; a paste only auto-shares to the
+  // room while the plain chat action is selected.
+  await page.locator("#fullChatAction").selectOption("chat");
+
   await page.locator("#fullChatInput").evaluate((input) => {
     const png = Uint8Array.from(atob(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",

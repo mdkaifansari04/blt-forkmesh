@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY_PATH = ROOT / "src/entry.py"
-ENTRY = ENTRY_PATH.read_text(encoding="utf-8")
+# The /status sampler + history projection live in the on-demand
+# status_monitoring module (kept out of Worker startup).
+ENTRY = (
+    ENTRY_PATH.read_text(encoding="utf-8") + "\n"
+    + ENTRY_PATH.with_name("status_monitoring.py").read_text(encoding="utf-8")
+)
 DEPLOY = (ROOT / "deploy.sh").read_text(encoding="utf-8")
 
 
@@ -55,7 +60,7 @@ def test_flagship_probe_applies_deploy_grace_without_delaying_real_outage_pings(
     assert sample.count("_deployment_status_grace_active(env, now)") == 2
     transition = ENTRY[
         ENTRY.index("async def _record_status_monitor_transitions"):
-        ENTRY.index("\ndef _status_expected_checks_for_hour")
+        ENTRY.index("\n\nasync def record_status_sample")
     ]
     # Deployment handoff is suppressed while sampling, not by holding every
     # real repository failure for five minutes in the alert path.

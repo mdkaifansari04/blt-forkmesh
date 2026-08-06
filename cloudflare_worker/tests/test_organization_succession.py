@@ -321,6 +321,7 @@ def test_routes_schema_migration_and_admin_boundary_are_integrated():
     ).read_text(encoding="utf-8")
     schema = SCHEMA.read_text(encoding="utf-8")
     entry = ENTRY.read_text(encoding="utf-8")
+    admin_console = (SRC / "admin_console.py").read_text(encoding="utf-8")
     for table in (
         "org_succession_policies",
         "org_succession_cases",
@@ -329,7 +330,8 @@ def test_routes_schema_migration_and_admin_boundary_are_integrated():
     ):
         assert "CREATE TABLE IF NOT EXISTS " + table in migration
         assert "CREATE TABLE IF NOT EXISTS " + table in schema
-        assert f'"{table}"' in entry.split("ADMIN_HIDDEN_TABLES", 1)[1]
+        assert f'"{table}"' in admin_console.split(
+            "ADMIN_HIDDEN_TABLES", 1)[1]
     assert "ORG_SUCCESSION_RE.match(url.path)" in entry
     assert "process_organization_succession_warnings(self.env)" in entry
     api_text = (SRC / "organization_succession_api.py").read_text(

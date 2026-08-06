@@ -3941,10 +3941,12 @@ function mountForkMeshDashboardChat() {
       const files = Array.from(fileInput.files || []);
       fileInput.value = "";
       if (files.length) {
-        stageDashboardAttachments(control, files);
-        if (inputEl !== fullInput || String(fullAction?.value || "chat") === "chat") {
-          void sendDashboardDraft(control);
-        }
+        void stageDashboardAttachments(control, files).then(() => {
+          if (inputEl !== fullInput || String(fullAction?.value || "chat") === "chat") {
+            return sendDashboardDraft(control);
+          }
+          return null;
+        });
       }
     });
     control.button.disabled = !canJoinChat();
