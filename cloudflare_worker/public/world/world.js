@@ -8635,7 +8635,10 @@ class ForkMeshWorld extends HTMLElement {
     if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
-      void this.refreshMirrorCatalogs();
+      void this.refreshMirrorCatalogs().catch(() => {
+        // Preserve the last verified snapshot during a transient HTTPS failure
+        // (fetchJSON may still be cooling down); the poll retries on its own.
+      });
     }
   };
 
@@ -8808,7 +8811,10 @@ class ForkMeshWorld extends HTMLElement {
     if (document.hidden) return;
     void this.refreshWorldTicket();
     this.connectPresence();
-    void this.refreshMirrorCatalogs();
+    void this.refreshMirrorCatalogs().catch(() => {
+      // Preserve the last verified snapshot during a transient HTTPS failure
+      // (fetchJSON may still be cooling down); the poll retries on its own.
+    });
   };
 
   worldCrashCount() {
