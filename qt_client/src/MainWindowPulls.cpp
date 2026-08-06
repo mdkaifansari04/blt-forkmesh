@@ -8580,15 +8580,18 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive,
         if (mirrorIntake)
             m_mirrorIssueIntakeInFlight.remove(intakeKey);
         if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(backoffKey,
-                                      QDateTime::currentMSecsSinceEpoch());
+            noteInboxDrainFailure(
+                backoffKey,
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt(),
+                mirrorIntake);
             if (interactive)
                 QMessageBox::warning(this, "Sync inbox",
                                      "Could not reach the inbox: " +
                                          reply->errorString());
             return;
         }
-        m_pollBackoff.noteSuccess(backoffKey);
+        noteInboxDrainSuccess(backoffKey);
         const QJsonArray pending =
             QJsonDocument::fromJson(reply->readAll())
                 .object()
