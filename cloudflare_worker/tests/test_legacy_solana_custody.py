@@ -285,7 +285,12 @@ def test_signing_code_exists_only_for_the_gated_deposit_sweep():
 
 
 def test_historical_status_and_admin_views_cannot_rewrite_or_reveal_keys():
-    worker = ENTRY.read_text(encoding="utf-8")
+    # The admin console (with its purge-table allowlist) loads on demand from
+    # its own module, outside Worker startup.
+    worker = (
+        ENTRY.read_text(encoding="utf-8") + "\n"
+        + ENTRY.with_name("admin_console.py").read_text(encoding="utf-8")
+    )
     account_status = worker[
         worker.index("async def _account_donation_status")
         : worker.index("def _signup_metadata")
