@@ -2078,44 +2078,6 @@ QWidget *MainWindow::buildSettingsSection()
     // Repositories: creating/importing repos and where mirrors live.
     auto *reposTab = flowBody();
 
-    // Notifications: every desktop-alert opt-in.
-    auto *notifyTab = new QWidget;
-    auto *notifyCol = new QVBoxLayout(notifyTab);
-    notifyCol->setContentsMargins(2, 14, 2, 14);
-    notifyCol->setSpacing(10);
-    notifyCol->addWidget(notifyLabel);
-    notifyCol->addWidget(inAppPingsCheck);
-    notifyCol->addWidget(inAppPingDuration, 0, Qt::AlignLeft);
-    notifyCol->addWidget(errorLogAlertCheck);
-    notifyCol->addWidget(pushAlertCheck);
-    notifyCol->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
-    notifyCol->addWidget(nodeConnectAlertCheck);
-    notifyCol->addWidget(disbursementAlertCheck);
-    notifyCol->addWidget(chatMessageAlertCheck);
-    notifyCol->addWidget(mentionAlertCheck);
-    notifyCol->addWidget(issueAlertCheck);
-    notifyCol->addWidget(pullAlertCheck);
-    notifyCol->addWidget(commentAlertCheck);
-    notifyCol->addWidget(mirrorUpdateAlertCheck);
-    notifyCol->addWidget(coveOpenAlertCheck);
-    notifyCol->addWidget(newUserAlertCheck);
-    notifyCol->addSpacing(6);
-    notifyCol->addWidget(emailNotifyLabel);
-    notifyCol->addWidget(emailMentionCheck);
-    notifyCol->addWidget(emailSubscribedCheck);
-    notifyCol->addWidget(emailPullCheck);
-    notifyCol->addWidget(emailIssueAssignedCheck);
-    notifyCol->addWidget(emailRepoSharedCheck);
-    notifyCol->addWidget(emailPendingInboxCheck);
-    notifyCol->addWidget(emailReleaseCheck);
-    notifyCol->addWidget(emailCreditsCheck);
-    notifyCol->addWidget(emailBountyFundedCheck);
-    notifyCol->addWidget(emailBountyPaidCheck);
-    notifyCol->addWidget(emailGeneralChatCheck);
-    notifyCol->addWidget(emailHostOnlineCheck);
-    notifyCol->addWidget(emailHostOfflineCheck);
-    notifyCol->addStretch();
-    addTab(notifyTab, "Pings");
     auto *repositoriesGroup = reposTab->addSection();
     repositoriesGroup->addLayout(settingsHeading(repositoriesLabel, "repo"));
     repositoriesGroup->addWidget(repositoriesHint);
@@ -2162,6 +2124,7 @@ QWidget *MainWindow::buildSettingsSection()
     pingsGroup->addLayout(settingsHeading(notifyLabel, "bell"));
     pingsGroup->addWidget(inAppPingsCheck);
     pingsGroup->addWidget(inAppPingDuration, 0, Qt::AlignLeft);
+    pingsGroup->addWidget(errorLogAlertCheck);
     pingsGroup->addWidget(pushAlertCheck);
     pingsGroup->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
     pingsGroup->addWidget(nodeConnectAlertCheck);
