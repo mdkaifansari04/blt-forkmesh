@@ -3530,16 +3530,51 @@ void MainWindow::refreshFooterWebsiteStatus()
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         m_footerWebsiteStatusInFlight = false;
         const QByteArray body = reply->readAll();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const bool transportOk = reply->error() == QNetworkReply::NoError;
         reply->deleteLater();
-        if (!transportOk)
-            return; // Retain the last good minute through a transient miss.
+        if (!transportOk && httpStatus <= 0) {
+            // This desktop never got an answer at all (DNS/timeout/refused):
+            // that says nothing about the relay, so keep showing the last
+            // good minute rather than paint a false outage from a local miss.
+            return;
+        }
         QJsonParseError error;
         const QJsonDocument document = QJsonDocument::fromJson(body, &error);
-        if (error.error != QJsonParseError::NoError || !document.isObject())
+        if (transportOk && error.error == QJsonParseError::NoError &&
+            document.isObject() &&
+            applyFooterWebsiteStatusPayload(document.object()))
             return;
-        applyFooterWebsiteStatusPayload(document.object());
+        // The edge answered — with an HTTP error, a Cloudflare error document,
+        // or malformed JSON — instead of the status payload. That is real
+        // information (this is exactly how a Worker exception/1101 shows up),
+        // so the dots must stop claiming the stale cached minute is current.
+        applyFooterWebsiteStatusFailure(httpStatus);
     });
+}
+
+// The relay's own /api/status fetch answered, but not with a usable status
+// payload — mark every relay-reported row unknown rather than keep repainting
+// whatever minute happened to be cached last, which would silently hide an
+// ongoing outage of the status endpoint itself.
+void MainWindow::applyFooterWebsiteStatusFailure(int httpStatus)
+{
+    if (m_footerRelayStatuses.isEmpty())
+        return;
+    const QString reason =
+        httpStatus > 0
+            ? QStringLiteral(
+                  "The status API answered HTTP %1 instead of a status "
+                  "payload, so this data is stale.")
+                  .arg(httpStatus)
+            : QStringLiteral("The status API did not return a usable "
+                             "payload, so this data is stale.");
+    for (FooterStatusRow &row : m_footerRelayStatuses) {
+        row.status = QStringLiteral("unknown");
+        row.reason = reason;
+    }
+    publishFooterWebsiteStatuses();
 }
 
 // Run both desktop-side edge checks for the active relay's public hostname.

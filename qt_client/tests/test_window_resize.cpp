@@ -205,6 +205,20 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("the debug row appends labeled green/red website "
                              "minute states"));
 
+        // A Cloudflare-edge failure of /api/status itself (e.g. a 1101 worker
+        // exception) must not leave the last-fetched green/red minutes on
+        // screen forever as though nothing happened — the relay-reported rows
+        // should go grey/unknown until a real payload is fetched again.
+        window.testApplyFooterWebsiteStatusFailure(500);
+        check(lights->websiteStatusCount() == 2 &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("unknown") &&
+                  lights->websiteStatusFor(QStringLiteral("api")) ==
+                      QStringLiteral("unknown"),
+              QStringLiteral("an HTTP error from the status API itself marks "
+                             "the relay-reported rows unknown instead of "
+                             "keeping the stale cached minute"));
+
         // adhoc #1564: the relay grades itself from inside Cloudflare, so the
         // last two dots are checked here instead — the site and the /status
         // page loaded over the real public hostname. A Cloudflare edge failure
