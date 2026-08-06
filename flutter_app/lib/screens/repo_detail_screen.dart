@@ -1454,6 +1454,7 @@ class _ActionsTabState extends State<_ActionsTab> {
                 _MobileCard(
                   icon: Icons.terminal_outlined,
                   iconColor: FmTheme.accent(context),
+                  iconWidget: _ActionRunStatusIcon(run: run),
                   title: run.displayName,
                   subtitle: [
                     if (run.refLabel.isNotEmpty) run.refLabel,
@@ -5530,6 +5531,7 @@ class _MobileCard extends StatelessWidget {
     this.badge = '',
     this.chips = const [],
     this.trailing,
+    this.iconWidget,
     this.onTap,
   });
   final IconData icon;
@@ -5539,6 +5541,7 @@ class _MobileCard extends StatelessWidget {
   final String badge;
   final List<String> chips;
   final Widget? trailing;
+  final Widget? iconWidget;
   final VoidCallback? onTap;
   @override
   Widget build(BuildContext context) => Padding(
@@ -5555,7 +5558,10 @@ class _MobileCard extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: iconColor),
+          if (iconWidget == null) ...[
+            Icon(icon, color: iconColor),
+          ] else
+            iconWidget!,
           const SizedBox(width: FmSpace.x3),
           Expanded(
             child: Column(
@@ -5707,6 +5713,116 @@ class _AsyncList<T> extends StatelessWidget {
       },
     );
   }
+}
+
+class _ActionRunStatusIconData {
+  const _ActionRunStatusIconData({
+    required this.icon,
+    required this.color,
+    this.spin = false,
+  });
+
+  final IconData icon;
+  final Color color;
+  final bool spin;
+}
+
+class _ActionRunStatusIcon extends StatefulWidget {
+  const _ActionRunStatusIcon({required this.run});
+
+  final ActionRun run;
+
+  @override
+  State<_ActionRunStatusIcon> createState() => _ActionRunStatusIconState();
+}
+
+class _ActionRunStatusIconState extends State<_ActionRunStatusIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1200),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _syncAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ActionRunStatusIcon oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.run.status != widget.run.status) _syncAnimation();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _syncAnimation() {
+    final isRunning = _actionRunStatusIconData(
+      context,
+      widget.run,
+    ).spin;
+    if (isRunning) {
+      _controller.repeat();
+    } else {
+      _controller.stop();
+      _controller.value = 0;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visual = _actionRunStatusIconData(context, widget.run);
+    final icon = Icon(visual.icon, color: visual.color, size: 24);
+    if (!visual.spin) return icon;
+    return SizedBox(
+      width: 24,
+      height: 24,
+      child: RotationTransition(
+        turns: _controller,
+        child: icon,
+      ),
+    );
+  }
+}
+
+_ActionRunStatusIconData _actionRunStatusIconData(
+  BuildContext context,
+  ActionRun run,
+) {
+  final status = run.statusLabel;
+  final spinning = run.status.toLowerCase() == 'running';
+  return switch (status) {
+    'Success' => _ActionRunStatusIconData(
+        icon: Icons.check_circle_outline,
+        color: FmTheme.success(context),
+      ),
+    'Failed' || 'Rejected' || 'Cancelled' => _ActionRunStatusIconData(
+        icon: Icons.error_outline,
+        color: FmTheme.danger(context),
+      ),
+    'Running' => _ActionRunStatusIconData(
+        icon: Icons.sync,
+        color: FmTheme.accent(context),
+        spin: spinning,
+      ),
+    'Queued' => _ActionRunStatusIconData(
+        icon: Icons.schedule,
+        color: FmTheme.accent(context),
+      ),
+    'Awaiting approval' => _ActionRunStatusIconData(
+        icon: Icons.hourglass_top,
+        color: FmTheme.accent(context),
+      ),
+    _ => _ActionRunStatusIconData(
+        icon: Icons.terminal_outlined,
+        color: FmTheme.textSecondary(context),
+      ),
+  };
 }
 
 class _WorktreesTab extends StatelessWidget {
