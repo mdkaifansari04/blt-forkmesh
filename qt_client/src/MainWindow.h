@@ -8068,6 +8068,7 @@ private:
     QPushButton *m_agentHideDetailButton = nullptr;
     bool m_agentDetailHidden = false;
     QLabel *m_agentTitle = nullptr;
+    QLabel *m_agentPromptLabel = nullptr;
     QToolButton *m_agentStatusPill = nullptr; // compact model + outcome control
     // The session's field list (agent/model/mode/repo/status/issue/PR/branch/
     // worktree/stats) and the popup it lives in — opened from the header's
@@ -8077,6 +8078,7 @@ private:
     // "Pop out": stop the session here and reopen its CLI conversation in the
     // user's own terminal, from the popup that shows the session id (adhoc #1584).
     QPushButton *m_agentPopOutButton = nullptr;
+    QPlainTextEdit *m_agentPrompt = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create PR" — pull requests are user-driven (adhoc #2 follow-up): a run

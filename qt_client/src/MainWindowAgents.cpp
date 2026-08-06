@@ -1842,6 +1842,7 @@ public:
     {
         setWordWrap(false);
         setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setTextInteractionFlags(Qt::TextSelectableByMouse);
         setFullText(text);
     }
 
@@ -2603,6 +2604,16 @@ QWidget *MainWindow::buildAgentsTab()
     statusRow->addLayout(actionRow);
     topRow->addLayout(statusRow);
     topRow->addWidget(m_agentTitle);
+    m_agentPromptLabel = new QLabel(QStringLiteral("Prompt"));
+    m_agentPromptLabel->setObjectName(QStringLiteral("agentPromptLabel"));
+    m_agentPrompt = new QPlainTextEdit;
+    m_agentPrompt->setObjectName(QStringLiteral("agentPrompt"));
+    m_agentPrompt->setReadOnly(true);
+    applyLogFont(m_agentPrompt);
+    m_agentPrompt->setPlaceholderText(
+        QStringLiteral("Select a session to view its original prompt."));
+    m_agentPrompt->setMaximumHeight(140);
+    m_agentPrompt->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
     m_agentLog = new QPlainTextEdit;
     m_agentLog->setReadOnly(true);
@@ -3019,6 +3030,8 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->setContentsMargins(12, 12, 22, 14);
     detailLayout->setSpacing(8);
     detailLayout->addLayout(topRow);
+    detailLayout->addWidget(m_agentPromptLabel);
+    detailLayout->addWidget(m_agentPrompt);
     // m_agentMeta is not laid out here any more — it lives in the popup opened
     // from the header's status control (adhoc #61).
     detailLayout->addWidget(m_agentNetPanel);
@@ -7869,6 +7882,10 @@ void MainWindow::showAgentSession(int sessionId)
             static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setStats(QString());
         if (m_agentNetPanel)
             m_agentNetPanel->clear();
+        if (m_agentPrompt)
+            m_agentPrompt->clear();
+        if (m_agentPromptLabel)
+            m_agentPromptLabel->setText(QStringLiteral("Prompt"));
         if (m_agentViewPrButton)
             m_agentViewPrButton->hide();
         if (m_agentCreatePrButton)
@@ -7948,6 +7965,15 @@ void MainWindow::showAgentSession(int sessionId)
                                    ? QStringLiteral("pull #%1").arg(session->prNumber)
                                    : adHocTitle));
         }
+    }
+    if (m_agentPromptLabel)
+        m_agentPromptLabel->setText(QStringLiteral("Prompt"));
+    if (m_agentPrompt) {
+        const QString prompt = session->prompt;
+        const QString fallback =
+            QStringLiteral("No initial prompt was stored for this session.");
+        m_agentPrompt->setPlaceholderText(QString());
+        m_agentPrompt->setPlainText(prompt.isEmpty() ? fallback : prompt);
     }
     // The detail header's key/value meta lines (identity, issue/branch/worktree/PR
     // chips, run Stats). Split out so the live-update paths can refresh just the
