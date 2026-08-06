@@ -4273,16 +4273,21 @@ protected:
 // Named transparent assets keep the source artwork inspectable and reusable
 // outside this control. Cache the QIcons because the combined menu is rebuilt
 // whenever a live provider catalog changes.
+//
+// Slots 0-6 are the seven robot portraits an agent bot already wears in the
+// World (cloudflare_worker/public/assets/bot-avatars), in that table's own
+// order, so one model reads the same in the composer picker, the Agents list
+// and the World. Use agentModelFaceIconIndex() rather than these numbers.
 inline QIcon agentControlIcon(int index)
 {
     static const char *const paths[] = {
-        ":/agent-ui/icons/model-starburst.png",
-        ":/agent-ui/icons/model-book-quill.png",
-        ":/agent-ui/icons/model-feather.png",
-        ":/agent-ui/icons/model-mountain-blossom.png",
-        ":/agent-ui/icons/model-sun.png",
-        ":/agent-ui/icons/model-globe-leaf.png",
-        ":/agent-ui/icons/model-crescent-moon.png",
+        ":/agent-ui/icons/model-opus-face.png",
+        ":/agent-ui/icons/model-sonnet-face.png",
+        ":/agent-ui/icons/model-haiku-face.png",
+        ":/agent-ui/icons/model-fable-face.png",
+        ":/agent-ui/icons/model-sol-face.png",
+        ":/agent-ui/icons/model-luna-face.png",
+        ":/agent-ui/icons/model-terra-face.png",
         ":/agent-ui/icons/mode-auto.png",
         ":/agent-ui/icons/mode-ask.png",
         ":/agent-ui/icons/mode-plan.png",
@@ -4367,6 +4372,37 @@ inline bool agentModelMatchesProvider(const QString &provider, const QString &mo
         provider.startsWith(QLatin1String("claude")))
         return agentModelIsClaudeStyle(model);
     return !agentModelIsClaudeStyle(model);
+}
+
+// agentControlIcon() slot holding the portrait a model wears. A session names
+// its model freely ("opus", "claude-sonnet-5", "gpt-5.5-codex"), so match the
+// face names by substring first and only then fall back per provider, exactly
+// as the World does: Claude reads as Sonnet, Codex as Sol, the OpenAI API as
+// Luna, anything else as Terra. Codex and OpenAI ids carry no face name of
+// their own, so the small models take Luna and the Codex line takes Sol. The
+// lookup never fails — every model gets a face.
+inline int agentModelFaceIconIndex(const QString &provider, const QString &model)
+{
+    static const char *const kFaces[] = {"opus", "sonnet", "haiku", "fable",
+                                         "sol",  "luna",   "terra"};
+    constexpr int kSonnetFace = 1;
+    constexpr int kSolFace = 4;
+    constexpr int kLunaFace = 5;
+    constexpr int kTerraFace = 6;
+    const QString m = model.trimmed().toLower();
+    for (int i = 0; i < 7; ++i)
+        if (m.contains(QLatin1String(kFaces[i])))
+            return i;
+    const QString p = provider.trimmed().toLower();
+    if (agentIsClaudeProvider(p) || agentModelIsClaudeStyle(m))
+        return kSonnetFace;
+    if (m.contains(QLatin1String("mini")) || m.contains(QLatin1String("nano")))
+        return kLunaFace;
+    if (agentIsCodexProvider(p) || m.contains(QLatin1String("codex")))
+        return kSolFace;
+    if (agentUsesOpenAiKey(p))
+        return kLunaFace;
+    return kTerraFace;
 }
 
 // Pre-model router for auto mode: a self-hosted, zero-cost heuristic pass over
