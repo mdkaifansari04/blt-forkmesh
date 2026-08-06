@@ -32,6 +32,15 @@ down. `FORKMESH_EXTERNAL_MIRROR_NODE=1` keeps the short-lived worker from
 fetching Git, publishing catalog state, or supervising gateway/tunnel children.
 There is no resident Qt service and therefore no idle Qt memory cost.
 
+Repository sync rides the same channel: the relay pushes a `commits` event
+when a source node publishes a moved public head, and the daemon fetches on
+that push (plus one catch-up per reconnect). The `syncInterval` fetch ticker
+only runs when an upstream lives outside the relay (a third-party git host
+that cannot push) or when the catalog — and therefore the channel — is
+disabled. A four-minute heartbeat cycle still republishes the catalog record
+and renews the HTTPS endpoint lease from local refs reads; that is a liveness
+proof, not a poll.
+
 ## Build and test
 
 ```sh

@@ -28,6 +28,7 @@ for the rest:
 | Qt headless mirror-bridge worker badges | fleet-wide `/pending` probes through every refresh tick | already skipped when headless (`MainWindowReleases.cpp` `fetchMirrorPendingCounts`) |
 | Qt desktop fallback inbox sync (`m_inboxPollTimer`) | `GET /api/sync` every 5m (15m while the event socket was up) | Timer deleted. The `NodeEventSocket` is the only sync trigger: push → debounced sync, plus one catch-up sync per (re)connect and one 20s post-launch pass. |
 | Qt desktop `/pending` badge fetch (`fetchMirrorPendingCounts`) | refetched on a 10m TTL through every roster/refresh tick | Fetch-once per repo; the cache entry is invalidated only by a node event push, a local drain, or an explicit repo open (user action). Steady-state ticks reuse the cache with no HTTP. Folding the tallies into the event frame itself (dropping the GET) remains open. |
+| Go mirror node git sync (`daemon.go` `syncLoop`) | upstream fetch + catalog publish every 30s | Push-driven: the relay fans a `commits` event to mirrors when a source publishes a moved public head (catalog publish path, `source == "local-node"` only, so mirror republishes cannot loop); the daemon fetches on that push, on reconnect catch-ups, and after each intake-worker exit. The `syncInterval` ticker survives only for third-party upstreams the relay cannot push for (or with the catalog disabled). The 4m heartbeat republish/lease-renewal cycle reads only local refs — liveness, exempt. |
 
 ## Inventory: still polling (relay-facing)
 
@@ -76,7 +77,6 @@ remaining 30s `renderPeople` tick is a local re-render, not a fetch.
 | # | Poller | Notes |
 | --- | --- | --- |
 | 19 | Relay cron `* * * * *` (`wrangler.toml`) | scheduled work, not client polling; audit which jobs could be event-triggered from the write path instead |
-| 20 | Go mirror node `syncLoop` (`daemon.go`) | 30s git fetch + catalog publish; see phase 2 |
 
 Already event-driven: the SSH post-receive refresh path
 (`packaging/systemd/forkmesh-mirror-refresh.path` is an inotify path unit;
@@ -95,13 +95,12 @@ each become a topic on the same socket (`admin-pending`, `directory`,
 `notes`, `agent-limits`); the relay's write paths already call
 `notify_repo_host` hooks where most of these change.
 
-**Phase 2 — mirror node git sync.** Add a `commits` push from the relay's
-post-receive/refresh paths to `ForkMeshNodes`, subscribe the Go daemon's
-`syncRequests` channel to the same `EventSocket` (it already exists for
-intake), and stretch `syncInterval` toward its 24h cap. Upstreams outside the
-relay (plain git remotes) cannot push, so repos with third-party upstreams
-keep a slow sync; relay-upstream repos go push-only. The 4m endpoint lease
-renewal stays — it is a liveness proof.
+**Phase 2 — mirror node git sync.** Done (see the eliminated table): the
+catalog publish path fans a `commits` event to mirrors on a moved source
+head, the daemon's `syncRequests` channel is subscribed to the shared
+`EventSocket`, and the fetch ticker only survives for third-party upstreams
+the relay cannot push for. The 4m endpoint lease renewal stays — it is a
+liveness proof.
 
 **Phase 3 — website.** The dashboard and world already hold sockets on several
 pages (chat, world, office, notes). Add a read-only, unauthenticated

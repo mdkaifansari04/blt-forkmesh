@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,7 @@ type Daemon struct {
 	identity       *Identity
 	supervisor     *Supervisor
 	intake         *IntakeBridge
+	events         *EventSocket
 	startedAt      time.Time
 	mu             sync.RWMutex
 	lastSyncAt     time.Time
@@ -83,28 +85,64 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 			return nil, errors.New("gateway contains an unsupported repository")
 		}
 	}
-	var intake *IntakeBridge
-	if cfg.IntakeProgram != "" {
-		// The event socket authenticates as this node's own account: the
-		// relay's mirror fan-out notifies the machine name registered in
-		// the catalog, and the account's signing key IS this identity key.
-		intake, err = NewIntakeBridge(cfg.IntakeProgram, cfg.CatalogURL,
-			cfg.IntakeOwner, cfg.IntakeRepository, gateway.Node.Name,
-			identity, cfg.IntakeIdleGrace.Duration)
+	// The node event channel authenticates as this node's own account: the
+	// relay's fan-outs notify the machine name registered in the catalog,
+	// and the account's signing key IS this identity key. It carries every
+	// push-driven trigger — intake wakes and "commits" sync nudges alike.
+	var events *EventSocket
+	if cfg.CatalogURL != "" {
+		events, err = NewEventSocket(cfg.CatalogURL, gateway.Node.Name, identity)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return &Daemon{
+	var intake *IntakeBridge
+	if cfg.IntakeProgram != "" {
+		if events == nil {
+			return nil, errors.New("intake requires catalogUrl")
+		}
+		intake = NewIntakeBridge(cfg.IntakeProgram, cfg.IntakeOwner,
+			cfg.IntakeRepository, cfg.IntakeIdleGrace.Duration)
+	}
+	daemon := &Daemon{
 		config:       cfg,
 		gateway:      gateway,
 		identity:     identity,
 		supervisor:   NewSupervisor(),
 		intake:       intake,
+		events:       events,
 		startedAt:    time.Now(),
 		repoStates:   map[string]string{},
 		syncRequests: make(chan struct{}, 1),
-	}, nil
+	}
+	if events != nil {
+		events.Handler = daemon.handleNodeEvent
+	}
+	if intake != nil {
+		intake.onWorkerExit = daemon.requestSync
+	}
+	return daemon, nil
+}
+
+// handleNodeEvent fans one relay push out to everything push-driven: the
+// intake bridge (which filters for its repository and inbox topics) and the
+// repository sync. A catch-up event — fired once per successful (re)connect —
+// wakes both, which is the entire missed-push story: there is no fallback
+// poll behind the channel (docs/operations/polling-elimination.md).
+func (d *Daemon) handleNodeEvent(event Event) {
+	if d.intake != nil {
+		d.intake.handleEvent(event)
+	}
+	if event.CatchUp || event.Topic == "commits" {
+		d.requestSync()
+	}
+}
+
+func (d *Daemon) requestSync() {
+	select {
+	case d.syncRequests <- struct{}{}:
+	default:
+	}
 }
 
 func (d *Daemon) Run(ctx context.Context, executable string) error {
@@ -142,6 +180,9 @@ func (d *Daemon) Run(ctx context.Context, executable string) error {
 	// Preflighting once makes the first gateway process the usable one.
 	d.syncOnce(ctx)
 	go d.supervisor.Run(ctx, specs)
+	if d.events != nil {
+		go d.events.Run(ctx)
+	}
 	if d.intake != nil {
 		go d.intake.Run(ctx)
 	}
@@ -166,22 +207,65 @@ func (d *Daemon) Run(ctx context.Context, executable string) error {
 // helper command in the gateway configuration.
 func (d *Daemon) configPath() string { return os.Getenv("FORKMESH_MIRROR_NODE_CONFIG") }
 
+// hasExternalUpstreams reports whether any configured upstream lives outside
+// the relay. The relay pushes a "commits" event the moment a source publishes
+// a new head for a relay-hosted upstream, so only third-party upstreams —
+// which cannot push — still justify a periodic fetch.
+func (d *Daemon) hasExternalUpstreams() bool {
+	catalog, err := url.Parse(d.config.CatalogURL)
+	if err != nil || catalog.Host == "" {
+		return true
+	}
+	for _, upstreams := range d.config.Upstreams {
+		for _, upstream := range upstreams {
+			parsed, err := url.Parse(upstream)
+			if err != nil || !strings.EqualFold(parsed.Host, catalog.Host) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (d *Daemon) syncLoop(ctx context.Context) {
-	ticker := time.NewTicker(d.config.SyncInterval.Duration)
-	defer ticker.Stop()
+	// The periodic fetch tick survives only where pushes cannot reach: an
+	// upstream on a third-party git host, or a node running without the
+	// catalog (and therefore without the event channel). Relay-hosted
+	// upstreams sync on "commits" pushes and reconnect catch-ups instead —
+	// no fallback poll (docs/operations/polling-elimination.md).
+	var fetchTick <-chan time.Time
+	if d.events == nil || d.hasExternalUpstreams() {
+		ticker := time.NewTicker(d.config.SyncInterval.Duration)
+		defer ticker.Stop()
+		fetchTick = ticker.C
+	}
+	// The heartbeat is a liveness proof, not a poll: it reads only local
+	// refs, republishes the catalog record, and renews the HTTPS endpoint
+	// lease — no upstream fetch. It also publishes refs the intake worker
+	// changed if the worker-exit nudge was lost.
+	heartbeat := time.NewTicker(endpointRenewInterval)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-fetchTick:
 			d.syncOnce(ctx)
+		case <-heartbeat.C:
+			d.publishOnce(ctx)
 		case <-d.syncRequests:
 			d.syncOnce(ctx)
 		}
 	}
 }
 
-func (d *Daemon) syncOnce(parent context.Context) {
+// syncOnce fetches upstreams, reconciles the served refs, and publishes.
+// publishOnce does the same minus the upstream fetch — the local-read,
+// publish-and-renew liveness cycle.
+func (d *Daemon) syncOnce(parent context.Context)    { d.cycle(parent, true) }
+func (d *Daemon) publishOnce(parent context.Context) { d.cycle(parent, false) }
+
+func (d *Daemon) cycle(parent context.Context, fetch bool) {
 	ctx, cancel := context.WithTimeout(parent, d.config.SyncTimeout.Duration)
 	defer cancel()
 	changed := false
@@ -192,7 +276,7 @@ func (d *Daemon) syncOnce(parent context.Context) {
 		repo := &d.gateway.Repositories[i]
 		key := repositoryKey(*repo)
 		upstreams := d.upstreamsFor(*repo)
-		if !seenDirs[repo.GitDir] {
+		if fetch && !seenDirs[repo.GitDir] {
 			seenDirs[repo.GitDir] = true
 			if err := syncRepository(ctx, *repo, upstreams); err != nil {
 				failures = append(failures, key+": "+err.Error())
