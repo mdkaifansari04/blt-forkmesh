@@ -2998,9 +2998,7 @@ QWidget *MainWindow::buildSiteDeployCard()
     m_siteDeployOutput->setPlaceholderText(
         QStringLiteral("deploy.sh output appears here live; credentials are "
                        "redacted."));
-    QFont deployMono(QStringLiteral("monospace"));
-    deployMono.setStyleHint(QFont::Monospace);
-    m_siteDeployOutput->setFont(deployMono);
+    applyLogFont(m_siteDeployOutput);
     col->addWidget(m_siteDeployOutput);
     return card;
 }
