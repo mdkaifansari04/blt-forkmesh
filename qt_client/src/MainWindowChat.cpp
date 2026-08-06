@@ -3732,16 +3732,12 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
     for (int i = 0; i < claudeModels.count(); ++i) {
         const QString id = claudeModels.itemData(i).toString();
-        const QString lower = id.toLower();
-        int icon = 7;
-        if (lower.contains(QLatin1String("opus")))
-            icon = 0;
-        else if (lower.contains(QLatin1String("fable")))
-            icon = 1;
-        else if (lower.contains(QLatin1String("sonnet")))
-            icon = 2;
-        else if (lower.contains(QLatin1String("haiku")))
-            icon = 3;
+        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
+        // borrowing one model's portrait.
+        const int icon =
+            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
+                ? 7
+                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
         addModel(agentControlIcon(icon),
                  compactModelName(claudeModels.itemText(i)),
                  QStringLiteral("claude-code"), id,
@@ -3751,8 +3747,9 @@ void MainWindow::refreshQuickAddAgentModelSelector()
     QComboBox codexModels;
     populateCodexModelCombo(&codexModels);
     for (int i = 0; i < codexModels.count(); ++i) {
-        addModel(agentControlIcon(4 + (i % 3)), codexModels.itemText(i),
-                 kCodexProvider, codexModels.itemData(i).toString(),
+        const QString id = codexModels.itemData(i).toString();
+        addModel(agentControlIcon(agentModelFaceIconIndex(kCodexProvider, id)),
+                 codexModels.itemText(i), kCodexProvider, id,
                  QStringLiteral("Codex"));
     }
 
@@ -3819,12 +3816,14 @@ void MainWindow::refreshQuickAddAgentModelSelector()
 
     // These API agents do not expose a per-run model chooser in this composer,
     // but remain first-class choices in the combined menu.
-    addChoice(agentControlIcon(4), QStringLiteral("OpenAI API"),
-              QStringLiteral("openai"), QString(),
+    addChoice(agentControlIcon(
+                  agentModelFaceIconIndex(QStringLiteral("openai"), QString())),
+              QStringLiteral("OpenAI API"), QStringLiteral("openai"), QString(),
               QStringLiteral("Headless OpenAI API agent"));
-    addChoice(agentControlIcon(2), QStringLiteral("Claude API"),
-              QStringLiteral("claude-api"), QString(),
-              QStringLiteral("Headless Claude API agent"));
+    addChoice(agentControlIcon(agentModelFaceIconIndex(
+                  QStringLiteral("claude-api"), QString())),
+              QStringLiteral("Claude API"), QStringLiteral("claude-api"),
+              QString(), QStringLiteral("Headless Claude API agent"));
 
     // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
     // rather than starting an agent, so they are appended as their own group
@@ -3837,7 +3836,11 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         // Cloudflare AI only answers a prompt and never creates a branch, so it
         // has no merge outcome to count. Keep its label distinct rather than
         // presenting a misleading permanent "0 merged" score.
-        addChoice(agentControlIcon(5), label, kCloudflareAiProvider,
+        // One face for the whole group: these are relay models, so the per-id
+        // lookup has no portrait of its own to find.
+        addChoice(agentControlIcon(agentModelFaceIconIndex(kCloudflareAiProvider,
+                                                          QString())),
+                  label, kCloudflareAiProvider,
                   cloudflareModels.itemData(i).toString(),
                   QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
                                  "starts no agent").arg(label));
