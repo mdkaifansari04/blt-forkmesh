@@ -302,25 +302,19 @@ void setDiffSplitPref(bool split);
 // overlay (adhoc #56). Unlike diffFileHeaderHtml this carries no Viewed toggle
 // or table layout — it renders inline in a QLabel.
 QString diffStickyLabelHtml(const DiffFileEntry &f);
-// Progressive, paged diff rendering. QTextEdit::setHtml() parses, styles and
-// lays out the whole document synchronously on the GUI thread, so handing it a
-// multi-megabyte diff freezes the window. Large files are split at row
-// boundaries and grouped into bounded pages; one page is resident at a time and
-// its small fragments stream one event-loop turn at a time. No diff rows are
-// discarded.
+// Progressive, continuously scrollable diff rendering. QTextEdit::setHtml()
+// parses, styles and lays out the whole document synchronously on the GUI
+// thread, so large files are split at row boundaries and their small fragments
+// stream one event-loop turn at a time. No diff rows are discarded.
 void renderDiffStreamed(QTextEdit *view, const QString &html,
                         const QString &styleSheet);
-// Repaint the resident page with a new stylesheet (diff zoom/theme changes)
-// without retaining a second copy of the complete source HTML on the widget.
+// Repaint the streamed document with a new stylesheet (diff zoom/theme
+// changes) without retaining a second copy of the complete source HTML on the
+// widget.
 bool restyleDiffStreamed(QTextEdit *view, const QString &styleSheet);
-// Select the page containing an anchor and scroll to it once that page's
-// progressive render reaches the anchor. Used by changed-file navigation.
+// Scroll to an anchor once its progressive render reaches it. Used by
+// changed-file navigation.
 void scrollDiffToAnchor(QTextEdit *view, const QString &anchor);
-// Introspection/navigation used by the embedded page controls and performance
-// regression test.
-int diffPageCount(QTextEdit *view);
-int diffCurrentPage(QTextEdit *view);
-void showDiffPage(QTextEdit *view, int page);
 // Ensure a streamed diff continues filling. This deliberately does *not* force
 // its remaining HTML into the document synchronously: doing that from an anchor
 // jump or a document-wide search bypassed the streaming limits and recreated the
@@ -3072,6 +3066,10 @@ const QString kMachineNodeNameSetting = QStringLiteral("node/machineName");
 // Persisted Hosts list (adhoc #263): non-sensitive JSON metadata only
 // ({name, ip, user, status}). Legacy password fields are removed on load.
 const QString kHostsSetting = QStringLiteral("hosts/list");
+const QString kMirrorFleetEnabledSetting =
+    QStringLiteral("hosts/healthyMirrorFleet/enabled");
+const QString kMirrorFleetDesiredSetting =
+    QStringLiteral("hosts/healthyMirrorFleet/desired");
 const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
 const QString kServerUrlSetting = QStringLiteral("server/url");
@@ -3291,6 +3289,10 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // desktop; seeded on for headless installs in main.cpp (an operator-run VM has
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
+// When on, the automatic update/rebuild pipeline is allowed to relaunch
+// ForkMesh after finding an update. Turn this off to prevent self-initiated
+// restarts (for example, when you want manual control over every restart).
+const QString kAutoUpdateRestartSetting = QStringLiteral("update/autoUpdateRestart");
 // Hourly local snapshots of the live database (Settings -> Data -> Automatic
 // backups). OFF by default everywhere because a rolling day of multi-gigabyte
 // tarballs filled control machines and small VPS disks. An explicit true turns
@@ -3758,13 +3760,15 @@ const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit")
 // staying blank until someone opens the Tasks page (adhoc #79).
 const QString kOrganizationTaskOpenCountSetting =
     QStringLiteral("tasks/openCount");
-// Canonical prefixes this desktop signs with its account key to open and close
-// an organization task when it has no account session token to present (the
+// Canonical prefixes this desktop signs with its account key to open, update,
+// and close an organization task when it has no account session token to present (the
 // authenticateSilently path holds keys, not sessions). Must stay byte-identical
 // to ORG_TASK_OPEN_PROOF / ORG_TASK_COMPLETE_PROOF in the worker's entry.py.
 const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
 const QString kOrgTaskCompleteProof =
     QStringLiteral("forkmesh-org-task-complete-v1");
+const QString kOrgTaskAgentStatusProof =
+    QStringLiteral("forkmesh-org-task-agent-status-v1");
 // Same key, reading the board. Without it the Tasks tab was empty for every
 // operator who launched normally instead of typing a password (adhoc #52).
 // Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
@@ -3794,6 +3798,11 @@ const QString kAccountAlertReadProof =
 // stay byte-identical to ACCOUNT_ALERT_DELETE_PROOF in entry.py.
 const QString kAccountAlertDeleteProof =
     QStringLiteral("forkmesh-account-alert-delete-v1");
+// Clearing all website pings is broader than deleting one row, so it requires
+// its own signed proof. Must stay byte-identical to ACCOUNT_ALERT_CLEAR_PROOF
+// in entry.py.
+const QString kAccountAlertClearProof =
+    QStringLiteral("forkmesh-account-alert-clear-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
@@ -4434,6 +4443,8 @@ inline QString codexChatGptModelId(const QString &model)
     const QString trimmed = model.trimmed();
     if (trimmed.isEmpty())
         return QStringLiteral("gpt-5.5");
+    if (trimmed == QLatin1String("gpt-5.3-codex-spark"))
+        return QStringLiteral("gpt-5.3-spark");
     if (trimmed == QLatin1String("gpt-5.5-codex"))
         return QStringLiteral("gpt-5.5");
     if (trimmed == QLatin1String("gpt-5.4"))
@@ -4724,6 +4735,10 @@ inline QString agentModelLabel(const QString &model)
         {QStringLiteral("gpt-5"), QStringLiteral("GPT-5")},
         {QStringLiteral("gpt-5.1"), QStringLiteral("GPT-5.1")},
         {QStringLiteral("gpt-5.1-codex"), QStringLiteral("GPT-5.1 Codex")},
+        {QStringLiteral("gpt-5.3"), QStringLiteral("GPT-5.3")},
+        {QStringLiteral("gpt-5.3-spark"), QStringLiteral("GPT-5.3 Spark")},
+        {QStringLiteral("gpt-5.3-codex-spark"),
+         QStringLiteral("GPT-5.3 Codex Spark")},
         {QStringLiteral("gpt-5.4"), QStringLiteral("GPT-5.4")},
         {QStringLiteral("gpt-5.4-mini"), QStringLiteral("GPT-5.4-Mini")},
         {QStringLiteral("gpt-5.5"), QStringLiteral("GPT-5.5")},
@@ -4756,6 +4771,8 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
         combo->addItem(QStringLiteral("GPT-5.5 Codex"),
                        QStringLiteral("gpt-5.5-codex"));
+        combo->addItem(QStringLiteral("GPT-5.3 Codex Spark"),
+                       QStringLiteral("gpt-5.3-codex-spark"));
         combo->addItem(QStringLiteral("GPT-5.1 Codex"),
                        QStringLiteral("gpt-5.1-codex"));
         combo->addItem(QStringLiteral("GPT-5.1"), QStringLiteral("gpt-5.1"));

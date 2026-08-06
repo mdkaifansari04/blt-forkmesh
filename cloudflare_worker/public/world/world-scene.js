@@ -87,6 +87,15 @@ const WORLD_PATH_HEIGHT = 0.08;
 const WORLD_PATH_SURFACE_Y = 0.105;
 const WORLD_PATH_CENTER_Y =
   WORLD_PATH_SURFACE_Y - WORLD_PATH_HEIGHT / 2;
+// The World edge walk deliberately has no deck. It starts at the eastern edge
+// of the city lawn and continues into empty space so triangle diagnostics can
+// isolate a path with nothing beneath the visitor. Its two boundaries are
+// single Three.js lines, rather than thin mesh rails or a hidden floor.
+const VOID_WALK_CENTER_Z = 270;
+const VOID_WALK_START_X = 178;
+const VOID_WALK_END_X = WORLD_RADIUS + 120;
+const VOID_WALK_HALF_WIDTH = 4;
+const VOID_WALK_RAIL_Y = WORLD_PATH_SURFACE_Y + 0.12;
 const DISTRICT_GROUND_RADIUS = 48;
 // The mirror-node yard is open to the rest of the World. Its rich pool and
 // cabinet displays are only useful when the camera approaches, while distant
@@ -351,6 +360,67 @@ const WORLD_AGENT_BOTS = Object.freeze([
     glow: "#8fffe0",
   },
 ]);
+// Model emblem art for the per-session agent robots. Each entry mirrors one
+// portrait in /assets/bot-avatars/ (the -face.webp files are 512px repacks of
+// the same art, small enough for a fleet): the emblem becomes the robot's
+// face plate and the shell/glow colours repaint its body to match the
+// portrait's armor and accent light.
+const WORLD_AGENT_BOT_AVATAR_LOOKS = Object.freeze({
+  opus: {
+    texture: "/assets/bot-avatars/opus-face.webp",
+    shell: "#b8892f",
+    glow: "#b07bff",
+  },
+  sonnet: {
+    texture: "/assets/bot-avatars/sonnet-face.webp",
+    shell: "#d09a3c",
+    glow: "#ff70bd",
+  },
+  haiku: {
+    texture: "/assets/bot-avatars/haiku-face.webp",
+    shell: "#c3ced1",
+    glow: "#59e5e8",
+  },
+  fable: {
+    texture: "/assets/bot-avatars/fable-face.webp",
+    shell: "#a08434",
+    glow: "#4fd9c2",
+  },
+  sol: {
+    texture: "/assets/bot-avatars/sol-face.webp",
+    shell: "#e9b23a",
+    glow: "#ffd25e",
+  },
+  luna: {
+    texture: "/assets/bot-avatars/luna-face.webp",
+    shell: "#4a4173",
+    glow: "#9678ff",
+  },
+  terra: {
+    texture: "/assets/bot-avatars/terra-face.webp",
+    shell: "#8e7a3d",
+    glow: "#79e77f",
+  },
+});
+// A session names its model freely ("opus", "claude-sonnet-5", …), so match
+// by substring first and only then fall back to a provider default: Claude
+// runs read as Sonnet, Codex as Sol, OpenAI API as Luna, anything else as
+// Terra. The lookup never fails — every robot gets a face.
+function agentBotAvatarLook(provider, model) {
+  const wantedModel = String(model || "").toLowerCase();
+  for (const [name, look] of Object.entries(WORLD_AGENT_BOT_AVATAR_LOOKS)) {
+    if (wantedModel.includes(name)) return { name, ...look };
+  }
+  const wantedProvider = String(provider || "").toLowerCase();
+  const fallback = wantedProvider.startsWith("claude")
+    ? "sonnet"
+    : wantedProvider === "codex"
+      ? "sol"
+      : wantedProvider === "openai"
+        ? "luna"
+        : "terra";
+  return { name: fallback, ...WORLD_AGENT_BOT_AVATAR_LOOKS[fallback] };
+}
 // The public World has one shared ground plane plus three regional labels.
 // Deprecated off-world destinations are deliberately not valid spawn spaces.
 const WORLD_SPACE_FLOORS = Object.freeze({
@@ -399,6 +469,18 @@ function cityWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   return false;
 }
 
+function voidWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
+  const px = Number(x);
+  const pz = Number(z);
+  const margin = Math.max(0, Number(radius) || 0);
+  if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
+  return (
+    px >= VOID_WALK_START_X + margin &&
+    px <= VOID_WALK_END_X - margin &&
+    Math.abs(pz - VOID_WALK_CENTER_Z) <= VOID_WALK_HALF_WIDTH - margin
+  );
+}
+
 function beachWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   const px = Number(x);
   const pz = Number(z);
@@ -420,6 +502,7 @@ function beachWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
 function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   return (
     cityWalkSurfaceContains(x, z, radius) ||
+    voidWalkSurfaceContains(x, z, radius) ||
     beachWalkSurfaceContains(x, z, radius)
   );
 }
@@ -8081,6 +8164,78 @@ function createAgentRobot(THREE, bot, id) {
   return group;
 }
 
+function createDesktopAgentRobot(THREE, session, textureLoader) {
+  const appearance = desktopAgentModel(session?.model, session?.provider);
+  const status = desktopAgentStatus(session?.status);
+  const group = new THREE.Group();
+  group.name = `desktop-agent:${String(session?.id || "unknown")}`;
+  group.userData.infrastructureKind = "desktop-agent";
+
+  const ball = new THREE.Mesh(
+    new THREE.SphereGeometry(0.52, 22, 15),
+    makeMaterial(THREE, "#14272c", {
+      metalness: 0.72,
+      roughness: 0.24,
+      emissive: appearance.shell,
+      emissiveIntensity: 0.2,
+    }),
+  );
+  ball.position.y = 0.56;
+  group.add(ball);
+
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.55, 0.62, 0.82, 20),
+    makeMaterial(THREE, appearance.shell, {
+      metalness: 0.5,
+      roughness: 0.28,
+      emissive: appearance.shell,
+      emissiveIntensity: 0.26,
+    }),
+  );
+  body.position.y = 1.15;
+  group.add(body);
+
+  const portrait = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: textureLoader.load(appearance.icon),
+      transparent: true,
+      toneMapped: false,
+      depthWrite: false,
+    }),
+  );
+  portrait.name = "desktop-agent-model-symbol";
+  portrait.scale.set(0.72, 0.72, 1);
+  portrait.position.set(0, 1.16, 0.58);
+  group.add(portrait);
+
+  const mast = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035, 0.035, 0.42, 8),
+    makeMaterial(THREE, "#bed9d2", { metalness: 0.65, roughness: 0.28 }),
+  );
+  mast.position.y = 1.78;
+  group.add(mast);
+  const light = new THREE.Mesh(
+    new THREE.SphereGeometry(0.12, 14, 10),
+    makeMaterial(THREE, status.color, {
+      emissive: status.color,
+      emissiveIntensity: 2,
+    }),
+  );
+  light.position.y = 2.02;
+  group.add(light);
+
+  group.userData.rollingBall = ball;
+  group.userData.body = body;
+  group.userData.portrait = portrait;
+  group.userData.statusLight = light;
+  group.userData.modelKey = `${appearance.label}|${appearance.icon}`;
+  group.userData.label = null;
+  setShadows(group);
+  portrait.castShadow = false;
+  portrait.receiveShadow = false;
+  return group;
+}
+
 function createSystemCapacityPlatform(THREE) {
   const district = new THREE.Group();
   district.name = "system-capacity-infrastructure";
@@ -8765,6 +8920,35 @@ function createLandscapePath(
   path.receiveShadow = true;
   path.userData.ground = true;
   return path;
+}
+
+function createVoidWalkRails(THREE) {
+  const rails = new THREE.Group();
+  rails.name = "forkmesh-void-walk-rails";
+  const railMaterial = new THREE.LineBasicMaterial({
+    color: "#d8f7ff",
+    transparent: true,
+    opacity: 0.9,
+  });
+  [-VOID_WALK_HALF_WIDTH, VOID_WALK_HALF_WIDTH].forEach((offset, index) => {
+    const geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(
+        VOID_WALK_START_X,
+        VOID_WALK_RAIL_Y,
+        VOID_WALK_CENTER_Z + offset,
+      ),
+      new THREE.Vector3(
+        VOID_WALK_END_X,
+        VOID_WALK_RAIL_Y,
+        VOID_WALK_CENTER_Z + offset,
+      ),
+    ]);
+    const rail = new THREE.Line(geometry, railMaterial);
+    rail.name = `forkmesh-void-walk-${index === 0 ? "south" : "north"}-rail`;
+    rail.userData.voidWalkRail = true;
+    rails.add(rail);
+  });
+  return rails;
 }
 
 const projectAssetTextures = new WeakMap();
@@ -17034,6 +17218,12 @@ export function createWorldScene({
 
   const townLandscape = createTownLandscape(THREE);
   world.add(townLandscape);
+  // This is intentionally only two one-segment Lines: beyond the city lawn
+  // there is no deck, terrain, or other mesh under the walker. The Elements
+  // diagnostics therefore reports this route as zero triangles while the two
+  // rails still make its otherwise invisible bounds easy to follow.
+  const voidWalkRails = createVoidWalkRails(THREE);
+  world.add(voidWalkRails);
   registerWorldElement(
     "city-terrain", "City terrain", "Terrain",
     continuousCityLand,
@@ -17041,6 +17231,10 @@ export function createWorldScene({
   registerWorldElement(
     "town-landscape", "Town landscaping, buildings & trees", "Terrain",
     townLandscape,
+  );
+  registerWorldElement(
+    "void-walk-rails", "World edge walk · line rails", "Terrain",
+    voidWalkRails,
   );
 
   // The bike street is one exact circle on top of the shared grass slab.
@@ -17163,7 +17357,7 @@ export function createWorldScene({
     setShadows(bike);
     world.add(bike);
     registerWorldElement("bikes", "World bikes", "Vehicles & rides", bike);
-    const state = { bike, wheels, seat, moving: false, angle: 0 };
+    const state = { bike, wheels, seat, hint, moving: false, angle: 0 };
     placeBikeOnLane(state, along * Math.PI * 2);
     bikeStates.push(state);
   }
@@ -19259,7 +19453,8 @@ export function createWorldScene({
   const activeWalkSurfaceContains = (x, z, radius = OFFICE_AVATAR_RADIUS) =>
     beachSceneActive
       ? beachWalkSurfaceContains(x, z, radius)
-      : cityWalkSurfaceContains(x, z, radius);
+      : cityWalkSurfaceContains(x, z, radius) ||
+        voidWalkSurfaceContains(x, z, radius);
   let activeEnclosureScene = "";
   const enclosureHiddenWorldRoots = new Map();
 
@@ -19648,6 +19843,8 @@ export function createWorldScene({
   // mirror; these avatars are only a visible chat/status surface.
   const agentBots = new Map();
   const agentBotStates = new Map();
+  const desktopAgentBots = new Map();
+  const desktopAgentTextureLoader = new THREE.TextureLoader();
   let agentBotAccessAllowed = false;
   let repositoryIssueAgentPicker = null;
   // A mirror-push socket frame is only a doorbell. It may arm a short-lived
@@ -19690,6 +19887,9 @@ export function createWorldScene({
       ],
     };
     const botKey = `session:${sessionId}`;
+    // The robot wears its model's portrait: emblem face plate, matching body
+    // paint, and the portrait's accent light as its halo and status glow.
+    const look = agentBotAvatarLook(session?.provider, session?.model);
     const avatar = new THREE.Group();
     avatar.name = `${config.id}-agent-droid-${sessionId}`;
     avatar.userData.name = `${config.label} ${
@@ -19708,7 +19908,7 @@ export function createWorldScene({
       makeMaterial(THREE, "#162d32", {
         metalness: 0.7,
         roughness: 0.24,
-        emissive: config.shell,
+        emissive: look.shell,
         emissiveIntensity: 0.25,
       }),
     );
@@ -19716,23 +19916,69 @@ export function createWorldScene({
     avatar.add(ball);
     const shell = new THREE.Mesh(
       new THREE.CylinderGeometry(0.48, 0.54, 0.72, 18),
-      makeMaterial(THREE, config.shell, {
-        metalness: 0.45,
-        roughness: 0.3,
-        emissive: config.shell,
-        emissiveIntensity: 0.22,
+      makeMaterial(THREE, look.shell, {
+        metalness: 0.55,
+        roughness: 0.28,
+        emissive: look.shell,
+        emissiveIntensity: 0.2,
       }),
     );
     shell.position.y = 1.08;
     avatar.add(shell);
+    // Every portrait shares the same ornate gold rim, so the armor gets thin
+    // gold bands at the shell's edges regardless of model colourway.
+    const trimMaterial = makeMaterial(THREE, "#d8b04a", {
+      metalness: 0.9,
+      roughness: 0.24,
+      emissive: "#8a6a1d",
+      emissiveIntensity: 0.28,
+    });
+    const trimTop = new THREE.Mesh(
+      new THREE.TorusGeometry(0.482, 0.02, 8, 36),
+      trimMaterial,
+    );
+    trimTop.rotation.x = Math.PI / 2;
+    trimTop.position.y = 1.42;
+    avatar.add(trimTop);
+    const trimBottom = new THREE.Mesh(
+      new THREE.TorusGeometry(0.538, 0.02, 8, 36),
+      trimMaterial,
+    );
+    trimBottom.rotation.x = Math.PI / 2;
+    trimBottom.position.y = 0.74;
+    avatar.add(trimBottom);
+    // Face plate: the model emblem itself. The texture is cached per path, so
+    // a 50-robot fleet decodes at most the seven portraits; the emissive copy
+    // keeps the face readable after the world switches to night.
+    const faceTexture = projectAssetTexture(THREE, look.texture);
+    const face = new THREE.Mesh(
+      new THREE.CircleGeometry(0.26, 36),
+      new THREE.MeshStandardMaterial({
+        map: faceTexture,
+        emissive: "#ffffff",
+        emissiveMap: faceTexture,
+        emissiveIntensity: 0.72,
+        roughness: 0.52,
+        metalness: 0.18,
+      }),
+    );
+    face.name = `agent-face:${sessionId}`;
+    face.userData.sharedAssetMap = true;
+    face.position.set(0, 1.18, 0.548);
+    avatar.add(face);
+    // The halo ring around the face carries the old eye's status pulse: it is
+    // registered as the state's `eye`, so updateAgentBots keeps animating the
+    // same material slot it always has.
     const eye = new THREE.Mesh(
-      new THREE.SphereGeometry(0.1, 12, 8),
-      makeMaterial(THREE, config.glow, {
-        emissive: config.glow,
+      new THREE.TorusGeometry(0.276, 0.024, 10, 44),
+      makeMaterial(THREE, "#d8b04a", {
+        metalness: 0.85,
+        roughness: 0.22,
+        emissive: look.glow,
         emissiveIntensity: 1.8,
       }),
     );
-    eye.position.set(0, 1.27, 0.5);
+    eye.position.set(0, 1.18, 0.542);
     avatar.add(eye);
     const statusStem = new THREE.Mesh(
       new THREE.CylinderGeometry(0.025, 0.025, 0.34, 7),
@@ -19753,23 +19999,26 @@ export function createWorldScene({
     statusLight.name = `agent-status-light:${sessionId}`;
     statusLight.position.set(0, 1.94, 0);
     avatar.add(statusLight);
+    const screenLabel = `${config.label} · ${look.name.toUpperCase()}`;
     const screenTexture = canvasTexture(THREE, 512, 176, (context, canvas) => {
       context.fillStyle = "#071917";
       context.fillRect(0, 0, canvas.width, canvas.height);
-      context.strokeStyle = config.glow;
+      context.strokeStyle = look.glow;
       context.lineWidth = 10;
       context.strokeRect(6, 6, canvas.width - 12, canvas.height - 12);
-      context.fillStyle = config.glow;
+      context.fillStyle = look.glow;
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.font = '800 62px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(config.label, canvas.width / 2, canvas.height / 2);
+      context.font = screenLabel.length > 12
+        ? '800 46px "ForkMesh Mono", ui-monospace, monospace'
+        : '800 62px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(screenLabel, canvas.width / 2, canvas.height / 2);
     });
     const screen = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.82, 0.28),
+      new THREE.PlaneGeometry(0.66, 0.24),
       new THREE.MeshBasicMaterial({ map: screenTexture, toneMapped: false }),
     );
-    screen.position.set(0, 1.02, 0.57);
+    screen.position.set(0, 0.79, 0.575);
     avatar.add(screen);
     avatar.userData.rollingBall = ball;
     avatar.traverse((child) => {
@@ -19781,6 +20030,7 @@ export function createWorldScene({
     agentBots.set(botKey, avatar);
     agentBotStates.set(botKey, {
       config,
+      look,
       avatar,
       botKey,
       session,
@@ -19816,13 +20066,17 @@ export function createWorldScene({
         interactiveIndex = interactive.indexOf(child);
       }
       child.geometry?.dispose?.();
+      // Face plates borrow the model portrait from the shared per-path
+      // texture cache; disposing it here would blank every other robot
+      // wearing the same emblem, so only bot-private maps are released.
+      const sharedMap = Boolean(child.userData.sharedAssetMap);
       if (Array.isArray(child.material)) {
         child.material.forEach((material) => {
-          material?.map?.dispose?.();
+          if (!sharedMap) material?.map?.dispose?.();
           material?.dispose?.();
         });
       } else {
-        child.material?.map?.dispose?.();
+        if (!sharedMap) child.material?.map?.dispose?.();
         child.material?.dispose?.();
       }
     });
@@ -27688,6 +27942,188 @@ export function createWorldScene({
     return agentBotAccessAllowed;
   }
 
+  function paintDesktopAgentBot(state) {
+    const { avatar, session } = state;
+    const appearance = desktopAgentModel(session.model, session.provider);
+    const status = desktopAgentStatus(session.status);
+    avatar.userData.body.material.color.set(appearance.shell);
+    avatar.userData.body.material.emissive.set(appearance.shell);
+    avatar.userData.rollingBall.material.emissive.set(appearance.shell);
+    const modelKey = `${appearance.label}|${appearance.icon}`;
+    if (avatar.userData.modelKey !== modelKey) {
+      avatar.userData.portrait.material.map?.dispose?.();
+      avatar.userData.portrait.material.map =
+        desktopAgentTextureLoader.load(appearance.icon);
+      avatar.userData.portrait.material.needsUpdate = true;
+      avatar.userData.modelKey = modelKey;
+    }
+    avatar.userData.statusLight.material.color.set(status.color);
+    avatar.userData.statusLight.material.emissive.set(status.color);
+    const effort = String(session.strength || "default").slice(0, 16);
+    const labelKey = `${appearance.label}|${effort}|${status.label}`;
+    if (avatar.userData.labelKey === labelKey) return;
+    if (avatar.userData.label) {
+      avatar.remove(avatar.userData.label);
+      disposeObject3D(avatar.userData.label);
+    }
+    const label = makeLabelSprite(
+      THREE,
+      appearance.label,
+      `${effort} effort · ${status.label}`,
+      status.color,
+    );
+    label.name = "desktop-agent-status-label";
+    label.scale.set(2.55, 0.85, 1);
+    label.position.y = 2.86;
+    avatar.add(label);
+    avatar.userData.label = label;
+    avatar.userData.labelKey = labelKey;
+  }
+
+  function defaultDesktopAgentTarget(index, total) {
+    const columns = Math.max(1, Math.ceil(Math.sqrt(total)));
+    const row = Math.floor(index / columns);
+    const column = index % columns;
+    return new THREE.Vector3(
+      FORKBOT_HOME[0] + 7 +
+        (column - (columns - 1) / 2) * DESKTOP_AGENT_GRID_SPACING,
+      FORKBOT_HOME[1],
+      FORKBOT_HOME[2] + 5 + row * DESKTOP_AGENT_GRID_SPACING,
+    );
+  }
+
+  function updateDesktopAgentBots(sessions = []) {
+    const safe = (Array.isArray(sessions) ? sessions : [])
+      .filter((session) =>
+        String(session?.taskId || "").trim() &&
+        String(session?.id || "").trim(),
+      )
+      .slice(0, 24);
+    const seen = new Set();
+    const now = performance.now();
+    safe.forEach((session, index) => {
+      const key = String(session.taskId).trim().slice(0, 64);
+      seen.add(key);
+      let state = desktopAgentBots.get(key);
+      if (!state) {
+        const avatar = createDesktopAgentRobot(
+          THREE,
+          session,
+          desktopAgentTextureLoader,
+        );
+        const target = defaultDesktopAgentTarget(index, safe.length);
+        state = {
+          avatar,
+          session: { ...session },
+          target,
+          dropAt: now + index * 90,
+          phase: hashNumber(key) * 0.0001,
+        };
+        avatar.position.set(
+          target.x,
+          target.y + DESKTOP_AGENT_DROP_HEIGHT,
+          target.z,
+        );
+        desktopAgentBots.set(key, state);
+        world.add(avatar);
+        const registeredAvatar = avatar;
+        registerWorldElement(
+          "agent-npcs",
+          "Desktop agent bots",
+          "Avatars & bots",
+          avatar,
+          () => desktopAgentBots.get(key)?.avatar === registeredAvatar,
+        );
+      } else {
+        state.session = { ...session };
+      }
+      paintDesktopAgentBot(state);
+    });
+    for (const [key, state] of desktopAgentBots.entries()) {
+      if (seen.has(key)) continue;
+      world.remove(state.avatar);
+      disposeObject3D(state.avatar);
+      desktopAgentBots.delete(key);
+    }
+    return desktopAgentBots.size;
+  }
+
+  function summonDesktopAgentBots() {
+    const states = Array.from(desktopAgentBots.values());
+    if (!states.length) return 0;
+    const columns = Math.max(1, Math.ceil(Math.sqrt(states.length)));
+    const rows = Math.ceil(states.length / columns);
+    const heading = player.rotation.y;
+    const forward = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
+    const right = new THREE.Vector3(Math.cos(heading), 0, -Math.sin(heading));
+    const center = player.position.clone().addScaledVector(forward, 6.5);
+    const now = performance.now();
+    states.forEach((state, index) => {
+      const row = Math.floor(index / columns);
+      const column = index % columns;
+      state.target.copy(center)
+        .addScaledVector(
+          right,
+          (column - (columns - 1) / 2) * DESKTOP_AGENT_GRID_SPACING,
+        )
+        .addScaledVector(
+          forward,
+          (row - (rows - 1) / 2) * DESKTOP_AGENT_GRID_SPACING,
+        );
+      state.target.y = currentFloorY;
+      state.dropAt = now + index * 110;
+      state.avatar.position.set(
+        state.target.x,
+        state.target.y + DESKTOP_AGENT_DROP_HEIGHT,
+        state.target.z,
+      );
+      state.avatar.visible = true;
+    });
+    return states.length;
+  }
+
+  function updateDesktopAgentBotMotion(delta, time) {
+    const now = performance.now();
+    for (const state of desktopAgentBots.values()) {
+      const { avatar, target } = state;
+      if (state.dropAt) {
+        const elapsed = now - state.dropAt;
+        if (elapsed < 0) {
+          avatar.visible = false;
+          continue;
+        }
+        avatar.visible = true;
+        const progress = reducedMotion
+          ? 1
+          : clamp(elapsed / DESKTOP_AGENT_DROP_MS, 0, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        avatar.position.x = target.x;
+        avatar.position.z = target.z;
+        avatar.position.y =
+          target.y + (1 - eased) * DESKTOP_AGENT_DROP_HEIGHT +
+          Math.sin(progress * Math.PI * 3) * (1 - progress) * 0.55;
+        if (progress >= 1) state.dropAt = 0;
+      } else {
+        const dx = target.x - avatar.position.x;
+        const dz = target.z - avatar.position.z;
+        const distance = Math.hypot(dx, dz);
+        if (distance > 0.03) {
+          const step = Math.min(distance, FORKBOT_SPEED * delta);
+          avatar.position.x += (dx / distance) * step;
+          avatar.position.z += (dz / distance) * step;
+          avatar.userData.rollingBall.rotation.x -= step * 1.8;
+          avatar.rotation.y = Math.atan2(dx, dz);
+        }
+        avatar.position.y = target.y +
+          (reducedMotion ? 0 : Math.sin(time * 0.0025 + state.phase) * 0.035);
+      }
+      const light = avatar.userData.statusLight;
+      const speed = state.session.status === "running" ? 0.014 : 0.007;
+      light.material.emissiveIntensity =
+        0.65 + (Math.sin(time * speed + state.phase) + 1) * 1.15;
+    }
+  }
+
   function paintForkbotScreen(state) {
     const canvas = forkbotScreenTexture.image;
     drawForkbotScreen(canvas.getContext("2d"), canvas, state);
@@ -34502,7 +34938,10 @@ export function createWorldScene({
     // can measure exactly what that population costs.
     if (worldElementEnabled("remote-avatars")) updateRemotePlayers(delta, time);
     if (worldElementEnabled("forkbot")) updateForkbot(delta, time);
-    if (worldElementEnabled("agent-npcs")) updateAgentBots(delta, time);
+    if (worldElementEnabled("agent-npcs")) {
+      updateAgentBots(delta, time);
+      updateDesktopAgentBotMotion(delta, time);
+    }
     const repositoryLoadingTail = world.userData.repositorySizeLoadingTail;
     if (repositoryLoadingTail?.visible) {
       repositoryLoadingTail.rotation.z = time * 0.008;
@@ -35580,6 +36019,9 @@ export function createWorldScene({
     exciteAgentBot,
     completeAgentTask,
     showAgentTaskBubble,
+    updateDesktopAgentBots,
+    summonDesktopAgentBots,
+    desktopAgentBotCount: () => desktopAgentBots.size,
     updateRewardPool,
     playRewardEvent,
     setPaused,

@@ -2138,6 +2138,12 @@ private:
                                        const QString &successMessage,
                                        int attempt = 0);
     void finishVultrProvision(bool ok, const QString &message);
+    // Opt-in desired-capacity controller for ForkMesh-managed Vultr mirrors.
+    // It reads the public flagship mirror catalog, creates one replacement
+    // when healthy capacity is short, and destroys one excess managed instance
+    // at a time when the target is lowered. Manually added hosts are excluded.
+    void reconcileDesiredMirrorFleet();
+    void destroyDesiredMirrorFleetNode(const QString &node);
     // Print the per-attempt record collected for this provision run into the
     // install log, so a finished run shows what every attempt did (adhoc #342).
     void appendVultrAttemptHistory();
@@ -2484,12 +2490,12 @@ private:
     // Register a diff viewer so it shares the text-size zoom: tracks it for the
     // +/- buttons and watches its viewport for Ctrl+wheel (issue #254).
     void registerDiffView(QTextEdit *view);
-    // Set a diff viewer's HTML. renderDiffStreamed retains bounded page fragments,
-    // keeps one page resident, and streams that page off the event loop; font-size
-    // changes repaint those fragments without retaining another full HTML copy.
+    // Set a diff viewer's HTML. renderDiffStreamed retains bounded fragments and
+    // streams them into one continuously scrollable document; font-size changes
+    // repaint those fragments without retaining another full HTML copy.
     void setDiffHtml(QTextEdit *view, const QString &html);
-    // Hook run when a diff view's resident page is complete; refreshes state
-    // derived from that page (sticky file positions and search).
+    // Hook run when a diff view has fully streamed; refreshes state derived from
+    // its document (sticky file positions and search).
     void onDiffStreamFinished(QTextEdit *view);
     // Scroll the Files-changed diff to the next/previous change relative to what
     // is currently on screen. delta is +1 (next) or -1 (prev).
@@ -3316,8 +3322,8 @@ private:
     // an alert raised on the site is readable — and openable — in the desktop
     // (adhoc #59). Throttled unless `force`, because it rides the heartbeat.
     void refreshWebAlerts(bool force = false);
-    // Mark every mirrored website alert read, on the site and here.
-    void markWebAlertsRead();
+    // Remove every mirrored website ping from the site and this page.
+    void clearWebAlerts();
     // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
     void updateNavRebuildButton();
     // Show the top-bar "Log in / Sign up" pill only while this machine has no
@@ -5848,6 +5854,11 @@ private:
     QCheckBox *m_vultrAgentClisCheck = nullptr;
     QPushButton *m_vultrCreateButton = nullptr;
     QLabel *m_vultrStatus = nullptr;
+    QCheckBox *m_mirrorFleetEnabledCheck = nullptr;
+    QSpinBox *m_mirrorFleetDesiredSpin = nullptr;
+    QLabel *m_mirrorFleetStatus = nullptr;
+    bool m_mirrorFleetReconcileInFlight = false;
+    bool m_mirrorFleetMutationInFlight = false;
     QWidget *m_vultrProgressPanel = nullptr;
     QList<QLabel *> m_vultrStageNumbers;
     QList<QLabel *> m_vultrStageLabels;
@@ -7690,6 +7701,10 @@ private:
     // status through the same authenticated lease after the run finishes.  The
     // same object is persisted on AgentSession for restart recovery.
     QHash<int, QJsonObject> m_orgAgentBindings;
+    // Last live state mirrored into the World task for each local session.
+    // reloadAgents() is intentionally chatty; this cache turns unchanged rows
+    // into no-ops while still republishing once after an app restart.
+    QHash<int, QString> m_orgTaskAgentStatusSent;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
@@ -7941,6 +7956,7 @@ private:
     // POST /api/tasks for a freshly created session and record the id it gets
     // back on the session. No-op unless session.orgTask is set.
     void openOrgTaskForSession(const AgentSession &session);
+    void syncOrgTaskAgentStatus(int sessionId);
     // POST /api/tasks/<id>/complete once the run reaches a terminal status,
     // stamping the finishing bot. No-op without an org task, while the run is
     // still going, or once finishedByBot is already set.

@@ -4947,18 +4947,29 @@
 
   function renderOrgAgentSession(session) {
     const history = Array.isArray(session.history) ? session.history : [];
+    const agentInfo =
+      session?.agentInfo && typeof session.agentInfo === "object"
+        ? session.agentInfo
+        : {};
+    const agentLabel = session?.provider === "codex" ? "Codex" : "Claude Code";
+    const permissionLabel = agentInfo.mode || "Node default";
+    const reasoningEffort = agentInfo.strength || "Provider default";
+    const modelLabel = agentInfo.model || session?.requestedModel || "Provider default";
     const promptable = ["running", "queued"].includes(String(session.status || ""));
     return `
-      <article class="grid gap-3 border-t border-border px-4 py-4" data-org-agent-session="${escapeHtml(session.id || "")}">
+      <article class="grid gap-3 border-t border-border px-4 py-4" data-org-agent-session="${escapeHtml(session.id || "")}" title="${escapeHtml(`Agent: ${agentLabel} · Permission: ${permissionLabel} · Reasoning effort: ${reasoningEffort}`)}">
         <div class="flex flex-wrap items-center gap-2">
           <span class="rounded-full border border-border px-2 py-0.5 font-mono text-[11px] ${repoAgentStatusTone(session.status)}">${escapeHtml(session.status || "unknown")}</span>
           <strong class="min-w-0 flex-1 truncate text-sm text-foreground">${escapeHtml(session.title || `${session.provider || "Agent"} session`)}</strong>
-          <span class="font-mono text-[11px] text-muted-foreground">${escapeHtml(session.provider === "codex" ? "Codex" : "Claude Code")}</span>
+          <span class="font-mono text-[11px] text-muted-foreground">${escapeHtml(agentLabel)}</span>
+          <span class="font-mono text-[11px] text-muted-foreground">${escapeHtml(modelLabel)}</span>
         </div>
         <div class="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
           <span>mirror <span class="font-mono text-foreground">${escapeHtml(session.targetNode || "pending")}</span></span>
           <span>started by @${escapeHtml(session.createdBy || "member")}</span>
           <span>Haiku gate: ${escapeHtml(session.security?.state || "pending")}</span>
+          <span>permission <span class="font-mono text-foreground">${escapeHtml(permissionLabel)}</span></span>
+          <span>reasoning <span class="font-mono text-foreground">${escapeHtml(reasoningEffort)}</span></span>
           ${session.taskKey ? `<span>board <span class="font-mono text-foreground">${escapeHtml(session.taskKey)}</span></span>` : ""}
         </div>
         <div class="max-h-72 space-y-2 overflow-auto rounded-md border border-border bg-secondary/20 p-3">

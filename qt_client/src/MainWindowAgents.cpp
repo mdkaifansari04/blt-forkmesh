@@ -3698,6 +3698,8 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
             QStringLiteral("gpt-5.6-sol"),
             QStringLiteral("gpt-5.6-luna"),
             QStringLiteral("gpt-5.6-terra"),
+            QStringLiteral("gpt-5.3-codex-spark"),
+            QStringLiteral("gpt-5.3-spark"),
         };
         const QJsonObject security =
             job.value(QStringLiteral("securityCheck")).toObject();
@@ -5898,6 +5900,8 @@ void MainWindow::reloadAgents()
         showAgentSession(m_selectedAgentSessionId);
     updateAgentsTabIndicator();
     refreshAgentDotMatrix();
+    for (const AgentSession &session : std::as_const(m_agentSessions))
+        syncOrgTaskAgentStatus(session.id);
     updateAgentsNavBadge();
     // Every agent-completion path reaches this reload (adhoc #111: the process-exit
     // handler for stream/codex sessions, and the embedded-terminal path, both call
@@ -7173,6 +7177,10 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
         completeOrgTaskForSession(id, QStringLiteral("The work has been merged."));
     if (changed) {
         refreshAgentTable();
+        // The prompt picker ranks models by merged sessions, so surface a
+        // verified merge immediately instead of waiting for the next composer
+        // selection or app restart to rebuild its counts.
+        refreshQuickAddAgentModelSelector();
         if (m_selectedAgentSessionId > 0)
             showAgentSession(m_selectedAgentSessionId);
     } else
@@ -7354,6 +7362,7 @@ void MainWindow::markAgentSessionsLanded(const QList<int> &sessionIds, bool refr
         if (!m_agentTableRefreshing)
             m_agentDiffRefreshPending = true;
         refreshAgentTable();
+        refreshQuickAddAgentModelSelector();
         if (m_selectedAgentSessionId > 0)
             showAgentSession(m_selectedAgentSessionId);
     }
@@ -10240,7 +10249,21 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // agent I restarted mid-task shows as done". Re-queue it instead, so it
         // gets another resume attempt like initAgents()'s recovery (issue #242).
         if (AgentSession *as = findAgentSession(sid)) {
-            if (as->status == AgentStatus::Running ||
+            // A one-shot transport can exit just after emitting its final
+            // `result`, before the subprocess-drain poll runs. That is a clean
+            // completion, not a crash: don't turn the already-finished session
+            // back into Queued/Working.
+            const bool completedResult = m_agentCompletionChecks.contains(sid);
+            if (completedResult) {
+                m_agentCompletionChecks.remove(sid);
+                if (as->status == AgentStatus::Running) {
+                    as->status = AgentStatus::Success;
+                    as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                    as->lastError.clear();
+                    m_agentStore->saveSession(*as);
+                    updateAgentStatusCell(sid);
+                }
+            } else if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
                 // Only re-queue a process that actually got somewhere (crash mid-turn);
                 // one that never produced a session id at all (bad install, expired
@@ -10376,6 +10399,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                             .value(codex ? kCodexModelSetting : kClaudeCodeModelSetting)
                             .toString()
                             .trimmed();
+    if (codex)
+        selectedModel = codexChatGptModelId(selectedModel);
     const QString launchProvider = codex ? kCodexProvider : QStringLiteral("claude-code");
     if (!agentModelMatchesProvider(launchProvider, selectedModel))
         selectedModel.clear();
@@ -11835,6 +11860,7 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     AgentSession *s = findAgentSession(sessionId);
     if (!s)
         return;
+    syncOrgTaskAgentStatus(sessionId);
     // anyAgentRunning() falls back to this frozen creation-time snapshot for a
     // stream/codex session that hasn't landed in m_agentSessions yet (see
     // startCliTranscript). Keep it in step with every real transition here so a
@@ -13098,6 +13124,8 @@ void MainWindow::recordOrgTaskFields(int sessionId, const QString &taskId,
     if (!finishedByBot.isEmpty())
         s->finishedByBot = finishedByBot;
     m_agentStore->saveSession(*s);
+    if (!taskId.isEmpty())
+        syncOrgTaskAgentStatus(sessionId);
 }
 
 void MainWindow::openOrgTaskForSession(const AgentSession &session)
@@ -13145,6 +13173,7 @@ void MainWindow::openOrgTaskForSession(const AgentSession &session)
              {QStringLiteral("mode"), session.mode},
              {QStringLiteral("strength"), session.strength},
              {QStringLiteral("sessionId"), QString::number(session.id)},
+             {QStringLiteral("status"), session.status},
          }},
     };
     const int sessionId = session.id;
@@ -13175,6 +13204,46 @@ void MainWindow::openOrgTaskForSession(const AgentSession &session)
             return;
         recordOrgTaskFields(sessionId, taskId, QString());
     });
+}
+
+void MainWindow::syncOrgTaskAgentStatus(int sessionId)
+{
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->orgTaskId.isEmpty() || isExternalSession(sessionId) ||
+        !m_networkAccess)
+        return;
+    const QString status = session->status.trimmed().toLower();
+    if (status != AgentStatus::Queued && status != AgentStatus::Running &&
+        status != AgentStatus::Waiting && status != AgentStatus::Success &&
+        status != AgentStatus::Failed && status != AgentStatus::Stopped)
+        return;
+    if (m_orgTaskAgentStatusSent.value(sessionId) == status)
+        return;
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/tasks/") + session->orgTaskId +
+                QStringLiteral("/agent-status"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    QNetworkRequest request;
+    if (!authenticateOrgTaskRequest(url, request, kOrgTaskAgentStatusProof,
+                                    session->orgTaskId))
+        return;
+    m_orgTaskAgentStatusSent.insert(sessionId, status);
+    QNetworkReply *reply = m_networkAccess->post(
+        request,
+        QJsonDocument(QJsonObject{{QStringLiteral("status"), status}})
+            .toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, sessionId, status] {
+                const int response =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                reply->deleteLater();
+                if ((response < 200 || response >= 300) &&
+                    m_orgTaskAgentStatusSent.value(sessionId) == status)
+                    m_orgTaskAgentStatusSent.remove(sessionId);
+            });
 }
 
 void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followUp)
@@ -13249,6 +13318,7 @@ void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followU
              {QStringLiteral("model"), session.model},
              {QStringLiteral("mode"), session.mode},
              {QStringLiteral("strength"), session.strength},
+             {QStringLiteral("status"), session.status},
          }},
     };
     QNetworkReply *reply = m_networkAccess->post(

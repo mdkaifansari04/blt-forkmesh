@@ -752,6 +752,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
               [this] { refreshHostsTable(); });
     traceStep(QStringLiteral("populate Relays navigation count"),
               [this] { refreshRelaysTable(); });
+    // Desired healthy mirror capacity is an app-level setting, not a page
+    // activity. When it is enabled, build the deferred Network/Hosts controls
+    // once after construction so their 30-second health timer and durable
+    // provisioning resume logic keep running even if the operator never opens
+    // the Hosts tab during this session.
+    if (QSettings().value(kMirrorFleetEnabledSetting, false).toBool()) {
+        QTimer::singleShot(0, this, [this] {
+            ensureSectionBuilt(kNetworkDiagnosticsSectionIndex);
+            reconcileDesiredMirrorFleet();
+        });
+    }
     logStartup(QStringLiteral("MainWindow ctor complete"));
 }
 

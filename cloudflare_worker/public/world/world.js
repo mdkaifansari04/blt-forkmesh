@@ -4401,6 +4401,15 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button
               class="world-top-link"
               type="button"
+              data-world-agent-summon
+              aria-label="Summon desktop agents into a status grid"
+              title="Summon desktop agents into a status grid"
+            >
+              <span aria-hidden="true">🤖</span><span class="world-top-link-label">Summon agents</span>
+            </button>
+            <button
+              class="world-top-link"
+              type="button"
               data-world-camera-toggle
               aria-pressed="false"
               aria-label="Enter first-person view"
@@ -7237,8 +7246,12 @@ class ForkMeshWorld extends HTMLElement {
         }
       }, WORLD_QA_POLL_MS);
       void this.refreshOrgAgentBots();
+      void this.refreshDesktopAgentBots();
       this.orgAgentTimer = window.setInterval(
-        () => void this.refreshOrgAgentBots(),
+        () => {
+          void this.refreshOrgAgentBots();
+          void this.refreshDesktopAgentBots();
+        },
         WORLD_AGENT_BOT_POLL_MS,
       );
       this.sessionWatchTimer = window.setInterval(
@@ -8365,6 +8378,53 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async refreshDesktopAgentBots() {
+    if (
+      this.destroyed ||
+      !this.sessionAuthenticated ||
+      !validWorldSession()
+    ) {
+      this.world?.updateDesktopAgentBots?.([]);
+      return [];
+    }
+    try {
+      const payload = await this.fetchJSON("/api/tasks", {
+        timeout: 10_000,
+        cache: "no-store",
+        dedupe: true,
+      });
+      const sessions = (Array.isArray(payload?.tasks) ? payload.tasks : [])
+        .filter((task) => task?.agent?.sessionId)
+        .sort(
+          (left, right) =>
+            Number(right?.createdAt || 0) - Number(left?.createdAt || 0),
+        )
+        .slice(0, 24)
+        .map((task) => ({
+          id: String(task.agent.sessionId).slice(0, 64),
+          taskId: String(task.id || "").slice(0, 64),
+          title: String(task.title || "").slice(0, 120),
+          provider: String(task.agent.provider || "").slice(0, 40),
+          model: String(task.agent.model || "").slice(0, 64),
+          strength: String(task.agent.strength || "").slice(0, 16),
+          status:
+            String(task.agent.status || "").toLowerCase() ||
+            (task.status === "done"
+              ? "success"
+              : task.status === "active"
+                ? "running"
+                : "queued"),
+        }));
+      this.world?.updateDesktopAgentBots?.(sessions);
+      return sessions;
+    } catch (error) {
+      if ([401, 403].includes(Number(error?.status || 0))) {
+        this.world?.updateDesktopAgentBots?.([]);
+      }
+      return [];
+    }
+  }
+
   async refreshOrgAgentBots() {
     if (
       this.destroyed ||
@@ -8575,7 +8635,10 @@ class ForkMeshWorld extends HTMLElement {
     if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
-      void this.refreshMirrorCatalogs();
+      void this.refreshMirrorCatalogs().catch(() => {
+        // Preserve the last verified snapshot during a transient HTTPS failure
+        // (fetchJSON may still be cooling down); the poll retries on its own.
+      });
     }
   };
 
@@ -8748,7 +8811,10 @@ class ForkMeshWorld extends HTMLElement {
     if (document.hidden) return;
     void this.refreshWorldTicket();
     this.connectPresence();
-    void this.refreshMirrorCatalogs();
+    void this.refreshMirrorCatalogs().catch(() => {
+      // Preserve the last verified snapshot during a transient HTTPS failure
+      // (fetchJSON may still be cooling down); the poll retries on its own.
+    });
   };
 
   worldCrashCount() {
@@ -11193,6 +11259,22 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-camera-toggle]")) {
         this.toggleWorldCameraMode();
+        return;
+      }
+      if (event.target.closest("[data-world-agent-summon]")) {
+        const announce = () => {
+          const count = Number(this.world?.summonDesktopAgentBots?.() || 0);
+          this.toast(
+            count
+              ? `${count} desktop agent${count === 1 ? "" : "s"} summoned.`
+              : "No desktop agent runs are available to summon yet.",
+          );
+        };
+        if (Number(this.world?.desktopAgentBotCount?.() || 0) > 0) {
+          announce();
+        } else {
+          void this.refreshDesktopAgentBots().then(announce);
+        }
         return;
       }
       if (event.target.closest("[data-world-jetpack-toggle]")) {
@@ -14949,6 +15031,10 @@ class ForkMeshWorld extends HTMLElement {
       const history = Array.isArray(session?.history)
         ? session.history.slice(-80)
         : [];
+      const agentLabel =
+        session?.provider === "codex" ? "Codex" : "Claude Code";
+      const permissionMode = info.mode || "Node default";
+      const reasoningEffort = info.strength || "Provider default";
       const promptable =
         canQueueAgent &&
         ["running", "queued"].includes(String(session?.status || ""));
@@ -14969,9 +15055,7 @@ class ForkMeshWorld extends HTMLElement {
             )}</strong>
             <span>${escapeHTML(
               session?.displayStatus || session?.status || "unknown",
-            )} · ${escapeHTML(
-              session?.provider === "codex" ? "Codex" : "Claude Code",
-            )}</span>
+            )} · ${escapeHTML(agentLabel)} · ${escapeHTML(permissionMode)} · ${escapeHTML(reasoningEffort)}</span>
           </summary>
           ${
             session?.diagnostic?.message
@@ -15003,6 +15087,7 @@ class ForkMeshWorld extends HTMLElement {
             <div><dt>Local session</dt><dd>${escapeHTML(
               session?.localAgentId || "Pending",
             )}</dd></div>
+            <div><dt>Agent</dt><dd>${escapeHTML(agentLabel)}</dd></div>
             <div><dt>Created by</dt><dd>@${escapeHTML(
               session?.createdBy || "member",
             )}</dd></div>
@@ -15025,6 +15110,9 @@ class ForkMeshWorld extends HTMLElement {
               info.model ||
                 session?.requestedModel ||
                 "Provider default",
+            )}</dd></div>
+            <div><dt>Reasoning effort</dt><dd>${escapeHTML(
+              reasoningEffort,
             )}</dd></div>
             <div><dt>Issue</dt><dd>${
               Number(session?.issueNumber) > 0
