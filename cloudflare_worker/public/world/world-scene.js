@@ -15967,52 +15967,8 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     );
     group.add(facadeColumn);
   }
-  const floorAccentColors = [
-    "#9ef7c6",
-    "#f7c96b",
-    "#77d9ff",
-    "#ff8ab6",
-    "#ff7189",
-    "#64d6ff",
-    "#b6ef7e",
-    "#c7a0ff",
-    "#ffaf75",
-    "#a7dfff",
-  ];
-  OFFICE_FLOORS.forEach((floor, index) => {
-    const accent = floorAccentColors[index];
-    const plaqueTexture = canvasTexture(THREE, 768, 176, (context) => {
-      context.fillStyle = "#071714";
-      context.fillRect(0, 0, 768, 176);
-      context.strokeStyle = accent;
-      context.lineWidth = 8;
-      context.strokeRect(5, 5, 758, 166);
-      context.fillStyle = accent;
-      context.font = '900 64px "ForkMesh Mono", ui-monospace, monospace';
-      context.textAlign = "left";
-      context.textBaseline = "middle";
-      context.fillText(String(floor.level + 1).padStart(2, "0"), 28, 88);
-      context.fillStyle = "#effff8";
-      context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(floor.label.toUpperCase(), 150, 88, 580);
-    });
-    const plaque = cloneSharedPlane(
-      THREE,
-      12,
-      2.75,
-      new THREE.MeshBasicMaterial({
-        map: plaqueTexture,
-        toneMapped: false,
-      }),
-    );
-    plaque.name = `forkmesh-office-facade-floor-${floor.id}`;
-    plaque.position.set(
-      -76,
-      floor.level * OFFICE_FLOOR_HEIGHT + OFFICE_FLOOR_HEIGHT / 2,
-      OFFICE_FRONT_Z + 0.26,
-    );
-    group.add(plaque);
-  });
+  // Floor plaques are intentionally hidden outside the Office so the tower facade
+  // appears without floor labels.
 
   const signTexture = canvasTexture(THREE, 1024, 192, (context) => {
     context.fillStyle = "#0b1713";
