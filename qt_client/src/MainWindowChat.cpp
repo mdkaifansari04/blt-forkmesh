@@ -12325,6 +12325,35 @@ void MainWindow::refreshNetworkReposPage()
     if (m_networkReposRefreshButton)
         m_networkReposRefreshButton->setEnabled(false);
 
+    const auto localCatalog = [this]() -> QJsonArray {
+        QJsonArray repos;
+        const QString localOwner = accountOwner().trimmed();
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (repo.previewOnly || repo.owner.trimmed().isEmpty() ||
+                repo.name.trimmed().isEmpty())
+                continue;
+            if (repo.localPath.trimmed().isEmpty() &&
+                repo.mirrorPath.trimmed().isEmpty())
+                continue;
+            const QString owner = repo.owner.trimmed();
+            const QString name = repo.name.trimmed();
+            QJsonObject localRepo;
+            localRepo.insert(QStringLiteral("owner"), owner);
+            localRepo.insert(QStringLiteral("name"), name);
+            localRepo.insert(QStringLiteral("source"), QStringLiteral("local-node"));
+            localRepo.insert(QStringLiteral("servingOwner"), owner);
+            const QString cloneUrl = repo.cloneUrl.trimmed();
+            localRepo.insert(
+                QStringLiteral("cloneUrl"),
+                cloneUrl.isEmpty() ? hostedCloneUrl(owner, name) : cloneUrl);
+            localRepo.insert(QStringLiteral("private"), repo.isPrivate);
+            localRepo.insert(QStringLiteral("isPrivate"), repo.isPrivate);
+            localRepo.insert(QStringLiteral("machineName"), localOwner);
+            repos.append(localRepo);
+        }
+        return repos;
+    };
+
     QNetworkRequest request(catalogListUrl());
     request.setRawHeader("accept", "application/json");
     QNetworkReply *reply = m_networkAccess->get(request);
@@ -12338,9 +12367,19 @@ void MainWindow::refreshNetworkReposPage()
         if (m_networkReposRefreshButton)
             m_networkReposRefreshButton->setEnabled(true);
         if (error != QNetworkReply::NoError) {
-            if (m_networkReposStatus)
+            if (m_networkReposStatus) {
+                const QJsonArray localRepos = localCatalog();
+                if (!localRepos.isEmpty()) {
+                    m_networkReposStatus->setText(
+                        QStringLiteral("Showing local repositories (website unavailable): %1")
+                            .arg(errorString));
+                    renderNetworkRepos(localRepos);
+                    return;
+                }
                 m_networkReposStatus->setText(
-                    QStringLiteral("Repositories unavailable: %1").arg(errorString));
+                    QStringLiteral("Repositories unavailable: %1")
+                        .arg(errorString));
+            }
             return;
         }
         const QJsonObject obj = QJsonDocument::fromJson(body).object();
