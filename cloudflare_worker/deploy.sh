@@ -736,7 +736,8 @@ verify_split_site_workers() {
     _split_check "$base/pricing" www 200 || failed=1
     _split_check "$base/blog" www 200 || failed=1
     _split_check "$base/blog/introducing-forkmesh/" www 200 || failed=1
-    _split_check "$base/docs" www 200 || failed=1
+    # auto-trailing-slash canonicalizes /docs to /docs/ (307) by design.
+    _split_check "$base/docs/" www 200 || failed=1
     _split_check "$base/status" www 200 || failed=1
     # ... the World from forkmesh-world ...
     _split_check "$base/world" world 200 || failed=1
