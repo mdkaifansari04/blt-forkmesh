@@ -9178,11 +9178,39 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-diagnostics-orb > span {
-  width: 6px;
-  height: 6px;
+  --world-diagnostics-refresh-progress: 0;
+  position: relative;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: #3fb950;
   box-shadow: 0 0 5px currentColor;
+}
+
+.world-diagnostics-orb > span::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  pointer-events: none;
+  background:
+    conic-gradient(
+      from -90deg,
+      currentColor calc(var(--world-diagnostics-refresh-progress) * 1turn),
+      transparent calc(
+        var(--world-diagnostics-refresh-progress) * 1turn
+      ) 1turn
+    );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(50% - 2px),
+    #000 calc(50% - 2px)
+  );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(50% - 2px),
+    #000 calc(50% - 2px)
+  );
 }
 
 .world-diagnostics-orb > span[data-level="caution"] {

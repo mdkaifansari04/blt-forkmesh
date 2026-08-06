@@ -27681,6 +27681,29 @@ class ForkMeshWorld extends HTMLElement {
             ? "connecting"
             : "offline";
     }
+    const minuteRefreshRemainingMs = (() => {
+      if (this.statusBoardRequestedAt > 0) {
+        return this.statusBoardRefreshRemaining();
+      }
+      const now = Date.now();
+      return WORLD_STATUS_POLL_MS - (now % WORLD_STATUS_POLL_MS);
+    })();
+    const minuteRefreshProgress = Math.max(
+      0,
+      Math.min(
+        1,
+        1 -
+          Math.max(0, Math.min(WORLD_STATUS_POLL_MS, minuteRefreshRemainingMs)) /
+            WORLD_STATUS_POLL_MS,
+      ),
+    );
+    const diagnosticDots = this.$("[data-world-diagnostics-dots]");
+    if (diagnosticDots) {
+      diagnosticDots.style.setProperty(
+        "--world-diagnostics-refresh-progress",
+        minuteRefreshProgress.toFixed(4),
+      );
+    }
     const worstLevel = (...levels) =>
       levels.includes("high")
         ? "high"
