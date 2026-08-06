@@ -9452,7 +9452,12 @@ public:
         f.setPixelSize(10);
         f.setWeight(QFont::DemiBold);
         const int textW = QFontMetrics(f).horizontalAdvance(text());
-        return QSize(qMax(44, qMax(kIconPx, textW) + 16), kHeight);
+        // Two long counts side by side ("147" open beside "99" waiting) are wider
+        // than both the icon and the caption; without this the pair would be
+        // clamped at the tile's left edge and paint over each other. Half the
+        // icon is the overhang the badges are allowed past its corner.
+        const int badgesW = badgeStripWidth() + kIconPx / 2;
+        return QSize(qMax(44, qMax(qMax(kIconPx, textW), badgesW) + 16), kHeight);
     }
     QSize minimumSizeHint() const override { return sizeHint(); }
 
@@ -9464,9 +9469,26 @@ public:
         if (m_badge == count)
             return;
         m_badge = count;
+        updateGeometry(); // a longer count can need a wider tile
         update();
     }
     qint64 badgeCount() const { return m_badge; }
+
+    // A second, red badge for a "waiting on you" count that must not be confused
+    // with the tile's own blue total: pull requests other nodes have filed but
+    // this node has not taken in yet ride the Pulls tab this way (adhoc #1541).
+    // It sits immediately left of the blue badge, so the ordinary count keeps its
+    // corner and both numbers stay legible at once.
+    void setAlertBadgeCount(qint64 count)
+    {
+        count = qMax<qint64>(0, count);
+        if (m_alertBadge == count)
+            return;
+        m_alertBadge = count;
+        updateGeometry();
+        update();
+    }
+    qint64 alertBadgeCount() const { return m_alertBadge; }
 
     // Name the octicon instead of handing over a finished QIcon, and the glyph
     // is re-tinted to the live caption colour on every repaint — exactly how
@@ -9532,33 +9554,62 @@ protected:
                    QFontMetrics(f).elidedText(text(), Qt::ElideRight,
                                               width() - 4));
 
-        // Count badge on the icon's upper-right corner, the same geometry and
+        // Count badges on the icon's upper-right corner, the same geometry and
         // blue as ActivityRailButton's, but never capped at 99+ — a repo can
-        // legitimately advertise hundreds of branches.
-        if (m_badge > 0) {
-            const QString badgeText = formatCount(m_badge);
+        // legitimately advertise hundreds of branches. The red alert count is
+        // laid out right-to-left from the same corner, so it lands just left of
+        // the blue one instead of on top of it.
+        double rightEdge = iconRect.right() + kBadgeH / 2.0 + 2;
+        const auto paintBadge = [&](qint64 count, const QColor &fill) {
+            if (count <= 0)
+                return;
+            const QString badgeText = formatCount(count);
             QFont bf = font();
             bf.setPixelSize(9);
             bf.setBold(true);
             p.setFont(bf);
-            const int h = 14;
-            const int w =
-                qMax(h, QFontMetrics(bf).horizontalAdvance(badgeText) + 8);
-            const QRectF badge(iconRect.right() - w + h / 2.0 + 2,
+            const int h = kBadgeH;
+            const int w = badgeWidth(count);
+            const QRectF badge(qMax(0.0, rightEdge - w),
                                qMax(0.0, double(iconRect.top() - 5)), w, h);
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#1f6feb"));
+            p.setBrush(fill);
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
             p.setPen(QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, badgeText);
-        }
+            rightEdge = badge.left() - 2;
+        };
+        paintBadge(m_badge, QColor("#1f6feb"));
+        paintBadge(m_alertBadge, QColor(dark ? "#da3633" : "#cf222e"));
     }
 
 private:
+    // Pixel width of one count badge (0 when it is hidden), and of the pair as
+    // laid out on the icon's corner. sizeHint and paintEvent must agree on this
+    // or a wide pair paints outside the tile it was measured for.
+    int badgeWidth(qint64 count) const
+    {
+        if (count <= 0)
+            return 0;
+        QFont bf = font();
+        bf.setPixelSize(9);
+        bf.setBold(true);
+        return qMax(kBadgeH,
+                    QFontMetrics(bf).horizontalAdvance(formatCount(count)) + 8);
+    }
+    int badgeStripWidth() const
+    {
+        const int blue = badgeWidth(m_badge);
+        const int red = badgeWidth(m_alertBadge);
+        return blue + red + (blue > 0 && red > 0 ? 2 : 0);
+    }
+
     static constexpr int kIconPx = 16;
     static constexpr int kHeight = 44;
+    static constexpr int kBadgeH = 14; // badge height and rounded-end radius
     Form m_form;
     qint64 m_badge = 0;
+    qint64 m_alertBadge = 0;
     QString m_iconName; // empty: paint the QIcon set by setOcticon instead
 };
 
