@@ -27,12 +27,12 @@
 # WORKER_ROLE) — tests/test_split_workers.py enforces parity so the two
 # deployments of the same code never diverge in configuration.
 name = "forkmesh-api"
-main = "src/entry.py"
+main = "src_build/entry.py"
 compatibility_flags = [ "python_workers" ]
 compatibility_date = "2026-07-23"
 
 [build]
-command = "python3 tools/build_split_assets.py api"
+command = "python3 tools/build_worker_python.py && python3 tools/build_split_assets.py api"
 
 [assets]
 directory = "./public_api"
