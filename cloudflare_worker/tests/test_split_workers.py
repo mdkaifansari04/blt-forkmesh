@@ -83,12 +83,14 @@ def test_api_worker_is_the_same_application_behind_api_routes():
     assert API["compatibility_flags"] == RELAY["compatibility_flags"]
     assert API["compatibility_date"] == RELAY["compatibility_date"]
     assert _paths(API) == {"/api/*"}
-    assert API["assets"]["directory"] == "./public"
+    assert API["assets"]["directory"] == "./public_api"
     assert API["assets"]["binding"] == "ASSETS"
     assert API["assets"]["run_worker_first"] == ["/api/*"]
     assert "triggers" not in API
     assert "migrations" not in API
-    assert "build" not in API
+    assert API["build"]["command"] == (
+        "python3 tools/build_split_assets.py api"
+    )
     for binding in API["durable_objects"]["bindings"]:
         assert binding["script_name"] == "forkmesh-relay", binding
     assert {
@@ -193,6 +195,36 @@ def test_staging_copies_control_files_verbatim_plus_worker_marker(tmp_path):
         # shadow docs/index.html for /docs (live /docs serves the tree
         # index). /docs.html stays a relay-owned canonical 404.
         assert not (ROOT / "public_www" / "docs.html").exists()
+        # The api Worker carries ONLY what its Python reads through ASSETS
+        # while answering /api/*: the blog board's sources, the homepage
+        # origin probe, the install/repo-shell readers, and its 404 page.
+        api_files = sorted(
+            str(p.relative_to(ROOT / "public_api"))
+            for p in (ROOT / "public_api").rglob("*")
+            if p.is_file() and not str(p).count("/blog/")
+        )
+        assert api_files == [
+            "404.html", "blog.html", "dashboard/repo.html",
+            "index.html", "install.sh",
+        ]
+        assert (ROOT / "public_api" / "blog").is_dir()
+        # The slimmed relay drops exactly what the split Workers own —
+        # /world, /docs, and the www marketing documents — while keeping
+        # everything its own routes and ASSETS reads still serve.
+        relay = ROOT / "public_relay"
+        assert not (relay / "world").exists()
+        assert not (relay / "docs").exists()
+        assert not (relay / "pricing.html").exists()
+        assert not (relay / "docs.html").exists()
+        assert not (relay / "status.html").exists()
+        for kept in ("index.html", "blog.html", "404.html", "login.html",
+                     "signup.html", "chat.html", "install.sh", "_redirects",
+                     "_headers"):
+            assert (relay / kept).is_file(), kept
+        assert (relay / "blog").is_dir()
+        assert (relay / "dashboard" / "repo.html").is_file()
+        assert (relay / "assets").is_dir()
+        assert (relay / "notes" / "view.html").is_file()
         # The www tree serves the marketing documents and their clean-URL
         # rewrite targets; the homepage must NOT be staged (it stays on the
         # relay for site_referrers).
@@ -212,8 +244,9 @@ def test_staging_copies_control_files_verbatim_plus_worker_marker(tmp_path):
             ROOT / "public" / "world" / "world-scene.js"
         ).read_bytes()
     finally:
-        shutil.rmtree(ROOT / "public_www", ignore_errors=True)
-        shutil.rmtree(ROOT / "public_world", ignore_errors=True)
+        for staged in ("public_www", "public_world", "public_api",
+                       "public_relay"):
+            shutil.rmtree(ROOT / staged, ignore_errors=True)
 
 
 def test_deploy_ships_split_workers_between_relay_deploy_and_verification():
