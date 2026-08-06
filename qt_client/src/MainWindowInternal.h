@@ -4776,6 +4776,39 @@ inline int agentModelPowerRank(const QString &model, const QString &label)
     return 500 + int(version * 100.0 + 0.5) + tier;
 }
 
+// Which rows the composer's agent/model dropdown leaves out (adhoc #1557). The
+// menu lists every model each installed provider offers, which is more choice
+// than most people want in a picker they open dozens of times a day; this is the
+// set they have switched off in Settings → Agents.
+//
+// Stored as the *hidden* set rather than the shown one so a model that appears
+// after this list was last edited — a live /v1/models fetch, a new Codex catalog
+// entry — shows up by default instead of being silently suppressed.
+const QString kComposerHiddenModelsSetting =
+    QStringLiteral("agents/composerHiddenModels");
+
+// Stable identity for one composer row. Provider-only agents (OpenAI API, Claude
+// API, Manual) carry no model of their own, so their key is just the provider.
+inline QString composerModelKey(const QString &provider, const QString &model)
+{
+    return provider.trimmed().toLower() + QLatin1Char('\x1f') +
+           model.trimmed().toLower();
+}
+
+inline QSet<QString> hiddenComposerModels()
+{
+    const QStringList saved =
+        QSettings().value(kComposerHiddenModelsSetting).toStringList();
+    return QSet<QString>(saved.cbegin(), saved.cend());
+}
+
+inline void saveHiddenComposerModels(const QSet<QString> &hidden)
+{
+    QStringList keys(hidden.cbegin(), hidden.cend());
+    keys.sort(); // stable on disk, so a no-op edit doesn't rewrite the file
+    QSettings().setValue(kComposerHiddenModelsSetting, keys);
+}
+
 inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())

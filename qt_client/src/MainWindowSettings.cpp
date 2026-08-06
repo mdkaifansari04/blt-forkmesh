@@ -1269,6 +1269,41 @@ QWidget *MainWindow::buildSettingsSection()
                 selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
             });
 
+    // Which models the composer's prompt dropdown offers (adhoc #1557). Every
+    // installed provider's whole line-up adds up to a long menu, and most people
+    // work with a handful of them; unticking the rest keeps the picker short
+    // without uninstalling a provider or losing the model's merged history.
+    //
+    // Unticking is presentation only: the hidden model is still perfectly
+    // runnable from the issue-detail picker and from any session already using
+    // it, and the currently-selected model stays in the dropdown even when it is
+    // unticked, so the composer can always show what it is about to run.
+    m_composerModelVisibilityList = new QListWidget;
+    m_composerModelVisibilityList->setObjectName("composerModelVisibilityList");
+    m_composerModelVisibilityList->setMaximumHeight(180);
+    m_composerModelVisibilityList->setSelectionMode(QAbstractItemView::NoSelection);
+    m_composerModelVisibilityList->setToolTip(
+        "Tick the agents and models the composer's prompt dropdown should list. "
+        "Unticking one only hides it from that menu — it stays available "
+        "elsewhere, and keeps its merged-success history. New models a provider "
+        "adds later appear ticked.");
+    refreshComposerModelVisibilityList();
+    connect(m_composerModelVisibilityList, &QListWidget::itemChanged, this,
+            [this](QListWidgetItem *item) {
+                if (!item)
+                    return;
+                const QString key = item->data(Qt::UserRole).toString();
+                if (key.isEmpty())
+                    return;
+                QSet<QString> hidden = hiddenComposerModels();
+                if (item->checkState() == Qt::Checked)
+                    hidden.remove(key);
+                else
+                    hidden.insert(key);
+                saveHiddenComposerModels(hidden);
+                refreshQuickAddAgentModelSelector();
+            });
+
     // When the watchdog catches the GUI thread freezing, hand the captured
     // backtrace to a coding agent so the freeze gets fixed without anyone filing
     // it by hand. On by default (adhoc #205).
@@ -1473,6 +1508,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->setLabelAlignment(Qt::AlignLeft);
     agentForm->setSpacing(8);
     agentForm->addRow("Default agent", m_defaultAgentProviderCombo);
+    agentForm->addRow("Composer models", m_composerModelVisibilityList);
     agentForm->addRow("Max running agents", m_maxRunningAgentsEdit);
     agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
     agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
@@ -2239,6 +2275,47 @@ QWidget *MainWindow::buildSettingsSection()
     reloadVariablesList();
     setSettingsAvatar(QByteArray()); // show the current/generated avatar
     return page;
+}
+
+// Fill the Settings → Agents "Composer models" list, which chooses which rows
+// the composer's prompt dropdown offers (adhoc #1557) — one checkable row per
+// catalog entry. Rebuilt rather than patched so a provider's line-up changing
+// under us (a live /v1/models fetch landing, a Codex catalog refresh) shows up
+// here too; the tick state comes from the saved hidden set, so nothing is lost
+// in the rebuild.
+void MainWindow::refreshComposerModelVisibilityList()
+{
+    if (!m_composerModelVisibilityList)
+        return;
+    const QSet<QString> hidden = hiddenComposerModels();
+    // itemChanged fires per row while filling; the saved set is the input here,
+    // so let it not write itself back out.
+    const QSignalBlocker block(m_composerModelVisibilityList);
+    m_composerModelVisibilityList->clear();
+    QSet<QString> seen;
+    for (const ComposerModelChoice &choice : composerModelCatalog()) {
+        const QString key = composerModelKey(choice.provider, choice.model);
+        // Two providers offering the same id would otherwise get two checkboxes
+        // for one setting, which could only ever disagree with each other.
+        if (seen.contains(key))
+            continue;
+        seen.insert(key);
+        // The dropdown drops the "which CLI runs it" half to stay narrow; this
+        // list has the room, and "Sonnet 5" alone doesn't say whose it is.
+        auto *item = new QListWidgetItem(
+            agentControlIcon(choice.iconIndex),
+            choice.agentName.isEmpty() || choice.agentName == choice.label
+                ? choice.label
+                : QStringLiteral("%1 · %2").arg(choice.label, choice.agentName));
+        item->setData(Qt::UserRole, key);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(hidden.contains(key) ? Qt::Unchecked : Qt::Checked);
+        item->setToolTip(choice.model.isEmpty()
+                             ? choice.tooltip
+                             : QStringLiteral("%1 · %2").arg(choice.model,
+                                                             choice.agentName));
+        m_composerModelVisibilityList->addItem(item);
+    }
 }
 
 // ------------------------------------------------------------- quick setup
