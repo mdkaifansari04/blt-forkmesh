@@ -4117,10 +4117,18 @@ void MainWindow::setFooterUpdateLine(const QString &line)
         m_logActivityLights->pulse(badge);
     if (m_logActivityHeader)
         m_logActivityHeader->pulse(badge);
-    if (!m_footerUpdateLog)
-        return;
     const QString clean = line.trimmed();
     if (clean.isEmpty())
+        return;
+    // The debug bar's five-line tail is fed whether or not it is on screen —
+    // it is capped at kDebugLogTailLines blocks, so keeping it current costs
+    // nothing and switching it on shows history instead of an empty strip.
+    if (m_debugLogTail) {
+        m_debugLogTail->appendPlainText(clean);
+        if (QScrollBar *tailBar = m_debugLogTail->verticalScrollBar())
+            tailBar->setValue(tailBar->maximum());
+    }
+    if (!m_footerUpdateLog)
         return;
     const QString html = footerLogLineHtml(clean);
     // The strip follows the newest line by default, so a glance at the footer is

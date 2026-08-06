@@ -227,6 +227,13 @@ QPushButton#socialIconButton:hover { border-color: #6e7681; }
 #debugBarScroll, #debugBarContent { background: transparent; border: none; }
 #debugBarSeparator { color: #30363d; }
 #debugBarScroll QScrollBar:horizontal { height: 7px; }
+/* Right-hand tool cluster (Restart / Resize / Log). The items paint themselves
+   like every other rail entry, so the host only holds them off the edge. */
+#debugBarTools { background: transparent; }
+#debugLogTail {
+    background-color: #0d1117; border-top: 1px solid #30363d;
+    color: #8b949e; padding: 2px 8px;
+}
 /* Background-work chips (adhoc #1389): the chips paint themselves, so the host
    only has to stay out of the way of the strip's own fill. */
 #statusBackgroundTasks { background: transparent; }
@@ -2317,6 +2324,12 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #debugBarScroll, #debugBarContent { background: transparent; border: none; }
 #debugBarSeparator { color: #d0d7de; }
 #debugBarScroll QScrollBar:horizontal { height: 7px; }
+/* See the dark rule: the tool items are painted, the host is just a layout. */
+#debugBarTools { background: transparent; }
+#debugLogTail {
+    background-color: #ffffff; border-top: 1px solid #d0d7de;
+    color: #57606a; padding: 2px 8px;
+}
 /* See the dark rule: the chips are painted, the host is just a layout. */
 #statusBackgroundTasks { background: transparent; }
 
