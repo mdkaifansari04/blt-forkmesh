@@ -156,10 +156,10 @@ void checkFooterOverlayGeometry(MainWindow &window)
         QStringLiteral("statusVersionButton"));
     check(dock && log && prompt && lights && header && debugBar && version &&
               !log->isVisible() && !debugBar->isVisible() && lights->isDebug() &&
-              lights->lightCount() == 30 &&
+              lights->lightCount() == 31 &&
               prompt->geometry().center().x() > dock->rect().center().x() &&
               prompt->geometry().bottom() == dock->rect().bottom(),
-          QStringLiteral("all 30 labeled log categories start collapsed in the "
+          QStringLiteral("all 31 labeled log categories start collapsed in the "
                          "version-controlled debug bar"));
     if (version && debugBar) {
         version->click();
@@ -427,12 +427,12 @@ void checkFooterOverlayGeometry(MainWindow &window)
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
     check(log && lights && header && log->isVisible() && lights->isVisible() &&
-              header->isVisible() && header->lightCount() == 30 &&
+              header->isVisible() && header->lightCount() == 31 &&
               log->geometry().center().x() < dock->rect().center().x() &&
               log->geometry().bottom() == dock->rect().bottom() &&
               header->geometry().top() >= log->rect().top(),
           QStringLiteral("the compact log opens at the lower-left with its "
-                         "expanded 30-category header"));
+                         "expanded 31-category header"));
 
     window.testShowLogSection();
     QApplication::processEvents();
@@ -6513,6 +6513,34 @@ int main(int argc, char *argv[])
         window.testResetNetworkLog();
         check(window.testLogFilterChipLabels().contains(QStringLiteral("STALL")),
               QStringLiteral("an empty category's chip shows no count at all"));
+    }
+
+    // Background outcome lines split by which side of the ✓ / ✕ they report, so
+    // "how much of this session was not backgrounded" is countable on its own
+    // instead of sharing one tally with the healthy runs.
+    {
+        window.testResetNetworkLog();
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 1, 48, QString(), /*backgrounded=*/true));
+        QStringList stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("BGTASK"),
+              QStringLiteral("a backgrounded outcome line badges as BGTASK"));
+
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 3, 1400, QString(), /*backgrounded=*/false));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("BGBLOCK"),
+              QStringLiteral("work that was not backgrounded badges as BGBLOCK, "
+                             "its own category"));
+
+        const QStringList labels = window.testLogFilterChipLabels();
+        check(labels.contains(QStringLiteral("BGTASK 1")) &&
+                  labels.contains(QStringLiteral("BGBLOCK 1")),
+              QStringLiteral("the log filter row counts the backgrounded and "
+                             "not-backgrounded halves separately"));
+        window.testResetNetworkLog();
     }
 
     // adhoc #1546: red means "this request failed". The verbose net line quotes

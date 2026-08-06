@@ -4149,6 +4149,13 @@ const Rule kNetworkLogRules[] = {
         // summarise ("git", "net", "sync" …), so they must be classified before
         // the per-kind rules below claim them — and their own chip makes them
         // filterable as a group (adhoc #419).
+        //
+        // The ✕ half gets its own badge (and an orange accent — red stays
+        // reserved for outright failures): work that ran on the GUI thread is
+        // what freezes the window, so "how much of this session was *not*
+        // backgrounded" has to be countable on its own rather than buried in the
+        // same tally as the healthy ✓ runs.
+        {" not backgrounded", "#f0883e", "BGBLOCK"},
         {"background ", "#8b949e", "BGTASK"},
         {"pull request", "#3fb950", "PULL"},
         {"pull #", "#3fb950", "PULL"},
@@ -4829,16 +4836,22 @@ void MainWindow::rebuildLogFilterButtons()
                          return m_logFilterCounts.value(left) >
                                 m_logFilterCounts.value(right);
                      });
-    for (const QString &badge : std::as_const(badges)) {
-        // Stalls carry the one explanatory tip: it's the diagnostic people go
-        // looking for after the window felt frozen.
-        addChip(badge, badge,
-                badge == QLatin1String(kStallBadge)
-                    ? QStringLiteral("Show only recorded UI stalls — moments "
-                                     "the window froze, with the operation that "
-                                     "blocked it")
-                    : QString());
-    }
+    // The categories whose names don't explain themselves: the diagnostic people
+    // go looking for after the window felt frozen, and the two halves of the
+    // background ✓ / ✕ split.
+    static const QHash<QString, QString> tips = {
+        {QString::fromLatin1(kStallBadge),
+         QStringLiteral("Show only recorded UI stalls — moments the window "
+                        "froze, with the operation that blocked it")},
+        {QStringLiteral("BGTASK"),
+         QStringLiteral("Show only work that was backgrounded — finished off the "
+                        "GUI thread, so the window stayed responsive")},
+        {QStringLiteral("BGBLOCK"),
+         QStringLiteral("Show only work that was not backgrounded — it ran on the "
+                        "GUI thread and blocked the window while it did")},
+    };
+    for (const QString &badge : std::as_const(badges))
+        addChip(badge, badge, tips.value(badge));
     m_logFilterRow->addStretch();
 }
 

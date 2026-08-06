@@ -7898,6 +7898,7 @@ private:
             {"PIN", "#79c0ff", "shield-check"},
             {"GIT", "#58a6ff", "git-commit"},
             {"BGTASK", "#8b949e", "gear"},
+            {"BGBLOCK", "#f0883e", "stop"},
             {"PUBLISH", "#58a6ff", "upload"},
             {"PULL", "#3fb950", "git-pull-request"},
             {"MERGE", "#a371f7", "git-merge"},
@@ -7915,13 +7916,20 @@ private:
             {"ERROR", "#f85149", "x"},
             {"INFO", "#6e7681", "info"},
         };
+        static_assert(sizeof(values) / sizeof(values[0]) == kCategoryCount,
+                      "kCategoryCount must match the taxonomy above");
         return values;
     }
 
-    static constexpr int categoryCount() { return 30; }
-    static constexpr int stallCategoryIndex() { return 27; }
-    static constexpr int kCompactColumns = 10;
+    // One entry per row of categories() above; the per-lane arrays below and the
+    // compact grid are both sized from it.
+    static constexpr int kCategoryCount = 31;
+    static constexpr int categoryCount() { return kCategoryCount; }
     static constexpr int kCompactRows = 3;
+    // Enough columns to hold the whole taxonomy in those rows, so adding a
+    // category widens the grid instead of dropping the overflow off the bottom.
+    static constexpr int kCompactColumns =
+        (kCategoryCount + kCompactRows - 1) / kCompactRows;
     static constexpr int kCompactCell = 16;
     static constexpr int kCompactPadding = 7;
     static constexpr int kHeaderHeight = 32;
@@ -7937,6 +7945,15 @@ private:
                 return i;
         }
         return categoryCount() - 1; // unknown future categories pulse INFO
+    }
+
+    // Looked up rather than hard-coded: STALL's lane shifts every time a
+    // category is inserted above it, and a stale index would silently hand the
+    // stall click/tooltip to whatever category took its place.
+    static int stallCategoryIndex()
+    {
+        static const int index = categoryIndex(QStringLiteral("STALL"));
+        return index;
     }
 
     int compactCategoryWidth() const
@@ -8173,8 +8190,9 @@ private:
             return;
         }
         setToolTip(QStringLiteral(
-            "30 live-log categories%1 — hover an icon for its count; click for full "
+            "%1 live-log categories%2 — hover an icon for its count; click for full "
             "Log page filtered to this category")
+                       .arg(categoryCount())
                        .arg(m_websiteStatuses.isEmpty()
                                 ? QString()
                                 : QStringLiteral(" and %1 website status results")
@@ -8182,10 +8200,10 @@ private:
     }
 
     Presentation m_presentation = Compact;
-    quint64 m_counts[30] = {};
-    bool m_blinkVisible[30] = {};
-    bool m_blinking[30] = {};
-    int m_generation[30] = {};
+    quint64 m_counts[kCategoryCount] = {};
+    bool m_blinkVisible[kCategoryCount] = {};
+    bool m_blinking[kCategoryCount] = {};
+    int m_generation[kCategoryCount] = {};
     bool m_expanded = false;
     QList<WebsiteStatus> m_websiteStatuses;
     QString m_stallToolTip;
