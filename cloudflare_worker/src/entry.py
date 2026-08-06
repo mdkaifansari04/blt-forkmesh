@@ -44248,6 +44248,13 @@ class Default(WorkerEntrypoint):
                 {
                     "ok": True,
                     "service": "forkmesh-mainnode",
+                    # /health is relay-routed while /api/* serves from the
+                    # split forkmesh-api Worker, so deploy verification reads
+                    # the relay's build stamp here (and the api Worker's from
+                    # /api/version).
+                    "rev": _build_rev(self.env),
+                    "worker": str(
+                        getattr(self.env, "WORKER_ROLE", "") or "relay"),
                     "node": getattr(self.env, "NODE_NAME", "forkmesh"),
                     "nodeSolanaAddress": getattr(self.env, "NODE_SOLANA_ADDRESS", ""),
                     "websocket": "/api/repo/{owner}/{repo}/rooms/{room}/ws",
@@ -44273,6 +44280,13 @@ class Default(WorkerEntrypoint):
                 {
                     "ok": True,
                     "rev": _build_rev(self.env),
+                    # Which Worker answered: the same Python bundle deploys
+                    # as forkmesh-relay (catch-all) AND forkmesh-api (zone
+                    # routes for /api/*), distinguished by the WORKER_ROLE
+                    # var so the split verification can prove route
+                    # ownership.
+                    "worker": str(
+                        getattr(self.env, "WORKER_ROLE", "") or "relay"),
                     # deploy.sh stamps APP_VERSION (qt_client release number)
                     # alongside BUILD_REV; the dashboard header chip renders
                     # it. It was documented as echoed here but never was —
