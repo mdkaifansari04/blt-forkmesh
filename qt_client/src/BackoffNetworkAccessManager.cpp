@@ -137,6 +137,9 @@ public:
         setError(QNetworkReply::UnknownNetworkError,
                  QStringLiteral(
                      "ForkMesh relay is rate-limited (HTTP 429); backing off"));
+        // Lets a call site recognise the cooldown without parsing that string.
+        setAttribute(
+            BackoffNetworkAccessManager::kBackoffSuppressedAttribute, true);
         setOpenMode(QIODevice::ReadOnly);
         // Real replies always finish asynchronously and callers routinely
         // connect to finished()/errorOccurred() right after issuing the
@@ -290,6 +293,19 @@ bool BackoffNetworkAccessManager::hostInCooldown(const QString &host) const
     // Same channel key createRequest() uses: the lowercased URL host.
     return !m_backoff.ready(normalizedHost(host),
                             QDateTime::currentMSecsSinceEpoch());
+}
+
+qint64 BackoffNetworkAccessManager::hostCooldownRemainingMs(
+    const QString &host) const
+{
+    return m_backoff.msUntilReady(normalizedHost(host),
+                                  QDateTime::currentMSecsSinceEpoch());
+}
+
+bool BackoffNetworkAccessManager::isBackoffSuppressed(const QNetworkReply *reply)
+{
+    return reply
+           && reply->attribute(kBackoffSuppressedAttribute).toBool();
 }
 
 QString BackoffNetworkAccessManager::normalizedHost(const QString &host)
