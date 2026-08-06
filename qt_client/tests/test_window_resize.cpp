@@ -2948,6 +2948,43 @@ int main(int argc, char *argv[])
               "2,150 request(s) across 3 route group(s)")),
           QStringLiteral("Web Requests summarises the window's traffic"));
 
+    // adhoc #1585: the tab used to answer every failure with a flat "could not
+    // load web requests from the worker", which hid the relay's own Cloudflare
+    // 1101 pages, an unreadable body, and this client's host-wide cooldown
+    // behind one sentence. Each failure now names itself and retries.
+    const QString http500 = window.testNetworkWebRequestsFailureText(
+        500, QStringLiteral("Internal Server Error"), QString(), QString(),
+        QByteArray("error code: 1101"), 0, 3400);
+    check(http500.contains(QStringLiteral("HTTP 500")) &&
+              http500.contains(QStringLiteral("error code: 1101")) &&
+              http500.contains(QStringLiteral("Retrying (attempt 2 of 3) in 4s")),
+          QStringLiteral("Web Requests quotes the worker's HTTP error and its "
+                         "pending retry"));
+    const QString cooldown = window.testNetworkWebRequestsFailureText(
+        0, QStringLiteral("ForkMesh relay is rate-limited (HTTP 429)"),
+        QString(), QString(), QByteArray(), 12000, 12400);
+    check(cooldown.contains(QStringLiteral("cooldown")) &&
+              cooldown.contains(QStringLiteral("12s left")) &&
+              cooldown.contains(QStringLiteral("never left this machine")),
+          QStringLiteral("Web Requests separates this client's own cooldown "
+                         "from a worker failure"));
+    const QString unreadable = window.testNetworkWebRequestsFailureText(
+        200, QString(), QStringLiteral("illegal value"), QString(),
+        QByteArray("<html><body>gateway</body></html>"), 0, -1);
+    check(unreadable.contains(QStringLiteral("unreadable JSON")) &&
+              unreadable.contains(QStringLiteral("illegal value")) &&
+              unreadable.contains(QStringLiteral("gateway")) &&
+              !unreadable.contains(QStringLiteral("<html>")) &&
+              unreadable.contains(QStringLiteral("Gave up after 1 attempt(s)")),
+          QStringLiteral("Web Requests reports an unreadable body without "
+                         "printing its markup"));
+    const QString refused = window.testNetworkWebRequestsFailureText(
+        200, QString(), QString(), QStringLiteral("window too large"),
+        QByteArray("{\"ok\":false,\"error\":\"window too large\"}"), 0, -1);
+    check(refused.contains(QStringLiteral("window too large")),
+          QStringLiteral("Web Requests surfaces the worker's own ok=false "
+                         "error"));
+
 
     // Reward settings must never launch the former reserve/donation/finalize
     // account funnel. A mock account flow is installed specifically to prove it
@@ -4181,18 +4218,18 @@ int main(int argc, char *argv[])
             check(mirror1Id == QStringLiteral("mirror1-new-key"),
                   QString("the newer identity wins the deduped Mirror nodes row "
                           "(got id %1)").arg(mirror1Id));
-            check(window.testMirrorNodeCardsAreCompact(),
-                  QStringLiteral("Mirror nodes render as three-row cards with "
-                                 "resource gauges and live node, sync, commit, "
-                                 "health, and reachability controls"));
+            check(window.testMirrorNodesAreSingleLineRows(),
+                  QStringLiteral("Mirror nodes render as a dense single-line "
+                                 "table with icon-only column headers and no "
+                                 "per-row card widgets"));
             check(!sawOffline,
                   QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
             check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 2) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
-            // Hidden data-model columns remain stable behind the card: Node,
-            // Sync, Owner, commit identity, sync facts, repo counts, pending
-            // inbox counts, Health, then CPU/RAM/Disk/Platform.
+            // Column order stays stable: Node, Sync, Owner, commit identity,
+            // sync facts, repo counts, pending inbox counts, Health, then
+            // CPU/RAM/Disk/Platform.
             check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 20)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
@@ -4200,7 +4237,7 @@ int main(int argc, char *argv[])
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             const QString healthTip = window.testMirrorNodeCellToolTip(
-                QStringLiteral("mirror1"), 13);
+                QStringLiteral("mirror1"), 17);
             check(healthTip.contains(QStringLiteral("Warning [relay-flap]")) &&
                       healthTip.contains(QStringLiteral("Correlate disconnect times")) &&
                       healthTip.contains(QStringLiteral("draft a troubleshooting prompt")),

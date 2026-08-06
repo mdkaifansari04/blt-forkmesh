@@ -604,6 +604,16 @@ public:
     QString testNetworkWebRequestsCellText(int row, const QString &header) const;
     QString testNetworkWebRequestsStatusText() const;
     int testNetworkWebRequestsChartHeight() const;
+    // Drives the failure path with a synthetic outcome (adhoc #1585) and
+    // returns the status line the tab would show; retryInMs < 0 means the
+    // attempt budget is spent.
+    QString testNetworkWebRequestsFailureText(int httpStatus,
+                                              const QString &transportError,
+                                              const QString &parseError,
+                                              const QString &payloadError,
+                                              const QByteArray &body,
+                                              qint64 cooldownMs,
+                                              qint64 retryInMs);
     // Badge riding the activity rail's Repos icon.
     int testReposNavBadgeCount() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
@@ -885,7 +895,7 @@ public:
     Q_INVOKABLE QStringList testMirrorNodeRows() const;
     bool testMirrorNodesOnlineOnlyChecked() const;
     void testSetMirrorNodesOnlineOnly(bool checked);
-    bool testMirrorNodeCardsAreCompact() const;
+    bool testMirrorNodesAreSingleLineRows() const;
     QString testMirrorNodeCellText(const QString &nodeName, int column) const;
     QString testMirrorNodeCellToolTip(const QString &nodeName, int column) const;
     bool testDraftMirrorNodeDiagnostics(const QString &nodeName);
@@ -2405,8 +2415,14 @@ private:
     // the public /api/metrics/summary buckets — the same masked route groups
     // and most-frequent-first ordering as the api.forkmesh.com landing page,
     // drawn as a bar chart plus the full un-paginated group table.
-    void refreshNetworkWebRequests();
+    // isRetry is set only by the automatic retry below, so a user-driven open
+    // (or a range change) always starts a fresh attempt budget.
+    void refreshNetworkWebRequests(bool isRetry = false);
     void renderNetworkWebRequests(const QJsonObject &payload);
+    // Paints one failed attempt: `detail` names what actually went wrong and
+    // the line ends either with the pending retry or with how to try again.
+    void showNetworkWebRequestsFailure(const QString &detail, bool willRetry,
+                                       qint64 retryInMs);
 
     // Admin-only Users page: the same privacy-filtered account facts shown on
     // World avatar chests, laid out as one sortable table. It deliberately
@@ -4233,8 +4249,9 @@ private:
     // local sync, a live peer via a targeted relay frame, an SSH-fed/offline
     // catalog mirror via the source of truth's push.
     void syncMirrorNodeNow(int row);
-    QWidget *buildMirrorNodeCard(int row);
-    void rebuildMirrorNodeCards();
+    // Visibility + Start/Stop label for the managed Go mirror-node server
+    // controls in the Mirror nodes header (source of truth only).
+    void updateMirrorNodeServerButtons(bool visible);
     // Fetch the worker's catalog mirror list for a repo group so the owner sees
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
@@ -6385,6 +6402,13 @@ private:
     int m_networkWebRequestsMinutes = 60;
     bool m_networkWebRequestsInFlight = false;
     bool m_networkWebRequestsUserSorted = false;
+    // Attempts spent on the load currently on screen, and the timer holding the
+    // next one. The relay answers a share of every request with a Cloudflare
+    // 1101 page, and this client's own BackoffNetworkAccessManager then puts
+    // the whole host in a short cooldown, so a single 500 used to leave the tab
+    // stuck on an error with no way back except reopening it.
+    int m_networkWebRequestsAttempt = 0;
+    QTimer *m_networkWebRequestsRetryTimer = nullptr;
     // The Network section's tab bar. Its first three tabs are the Relays, Nodes
     // and Hosts pages (adhoc #54); their counts ride the tab labels and total on
     // the rail's Network badge.
@@ -7040,6 +7064,10 @@ private:
     // "Reset integrity pin" action, shown in the Mirror nodes header only when
     // this node is the source of truth (the owner holding the working copy).
     QPushButton *m_mirrorResetPinButton = nullptr;
+    // Go mirror-node companion window + managed-server start/stop toggle, in
+    // the same header and under the same source-of-truth-only visibility.
+    QPushButton *m_mirrorNodeServerButton = nullptr;
+    QPushButton *m_mirrorNodeServerPowerButton = nullptr;
     // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.
     QString m_repoBranch;
     RepoInfo m_repoInfo;

@@ -650,6 +650,7 @@ async def record_status_sample(env, source="trigger"):
 async def status_history(env, view="full"):
     await ensure_schema(env)
     now = int(Date.now())
+    STALE_MIRROR_ONLINE_MS = 24 * 60 * 60 * 1000
     cur_day = (now // 86400000) * 86400000
     start = cur_day - (STATUS_HISTORY_DAYS - 1) * 86400000
     # Day cells, uptime and coverage all come from the hourly buckets (which
@@ -678,6 +679,26 @@ async def status_history(env, view="full"):
         "WHERE minute_ts >= ?",
         minute_start,
     )
+    if view == "full":
+        mirror_last_online_rows = []
+        try:
+            mirror_last_online_rows = await d1_all(
+                env,
+                "SELECT lower(node_name) AS node_name, checked_at "
+                "FROM mirror_https_endpoints",
+            )
+        except Exception:
+            mirror_last_online_rows = []
+        mirror_last_online = {}
+        for row in mirror_last_online_rows:
+            mirror_name = str(row.get("node_name") or "").strip().lower()
+            if not mirror_name.startswith("mirror"):
+                continue
+            mirror_last_online[mirror_name] = max(
+                int(mirror_last_online.get(mirror_name) or 0),
+                int(row.get("checked_at") or 0),
+            )
+
     by_system_minute = {}
     last_sample_ts = 0
     for row in minute_rows:
@@ -728,6 +749,18 @@ async def status_history(env, view="full"):
 
     systems = []
     for system_id, label in status_systems:
+        if view == "full" and system_id.startswith(STATUS_MIRROR_PREFIX):
+            mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
+            minute_records = by_system_minute.get(system_id, {})
+            hour_records = by_system_hour.get(system_id, {})
+            latest_minute = max(minute_records) if minute_records else 0
+            latest_hour = max(hour_records) if hour_records else 0
+            last_seen_at = max(
+                int(mirror_last_online.get(mirror_name) or 0),
+                latest_minute, latest_hour
+            )
+            if not last_seen_at or now - last_seen_at > STALE_MIRROR_ONLINE_MS:
+                continue
         # Uptime is computed over RECORDED samples only; expected-but-missing
         # samples (the sampling cron didn't run) are reported separately as
         # coverage, never counted as downtime. See _status_effective_hour.

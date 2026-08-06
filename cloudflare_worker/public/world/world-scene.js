@@ -18664,21 +18664,14 @@ export function createWorldScene({
     { radius: 7.1, capacity: 16 },
     { radius: 9.7, capacity: 22 },
   ];
-  const MEMBER_CIRCLE_VISIBLE_LIMIT = MEMBER_CIRCLE_RINGS.reduce(
-    (total, ring) => total + ring.capacity,
-    0,
-  );
+  const MEMBER_CIRCLE_RING_SPACING = 3.65;
+  const MEMBER_CIRCLE_RING_GROWTH = 2.65;
   function memberCirclePosition(index, total) {
-    const boundedTotal = Math.max(
-      0,
-      Math.min(MEMBER_CIRCLE_VISIBLE_LIMIT, Math.round(Number(total) || 0)),
-    );
+    const boundedTotal = Math.max(0, Math.round(Number(total) || 0));
+    let remaining = boundedTotal;
     let ringStart = 0;
     for (const ring of MEMBER_CIRCLE_RINGS) {
-      const ringCount = Math.min(
-        ring.capacity,
-        Math.max(0, boundedTotal - ringStart),
-      );
+      const ringCount = Math.min(ring.capacity, Math.max(0, remaining));
       if (index < ringStart + ringCount) {
         // Keep a clear approach from Town while spreading directory members
         // around the open hearth in bounded, camera-LOD avatars.
@@ -18695,6 +18688,36 @@ export function createWorldScene({
         );
       }
       ringStart += ringCount;
+      remaining -= ringCount;
+    }
+    let ringRadius =
+      MEMBER_CIRCLE_RINGS[MEMBER_CIRCLE_RINGS.length - 1]?.radius || 9.7;
+    let ringGap = MEMBER_CIRCLE_RING_GROWTH;
+    while (remaining > 0) {
+      ringRadius += ringGap;
+      const ringCount = Math.max(
+        1,
+        Math.min(
+          Math.floor((Math.PI * 2 * ringRadius) / MEMBER_CIRCLE_RING_SPACING),
+          remaining,
+        ),
+      );
+      if (index < ringStart + ringCount) {
+        const entranceGap = Math.min(Math.PI / 2, 3.6 / ringRadius);
+        const usableArc = Math.PI * 2 - entranceGap;
+        const slot = index - ringStart;
+        const angle =
+          -Math.PI / 2 + entranceGap / 2 +
+          ((slot + 0.5) / Math.max(1, ringCount)) * usableArc;
+        return new THREE.Vector3(
+          Math.cos(angle) * ringRadius,
+          0,
+          Math.sin(angle) * ringRadius,
+        );
+      }
+      ringStart += ringCount;
+      remaining -= ringCount;
+      ringGap += 0.35;
     }
     return new THREE.Vector3();
   }
@@ -29597,8 +29620,7 @@ export function createWorldScene({
           }
           interiorNames.add(name);
           return true;
-        })
-        .slice(0, MEMBER_CIRCLE_VISIBLE_LIMIT);
+        });
       const seen = new Set();
       interiorMembers.forEach((member, index) => {
         const name = String(member.name).trim().slice(0, 32);
@@ -29650,7 +29672,7 @@ export function createWorldScene({
           figure = createAvatar(
             THREE,
             memberIdentity,
-            { remote: true, scale: 0.78 },
+            { remote: true },
           );
           figure.userData.badgeKey = badgeKey;
           figure.userData.memberCircleFigure = true;
