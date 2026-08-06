@@ -21,6 +21,7 @@ OUTPUT = PUBLIC / "world" / "worker-footprint.js"
 # module only after the route which needs them runs.
 LAZY_MODULES = {
     "admin_console.py",
+    "api_metrics.py",
     "activitypub.py",
     "activitypub_threads.py",
     "badges.py",
