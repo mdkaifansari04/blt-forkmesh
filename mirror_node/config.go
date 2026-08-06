@@ -136,11 +136,17 @@ func (c *Config) validate() error {
 			!repositoryPattern.MatchString(c.IntakeRepository) || c.CatalogURL == "" {
 			return errors.New("intakeProgram, intakeOwner, intakeRepository, and catalogUrl must be valid")
 		}
-		if c.IntakePollInterval.Duration == 0 {
-			c.IntakePollInterval.Duration = 5 * time.Second
+		// The relay answers /api/repo/*/pending from a ten-minute edge
+		// cache, so a faster tick only re-reads the same counts while
+		// keeping this the busiest endpoint on the API traffic chart. Every
+		// deployed config pinned "5s", so shorter values are raised to the
+		// floor rather than rejected: an existing node keeps starting after
+		// the upgrade instead of failing config validation.
+		if c.IntakePollInterval.Duration < 10*time.Minute {
+			c.IntakePollInterval.Duration = 10 * time.Minute
 		}
-		if c.IntakePollInterval.Duration < time.Second || c.IntakePollInterval.Duration > 5*time.Minute {
-			return errors.New("intakePollInterval must be between 1s and 5m")
+		if c.IntakePollInterval.Duration > time.Hour {
+			return errors.New("intakePollInterval must be at most 1h")
 		}
 		if c.IntakeIdleGrace.Duration == 0 {
 			c.IntakeIdleGrace.Duration = 20 * time.Second

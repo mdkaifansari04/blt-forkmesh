@@ -19,7 +19,9 @@ Its two gateway helper modes accept only the bounded ForkMesh health and masked
 proxy protocols on stdin.
 
 During the intake migration, the daemon polls the relay's content-free pending
-counter every five seconds. It starts the Qt relay lease/materialization bridge
+counter every ten minutes, matching that endpoint's edge cache — a faster tick
+reads the same cached counts. Anything shorter in `intakePollInterval` is raised
+to ten minutes. It starts the Qt relay lease/materialization bridge
 only while issue, pull, or discussion work exists and stops it after the queue
 drains. `FORKMESH_EXTERNAL_MIRROR_NODE=1` keeps that short-lived worker from
 fetching Git, publishing catalog state, or supervising gateway/tunnel children.

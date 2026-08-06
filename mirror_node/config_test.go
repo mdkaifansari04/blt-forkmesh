@@ -27,9 +27,19 @@ func TestLoadConfigDefaultsAndRejectsUnsafeInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	intakeCfg, err := LoadConfig(path)
-	if err != nil || intakeCfg.IntakePollInterval.Duration != 5*time.Second ||
+	if err != nil || intakeCfg.IntakePollInterval.Duration != 10*time.Minute ||
 		intakeCfg.IntakeIdleGrace.Duration != 20*time.Second {
 		t.Fatalf("intake defaults not applied: %+v %v", intakeCfg, err)
+	}
+	// /pending is edge-cached for ten minutes, so a config that still asks for
+	// the old five-second tick is raised to the floor instead of rejected.
+	fastIntake := strings.Replace(withIntake, `"upstreams":{}`, `"intakePollInterval":"5s","upstreams":{}`, 1)
+	if err := os.WriteFile(path, []byte(fastIntake), 0600); err != nil {
+		t.Fatal(err)
+	}
+	floored, err := LoadConfig(path)
+	if err != nil || floored.IntakePollInterval.Duration != 10*time.Minute {
+		t.Fatalf("intake poll floor not applied: %+v %v", floored, err)
 	}
 	for name, raw := range map[string]string{
 		"unknown":        strings.Replace(good, `"schemaVersion":1`, `"schemaVersion":1,"wat":true`, 1),
