@@ -320,7 +320,6 @@ namespace {
 constexpr qsizetype kDiffFirstPaintChars = 12'000;
 constexpr qsizetype kDiffStreamBatchChars = 12'000;
 constexpr qsizetype kDiffFragmentChars = 12'000;
-constexpr qsizetype kDiffPageChars = 180'000;
 
 // Split rendered diff HTML into its self-contained per-file blocks. Each file's
 // block begins with its `<a name="file-N"></a>` anchor (see diffFileHeaderHtml)
@@ -408,68 +407,33 @@ QStringList splitDiffFileFragments(const QString &block)
     return fragments;
 }
 
-QList<QStringList> paginateDiffHtml(const QString &html)
+QStringList fragmentDiffHtml(const QString &html)
 {
     QStringList fragments;
     for (const QString &block : splitDiffFileBlocks(html))
         fragments.append(splitDiffFileFragments(block));
     if (fragments.isEmpty())
         fragments.append(QString());
-
-    QList<QStringList> pages;
-    QStringList page;
-    qsizetype pageChars = 0;
-    for (QString &fragment : fragments) {
-        if (!page.isEmpty() && pageChars + fragment.size() > kDiffPageChars) {
-            pages.append(std::move(page));
-            page.clear();
-            pageChars = 0;
-        }
-        pageChars += fragment.size();
-        page.append(std::move(fragment));
-    }
-    if (!page.isEmpty())
-        pages.append(std::move(page));
-    return pages;
-}
-
-QString diffPaginationHtml(int page, int count)
-{
-    if (count <= 1)
-        return QString();
-    const QString previous =
-        page > 0
-            ? QStringLiteral("<a href='forkmesh-diff-page:%1'>&larr; Previous</a>")
-                  .arg(page - 1)
-            : QStringLiteral("<span>&larr; Previous</span>");
-    const QString next =
-        page + 1 < count
-            ? QStringLiteral("<a href='forkmesh-diff-page:%1'>Next &rarr;</a>")
-                  .arg(page + 1)
-            : QStringLiteral("<span>Next &rarr;</span>");
-    return QStringLiteral(
-               "<div class='diffpagination'>%1 &nbsp; Page %2 of %3 &nbsp; %4"
-               "<br><span>All diff content is available across these pages.</span>"
-               "</div>")
-        .arg(previous)
-        .arg(page + 1)
-        .arg(count)
-        .arg(next);
+    return fragments;
 }
 
 struct DiffStreamState {
-    QList<QStringList> pages;
+    QStringList fragments;
     QStringList pending;
     // Bumped on every render (and by a flush) so a batch queued for a diff that
     // has since been replaced bails instead of writing into the new document.
     int gen = 0;
-    int page = 0;
     QString styleSheet;
     QString pendingAnchor;
+    // A viewport-height black end cap supplies trailing scroll range so the
+    // final source line can be scrolled all the way to the top.
+    int endCapPosition = -1;
+    bool endCapResizePending = false;
+    bool endCapResizeFilterInstalled = false;
     QList<std::function<void()>> finishedHooks;
 };
 
-void renderDiffPage(QTextEdit *view, int page);
+void renderDiffDocument(QTextEdit *view);
 
 // Per-view stream state. Keyed by pointer and dropped when the view dies; all of
 // this runs on the GUI thread.
@@ -487,21 +451,77 @@ DiffStreamState &diffStreamState(QTextEdit *view)
         return *it;
     QObject::connect(view, &QObject::destroyed, qApp,
                      [view] { diffStreams().remove(view); });
-    if (auto *browser = qobject_cast<QTextBrowser *>(view)) {
-        QObject::connect(browser, &QTextBrowser::anchorClicked, browser,
-                         [view](const QUrl &url) {
-                             if (url.scheme() !=
-                                 QLatin1String("forkmesh-diff-page"))
-                                 return;
-                             bool ok = false;
-                             const int page = url.toString()
-                                                  .section(QLatin1Char(':'), 1)
-                                                  .toInt(&ok);
-                             if (ok)
-                                 showDiffPage(view, page);
-                         });
-    }
     return streams[view];
+}
+
+void resizeDiffEndCap(QTextEdit *view, DiffStreamState &state)
+{
+    if (!view || state.endCapPosition < 0)
+        return;
+    QTextCursor cursor(view->document());
+    cursor.setPosition(state.endCapPosition);
+    cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+    QTextImageFormat image = cursor.charFormat().toImageFormat();
+    if (!image.isValid())
+        return;
+    image.setWidth(qMax(1, view->viewport()->width()));
+    image.setHeight(qMax(1, view->viewport()->height()));
+    cursor.setCharFormat(image);
+}
+
+class DiffEndCapResizeFilter final : public QObject
+{
+public:
+    explicit DiffEndCapResizeFilter(QTextEdit *view) : QObject(view), m_view(view) {}
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched != m_view || event->type() != QEvent::Resize)
+            return false;
+        auto it = diffStreams().find(m_view);
+        if (it == diffStreams().end() || it->endCapPosition < 0 ||
+            it->endCapResizePending)
+            return false;
+        it->endCapResizePending = true;
+        QPointer<QTextEdit> guard(m_view);
+        QTimer::singleShot(0, m_view, [guard] {
+            if (!guard)
+                return;
+            auto it = diffStreams().find(guard.data());
+            if (it == diffStreams().end())
+                return;
+            it->endCapResizePending = false;
+            resizeDiffEndCap(guard, *it);
+        });
+        return false;
+    }
+
+private:
+    QTextEdit *m_view = nullptr;
+};
+
+void installDiffEndCapResizeFilter(QTextEdit *view)
+{
+    view->installEventFilter(new DiffEndCapResizeFilter(view));
+}
+
+void appendDiffEndCap(QTextEdit *view, DiffStreamState &state)
+{
+    if (!view || state.endCapPosition >= 0)
+        return;
+    QTextCursor cursor(view->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertBlock();
+    QImage black(1, 1, QImage::Format_ARGB32);
+    black.fill(Qt::black);
+    static const QUrl resource(QStringLiteral("forkmesh-diff-end-cap"));
+    view->document()->addResource(QTextDocument::ImageResource, resource, black);
+    QTextImageFormat image;
+    image.setName(resource.toString());
+    state.endCapPosition = cursor.position();
+    cursor.insertImage(image);
+    resizeDiffEndCap(view, state);
 }
 
 // Run the "document is complete" hooks for a view. Hooks are copied first: one
@@ -584,10 +604,12 @@ void scheduleDiffStreamBatch(QTextEdit *view, int gen)
         if (!guard)
             return;
         scrollLoadedDiffAnchor(guard, *it, batch);
-        if (done)
+        if (done) {
+            appendDiffEndCap(guard, *it);
             finishDiffStream(guard);
-        else
+        } else {
             scheduleDiffStreamBatch(guard, gen);
+        }
     });
 }
 
@@ -599,35 +621,34 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
     if (!view)
         return;
     DiffStreamState &state = diffStreamState(view);
+    if (!state.endCapResizeFilterInstalled) {
+        installDiffEndCapResizeFilter(view);
+        state.endCapResizeFilterInstalled = true;
+    }
     ++state.gen; // supersede any batches still queued from a previous render
     state.pending.clear();
-    state.pages = paginateDiffHtml(html);
-    state.page = 0;
+    state.fragments = fragmentDiffHtml(html);
     state.styleSheet = styleSheet;
     state.pendingAnchor.clear();
-    renderDiffPage(view, 0);
+    state.endCapPosition = -1;
+    state.endCapResizePending = false;
+    renderDiffDocument(view);
 }
 
 namespace {
 
-void renderDiffPage(QTextEdit *view, int page)
+void renderDiffDocument(QTextEdit *view)
 {
     if (!view)
         return;
     DiffStreamState &state = diffStreamState(view);
-    if (state.pages.isEmpty())
+    if (state.fragments.isEmpty())
         return;
-    state.page = qBound(0, page, int(state.pages.size()) - 1);
     ++state.gen;
     state.pending.clear();
     const int gen = state.gen;
 
-    QStringList blocks = state.pages.at(state.page);
-    const QString nav = diffPaginationHtml(state.page, int(state.pages.size()));
-    if (!nav.isEmpty()) {
-        blocks.first().prepend(nav);
-        blocks.last().append(nav);
-    }
+    QStringList blocks = state.fragments;
     QString first;
     while (!blocks.isEmpty() &&
            (first.isEmpty() ||
@@ -655,10 +676,12 @@ void renderDiffPage(QTextEdit *view, int page)
         view->setHtml(first);
     }
     scrollLoadedDiffAnchor(view, state, first);
-    if (streaming)
+    if (streaming) {
         scheduleDiffStreamBatch(view, gen);
-    else
+    } else {
+        appendDiffEndCap(view, state);
         finishDiffStream(view);
+    }
 }
 
 } // namespace
@@ -666,35 +689,13 @@ void renderDiffPage(QTextEdit *view, int page)
 bool restyleDiffStreamed(QTextEdit *view, const QString &styleSheet)
 {
     auto it = diffStreams().find(view);
-    if (it == diffStreams().end() || it->pages.isEmpty())
+    if (it == diffStreams().end() || it->fragments.isEmpty())
         return false;
     it->styleSheet = styleSheet;
-    renderDiffPage(view, it->page);
+    it->endCapPosition = -1;
+    it->endCapResizePending = false;
+    renderDiffDocument(view);
     return true;
-}
-
-int diffPageCount(QTextEdit *view)
-{
-    const auto it = diffStreams().constFind(view);
-    return it == diffStreams().cend() ? 0 : int(it->pages.size());
-}
-
-int diffCurrentPage(QTextEdit *view)
-{
-    const auto it = diffStreams().constFind(view);
-    return it == diffStreams().cend() ? -1 : it->page;
-}
-
-void showDiffPage(QTextEdit *view, int page)
-{
-    auto it = diffStreams().find(view);
-    if (it == diffStreams().end() || page < 0 || page >= int(it->pages.size()) ||
-        page == it->page)
-        return;
-    it->pendingAnchor.clear();
-    renderDiffPage(view, page);
-    if (QScrollBar *bar = view->verticalScrollBar())
-        bar->setValue(0);
 }
 
 void scrollDiffToAnchor(QTextEdit *view, const QString &anchor)
@@ -702,31 +703,23 @@ void scrollDiffToAnchor(QTextEdit *view, const QString &anchor)
     if (!view || anchor.isEmpty())
         return;
     auto it = diffStreams().find(view);
-    if (it == diffStreams().end() || it->pages.isEmpty()) {
+    if (it == diffStreams().end() || it->fragments.isEmpty()) {
         if (auto *browser = qobject_cast<QTextBrowser *>(view))
             browser->scrollToAnchor(anchor);
         return;
     }
     const QString marker = QStringLiteral("name=\"") + anchor +
                            QStringLiteral("\"");
-    int targetPage = -1;
-    for (int page = 0; page < int(it->pages.size()) && targetPage < 0; ++page) {
-        for (const QString &fragment : it->pages.at(page)) {
-            if (fragment.contains(marker)) {
-                targetPage = page;
-                break;
-            }
-        }
-    }
-    if (targetPage < 0) {
+    const bool found = std::any_of(
+        it->fragments.cbegin(), it->fragments.cend(),
+        [&marker](const QString &fragment) { return fragment.contains(marker); });
+    if (!found) {
         if (auto *browser = qobject_cast<QTextBrowser *>(view))
             browser->scrollToAnchor(anchor);
         return;
     }
     it->pendingAnchor = anchor;
-    if (targetPage != it->page)
-        renderDiffPage(view, targetPage);
-    else if (auto *browser = qobject_cast<QTextBrowser *>(view))
+    if (auto *browser = qobject_cast<QTextBrowser *>(view))
         browser->scrollToAnchor(anchor);
 }
 
@@ -2023,11 +2016,6 @@ QString diffStyleSheet(int fontPt)
                ".threadsystem { color:%2; font-size:11px; margin-top:6px; }"
                ".threadactions { margin-top:8px; }"
                ".threadactions a { color:#58a6ff; text-decoration:none; }"
-               ".diffpagination { color:%2; text-align:center; padding:10px; "
-               "border:1px solid %7; background:%1; }"
-               ".diffpagination a { color:#58a6ff; text-decoration:none; "
-               "font-weight:700; }"
-               ".diffpagination span { color:%2; }"
                ".diffcontinuation { color:%2; padding:4px 12px; "
                "border-left:1px solid %7; border-right:1px solid %7; "
                "background:%1; font-size:11px; font-style:italic; }"
