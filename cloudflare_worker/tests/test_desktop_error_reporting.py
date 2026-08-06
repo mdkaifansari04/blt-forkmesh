@@ -146,12 +146,17 @@ def test_the_desktop_client_reports_every_error_surface_once():
     assert "const bool informational =" in QT_EVENT_FILTER
     assert "~(QMessageBox::Ok | QMessageBox::Close)" in QT_EVENT_FILTER
     assert 'reportUserVisibleError(QStringLiteral("dialog")' in QT_EVENT_FILTER
-    # The toast path reports before the widget guard: a headless node has no
-    # toast widget at all, and its failures are the invisible ones.
+    # The toast path reports from flashMessage, the half that records the
+    # failure, not from showTopMessage, the half that paints a bubble: a headless
+    # node has no toast widget at all (and its failures are the invisible ones),
+    # while the logged-error hook paints its own cards through showTopMessage and
+    # must not report a line a second time.
     flash = QT_SETTINGS[QT_SETTINGS.index("void MainWindow::flashMessage("):]
-    flash = flash[:flash.index("\n}\n")]
-    assert flash.index('reportUserVisibleError(QStringLiteral("toast")') < (
-        flash.index("if (!m_topMessage)"))
+    show = flash[flash.index("void MainWindow::showTopMessage("):]
+    flash = flash[:flash.index("void MainWindow::showTopMessage(")]
+    assert 'reportUserVisibleError(QStringLiteral("toast")' in flash
+    assert 'reportUserVisibleError(QStringLiteral("toast")' not in show
+    assert "if (!m_topMessage)" not in flash
     assert "/api/desktop-errors" in QT_MESSAGES
     assert "signedInboxQuery(owner)" in QT_MESSAGES
     assert "hostInCooldown(url.host())" in QT_MESSAGES

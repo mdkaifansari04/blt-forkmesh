@@ -28,15 +28,41 @@
 
 using namespace forkmesh::ui;
 
+namespace {
+
+// Heading row for one settings group: the existing small-caps section label
+// with an octicon in front of it. Once the groups are flowed into columns the
+// glyph is what makes the page scannable — you find "Startup" or "Pings" by its
+// icon instead of reading every header (adhoc #1533).
+QHBoxLayout *settingsHeading(QLabel *label, const QString &octicon,
+                             QWidget *trailing = nullptr)
+{
+    auto *row = new QHBoxLayout;
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(6);
+    auto *glyph = new QLabel;
+    setLabelOcticon(glyph, octicon, 12);
+    // #sectionLabel carries a top padding, so its text sits at the bottom of the
+    // label box; aligning the glyph to the bottom lines the two up.
+    row->addWidget(glyph, 0, Qt::AlignBottom);
+    row->addWidget(label, 0, Qt::AlignBottom);
+    if (trailing)
+        row->addWidget(trailing, 0, Qt::AlignBottom);
+    row->addStretch();
+    return row;
+}
+
+} // namespace
+
 // ----------------------------------------------------------------- settings
 
 QWidget *MainWindow::buildSettingsSection()
 {
     auto *page = new QWidget;
 
-    auto *title = new QLabel("Settings");
-    title->setObjectName("settingsTitle");
-
+    // No "Settings" banner over the tab strip: the left rail already says where
+    // you are, and on a small screen that heading cost a row of settings for a
+    // word nobody needed (adhoc #1533). The tab strip starts at the top instead.
     auto *profileLabel = new QLabel("PROFILE");
     profileLabel->setObjectName("sectionLabel");
 
@@ -612,6 +638,17 @@ QWidget *MainWindow::buildSettingsSection()
                 QSettings().setValue(kInAppNotificationDurationSetting,
                                      inAppPingDuration->currentData().toInt());
             });
+    auto *errorLogAlertCheck =
+        new QCheckBox("Flash the window when an error is logged");
+    errorLogAlertCheck->setChecked(
+        QSettings().value(kErrorLogAlertSetting, true).toBool());
+    errorLogAlertCheck->setToolTip(
+        "Pulse the red window border and show the failure as a card whenever an "
+        "error reaches the log, so a background failure isn't missed while the "
+        "Log section is closed. The Log keeps every error either way.");
+    connect(errorLogAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kErrorLogAlertSetting, enabled);
+    });
     auto *pushAlertCheck =
         new QCheckBox("Show a system ping when a push reaches a mirror");
     pushAlertCheck->setChecked(
@@ -1811,11 +1848,7 @@ QWidget *MainWindow::buildSettingsSection()
     varsHelpButton->setFlat(true);
     varsHelpButton->setFixedSize(24, 24);
     setOcticon(varsHelpButton, "info", 14);
-    auto *varsHeading = new QHBoxLayout;
-    varsHeading->setContentsMargins(0, 0, 0, 0);
-    varsHeading->addWidget(varsLabel);
-    varsHeading->addWidget(varsHelpButton);
-    varsHeading->addStretch();
+    auto *varsHeading = settingsHeading(varsLabel, "key", varsHelpButton);
 
     // Each variable gets a full-width card instead of a short, scrollable
     // table. This keeps long names and values readable and removes column
@@ -1933,25 +1966,39 @@ QWidget *MainWindow::buildSettingsSection()
     footerRow->addWidget(uninstallButton);
 
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(24, 22, 24, 22);
+    layout->setContentsMargins(24, 14, 24, 16);
     layout->setSpacing(10);
-    layout->addWidget(title);
 
     // Group related settings under tabs rather than one long two-column scroll.
-    // Each tab scrolls on its own; the title above and the account-action footer
-    // below stay pinned so they're reachable from any tab.
+    // Each tab scrolls on its own; the account-action footer below stays pinned
+    // so it's reachable from any tab. Every tab carries an octicon beside a
+    // small caption, which is what keeps eleven of them on one row of a laptop
+    // screen instead of behind scroll arrows (adhoc #1533).
     auto *tabs = new QTabWidget;
     tabs->setObjectName("settingsTabs");
     tabs->setDocumentMode(true);
+    tabs->tabBar()->setUsesScrollButtons(true);
     // Wrap a tab's content widget in a frameless, vertically-scrolling page.
-    auto addTab = [tabs](QWidget *body, const QString &name) {
+    auto addTab = [tabs](QWidget *body, const QString &name,
+                         const QString &octicon) {
         auto *scroll = new QScrollArea;
         scroll->setObjectName("settingsTabScroll");
         scroll->setFrameShape(QFrame::NoFrame);
         scroll->setWidgetResizable(true);
         scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         scroll->setWidget(body);
-        tabs->addTab(scroll, name);
+        const int index = tabs->addTab(scroll, name);
+        setTabOcticon(tabs, index, octicon);
+    };
+
+    // One tab body: the section cards flow into two or three columns as the
+    // window allows, so a page that was a single long scroll fits on a small
+    // screen. addSection() hands back the layout each group stacks into.
+    auto flowBody = [](int maxColumns = 3) {
+        auto *body = new ColumnFlowWidget;
+        body->setContentsMargins(2, 12, 2, 12);
+        body->setMaximumColumns(maxColumns);
+        return body;
     };
 
     // Profile (adhoc #274): the avatar / power-switch page that used to only be
@@ -1965,195 +2012,221 @@ QWidget *MainWindow::buildSettingsSection()
     profileHostLayout->setSpacing(0);
     m_profileSettingsTabIndex = tabs->count();
     tabs->addTab(m_settingsProfileHost, "Profile");
+    setTabOcticon(tabs, m_profileSettingsTabIndex, "person");
     connect(tabs, &QTabWidget::currentChanged, this,
             [this](int) { syncSettingsProfileTab(); });
 
     // Quick Setup: everything a brand-new instance needs, on one page with a
     // single Apply button (adhoc #318).
-    addTab(buildQuickSetupTab(), "Quick Setup");
+    addTab(buildQuickSetupTab(), "Quick Setup", "rocket");
 
     // General: identity, appearance and launch behaviour.
-    auto *generalTab = new QWidget;
-    auto *generalCol = new QVBoxLayout(generalTab);
-    generalCol->setContentsMargins(2, 14, 2, 14);
-    generalCol->setSpacing(10);
-    generalCol->addWidget(profileLabel);
-    generalCol->addLayout(form);
-    generalCol->addSpacing(6);
-    generalCol->addWidget(appearanceLabel);
-    generalCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
-    generalCol->addWidget(rebuildButtonCheck);
-    generalCol->addWidget(verboseNetLogCheck);
-    generalCol->addSpacing(6);
-    generalCol->addWidget(bountyLabel);
-    generalCol->addWidget(autoBountyCheck);
-    generalCol->addWidget(bountyHint);
-    generalCol->addLayout(bountyAmountRow);
-    generalCol->addLayout(bountyModeRow);
-    generalCol->addWidget(legacyWalletNotice);
-    generalCol->addSpacing(6);
-    generalCol->addWidget(nodeStatsLabel);
-    generalCol->addWidget(nodeStatsHint);
+    auto *generalTab = flowBody();
+
+    auto *profileGroup = generalTab->addSection();
+    profileGroup->addLayout(settingsHeading(profileLabel, "person"));
+    profileGroup->addLayout(form);
+
+    auto *appearanceGroup = generalTab->addSection();
+    appearanceGroup->addLayout(settingsHeading(appearanceLabel, "sun"));
+    appearanceGroup->addWidget(m_themeCombo, 0, Qt::AlignLeft);
+    appearanceGroup->addWidget(rebuildButtonCheck);
+    appearanceGroup->addWidget(verboseNetLogCheck);
+
+    auto *startupGroup = generalTab->addSection();
+    startupGroup->addLayout(settingsHeading(startupLabel, "sign-in"));
+    startupGroup->addWidget(m_autostartCheck);
+    startupGroup->addWidget(m_autostartInfo);
+    startupGroup->addLayout(autostartRemoveRow);
+    startupGroup->addWidget(autoUpdateCheck);
+    startupGroup->addWidget(autoRestartCheck);
+
+    // The three agent-behaviour toggles used to trail the tab with no heading of
+    // their own; in a column flow every card needs one to say what it is.
+    auto *agentBehaviourLabel = new QLabel("AGENT BEHAVIOUR");
+    agentBehaviourLabel->setObjectName("sectionLabel");
+    auto *agentBehaviourGroup = generalTab->addSection();
+    agentBehaviourGroup->addLayout(
+        settingsHeading(agentBehaviourLabel, "sparkle"));
+    agentBehaviourGroup->addWidget(autoSwitchToAgentCheck);
+    agentBehaviourGroup->addWidget(excludeExternalClaudeCheck);
+    agentBehaviourGroup->addWidget(publishAgentsToWebCheck);
+
+    auto *nodeStatsGroup = generalTab->addSection();
+    nodeStatsGroup->addLayout(settingsHeading(nodeStatsLabel, "graph"));
+    nodeStatsGroup->addWidget(nodeStatsHint);
     for (QCheckBox *check : std::as_const(nodeStatChecks))
-        generalCol->addWidget(check);
-    generalCol->addSpacing(6);
-    generalCol->addWidget(startupLabel);
-    generalCol->addWidget(m_autostartCheck);
-    generalCol->addWidget(m_autostartInfo);
-    generalCol->addLayout(autostartRemoveRow);
-    generalCol->addWidget(autoUpdateCheck);
-    generalCol->addWidget(autoRestartCheck);
-    generalCol->addSpacing(6);
-    generalCol->addWidget(vmLabel);
-    generalCol->addWidget(vmHint);
-    generalCol->addWidget(vmCheck);
-    generalCol->addWidget(vmStatus);
-    generalCol->addLayout(vmButtonRow);
-    generalCol->addSpacing(6);
-    generalCol->addWidget(autoSwitchToAgentCheck);
-    generalCol->addWidget(excludeExternalClaudeCheck);
-    generalCol->addWidget(publishAgentsToWebCheck);
-    generalCol->addStretch();
-    addTab(generalTab, "General");
+        nodeStatsGroup->addWidget(check);
+
+    auto *bountyGroup = generalTab->addSection();
+    bountyGroup->addLayout(settingsHeading(bountyLabel, "credit-card"));
+    bountyGroup->addWidget(autoBountyCheck);
+    bountyGroup->addWidget(bountyHint);
+    bountyGroup->addLayout(bountyAmountRow);
+    bountyGroup->addLayout(bountyModeRow);
+    bountyGroup->addWidget(legacyWalletNotice);
+
+    auto *vmGroup = generalTab->addSection();
+    vmGroup->addLayout(settingsHeading(vmLabel, "server"));
+    vmGroup->addWidget(vmHint);
+    vmGroup->addWidget(vmCheck);
+    vmGroup->addWidget(vmStatus);
+    vmGroup->addLayout(vmButtonRow);
+
+    addTab(generalTab, "General", "gear");
 
     // Repositories: creating/importing repos and where mirrors live.
-    auto *reposTab = new QWidget;
-    auto *reposCol = new QVBoxLayout(reposTab);
-    reposCol->setContentsMargins(2, 14, 2, 14);
-    reposCol->setSpacing(10);
-    reposCol->addWidget(repositoriesLabel);
-    reposCol->addWidget(repositoriesHint);
-    reposCol->addLayout(repoButtonRow);
-    reposCol->addSpacing(6);
-    reposCol->addWidget(importLabel);
-    reposCol->addWidget(importHint);
-    reposCol->addLayout(importRow);
-    reposCol->addWidget(m_importStatus);
-    reposCol->addLayout(importTokenForm);
-    reposCol->addSpacing(6);
-    reposCol->addWidget(storageLabel);
-    reposCol->addLayout(mirrorRow);
-    reposCol->addSpacing(6);
-    reposCol->addWidget(previewCacheLabel);
-    reposCol->addLayout(previewCacheRow);
-    reposCol->addSpacing(6);
-    reposCol->addWidget(issuesSyncLabel);
-    reposCol->addWidget(autoSyncIssuesCheck);
-    reposCol->addSpacing(6);
-    reposCol->addWidget(pullsSyncLabel);
-    reposCol->addWidget(autoSyncMergeCheck);
-    reposCol->addSpacing(6);
-    reposCol->addWidget(mirrorSyncLabel);
-    reposCol->addWidget(mirrorSyncHint);
-    reposCol->addLayout(mirrorSyncRow);
-    reposCol->addStretch();
-    addTab(reposTab, "Repositories");
+    auto *reposTab = flowBody();
 
-    // Notifications: every desktop-alert opt-in.
-    auto *notifyTab = new QWidget;
-    auto *notifyCol = new QVBoxLayout(notifyTab);
-    notifyCol->setContentsMargins(2, 14, 2, 14);
-    notifyCol->setSpacing(10);
-    notifyCol->addWidget(notifyLabel);
-    notifyCol->addWidget(inAppPingsCheck);
-    notifyCol->addWidget(inAppPingDuration, 0, Qt::AlignLeft);
-    notifyCol->addWidget(pushAlertCheck);
-    notifyCol->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
-    notifyCol->addWidget(nodeConnectAlertCheck);
-    notifyCol->addWidget(disbursementAlertCheck);
-    notifyCol->addWidget(chatMessageAlertCheck);
-    notifyCol->addWidget(mentionAlertCheck);
-    notifyCol->addWidget(issueAlertCheck);
-    notifyCol->addWidget(pullAlertCheck);
-    notifyCol->addWidget(commentAlertCheck);
-    notifyCol->addWidget(mirrorUpdateAlertCheck);
-    notifyCol->addWidget(coveOpenAlertCheck);
-    notifyCol->addWidget(newUserAlertCheck);
-    notifyCol->addSpacing(6);
-    notifyCol->addWidget(emailNotifyLabel);
-    notifyCol->addWidget(emailMentionCheck);
-    notifyCol->addWidget(emailSubscribedCheck);
-    notifyCol->addWidget(emailPullCheck);
-    notifyCol->addWidget(emailIssueAssignedCheck);
-    notifyCol->addWidget(emailRepoSharedCheck);
-    notifyCol->addWidget(emailPendingInboxCheck);
-    notifyCol->addWidget(emailReleaseCheck);
-    notifyCol->addWidget(emailCreditsCheck);
-    notifyCol->addWidget(emailBountyFundedCheck);
-    notifyCol->addWidget(emailBountyPaidCheck);
-    notifyCol->addWidget(emailGeneralChatCheck);
-    notifyCol->addWidget(emailHostOnlineCheck);
-    notifyCol->addWidget(emailHostOfflineCheck);
-    notifyCol->addStretch();
-    addTab(notifyTab, "Pings");
+    auto *repositoriesGroup = reposTab->addSection();
+    repositoriesGroup->addLayout(settingsHeading(repositoriesLabel, "repo"));
+    repositoriesGroup->addWidget(repositoriesHint);
+    repositoriesGroup->addLayout(repoButtonRow);
 
-    // Agents & IDE: model keys/commands and editor integration.
-    auto *agentsTab = new QWidget;
-    auto *agentsCol = new QVBoxLayout(agentsTab);
-    agentsCol->setContentsMargins(2, 14, 2, 14);
-    agentsCol->setSpacing(10);
-    agentsCol->addWidget(agentsLabel);
-    agentsCol->addWidget(agentsHint);
-    agentsCol->addLayout(agentForm);
-    agentsCol->addWidget(autoStallAgentCheck);
-    agentsCol->addWidget(autoFixFailuresCheck);
-    agentsCol->addWidget(jailAgentsCheck);
-    agentsCol->addSpacing(6);
-    agentsCol->addWidget(usageLabel);
-    agentsCol->addWidget(usageHint);
-    agentsCol->addLayout(usageText);
-    agentsCol->addSpacing(6);
-    agentsCol->addWidget(ideLabel);
-    agentsCol->addWidget(ideIntegrationCheck);
-    agentsCol->addWidget(ideStatus);
-    agentsCol->addStretch();
-    addTab(agentsTab, "Agents & IDE");
+    auto *importGroup = reposTab->addSection();
+    importGroup->addLayout(settingsHeading(importLabel, "download"));
+    importGroup->addWidget(importHint);
+    importGroup->addLayout(importRow);
+    importGroup->addWidget(m_importStatus);
+    importGroup->addLayout(importTokenForm);
+
+    auto *storageGroup = reposTab->addSection();
+    storageGroup->addLayout(settingsHeading(storageLabel, "file-directory"));
+    storageGroup->addLayout(mirrorRow);
+
+    auto *previewCacheGroup = reposTab->addSection();
+    previewCacheGroup->addLayout(settingsHeading(previewCacheLabel, "eye"));
+    previewCacheGroup->addLayout(previewCacheRow);
+
+    auto *issuesSyncGroup = reposTab->addSection();
+    issuesSyncGroup->addLayout(settingsHeading(issuesSyncLabel, "issue-opened"));
+    issuesSyncGroup->addWidget(autoSyncIssuesCheck);
+
+    auto *pullsSyncGroup = reposTab->addSection();
+    pullsSyncGroup->addLayout(
+        settingsHeading(pullsSyncLabel, "git-pull-request"));
+    pullsSyncGroup->addWidget(autoSyncMergeCheck);
+
+    auto *mirrorSyncGroup = reposTab->addSection();
+    mirrorSyncGroup->addLayout(settingsHeading(mirrorSyncLabel, "sync"));
+    mirrorSyncGroup->addWidget(mirrorSyncHint);
+    mirrorSyncGroup->addLayout(mirrorSyncRow);
+
+    // "Repos", the same word the left rail uses, so the strip's widest caption
+    // isn't spending 60px saying what the icon already says.
+    addTab(reposTab, "Repos", "repo");
+
+    // Notifications: every desktop-alert opt-in. Two long checkbox lists, so
+    // they sit side by side rather than one after the other.
+    auto *notifyTab = flowBody(2);
+
+    auto *pingsGroup = notifyTab->addSection();
+    pingsGroup->addLayout(settingsHeading(notifyLabel, "bell"));
+    pingsGroup->addWidget(inAppPingsCheck);
+    pingsGroup->addWidget(inAppPingDuration, 0, Qt::AlignLeft);
+    pingsGroup->addWidget(errorLogAlertCheck);
+    pingsGroup->addWidget(pushAlertCheck);
+    pingsGroup->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
+    pingsGroup->addWidget(nodeConnectAlertCheck);
+    pingsGroup->addWidget(disbursementAlertCheck);
+    pingsGroup->addWidget(chatMessageAlertCheck);
+    pingsGroup->addWidget(mentionAlertCheck);
+    pingsGroup->addWidget(issueAlertCheck);
+    pingsGroup->addWidget(pullAlertCheck);
+    pingsGroup->addWidget(commentAlertCheck);
+    pingsGroup->addWidget(mirrorUpdateAlertCheck);
+    pingsGroup->addWidget(coveOpenAlertCheck);
+    pingsGroup->addWidget(newUserAlertCheck);
+
+    auto *emailGroup = notifyTab->addSection();
+    emailGroup->addLayout(settingsHeading(emailNotifyLabel, "paper-airplane"));
+    emailGroup->addWidget(emailMentionCheck);
+    emailGroup->addWidget(emailSubscribedCheck);
+    emailGroup->addWidget(emailPullCheck);
+    emailGroup->addWidget(emailIssueAssignedCheck);
+    emailGroup->addWidget(emailRepoSharedCheck);
+    emailGroup->addWidget(emailPendingInboxCheck);
+    emailGroup->addWidget(emailReleaseCheck);
+    emailGroup->addWidget(emailCreditsCheck);
+    emailGroup->addWidget(emailBountyFundedCheck);
+    emailGroup->addWidget(emailBountyPaidCheck);
+    emailGroup->addWidget(emailGeneralChatCheck);
+    emailGroup->addWidget(emailHostOnlineCheck);
+    emailGroup->addWidget(emailHostOfflineCheck);
+
+    addTab(notifyTab, "Pings", "bell");
+
+    // Agents & IDE: model keys/commands and editor integration. The agent form
+    // is wide, so this one stays at two columns.
+    auto *agentsTab = flowBody(2);
+
+    auto *agentsGroup = agentsTab->addSection();
+    agentsGroup->addLayout(settingsHeading(agentsLabel, "sparkle"));
+    agentsGroup->addWidget(agentsHint);
+    agentsGroup->addLayout(agentForm);
+    agentsGroup->addWidget(autoStallAgentCheck);
+    agentsGroup->addWidget(autoFixFailuresCheck);
+    agentsGroup->addWidget(jailAgentsCheck);
+
+    auto *usageGroup = agentsTab->addSection();
+    usageGroup->addLayout(settingsHeading(usageLabel, "pie-chart"));
+    usageGroup->addWidget(usageHint);
+    usageGroup->addLayout(usageText);
+
+    auto *ideGroup = agentsTab->addSection();
+    ideGroup->addLayout(settingsHeading(ideLabel, "code"));
+    ideGroup->addWidget(ideIntegrationCheck);
+    ideGroup->addWidget(ideStatus);
+
+    // "Agents / IDE", not "Agents & IDE": a tab bar eats the ampersand as a
+    // mnemonic and painted the caption as "Agents_IDE".
+    addTab(agentsTab, "Agents / IDE", "code");
 
     // Voice: local speech-to-text engine setup, mic device and test — its own
     // tab so it's easy to land on directly (see openVoiceSettings(), adhoc #132).
-    auto *voiceTab = new QWidget;
-    auto *voiceCol = new QVBoxLayout(voiceTab);
-    voiceCol->setContentsMargins(2, 14, 2, 14);
-    voiceCol->setSpacing(10);
-    voiceCol->addWidget(voiceLabel);
-    voiceCol->addWidget(voiceHint);
-    voiceCol->addLayout(voiceRow);
-    voiceCol->addLayout(voiceDeviceRow);
-    voiceCol->addLayout(voiceTestRow);
-    voiceCol->addWidget(m_whisperStatusLabel);
-    voiceCol->addSpacing(8);
-    voiceCol->addWidget(worldVoiceLabel);
-    voiceCol->addWidget(worldVoiceHint);
-    voiceCol->addLayout(worldVoiceOriginRow);
-    voiceCol->addLayout(worldVoicePairRow);
-    voiceCol->addWidget(m_worldSpeechStatusLabel);
-    voiceCol->addStretch();
+    auto *voiceTab = flowBody(2);
+
+    auto *voiceGroup = voiceTab->addSection();
+    voiceGroup->addLayout(settingsHeading(voiceLabel, "mic"));
+    voiceGroup->addWidget(voiceHint);
+    voiceGroup->addLayout(voiceRow);
+    voiceGroup->addLayout(voiceDeviceRow);
+    voiceGroup->addLayout(voiceTestRow);
+    voiceGroup->addWidget(m_whisperStatusLabel);
+
+    auto *worldVoiceGroup = voiceTab->addSection();
+    worldVoiceGroup->addLayout(settingsHeading(worldVoiceLabel, "broadcast"));
+    worldVoiceGroup->addWidget(worldVoiceHint);
+    worldVoiceGroup->addLayout(worldVoiceOriginRow);
+    worldVoiceGroup->addLayout(worldVoicePairRow);
+    worldVoiceGroup->addWidget(m_worldSpeechStatusLabel);
+
     m_voiceSettingsTabIndex = tabs->count();
-    addTab(voiceTab, "Voice");
+    addTab(voiceTab, "Voice", "mic");
 
     // Secrets: shared action variables. Coves are account-scoped and managed
     // from their repository explorer, not through a global password here.
     auto *secretsTab = new QWidget;
     auto *secretsCol = new QVBoxLayout(secretsTab);
-    secretsCol->setContentsMargins(2, 14, 2, 14);
+    secretsCol->setContentsMargins(2, 12, 2, 12);
     secretsCol->setSpacing(10);
     secretsCol->addLayout(varsHeading);
     secretsCol->addLayout(varButtonRow);
     secretsCol->addWidget(m_varsList);
     secretsCol->addStretch();
-    addTab(secretsTab, "Secrets");
+    addTab(secretsTab, "Secrets", "key");
 
     // MCP: connector token + the config to paste into an external agent, so
     // anything speaking MCP can work this node's issues and PRs (adhoc #16).
     // Built in its own translation unit (MainWindowMcp.cpp).
-    addTab(buildMcpConnectorTab(), "MCP");
+    addTab(buildMcpConnectorTab(), "MCP", "link");
 
     // Security: private vulnerability reporting form.
-    addTab(buildVulnReportTab(), "Security");
+    addTab(buildVulnReportTab(), "Security", "shield-check");
 
     // Data: where configuration data lives, per-directory breakdown, backup and
     // cleanup. Built in its own translation unit (MainWindowData.cpp).
-    addTab(buildDataSection(), "Data");
+    addTab(buildDataSection(), "Data", "package");
 
     m_settingsTabs = tabs;
     // Each settings tab is its own destination on the Back/Forward trail
@@ -4774,6 +4847,79 @@ void MainWindow::logSystem(const QString &text)
         if (++m_networkLogDiskLines > kNetworkLogLimit * 2)
             saveNetworkLog();
     }
+
+    // Last, once the line is safely recorded: a failure that only reached the
+    // log used to be invisible unless the Log section happened to be open.
+    // Announce every ERROR-badged line from this one choke point, so it doesn't
+    // matter which subsystem recorded it.
+    if (badge == QLatin1String("ERROR"))
+        alertOnLoggedError(plain);
+}
+
+// Identical error text repeating inside this window alerts once. A retry loop
+// hammering the same failure should flash the window once, not once per
+// attempt; the log itself still records every occurrence.
+static constexpr qint64 kLoggedErrorAlertRepeatMs = 15000;
+// A failing subsystem can emit distinct error lines (different URLs, different
+// repos) faster than anyone can read them, and each card holds the screen for
+// kToastErrorSeconds. Past this many in a window, the window keeps flashing but
+// the cards give way to a single "open the Log" notice.
+static constexpr qint64 kLoggedErrorBurstWindowMs = 30000;
+static constexpr int kLoggedErrorBurstCards = 5;
+
+// Runs for every ERROR-badged line reaching logSystem. Two halves: the window
+// flash always fires, while the toast is skipped when the caller came through
+// flashMessage and is already putting this exact text on screen.
+void MainWindow::alertOnLoggedError(const QString &message)
+{
+    // A headless node has no window to flash and nobody to read a card; the
+    // line is in the log and in the node's self-check tally either way.
+    if (m_headless)
+        return;
+    // Nothing is on screen yet — early startup logs before the UI is built.
+    if (!m_topMessage)
+        return;
+    // A repaint or animation on the alert path logging its own failure must not
+    // re-enter this and alert about the alert.
+    if (m_inLoggedErrorAlert)
+        return;
+    if (!QSettings().value(kErrorLogAlertSetting, true).toBool())
+        return;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (message == m_lastLoggedErrorText &&
+        now - m_lastLoggedErrorAtMs < kLoggedErrorAlertRepeatMs)
+        return;
+    m_lastLoggedErrorText = message;
+    m_lastLoggedErrorAtMs = now;
+
+    if (now - m_loggedErrorBurstStartMs > kLoggedErrorBurstWindowMs) {
+        m_loggedErrorBurstStartMs = now;
+        m_loggedErrorBurstCount = 0;
+        m_loggedErrorBurstNoticeShown = false;
+    }
+    const bool burst = ++m_loggedErrorBurstCount > kLoggedErrorBurstCards;
+
+    m_inLoggedErrorAlert = true;
+    // The red edge pulse (adhoc #77), plus the platform's own window/taskbar
+    // attention flash for when ForkMesh isn't the focused window.
+    flashErrorBorder();
+    QApplication::alert(this, 0);
+    if (!m_topMessageOwnsLoggedError && (!burst || !m_loggedErrorBurstNoticeShown)) {
+        // A failure supersedes any in-flight progress pill, exactly as it would
+        // had the caller reported it through flashMessage. The card links into
+        // the Log's ERROR filter, where the full text and everything around it is.
+        m_loadStatusShowing = false;
+        if (burst)
+            m_loggedErrorBurstNoticeShown = true;
+        const QString text =
+            burst ? QStringLiteral("Errors are arriving faster than they can be "
+                                   "shown. Open the Log for the full list.")
+                  : message;
+        showTopMessage(text, true, QStringLiteral("fm:log:errors"), 0,
+                       QStringLiteral("error"));
+    }
+    m_inLoggedErrorAlert = false;
 }
 
 // Auto-dismiss windows for the top toast. Every toast counts down visibly so the
@@ -4836,6 +4982,7 @@ QString topMessageKindLabel(const QString &kind)
         {QStringLiteral("comment"), QStringLiteral("Comment")},
         {QStringLiteral("desktop"), QStringLiteral("System")},
         {QStringLiteral("discussion"), QStringLiteral("Discussion")},
+        {QStringLiteral("error"), QStringLiteral("Error")},
         {QStringLiteral("issue"), QStringLiteral("Issue")},
         {QStringLiteral("mention"), QStringLiteral("Mention")},
         {QStringLiteral("mirror"), QStringLiteral("Mirror")},
@@ -5491,14 +5638,28 @@ void MainWindow::flashMessage(const QString &text, bool error,
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
-    // Always keep a copy in the network log for history.
+    // Always keep a copy in the network log for history. An error-classified
+    // line still flashes the window from there (alertOnLoggedError), but this
+    // toast is the one that shows it — say so, so the hook doesn't queue a
+    // second card with the same text.
+    m_topMessageOwnsLoggedError = true;
     logSystem(text);
+    m_topMessageOwnsLoggedError = false;
     // An error toast is the whole record of the failure on this machine; report
     // it so it also becomes an operational record and a ping (adhoc #1538).
-    // Ahead of the m_topMessage guard on purpose: a headless node has no toast
-    // widget at all, and its failures are the ones nobody can see.
+    // Here rather than in showTopMessage: a headless node has no toast widget at
+    // all — its failures are the ones nobody can see — and the logged-error hook
+    // that paints its own cards through showTopMessage must not report a line
+    // that was already reported from wherever it originally failed.
     if (error)
         reportUserVisibleError(QStringLiteral("toast"), QString(), text);
+    showTopMessage(text, error, clickHref, durationSeconds, kind, actionRunId);
+}
+
+void MainWindow::showTopMessage(const QString &text, bool error,
+                                const QString &clickHref, int durationSeconds,
+                                const QString &kind, int actionRunId)
+{
     if (!m_topMessage)
         return;
 
@@ -5672,14 +5833,16 @@ void MainWindow::advanceTopMessageQueue()
     }
     const TopMessageQueueEntry next = m_topMessageQueue.takeFirst();
     renderTopMessageQueue();
-    // Hide first: flashMessage would otherwise see a toast that is still
+    // Hide first: showTopMessage would otherwise see a toast that is still
     // visible and queue this one straight back behind itself.
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
-    flashMessage(next.text, next.error, next.clickHref, next.durationSeconds,
-                 next.kind, next.actionRunId);
+    // Present only — this card was already logged (and, if it was an error,
+    // already flashed the window) when it first arrived.
+    showTopMessage(next.text, next.error, next.clickHref, next.durationSeconds,
+                   next.kind, next.actionRunId);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)

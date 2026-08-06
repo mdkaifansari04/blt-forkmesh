@@ -163,6 +163,7 @@
 #include <QAbstractItemView>
 #include <QHeaderView>
 #include <QTableWidget>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTextBrowser>
 #include <QTextBlock>
@@ -3179,6 +3180,9 @@ const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
 const QString kInAppNotificationsSetting = QStringLiteral("notifications/inAppCards");
 const QString kInAppNotificationDurationSetting =
     QStringLiteral("notifications/inAppCardDurationSeconds");
+// Every ERROR-badged log line flashes the window border and shows itself as a
+// card. On by default: a failure nobody sees is the thing this exists to stop.
+const QString kErrorLogAlertSetting = QStringLiteral("notifications/errorLogFlash");
 const QString kEmailNotifyMentionSetting = QStringLiteral("notifications/email/mention");
 const QString kEmailNotifySubscribedSetting = QStringLiteral("notifications/email/subscribed");
 const QString kEmailNotifyPullSubmittedSetting = QStringLiteral("notifications/email/pullSubmitted");
@@ -3734,7 +3738,7 @@ inline int agentJailMemoryMb()
 // How many agent sessions may run at the same time (adhoc #433). Anything
 // started beyond the cap stays Queued and launches as a slot frees up, so a
 // batch of assignments can't spawn a dozen CLIs at once. Adjustable in
-// Settings -> Agents & IDE.
+// Settings -> Agents / IDE.
 const QString kMaxRunningAgentsSetting = QStringLiteral("agents/maxRunning");
 constexpr int kDefaultMaxRunningAgents = 5;
 constexpr int kMinMaxRunningAgents = 1;
@@ -4266,16 +4270,21 @@ protected:
 // Named transparent assets keep the source artwork inspectable and reusable
 // outside this control. Cache the QIcons because the combined menu is rebuilt
 // whenever a live provider catalog changes.
+//
+// Slots 0-6 are the seven robot portraits an agent bot already wears in the
+// World (cloudflare_worker/public/assets/bot-avatars), in that table's own
+// order, so one model reads the same in the composer picker, the Agents list
+// and the World. Use agentModelFaceIconIndex() rather than these numbers.
 inline QIcon agentControlIcon(int index)
 {
     static const char *const paths[] = {
-        ":/agent-ui/icons/model-starburst.png",
-        ":/agent-ui/icons/model-book-quill.png",
-        ":/agent-ui/icons/model-feather.png",
-        ":/agent-ui/icons/model-mountain-blossom.png",
-        ":/agent-ui/icons/model-sun.png",
-        ":/agent-ui/icons/model-globe-leaf.png",
-        ":/agent-ui/icons/model-crescent-moon.png",
+        ":/agent-ui/icons/model-opus-face.png",
+        ":/agent-ui/icons/model-sonnet-face.png",
+        ":/agent-ui/icons/model-haiku-face.png",
+        ":/agent-ui/icons/model-fable-face.png",
+        ":/agent-ui/icons/model-sol-face.png",
+        ":/agent-ui/icons/model-luna-face.png",
+        ":/agent-ui/icons/model-terra-face.png",
         ":/agent-ui/icons/mode-auto.png",
         ":/agent-ui/icons/mode-ask.png",
         ":/agent-ui/icons/mode-plan.png",
@@ -4360,6 +4369,37 @@ inline bool agentModelMatchesProvider(const QString &provider, const QString &mo
         provider.startsWith(QLatin1String("claude")))
         return agentModelIsClaudeStyle(model);
     return !agentModelIsClaudeStyle(model);
+}
+
+// agentControlIcon() slot holding the portrait a model wears. A session names
+// its model freely ("opus", "claude-sonnet-5", "gpt-5.5-codex"), so match the
+// face names by substring first and only then fall back per provider, exactly
+// as the World does: Claude reads as Sonnet, Codex as Sol, the OpenAI API as
+// Luna, anything else as Terra. Codex and OpenAI ids carry no face name of
+// their own, so the small models take Luna and the Codex line takes Sol. The
+// lookup never fails — every model gets a face.
+inline int agentModelFaceIconIndex(const QString &provider, const QString &model)
+{
+    static const char *const kFaces[] = {"opus", "sonnet", "haiku", "fable",
+                                         "sol",  "luna",   "terra"};
+    constexpr int kSonnetFace = 1;
+    constexpr int kSolFace = 4;
+    constexpr int kLunaFace = 5;
+    constexpr int kTerraFace = 6;
+    const QString m = model.trimmed().toLower();
+    for (int i = 0; i < 7; ++i)
+        if (m.contains(QLatin1String(kFaces[i])))
+            return i;
+    const QString p = provider.trimmed().toLower();
+    if (agentIsClaudeProvider(p) || agentModelIsClaudeStyle(m))
+        return kSonnetFace;
+    if (m.contains(QLatin1String("mini")) || m.contains(QLatin1String("nano")))
+        return kLunaFace;
+    if (agentIsCodexProvider(p) || m.contains(QLatin1String("codex")))
+        return kSolFace;
+    if (agentUsesOpenAiKey(p))
+        return kLunaFace;
+    return kTerraFace;
 }
 
 // Pre-model router for auto mode: a self-hosted, zero-cost heuristic pass over
@@ -8897,6 +8937,193 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     button->setProperty("forkmeshOcticonRotation", rotationDeg);
     applyStoredOcticon(button);
 }
+
+// Glyph in front of a plain label — the settings section headings, whose icon
+// is what makes a wall of small-caps headers scannable at a glance. Same stored
+// name/size properties as the button flavour so a theme switch can re-tint it
+// (refreshThemedIcons()).
+inline void applyStoredLabelOcticon(QLabel *label)
+{
+    if (!label)
+        return;
+    const QString name = label->property("forkmeshOcticon").toString();
+    if (name.isEmpty())
+        return;
+    const int size = label->property("forkmeshOcticonSize").toInt();
+    const int px = size > 0 ? size : 12;
+    // Section headings are tertiary text in both themes; matching that colour
+    // keeps the glyph reading as part of the heading rather than a control.
+    const QColor color(currentThemeIsDark() ? QStringLiteral("#8b949e")
+                                            : QStringLiteral("#656d76"));
+    label->setPixmap(tintedOcticonPixmap(name, color, px));
+    label->setFixedSize(px, px);
+}
+
+inline void setLabelOcticon(QLabel *label, const QString &name, int size = 12)
+{
+    if (!label)
+        return;
+    label->setProperty("forkmeshOcticon", name);
+    label->setProperty("forkmeshOcticonSize", size);
+    applyStoredLabelOcticon(label);
+}
+
+// Icon for a tab, stored on the tab so a theme switch can re-tint it the same
+// way buttons and section headings are re-tinted.
+inline void setTabOcticon(QTabWidget *tabs, int index, const QString &name,
+                          int size = 14)
+{
+    if (!tabs || index < 0 || index >= tabs->count())
+        return;
+    QTabBar *bar = tabs->tabBar();
+    bar->setTabData(index, name);
+    const QColor color(currentThemeIsDark() ? QStringLiteral("#8b949e")
+                                            : QStringLiteral("#656d76"));
+    tabs->setTabIcon(index, themedOcticon(name, color, size));
+    tabs->setIconSize(QSize(size, size));
+}
+
+inline void refreshTabOcticons(QTabWidget *tabs)
+{
+    if (!tabs)
+        return;
+    QTabBar *bar = tabs->tabBar();
+    for (int i = 0; i < bar->count(); ++i) {
+        const QString name = bar->tabData(i).toString();
+        if (!name.isEmpty())
+            setTabOcticon(tabs, i, name, tabs->iconSize().width());
+    }
+}
+
+// Flows a list of section cards into as many equal columns as the width allows,
+// so a page that is naturally one long column (Settings' General and Pings tabs
+// especially) is readable on a small screen without scrolling past the fold.
+// Sections keep their order but are packed shortest-column-first, so no column
+// runs away from its neighbours.
+//
+// The advertised minimum width is one column, never the sum of them: the flow
+// drops back to a single column when squeezed, and must not push the window's
+// own minimum width out to a desktop-only size in the process.
+class ColumnFlowWidget : public QWidget
+{
+public:
+    explicit ColumnFlowWidget(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        m_row = new QHBoxLayout(this);
+        m_row->setContentsMargins(0, 0, 0, 0);
+        m_row->setSpacing(kColumnGap);
+    }
+
+    // Narrowest a column may become before the flow drops back to fewer of
+    // them. Settings rows carry long checkbox captions, so this is generous.
+    void setMinimumColumnWidth(int px)
+    {
+        m_minColumnWidth = qMax(120, px);
+        reflow(true);
+    }
+    void setMaximumColumns(int columns)
+    {
+        m_maxColumns = qMax(1, columns);
+        reflow(true);
+    }
+
+    // Start a section. Everything added to the returned layout stacks under it,
+    // and the whole card moves between columns as one unit.
+    QVBoxLayout *addSection()
+    {
+        auto *card = new QWidget(this);
+        auto *body = new QVBoxLayout(card);
+        body->setContentsMargins(0, 0, 0, 0);
+        body->setSpacing(8);
+        m_sections.append(card);
+        m_pending = true;
+        return body;
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QWidget::minimumSizeHint();
+        hint.setWidth(qMin(hint.width(), m_minColumnWidth));
+        return hint;
+    }
+
+    int columnCount() const { return m_columnCount; }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QWidget::resizeEvent(event);
+        reflow(false);
+    }
+    void showEvent(QShowEvent *event) override
+    {
+        QWidget::showEvent(event);
+        reflow(false);
+    }
+
+private:
+    static constexpr int kColumnGap = 22;
+
+    int columnsForWidth() const
+    {
+        int best = 1;
+        for (int n = 2; n <= qMin(m_maxColumns, int(m_sections.size())); ++n) {
+            if (width() >= n * m_minColumnWidth + (n - 1) * kColumnGap)
+                best = n;
+        }
+        return best;
+    }
+
+    void reflow(bool force)
+    {
+        const int columns = columnsForWidth();
+        if (!force && !m_pending && columns == m_columnCount)
+            return;
+        m_columnCount = columns;
+        m_pending = false;
+
+        // Empty the old columns before deleting them. Taking a layout item out
+        // does not touch the widget it wraps, so the section cards survive the
+        // rebuild and simply land in their new column below.
+        for (QVBoxLayout *column : std::as_const(m_columns)) {
+            while (QLayoutItem *item = column->takeAt(0))
+                delete item;
+        }
+        qDeleteAll(m_columns);
+        m_columns.clear();
+        while (QLayoutItem *item = m_row->takeAt(0))
+            delete item;
+
+        for (int i = 0; i < columns; ++i) {
+            auto *column = new QVBoxLayout;
+            column->setContentsMargins(0, 0, 0, 0);
+            column->setSpacing(14);
+            m_columns.append(column);
+            m_row->addLayout(column, 1);
+        }
+
+        QList<int> filled(columns, 0);
+        for (QWidget *section : std::as_const(m_sections)) {
+            int target = 0;
+            for (int i = 1; i < columns; ++i) {
+                if (filled.at(i) < filled.at(target))
+                    target = i;
+            }
+            m_columns.at(target)->addWidget(section);
+            filled[target] += qMax(1, section->sizeHint().height());
+        }
+        for (QVBoxLayout *column : std::as_const(m_columns))
+            column->addStretch(1);
+    }
+
+    QHBoxLayout *m_row = nullptr;
+    QList<QWidget *> m_sections;
+    QList<QVBoxLayout *> m_columns;
+    int m_columnCount = 0;
+    int m_minColumnWidth = 300;
+    int m_maxColumns = 3;
+    bool m_pending = false;
+};
 
 // A push button whose label never pins its pane open: the text is elided to
 // whatever width the button is actually given, and both its preferred and its

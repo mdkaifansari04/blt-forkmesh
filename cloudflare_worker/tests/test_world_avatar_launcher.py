@@ -49,6 +49,32 @@ def test_avatar_launcher_keeps_actionable_counts_on_their_related_tools():
     assert 'content: attr(data-world-tooltip);' in CSS
 
 
+def test_launcher_wears_a_painted_face_when_no_photo_was_uploaded():
+    # Guests can never have an uploaded account photo, so the badge used to
+    # render as an empty disc in the top-right corner. The deterministic
+    # portrait the 3D head already paints stands in, keyed to the same
+    # identity so the badge and the avatar in the scene match.
+    assert "export function paintProceduralAvatarFace(context, identityKey)" in SCENE
+    assert "export function proceduralAvatarFaceDataURL(identityKey, size = 128)" in SCENE
+    assert "skin = paintProceduralAvatarFace(context, identityKey);" in SCENE
+    assert "  proceduralAvatarFaceDataURL,\n} from \"./world-scene.js\";" in WORLD
+    assert "function hudAvatarFaceSource(session, identity)" in WORLD
+    assert (
+        'hudFacePortrait = { key, url: proceduralAvatarFaceDataURL(key) };'
+        in WORLD
+    )
+    assert (
+        "const shirtAvatarSource = hudAvatarFaceSource(accountSession, identity);"
+        in WORLD
+    )
+    avatar_markup = WORLD.split("data-world-shirt-avatar", 1)[1].split("/>", 1)[0]
+    assert 'src="${escapeHTML(shirtAvatarSource)}"' in avatar_markup
+    assert "${shirtAvatarSource ? \"\" : \"hidden\"}" in avatar_markup
+    identity_sync = WORLD.split("const avatar = this.$(\"[data-world-shirt-avatar]\");", 1)[1]
+    assert "const source = hudAvatarFaceSource(session, this.identity);" in identity_sync
+    assert "avatar.hidden = !source;" in identity_sync
+
+
 def test_hud_controls_slide_out_without_resizing_and_latch_until_movement():
     assert '.world-hud[data-hud-expanded="true"] .world-top-link' in CSS
     assert "width: 40px;" in CSS
