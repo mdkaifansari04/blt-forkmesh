@@ -13579,7 +13579,7 @@ async def _repo_about_public(env, request, owner, repo):
             "followersList": followers_list,
             "settings": ap_settings,
         },
-    }, cache_control="public, max-age=30")
+    }, cache_control="public, max-age=600")
 
 
 async def repo_about_handler(env, request, owner, repo):
@@ -33537,8 +33537,11 @@ async def repo_pending_counts_handler(env, request, owner, repo):
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     # The whole fleet polls these badges (plus every open repo page), so a
-    # colo answers from its edge cache for 30s and a polling burst collapses
-    # to one D1 UNION per colo per TTL. Only the public 200 is cached — the
+    # colo answers from its edge cache for ten minutes and a polling burst
+    # collapses to one D1 UNION per colo per TTL. Ten minutes (not 30s)
+    # because this was still the largest request group on the API traffic
+    # chart at ~900/hour; a badge that lags a drain by minutes is fine,
+    # since the drain itself is not instantaneous. Only the public 200 is cached — the
     # private/unpublished 404 above stays uncached and instant to reverse.
     pending_cache_key = (
         "https://edge-cache.forkmesh.internal/repo-pending/"
@@ -33570,7 +33573,7 @@ async def repo_pending_counts_handler(env, request, owner, repo):
             "pulls": counts.get("pulls", 0),
             "discussions": counts.get("discussions", 0),
         },
-    }, cache_control="public, max-age=30")
+    }, cache_control="public, max-age=600")
     await edge_cache_put(pending_cache_key, resp)
     return resp
 

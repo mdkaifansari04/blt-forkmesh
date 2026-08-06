@@ -107,10 +107,10 @@ def test_pending_endpoint_counts_all_three_collaboration_inboxes_in_one_round_tr
     assert len(queries) == 1
     assert queries[0].count("UNION ALL") == 2
     # The whole fleet polls these badges, so the public 200 is edge-cached
-    # for 30 seconds (2026-08-06: repo/*/*/pending was the single largest
+    # for ten minutes (2026-08-06: repo/*/*/pending was the single largest
     # request group on the api.forkmesh.com traffic chart). A 30s-stale badge
     # is an accepted trade; the private 404 path stays uncached.
-    assert captured["_cache_control"] == "public, max-age=30"
+    assert captured["_cache_control"] == "public, max-age=600"
     assert edge["gets"] and edge["puts"]
     assert edge["gets"][0] == edge["puts"][0]
     assert "/repo-pending/o/r" in edge["puts"][0]
