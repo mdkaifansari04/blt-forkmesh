@@ -2807,6 +2807,43 @@ int main(int argc, char *argv[])
               "2,150 request(s) across 3 route group(s)")),
           QStringLiteral("Web Requests summarises the window's traffic"));
 
+    // adhoc #1585: the tab used to answer every failure with a flat "could not
+    // load web requests from the worker", which hid the relay's own Cloudflare
+    // 1101 pages, an unreadable body, and this client's host-wide cooldown
+    // behind one sentence. Each failure now names itself and retries.
+    const QString http500 = window.testNetworkWebRequestsFailureText(
+        500, QStringLiteral("Internal Server Error"), QString(), QString(),
+        QByteArray("error code: 1101"), 0, 3400);
+    check(http500.contains(QStringLiteral("HTTP 500")) &&
+              http500.contains(QStringLiteral("error code: 1101")) &&
+              http500.contains(QStringLiteral("Retrying (attempt 2 of 3) in 4s")),
+          QStringLiteral("Web Requests quotes the worker's HTTP error and its "
+                         "pending retry"));
+    const QString cooldown = window.testNetworkWebRequestsFailureText(
+        0, QStringLiteral("ForkMesh relay is rate-limited (HTTP 429)"),
+        QString(), QString(), QByteArray(), 12000, 12400);
+    check(cooldown.contains(QStringLiteral("cooldown")) &&
+              cooldown.contains(QStringLiteral("12s left")) &&
+              cooldown.contains(QStringLiteral("never left this machine")),
+          QStringLiteral("Web Requests separates this client's own cooldown "
+                         "from a worker failure"));
+    const QString unreadable = window.testNetworkWebRequestsFailureText(
+        200, QString(), QStringLiteral("illegal value"), QString(),
+        QByteArray("<html><body>gateway</body></html>"), 0, -1);
+    check(unreadable.contains(QStringLiteral("unreadable JSON")) &&
+              unreadable.contains(QStringLiteral("illegal value")) &&
+              unreadable.contains(QStringLiteral("gateway")) &&
+              !unreadable.contains(QStringLiteral("<html>")) &&
+              unreadable.contains(QStringLiteral("Gave up after 1 attempt(s)")),
+          QStringLiteral("Web Requests reports an unreadable body without "
+                         "printing its markup"));
+    const QString refused = window.testNetworkWebRequestsFailureText(
+        200, QString(), QString(), QStringLiteral("window too large"),
+        QByteArray("{\"ok\":false,\"error\":\"window too large\"}"), 0, -1);
+    check(refused.contains(QStringLiteral("window too large")),
+          QStringLiteral("Web Requests surfaces the worker's own ok=false "
+                         "error"));
+
 
     // Reward settings must never launch the former reserve/donation/finalize
     // account funnel. A mock account flow is installed specifically to prove it
