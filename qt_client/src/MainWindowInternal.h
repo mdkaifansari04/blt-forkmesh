@@ -4814,6 +4814,15 @@ inline QString agentModelLabel(const QString &model)
     return kLabels.value(model.trimmed(), model.trimmed());
 }
 
+// The running-session status pill has no room for "Opus 4.8" alongside its
+// portrait icon, so trim agentModelLabel() down to its leading word ("Opus").
+inline QString agentModelShortLabel(const QString &model)
+{
+    const QString label = agentModelLabel(model);
+    const int space = label.indexOf(QLatin1Char(' '));
+    return space < 0 ? label : label.left(space);
+}
+
 // Fill an agent-provider model combo for one of the three agent providers
 // (adhoc #56; shared by the branch "Fix with agent" bar and the Actions "Fix
 // with agent" bar). Item data is the model id passed straight to the caller's
