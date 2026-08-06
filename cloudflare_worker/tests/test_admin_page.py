@@ -3,10 +3,7 @@ from pathlib import Path
 
 
 ENTRY_PATH = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-ADMIN_CONSOLE_PATH = ENTRY_PATH.with_name("admin_console.py")
-ENTRY_TEXT = (
-    ENTRY_PATH.read_text() + "\n" + ADMIN_CONSOLE_PATH.read_text()
-)
+ENTRY_TEXT = ENTRY_PATH.read_text()
 
 
 def _admin_function():

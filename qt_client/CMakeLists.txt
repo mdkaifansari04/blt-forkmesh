@@ -44,12 +44,13 @@ if(FORKMESH_BUILD_COMMIT_OVERRIDE)
     endif()
 endif()
 
-# Baked into the binaries: the quick-update button uses the source dir to
-# git pull + rebuild when running from a checkout. Global is fine here — the
-# value never changes between builds of the same checkout, so it never
+# Baked into the binaries for rebuild-only developer actions and diagnostics.
+# Update & restart deliberately uses an app-managed source clone instead, so it
+# cannot pull, replace, or build inside this working copy. Global is fine here —
+# the value never changes between builds of the same checkout, so it never
 # invalidates incremental builds. (It also must stay global: the inline
-# updateClientDir() in MainWindowInternal.h reads it, so every TU has to see
-# the same value or the ODR is violated.)
+# workingClientDir() in MainWindowInternal.h reads it, so every TU has to see the
+# same value or the ODR is violated.)
 add_compile_definitions(
     FORKMESH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
@@ -1014,9 +1015,12 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-upstream-sync-tests
              COMMAND forkmesh-upstream-sync-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
+    add_test(NAME forkmesh-mirror-fleet-window-tests
+             COMMAND forkmesh-window-tests --mirror-fleet-only)
     add_test(NAME forkmesh-perf-tests COMMAND forkmesh-perf-tests)
     add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
-    set_tests_properties(forkmesh-tests forkmesh-window-tests forkmesh-perf-tests PROPERTIES
+    set_tests_properties(forkmesh-tests forkmesh-window-tests
+        forkmesh-mirror-fleet-window-tests forkmesh-perf-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     # The default developer/CI suite stays intentionally small: deployment
     # trust boundaries, private/public mirror encryption, and the agent
@@ -1024,7 +1028,7 @@ if(FORKMESH_BUILD_TESTS)
     set_tests_properties(
         forkmesh-control-tests forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests forkmesh-codex-tests
-        forkmesh-vm-runtime-tests
+        forkmesh-vm-runtime-tests forkmesh-mirror-fleet-window-tests
         PROPERTIES LABELS "critical" TIMEOUT 20)
     # The e2e loop drives real git subprocesses and needs the stub agent's path.
     set_tests_properties(forkmesh-e2e PROPERTIES

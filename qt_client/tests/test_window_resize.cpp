@@ -766,12 +766,16 @@ int main(int argc, char *argv[])
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
     const bool hostsLayoutOnly =
         app.arguments().contains(QStringLiteral("--hosts-layout-only"));
+    const bool mirrorFleetOnly =
+        app.arguments().contains(QStringLiteral("--mirror-fleet-only"));
     const bool issuesRedesignOnly =
         app.arguments().contains(QStringLiteral("--issues-redesign-only"));
     const bool logTimelineOnly =
         app.arguments().contains(QStringLiteral("--log-timeline-only"));
     const bool footerOverlayOnly =
         app.arguments().contains(QStringLiteral("--footer-overlay-only"));
+    const bool updateIsolationOnly =
+        app.arguments().contains(QStringLiteral("--update-isolation-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -919,7 +923,8 @@ int main(int argc, char *argv[])
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
-    if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly)
+    if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly &&
+        !mirrorFleetOnly)
         check(detailedStartupSteps >= 7 &&
               startupLog.contains(QStringLiteral(
                   "BEGIN MainWindow: read connection state and cached model list")) &&
@@ -935,6 +940,56 @@ int main(int argc, char *argv[])
           QString("startup log names and times every material constructor phase "
                   "(detailed steps=%1)")
                   .arg(detailedStartupSteps));
+
+    if (mirrorFleetOnly) {
+        const QJsonArray managedHostFixture{
+            QJsonObject{
+                {QStringLiteral("name"), QStringLiteral("mirror7")},
+                {QStringLiteral("ip"), QStringLiteral("203.0.113.7")},
+                {QStringLiteral("user"), QStringLiteral("root")},
+                {QStringLiteral("status"), QStringLiteral("installed")},
+                {QStringLiteral("provider"), QStringLiteral("Vultr")},
+                {QStringLiteral("instanceId"),
+                 QStringLiteral("1f2e3d4c-5b6a-4798-8899-aabbccddeeff")},
+            },
+        };
+        QSettings settings;
+        settings.remove(QStringLiteral("hosts/healthyMirrorFleet/enabled"));
+        settings.remove(QStringLiteral("hosts/healthyMirrorFleet/desired"));
+        settings.setValue(
+            QStringLiteral("hosts/list"),
+            QString::fromUtf8(
+                QJsonDocument(managedHostFixture).toJson(
+                    QJsonDocument::Compact)));
+        window.testShowHostsSection();
+        QApplication::processEvents();
+        QCheckBox *enabled = window.findChild<QCheckBox *>(
+            QStringLiteral("healthyMirrorFleetEnabled"));
+        QSpinBox *desired = window.findChild<QSpinBox *>(
+            QStringLiteral("desiredHealthyMirrorCount"));
+        QLabel *status = window.findChild<QLabel *>(
+            QStringLiteral("healthyMirrorFleetStatus"));
+        check(enabled && desired && status && !enabled->isChecked() &&
+                  desired->value() == 1 && desired->isEnabled() &&
+                  status->text().contains(QStringLiteral("off")) &&
+                  enabled->toolTip().contains(
+                      QStringLiteral("permanently destroys")),
+              QStringLiteral(
+                  "healthy mirror fleet UI is opt-in and safely seeds its target from managed Vultr hosts"));
+        if (desired)
+            desired->setValue(2);
+        QApplication::processEvents();
+        check(settings.value(
+                  QStringLiteral("hosts/healthyMirrorFleet/desired"))
+                      .toInt() == 2,
+              QStringLiteral(
+                  "editing the desired healthy mirror count persists while automation is off"));
+        settings.remove(QStringLiteral("hosts/list"));
+        settings.remove(QStringLiteral("hosts/healthyMirrorFleet/enabled"));
+        settings.remove(QStringLiteral("hosts/healthyMirrorFleet/desired"));
+        stopChildProcesses(window);
+        return failures == 0 ? 0 : 1;
+    }
 
     if (logTimelineOnly) {
         window.show();
@@ -1723,6 +1778,20 @@ int main(int argc, char *argv[])
               hostsPageLayout->indexOf(hostsProvisioningRow) == 1,
           QStringLiteral(
               "Hosts puts the saved-host fleet first and provisioning cards next"));
+    QCheckBox *healthyFleetEnabled = window.findChild<QCheckBox *>(
+        QStringLiteral("healthyMirrorFleetEnabled"));
+    QSpinBox *desiredHealthyMirrors = window.findChild<QSpinBox *>(
+        QStringLiteral("desiredHealthyMirrorCount"));
+    QLabel *healthyFleetStatus = window.findChild<QLabel *>(
+        QStringLiteral("healthyMirrorFleetStatus"));
+    check(healthyFleetEnabled && desiredHealthyMirrors && healthyFleetStatus &&
+              !healthyFleetEnabled->isChecked() &&
+              desiredHealthyMirrors->isEnabled() &&
+              desiredHealthyMirrors->value() == 0 &&
+              healthyFleetEnabled->toolTip().contains(
+                  QStringLiteral("permanently destroys")),
+          QStringLiteral(
+              "Hosts exposes an explicit opt-in desired healthy mirror count with destructive scaling explained"));
     const QList<QPushButton *> inlineHelpButtons =
         window.findChildren<QPushButton *>(QStringLiteral("inlineHelpButton"));
     QSet<QString> inlineHelpNames;
@@ -1922,6 +1991,31 @@ int main(int argc, char *argv[])
         check(window.testQuickUpdatePullArguments(detachedRepo.path()) ==
                   QStringList({"pull", "--ff-only", "origin", "HEAD"}),
               QStringLiteral("quick update pulls origin/HEAD in detached HEAD"));
+    }
+
+    // Update & restart owns a disposable source/binary pair under the app's
+    // managed locations. In particular neither path may resolve into the
+    // checkout baked into this developer build: the update fallback is allowed
+    // to replace its own clone, while the user's working copy must remain byte
+    // for byte untouched.
+    {
+        const QString working =
+            QFileInfo(window.testWorkingClientDir()).absoluteFilePath();
+        const QString running =
+            QFileInfo(window.testRunningClientDir()).absoluteFilePath();
+        const QString executable =
+            QFileInfo(window.testRunningClientExecutable()).absoluteFilePath();
+        const QString workingRoot =
+            QFileInfo(QDir(working).filePath(QStringLiteral("..")))
+                .absoluteFilePath() + QDir::separator();
+        check(running != working && !running.startsWith(workingRoot),
+              QStringLiteral("update source is separate from the working copy"));
+        check(!executable.startsWith(workingRoot),
+              QStringLiteral("updated executable is separate from the working copy"));
+    }
+    if (updateIsolationOnly) {
+        stopChildProcesses(window);
+        return failures == 0 ? 0 : 1;
     }
 
     // Issue #214: "Build & preview" checks the PR head out into a throwaway
@@ -2662,9 +2756,10 @@ int main(int argc, char *argv[])
                 break;
         }
     }
-    // The Agents prompt is a real full-width footer rather than the compact
-    // overlay used elsewhere. Its reserved page margin keeps the transcript and
-    // session list above it instead of letting their last lines hide underneath.
+    // The Agents prompt occupies the right half of the footer, matching the
+    // transcript pane to the right of the page's middle splitter divider. Its
+    // reserved page margin keeps the transcript and session list above it
+    // instead of letting their last lines hide underneath.
     {
         QWidget *agentsPage = window.findChild<QWidget *>(
             QStringLiteral("agentsPage"));
@@ -2676,15 +2771,24 @@ int main(int argc, char *argv[])
             footerDock && footerDock->layout()
                 ? footerDock->layout()->contentsMargins()
                 : QMargins();
+        const int dockContentWidth =
+            footerDock ? footerDock->width() - dockMargins.left() -
+                             dockMargins.right()
+                       : 0;
         check(agentsPage && agentsPage->layout() && footerDock && promptHost &&
-                  promptHost->isVisibleTo(&window) &&
-                  promptHost->geometry().left() == dockMargins.left() &&
+                  promptHost->isVisibleTo(&window) && dockContentWidth > 0 &&
+                  promptHost->geometry().left() >=
+                      dockMargins.left() + dockContentWidth / 2 - 2 &&
+                  promptHost->geometry().left() <=
+                      dockMargins.left() + dockContentWidth / 2 + 2 &&
                   promptHost->geometry().right() ==
                       footerDock->rect().right() - dockMargins.right() &&
+                  promptHost->width() >= dockContentWidth / 2 - 2 &&
+                  promptHost->width() <= dockContentWidth / 2 + 2 &&
                   agentsPage->layout()->contentsMargins().bottom() ==
                       footerDock->height(),
-              QStringLiteral("Agents docks the full-width prompt below its "
-                             "transcript"));
+              QStringLiteral("Agents docks the prompt in the right half below "
+                             "its transcript"));
 
         QPushButton *avatar = window.findChild<QPushButton *>(
             QStringLiteral("serverFooterButton"));
@@ -2705,11 +2809,14 @@ int main(int argc, char *argv[])
             QApplication::sendEvent(avatar, &enter);
             QApplication::processEvents();
             check(promptWrapper->isVisible() &&
-                      promptHost->geometry().left() == dockMargins.left() &&
+                      promptHost->geometry().left() >=
+                          dockMargins.left() + dockContentWidth / 2 - 2 &&
+                      promptHost->geometry().left() <=
+                          dockMargins.left() + dockContentWidth / 2 + 2 &&
                       promptHost->geometry().right() ==
                           footerDock->rect().right() - dockMargins.right(),
                   QStringLiteral("hovering the Agents avatar restores the "
-                                 "full-width prompt"));
+                                 "right-half prompt"));
         }
     }
     check(window.testAgentListChromeHidden(),
@@ -4512,13 +4619,23 @@ int main(int argc, char *argv[])
                     !iconContainsChromaKey(quickAgentModel->itemIcon(i));
             }
         }
-        // adhoc #1204: rows are the bare model name — no "· Claude Code" /
-        // "· Codex" suffix repeated down the whole menu; the per-row tooltip
-        // still says which agent runs the model.
+        const int gpt55Row = quickAgentModel
+                                 ? quickAgentModel->findText(
+                                       QStringLiteral("GPT-5.5"),
+                                       Qt::MatchStartsWith)
+                                 : -1;
+        // Rows keep the model name plus an explicit merged-success count; the
+        // tooltip still says which agent runs the model.
         check(quickAgentModel && quickAgentModel->isVisible() &&
                   quickAgentModel->maxVisibleItems() >= quickAgentModel->count() &&
-                  agentModelLabels.contains(QStringLiteral("Auto")) &&
-                  agentModelLabels.contains(QStringLiteral("GPT-5.5")) &&
+                  std::any_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
+                              [](const QString &label) {
+                                  return label.startsWith(QStringLiteral("Auto · "));
+                              }) &&
+                  std::any_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
+                              [](const QString &label) {
+                                  return label.startsWith(QStringLiteral("GPT-5.5 · "));
+                              }) &&
                   agentModelLabels.contains(QStringLiteral("OpenAI API")) &&
                   agentModelLabels.contains(QStringLiteral("Claude API")) &&
                   std::none_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
@@ -4527,17 +4644,15 @@ int main(int argc, char *argv[])
                                               QStringLiteral("Claude Code")) ||
                                           label.endsWith(QStringLiteral("Codex"));
                                }) &&
-                  quickAgentModel->itemData(
-                      quickAgentModel->findText(QStringLiteral("GPT-5.5")),
-                      Qt::ToolTipRole).toString() ==
-                      QStringLiteral("GPT-5.5 · Codex") &&
+                  gpt55Row >= 0 &&
+                  quickAgentModel->itemData(gpt55Row, Qt::ToolTipRole).toString()
+                      .startsWith(QStringLiteral("GPT-5.5 · Codex\nMerged success:")) &&
                   allAgentModelsHaveIcons && agentModelIconsAreClean && quickProvider &&
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
               QString("one icon-rich composer dropdown combines agents and models (%1)")
                   .arg(agentModelLabels.join(QStringLiteral(", "))));
-        // The menu is ordered strongest-model-first. Offline this is the static
-        // fallback line-up, so the order is exact: the Auto router above every
-        // concrete model, then every Claude model, then every Codex model.
+        // The menu is ordered by merged-agent success, then model power. With
+        // no merged history the static fallback line-up is strongest first.
         QStringList rankedLabels;
         for (int i = 0; i < quickAgentModel->count(); ++i) {
             // Manual and the two API agents carry no model of their own.
@@ -4551,15 +4666,15 @@ int main(int argc, char *argv[])
                 continue;
             rankedLabels << quickAgentModel->itemText(i);
         }
-        check(rankedLabels == QStringList({QStringLiteral("Auto"),
-                                           QStringLiteral("Fable 5"),
-                                           QStringLiteral("Opus 4.8"),
-                                           QStringLiteral("Sonnet 4.6"),
-                                           QStringLiteral("Haiku 4.5"),
-                                           QStringLiteral("GPT-5.5"),
-                                           QStringLiteral("GPT-5.4"),
-                                           QStringLiteral("GPT-5.4-Mini")}),
-              QString("composer models sort most powerful first and show every model (%1)")
+        check(rankedLabels == QStringList({QStringLiteral("Auto · 0 merged"),
+                                           QStringLiteral("Fable 5 · 0 merged"),
+                                           QStringLiteral("Opus 4.8 · 0 merged"),
+                                           QStringLiteral("Sonnet 4.6 · 0 merged"),
+                                           QStringLiteral("Haiku 4.5 · 0 merged"),
+                                           QStringLiteral("GPT-5.5 · 0 merged"),
+                                           QStringLiteral("GPT-5.4 · 0 merged"),
+                                           QStringLiteral("GPT-5.4-Mini · 0 merged")}),
+              QString("composer models show merged counts and sort strongest first when tied (%1)")
                   .arg(rankedLabels.join(QStringLiteral(", "))));
         QComboBox *canonicalModel =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
@@ -4588,12 +4703,12 @@ int main(int argc, char *argv[])
                   canonicalModel->currentData().toString() == concreteClaudeModel,
               QStringLiteral("one combined-menu click updates provider and model state"));
 
-        // The composer puts most-used models first and keeps the open row to the
-        // model name alone: no last-run ✓ / ✗, quota countdown, or provider text.
+        // The composer puts models with the most merged work first, keeping a
+        // merged-success count beside every model name.
         {
             const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
             const auto addUse = [&seeded](int id, const QString &model,
-                                          qint64 createdAtMs) {
+                                          qint64 createdAtMs, bool merged) {
                 AgentSession session;
                 session.id = id;
                 session.owner = QStringLiteral("me");
@@ -4602,6 +4717,7 @@ int main(int argc, char *argv[])
                 session.provider = QStringLiteral("claude-code");
                 session.model = model;
                 session.status = AgentStatus::Success;
+                session.merged = merged;
                 session.createdAtMs = createdAtMs;
                 session.startedAtMs = createdAtMs;
                 session.finishedAtMs = createdAtMs + 1000;
@@ -4609,10 +4725,10 @@ int main(int argc, char *argv[])
             };
             for (int i = 0; i < 4; ++i)
                 addUse(144501 + i, QStringLiteral("claude-sonnet-4-6"),
-                       nowMs - (i + 1) * 60000);
+                       nowMs - (i + 1) * 60000, i < 3);
             for (int i = 0; i < 2; ++i)
                 addUse(144505 + i, QStringLiteral("claude-opus-4-8"),
-                       nowMs - (i + 5) * 60000);
+                       nowMs - (i + 5) * 60000, i < 1);
             seeded.testRefreshQuickAddAgentModelSelector();
             QApplication::processEvents();
             const QString opusLabel = seeded.testQuickAddAgentModelLabel(
@@ -4622,10 +4738,10 @@ int main(int argc, char *argv[])
             const int sonnetRow = quickAgentModel->findText(sonnetLabel);
             const int opusRow = quickAgentModel->findText(opusLabel);
             check(sonnetRow >= 0 && opusRow > sonnetRow &&
-                      sonnetLabel == QStringLiteral("Sonnet 4.6") &&
-                      opusLabel == QStringLiteral("Opus 4.8"),
-                  QString("the model menu orders by use frequency and shows only "
-                          "model names (Sonnet row %1, Opus row %2)")
+                      sonnetLabel == QStringLiteral("Sonnet 4.6 · 3 merged") &&
+                      opusLabel == QStringLiteral("Opus 4.8 · 1 merged"),
+                  QString("the model menu orders by merged success and shows "
+                          "the count (Sonnet row %1, Opus row %2)")
                       .arg(sonnetRow).arg(opusRow));
             for (int id = 144501; id <= 144506; ++id)
                 seeded.testRemoveAgentSession(id);
@@ -4791,7 +4907,7 @@ int main(int argc, char *argv[])
                   quickAgentModel
                       ->itemData(quickAgentModel->currentIndex(), Qt::ToolTipRole)
                       .toString()
-                      .endsWith(QStringLiteral("· Codex")) &&
+                      .contains(QStringLiteral("· Codex\nMerged success:")) &&
                   !seeded.testQuickAddModelEditable() && codexModels ==
                       QStringList({QStringLiteral("GPT-5.5"),
                                    QStringLiteral("GPT-5.4"),

@@ -351,63 +351,66 @@ const WORLD_AGENT_BOTS = Object.freeze([
     glow: "#8fffe0",
   },
 ]);
-const DESKTOP_AGENT_MODEL_ART = Object.freeze({
-  sol: Object.freeze({
-    label: "Sol",
-    icon: "/world/assets/agent-model-sol.webp",
-    shell: "#d98224",
-  }),
-  luna: Object.freeze({
-    label: "Luna",
-    icon: "/world/assets/agent-model-luna.webp",
-    shell: "#2763a8",
-  }),
-  terra: Object.freeze({
-    label: "Terra",
-    icon: "/world/assets/agent-model-terra.webp",
-    shell: "#3d8a4c",
-  }),
-  opus: Object.freeze({
-    label: "Opus",
-    icon: "/world/assets/agent-model-opus.webp",
-    shell: "#147d82",
-  }),
-  fable: Object.freeze({
-    label: "Fable",
-    icon: "/world/assets/agent-model-fable.webp",
-    shell: "#5d3a94",
-  }),
-  sonnet: Object.freeze({
-    label: "Sonnet",
-    icon: "/world/assets/agent-model-sonnet.webp",
-    shell: "#8a2f82",
-  }),
+// Model emblem art for the per-session agent robots. Each entry mirrors one
+// portrait in /assets/bot-avatars/ (the -face.webp files are 512px repacks of
+// the same art, small enough for a fleet): the emblem becomes the robot's
+// face plate and the shell/glow colours repaint its body to match the
+// portrait's armor and accent light.
+const WORLD_AGENT_BOT_AVATAR_LOOKS = Object.freeze({
+  opus: {
+    texture: "/assets/bot-avatars/opus-face.webp",
+    shell: "#b8892f",
+    glow: "#b07bff",
+  },
+  sonnet: {
+    texture: "/assets/bot-avatars/sonnet-face.webp",
+    shell: "#d09a3c",
+    glow: "#ff70bd",
+  },
+  haiku: {
+    texture: "/assets/bot-avatars/haiku-face.webp",
+    shell: "#c3ced1",
+    glow: "#59e5e8",
+  },
+  fable: {
+    texture: "/assets/bot-avatars/fable-face.webp",
+    shell: "#a08434",
+    glow: "#4fd9c2",
+  },
+  sol: {
+    texture: "/assets/bot-avatars/sol-face.webp",
+    shell: "#e9b23a",
+    glow: "#ffd25e",
+  },
+  luna: {
+    texture: "/assets/bot-avatars/luna-face.webp",
+    shell: "#4a4173",
+    glow: "#9678ff",
+  },
+  terra: {
+    texture: "/assets/bot-avatars/terra-face.webp",
+    shell: "#8e7a3d",
+    glow: "#79e77f",
+  },
 });
-const DESKTOP_AGENT_STATUS = Object.freeze({
-  queued: Object.freeze({ label: "Queued", color: "#d6a84b" }),
-  running: Object.freeze({ label: "Working", color: "#48d597" }),
-  waiting: Object.freeze({ label: "Waiting", color: "#ffb45f" }),
-  success: Object.freeze({ label: "Done", color: "#62d98b" }),
-  failed: Object.freeze({ label: "Failed", color: "#ff667a" }),
-  stopped: Object.freeze({ label: "Stopped", color: "#91a0a8" }),
-});
-const DESKTOP_AGENT_DROP_HEIGHT = 16;
-const DESKTOP_AGENT_DROP_MS = 900;
-const DESKTOP_AGENT_GRID_SPACING = 3.1;
-
-function desktopAgentModel(model, provider = "") {
-  const value = String(model || "").toLowerCase();
-  for (const key of ["fable", "opus", "sonnet", "luna", "terra", "sol"]) {
-    if (value.includes(key)) return DESKTOP_AGENT_MODEL_ART[key];
+// A session names its model freely ("opus", "claude-sonnet-5", …), so match
+// by substring first and only then fall back to a provider default: Claude
+// runs read as Sonnet, Codex as Sol, OpenAI API as Luna, anything else as
+// Terra. The lookup never fails — every robot gets a face.
+function agentBotAvatarLook(provider, model) {
+  const wantedModel = String(model || "").toLowerCase();
+  for (const [name, look] of Object.entries(WORLD_AGENT_BOT_AVATAR_LOOKS)) {
+    if (wantedModel.includes(name)) return { name, ...look };
   }
-  return String(provider || "").toLowerCase().includes("claude")
-    ? DESKTOP_AGENT_MODEL_ART.sonnet
-    : DESKTOP_AGENT_MODEL_ART.sol;
-}
-
-function desktopAgentStatus(status) {
-  return DESKTOP_AGENT_STATUS[String(status || "").toLowerCase()] ||
-    DESKTOP_AGENT_STATUS.queued;
+  const wantedProvider = String(provider || "").toLowerCase();
+  const fallback = wantedProvider.startsWith("claude")
+    ? "sonnet"
+    : wantedProvider === "codex"
+      ? "sol"
+      : wantedProvider === "openai"
+        ? "luna"
+        : "terra";
+  return { name: fallback, ...WORLD_AGENT_BOT_AVATAR_LOOKS[fallback] };
 }
 // The public World has one shared ground plane plus three regional labels.
 // Deprecated off-world destinations are deliberately not valid spawn spaces.
@@ -19786,21 +19789,64 @@ export function createWorldScene({
   // expectation, but the visual effect is released only after the next signed
   // catalog record confirms that exact node and commit prefix.
   const pendingMirrorPushEffects = new Map();
-  for (const config of WORLD_AGENT_BOTS) {
+  function agentBotProviderConfig(provider) {
+    const wanted = String(provider || "").toLowerCase();
+    return WORLD_AGENT_BOTS.find((config) =>
+      wanted === config.id ||
+      (wanted === "claude-code" && config.id === "claude"),
+    ) || null;
+  }
+
+  function createAgentBotAvatar(session, index) {
+    const providerConfig = agentBotProviderConfig(session?.provider);
+    const sessionId = String(session?.id || "").trim();
+    if (!providerConfig || !sessionId) return null;
+    // Spread a large fleet into a shallow grid around the provider's home. A
+    // session gets a deterministic slot on every refresh, so existing robots
+    // never jump when an older item changes status.
+    const occupiedSlots = new Set(
+      [...agentBotStates.values()]
+        .filter((state) => state.config.id === providerConfig.id)
+        .map((state) => state.slot),
+    );
+    let slot = hashNumber(sessionId) % 64;
+    for (let attempt = 0; occupiedSlots.has(slot) && attempt < 64; attempt += 1) {
+      slot = (slot + 1) % 64;
+    }
+    const lane = Math.floor(slot / 8);
+    const column = slot % 8;
+    const direction = providerConfig.id === "codex" ? 1 : -1;
+    const config = {
+      ...providerConfig,
+      home: [
+        providerConfig.home[0] + direction * lane * 1.65,
+        providerConfig.home[1],
+        providerConfig.home[2] + (column - 3.5) * 1.55,
+      ],
+    };
+    const botKey = `session:${sessionId}`;
+    // The robot wears its model's portrait: emblem face plate, matching body
+    // paint, and the portrait's accent light as its halo and status glow.
+    const look = agentBotAvatarLook(session?.provider, session?.model);
     const avatar = new THREE.Group();
-    avatar.name = `${config.id}-agent-droid`;
-    avatar.userData.name = config.label;
-    avatar.userData.id = config.id;
+    avatar.name = `${config.id}-agent-droid-${sessionId}`;
+    avatar.userData.name = `${config.label} ${
+      Number(session?.localAgentId) > 0
+        ? `#${Number(session.localAgentId)}`
+        : `#${index + 1}`
+    }`;
+    avatar.userData.id = botKey;
     avatar.userData.accountStatus = "Organization agent";
-    avatar.userData.phase = hashNumber(config.id) * 0.0001;
+    avatar.userData.phase = hashNumber(sessionId) * 0.0001;
     avatar.position.set(...config.home);
+    avatar.position.y += 7 + (slot % 3) * 0.8;
     avatar.visible = false;
     const ball = new THREE.Mesh(
       new THREE.SphereGeometry(0.5, 22, 15),
       makeMaterial(THREE, "#162d32", {
         metalness: 0.7,
         roughness: 0.24,
-        emissive: config.shell,
+        emissive: look.shell,
         emissiveIntensity: 0.25,
       }),
     );
@@ -19808,58 +19854,129 @@ export function createWorldScene({
     avatar.add(ball);
     const shell = new THREE.Mesh(
       new THREE.CylinderGeometry(0.48, 0.54, 0.72, 18),
-      makeMaterial(THREE, config.shell, {
-        metalness: 0.45,
-        roughness: 0.3,
-        emissive: config.shell,
-        emissiveIntensity: 0.22,
+      makeMaterial(THREE, look.shell, {
+        metalness: 0.55,
+        roughness: 0.28,
+        emissive: look.shell,
+        emissiveIntensity: 0.2,
       }),
     );
     shell.position.y = 1.08;
     avatar.add(shell);
+    // Every portrait shares the same ornate gold rim, so the armor gets thin
+    // gold bands at the shell's edges regardless of model colourway.
+    const trimMaterial = makeMaterial(THREE, "#d8b04a", {
+      metalness: 0.9,
+      roughness: 0.24,
+      emissive: "#8a6a1d",
+      emissiveIntensity: 0.28,
+    });
+    const trimTop = new THREE.Mesh(
+      new THREE.TorusGeometry(0.482, 0.02, 8, 36),
+      trimMaterial,
+    );
+    trimTop.rotation.x = Math.PI / 2;
+    trimTop.position.y = 1.42;
+    avatar.add(trimTop);
+    const trimBottom = new THREE.Mesh(
+      new THREE.TorusGeometry(0.538, 0.02, 8, 36),
+      trimMaterial,
+    );
+    trimBottom.rotation.x = Math.PI / 2;
+    trimBottom.position.y = 0.74;
+    avatar.add(trimBottom);
+    // Face plate: the model emblem itself. The texture is cached per path, so
+    // a 50-robot fleet decodes at most the seven portraits; the emissive copy
+    // keeps the face readable after the world switches to night.
+    const faceTexture = projectAssetTexture(THREE, look.texture);
+    const face = new THREE.Mesh(
+      new THREE.CircleGeometry(0.26, 36),
+      new THREE.MeshStandardMaterial({
+        map: faceTexture,
+        emissive: "#ffffff",
+        emissiveMap: faceTexture,
+        emissiveIntensity: 0.72,
+        roughness: 0.52,
+        metalness: 0.18,
+      }),
+    );
+    face.name = `agent-face:${sessionId}`;
+    face.userData.sharedAssetMap = true;
+    face.position.set(0, 1.18, 0.548);
+    avatar.add(face);
+    // The halo ring around the face carries the old eye's status pulse: it is
+    // registered as the state's `eye`, so updateAgentBots keeps animating the
+    // same material slot it always has.
     const eye = new THREE.Mesh(
-      new THREE.SphereGeometry(0.1, 12, 8),
-      makeMaterial(THREE, config.glow, {
-        emissive: config.glow,
+      new THREE.TorusGeometry(0.276, 0.024, 10, 44),
+      makeMaterial(THREE, "#d8b04a", {
+        metalness: 0.85,
+        roughness: 0.22,
+        emissive: look.glow,
         emissiveIntensity: 1.8,
       }),
     );
-    eye.position.set(0, 1.27, 0.5);
+    eye.position.set(0, 1.18, 0.542);
     avatar.add(eye);
+    const statusStem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.025, 0.025, 0.34, 7),
+      makeMaterial(THREE, "#718087", {
+        metalness: 0.6,
+        roughness: 0.34,
+      }),
+    );
+    statusStem.position.set(0, 1.72, 0);
+    avatar.add(statusStem);
+    const statusLight = new THREE.Mesh(
+      new THREE.SphereGeometry(0.085, 10, 7),
+      makeMaterial(THREE, "#d29922", {
+        emissive: "#d29922",
+        emissiveIntensity: 1.2,
+      }),
+    );
+    statusLight.name = `agent-status-light:${sessionId}`;
+    statusLight.position.set(0, 1.94, 0);
+    avatar.add(statusLight);
+    const screenLabel = `${config.label} · ${look.name.toUpperCase()}`;
     const screenTexture = canvasTexture(THREE, 512, 176, (context, canvas) => {
       context.fillStyle = "#071917";
       context.fillRect(0, 0, canvas.width, canvas.height);
-      context.strokeStyle = config.glow;
+      context.strokeStyle = look.glow;
       context.lineWidth = 10;
       context.strokeRect(6, 6, canvas.width - 12, canvas.height - 12);
-      context.fillStyle = config.glow;
+      context.fillStyle = look.glow;
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.font = '800 62px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(config.label, canvas.width / 2, canvas.height / 2);
+      context.font = screenLabel.length > 12
+        ? '800 46px "ForkMesh Mono", ui-monospace, monospace'
+        : '800 62px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(screenLabel, canvas.width / 2, canvas.height / 2);
     });
     const screen = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.82, 0.28),
+      new THREE.PlaneGeometry(0.66, 0.24),
       new THREE.MeshBasicMaterial({ map: screenTexture, toneMapped: false }),
     );
-    screen.position.set(0, 1.02, 0.57);
+    screen.position.set(0, 0.79, 0.575);
     avatar.add(screen);
     avatar.userData.rollingBall = ball;
     avatar.traverse((child) => {
       if (!child.isMesh) return;
       child.userData.agentBotChat = config.id;
+      child.userData.repositoryAgentSession = session;
       interactive.push(child);
     });
-    animated.push((time) => {
-      const active = Boolean(agentBotStates.get(config.id)?.excitement);
-      eye.material.emissiveIntensity = active
-        ? 2.1 + (Math.sin(time * 0.025) + 1) * 0.9
-        : 1.2 + (Math.sin(time * 0.007) + 1) * 0.55;
-    });
-    agentBots.set(config.id, avatar);
-    agentBotStates.set(config.id, {
+    agentBots.set(botKey, avatar);
+    agentBotStates.set(botKey, {
       config,
+      look,
       avatar,
+      botKey,
+      session,
+      status: String(session?.status || "security_pending"),
+      statusLight,
+      eye,
+      slot,
+      spawnedAt: performance.now(),
       target: new THREE.Vector3(...config.home),
       nextWanderAt: 0,
       excitement: null,
@@ -19867,8 +19984,83 @@ export function createWorldScene({
     });
     world.add(avatar);
     registerWorldElement(
-      "agent-npcs", "Agent bot avatars", "Avatars & bots", avatar,
+      "agent-npcs",
+      "Agent bot avatars",
+      "Avatars & bots",
+      avatar,
+      () => agentBots.get(botKey) === avatar,
     );
+    return agentBotStates.get(botKey);
+  }
+
+  function removeAgentBotAvatar(botKey) {
+    const state = agentBotStates.get(botKey);
+    const avatar = state?.avatar;
+    if (!avatar) return;
+    avatar.traverse((child) => {
+      let interactiveIndex = interactive.indexOf(child);
+      while (interactiveIndex >= 0) {
+        interactive.splice(interactiveIndex, 1);
+        interactiveIndex = interactive.indexOf(child);
+      }
+      child.geometry?.dispose?.();
+      // Face plates borrow the model portrait from the shared per-path
+      // texture cache; disposing it here would blank every other robot
+      // wearing the same emblem, so only bot-private maps are released.
+      const sharedMap = Boolean(child.userData.sharedAssetMap);
+      if (Array.isArray(child.material)) {
+        child.material.forEach((material) => {
+          if (!sharedMap) material?.map?.dispose?.();
+          material?.dispose?.();
+        });
+      } else {
+        if (!sharedMap) child.material?.map?.dispose?.();
+        child.material?.dispose?.();
+      }
+    });
+    avatar.parent?.remove?.(avatar);
+    agentBots.delete(botKey);
+    agentBotStates.delete(botKey);
+    pruneDeadElementRoots(worldElements.get("agent-npcs"));
+  }
+
+  function agentBotState(botId) {
+    const wanted = String(botId || "").toLowerCase();
+    return agentBotStates.get(wanted) ||
+      [...agentBotStates.values()].find(
+        (state) => state.config.id === wanted,
+      ) || null;
+  }
+
+  function reconcileSessionAgentBots(sessions = []) {
+    const visibleSessions = (Array.isArray(sessions) ? sessions : [])
+      .filter(
+        (session) =>
+          String(session?.id || "").trim() &&
+          agentBotProviderConfig(session?.provider),
+      )
+      .slice(0, 50);
+    const live = new Set();
+    visibleSessions.forEach((session, index) => {
+      const botKey = `session:${String(session.id).trim()}`;
+      live.add(botKey);
+      let state = agentBotStates.get(botKey);
+      if (!state) state = createAgentBotAvatar(session, index);
+      if (!state) return;
+      state.session = session;
+      state.status = String(session?.status || "security_pending");
+      state.avatar.visible = agentBotAccessAllowed;
+      state.avatar.traverse((child) => {
+        if (!child.isMesh) return;
+        child.userData.agentBotChat = agentBotAccessAllowed
+          ? state.config.id
+          : "";
+        child.userData.repositoryAgentSession = session;
+      });
+    });
+    for (const botKey of [...agentBotStates.keys()]) {
+      if (!live.has(botKey)) removeAgentBotAvatar(botKey);
+    }
   }
 
   const remotePlayers = new Map();
@@ -27498,6 +27690,28 @@ export function createWorldScene({
     for (const state of agentBotStates.values()) {
       const { avatar, config } = state;
       if (!agentBotAccessAllowed || !avatar.visible) continue;
+      const status = String(state.status || "security_pending");
+      const statusVisual = status === "running"
+        ? { color: "#3fb950", speed: 0.014, floor: 0.55, range: 2.9 }
+        : ["failed", "rejected"].includes(status)
+          ? { color: "#f85149", speed: 0.009, floor: 0.35, range: 2.5 }
+          : ["queued", "security_pending"].includes(status)
+            ? { color: "#d29922", speed: 0.0045, floor: 0.45, range: 1.8 }
+            : { color: "#58a6ff", speed: 0.0022, floor: 0.6, range: 0.55 };
+      if (state.statusLight.userData.statusColor !== statusVisual.color) {
+        state.statusLight.userData.statusColor = statusVisual.color;
+        state.statusLight.material.color.set(statusVisual.color);
+        state.statusLight.material.emissive.set(statusVisual.color);
+      }
+      const pulse = reducedMotion
+        ? 0.5
+        : (Math.sin(time * statusVisual.speed + avatar.userData.phase) + 1) / 2;
+      state.statusLight.material.emissiveIntensity =
+        statusVisual.floor + pulse * statusVisual.range;
+      const active = status === "running" || Boolean(state.excitement);
+      state.eye.material.emissiveIntensity = active
+        ? 2.1 + (Math.sin(time * 0.025) + 1) * 0.9
+        : 1.2 + (Math.sin(time * 0.007) + 1) * 0.55;
       let target = state.target;
       let speed = FORKBOT_SPEED * 0.9;
       if (state.completion) {
@@ -27544,11 +27758,25 @@ export function createWorldScene({
       if (walking) {
         avatar.userData.rollingBall.rotation.x -= speed * delta * 1.8;
       }
-      avatar.position.y =
-        (state.excitement || state.completion) && !reducedMotion
-          ? config.home[1] +
-            Math.abs(Math.sin(time * 0.011 + avatar.userData.phase)) * 0.12
-          : config.home[1];
+      const dropProgress = Math.min(
+        1,
+        Math.max(0, (performance.now() - state.spawnedAt) / 1150),
+      );
+      if (dropProgress < 1) {
+        // A newly authorized session visibly arrives in the World. Ease the
+        // fall and add a tiny decaying bounce; no physics object or light is
+        // allocated, keeping a 50-agent fleet inexpensive.
+        const remaining = 1 - dropProgress;
+        avatar.position.y =
+          config.home[1] + remaining * remaining * 7 +
+          Math.abs(Math.sin(dropProgress * Math.PI * 3)) * remaining * 0.34;
+      } else {
+        avatar.position.y =
+          (state.excitement || state.completion) && !reducedMotion
+            ? config.home[1] +
+              Math.abs(Math.sin(time * 0.011 + avatar.userData.phase)) * 0.12
+            : config.home[1];
+      }
       if (state.completion && !walking) {
         const taskLabel = state.completion.taskKey.startsWith("issue:")
           ? state.completion.taskKey.replace(/^issue:/, "")
@@ -27573,7 +27801,7 @@ export function createWorldScene({
 
   function exciteAgentBot(peerId, botId, text) {
     if (!agentBotAccessAllowed) return false;
-    const state = agentBotStates.get(String(botId || "").toLowerCase());
+    const state = agentBotState(botId);
     const avatar = worldSpeakerAvatar(peerId);
     const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 90);
     if (!state || !avatar || !message) return false;
@@ -27588,7 +27816,7 @@ export function createWorldScene({
 
   function completeAgentTask(botId, taskKey) {
     if (!agentBotAccessAllowed) return false;
-    const state = agentBotStates.get(String(botId || "").toLowerCase());
+    const state = agentBotState(botId);
     const key = String(taskKey || "");
     if (!state || !key) return false;
     state.excitement = null;
@@ -27608,7 +27836,7 @@ export function createWorldScene({
     // The task board names one general bot, so an unknown id speaks through
     // whichever bot avatar is present rather than staying silent.
     const state =
-      agentBotStates.get(String(botId || "").toLowerCase()) ||
+      agentBotState(botId) ||
       agentBotStates.values().next().value;
     const taskTitle = String(title || "")
       .replace(/\s+/g, " ")
@@ -27629,11 +27857,13 @@ export function createWorldScene({
     agentBotAccessAllowed = allowed === true;
     for (const [botId, avatar] of agentBots.entries()) {
       avatar.visible = agentBotAccessAllowed;
+      const state = agentBotStates.get(botId);
       avatar.traverse((child) => {
         if (!child.isMesh) return;
-        child.userData.agentBotChat = agentBotAccessAllowed ? botId : "";
+        child.userData.agentBotChat = agentBotAccessAllowed
+          ? state?.config?.id || ""
+          : "";
       });
-      const state = agentBotStates.get(botId);
       if (!state || agentBotAccessAllowed) continue;
       state.excitement = null;
       state.completion = null;
@@ -29776,6 +30006,10 @@ export function createWorldScene({
   function updateMirrorAgentTasks(sessions = []) {
     humanTodoSessions = Array.isArray(sessions) ? sessions.slice(0, 80) : [];
     repaintHumanTodoBoard();
+    // The decrypted, engineering-authorized session projection is also the
+    // roster for agent avatars: exactly one lightweight Claude/Codex robot per
+    // session, reconciled away immediately when access or the session vanishes.
+    reconcileSessionAgentBots(sessions);
     const next = new Map();
     const nextByRepository = new Map();
     for (const session of Array.isArray(sessions) ? sessions.slice(0, 80) : []) {
@@ -32652,7 +32886,7 @@ export function createWorldScene({
         ? player
         : peerId === FORKBOT_PEER_ID
           ? forkbot
-          : agentBots.get(String(peerId || "").toLowerCase()) ||
+          : agentBotState(peerId)?.avatar ||
             remotePlayers.get(String(peerId || "")) ||
             loungeMembers.get(String(peerId || ""));
     if (!avatar) return false;
@@ -32660,7 +32894,7 @@ export function createWorldScene({
     if (avatar === forkbot && forkbotExcitement) {
       settleForkbot(performance.now());
     }
-    const agentState = agentBotStates.get(String(peerId || "").toLowerCase());
+    const agentState = agentBotState(peerId);
     if (agentState?.excitement) {
       agentState.excitement = null;
       agentState.target.copy(agentState.avatar.position);

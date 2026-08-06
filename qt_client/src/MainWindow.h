@@ -533,6 +533,9 @@ public:
     }
     void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
+    QString testWorkingClientDir() const;
+    QString testRunningClientDir() const;
+    QString testRunningClientExecutable() const;
     // Issue #214: the ordered "Build & preview" command pipeline — checkout into a
     // throwaway worktree, CMake configure, build — as "<program> <args…>" lines.
     QStringList testBuildAndPreviewSteps(const QString &gitDir,
@@ -2129,6 +2132,12 @@ private:
                                        const QString &successMessage,
                                        int attempt = 0);
     void finishVultrProvision(bool ok, const QString &message);
+    // Opt-in desired-capacity controller for ForkMesh-managed Vultr mirrors.
+    // It reads the public flagship mirror catalog, creates one replacement
+    // when healthy capacity is short, and destroys one excess managed instance
+    // at a time when the target is lowered. Manually added hosts are excluded.
+    void reconcileDesiredMirrorFleet();
+    void destroyDesiredMirrorFleetNode(const QString &node);
     // Print the per-attempt record collected for this provision run into the
     // install log, so a finished run shows what every attempt did (adhoc #342).
     void appendVultrAttemptHistory();
@@ -2475,12 +2484,12 @@ private:
     // Register a diff viewer so it shares the text-size zoom: tracks it for the
     // +/- buttons and watches its viewport for Ctrl+wheel (issue #254).
     void registerDiffView(QTextEdit *view);
-    // Set a diff viewer's HTML. renderDiffStreamed retains bounded page fragments,
-    // keeps one page resident, and streams that page off the event loop; font-size
-    // changes repaint those fragments without retaining another full HTML copy.
+    // Set a diff viewer's HTML. renderDiffStreamed retains bounded fragments and
+    // streams them into one continuously scrollable document; font-size changes
+    // repaint those fragments without retaining another full HTML copy.
     void setDiffHtml(QTextEdit *view, const QString &html);
-    // Hook run when a diff view's resident page is complete; refreshes state
-    // derived from that page (sticky file positions and search).
+    // Hook run when a diff view has fully streamed; refreshes state derived from
+    // its document (sticky file positions and search).
     void onDiffStreamFinished(QTextEdit *view);
     // Scroll the Files-changed diff to the next/previous change relative to what
     // is currently on screen. delta is +1 (next) or -1 (prev).
@@ -5829,6 +5838,11 @@ private:
     QCheckBox *m_vultrAgentClisCheck = nullptr;
     QPushButton *m_vultrCreateButton = nullptr;
     QLabel *m_vultrStatus = nullptr;
+    QCheckBox *m_mirrorFleetEnabledCheck = nullptr;
+    QSpinBox *m_mirrorFleetDesiredSpin = nullptr;
+    QLabel *m_mirrorFleetStatus = nullptr;
+    bool m_mirrorFleetReconcileInFlight = false;
+    bool m_mirrorFleetMutationInFlight = false;
     QWidget *m_vultrProgressPanel = nullptr;
     QList<QLabel *> m_vultrStageNumbers;
     QList<QLabel *> m_vultrStageLabels;

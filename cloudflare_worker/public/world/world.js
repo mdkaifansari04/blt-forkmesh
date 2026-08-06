@@ -15025,6 +15025,10 @@ class ForkMeshWorld extends HTMLElement {
       const history = Array.isArray(session?.history)
         ? session.history.slice(-80)
         : [];
+      const agentLabel =
+        session?.provider === "codex" ? "Codex" : "Claude Code";
+      const permissionMode = info.mode || "Node default";
+      const reasoningEffort = info.strength || "Provider default";
       const promptable =
         canQueueAgent &&
         ["running", "queued"].includes(String(session?.status || ""));
@@ -15045,9 +15049,7 @@ class ForkMeshWorld extends HTMLElement {
             )}</strong>
             <span>${escapeHTML(
               session?.displayStatus || session?.status || "unknown",
-            )} · ${escapeHTML(
-              session?.provider === "codex" ? "Codex" : "Claude Code",
-            )}</span>
+            )} · ${escapeHTML(agentLabel)} · ${escapeHTML(permissionMode)} · ${escapeHTML(reasoningEffort)}</span>
           </summary>
           ${
             session?.diagnostic?.message
@@ -15079,6 +15081,7 @@ class ForkMeshWorld extends HTMLElement {
             <div><dt>Local session</dt><dd>${escapeHTML(
               session?.localAgentId || "Pending",
             )}</dd></div>
+            <div><dt>Agent</dt><dd>${escapeHTML(agentLabel)}</dd></div>
             <div><dt>Created by</dt><dd>@${escapeHTML(
               session?.createdBy || "member",
             )}</dd></div>
@@ -15101,6 +15104,9 @@ class ForkMeshWorld extends HTMLElement {
               info.model ||
                 session?.requestedModel ||
                 "Provider default",
+            )}</dd></div>
+            <div><dt>Reasoning effort</dt><dd>${escapeHTML(
+              reasoningEffort,
             )}</dd></div>
             <div><dt>Issue</dt><dd>${
               Number(session?.issueNumber) > 0

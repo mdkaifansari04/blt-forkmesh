@@ -706,8 +706,6 @@ def test_owner_or_security_reviewer_can_triage_and_public_sees_counts():
 
 def test_schema_route_cleanup_and_admin_boundaries_are_wired():
     entry = ENTRY.read_text(encoding="utf-8")
-    admin_console = (ROOT / "src" / "admin_console.py").read_text(
-        encoding="utf-8")
     schema = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
     urls = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
     migration = MIGRATION.read_text(encoding="utf-8")
@@ -729,7 +727,6 @@ def test_schema_route_cleanup_and_admin_boundaries_are_wired():
     assert "CREATE TABLE IF NOT EXISTS repo_security_scan_reviews" in (
         schema + REVIEW_MIGRATION.read_text(encoding="utf-8"))
     assert '"DELETE FROM repo_security_scan_reviews WHERE repo_bi=?"' in entry
-    hidden = admin_console.split(
-        "ADMIN_HIDDEN_TABLES = (", 1)[1].split(")", 1)[0]
+    hidden = entry.split("ADMIN_HIDDEN_TABLES = (", 1)[1].split(")", 1)[0]
     assert '"repo_security_scans"' in hidden
     assert '"repo_security_scan_reviews"' in hidden

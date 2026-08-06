@@ -12,10 +12,7 @@ from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
-ENTRY_TEXT = (
-    ENTRY.read_text(encoding="utf-8") + "\n"
-    + ENTRY.with_name("admin_console.py").read_text(encoding="utf-8")
-)
+ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
 
 def _load_helpers(events=None, status=200):

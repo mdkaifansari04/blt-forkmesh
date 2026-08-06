@@ -302,25 +302,19 @@ void setDiffSplitPref(bool split);
 // overlay (adhoc #56). Unlike diffFileHeaderHtml this carries no Viewed toggle
 // or table layout — it renders inline in a QLabel.
 QString diffStickyLabelHtml(const DiffFileEntry &f);
-// Progressive, paged diff rendering. QTextEdit::setHtml() parses, styles and
-// lays out the whole document synchronously on the GUI thread, so handing it a
-// multi-megabyte diff freezes the window. Large files are split at row
-// boundaries and grouped into bounded pages; one page is resident at a time and
-// its small fragments stream one event-loop turn at a time. No diff rows are
-// discarded.
+// Progressive, continuously scrollable diff rendering. QTextEdit::setHtml()
+// parses, styles and lays out the whole document synchronously on the GUI
+// thread, so large files are split at row boundaries and their small fragments
+// stream one event-loop turn at a time. No diff rows are discarded.
 void renderDiffStreamed(QTextEdit *view, const QString &html,
                         const QString &styleSheet);
-// Repaint the resident page with a new stylesheet (diff zoom/theme changes)
-// without retaining a second copy of the complete source HTML on the widget.
+// Repaint the streamed document with a new stylesheet (diff zoom/theme
+// changes) without retaining a second copy of the complete source HTML on the
+// widget.
 bool restyleDiffStreamed(QTextEdit *view, const QString &styleSheet);
-// Select the page containing an anchor and scroll to it once that page's
-// progressive render reaches the anchor. Used by changed-file navigation.
+// Scroll to an anchor once its progressive render reaches it. Used by
+// changed-file navigation.
 void scrollDiffToAnchor(QTextEdit *view, const QString &anchor);
-// Introspection/navigation used by the embedded page controls and performance
-// regression test.
-int diffPageCount(QTextEdit *view);
-int diffCurrentPage(QTextEdit *view);
-void showDiffPage(QTextEdit *view, int page);
 // Ensure a streamed diff continues filling. This deliberately does *not* force
 // its remaining HTML into the document synchronously: doing that from an anchor
 // jump or a document-wide search bypassed the streaming limits and recreated the
@@ -3072,6 +3066,10 @@ const QString kMachineNodeNameSetting = QStringLiteral("node/machineName");
 // Persisted Hosts list (adhoc #263): non-sensitive JSON metadata only
 // ({name, ip, user, status}). Legacy password fields are removed on load.
 const QString kHostsSetting = QStringLiteral("hosts/list");
+const QString kMirrorFleetEnabledSetting =
+    QStringLiteral("hosts/healthyMirrorFleet/enabled");
+const QString kMirrorFleetDesiredSetting =
+    QStringLiteral("hosts/healthyMirrorFleet/desired");
 const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
 const QString kServerUrlSetting = QStringLiteral("server/url");
@@ -3291,6 +3289,10 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // desktop; seeded on for headless installs in main.cpp (an operator-run VM has
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
+// When on, the automatic update/rebuild pipeline is allowed to relaunch
+// ForkMesh after finding an update. Turn this off to prevent self-initiated
+// restarts (for example, when you want manual control over every restart).
+const QString kAutoUpdateRestartSetting = QStringLiteral("update/autoUpdateRestart");
 // Hourly local snapshots of the live database (Settings -> Data -> Automatic
 // backups). OFF by default everywhere because a rolling day of multi-gigabyte
 // tarballs filled control machines and small VPS disks. An explicit true turns
@@ -4433,6 +4435,8 @@ inline QString codexChatGptModelId(const QString &model)
     const QString trimmed = model.trimmed();
     if (trimmed.isEmpty())
         return QStringLiteral("gpt-5.5");
+    if (trimmed == QLatin1String("gpt-5.3-codex-spark"))
+        return QStringLiteral("gpt-5.3-spark");
     if (trimmed == QLatin1String("gpt-5.5-codex"))
         return QStringLiteral("gpt-5.5");
     if (trimmed == QLatin1String("gpt-5.4"))
@@ -4723,6 +4727,10 @@ inline QString agentModelLabel(const QString &model)
         {QStringLiteral("gpt-5"), QStringLiteral("GPT-5")},
         {QStringLiteral("gpt-5.1"), QStringLiteral("GPT-5.1")},
         {QStringLiteral("gpt-5.1-codex"), QStringLiteral("GPT-5.1 Codex")},
+        {QStringLiteral("gpt-5.3"), QStringLiteral("GPT-5.3")},
+        {QStringLiteral("gpt-5.3-spark"), QStringLiteral("GPT-5.3 Spark")},
+        {QStringLiteral("gpt-5.3-codex-spark"),
+         QStringLiteral("GPT-5.3 Codex Spark")},
         {QStringLiteral("gpt-5.4"), QStringLiteral("GPT-5.4")},
         {QStringLiteral("gpt-5.4-mini"), QStringLiteral("GPT-5.4-Mini")},
         {QStringLiteral("gpt-5.5"), QStringLiteral("GPT-5.5")},
@@ -4755,6 +4763,8 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
         combo->addItem(QStringLiteral("GPT-5.5 Codex"),
                        QStringLiteral("gpt-5.5-codex"));
+        combo->addItem(QStringLiteral("GPT-5.3 Codex Spark"),
+                       QStringLiteral("gpt-5.3-codex-spark"));
         combo->addItem(QStringLiteral("GPT-5.1 Codex"),
                        QStringLiteral("gpt-5.1-codex"));
         combo->addItem(QStringLiteral("GPT-5.1"), QStringLiteral("gpt-5.1"));
@@ -4996,17 +5006,28 @@ inline QString codexCommandSetting()
     return command;
 }
 
-// Directory holding client/CMakeLists.txt to update from: the build-time
-// checkout when it still exists, otherwise a persistent clone managed by the
-// app in its data directory (used when the binary was installed without a
-// checkout, e.g. via install.sh).
-inline QString updateClientDir()
+// App-managed source used only to build the running copy. This is the same
+// installer-owned location used by cloudflare_worker/public/install.sh.
+inline QString runningClientDir()
+{
+#ifdef Q_OS_WIN
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           "/src/qt_client";
+#else
+    return QDir::homePath() + QStringLiteral("/.local/share/forkmesh/src/qt_client");
+#endif
+}
+
+// The editable source tree this build came from. Rebuild-only developer actions
+// intentionally use it so local edits can be compiled and previewed. Update
+// actions must never use this path: a failed fast-forward can replace its source
+// checkout, which would destroy the user's uncommitted work.
+inline QString workingClientDir()
 {
     const QString baked = QStringLiteral(FORKMESH_SOURCE_DIR);
     if (!baked.isEmpty() && QDir(baked).exists("CMakeLists.txt"))
         return baked;
-    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-           "/src/qt_client";
+    return runningClientDir();
 }
 
 inline bool gitOutput(const QString &clientDir, const QStringList &arguments, QString *out)
@@ -5074,11 +5095,36 @@ inline QString homeForUser(const QString &user)
     return QDir::homePath();
 }
 
-// The managed source checkout directory (holding qt_client/CMakeLists.txt) under
-// a specific home directory.
-inline QString clientDirUnderHome(const QString &home)
+// The app-managed running source checkout (holding qt_client/CMakeLists.txt)
+// under a specific home directory. Used when a root process updates for the
+// non-root user who invoked sudo.
+inline QString runningClientDirUnderHome(const QString &home)
 {
+#ifdef Q_OS_WIN
+    Q_UNUSED(home);
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           QStringLiteral("/src/qt_client");
+#else
     return home + QStringLiteral("/.local/share/forkmesh/src/qt_client");
+#endif
+}
+
+// Stable installed executable for the running copy. Source builds launched
+// directly from a working tree migrate here on their first Update & restart;
+// rebuild-only actions continue to relaunch the developer's existing binary.
+inline QString runningClientExecutableUnderHome(const QString &home)
+{
+#ifdef Q_OS_WIN
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           QStringLiteral("/bin/forkmesh.exe");
+#else
+    return home + QStringLiteral("/.local/bin/forkmesh");
+#endif
+}
+
+inline QString runningClientExecutable()
+{
+    return runningClientExecutableUnderHome(QDir::homePath());
 }
 
 // Single-quote a string for safe use inside an `sh -c` command line.

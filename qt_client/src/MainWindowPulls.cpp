@@ -2187,8 +2187,8 @@ void MainWindow::registerDiffView(QTextEdit *view)
     view->viewport()->installEventFilter(this); // Ctrl+wheel, see eventFilter
     if (auto *browser = qobject_cast<QTextBrowser *>(view))
         browser->setOpenLinks(false);
-    // Whatever this view derives from the resident page (file positions and
-    // search matches) is recomputed after that page finishes streaming.
+    // Whatever this view derives from the rendered document (file positions and
+    // search matches) is recomputed after the stream finishes.
     addDiffStreamFinishedHook(view, [this, view] { onDiffStreamFinished(view); });
     connect(view, &QObject::destroyed, this, [this](QObject *o) {
         auto *dead = static_cast<QTextEdit *>(o);
@@ -2197,9 +2197,9 @@ void MainWindow::registerDiffView(QTextEdit *view)
     });
 }
 
-// Set a diff viewer's HTML. The pager owns the only retained rendered copy and
-// keeps one bounded rich-text page resident; this avoids duplicating a large
-// source string on the widget solely for later zoom changes.
+// Set a diff viewer's HTML. The streamer owns the only retained rendered
+// fragments; this avoids duplicating a large source string on the widget solely
+// for later zoom changes.
 void MainWindow::setDiffHtml(QTextEdit *view, const QString &html)
 {
     if (!view)
@@ -2256,8 +2256,8 @@ void MainWindow::adjustDiffFont(int delta)
             continue;
         QScrollBar *vbar = view->verticalScrollBar();
         const int scroll = vbar ? vbar->value() : 0;
-        // Re-render only the resident page. The pager retains its fragments, so
-        // zoom does not rebuild or duplicate the complete diff source.
+        // Re-render from retained fragments, so zoom does not rebuild or
+        // duplicate the complete diff source.
         if (scroll > 0)
             m_diffRestoreScroll.insert(view, scroll);
         if (!restyleDiffStreamed(view, diffStyleSheet(m_diffFontPt)))
