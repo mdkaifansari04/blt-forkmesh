@@ -3087,7 +3087,10 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
             changed = true;
         }
         if (composerIsCli && m_quickAddClaudeModel) {
-            const QString chosen = selectedModelComboValue(m_quickAddClaudeModel);
+            const QString chosen = (composerProvider == QLatin1String("claude-code")
+                                       ? selectedModelComboValue(m_quickAddClaudeModel)
+                                       : codexChatGptModelId(
+                                           selectedModelComboValue(m_quickAddClaudeModel)));
             if (session->model != chosen) {
                 session->model = chosen;
                 changed = true;
@@ -3698,7 +3701,7 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
         const QString prompt =
             job.value(QStringLiteral("prompt")).toString();
         const QString requestedModel =
-            job.value(QStringLiteral("model")).toString().trimmed();
+            codexChatGptModelId(job.value(QStringLiteral("model")).toString());
         const int issueNumber =
             job.value(QStringLiteral("issueNumber")).toInt();
         const QSet<QString> allowedWebsiteModels = {
@@ -3710,7 +3713,6 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
             QStringLiteral("gpt-5.6-luna"),
             QStringLiteral("gpt-5.6-terra"),
             QStringLiteral("gpt-5.3-codex-spark"),
-            QStringLiteral("gpt-5.3-spark"),
         };
         const QJsonObject security =
             job.value(QStringLiteral("securityCheck")).toObject();
@@ -7784,6 +7786,7 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
+    updateQuickAddTargetAgentLabel();
     // The session on screen is the Agents tab's place, so Back walks between
     // sessions the same way it walks between issues (adhoc #50).
     scheduleNavRecord();
@@ -7819,6 +7822,7 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLogSession = -1; // log emptied out-of-band; force the next set to render
         m_agentDetailTabSession = -1; // next opened session re-starts on the Agent tab
         updateAgentActionState();
+        updateQuickAddTargetAgentLabel();
         return;
     }
     // Several detail helpers resolve git/worktree state through keep-alive
@@ -7843,6 +7847,8 @@ void MainWindow::showAgentSession(int sessionId)
     // sessions; the live re-fetch only happens on the top-bar chart's hover.
     applyLiveClaudeModelsToCombos();
     if (m_agentTitle) {
+        const QString sessionLabel =
+            QStringLiteral("Agent #%1").arg(sessionId);
         if (isExternalSession(sessionId)) {
             const QString label = !session->issueTitle.isEmpty()
                                       ? session->issueTitle
@@ -7851,7 +7857,8 @@ void MainWindow::showAgentSession(int sessionId)
                                              : session->branchName);
             setAgentTitleText(
                 m_agentTitle,
-                QStringLiteral("External Claude Code · %1").arg(label));
+                QStringLiteral("%1 · External Claude Code · %2")
+                    .arg(sessionLabel, label));
         } else {
             // Older ad-hoc sessions may still carry a historically shortened
             // issueTitle, so prefer the prompt's complete first line when it is
@@ -7863,7 +7870,8 @@ void MainWindow::showAgentSession(int sessionId)
             setAgentTitleText(
                 m_agentTitle,
                 session->issueNumber > 0
-                    ? QStringLiteral("#%1 · %2")
+                    ? QStringLiteral("%1 · #%2 · %3")
+                          .arg(sessionLabel)
                           .arg(session->issueNumber)
                           .arg(session->issueTitle.isEmpty()
                                    ? agentProviderName(session->provider)
@@ -7871,7 +7879,8 @@ void MainWindow::showAgentSession(int sessionId)
                     // Ad-hoc sessions (no issue) lead with the prompt-derived
                     // title rather than "pull #0" — before a PR exists prNumber
                     // is 0, and the prompt is what identifies the run anyway.
-                    : QStringLiteral("%1 · %2")
+                    : QStringLiteral("%1 · %2 · %3")
+                          .arg(sessionLabel)
                           .arg(agentProviderName(session->provider))
                           .arg(adHocTitle.isEmpty()
                                    ? QStringLiteral("pull #%1").arg(session->prNumber)
@@ -8235,7 +8244,8 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         config.command = codexCommandSetting();
         config.apiKeyName = QStringLiteral("CODEX_API_KEY");
         config.apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();
-        config.model = QSettings().value(kCodexModelSetting).toString().trimmed();
+        config.model = codexChatGptModelId(
+            QSettings().value(kCodexModelSetting).toString());
         config.preferApiKeyAuth = true;
         config.isolatedHome =
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
@@ -8377,7 +8387,10 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.orgTask = true;
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
-    session.model = model.trimmed(); // empty leaves the provider's own default
+    session.model = (provider == QLatin1String("claude-code") ||
+                     agentIsCodexProvider(provider))
+                        ? codexChatGptModelId(model)
+                        : model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
         session.mode = m_quickAddModeSelector->currentText();
@@ -8710,7 +8723,8 @@ void MainWindow::updateIssueLooperButton()
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr,
                                        const QString &model,
-                                       const QString &titleOverride, bool genie)
+                                       const QString &titleOverride, bool genie,
+                                       bool switchToTab)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -8745,7 +8759,10 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     // genie even though the "task" button that started it is long since
     // forgotten.
     session.genie = genie;
-    session.model = model.trimmed(); // empty leaves the provider's own default
+    session.model = (provider == QLatin1String("claude-code") ||
+                     agentIsCodexProvider(provider))
+                        ? codexChatGptModelId(model)
+                        : model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
         session.mode = m_quickAddModeSelector->currentText();
@@ -8784,7 +8801,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     if (runningAgentCount() >= maxRunningAgents()) {
         m_agentQueue.append(session.id);
         reloadAgents();
-        switchToAgentsTab(session.id);
+        if (switchToTab)
+            switchToAgentsTab(session.id);
         flashMessage(QStringLiteral("Queued \xE2\x80\x94 %1 agents are already "
                                     "running (limit set in Settings).")
                          .arg(maxRunningAgents()));
@@ -8794,7 +8812,7 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     if (provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) {
         // Both CLI-backed agents render through their structured protocols; the
         // typed prompt is their task verbatim.
-        startCliTranscript(session, Issue(), repo.localPath, task);
+        startCliTranscript(session, Issue(), repo.localPath, task, switchToTab);
     } else {
         // API-key agents run headlessly through a runner. There's no issue to
         // anchor to, so the task rides through the config as an override prompt.
@@ -8811,7 +8829,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         markAgentLimitWindow(provider);
         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
         reloadAgents();
-        switchToAgentsTab(session.id);
+        if (switchToTab)
+            switchToAgentsTab(session.id);
     }
     return session.id;
 }
@@ -8843,7 +8862,8 @@ void MainWindow::startAgentFromComposer()
         provider == QLatin1String("claude-code")
             ? QSettings().value(kClaudeCodeModelSetting).toString()
             : (agentIsCodexProvider(provider)
-                   ? QSettings().value(kCodexModelSetting).toString()
+                   ? codexChatGptModelId(
+                       QSettings().value(kCodexModelSetting).toString())
                    : QString());
     if (startAdHocAgentForRepo(repoIndex, prompt, provider, /*createPr=*/true,
                                model) > 0)
@@ -10093,7 +10113,8 @@ QString MainWindow::issueContextPrompt(const Issue &issue) const
 
 void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                     const QString &repoPath,
-                                    const QString &customPrompt)
+                                    const QString &customPrompt,
+                                    bool switchToTab)
 {
     if (!m_agentStore)
         return;
@@ -10484,8 +10505,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                         agentIsCodexProvider(
                             m_quickAddAgentProvider->currentData().toString())) {
                         mergeLiveCodexModels(m_quickAddClaudeModel, models);
-                        const QString selected =
-                            selectedModelComboValue(m_quickAddClaudeModel);
+                        const QString selected = codexChatGptModelId(
+                            selectedModelComboValue(m_quickAddClaudeModel));
                         QSettings().setValue(kCodexModelSetting, selected);
                         if (m_codexModelEdit)
                             m_codexModelEdit->setText(selected);
@@ -10564,12 +10585,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Skip the jump when the user is already viewing this session (e.g. they
     // pressed Enter in the composer on the Agents tab): switchToAgentsTab fires
     // extra reloadAgents() calls that can reset the table selection to row 0 and
-    // navigate away from the session the user was working with.
+    // navigate away from the session the user was working with. switchToTab is
+    // false for a quick-add bar launch (adhoc #1573): the prompt bar is docked
+    // on every page, so starting a run from it must not yank the user onto the
+    // Agents tab away from whatever they were looking at.
     const bool startupQuiet =
         m_startupQuietAgentSessions.remove(sid) || m_agentQuietResume;
     if (!startupQuiet) {
         m_terminalSessionId = sid;
-        if (m_selectedAgentSessionId != sid)
+        if (switchToTab && m_selectedAgentSessionId != sid)
             switchToAgentsTab(sid);
         showAgentSession(sid); // renders the buffered turn + selects the surface
         if (m_transcriptModeButton)
@@ -11367,6 +11391,7 @@ void MainWindow::unsurfaceExternalSession(int sessionId)
     m_externalSig.clear();
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
+    updateQuickAddTargetAgentLabel();
     reloadAgents();
 }
 
@@ -11463,6 +11488,7 @@ void MainWindow::onExternalClaudeTick()
             m_externalSig.clear();
             if (isExternalSession(m_selectedAgentSessionId))
                 m_selectedAgentSessionId = -1;
+            updateQuickAddTargetAgentLabel();
             injectExternalSessions();
             refreshAgentTable();
             updateAgentsTabIndicator();
@@ -13979,4 +14005,19 @@ void MainWindow::updateQuickAddEnterTarget()
     apply(m_quickAddSendToAgentButton, toAgent,
           QStringLiteral("Send to the agent open above, as a follow-up message"));
     apply(m_quickAddSendButton, !toAgent, QStringLiteral("Send to a new agent"));
+    updateQuickAddTargetAgentLabel();
+}
+
+void MainWindow::updateQuickAddTargetAgentLabel()
+{
+    if (!m_quickAddTargetAgentLabel)
+        return;
+    if (!quickAddShouldFollowUpAgent()) {
+        m_quickAddTargetAgentLabel->clear();
+        m_quickAddTargetAgentLabel->hide();
+        return;
+    }
+    m_quickAddTargetAgentLabel->setText(
+        QStringLiteral("Agent #%1").arg(m_selectedAgentSessionId));
+    m_quickAddTargetAgentLabel->show();
 }
