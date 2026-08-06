@@ -2370,6 +2370,8 @@ int main(int argc, char *argv[])
                     {QStringLiteral("kind"), QStringLiteral("user")},
                     {QStringLiteral("status"), QStringLiteral("active")},
                     {QStringLiteral("emailVerified"), true},
+                    {QStringLiteral("solana"),
+                     QStringLiteral("So11111111111111111111111111111111111111112")},
                     {QStringLiteral("createdAt"), 1600000000000.0},
                     {QStringLiteral("totalActiveMs"), 7380000.0},
                     {QStringLiteral("activityBucket"), QStringLiteral("hour")},
@@ -2385,7 +2387,8 @@ int main(int argc, char *argv[])
     });
     const QStringList userColumns = window.testUsersColumns();
     const QStringList expectedUserColumns{
-        QStringLiteral("User"),          QStringLiteral("Email verified"),
+        QStringLiteral("User"),          QStringLiteral("Solana"),
+        QStringLiteral("Email verified"),
         QStringLiteral("Status"),        QStringLiteral("Joined"),
         QStringLiteral("World activity"),
         QStringLiteral("Activity recency"),
@@ -2400,6 +2403,10 @@ int main(int argc, char *argv[])
                                        QStringLiteral("zora")} &&
               window.testUsersCellText(0, QStringLiteral("World activity")) ==
                   QStringLiteral("2h 03m") &&
+              window.testUsersCellText(0, QStringLiteral("Solana")) ==
+                  QStringLiteral("So11111111111111111111111111111111111111112") &&
+              window.testUsersCellText(1, QStringLiteral("Solana")) ==
+                  QStringLiteral("Not set") &&
               window.testUsersCellText(0, QStringLiteral("Nodes")) ==
                   QStringLiteral("2 - node-a, node-b"),
           QStringLiteral("Users sorts formatted statistics by their numeric values"));

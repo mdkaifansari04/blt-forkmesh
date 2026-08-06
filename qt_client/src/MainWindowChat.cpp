@@ -17060,6 +17060,7 @@ QWidget *networkTabPage()
 
 enum UsersColumn {
     kUsersColName = 0,
+    kUsersColSolana,
     kUsersColVerified,
     kUsersColStatus,
     kUsersColJoined,
@@ -17076,7 +17077,8 @@ enum UsersColumn {
 
 QStringList usersTableHeaders()
 {
-    return {QStringLiteral("User"), QStringLiteral("Email verified"),
+    return {QStringLiteral("User"), QStringLiteral("Solana"),
+            QStringLiteral("Email verified"),
             QStringLiteral("Status"), QStringLiteral("Joined"),
             QStringLiteral("World activity"),
             QStringLiteral("Activity recency"), QStringLiteral("Last email"),
@@ -17231,6 +17233,14 @@ void MainWindow::renderUsersPage(const QJsonArray &users)
         if (avatar != m_avatars.constEnd())
             nameItem->setIcon(QIcon(*avatar));
         m_usersTable->setItem(row, kUsersColName, nameItem);
+
+        const QString solana =
+            user.value(QStringLiteral("solana")).toString().trimmed();
+        m_usersTable->setItem(
+            row, kUsersColSolana,
+            usersTableItem(solana.isEmpty() ? QStringLiteral("Not set")
+                                             : solana,
+                           solana.toLower()));
 
         const bool verified =
             user.value(QStringLiteral("emailVerified")).toBool();
