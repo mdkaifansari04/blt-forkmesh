@@ -767,6 +767,12 @@ public:
     // tests of ordering and the model-only visible text.
     void testRefreshQuickAddAgentModelSelector();
     QString testQuickAddAgentModelLabel(const QString &model) const;
+    // The merged tally the popup paints beside a row's label, which the closed
+    // control deliberately does not show (adhoc #1565).
+    QString testQuickAddAgentModelMergedNote(const QString &model) const;
+    // Where the composer sits: "anchored", "floating" or "detached". A launch
+    // always begins anchored on the footer's lower-right corner.
+    QString testPromptOverlayPlacement() const;
     // Prompt shortcuts can pin a dedicated CLI agent/model in their metadata.
     // Return the parsed fields plus launch prompt so tests cover both the pin and
     // removal of configuration headers from what the agent receives.

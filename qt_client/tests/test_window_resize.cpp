@@ -4957,18 +4957,13 @@ int main(int argc, char *argv[])
                                        QStringLiteral("GPT-5.5"),
                                        Qt::MatchStartsWith)
                                  : -1;
-        // Rows keep the model name plus an explicit merged-success count; the
-        // tooltip still says which agent runs the model.
+        // Rows are the bare model name — the merged-success count is painted
+        // beside it in the open popup only — and the tooltip still says which
+        // agent runs the model.
         check(quickAgentModel && quickAgentModel->isVisible() &&
                   quickAgentModel->maxVisibleItems() >= quickAgentModel->count() &&
-                  std::any_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
-                              [](const QString &label) {
-                                  return label.startsWith(QStringLiteral("Auto · "));
-                              }) &&
-                  std::any_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
-                              [](const QString &label) {
-                                  return label.startsWith(QStringLiteral("GPT-5.5 · "));
-                              }) &&
+                  agentModelLabels.contains(QStringLiteral("Auto")) &&
+                  agentModelLabels.contains(QStringLiteral("GPT-5.5")) &&
                   agentModelLabels.contains(QStringLiteral("OpenAI API")) &&
                   agentModelLabels.contains(QStringLiteral("Claude API")) &&
                   std::none_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
@@ -4978,12 +4973,20 @@ int main(int argc, char *argv[])
                                           label.endsWith(QStringLiteral("Codex"));
                                }) &&
                   gpt55Row >= 0 &&
+                  // The tooltip opens with the account the run would use, so the
+                  // model/agent line and its merged tally sit below that.
                   quickAgentModel->itemData(gpt55Row, Qt::ToolTipRole).toString()
-                      .startsWith(QStringLiteral("GPT-5.5 · Codex\nMerged success:")) &&
+                      .contains(QStringLiteral("GPT-5.5 · Codex\nMerged success:")) &&
                   allAgentModelsHaveIcons && agentModelIconsAreClean && quickProvider &&
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
-              QString("one icon-rich composer dropdown combines agents and models (%1)")
-                  .arg(agentModelLabels.join(QStringLiteral(", "))));
+              QString("one icon-rich composer dropdown combines agents and models "
+                      "(%1 | GPT-5.5 tooltip: %2)")
+                  .arg(agentModelLabels.join(QStringLiteral(", ")),
+                       gpt55Row >= 0
+                           ? quickAgentModel->itemData(gpt55Row, Qt::ToolTipRole)
+                                 .toString()
+                                 .replace(QLatin1Char('\n'), QLatin1Char('|'))
+                           : QStringLiteral("missing")));
         // Only the top model lines wear the World's robot portraits. Everything
         // below them — the raw API agents, the Cloudflare chat models — keeps the
         // abstract mark it always had, so the menu does not read as one wall of
@@ -5051,16 +5054,32 @@ int main(int argc, char *argv[])
                 continue;
             rankedLabels << quickAgentModel->itemText(i);
         }
-        check(rankedLabels == QStringList({QStringLiteral("Auto · 0 merged"),
-                                           QStringLiteral("Fable 5 · 0 merged"),
-                                           QStringLiteral("Opus 4.8 · 0 merged"),
-                                           QStringLiteral("Sonnet 4.6 · 0 merged"),
-                                           QStringLiteral("Haiku 4.5 · 0 merged"),
-                                           QStringLiteral("GPT-5.5 · 0 merged"),
-                                           QStringLiteral("GPT-5.4 · 0 merged"),
-                                           QStringLiteral("GPT-5.4-Mini · 0 merged")}),
-              QString("composer models show merged counts and sort strongest first when tied (%1)")
+        check(rankedLabels == QStringList({QStringLiteral("Auto"),
+                                           QStringLiteral("Fable 5"),
+                                           QStringLiteral("Opus 5"),
+                                           QStringLiteral("Sonnet 5"),
+                                           QStringLiteral("Opus 4.8"),
+                                           QStringLiteral("Opus 4.7"),
+                                           QStringLiteral("Opus 4.6"),
+                                           QStringLiteral("Opus 4.5"),
+                                           QStringLiteral("Sonnet 4.6"),
+                                           QStringLiteral("Sonnet 4.5"),
+                                           QStringLiteral("Haiku 4.5"),
+                                           QStringLiteral("GPT-5.5"),
+                                           QStringLiteral("GPT-5.4"),
+                                           QStringLiteral("GPT-5.4-Mini")}),
+              QString("composer model rows are bare model names, sorted strongest first when tied (%1)")
                   .arg(rankedLabels.join(QStringLiteral(", "))));
+        // The merged tally rides the popup-only description role, so the badge on
+        // the prompt stays the model name alone (adhoc #1565).
+        check(seeded.testQuickAddAgentModelMergedNote(
+                  QStringLiteral("claude-opus-4-8")) ==
+                      QStringLiteral("0 merged") &&
+                  !seeded.testQuickAddAgentModelLabel(
+                       QStringLiteral("claude-opus-4-8"))
+                       .contains(QStringLiteral("merged")),
+              QStringLiteral("merged counts live in the popup rows, not the "
+                             "closed model badge"));
         QComboBox *canonicalModel =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
         int concreteClaudeChoice = -1;
@@ -5123,11 +5142,66 @@ int main(int argc, char *argv[])
             const int sonnetRow = quickAgentModel->findText(sonnetLabel);
             const int opusRow = quickAgentModel->findText(opusLabel);
             check(sonnetRow >= 0 && opusRow > sonnetRow &&
-                      sonnetLabel == QStringLiteral("Sonnet 4.6 · 3 merged") &&
-                      opusLabel == QStringLiteral("Opus 4.8 · 1 merged"),
+                      sonnetLabel == QStringLiteral("Sonnet 4.6") &&
+                      opusLabel == QStringLiteral("Opus 4.8") &&
+                      seeded.testQuickAddAgentModelMergedNote(
+                          QStringLiteral("claude-sonnet-4-6")) ==
+                          QStringLiteral("3 merged") &&
+                      seeded.testQuickAddAgentModelMergedNote(
+                          QStringLiteral("claude-opus-4-8")) ==
+                          QStringLiteral("1 merged"),
                   QString("the model menu orders by merged success and shows "
                           "the count (Sonnet row %1, Opus row %2)")
                       .arg(sonnetRow).arg(opusRow));
+            // The record has to be on the menu from the first frame (adhoc
+            // #1565). The composer is built before initAgents() reads the
+            // sessions off disk, so a restart used to open with every model on
+            // "0 merged" until some later reload happened to refresh the menu —
+            // the user's whole merged history, apparently wiped.
+            {
+                // Same window proves the composer comes back to its corner: a
+                // prompt left floating mid-workspace in the last session must not
+                // be where the next launch opens (adhoc #1565).
+                QSettings placement;
+                placement.setValue(QStringLiteral("prompt/floating"), true);
+                placement.setValue(QStringLiteral("prompt/floatPos"),
+                                   QPoint(24, 48));
+                placement.setValue(QStringLiteral("prompt/floatSize"),
+                                   QSize(320, 200));
+                MainWindow restarted;
+                const QString restartedSonnet =
+                    restarted.testQuickAddAgentModelMergedNote(
+                        QStringLiteral("claude-sonnet-4-6"));
+                const QString restartedOpus =
+                    restarted.testQuickAddAgentModelMergedNote(
+                        QStringLiteral("claude-opus-4-8"));
+                check(restartedSonnet == QStringLiteral("3 merged") &&
+                          restartedOpus == QStringLiteral("1 merged"),
+                      QString("a fresh window shows the stored merged counts "
+                              "without waiting for a reload (Sonnet %1, Opus %2)")
+                          .arg(restartedSonnet, restartedOpus));
+                restarted.resize(1200, 720);
+                restarted.show();
+                QApplication::processEvents();
+                auto *restartedDock =
+                    restarted.findChild<QWidget *>(QStringLiteral("logDock"));
+                auto *restartedPrompt = restarted.findChild<QWidget *>(
+                    QStringLiteral("promptOverlayHost"));
+                check(restarted.testPromptOverlayPlacement() ==
+                              QStringLiteral("anchored") &&
+                          restartedDock && restartedPrompt &&
+                          restartedPrompt->parentWidget() == restartedDock &&
+                          restartedPrompt->geometry().center().x() >
+                              restartedDock->rect().center().x() &&
+                          restartedPrompt->geometry().bottom() ==
+                              restartedDock->rect().bottom() &&
+                          !placement.value(QStringLiteral("prompt/floating"))
+                               .toBool(),
+                      QString("a launch pins the prompt to the lower-right corner "
+                              "however it was left (placement %1)")
+                          .arg(restarted.testPromptOverlayPlacement()));
+                stopChildProcesses(restarted);
+            }
             for (int id = 144501; id <= 144506; ++id)
                 seeded.testRemoveAgentSession(id);
             seeded.testRefreshQuickAddAgentModelSelector();
