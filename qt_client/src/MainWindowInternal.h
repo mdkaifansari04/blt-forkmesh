@@ -7693,7 +7693,7 @@ public:
     bool isDebug() const { return m_presentation == Debug; }
 
     std::function<void(const QString &category)> onCategoryClicked;
-    std::function<void()> onWebsiteClicked;
+    std::function<void(const QString &statusId)> onWebsiteClicked;
     std::function<void()> onStallClicked;
     std::function<void()> onStallContextMenu;
     std::function<void()> onClicked;
@@ -7827,8 +7827,8 @@ protected:
                 if (!status.reason.isEmpty())
                     tip += QLatin1Char('\n') + status.reason;
                 if (onWebsiteClicked)
-                    tip += QStringLiteral("\nClick for the Cloudflare Worker's "
-                                          "live logs");
+                    tip += QStringLiteral(
+                        "\nClick to open the related website page.");
                 QToolTip::showText(help->globalPos(), tip, this);
                 return true;
             }
@@ -7844,12 +7844,13 @@ protected:
                 onStallClicked();
             } else if (lane < 0) {
                 // Outside the category glyphs. The website dots are the relay's
-                // own health, so they open its live logs (adhoc #1559); nothing
-                // else in the strip claims that area. Reading categories()[-1]
-                // is what this branch used to do.
-                if (websiteStatusAt(event->pos()) >= 0 && onWebsiteClicked)
-                    onWebsiteClicked();
-                else if (onClicked)
+                // own health, so they open related pages in the website (adhoc
+                // #1559); nothing else in the strip claims this area. Reading
+                // categories()[-1] is what this branch used to do.
+                const int website = websiteStatusAt(event->pos());
+                if (website >= 0 && onWebsiteClicked) {
+                    onWebsiteClicked(m_websiteStatuses.at(website).id);
+                } else if (onClicked)
                     onClicked();
             } else if (m_presentation != Header) {
                 if (onCategoryClicked)
