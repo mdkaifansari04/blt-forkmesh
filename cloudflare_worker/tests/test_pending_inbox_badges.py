@@ -18,7 +18,15 @@ from _dashboard_bundle import assembled_dashboard_js
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+ENTRY_TEXT = (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+)
 URLS_TEXT = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
 DASHBOARD_JS = assembled_dashboard_js()
 
