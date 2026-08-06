@@ -3291,6 +3291,10 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // desktop; seeded on for headless installs in main.cpp (an operator-run VM has
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
+// When on, the automatic update/rebuild pipeline is allowed to relaunch
+// ForkMesh after finding an update. Turn this off to prevent self-initiated
+// restarts (for example, when you want manual control over every restart).
+const QString kAutoUpdateRestartSetting = QStringLiteral("update/autoUpdateRestart");
 // Hourly local snapshots of the live database (Settings -> Data -> Automatic
 // backups). OFF by default everywhere because a rolling day of multi-gigabyte
 // tarballs filled control machines and small VPS disks. An explicit true turns
