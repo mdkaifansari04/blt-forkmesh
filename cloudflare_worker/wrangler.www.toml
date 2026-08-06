@@ -1,0 +1,234 @@
+# forkmesh-www — assets-only Worker for the marketing pages.
+#
+# One of the three split site Workers (see docs/worker-split.md):
+# forkmesh-relay keeps the Python app (APIs, dashboard, git, fediverse, /,
+# auth pages, RSS) plus the complete public/ tree as a catch-all fallback via
+# its custom domains; this Worker takes the marketing DOCUMENT traffic through
+# the more-specific zone routes below. Subresources those pages load from
+# un-routed paths (/assets/*, /styles.css, /site-header.js, /favicon/*, …)
+# still resolve on the relay, so nothing is duplicated beyond the documents.
+#
+# The homepage stays on the relay on purpose: _serve_homepage records
+# site_referrers (feeds /referrals and /api/referrals/sites) and streams
+# index.html with cache-control: no-cache. The *.html canonical 404s also stay
+# on the relay because these routes are exact-path or /prefix/* patterns that
+# never capture the .html spellings.
+#
+# The asset tree public_www/ is staged from public/ by the [build] command —
+# public/ remains the single source of truth. _redirects is copied verbatim,
+# which is also what keeps the Worker-built RSS feed working: this Worker owns
+# /blog/*, and the copied safety-net rule "/blog/rss.xml /rss.xml 308" bounces
+# feed readers to /rss.xml, which is not routed here and therefore reaches the
+# relay's dynamic blog_rss_handler.
+#
+# Rollback: deleting this Worker (wrangler delete --name forkmesh-www) removes
+# its routes and the relay's custom-domain catch-all resumes serving every
+# path below, byte-identically.
+name = "forkmesh-www"
+compatibility_date = "2026-07-23"
+
+[build]
+command = "python3 tools/build_split_assets.py www"
+
+[assets]
+directory = "./public_www"
+# Unlike the relay (html_handling "none" + the full _redirects table, because
+# its Worker owns many sibling paths), this assets-only Worker uses the
+# platform's native clean-URL handling: /pricing serves pricing.html and
+# /blog/<slug> serves the post directory index without any redirect rules.
+# Its staged _redirects is a tiny generated file (feed bounces + /blogs
+# alias) — Cloudflare caps "dynamic" _redirects rules at 100, which rules
+# out shipping the relay's placeholder table or enumerating posts, and a
+# placeholder rule was observed beating the exact /blog/rss.xml safety net.
+html_handling = "auto-trailing-slash"
+not_found_handling = "404-page"
+
+# Marketing document routes, on both public hostnames. Exact patterns (no
+# trailing *) match only that path; /blog/* and /docs/* own the post and doc
+# trees. Never add: "/", /api/*, /ap/*, /dashboard*, /@*, /rss.xml, /feed.xml,
+# /login, /signup, /forgot-password, /reset-password, /chat, or any pattern
+# that could capture the two-segment repository/git namespace.
+
+[[routes]]
+pattern = "forkmesh.com/about"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/blog"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/blog/*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/blogs"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/careers"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/changelog"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/desktop"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/docs"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/docs/*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/features"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/homev2"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/leaderboards"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/mirror-payouts"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/network"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/new-home"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/outreach"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/press"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/pricing"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/privacy"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/referrals"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/security-report"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/status"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/terms"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/about"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/blog"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/blog/*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/blogs"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/careers"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/changelog"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/desktop"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/docs"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/docs/*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/features"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/homev2"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/leaderboards"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/mirror-payouts"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/network"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/new-home"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/outreach"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/press"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/pricing"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/privacy"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/referrals"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/security-report"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/status"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/terms"
+zone_name = "forkmesh.com"
