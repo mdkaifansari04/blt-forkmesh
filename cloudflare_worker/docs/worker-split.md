@@ -1,11 +1,12 @@
-# The three-Worker site split
+# The four-Worker site split
 
-Since 2026-08, the public site is served by three Cloudflare Workers on the
+Since 2026-08, the public site is served by four Cloudflare Workers on the
 `forkmesh.com` zone:
 
 | Worker | Config | Owns | How traffic reaches it |
 |---|---|---|---|
-| `forkmesh-relay` | `wrangler.toml` | The Python application: every `/api/*` route, realtime chat/presence Durable Objects, git smart-HTTP, ActivityPub (`/ap/*`, `/@handle`), the dashboard, repo pages, auth pages, the homepage `/`, the Worker-built RSS feeds, `.html` canonical 404s, cron — plus the **complete** `public/` asset tree | Custom domains `forkmesh.com` and `www.forkmesh.com` (the catch-all) |
+| `forkmesh-relay` | `wrangler.toml` | The Python application's page/protocol surface: realtime Durable Objects (owner of the classes), git smart-HTTP, ActivityPub (`/ap/*`, `/@handle`), the dashboard, repo pages, auth pages, the homepage `/`, the Worker-built RSS feeds, `.html` canonical 404s, `/health`, the secret admin dashboard, cron — plus the **complete** `public/` asset tree | Custom domains `forkmesh.com` and `www.forkmesh.com` (the catch-all) |
+| `forkmesh-api` | `wrangler.api.toml` | The **same Python application**, answering every `/api/*` route (REST + WebSockets; the sockets reach the relay-owned Durable Objects through cross-script bindings) | Zone routes `…/api/*` |
 | `forkmesh-www` | `wrangler.www.toml` | Marketing documents: `/pricing`, `/about`, `/features`, `/docs*`, `/blog*`, `/status`, and the other static pages | Exact/prefix zone routes (more specific than the custom domain, so they win) |
 | `forkmesh-world` | `wrangler.world.toml` | The `/world` three.js application shell and its module graph `/world/*` | Zone routes `…/world` and `…/world/*` |
 
@@ -48,6 +49,21 @@ Since 2026-08, the public site is served by three Cloudflare Workers on the
   loads `/assets/world/*`, `/assets/songs/*`, `/assets/video/*` and calls
   `/api/world/*` (including the WebSocket) — all un-routed paths that resolve
   on the relay exactly as before.
+
+- **The api Worker is configuration-locked to the relay.**
+  `wrangler.api.toml` must keep `[vars]` value-identical to `wrangler.toml`
+  (except `WORKER_ROLE`), bind the same D1/KV/AI, and reach every Durable
+  Object class via `script_name = "forkmesh-relay"` — the classes (and their
+  migrations) live only in the relay, so a chat room joined through an
+  `/api/*` WebSocket is the same instance a relay-served page would reach.
+  It has **no cron** (the relay's schedule must not double-run) and receives
+  the same secret set on every deploy (`SPLIT_SECRET_WORKER=forkmesh-api
+  push_secrets`). `tests/test_split_workers.py` enforces all of this.
+- **Build-stamp verification is per Worker**: `/api/version` (now served by
+  `forkmesh-api`) echoes `"worker": "api"` and its own `BUILD_REV`;
+  `/health` stays relay-routed and echoes `"worker": "relay"` plus the
+  relay's `rev`, which is how `verify_split_site_workers` proves both
+  deployments landed.
 
 ## Operational notes
 

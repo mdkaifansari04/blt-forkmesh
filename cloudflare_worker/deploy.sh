@@ -623,6 +623,18 @@ deploy_split_site_workers() {
         npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.42.1}" -- \
             wrangler deploy --config "$config"
     done
+    # The API split ships the same Python application as the relay, so it
+    # deploys through pywrangler (which vendors the Python modules) with the
+    # same build stamps, then refreshes its copy of the production
+    # credentials. Those persist across deploys, so steady-state deploys
+    # have no unconfigured window; the Worker was bootstrapped before its
+    # /api/* routes first attached.
+    echo "Deploying split site Worker from wrangler.api.toml ..."
+    pywrangler deploy --config wrangler.api.toml --env "" \
+        --var "BUILD_REV:${BUILD_REV}" \
+        --var "APP_VERSION:${APP_VERSION}" \
+        --var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}"
+    SPLIT_SECRET_WORKER=forkmesh-api push_secrets
 }
 
 # One split-route probe: the staged _headers of each split Worker append an
@@ -656,6 +668,7 @@ verify_split_site_workers() {
     if ! split_site_workers_enabled; then
         return 0
     fi
+    local expected_rev="${1:-}"
     if ! command -v curl >/dev/null 2>&1; then
         echo "note: curl not found — skipping split Worker verification." >&2
         return 0
@@ -664,6 +677,29 @@ verify_split_site_workers() {
     base="${base%/}"
     echo "Verifying the split Workers own their routes on $base ..."
     local failed=0
+    # /api/* must be answered by the forkmesh-api deployment of this build
+    # (verify_deploy already matched its rev on /api/version) ...
+    local api_body
+    api_body="$(curl -sS --max-time 25 "$base/api/version" 2>/dev/null || true)"
+    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"api"' <<<"$api_body"; then
+        echo "ERROR: $base/api/version is not served by forkmesh-api (got: ${api_body:-<none>})." >&2
+        failed=1
+    fi
+    # ... while the relay proves its own build through the relay-routed
+    # /health stamp, which verify_deploy can no longer see via /api/*.
+    local health_body health_rev
+    health_body="$(curl -sS --max-time 25 "$base/health" 2>/dev/null || true)"
+    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"relay"' <<<"$health_body"; then
+        echo "ERROR: $base/health is not served by the relay (got: ${health_body:-<none>})." >&2
+        failed=1
+    fi
+    if [ -n "$expected_rev" ]; then
+        health_rev="$(sed -n 's/.*"rev"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$health_body")"
+        if [ "$health_rev" != "$expected_rev" ]; then
+            echo "ERROR: relay /health reports rev '${health_rev:-<none>}' (expected '$expected_rev')." >&2
+            failed=1
+        fi
+    fi
     # Marketing documents must come from forkmesh-www ...
     _split_check "$base/pricing" www 200 || failed=1
     _split_check "$base/blog" www 200 || failed=1
@@ -872,7 +908,10 @@ with open(sys.argv[1], "w", encoding="utf-8") as stream:
     json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
 PYEOF
         [ -s "$secret_bulk_file" ] || exit 1
-        pywrangler secret bulk --env "" "$secret_bulk_file"
+        # SPLIT_SECRET_WORKER retargets the same bulk update at a split
+        # Worker (forkmesh-api) that shares this application and its secret
+        # set; unset, it addresses the relay from wrangler.toml as always.
+        pywrangler secret bulk --env "" ${SPLIT_SECRET_WORKER:+--name "$SPLIT_SECRET_WORKER"} "$secret_bulk_file"
     ); then
         echo "ERROR: bulk secret update failed; no per-secret retry was attempted." >&2
         return 1
@@ -882,7 +921,7 @@ PYEOF
     # Verify: confirm each pushed name actually exists on the Worker now, so a
     # silently-failed `secret bulk` becomes a loud error instead of a mystery.
     local listed
-    if listed="$(pywrangler secret list --env "" 2>/dev/null)"; then
+    if listed="$(pywrangler secret list --env "" ${SPLIT_SECRET_WORKER:+--name "$SPLIT_SECRET_WORKER"} 2>/dev/null)"; then
         local missing=()
         local k
         for k in ${pushed[@]+"${pushed[@]}"}; do
@@ -1209,16 +1248,18 @@ case "${1:-deploy}" in
         # Prove the public origin is actually serving what we just uploaded. A
         # failed/no-op/wrong-account deploy now aborts here instead of printing a
         # phantom success.
-        verify_deploy "$BUILD_REV"
-        # The split Workers deploy immediately after the relay is verified,
-        # BEFORE the public-asset checks below: once the zone routes exist,
-        # /world/*.js is answered by forkmesh-world, so the byte-for-byte
-        # World freshness check must observe the just-staged copy.
+        # The split Workers deploy immediately after the relay, BEFORE the
+        # build-stamp and public-asset checks below: /api/version is owned by
+        # forkmesh-api (so the rev poll must observe this build's api deploy)
+        # and /world/*.js by forkmesh-world (so the byte-for-byte World
+        # freshness check must observe the just-staged copy). The relay's own
+        # build stamp is proven via the relay-routed /health afterwards.
         deploy_split_site_workers
+        verify_deploy "$BUILD_REV"
         verify_public_assets
         retire_legacy_marketing_worker
         verify_marketing_routes
-        verify_split_site_workers
+        verify_split_site_workers "$BUILD_REV"
         if [ "$DEPLOY_SIGNAL_ACTIVE" = "1" ]; then
             signal_world_deploy ready "$BUILD_REV"
             DEPLOY_SIGNAL_ACTIVE=0

@@ -21,6 +21,9 @@ WWW = tomllib.loads((ROOT / "wrangler.www.toml").read_text(encoding="utf-8"))
 WORLD = tomllib.loads(
     (ROOT / "wrangler.world.toml").read_text(encoding="utf-8")
 )
+API = tomllib.loads(
+    (ROOT / "wrangler.api.toml").read_text(encoding="utf-8")
+)
 DEPLOY = (ROOT / "deploy.sh").read_text(encoding="utf-8")
 REDIRECTS = (ROOT / "public" / "_redirects").read_text(encoding="utf-8")
 
@@ -67,6 +70,53 @@ def test_split_workers_are_assets_only_and_mirror_relay_asset_semantics():
 
 def test_world_routes_own_exactly_the_world_prefix():
     assert _paths(WORLD) == {"/world", "/world/*"}
+
+
+def test_api_worker_is_the_same_application_behind_api_routes():
+    # forkmesh-api is a second deployment of the relay's Python application,
+    # differing ONLY in ownership: /api/* zone routes, a WORKER_ROLE marker,
+    # no cron (the relay's schedule must not double-run), and no Durable
+    # Object migrations (the classes live in the relay script and are
+    # reached cross-script, so both Workers share the same live rooms).
+    assert API["name"] == "forkmesh-api"
+    assert API["main"] == RELAY["main"] == "src/entry.py"
+    assert API["compatibility_flags"] == RELAY["compatibility_flags"]
+    assert API["compatibility_date"] == RELAY["compatibility_date"]
+    assert _paths(API) == {"/api/*"}
+    assert API["assets"]["directory"] == "./public"
+    assert API["assets"]["binding"] == "ASSETS"
+    assert API["assets"]["run_worker_first"] == ["/api/*"]
+    assert "triggers" not in API
+    assert "migrations" not in API
+    assert "build" not in API
+    for binding in API["durable_objects"]["bindings"]:
+        assert binding["script_name"] == "forkmesh-relay", binding
+    assert {
+        (b["name"], b["class_name"])
+        for b in API["durable_objects"]["bindings"]
+    } == {
+        (b["name"], b["class_name"])
+        for b in RELAY["durable_objects"]["bindings"]
+    }
+    assert API["d1_databases"] == RELAY["d1_databases"]
+    assert API["kv_namespaces"] == RELAY["kv_namespaces"]
+    assert API["ai"] == RELAY["ai"]
+    assert API["observability"] == RELAY["observability"]
+    # Value-identical vars keep the two deployments of the same code from
+    # diverging in configuration; WORKER_ROLE is the one deliberate marker.
+    api_vars = dict(API["vars"])
+    assert api_vars.pop("WORKER_ROLE") == "api"
+    assert api_vars == RELAY["vars"]
+
+
+def test_version_and_health_endpoints_identify_their_worker():
+    entry = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+    # /api/version rides the forkmesh-api routes; /health stays relay-routed
+    # so each Worker exposes its own build stamp and role for verification.
+    assert entry.count(
+        '"worker": str(\n'
+        '                        getattr(self.env, "WORKER_ROLE", "") or "relay"),'
+    ) == 2
 
 
 def test_www_routes_never_capture_application_or_feed_paths():
@@ -166,24 +216,35 @@ def test_staging_copies_control_files_verbatim_plus_worker_marker(tmp_path):
         shutil.rmtree(ROOT / "public_world", ignore_errors=True)
 
 
-def test_deploy_ships_split_workers_between_relay_verify_and_asset_hashes():
-    # Once the zone routes exist, /world/*.js is answered by forkmesh-world,
-    # so the split deploy must land BEFORE verify_public_assets hash-compares
-    # the live World modules — and the end-to-end route verification runs
-    # after the marketing checks.
+def test_deploy_ships_split_workers_between_relay_deploy_and_verification():
+    # Once the zone routes exist, /api/version is answered by forkmesh-api
+    # and /world/*.js by forkmesh-world, so the split deploys must land
+    # BEFORE the build-stamp poll and the byte-for-byte World freshness
+    # check — and the end-to-end route verification runs after the
+    # marketing checks, proving the relay's own build via /health.
     arm = DEPLOY.split('case "${1:-deploy}" in', 1)[1]
     order = [
-        arm.index('verify_deploy "$BUILD_REV"'),
         arm.index("deploy_split_site_workers"),
+        arm.index('verify_deploy "$BUILD_REV"'),
         arm.index("verify_public_assets"),
         arm.index("retire_legacy_marketing_worker"),
         arm.index("verify_marketing_routes"),
-        arm.index("verify_split_site_workers"),
+        arm.index('verify_split_site_workers "$BUILD_REV"'),
     ]
     assert order == sorted(order)
-    # Both split configs deploy through the pinned wrangler version.
+    # The assets-only configs deploy through the pinned wrangler version;
+    # the API split deploys the Python application through pywrangler with
+    # the same build stamps and then refreshes its secret set.
     assert "wrangler deploy --config \"$config\"" in DEPLOY
     assert 'for config in wrangler.www.toml wrangler.world.toml; do' in DEPLOY
+    assert "pywrangler deploy --config wrangler.api.toml --env \"\"" in DEPLOY
+    assert "SPLIT_SECRET_WORKER=forkmesh-api push_secrets" in DEPLOY
+    split_body = DEPLOY[DEPLOY.index("deploy_split_site_workers() {"):]
+    split_body = split_body[:split_body.index("\n}")]
+    for stamp in ('--var "BUILD_REV:${BUILD_REV}"',
+                  '--var "APP_VERSION:${APP_VERSION}"',
+                  '--var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}"'):
+        assert stamp in split_body, stamp
 
 
 def test_split_deploy_is_gated_to_the_canonical_origin():
@@ -213,3 +274,10 @@ def test_route_verification_proves_ownership_with_worker_markers():
                   '_split_check "$base/login" "" 200',
                   '_split_check "$base/pricing.html" "" 404'):
         assert probe in DEPLOY, probe
+    # The Python Workers identify themselves in their payloads rather than
+    # via the assets-layer marker header: /api/version must come back from
+    # the api role and the relay-routed /health from the relay, carrying the
+    # relay's build stamp.
+    assert '"worker"[[:space:]]*:[[:space:]]*"api"' in DEPLOY
+    assert '"worker"[[:space:]]*:[[:space:]]*"relay"' in DEPLOY
+    assert 'relay /health reports rev' in DEPLOY
