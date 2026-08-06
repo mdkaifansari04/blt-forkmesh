@@ -263,23 +263,12 @@ QString agentSuccessOutcomeText(const AgentSession &session)
 
 int agentStatusModelIconIndex(const AgentSession &session)
 {
-    const QString model = session.model.toLower();
-    if (session.provider.startsWith(QLatin1String("claude"))) {
-        if (model.contains(QLatin1String("opus")))
-            return 1;
-        if (model.contains(QLatin1String("haiku")))
-            return 3;
-        if (model.contains(QLatin1String("sonnet")) ||
-            model.contains(QLatin1String("fable")))
-            return 2;
-        return 0; // Auto / the provider default.
-    }
-    if (model.contains(QLatin1String("mini")) ||
-        model.contains(QLatin1String("nano")))
-        return 6;
-    if (model.contains(QLatin1String("codex")))
-        return 5;
-    return 4;
+    // "Auto" picks its model per task, so a session still on the sentinel gets
+    // the auto glyph rather than one model's portrait.
+    if (session.model.trimmed().compare(kClaudeAutoModelId,
+                                        Qt::CaseInsensitive) == 0)
+        return 7;
+    return agentModelFaceIconIndex(session.provider, session.model);
 }
 
 QString agentStatusBadgeText(const AgentSession &session)
