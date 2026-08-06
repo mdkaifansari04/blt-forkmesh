@@ -629,14 +629,14 @@ deploy_split_site_workers() {
     # credentials. Those persist across deploys, so steady-state deploys
     # have no unconfigured window.
     #
-    # PARKED (2026-08-06): concentrating cold /api/* traffic on a second
-    # near-startup-ceiling Python Worker melted its fresh isolates
-    # ("Attempted to use PyProxy when Python GIL not held" at initPyInstance
-    # → "Cannot enter into task" wedges on /api/repo/*/pending), so
-    # forkmesh-api was deleted and /api/* rolled back to the always-warm
-    # relay. Re-enable with FORKMESH_DEPLOY_API_WORKER=1 once the
-    # startup-memory work brings entry.py comfortably under the ceiling.
-    if [ "${FORKMESH_DEPLOY_API_WORKER:-0}" = "1" ]; then
+    # UN-PARKED (2026-08-06): forkmesh-api is the canonical API host at
+    # api.forkmesh.com (plus the forkmesh.com/api/* compat routes) and hosts
+    # the traffic-diagnostics landing page. Its 2026-08-06 isolate meltdown
+    # ("PyProxy when Python GIL not held" at initPyInstance under cold-start
+    # churn) is a startup-ceiling symptom shared with the relay — set
+    # FORKMESH_DEPLOY_API_WORKER=0 to park it again in an emergency
+    # (rollback: wrangler delete --name forkmesh-api).
+    if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" = "1" ]; then
         echo "Deploying split site Worker from wrangler.api.toml ..."
         pywrangler deploy --config wrangler.api.toml --env "" \
             --var "BUILD_REV:${BUILD_REV}" \
@@ -688,18 +688,34 @@ verify_split_site_workers() {
     base="${base%/}"
     echo "Verifying the split Workers own their routes on $base ..."
     local failed=0
-    # /api/* is answered by forkmesh-api only while that Worker is shipped
-    # (see the PARKED note in deploy_split_site_workers); otherwise the
-    # relay's custom-domain catch-all owns it and must say so.
+    # /api/* is answered by forkmesh-api while that Worker is shipped (the
+    # default; see deploy_split_site_workers); parked, the relay's
+    # custom-domain catch-all owns it and must say so.
     local api_body expected_api_worker
-    expected_api_worker="relay"
-    if [ "${FORKMESH_DEPLOY_API_WORKER:-0}" = "1" ]; then
-        expected_api_worker="api"
+    expected_api_worker="api"
+    if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" != "1" ]; then
+        expected_api_worker="relay"
     fi
     api_body="$(curl -sS --max-time 25 "$base/api/version" 2>/dev/null || true)"
     if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"'"$expected_api_worker"'"' <<<"$api_body"; then
         echo "ERROR: $base/api/version is not served by the $expected_api_worker Worker (got: ${api_body:-<none>})." >&2
         failed=1
+    fi
+    if [ "$expected_api_worker" = "api" ] && [ "$base" = "https://forkmesh.com" ]; then
+        # The canonical API host: the diagnostics landing page and the same
+        # /api surface must answer on api.forkmesh.com.
+        local api_host_body
+        api_host_body="$(curl -sS --max-time 25 "https://api.forkmesh.com/api/version" 2>/dev/null || true)"
+        if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"api"' <<<"$api_host_body"; then
+            echo "ERROR: https://api.forkmesh.com/api/version is not served by forkmesh-api (got: ${api_host_body:-<none>})." >&2
+            failed=1
+        fi
+        local landing_status
+        landing_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 25 "https://api.forkmesh.com/" 2>/dev/null || true)"
+        if [ "$landing_status" != "200" ]; then
+            echo "ERROR: https://api.forkmesh.com/ answered HTTP ${landing_status:-<none>} (expected the diagnostics landing page)." >&2
+            failed=1
+        fi
     fi
     # ... while the relay proves its own build through the relay-routed
     # /health stamp, which verify_deploy can no longer see via /api/*.
@@ -720,7 +736,8 @@ verify_split_site_workers() {
     _split_check "$base/pricing" www 200 || failed=1
     _split_check "$base/blog" www 200 || failed=1
     _split_check "$base/blog/introducing-forkmesh/" www 200 || failed=1
-    _split_check "$base/docs" www 200 || failed=1
+    # auto-trailing-slash canonicalizes /docs to /docs/ (307) by design.
+    _split_check "$base/docs/" www 200 || failed=1
     _split_check "$base/status" www 200 || failed=1
     # ... the World from forkmesh-world ...
     _split_check "$base/world" world 200 || failed=1

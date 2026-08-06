@@ -3580,6 +3580,11 @@ async def _cron_runner_kick(env):
 # alarm and the projection only serves the /status page, so compiling them
 # here spent scarce Pyodide startup memory on every isolate (see
 # admin_console for the same pattern).
+# /api traffic diagnostics: the api.forkmesh.com landing page and its
+# summary endpoint (src/api_metrics.py). Lazy for the same startup-memory
+# reason as the sampler below; bound on the first served /api response.
+_api_metrics = _LazyModule("api_metrics")
+
 _status_monitoring = _LazyModule("status_monitoring")
 _record_status_monitor_transitions = _status_monitoring.export(
     "_record_status_monitor_transitions")
@@ -34796,6 +34801,16 @@ async def repo_pending_counts_handler(env, request, owner, repo):
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
+    # The whole fleet polls these badges (plus every open repo page), so a
+    # colo answers from its edge cache for 30s and a polling burst collapses
+    # to one D1 UNION per colo per TTL. Only the public 200 is cached — the
+    # private/unpublished 404 above stays uncached and instant to reverse.
+    pending_cache_key = (
+        "https://edge-cache.forkmesh.internal/repo-pending/"
+        + quote(owner) + "/" + quote(repo))
+    cached = await edge_cache_match(pending_cache_key)
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     # Count the SAME key the drains read (see _inbox_repo_key), or an aliased
     # repo's badge sticks at "N pending" forever against a queue the owner node
@@ -34813,14 +34828,16 @@ async def repo_pending_counts_handler(env, request, owner, repo):
         repo_bi, repo_bi, repo_bi,
     )
     counts = {str(r.get("k") or ""): int(r.get("c") or 0) for r in rows or []}
-    return json_response({
+    resp = json_response({
         "ok": True,
         "pending": {
             "issues": counts.get("issues", 0),
             "pulls": counts.get("pulls", 0),
             "discussions": counts.get("discussions", 0),
         },
-    }, cache_control="no-store, max-age=0, must-revalidate")
+    }, cache_control="public, max-age=30")
+    await edge_cache_put(pending_cache_key, resp)
+    return resp
 
 
 async def sync_handler(env, request):
@@ -43710,6 +43727,7 @@ class Default(WorkerEntrypoint):
 
     async def fetch(self, request):
         url = None
+        request_started_ms = int(Date.now())
         try:
             url = urlparse(request.url)
 
@@ -43759,6 +43777,15 @@ class Default(WorkerEntrypoint):
             status = int(getattr(response, "status", 200) or 200)
         except Exception:
             status = 200
+        # Every served /api response feeds the api.forkmesh.com diagnostics
+        # buckets (minute × masked route group × status class). The module is
+        # lazy and the fold is in-memory; D1 sees one batched upsert per few
+        # dozen requests, and record_api_request never raises.
+        if url is not None and str(getattr(url, "path", "")).startswith(
+                "/api/"):
+            await _api_metrics.record_api_request(
+                self.env, url.path, status,
+                int(Date.now()) - request_started_ms)
         # Credit the website that sent this visitor. Gated to served page
         # navigations carrying an external Referer, so the extra D1 write only
         # happens on the rare request that is actually an inbound referral.
@@ -44298,6 +44325,11 @@ class Default(WorkerEntrypoint):
             return await self._git_push(request, git_recv.group(1), git_recv.group(2))
 
         if url.path == "/" and method_name(request) in ("GET", "HEAD"):
+            # On the api role (api.forkmesh.com), the root is the traffic
+            # diagnostics landing page; the marketing homepage stays a relay
+            # concern (it also records site_referrers there).
+            if str(getattr(self.env, "WORKER_ROLE", "") or "") == "api":
+                return _api_metrics.landing_page_response(self.env)
             # Everyone enters the same world immediately. The app may use the
             # locally held session to render an authorized avatar and portals,
             # but the route itself never changes based on login state.
@@ -44365,6 +44397,17 @@ class Default(WorkerEntrypoint):
                     "now": Date.now(),
                 }
             )
+
+        if url.path in ("/api/metrics/summary", "/api/metrics/summary/"):
+            return await _api_metrics.metrics_summary_handler(
+                self.env, request)
+
+        if url.path in ("/api/metrics/endpoints", "/api/metrics/endpoints/"):
+            return await _api_metrics.endpoint_catalog_handler(
+                self.env, request)
+
+        if url.path in ("/api/openapi.json", "/api/openapi.json/"):
+            return await _api_metrics.openapi_handler(self.env, request)
 
         if url.path in ("/api/world/context", "/api/world/context/"):
             return world_context_handler(request)
