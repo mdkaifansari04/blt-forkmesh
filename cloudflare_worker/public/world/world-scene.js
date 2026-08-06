@@ -87,6 +87,15 @@ const WORLD_PATH_HEIGHT = 0.08;
 const WORLD_PATH_SURFACE_Y = 0.105;
 const WORLD_PATH_CENTER_Y =
   WORLD_PATH_SURFACE_Y - WORLD_PATH_HEIGHT / 2;
+// The World edge walk deliberately has no deck. It starts at the eastern edge
+// of the city lawn and continues into empty space so triangle diagnostics can
+// isolate a path with nothing beneath the visitor. Its two boundaries are
+// single Three.js lines, rather than thin mesh rails or a hidden floor.
+const VOID_WALK_CENTER_Z = 270;
+const VOID_WALK_START_X = 178;
+const VOID_WALK_END_X = WORLD_RADIUS + 120;
+const VOID_WALK_HALF_WIDTH = 4;
+const VOID_WALK_RAIL_Y = WORLD_PATH_SURFACE_Y + 0.12;
 const DISTRICT_GROUND_RADIUS = 48;
 // The mirror-node yard is open to the rest of the World. Its rich pool and
 // cabinet displays are only useful when the camera approaches, while distant
@@ -460,6 +469,18 @@ function cityWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   return false;
 }
 
+function voidWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
+  const px = Number(x);
+  const pz = Number(z);
+  const margin = Math.max(0, Number(radius) || 0);
+  if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
+  return (
+    px >= VOID_WALK_START_X + margin &&
+    px <= VOID_WALK_END_X - margin &&
+    Math.abs(pz - VOID_WALK_CENTER_Z) <= VOID_WALK_HALF_WIDTH - margin
+  );
+}
+
 function beachWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   const px = Number(x);
   const pz = Number(z);
@@ -481,6 +502,7 @@ function beachWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
 function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   return (
     cityWalkSurfaceContains(x, z, radius) ||
+    voidWalkSurfaceContains(x, z, radius) ||
     beachWalkSurfaceContains(x, z, radius)
   );
 }
@@ -8900,6 +8922,35 @@ function createLandscapePath(
   return path;
 }
 
+function createVoidWalkRails(THREE) {
+  const rails = new THREE.Group();
+  rails.name = "forkmesh-void-walk-rails";
+  const railMaterial = new THREE.LineBasicMaterial({
+    color: "#d8f7ff",
+    transparent: true,
+    opacity: 0.9,
+  });
+  [-VOID_WALK_HALF_WIDTH, VOID_WALK_HALF_WIDTH].forEach((offset, index) => {
+    const geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(
+        VOID_WALK_START_X,
+        VOID_WALK_RAIL_Y,
+        VOID_WALK_CENTER_Z + offset,
+      ),
+      new THREE.Vector3(
+        VOID_WALK_END_X,
+        VOID_WALK_RAIL_Y,
+        VOID_WALK_CENTER_Z + offset,
+      ),
+    ]);
+    const rail = new THREE.Line(geometry, railMaterial);
+    rail.name = `forkmesh-void-walk-${index === 0 ? "south" : "north"}-rail`;
+    rail.userData.voidWalkRail = true;
+    rails.add(rail);
+  });
+  return rails;
+}
+
 const projectAssetTextures = new WeakMap();
 function projectAssetTexture(
   THREE,
@@ -17167,6 +17218,12 @@ export function createWorldScene({
 
   const townLandscape = createTownLandscape(THREE);
   world.add(townLandscape);
+  // This is intentionally only two one-segment Lines: beyond the city lawn
+  // there is no deck, terrain, or other mesh under the walker. The Elements
+  // diagnostics therefore reports this route as zero triangles while the two
+  // rails still make its otherwise invisible bounds easy to follow.
+  const voidWalkRails = createVoidWalkRails(THREE);
+  world.add(voidWalkRails);
   registerWorldElement(
     "city-terrain", "City terrain", "Terrain",
     continuousCityLand,
@@ -17174,6 +17231,10 @@ export function createWorldScene({
   registerWorldElement(
     "town-landscape", "Town landscaping, buildings & trees", "Terrain",
     townLandscape,
+  );
+  registerWorldElement(
+    "void-walk-rails", "World edge walk · line rails", "Terrain",
+    voidWalkRails,
   );
 
   // The bike street is one exact circle on top of the shared grass slab.
@@ -19392,7 +19453,8 @@ export function createWorldScene({
   const activeWalkSurfaceContains = (x, z, radius = OFFICE_AVATAR_RADIUS) =>
     beachSceneActive
       ? beachWalkSurfaceContains(x, z, radius)
-      : cityWalkSurfaceContains(x, z, radius);
+      : cityWalkSurfaceContains(x, z, radius) ||
+        voidWalkSurfaceContains(x, z, radius);
   let activeEnclosureScene = "";
   const enclosureHiddenWorldRoots = new Map();
 
