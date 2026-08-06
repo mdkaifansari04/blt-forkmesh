@@ -1,3 +1,4 @@
+#include "../src/AgentResumeIdentity.h"
 #include "../src/CodexAppServerSession.h"
 #include "../src/CodexTranscriptStyle.h"
 
@@ -1470,6 +1471,57 @@ void runFatalErrorTest(const QString &executable)
           "non-retrying error emits one terminal result");
 }
 
+// Which conversation a resumed session may pick up. A session can be handed
+// between Claude Code and Codex between runs, so one transcript can hold both
+// CLIs' identities — and Codex stamps its thread id into `session_id` as well
+// as `thread_id`, which is exactly the field Claude Code's `--resume` reads.
+void runResumeIdentityTest()
+{
+    using namespace forkmesh::agents;
+    auto claudeEvent = [](const QString &id) {
+        return QJsonObject{{QStringLiteral("type"), QStringLiteral("assistant")},
+                           {QStringLiteral("session_id"), id}};
+    };
+    auto codexEvent = [](const QString &id) {
+        return QJsonObject{{QStringLiteral("type"), QStringLiteral("assistant")},
+                           {QStringLiteral("session_id"), id},
+                           {QStringLiteral("thread_id"), id}};
+    };
+    const QJsonObject codexInit{
+        {QStringLiteral("type"), QStringLiteral("system")},
+        {QStringLiteral("subtype"), QStringLiteral("init")},
+        {QStringLiteral("session_id"), QStringLiteral("codex-init")},
+        {QStringLiteral("provider"), QStringLiteral("codex")}};
+    const QJsonObject localTurn{
+        {QStringLiteral("type"), QStringLiteral("_local_user")},
+        {QStringLiteral("text"), QStringLiteral("Continue where you left off.")}};
+
+    const QList<QJsonObject> codexOnly{codexInit, codexEvent("codex-1"), localTurn};
+    check(codexResumeThreadId(codexOnly) == QStringLiteral("codex-1"),
+          "a Codex run resumes its own thread");
+    check(claudeResumeSessionId(codexOnly).isEmpty(),
+          "Claude Code is never handed a Codex thread id to --resume");
+
+    const QList<QJsonObject> claudeOnly{claudeEvent("claude-1"), localTurn};
+    check(claudeResumeSessionId(claudeOnly) == QStringLiteral("claude-1"),
+          "a Claude Code run resumes its own session");
+    check(codexResumeThreadId(claudeOnly).isEmpty(),
+          "Codex is never handed a Claude Code session id to resume");
+
+    // Bounced back and forth: each CLI finds the newest conversation it owns,
+    // not merely the newest event in the transcript.
+    const QList<QJsonObject> mixed{claudeEvent("claude-1"), codexInit,
+                                   codexEvent("codex-2"), claudeEvent("claude-3"),
+                                   codexEvent("codex-4")};
+    check(claudeResumeSessionId(mixed) == QStringLiteral("claude-3"),
+          "a hand-back to Claude Code resumes its latest own session");
+    check(codexResumeThreadId(mixed) == QStringLiteral("codex-4"),
+          "a hand-back to Codex resumes its latest own thread");
+
+    check(claudeResumeSessionId({}).isEmpty() && codexResumeThreadId({}).isEmpty(),
+          "an empty transcript resumes nothing");
+}
+
 // How the transcript retells what a turn did (adhoc #34): Codex explores by
 // running shell commands, so the difference between a line under "Explored" and
 // a spelled-out "Ran <command>" is a reading of the command line itself.
@@ -1556,6 +1608,7 @@ int main(int argc, char *argv[])
     runInterruptTest(executable);
     runTurnOptionsTest(executable);
     runFatalErrorTest(executable);
+    runResumeIdentityTest();
     runTranscriptStyleTest();
 
     if (failures == 0)
