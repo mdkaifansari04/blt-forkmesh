@@ -18,8 +18,10 @@
 #   - No [[migrations]]: Durable Object classes live in (and are migrated
 #     by) the relay script; the bindings below reach them cross-script via
 #     script_name, so both Workers share the same live rooms and channels.
-#   - No [build]: the relay's deploy already rebuilt the dashboard assets
-#     and validated the footprint; this deploy ships the same tree.
+#   - [build] only stages public_api/: the audited set of documents this
+#     Worker's Python reads through its ASSETS binding while answering
+#     /api/* (it never serves an asset by URL). The relay's deploy already
+#     rebuilt the dashboard assets and validated the footprint.
 #
 # The [vars] block must stay value-identical to wrangler.toml (except
 # WORKER_ROLE) — tests/test_split_workers.py enforces parity so the two
@@ -29,8 +31,11 @@ main = "src/entry.py"
 compatibility_flags = [ "python_workers" ]
 compatibility_date = "2026-07-23"
 
+[build]
+command = "python3 tools/build_split_assets.py api"
+
 [assets]
-directory = "./public"
+directory = "./public_api"
 binding = "ASSETS"
 html_handling = "none"
 not_found_handling = "404-page"
