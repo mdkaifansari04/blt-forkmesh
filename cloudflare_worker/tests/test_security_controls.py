@@ -191,7 +191,12 @@ def test_owner_envelope_round_trip_is_opaque_and_routing_is_allowlisted():
 
 def test_schema_and_worker_keep_sensitive_planes_out_of_generic_admin():
     schema = (SRC / "schema.py").read_text(encoding="utf-8")
-    worker = (SRC / "entry.py").read_text(encoding="utf-8")
+    # The generic admin table plane lives in the on-demand admin console
+    # module, outside Worker startup.
+    worker = (
+        (SRC / "entry.py").read_text(encoding="utf-8") + "\n"
+        + (SRC / "admin_console.py").read_text(encoding="utf-8")
+    )
     migration = (
         ROOT / "migrations" / "0043_security_control_plane.sql"
     ).read_text(encoding="utf-8")
