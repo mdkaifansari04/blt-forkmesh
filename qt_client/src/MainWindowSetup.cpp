@@ -4425,6 +4425,11 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
         }
         runUpdateStep("sudo", {"-u", m_updateAsUser, "-H", "sh", "-c", script},
                       QDir::tempPath(), [this, appPath, relaunchArgs] {
+            // The user closed the window while this build was still running in
+            // the background; don't let it win the race and pop a new instance
+            // back up after they already quit.
+            if (m_closingDown)
+                return;
             setRestartSpinProgress(100);
             setUpdateStatus("Relaunching...");
             const QString user = m_updateAsUser;
@@ -4492,6 +4497,11 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
                               QFile::ExeGroup | QFile::ReadOther |
                               QFile::ExeOther);
     }
+    // The user closed the window while this build was still running in the
+    // background; don't let it win the race and pop a new instance back up
+    // after they already quit.
+    if (m_closingDown)
+        return;
     setRestartSpinProgress(100);
     setUpdateStatus("Relaunching...");
     // Release the instance lock before spawning the replacement process, or it
