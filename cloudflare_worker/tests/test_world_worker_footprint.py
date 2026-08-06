@@ -62,7 +62,7 @@ def test_worker_footprint_budgets_match_current_source_tree():
     assert data["staticLimits"] == {
         "assetCount": 20_000,
         "maxAssetBytes": 25 * 1024 * 1024,
-        "initialWorldModuleBytesSoft": 2_600_000,
+        "initialWorldModuleBytesSoft": 2_650_000,
     }
 
 

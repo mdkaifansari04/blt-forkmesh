@@ -3915,18 +3915,26 @@ function mountForkMeshDashboardChat() {
       queue,
       draft: [],
     };
-    bar.parentElement?.insertBefore(queue, bar);
     const sendButton = inputEl === fullInput ? fullSend : sideSend;
     const quickSlot =
       simpleWorldComposer && inputEl === fullInput
         ? bar.querySelector("[data-world-quick-attachment]")
         : null;
     if (quickSlot) {
+      // world.css pins the queue to the compose row's second grid row, so it
+      // must stay a direct child of the row here.
+      bar.parentElement?.insertBefore(queue, bar);
       quickSlot.append(fileInput, button, feedback);
     } else {
-      bar.insertBefore(fileInput, sendButton || null);
-      bar.insertBefore(button, sendButton || null);
-      bar.append(feedback);
+      // The resizable composer wraps the textarea in its own div, so the send
+      // button is not necessarily a sibling of inputEl: mount beside wherever
+      // the send button actually lives and keep the queue above that row.
+      const composeRow = bar.closest("[data-dashboard-chat-compose-row]") || bar;
+      composeRow.parentElement?.insertBefore(queue, composeRow);
+      const host = sendButton?.parentElement || bar;
+      host.insertBefore(fileInput, sendButton || null);
+      host.insertBefore(button, sendButton || null);
+      host.append(feedback);
     }
     button.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", () => {
@@ -4630,7 +4638,12 @@ function mountForkMeshDashboardChat() {
 
   function mountPrivateChannelsLink() {
     if (!PUBLIC_WORLD_GENERAL || !fullLog) return;
-    const header = fullLog.previousElementSibling;
+    // The context rail and emote panel sit between the channel header and the
+    // log, so the header must be found by name, not by adjacency; the sibling
+    // fallback covers the World's simplified native-chat markup.
+    const header =
+      document.querySelector("[data-dashboard-chat-channel-header]") ||
+      fullLog.previousElementSibling;
     if (!header || header.querySelector("[data-private-channels-link]")) return;
     const link = document.createElement("a");
     link.href = "/chat";
