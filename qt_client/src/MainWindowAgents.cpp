@@ -2329,6 +2329,20 @@ QWidget *MainWindow::buildAgentsTab()
     auto *metaPopupLayout = new QVBoxLayout(m_agentMetaPopup);
     metaPopupLayout->setContentsMargins(12, 10, 12, 10);
     metaPopupLayout->addWidget(m_agentMeta);
+    // Hand this session's conversation to the user's own terminal (adhoc #1584).
+    // It sits with the Session row it acts on rather than in the header's action
+    // row: the id and the button that uses it are one thought, and the row above
+    // is where the user goes to ask "what exactly am I taking over?".
+    m_agentPopOutButton = railActionButton(QStringLiteral("terminal"),
+                                           QStringLiteral("Pop out"), QString());
+    m_agentPopOutButton->setObjectName("agentPopOutButton");
+    connect(m_agentPopOutButton, &QPushButton::clicked, this,
+            [this] { popOutAgentSessionToTerminal(m_selectedAgentSessionId); });
+    auto *popOutRow = new QHBoxLayout;
+    popOutRow->setContentsMargins(0, 6, 0, 0);
+    popOutRow->addStretch(1);
+    popOutRow->addWidget(m_agentPopOutButton);
+    metaPopupLayout->addLayout(popOutRow);
     m_agentStopButton = railActionButton(QStringLiteral("circle-slash"),
                                          QStringLiteral("Stop"),
                                          "Stop this session's running agent");
@@ -7603,6 +7617,33 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                 ? QString()
                 : QStringLiteral("Open worktree %1").arg(worktreePath));
     }
+    // The conversation id both halves of this popup are about: the Session row
+    // shows it, and "Pop out" hands it to a terminal (adhoc #1584).
+    const QString conversationId = agentCliConversationId(sessionId);
+    if (m_agentPopOutButton) {
+        // Only the cheap half of agentTerminalHandoff()'s test is asked here —
+        // this runs on the running-session ticker, and probing PATH and the
+        // filesystem every ~240ms to grey out a button is not worth it. The rest
+        // is reported on click, where a blocked hand-off says exactly why.
+        const bool cliSession = isExternalSession(sessionId) ||
+                                agentIsCodexProvider(session->provider) ||
+                                session->provider == QLatin1String("claude-code");
+        m_agentPopOutButton->setEnabled(cliSession);
+        m_agentPopOutButton->setToolTip(
+            !cliSession
+                ? QStringLiteral("%1 sessions run against the API — there is no "
+                                 "CLI conversation to continue in a terminal.")
+                      .arg(agentProviderName(session->provider))
+                : conversationId.isEmpty()
+                      ? QStringLiteral("Stop this session and open its agent CLI "
+                                       "in a system terminal. It has no "
+                                       "conversation to resume yet, so the CLI "
+                                       "starts fresh in the same directory.")
+                      : QStringLiteral("Stop this session and continue "
+                                       "conversation %1 in a system terminal. "
+                                       "Continue above picks it back up here.")
+                            .arg(conversationId));
+    }
     if (isExternalSession(sessionId)) {
         // Rendered as a mini table — header labels on top, values below (adhoc
         // #90) — rather than one long "Label: value | Label: value" line. Every
@@ -7628,6 +7669,13 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         values << agentStatusText(session->status).toHtmlEscaped();
         headers << QStringLiteral("Mode");
         values << QStringLiteral("watch-only");
+        // A watch-only row *is* a CLI conversation: its synthetic id is the
+        // transcript's file stem, which is the id `claude --resume` wants
+        // (adhoc #1584). Shown for the same reason as below.
+        headers << QStringLiteral("Session");
+        values << (conversationId.isEmpty()
+                       ? QStringLiteral("<span style='color:#8b949e'>unknown</span>")
+                       : conversationId.toHtmlEscaped());
         QString meta = agentDetailTableHtml(headers, values);
         if (!mergedMeta.isEmpty())
             meta += QStringLiteral("<br>") + mergedMeta;
@@ -7758,6 +7806,20 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                      .arg(SystemStats::formatBytes(compilers.residentBytes)
                               .toHtmlEscaped());
     }
+    // Who this session is, to ForkMesh and to the CLI driving it. The CLI's own
+    // conversation id is what `claude --resume` / `codex resume` take, so it is
+    // both the answer to "which transcript on disk is this?" and the handle the
+    // "Pop out" button below hands to a system terminal (adhoc #1584). Empty
+    // until the CLI has announced a conversation this account can reach — the
+    // same condition that makes a resume fall back to replaying the task.
+    headers << QStringLiteral("Session");
+    lines << QStringLiteral("#%1 &middot; %2")
+                 .arg(QString::number(session->id),
+                      conversationId.isEmpty()
+                          ? QStringLiteral(
+                                "<span style='color:#8b949e'>no CLI conversation "
+                                "yet</span>")
+                          : conversationId.toHtmlEscaped());
     // A result event arrives before a long-lived CLI transport has necessarily
     // reaped its build/test children. Show the exact remaining process snapshot
     // where the user already checks session status, rather than claiming Done
@@ -12037,6 +12099,150 @@ QString MainWindow::lastCodexThreadId(int sessionId) const
         activeAgentAccount(kCodexProvider).id);
 }
 
+// The conversation id of whichever CLI drives this session — the same id its
+// next resume would use, shown in the detail popup's Session row and handed to
+// the terminal by "Pop out" (adhoc #1584). A watch-only row is a CLI
+// conversation ForkMesh only reads: its synthetic entry is keyed by the
+// transcript's file stem, which is exactly the `claude` session id. API-only
+// providers have no CLI conversation at all and return empty, as does a session
+// whose CLI has not stamped one this account can reach.
+QString MainWindow::agentCliConversationId(int sessionId)
+{
+    if (isExternalSession(sessionId))
+        return m_externalSurfaced.value(sessionId).uuid;
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session)
+        return QString();
+    if (agentIsCodexProvider(session->provider))
+        return lastCodexThreadId(sessionId);
+    if (session->provider == QLatin1String("claude-code"))
+        return lastClaudeSessionId(sessionId);
+    return QString();
+}
+
+// Resolve the hand-off before doing any of it, so the button can refuse with a
+// reason instead of opening a terminal that immediately fails. Every blocker
+// here is a real dead end: an API-only session has no CLI to take over, an
+// uninstalled CLI cannot run, and a worktree that has been cleaned up leaves
+// nowhere to run it. A session with no conversation id yet is *not* blocked —
+// the CLI simply opens fresh in the right directory, which is still the useful
+// half of the hand-off.
+MainWindow::AgentTerminalHandoff MainWindow::agentTerminalHandoff(int sessionId)
+{
+    AgentTerminalHandoff plan;
+    const AgentSession *live = findAgentSession(sessionId);
+    if (!live) {
+        plan.blocker = QStringLiteral("Select a session first.");
+        return plan;
+    }
+    // cachedSessionWorktree() below can shell out to git, which pumps the event
+    // loop and may replace m_agentSessions — read the session by value first.
+    const AgentSession session = *live;
+    const bool external = isExternalSession(sessionId);
+    const QString provider =
+        external ? QStringLiteral("claude-code") : session.provider;
+    const bool codex = agentIsCodexProvider(provider);
+    if (!codex && provider != QLatin1String("claude-code")) {
+        plan.blocker = QStringLiteral("%1 sessions run against the API — there is "
+                                      "no CLI conversation to continue in a "
+                                      "terminal.")
+                           .arg(agentProviderName(provider));
+        return plan;
+    }
+    plan.program = codex ? QStringLiteral("codex") : QStringLiteral("claude");
+    if (QStandardPaths::findExecutable(plan.program).isEmpty()) {
+        plan.blocker = QStringLiteral("%1 is not installed on this device.")
+                           .arg(codex ? QStringLiteral("Codex")
+                                      : QStringLiteral("Claude Code"));
+        return plan;
+    }
+    // Where the agent was working: its worktree, falling back to the repository
+    // checkout for a session that never got one. A watch-only row already knows
+    // its own cwd — that is how it was detected.
+    if (external) {
+        plan.cwd = m_externalSurfaced.value(sessionId).cwd;
+    } else {
+        const int repoIdx = repoIndexFor(session.owner, session.name);
+        const QString repoLocal =
+            repoIdx >= 0 ? m_repositories.at(repoIdx).localPath : QString();
+        if (!repoLocal.isEmpty() && !session.branchName.isEmpty())
+            plan.cwd =
+                cachedSessionWorktree(sessionId, repoLocal, session.branchName);
+        if (plan.cwd.isEmpty())
+            plan.cwd = repoLocal;
+    }
+    if (plan.cwd.isEmpty() || !QDir(plan.cwd).exists()) {
+        plan.blocker = QStringLiteral("This session has no working directory left "
+                                      "on disk to continue in.");
+        return plan;
+    }
+    plan.conversationId = agentCliConversationId(sessionId);
+    if (!plan.conversationId.isEmpty()) {
+        plan.args = codex ? QStringList{QStringLiteral("resume"),
+                                        plan.conversationId}
+                          : QStringList{QStringLiteral("--resume"),
+                                        plan.conversationId};
+    }
+    // The conversation lives inside the config root of the account that ran it,
+    // and agentCliConversationId() only returns ids the *selected* account can
+    // reach — so point the terminal at that same account (see
+    // AgentResumeIdentity.h for why a mismatch fails the resume outright).
+    const AgentAccountProfile account = activeAgentAccount(provider);
+    if (!account.builtIn)
+        plan.env.insert(codex ? QStringLiteral("CODEX_HOME")
+                              : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                        account.configDir);
+    plan.ok = true;
+    return plan;
+}
+
+// Hand the session to the user's own terminal: stop it here first, then open the
+// CLI on the same conversation, in the same directory, under the same account
+// (adhoc #1584). The stop is the point rather than a side effect — two CLIs
+// appending to one conversation and one worktree is exactly the corruption this
+// avoids — and it is reversible from this same page: the header's Continue
+// button picks the session back up in ForkMesh once the terminal is done.
+void MainWindow::popOutAgentSessionToTerminal(int sessionId)
+{
+    if (m_headless) {
+        logSystem(
+            QStringLiteral("A system terminal is unavailable on a headless node."));
+        return;
+    }
+    const AgentTerminalHandoff plan = agentTerminalHandoff(sessionId);
+    if (m_agentMetaPopup)
+        m_agentMetaPopup->hide(); // the click is leaving this pane either way
+    if (!plan.ok) {
+        flashMessage(plan.blocker, true);
+        return;
+    }
+    // Reuse the session-stop primitive rather than repeating its liveness rules:
+    // it dequeues a session the run limit has not started yet (which would
+    // otherwise launch a second CLI onto the worktree the terminal now holds),
+    // tears down the runner or transport driving one that is running, and
+    // records the Stopped status Continue reads. It refuses the synthetic ids
+    // watch-only rows carry, so those signal their own CLI process instead —
+    // the same split the Stop button makes.
+    bool stopped = false;
+    if (isExternalSession(sessionId)) {
+        if (m_externalSurfaced.contains(sessionId) &&
+            externalIsLive(m_externalSurfaced.value(sessionId).uuid)) {
+            stopExternalSession(sessionId);
+            stopped = true;
+        }
+    } else {
+        stopped = stopAgentSessionById(sessionId);
+    }
+    if (!launchSystemTerminal(plan.program, plan.args, plan.cwd, plan.env))
+        return;
+    const QString what =
+        plan.conversationId.isEmpty()
+            ? QStringLiteral("%1 opened in %2").arg(plan.program, plan.cwd)
+            : QStringLiteral("%1 resumed in %2").arg(plan.program, plan.cwd);
+    flashMessage(stopped ? QStringLiteral("Session stopped here — %1.").arg(what)
+                         : QStringLiteral("%1.").arg(what));
+}
+
 // The session started working again — a resumed CLI announced itself, or a new
 // user turn was steered into a live one. Whatever terminal state the previous
 // turn left (Waiting, Failed, Success), the list must show it Running now (adhoc
@@ -13146,6 +13352,12 @@ QString MainWindow::testAgentPrButtonText(int sessionId)
     return m_agentViewPrButton && m_agentViewPrButton->isVisible()
                ? m_agentViewPrButton->text()
                : QString();
+}
+
+QString MainWindow::testAgentMetaHtml(int sessionId)
+{
+    showAgentSession(sessionId);
+    return m_agentMeta ? m_agentMeta->text() : QString();
 }
 #endif
 
