@@ -275,6 +275,9 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected, #repoSettingsTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
+/* Settings carries eleven tabs: a small caption behind an octicon keeps the
+   whole strip on one row of a laptop screen (adhoc #1533). */
+#settingsTabs QTabBar::tab { padding: 6px 5px; font-size: 11px; }
 #codeEditor {
     background-color: #0d1117; border: none; color: #e6edf3;
     font-family: monospace; font-size: 12px;
@@ -1676,6 +1679,9 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected, #repoSettingsTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
+/* Settings carries eleven tabs: a small caption behind an octicon keeps the
+   whole strip on one row of a laptop screen (adhoc #1533). */
+#settingsTabs QTabBar::tab { padding: 6px 5px; font-size: 11px; }
 #codeEditor {
     background-color: #ffffff; border: none; color: #1f2328;
     font-family: monospace; font-size: 12px;
