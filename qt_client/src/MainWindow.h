@@ -767,6 +767,12 @@ public:
     // tests of ordering and the model-only visible text.
     void testRefreshQuickAddAgentModelSelector();
     QString testQuickAddAgentModelLabel(const QString &model) const;
+    // The merged tally the popup paints beside a row's label, which the closed
+    // control deliberately does not show (adhoc #1565).
+    QString testQuickAddAgentModelMergedNote(const QString &model) const;
+    // Where the composer sits: "anchored", "floating" or "detached". A launch
+    // always begins anchored on the footer's lower-right corner.
+    QString testPromptOverlayPlacement() const;
     // Prompt shortcuts can pin a dedicated CLI agent/model in their metadata.
     // Return the parsed fields plus launch prompt so tests cover both the pin and
     // removal of configuration headers from what the agent receives.
@@ -1417,15 +1423,19 @@ private:
     void installAndRelaunch(const QString &built, const QString &appPath);
     // When onFailure is set it is invoked instead of the default "Update failed"
     // handling if the step exits non-zero, letting callers recover (e.g. re-clone
-    // a checkout that has diverged from the mirror).
+    // a checkout that has diverged from the mirror). extraEnv is merged over the
+    // inherited environment (used to point the compiler's TMPDIR at the build
+    // tree) and is echoed into the update log alongside the command.
     void runUpdateStep(const QString &program, const QStringList &arguments,
                        const QString &workingDir, std::function<void()> onSuccess,
-                       std::function<void()> onFailure = {});
+                       std::function<void()> onFailure = {},
+                       const QMap<QString, QString> &extraEnv = {});
     // Like runUpdateStep, but runs the command as m_updateAsUser (via sudo -u)
     // when that is set, so root-launched updates write files owned by the user.
     void runUpdateStepUser(const QString &program, const QStringList &arguments,
                            const QString &workingDir, std::function<void()> onSuccess,
-                           std::function<void()> onFailure = {});
+                           std::function<void()> onFailure = {},
+                           const QMap<QString, QString> &extraEnv = {});
     void setUpdateStatus(const QString &status, bool isError = false);
     // Open (or reset) the live update/rebuild log window and append to it.
     void showUpdateLog();
@@ -1675,6 +1685,8 @@ private:
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
     void showCloudflareWorkerLogs();
+    // The same log in a window of its own: everything retained, unfiltered.
+    void showNetworkLogPopout();
 
     // Mainnode relays (shown in the top-bar relay switcher)
     void loadServers();
@@ -5088,6 +5100,11 @@ private:
     void updateLogTimelineSummary();
     void chooseCustomLogTimelineRange();
     void rebuildNetworkLogView();   // re-render the log honoring m_logFilter
+    // Pop-out plumbing: one entry's markup against that window's own document,
+    // the live append that keeps it current, and its header line.
+    QString popoutLogLineHtml(const QString &storedLine, QString &runningDate);
+    void appendNetworkLogPopoutLine(const QString &storedLine);
+    void updateNetworkLogPopoutStatus();
     QString networkLogPath() const; // on-disk path for the persisted log
     void loadNetworkLog();          // restore log history at startup
     void saveNetworkLog();          // rewrite (and trim) the on-disk log
@@ -6304,6 +6321,14 @@ private:
     QLabel *m_settingsAvatarPreview = nullptr;
     QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
     QTextBrowser *m_settingsLog = nullptr;
+    // The pop-out log window (adhoc #1559) and its live-append state. Guarded
+    // pointers: the window is WA_DeleteOnClose, so these go null on their own.
+    QPointer<QDialog> m_logPopout;
+    QPointer<QTextBrowser> m_logPopoutView;
+    QPointer<QLabel> m_logPopoutStatus;
+    QString m_logPopoutDate;         // last day divider written to the pop-out
+    bool m_logPopoutFilling = false; // history render in progress
+    QStringList m_logPopoutPending;  // lines logged while it was filling
     LogTimelineChart *m_logTimelineChart = nullptr;
     QLabel *m_logTimelineSummary = nullptr;
     QPushButton *m_logTimelineResetZoom = nullptr;
