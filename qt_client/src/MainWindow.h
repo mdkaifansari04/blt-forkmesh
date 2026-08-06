@@ -8090,6 +8090,10 @@ private:
     // Sessions that delivered a clean result but still have agent-owned child
     // processes. Their status stays Running until the tree is empty.
     QSet<int> m_agentCompletionChecks;
+    // How many completeAgentSessionWhenSubprocessesExit() polls a session has
+    // spent waiting on a non-empty process tree — used to escalate a stuck
+    // wait to a kill, then to giving up on the tree entirely (adhoc #1583).
+    QHash<int, int> m_agentCompletionPollCounts;
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
