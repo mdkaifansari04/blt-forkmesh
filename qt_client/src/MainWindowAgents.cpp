@@ -5866,6 +5866,12 @@ void MainWindow::initAgents()
     m_agentSessions = m_agentStore->loadAllSessions();
     seedSessionTokens();
     refreshAgentDotMatrix(); // the top-bar fleet matrix reflects sessions from the start
+    // The composer is built before this runs, so its model menu was ranked and
+    // counted against an empty session list and no store at all — every model
+    // opened on "0 merged" until some later reload happened to refresh it
+    // (adhoc #1565). The tallies are on disk right here; show them from the
+    // first frame instead of blanking a record the user reads as lost.
+    refreshQuickAddAgentModelSelector();
     // The re-queued sessions are NOT started here: initAgents() runs inside the
     // MainWindow constructor, and draining the queue starts Claude transcripts
     // whose assign-time UI jump (switchToAgentsTab → openRepoDetail) fired a

@@ -2965,28 +2965,30 @@ void MainWindow::savePromptOverlayPlacement()
                       m_promptDetachGeometry);
 }
 
+// Every launch starts on the footer's lower-right anchor (adhoc #1565). Moving
+// the composer — dragging it over the workspace or popping it out into its own
+// window — is a gesture for the task at hand, and restoring it a day later meant
+// the app opened with its prompt parked mid-page or on a window the compositor
+// had put behind everything else, which reads as the prompt having gone missing.
+// The drag, the resize and the pop-out all still work and still hold for the rest
+// of the session; they simply do not decide where the next launch opens. Only the
+// popped-out window's own geometry is kept, so re-popping it lands where it was.
 void MainWindow::loadPromptOverlayPlacement()
 {
     if (!m_promptOverlayHost)
         return;
     QSettings settings;
-    m_promptOverlaySize =
-        settings.value(QLatin1String(kPromptFloatSizeSetting)).toSize();
-    m_promptOverlayPos =
-        settings.value(QLatin1String(kPromptFloatPosSetting)).toPoint();
     m_promptDetachGeometry =
         settings.value(QLatin1String(kPromptDetachGeometrySetting)).toRect();
-    if (settings.value(QLatin1String(kPromptFloatingSetting), false).toBool()) {
-        m_promptOverlayFloating = true;
-        if (auto *dockRow = m_footerDock
-                                ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
-                                : nullptr)
-            dockRow->removeWidget(m_promptOverlayHost);
-        m_promptOverlayHost->setParent(m_globalOverlayHost);
-        m_promptOverlayHost->show();
-    }
-    if (settings.value(QLatin1String(kPromptDetachedSetting), false).toBool())
-        setPromptOverlayDetached(true);
+    m_promptOverlayFloating = false;
+    m_promptOverlayDetached = false;
+    m_promptOverlaySize = QSize();
+    m_promptOverlayPos = QPoint();
+    // The composer was added to the footer row when it was built and has not
+    // moved since, so anchoring it is a matter of leaving it there — but the
+    // stored placement has to go with it, or a session that never touches the
+    // prompt would write yesterday's float back out on the next save.
+    savePromptOverlayPlacement();
 }
 
 // Drag/resize gestures on the composer's top strip. Everything is done in
@@ -4133,10 +4135,13 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // model controls. Each row stores provider in UserRole and model in UserRole+1,
 // allowing a single click to update both without changing the launch contract.
 //
-// Rows read as the model name plus its merged-work count: "Opus 5 · 3 merged",
+// Rows read as the model name plus its merged-work count — "Opus 5   3 merged",
 // not "Opus 5 · Claude Code". Which CLI runs a model follows from the model, so
 // the provider suffix was the same handful of words repeated down the whole
-// menu; the tooltip still carries it. A merge is the durable success signal for
+// menu; the tooltip still carries it. The count is a popup-only second column
+// (kAgentChoiceDescriptionRole): the closed control shows the bare model name,
+// since the badge on the prompt should say what is about to run rather than
+// carry a standing scoreboard. A merge is the durable success signal for
 // an agent run, so models with the most merged work lead the list; power is a
 // stable tie-breaker for equal success counts. Scores count every run this
 // desktop has made, including the ones whose branch and session were cleaned up
@@ -4242,13 +4247,20 @@ void MainWindow::refreshQuickAddAgentModelSelector()
 
     auto addChoice = [this](const QIcon &icon, const QString &label,
                             const QString &provider, const QString &model,
-                            const QString &tooltip) {
+                            const QString &tooltip,
+                            const QString &description = QString()) {
         const int row = m_quickAddAgentModelSelector->count();
         m_quickAddAgentModelSelector->addItem(icon, label, provider);
         m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
         if (!tooltip.isEmpty())
             m_quickAddAgentModelSelector->setItemData(row, tooltip,
                                                       Qt::ToolTipRole);
+        // Painted beside the label by AgentChoiceDescriptionDelegate, which only
+        // draws the popup rows — so this half of the row exists in the open menu
+        // and nowhere else.
+        if (!description.isEmpty())
+            m_quickAddAgentModelSelector->setItemData(
+                row, description, kAgentChoiceDescriptionRole);
     };
     addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
               QStringLiteral("manual"), QString(),
@@ -4264,13 +4276,17 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
     QHash<QString, QString> providerIdentities;
     for (const Choice &choice : models) {
-        // Keep the success count in the row so the best model can be spotted
-        // without opening a tooltip. The run total remains in the tooltip: a
-        // session that is still under review must not be mistaken for a failed
-        // merge simply because it has not landed yet.
-        const QString label = QStringLiteral("%1 · %2 merged")
-                                  .arg(choice.label)
-                                  .arg(choice.mergedCount);
+        // Keep the success count in the open menu so the best model can be
+        // spotted without opening a tooltip — but only there (adhoc #1565). The
+        // closed control is a one-line badge on the prompt and its job is to say
+        // which model is about to run; "Opus 5 · 11 merged" sitting there all day
+        // is a scoreboard for a comparison the user is not making until they open
+        // the picker. The run total remains in the tooltip: a session that is
+        // still under review must not be mistaken for a failed merge simply
+        // because it has not landed yet.
+        const QString label = choice.label;
+        const QString mergedNote =
+            QStringLiteral("%1 merged").arg(choice.mergedCount);
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
         toolTip += QStringLiteral("\nMerged success: %1 of %2 runs")
@@ -4288,7 +4304,8 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(chosenIdentity, toolTip);
-        addChoice(choice.icon, label, choice.provider, choice.model, toolTip);
+        addChoice(choice.icon, label, choice.provider, choice.model, toolTip,
+                  mergedNote);
     }
 
     // These API agents do not expose a per-run model chooser in this composer,
@@ -4375,6 +4392,28 @@ QString MainWindow::testQuickAddAgentModelLabel(const QString &model) const
             return m_quickAddAgentModelSelector->itemText(row);
     }
     return QString();
+}
+
+QString MainWindow::testQuickAddAgentModelMergedNote(const QString &model) const
+{
+    if (!m_quickAddAgentModelSelector)
+        return QString();
+    for (int row = 0; row < m_quickAddAgentModelSelector->count(); ++row) {
+        if (m_quickAddAgentModelSelector->itemData(row, Qt::UserRole + 1)
+                .toString() == model)
+            return m_quickAddAgentModelSelector
+                ->itemData(row, kAgentChoiceDescriptionRole)
+                .toString();
+    }
+    return QString();
+}
+
+QString MainWindow::testPromptOverlayPlacement() const
+{
+    if (m_promptOverlayDetached)
+        return QStringLiteral("detached");
+    return m_promptOverlayFloating ? QStringLiteral("floating")
+                                   : QStringLiteral("anchored");
 }
 #endif // FORKMESH_WINDOW_TESTS
 
