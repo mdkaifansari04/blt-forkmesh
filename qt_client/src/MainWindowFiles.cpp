@@ -42,6 +42,10 @@ const char *kFilesHiddenSetting = "files/showHidden";
 // where dropping a multi-megabyte log into a QPlainTextEdit stalls the UI.
 constexpr qint64 kPreviewByteLimit = 256 * 1024;
 
+// The preview opens with "<path>\n<size> · <modified>\n\n" before the file's
+// own first line, so line N of the file is block kFilePreviewHeaderLines+N-1.
+constexpr int kFilePreviewHeaderLines = 3;
+
 QString modifiedLabel(const QFileInfo &info)
 {
     const QDateTime when = info.lastModified();
@@ -414,10 +418,11 @@ void MainWindow::populateFileExplorerItem(QTreeWidgetItem *item)
         addFileExplorerRow(item, entry);
 }
 
-void MainWindow::previewFileExplorerFile(const QString &path)
+void MainWindow::previewFileExplorerFile(const QString &path, int line)
 {
     if (!m_fileExplorerPreview)
         return;
+    m_fileExplorerPreview->setExtraSelections({});
     if (path.isEmpty()) {
         m_fileExplorerPreview->clear();
         return;
@@ -467,6 +472,75 @@ void MainWindow::previewFileExplorerFile(const QString &path)
                          formatByteSize(info.size()));
     }
     m_fileExplorerPreview->setPlainText(header + text);
+    if (line > 0)
+        highlightFileExplorerPreviewLine(line);
+}
+
+// Park the preview on one line and tint it, for the callers that arrive with a
+// line in hand — a log entry's origin, so far (adhoc #1587). Line 1 of the file
+// is the block after the three-line header previewFileExplorerFile() writes.
+void MainWindow::highlightFileExplorerPreviewLine(int line)
+{
+    if (!m_fileExplorerPreview || line <= 0)
+        return;
+    QTextDocument *doc = m_fileExplorerPreview->document();
+    const int block = kFilePreviewHeaderLines + line - 1;
+    if (block >= doc->blockCount())
+        return; // past the end (a truncated preview, or a stale line number)
+
+    QTextCursor cursor(doc->findBlockByNumber(block));
+    m_fileExplorerPreview->setTextCursor(cursor);
+    m_fileExplorerPreview->centerCursor();
+
+    QTextEdit::ExtraSelection selection;
+    selection.cursor = cursor;
+    selection.format.setBackground(
+        currentThemeIsDark() ? QColor(56, 47, 12) : QColor(255, 244, 191));
+    // Full-width, so the line reads as picked out rather than as a text
+    // selection the next keypress would replace.
+    selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+    m_fileExplorerPreview->setExtraSelections({selection});
+}
+
+// Show `path` in the Files section: the explorer rooted on its directory with
+// the file selected, and the preview open (at `line` when there is one).
+void MainWindow::revealFileInExplorer(const QString &path, int line)
+{
+    const QFileInfo info(path);
+    if (!info.isFile()) {
+        flashMessage(QStringLiteral("No such file: %1").arg(path), true);
+        return;
+    }
+    showSection(kFilesSectionIndex);
+    if (m_filesNavButton)
+        m_filesNavButton->setChecked(true);
+    // Re-roots on the containing directory and selects the row (see
+    // setFileExplorerRoot); the preview follows that selection, but is set
+    // explicitly here because only this path knows the line.
+    setFileExplorerRoot(info.absoluteFilePath());
+    previewFileExplorerFile(info.absoluteFilePath(), line);
+}
+
+void MainWindow::revealLogSourceInExplorer(const QString &relativePath, int line)
+{
+    // The path stored in the log is relative to the checkout the binary was
+    // built from. That checkout is the first place to look; the open repository
+    // is the second, which is what makes this work for a build running against
+    // a clone somewhere else.
+    QStringList roots;
+    const QString repo = repoGitDir();
+    if (!repo.isEmpty())
+        roots << repo;
+    const QString resolved = forkmesh::resolveLogSourcePath(relativePath, roots);
+    if (resolved.isEmpty()) {
+        flashMessage(QStringLiteral("%1 isn't on this machine — the log entry "
+                                    "was written by a build from another "
+                                    "checkout.")
+                         .arg(relativePath),
+                     true);
+        return;
+    }
+    revealFileInExplorer(resolved, line);
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -494,6 +568,17 @@ QStringList MainWindow::testFileExplorerNames() const
 QString MainWindow::testFileExplorerPreview() const
 {
     return m_fileExplorerPreview ? m_fileExplorerPreview->toPlainText() : QString();
+}
+
+int MainWindow::testFileExplorerPreviewLine() const
+{
+    if (!m_fileExplorerPreview || m_fileExplorerPreview->extraSelections().isEmpty())
+        return 0;
+    const int block =
+        m_fileExplorerPreview->extraSelections().first().cursor.blockNumber();
+    return block < kFilePreviewHeaderLines
+               ? 0
+               : block - kFilePreviewHeaderLines + 1;
 }
 
 QStringList MainWindow::testExpandedFileExplorerPaths() const

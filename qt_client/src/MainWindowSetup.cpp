@@ -2289,8 +2289,10 @@ void MainWindow::startOfficeChannelMirror()
             });
         connect(m_officeChannelMirror, &OfficeChannelMirror::messageArrived,
                 this, &MainWindow::onMessage);
-        connect(m_officeChannelMirror, &OfficeChannelMirror::sendActivity,
-                this, &MainWindow::logSystem);
+        // A lambda, not &MainWindow::logSystem: logSystem's origin arguments
+        // are defaults, which pointer-to-member connections cannot fill in.
+        connect(m_officeChannelMirror, &OfficeChannelMirror::sendActivity, this,
+                [this](const QString &text) { logSystem(text); });
         connect(m_officeChannelMirror, &OfficeChannelMirror::messageSendFailed,
                 this,
                 [this](const QString &conversation, const QString &text,
@@ -4153,6 +4155,16 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
         time = clean.mid(11, 8);
         message = clean.mid(21);
     }
+    // The origin the entry carries is rendered as its own trailing link rather
+    // than left in the message text (adhoc #1587), the same way the Log view
+    // shows it — and clicking it here opens the file too.
+    QString sourcePath;
+    int sourceLine = 0;
+    {
+        QString body;
+        if (forkmesh::splitLogSource(message, &body, &sourcePath, &sourceLine))
+            message = body;
+    }
     const QString badge = logBadgeFor(clean);
     const QString accent = logAccentFor(clean);
     QString html;
@@ -4175,6 +4187,9 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
                          QStringLiteral("&nbsp;")
                              .repeated(qMax(0, 8 - badge.size())),
                      forkmesh::colorizeBackgroundMarker(message.toHtmlEscaped()));
+    // The strip's canvas is forced white, so the light-theme grey is the
+    // readable one here whatever theme the rest of the window is wearing.
+    html += logSourceAnchorHtml(sourcePath, sourceLine, /*dark=*/false);
     return html;
 }
 
