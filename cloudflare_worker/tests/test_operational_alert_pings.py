@@ -8,7 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = (
     ENTRY.read_text(encoding="utf-8") + "\n"
-    + ENTRY.with_name("admin_console.py").read_text(encoding="utf-8")
+    + ENTRY.with_name("admin_console.py").read_text(encoding="utf-8") + "\n"
+    + ENTRY.with_name("status_monitoring.py").read_text(encoding="utf-8")
 )
 
 
@@ -30,7 +31,7 @@ def test_both_operational_monitor_paths_enqueue_pings():
     ]
     transitions = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _record_status_monitor_transitions"):
-        ENTRY_TEXT.index("def _status_expected_checks_for_hour")
+        ENTRY_TEXT.index("\n\nasync def record_status_sample")
     ]
     assert "await _enqueue_operational_alert_pings(env, [alert], now)" in watchdog
     assert (
@@ -51,7 +52,7 @@ def test_ping_channel_tracks_its_own_delivered_transition():
     """
     transitions = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _record_status_monitor_transitions"):
-        ENTRY_TEXT.index("def _status_expected_checks_for_hour")
+        ENTRY_TEXT.index("\n\nasync def record_status_sample")
     ]
     enqueue = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _enqueue_operational_alert_pings"):
@@ -69,7 +70,7 @@ def test_ping_channel_tracks_its_own_delivered_transition():
 def test_monitor_transition_upserts_stay_under_the_d1_parameter_limit():
     transitions = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _record_status_monitor_transitions"):
-        ENTRY_TEXT.index("def _status_expected_checks_for_hour")
+        ENTRY_TEXT.index("\n\nasync def record_status_sample")
     ]
     assert "for offset in range(0, len(values), 80)" in transitions
     assert "batch = values[offset:offset + 80]" in transitions

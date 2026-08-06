@@ -56,6 +56,7 @@ LAZY_MODULES = {
     "ssh_keys.py",
     "schema.py",
     "static_routes.py",
+    "status_monitoring.py",
     "urls.py",
     "world.py",
     "world_build_board.py",
