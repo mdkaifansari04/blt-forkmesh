@@ -285,6 +285,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                          .value(kVerboseNetworkLogSetting, false)
                          .toBool())
                     return;
+                // Favicon fetches (adhoc #190/#436) are decorative background
+                // enrichment, not app traffic the user asked about, and plenty of
+                // hosts (e.g. mastodon.social) 404 on /favicon.ico — logging that
+                // dumps the site's full 404 HTML body into the log as a scary
+                // "ERR 404" line for a failure the UI already handles quietly via
+                // m_faviconMissing. /favicon.ico is only ever requested by the
+                // favicon-fetch helpers, so the path alone identifies these.
+                if (reply->url().path() == QStringLiteral("/favicon.ico"))
+                    return;
                 static const char *const verbs[] = {"HEAD",   "GET", "PUT",
                                                      "POST",   "DELETE",
                                                      "CUSTOM"};
