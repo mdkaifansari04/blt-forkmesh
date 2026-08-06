@@ -29,6 +29,27 @@ QString actionRunLogPath(const ActionRun &run)
            QString::number(run.id) + QStringLiteral("/log.txt");
 }
 
+constexpr int kActionStatusIconPx = 14;
+
+QString actionRunStatusIconName(const QString &status)
+{
+    if (status == ActionStatus::Running)
+        return QStringLiteral("sync");
+    if (status == ActionStatus::Queued)
+        return QStringLiteral("history");
+    if (status == ActionStatus::AwaitingApproval)
+        return QStringLiteral("alert");
+    if (status == ActionStatus::Success)
+        return QStringLiteral("check-circle");
+    if (status == ActionStatus::Failed || status == ActionStatus::Rejected)
+        return QStringLiteral("x");
+    if (status == ActionStatus::Cancelled)
+        return QStringLiteral("circle-slash");
+    if (status == ActionStatus::Skipped)
+        return QStringLiteral("stop");
+    return QStringLiteral("terminal");
+}
+
 // First line (after the shebang) of the working-copy commit-signal hooks we
 // install; install/remove only ever touch a hook file carrying this marker.
 const char kCommitSignalMarker[] =
@@ -2936,6 +2957,9 @@ void MainWindow::refreshActionsTable()
         // Flag failed runs so the delegate draws a red outline around the row.
         wfItem->setData(ActionFailureBorderDelegate::ActionFailedRole,
                         run.status == ActionStatus::Failed);
+        wfItem->setIcon(themedOcticon(actionRunStatusIconName(run.status),
+                                      actionStatusColor(run.status),
+                                      kActionStatusIconPx));
         auto *statusItem = new QTableWidgetItem(actionStatusText(run.status));
         statusItem->setForeground(actionStatusColor(run.status));
         // Show a human-friendly relative time ("5m ago") in the column, with the
@@ -2979,6 +3003,7 @@ void MainWindow::refreshActionsTable()
         if (run.id == m_selectedRunId)
             m_actionsTable->selectRow(row);
     }
+    updateActionsSpinTimer();
     updateActionsTabIndicator();
 }
 
@@ -3201,6 +3226,57 @@ void MainWindow::updateAgentsTabIndicator()
     }
     if (!m_agentsSpinTimer->isActive())
         m_agentsSpinTimer->start(kAgentSpinTickMs);
+}
+
+void MainWindow::updateActionsSpinTimer()
+{
+    if (!m_actionsTable)
+        return;
+    bool anyRunning = false;
+    for (int r = 0; r < m_actionsTable->rowCount(); ++r) {
+        QTableWidgetItem *item = m_actionsTable->item(r, 0);
+        if (!item)
+            continue;
+        const ActionRun *run = findRun(item->data(Qt::UserRole).toInt());
+        if (run && run->status == ActionStatus::Running) {
+            anyRunning = true;
+            break;
+        }
+    }
+    if (!anyRunning) {
+        if (m_actionsSpinTimer)
+            m_actionsSpinTimer->stop();
+        return;
+    }
+    if (!m_actionsSpinTimer) {
+        m_actionsSpinTimer = new QTimer(this);
+        connect(m_actionsSpinTimer, &QTimer::timeout, this,
+                &MainWindow::animateRunningActionIcons);
+    }
+    if (!m_actionsSpinTimer->isActive())
+        m_actionsSpinTimer->start(kAgentSpinTickMs);
+}
+
+void MainWindow::animateRunningActionIcons()
+{
+    if (!m_actionsTable)
+        return;
+    ++m_actionSpinTicks;
+    const qreal angle = qreal((m_actionSpinTicks * 11) % 360);
+    QSignalBlocker block(m_actionsTable);
+    for (int r = 0; r < m_actionsTable->rowCount(); ++r) {
+        QTableWidgetItem *item = m_actionsTable->item(r, 0);
+        if (!item)
+            continue;
+        const ActionRun *run = findRun(item->data(Qt::UserRole).toInt());
+        if (!run || run->status != ActionStatus::Running)
+            continue;
+        const QPixmap spinning = rotatedTintedOcticonPixmap(
+            actionRunStatusIconName(run->status), actionStatusColor(run->status),
+            kActionStatusIconPx, angle);
+        item->setIcon(QIcon(spinning));
+        m_actionsTable->viewport()->update(m_actionsTable->visualItemRect(item));
+    }
 }
 
 // The mirror-activity dot strip (adhoc #197) and the current-release pill
