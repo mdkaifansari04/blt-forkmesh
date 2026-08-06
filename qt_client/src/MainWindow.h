@@ -1870,6 +1870,16 @@ private:
     void provisionDirectMirrorEndpoint(bool dryRun);
     bool rebuildDirectMirrorGatewayConfiguration(
         QString *error = nullptr, bool restartRunningGateway = false);
+    // True when this node has a direct HTTPS mirror endpoint to keep in step.
+    // Serving through the relay alone is a supported setup, so background
+    // refreshes check this first instead of reporting a failure every time a
+    // repository is synced, pushed to, or deleted on a relay-only node.
+    bool directMirrorGatewayConfigured() const;
+    // The node name, mirror hostname, and Worker router public key the direct
+    // gateway would be built from, returning whether all three are usable.
+    bool resolveDirectMirrorGatewayIdentity(
+        QString *nodeName, QString *hostname,
+        QString *routerPublicKey) const;
     void startDirectMirrorServices();
     void stopDirectMirrorServices();
     // Desktop companion for the small Go mirror-node supervisor. The daemon

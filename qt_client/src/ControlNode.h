@@ -359,6 +359,21 @@ QUrl worldDevServerUrl(const QString &configured);
 QStringList directMirrorRepositoryOwners(const QString &canonicalOwner,
                                          const QString &catalogOwner);
 
+// True when `value` is one deployed Worker's mirror-router public key: 43
+// base64url characters that decode to exactly 32 bytes.
+bool isValidMirrorRouterPublicKey(const QString &value);
+
+// True when this node holds every setting its direct HTTPS mirror gateway
+// needs: a DNS-label node name, an https origin for the mirror hostname (as
+// returned by the caller's origin normalizer, empty when the hostname is
+// unusable), and the deployed Worker's router public key. A node that never
+// provisioned a Cloudflare endpoint leaves these empty and serves through the
+// relay instead, so an incomplete set is a supported steady state rather than
+// a failure worth reporting.
+bool directMirrorGatewayIsConfigured(const QString &nodeName,
+                                     const QString &mirrorOrigin,
+                                     const QString &routerPublicKey);
+
 // Validate the JSON request emitted by cloudflare_bootstrap.py's external
 // manifest signer and return the exact canonical manifest bytes to sign.
 // Nothing from the request is persisted or logged.
