@@ -4735,24 +4735,30 @@ void MainWindow::reloadVariablesList()
         auto *card = new QFrame;
         card->setObjectName(QStringLiteral("variableCard"));
         card->setFrameShape(QFrame::StyledPanel);
-        auto *cardLayout = new QVBoxLayout(card);
+        auto *cardLayout = new QHBoxLayout(card);
         cardLayout->setContentsMargins(12, 10, 12, 10);
-        cardLayout->setSpacing(6);
+        cardLayout->setSpacing(8);
 
-        auto *titleRow = new QHBoxLayout;
-        titleRow->setContentsMargins(0, 0, 0, 0);
         auto *nameLabel = new QLabel(name);
         nameLabel->setObjectName(QStringLiteral("variableName"));
         nameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        titleRow->addWidget(nameLabel);
-        titleRow->addStretch();
+        cardLayout->addWidget(nameLabel);
+
+        auto *valueEdit = new QLineEdit(value);
+        valueEdit->setReadOnly(true);
+        valueEdit->setEchoMode(m_varsRevealed ? QLineEdit::Normal
+                                              : QLineEdit::Password);
+        valueEdit->setToolTip(m_varsRevealed
+                                  ? QStringLiteral("Use Copy to copy this value")
+                                  : QStringLiteral("Reveal values to view or copy them"));
+        cardLayout->addWidget(valueEdit, 1);
 
         auto *editButton = new QPushButton(QStringLiteral("Edit\xE2\x80\xA6"));
         editButton->setObjectName(QStringLiteral("ghostButton"));
         editButton->setCursor(Qt::PointingHandCursor);
         connect(editButton, &QPushButton::clicked, this,
                 [this, name] { addOrEditVariable(name); });
-        titleRow->addWidget(editButton);
+        cardLayout->addWidget(editButton);
         auto *copyButton = new QPushButton(QStringLiteral("Copy"));
         copyButton->setObjectName(QStringLiteral("ghostButton"));
         copyButton->setCursor(Qt::PointingHandCursor);
@@ -4764,23 +4770,13 @@ void MainWindow::reloadVariablesList()
             QApplication::clipboard()->setText(value);
             logSystem(QStringLiteral("Copied %1 to clipboard.").arg(name));
         });
-        titleRow->addWidget(copyButton);
+        cardLayout->addWidget(copyButton);
         auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
         deleteButton->setObjectName(QStringLiteral("ghostButton"));
         deleteButton->setCursor(Qt::PointingHandCursor);
         connect(deleteButton, &QPushButton::clicked, this,
                 [this, name] { deleteVariable(name); });
-        titleRow->addWidget(deleteButton);
-        cardLayout->addLayout(titleRow);
-
-        auto *valueEdit = new QLineEdit(value);
-        valueEdit->setReadOnly(true);
-        valueEdit->setEchoMode(m_varsRevealed ? QLineEdit::Normal
-                                              : QLineEdit::Password);
-        valueEdit->setToolTip(m_varsRevealed
-                                  ? QStringLiteral("Use Copy to copy this value")
-                                  : QStringLiteral("Reveal values to view or copy them"));
-        cardLayout->addWidget(valueEdit);
+        cardLayout->addWidget(deleteButton);
         m_varsListLayout->addWidget(card);
     }
 

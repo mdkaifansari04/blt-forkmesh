@@ -8455,7 +8455,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessagePromptStatusLabel = new QLabel;
     m_topMessagePromptStatusLabel->setObjectName("topMessagePromptStatus");
     m_topMessagePromptStatusLabel->setTextFormat(Qt::RichText);
-    m_topMessagePromptStatusLabel->setWordWrap(true);
+    // One line, always — a live status keeps replacing this as the agent
+    // streams (adhoc #1570), so it elides rather than wrapping onto a second
+    // line and shifting the bubble's height on every event.
+    m_topMessagePromptStatusLabel->setWordWrap(false);
     m_topMessagePromptStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_topMessagePromptStatusLabel->setMinimumWidth(1);
     m_topMessagePromptStatusLabel->setFocusPolicy(Qt::NoFocus);
