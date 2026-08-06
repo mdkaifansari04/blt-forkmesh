@@ -1877,6 +1877,30 @@ QStringList directMirrorRepositoryOwners(const QString &canonicalOwner,
     return owners;
 }
 
+bool isValidMirrorRouterPublicKey(const QString &value)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^[A-Za-z0-9_-]{43}$"));
+    if (!pattern.match(value).hasMatch())
+        return false;
+    return QByteArray::fromBase64(
+               value.toLatin1(),
+               QByteArray::Base64UrlEncoding |
+                   QByteArray::AbortOnBase64DecodingErrors)
+               .size() == 32;
+}
+
+bool directMirrorGatewayIsConfigured(const QString &nodeName,
+                                     const QString &mirrorOrigin,
+                                     const QString &routerPublicKey)
+{
+    static const QRegularExpression nodePattern(
+        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
+    return nodePattern.match(nodeName).hasMatch() &&
+           !mirrorOrigin.isEmpty() &&
+           isValidMirrorRouterPublicKey(routerPublicKey);
+}
+
 QByteArray mirrorManifestSigningPayload(const QJsonObject &request,
                                         const QString &expectedPublicKey,
                                         QString *error)
