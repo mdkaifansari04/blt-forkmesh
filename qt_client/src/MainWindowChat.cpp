@@ -7561,6 +7561,11 @@ QWidget *MainWindow::buildBreadcrumb()
                 switchToAgentsTab(sid);
                 dismissTopMessage();
             }
+        } else if (href == QLatin1String("fm:log:errors")) {
+            // Auto-raised error card (alertOnLoggedError): open the Log filtered
+            // to ERROR, where this failure and its neighbours are in full.
+            openFullLogForCategory(QStringLiteral("ERROR"));
+            dismissTopMessage();
         }
     });
     m_topMessage->hide();

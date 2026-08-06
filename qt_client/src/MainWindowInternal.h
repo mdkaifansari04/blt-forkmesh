@@ -3180,6 +3180,9 @@ const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
 const QString kInAppNotificationsSetting = QStringLiteral("notifications/inAppCards");
 const QString kInAppNotificationDurationSetting =
     QStringLiteral("notifications/inAppCardDurationSeconds");
+// Every ERROR-badged log line flashes the window border and shows itself as a
+// card. On by default: a failure nobody sees is the thing this exists to stop.
+const QString kErrorLogAlertSetting = QStringLiteral("notifications/errorLogFlash");
 const QString kEmailNotifyMentionSetting = QStringLiteral("notifications/email/mention");
 const QString kEmailNotifySubscribedSetting = QStringLiteral("notifications/email/subscribed");
 const QString kEmailNotifyPullSubmittedSetting = QStringLiteral("notifications/email/pullSubmitted");
