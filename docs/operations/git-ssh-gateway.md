@@ -143,9 +143,9 @@ validate it with
   },
   "repositories": [
     {
-      "owner": "mirror2",
+      "owner": "forkmesh",
       "name": "forkmesh",
-      "path": "mirror2/forkmesh.git",
+      "path": "forkmesh-forkmesh.git",
       "access": "read-write",
       "maxStorageBytes": 17179869184
     }
@@ -313,3 +313,39 @@ boundary.
   resolves the current account name rather than trusting registration-time
   encrypted metadata.
 - Account deletion removes its SSH public-key rows.
+
+## Round-robin gateways
+
+`ssh.forkmesh.com` used to be one machine (mirror2). When that node was
+retired the published `ssh://` clone URL died with it, because nothing else
+in the fleet ran the gateway. The name now resolves to several mirrors and
+each of them serves the flagship repository read-only:
+
+```bash
+tools/provision_ssh_gateway.sh <host-ip> [owner/name]
+```
+
+The script is idempotent and installs the whole node side (accounts,
+programs, configs, broker unit, sshd `Match User git` block). It publishes
+the bare mirror through a **read-only bind mount** under root-owned
+`/srv/forkmesh-git`, because the gateway requires a root-owned repository
+root while the node account must keep ownership of the repository it writes.
+The sshd change is applied only after `sshd -t` accepts the merged config.
+
+Pushes do not travel this path: mirrors are read-only replicas, and the
+owner node pushes through its own authenticated fleet remotes. That is why
+the Worker allowlist carries `forkmesh/forkmesh=read-only` and no
+`mirror<N>/...` entries.
+
+**Host keys are the one round-robin caveat.** Every member presents its own
+host key, so a client that pinned a single key sees
+`REMOTE HOST IDENTIFICATION HAS CHANGED` when DNS hands it a different
+member. Pin all members (one `known_hosts` line per member, each naming
+`ssh.forkmesh.com` plus the member address), or give the members a shared
+host certificate so they present one identity — the certificate is the
+better long-term answer and is not deployed yet.
+
+Both Python Workers must carry the gateway secrets: `/api/*` is served by
+`forkmesh-api`, so a relay-only `./deploy.sh secrets` leaves the gateway
+authorizing against stale configuration. The `secrets` command pushes to
+both.

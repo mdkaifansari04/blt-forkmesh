@@ -52,7 +52,7 @@ printf '%s\n' '{
   "type": "forkmesh.headless-mirror-identity-init",
   "nodeName": "mirror-two",
   "routerPublicKey": "<MIRROR_ROUTER_PUBLIC_KEY>",
-  "allowedOrigins": ["https://mirror2.forkmesh.com"]
+  "allowedOrigins": ["https://mirror9.forkmesh.com"]
 }' | python3 tools/headless_mirror_identity.py \
   --state-dir /var/lib/forkmesh/identity init
 ```
@@ -77,7 +77,7 @@ either private identity:
   "schemaVersion": 1,
   "type": "forkmesh.headless-mirror-identity-configure",
   "routerPublicKey": "<MIRROR_ROUTER_PUBLIC_KEY>",
-  "allowedOrigins": ["https://mirror2.forkmesh.com"]
+  "allowedOrigins": ["https://mirror9.forkmesh.com"]
 }
 ```
 
