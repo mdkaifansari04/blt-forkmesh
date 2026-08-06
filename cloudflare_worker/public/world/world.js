@@ -4472,6 +4472,15 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 </svg>
               </span><span class="world-top-link-label">Capture</span>
             </button>
+            <button
+              class="world-top-link"
+              type="button"
+              data-world-notes-open
+              aria-label="Open world notes"
+              title="Open Notes"
+            >
+              <span aria-hidden="true">✎</span><span class="world-top-link-label">Notes</span>
+            </button>
             <a
               class="world-top-link world-dashboard-link"
               href="/dashboard"
@@ -11369,6 +11378,16 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-screenshot]")) {
         this.startScreenshotCapture();
+        return;
+      }
+      const worldNotesOpen = event.target.closest("[data-world-notes-open]");
+      if (worldNotesOpen) {
+        const worldNotes = document.querySelector("forkmesh-world-notes");
+        if (typeof worldNotes?.open === "function") {
+          worldNotes.open();
+        } else {
+          worldNotes?.shadowRoot?.querySelector(".open")?.click?.();
+        }
         return;
       }
       if (event.target.closest("[data-world-instance-launcher-close]")) {
