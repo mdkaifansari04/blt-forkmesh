@@ -1329,8 +1329,16 @@ case "${1:-deploy}" in
     secrets)
         require_cloudflare_account
         require_cloudflare_auth
-        # Re-push just the .env.production secrets, no full redeploy.
+        # Re-push just the .env.production secrets, no full redeploy — to
+        # BOTH Python Workers. /api/* is served by forkmesh-api, so a
+        # relay-only push leaves every API route authorizing against stale
+        # credentials (2026-08-06: the SSH gateway kept reading the retired
+        # mirror2 allowlist after a relay-only secrets push).
         push_secrets
+        if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" = "1" ] && \
+           split_site_workers_enabled; then
+            SPLIT_SECRET_WORKER=forkmesh-api push_secrets
+        fi
         ;;
     dev)
         build_dashboard_assets
