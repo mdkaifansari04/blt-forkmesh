@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1786056477462,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-577",
+            "sig": "HpGUB7AkQlOc8SgmTwSt1b4ODLZw4UgLOXUSp6FJD1X3bEMWbTPMqjD8UuPptqp3YaDG-HDpsTiiXDIQFVTNAA",
+            "title": "test if this creates an issue",
+            "ts": 1786056477462,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 577,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "test if this creates an issue",
+    "updatedAt": 1786056477462,
+    "votes": 0
+}
