@@ -1738,6 +1738,21 @@ QWidget *MainWindow::buildStatusBar()
     toolsSeparator->setFixedHeight(32);
     debugToolsRow->addWidget(toolsSeparator, 0, Qt::AlignVCenter);
 
+    // The relay's live tail is a section of this strip now (adhoc #1559) rather
+    // than a button on the Log page: it sits beside the Worker status dots it
+    // explains, and one click opens the full viewer.
+    auto *cloudflareButton = new ActivityRailButton(QStringLiteral("cloud"),
+                                                    QStringLiteral("Cloud"));
+    cloudflareButton->setObjectName(
+        QStringLiteral("cloudflareWorkerLogsButton"));
+    cloudflareButton->setCheckable(false);
+    cloudflareButton->setCursor(Qt::PointingHandCursor);
+    cloudflareButton->setIconSize(QSize(kRailIconPx, kRailIconPx));
+    cloudflareButton->setToolTip(
+        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
+    connect(cloudflareButton, &QPushButton::clicked, this,
+            &MainWindow::showCloudflareWorkerLogs);
+
     // Third tool: grow the window by a five-line live tail of the log, so the
     // newest lines are readable without opening the footer overlay or the full
     // Log page. Checkable — it is a state, not a one-shot action.
@@ -1752,7 +1767,8 @@ QWidget *MainWindow::buildStatusBar()
     connect(logTailButton, &QPushButton::toggled, this,
             [this](bool on) { setDebugLogTailVisible(on); });
 
-    for (QPushButton *tool : {m_navRebuildButton, m_navResizeButton,
+    for (QPushButton *tool : {static_cast<QPushButton *>(cloudflareButton),
+                              m_navRebuildButton, m_navResizeButton,
                               static_cast<QPushButton *>(logTailButton)})
         if (tool)
             debugToolsRow->addWidget(tool, 0, Qt::AlignVCenter);
@@ -2758,6 +2774,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_logActivityLights->onCategoryClicked = [this](const QString &category) {
         openFullLogForCategory(category);
     };
+    // The status dots to the right of the categories are the deployed Worker's
+    // own health, so clicking them opens its live logs (adhoc #1559) — the
+    // viewer that used to be a button on the Log page.
+    m_logActivityLights->onWebsiteClicked = [this] { showCloudflareWorkerLogs(); };
     const QString stallTip = QStringLiteral(
         "Click to draft a fix-it prompt for recorded UI stalls; right-click "
         "for the captured backtraces.");
@@ -7100,15 +7120,18 @@ QWidget *MainWindow::buildLogSection()
     clearButton->setCursor(Qt::PointingHandCursor);
     clearButton->setToolTip("Clear all saved logs");
     setOcticon(clearButton, "trash", 14);
-    auto *cloudflareButton = new QPushButton("Cloudflare logs");
-    cloudflareButton->setObjectName(
-        QStringLiteral("cloudflareWorkerLogsButton"));
-    cloudflareButton->setCursor(Qt::PointingHandCursor);
-    cloudflareButton->setToolTip(
-        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
-    setOcticon(cloudflareButton, "cloud", 14);
-    connect(cloudflareButton, &QPushButton::clicked, this,
-            &MainWindow::showCloudflareWorkerLogs);
+    // The Cloudflare viewer moved down to the debug strip beside the Worker's
+    // own status dots (adhoc #1559). What sits here instead is the whole log in
+    // its own window: every retained line, unfiltered, in one scrollback.
+    auto *popoutButton = new QPushButton("Pop out");
+    popoutButton->setObjectName(QStringLiteral("logPopoutButton"));
+    popoutButton->setCursor(Qt::PointingHandCursor);
+    popoutButton->setToolTip(
+        QStringLiteral("Open the complete log — every category, every retained "
+                       "line — in its own window"));
+    setOcticon(popoutButton, "screen-full", 14);
+    connect(popoutButton, &QPushButton::clicked, this,
+            &MainWindow::showNetworkLogPopout);
 
     // The timeline is only a compact overview. Keep the paged rich log visible
     // below it so opening Logs stays useful immediately instead of spending the
@@ -7190,7 +7213,9 @@ QWidget *MainWindow::buildLogSection()
     filterScroll->setFrameShape(QFrame::NoFrame);
     filterScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     filterScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    filterScroll->setFixedHeight(34);
+    // Tall enough for the bigger, icon-bearing chips (adhoc #1559) plus the
+    // horizontal scrollbar the full taxonomy needs on a laptop-width window.
+    filterScroll->setFixedHeight(44);
 
     // Discover which categories the buffered history contains and build the
     // chips now, but leave rendering the history itself (the newest
@@ -7214,6 +7239,12 @@ QWidget *MainWindow::buildLogSection()
         m_logFilterEmptyNotice = false;
         if (m_settingsLog)
             m_settingsLog->clear();
+        // The pop-out shows the same buffer, so it empties with it.
+        if (m_logPopoutView)
+            m_logPopoutView->clear();
+        m_logPopoutDate.clear();
+        m_logPopoutPending.clear();
+        updateNetworkLogPopoutStatus();
         if (m_logActivityLights)
             m_logActivityLights->reset();
         if (m_logActivityHeader)
@@ -7228,7 +7259,7 @@ QWidget *MainWindow::buildLogSection()
     headerRow->addWidget(label);
     headerRow->addWidget(m_logTimelineSummary);
     headerRow->addStretch();
-    headerRow->addWidget(cloudflareButton);
+    headerRow->addWidget(popoutButton);
     headerRow->addWidget(clearButton);
 
     auto *layout = new QVBoxLayout(page);

@@ -4102,10 +4102,15 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
                     .arg(time);
+    // Non-breaking padding, wide enough for the longest badge: plain trailing
+    // spaces collapse in HTML, which left this column ragged (adhoc #1559).
     html += QStringLiteral(
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
                 "<span style='color:#1f2328'>%3</span>")
-                .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
+                .arg(accent,
+                     badge.toHtmlEscaped() +
+                         QStringLiteral("&nbsp;")
+                             .repeated(qMax(0, 8 - badge.size())),
                      forkmesh::colorizeBackgroundMarker(message.toHtmlEscaped()));
     return html;
 }

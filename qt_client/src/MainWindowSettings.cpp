@@ -4307,13 +4307,20 @@ QString formatLogLineHtml(const QString &time, const QString &message, bool dark
     // The site favicon (when the entry hit a network source) leads the line so
     // requests read at a glance as "who they went to".
     QString html = iconHtml;
+    // Padding a plain string collapses to one space in HTML, which is what left
+    // this column ragged. Pad in non-breaking spaces instead, wide enough for
+    // the longest badge ("IDENTITY"), so every message starts in the same column
+    // of this monospaced view (adhoc #1559).
+    const QString paddedBadge =
+        style.badge.toHtmlEscaped() +
+        QStringLiteral("&nbsp;").repeated(qMax(0, 8 - style.badge.size()));
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:%1'>%2</span>&nbsp;&nbsp;")
                     .arg(timeColor, time);
     html += QStringLiteral(
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
                 "<span style='color:%3'>%4</span>")
-                .arg(style.accent, style.badge.leftJustified(7).toHtmlEscaped(),
+                .arg(style.accent, paddedBadge,
                      messageColor,
                      forkmesh::colorizeBackgroundMarker(
                          linkifyEscapedMessage(message.toHtmlEscaped())));
@@ -4371,9 +4378,13 @@ void MainWindow::refreshLogFavicon(const QString &host)
 // off a fetch on first sighting of a host.
 QString MainWindow::logFaviconTag(const QString &message, QTextEdit *view)
 {
-    const QString host = firstUrlHost(message);
-    if (host.isEmpty() || !view)
+    if (!view)
         return QString();
+    const QString host = firstUrlHost(message);
+    // An entry that hit no network source still reserves the column, so its
+    // text lines up with the requests around it (adhoc #1559).
+    if (host.isEmpty())
+        return logIconSpacerTag(view, 14);
     // Stand-in now, real icon once fetched.
     registerLogFaviconResource(host, view);
     fetchFaviconForHost(host); // no-op if already cached / in flight / builtin
@@ -4406,6 +4417,171 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
         time, message, dark,
         logPromptIconTag(m_settingsLog, storedLine) +
             logFaviconTag(message, m_settingsLog)));
+}
+
+// One rendered entry for the pop-out window: the same markup the Log page uses,
+// against that window's own document (icon resources are per-document).
+QString MainWindow::popoutLogLineHtml(const QString &storedLine,
+                                      QString &runningDate)
+{
+    if (!m_logPopoutView)
+        return QString();
+    const bool dark = currentThemeIsDark();
+    QString date, time, message;
+    parseStoredLogLine(storedLine, date, time, message);
+    QString html;
+    if (!date.isEmpty() && date != runningDate) {
+        runningDate = date;
+        html += QStringLiteral("<div>%1</div>")
+                    .arg(formatDayDividerHtml(date, dark));
+    }
+    html += QStringLiteral("<div>%1</div>")
+                .arg(formatLogLineHtml(
+                    time, message, dark,
+                    logPromptIconTag(m_logPopoutView, storedLine) +
+                        logFaviconTag(message, m_logPopoutView)));
+    return html;
+}
+
+// The whole retained log in a window of its own (adhoc #1559). The Log page
+// renders one 300-line segment at a time and honours the active category chip;
+// this deliberately does neither — every buffered line, every category, in one
+// scrollback you can park on a second screen beside the app. New entries append
+// live, so it stays a view of the log rather than a snapshot of it.
+void MainWindow::showNetworkLogPopout()
+{
+    if (m_logPopout) {
+        m_logPopout->show();
+        m_logPopout->raise();
+        m_logPopout->activateWindow();
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    m_logPopout = dialog;
+    dialog->setObjectName(QStringLiteral("networkLogPopout"));
+    dialog->setWindowTitle(QStringLiteral("ForkMesh log — everything"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowFlag(Qt::Window);
+    dialog->resize(1180, 760);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+
+    auto *status = new QLabel;
+    status->setObjectName(QStringLiteral("modeHint"));
+    m_logPopoutStatus = status;
+    layout->addWidget(status);
+
+    auto *view = new QTextBrowser(dialog);
+    m_logPopoutView = view;
+    view->setObjectName(QStringLiteral("networkLogPopoutView"));
+    view->setReadOnly(true);
+    view->setOpenExternalLinks(true);
+    view->setLineWrapMode(QTextEdit::NoWrap);
+    // 20,000 entries is a large document; skipping the undo stack keeps what it
+    // costs down to the text itself.
+    view->document()->setUndoRedoEnabled(false);
+    layout->addWidget(view, 1);
+
+    auto *copyButton = new QPushButton(QStringLiteral("Copy all"));
+    copyButton->setObjectName(QStringLiteral("logPopoutCopyButton"));
+    copyButton->setCursor(Qt::PointingHandCursor);
+    copyButton->setToolTip(QStringLiteral("Copy every retained line as plain text"));
+    connect(copyButton, &QPushButton::clicked, this, [this, copyButton] {
+        QApplication::clipboard()->setText(m_networkLog.join(QLatin1Char('\n')));
+        copyButton->setText(QStringLiteral("Copied!"));
+    });
+    auto *closeButton = new QPushButton(QStringLiteral("Close"));
+    closeButton->setObjectName(QStringLiteral("primaryButton"));
+    closeButton->setCursor(Qt::PointingHandCursor);
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::close);
+    auto *buttons = new QHBoxLayout;
+    buttons->addWidget(copyButton);
+    buttons->addStretch(1);
+    buttons->addWidget(closeButton);
+    layout->addLayout(buttons);
+
+    dialog->show();
+    dialog->raise();
+
+    // Fill it in batches rather than as one 20,000-line insert: a single parse
+    // of that much rich text blocks the event loop long enough for the stall
+    // watchdog to record the very freeze this window exists to help read.
+    // Batching means the event loop runs mid-fill, so the buffer is copied first
+    // (the strings are shared, so this costs pointers) and lines logged while it
+    // fills are held back rather than landing ahead of older ones.
+    const QStringList history = m_networkLog;
+    m_logPopoutFilling = true;
+    constexpr int kBatch = 500;
+    QString runningDate;
+    const int total = history.size();
+    for (int index = 0; index < total; index += kBatch) {
+        if (!m_logPopoutView) { // closed while it was still filling
+            m_logPopoutFilling = false;
+            m_logPopoutPending.clear();
+            return;
+        }
+        QString html;
+        const int end = qMin(index + kBatch, total);
+        for (int line = index; line < end; ++line)
+            html += popoutLogLineHtml(history.at(line), runningDate);
+        QTextCursor cursor(view->document());
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertHtml(html);
+        status->setText(QStringLiteral("Loading the full log — %1 of %2 lines…")
+                            .arg(end)
+                            .arg(total));
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    }
+    m_logPopoutFilling = false;
+    if (!m_logPopoutView) {
+        m_logPopoutPending.clear();
+        return;
+    }
+    m_logPopoutDate = runningDate;
+    const QStringList pending = m_logPopoutPending;
+    m_logPopoutPending.clear();
+    for (const QString &line : pending)
+        appendNetworkLogPopoutLine(line);
+    view->moveCursor(QTextCursor::End);
+    updateNetworkLogPopoutStatus();
+}
+
+// "14122 lines · every category · live" — the pop-out's own header.
+void MainWindow::updateNetworkLogPopoutStatus()
+{
+    if (!m_logPopoutStatus)
+        return;
+    const int total = m_networkLog.size();
+    m_logPopoutStatus->setText(QStringLiteral("%1 line%2 · every category · live")
+                                   .arg(total)
+                                   .arg(total == 1 ? QString()
+                                                   : QStringLiteral("s")));
+}
+
+// Mirror a freshly logged line into the pop-out window, if one is open.
+void MainWindow::appendNetworkLogPopoutLine(const QString &storedLine)
+{
+    if (!m_logPopoutView)
+        return;
+    if (m_logPopoutFilling) {
+        // Still rendering the history: queue the line so it lands after the
+        // older entries it follows instead of ahead of them.
+        m_logPopoutPending.append(storedLine);
+        return;
+    }
+    const QString html = popoutLogLineHtml(storedLine, m_logPopoutDate);
+    QScrollBar *bar = m_logPopoutView->verticalScrollBar();
+    const bool atBottom = !bar || bar->value() >= bar->maximum() - 4;
+    QTextCursor cursor(m_logPopoutView->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertHtml(html);
+    // Follow the tail only when the reader was already at it.
+    if (atBottom)
+        m_logPopoutView->moveCursor(QTextCursor::End);
+    updateNetworkLogPopoutStatus();
 }
 
 // Loads the next older page of matching lines when the user scrolls to the
@@ -4515,6 +4691,14 @@ void MainWindow::rebuildLogFilterButtons()
                           const QString &tip = QString()) {
         auto *chip = new QPushButton(logFilterChipLabel(label, category));
         chip->setObjectName("logFilterChip");
+        // The same glyph the debug strip flies for this category (adhoc #1559),
+        // so the two rows read as one legend instead of two vocabularies.
+        const bool seen =
+            category.isEmpty() || m_logFilterCounts.value(category) > 0;
+        const QString glyph =
+            category.isEmpty()
+                ? QStringLiteral("list-unordered")
+                : forkmesh::ui::LogActivityLights::iconForBadge(category);
         // Remembered so updateLogFilterChipCounts() can refresh just the number
         // on each chip instead of tearing the whole row down per log line.
         chip->setProperty("logChipName", label);
@@ -4528,10 +4712,15 @@ void MainWindow::rebuildLogFilterButtons()
                              : QStringLiteral("Show only %1 events").arg(label));
         // Tint each chip with the same accent its badge uses in the log body
         // (adhoc #15) so the filter row reads as the log's own legend instead
-        // of a flat, uniformly grey button row.
+        // of a flat, uniformly grey button row. A category the buffer has never
+        // recorded stays the strip's neutral grey, exactly as its light does.
         const QString accent =
-            category.isEmpty() ? QStringLiteral("#8b949e") : accentForBadge(category);
+            !seen ? QStringLiteral("#6e7681")
+                  : category.isEmpty() ? QStringLiteral("#8b949e")
+                                       : accentForBadge(category);
         const QColor accentColor(accent);
+        chip->setIcon(QIcon(tintedOcticonPixmap(glyph, accentColor, 14)));
+        chip->setIconSize(QSize(14, 14));
         const QString checkedBg = QStringLiteral("rgba(%1, %2, %3, 0.18)")
                                        .arg(accentColor.red())
                                        .arg(accentColor.green())
@@ -4551,25 +4740,27 @@ void MainWindow::rebuildLogFilterButtons()
     };
 
     addChip(QStringLiteral("All"), QString());
-    // Stalls get a permanent chip right beside All, even before one has been
-    // recorded: it's the diagnostic people go looking for when the window felt
-    // frozen, so it shouldn't only appear once the app has already misbehaved.
-    // (Every other category chip is discovered from the buffered history.)
-    addChip(QString::fromLatin1(kStallBadge), QString::fromLatin1(kStallBadge),
-            QStringLiteral("Show only recorded UI stalls — moments the window "
-                           "froze, with the operation that blocked it"));
-    // Show present categories in a stable, readable order.
-    static const char *order[] = {
-        "SESSION", "STATUS", "PEER",  "NODE",   "FORK",  "FORKED", "MIRROR",
-        "SYNC",    "ACCOUNT", "HOST", "ACTIONS", "PIN", "GIT", "BGTASK",
-        "PUBLISH", "PULL",   "MERGE", "ISSUE", "PROMPT",    "BOUNTY", "WALLET",
-        "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "NETWORK", "ERROR",
-        "INFO",
-    };
-    for (const char *b : order) {
-        const QString badge = QString::fromLatin1(b);
-        if (m_logFilterCounts.value(badge) > 0)
-            addChip(badge, badge);
+    // The whole taxonomy, busiest first: the same content in the same order as
+    // the debug strip's lights (adhoc #1559), so the two rows can be read
+    // against each other. Categories the buffer has never recorded keep a chip
+    // too (grey, no count) — the row is the complete legend, and holding the
+    // empty ones in place stops the busy chips jumping around as counts change.
+    // Ties fall back to the canonical taxonomy order, exactly as the lights do.
+    QStringList badges = forkmesh::ui::LogActivityLights::badges();
+    std::stable_sort(badges.begin(), badges.end(),
+                     [this](const QString &left, const QString &right) {
+                         return m_logFilterCounts.value(left) >
+                                m_logFilterCounts.value(right);
+                     });
+    for (const QString &badge : std::as_const(badges)) {
+        // Stalls carry the one explanatory tip: it's the diagnostic people go
+        // looking for after the window felt frozen.
+        addChip(badge, badge,
+                badge == QLatin1String(kStallBadge)
+                    ? QStringLiteral("Show only recorded UI stalls — moments "
+                                     "the window froze, with the operation that "
+                                     "blocked it")
+                    : QString());
     }
     m_logFilterRow->addStretch();
 }
@@ -4845,6 +5036,9 @@ void MainWindow::logSystem(const QString &text)
         else
             appendNetworkLogLine(line);
     }
+    // The pop-out shows everything, so it takes the line whatever the page's
+    // own filter is doing.
+    appendNetworkLogPopoutLine(line);
     // The retained log is normally at its 20,000-line cap, so every append also
     // evicts one old line. Rebuilding and reclassifying the full visible slice
     // here made routine logging take seconds, and logging the resulting stall
