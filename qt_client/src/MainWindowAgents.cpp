@@ -11583,6 +11583,44 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
         reapplyTranscriptSearch(); // re-highlight against the rebuilt transcript
 }
 
+// One-line, human-readable summary of a stream event — what the "Prompt sent"
+// bubble shows as its live status while the agent is still running (adhoc
+// #1570). Empty when the event has nothing worth surfacing (thinking deltas,
+// bookkeeping events, etc).
+static QString oneLineTranscriptSummary(const QJsonObject &ev)
+{
+    const QString type = ev.value(QStringLiteral("type")).toString();
+    if (type == QLatin1String("assistant")) {
+        const QJsonArray content = ev.value(QStringLiteral("message")).toObject()
+                                       .value(QStringLiteral("content")).toArray();
+        for (const QJsonValue &bv : content) {
+            const QJsonObject b = bv.toObject();
+            const QString btype = b.value(QStringLiteral("type")).toString();
+            if (btype == QLatin1String("tool_use")) {
+                const QString name = b.value(QStringLiteral("name")).toString();
+                const QJsonObject input = b.value(QStringLiteral("input")).toObject();
+                QString arg = input.value(QStringLiteral("file_path")).toString();
+                if (arg.isEmpty())
+                    arg = input.value(QStringLiteral("command")).toString();
+                if (arg.isEmpty())
+                    arg = input.value(QStringLiteral("path")).toString();
+                if (arg.isEmpty())
+                    arg = input.value(QStringLiteral("pattern")).toString();
+                return (arg.isEmpty() ? name : name + QStringLiteral(": ") + arg)
+                    .simplified();
+            }
+            if (btype == QLatin1String("text")) {
+                const QString t = b.value(QStringLiteral("text")).toString().trimmed();
+                if (!t.isEmpty())
+                    return t.simplified();
+            }
+        }
+    } else if (type == QLatin1String("_codex_agent_complete")) {
+        return ev.value(QStringLiteral("text")).toString().simplified();
+    }
+    return QString();
+}
+
 // Buffer one event for a session and, if that session is the one on screen,
 // render it live. Also collect the files it edits for the side panel.
 void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
@@ -11606,6 +11644,16 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
         ev.insert(forkmesh::agents::resumeAccountKey(), accountId);
     }
     const QString type = ev.value(QStringLiteral("type")).toString();
+    // While the "Prompt sent" bubble for this exact session is still on screen,
+    // keep its status line showing what the agent is doing right now instead of
+    // the static "Started a Claude Code agent..." message it opened with
+    // (adhoc #1570).
+    if (sessionId == m_topMessageAgentSessionId && m_topMessageIsPromptBubble &&
+        m_topMessage && m_topMessage->isVisible() && !m_topMessageSlidingOut) {
+        const QString live = oneLineTranscriptSummary(ev);
+        if (!live.isEmpty())
+            updateTopMessagePromptLiveStatus(live);
+    }
     m_streamEvents[sessionId].append(ev);
     // Persist the turn so the transcript survives an app restart (issue #41).
     if (m_agentStore && m_streamSessionInfo.contains(sessionId))
