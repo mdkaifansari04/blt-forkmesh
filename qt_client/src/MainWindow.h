@@ -561,6 +561,15 @@ public:
     QString testNetworkRepoCellText(int row, const QString &header) const;
     bool testNetworkRepoHasCommitSparkline(int row) const;
     QString testNetworkRepoCommitActivitySummary(int row) const;
+    // Web Requests tab (adhoc #1575): the Network tab labels in order, a
+    // fixture-driven render of the /api/metrics/summary payload, and readers
+    // over the resulting chart, table and summary line.
+    QStringList testNetworkTabLabels() const;
+    void testRenderNetworkWebRequests(const QJsonObject &payload);
+    QStringList testNetworkWebRequestsGroups() const;
+    QString testNetworkWebRequestsCellText(int row, const QString &header) const;
+    QString testNetworkWebRequestsStatusText() const;
+    int testNetworkWebRequestsChartHeight() const;
     // Badge riding the activity rail's Repos icon.
     int testReposNavBadgeCount() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
@@ -2353,6 +2362,12 @@ private:
     // to be on navigation.
     void refreshNetworkTab(int tabIndex);
     void showEndpointRequestDetails(int row, int column);
+    // Web Requests tab: the inbound traffic the Worker itself answered, from
+    // the public /api/metrics/summary buckets — the same masked route groups
+    // and most-frequent-first ordering as the api.forkmesh.com landing page,
+    // drawn as a bar chart plus the full un-paginated group table.
+    void refreshNetworkWebRequests();
+    void renderNetworkWebRequests(const QJsonObject &payload);
 
     // Admin-only Users page: the same privacy-filtered account facts shown on
     // World avatar chests, laid out as one sortable table. It deliberately
@@ -6266,6 +6281,16 @@ private:
     QPushButton *m_networkDiagnosticsRefreshButton = nullptr;
     bool m_networkEndpointFadeScheduled = false;
     bool m_networkEndpointsUserSorted = false;
+    // Web Requests tab: inbound Worker traffic from /api/metrics/summary. The
+    // chart is a file-local widget class, so it rides in a QWidget pointer.
+    QWidget *m_networkWebRequestsChart = nullptr;
+    QTableWidget *m_networkWebRequestsTable = nullptr;
+    QLabel *m_networkWebRequestsStatus = nullptr;
+    QComboBox *m_networkWebRequestsRange = nullptr;
+    int m_networkWebRequestsTabIndex = -1;
+    int m_networkWebRequestsMinutes = 60;
+    bool m_networkWebRequestsInFlight = false;
+    bool m_networkWebRequestsUserSorted = false;
     // The Network section's tab bar. Its first three tabs are the Relays, Nodes
     // and Hosts pages (adhoc #54); their counts ride the tab labels and total on
     // the rail's Network badge.

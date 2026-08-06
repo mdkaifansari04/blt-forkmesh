@@ -1378,6 +1378,68 @@ QString MainWindow::testNetworkRepoMirrorHeader() const
     return m_networkReposTable->horizontalHeaderItem(2)->text();
 }
 
+QStringList MainWindow::testNetworkTabLabels() const
+{
+    QStringList labels;
+    if (m_networkTabs)
+        for (int index = 0; index < m_networkTabs->count(); ++index)
+            labels.append(m_networkTabs->tabText(index));
+    return labels;
+}
+
+void MainWindow::testRenderNetworkWebRequests(const QJsonObject &payload)
+{
+    showSection(kNetworkDiagnosticsSectionIndex);
+    if (m_networkTabs)
+        m_networkTabs->setCurrentIndex(m_networkWebRequestsTabIndex);
+    // The real fetch the tab switch starts (if any) only answers on the event
+    // loop and only renders an ok payload; the fixture below owns the widgets
+    // deterministically.
+    renderNetworkWebRequests(payload);
+}
+
+QStringList MainWindow::testNetworkWebRequestsGroups() const
+{
+    QStringList groups;
+    if (!m_networkWebRequestsTable)
+        return groups;
+    for (int row = 0; row < m_networkWebRequestsTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_networkWebRequestsTable->item(row, 0))
+            groups.append(item->text());
+    }
+    return groups;
+}
+
+QString MainWindow::testNetworkWebRequestsCellText(int row,
+                                                   const QString &header) const
+{
+    if (!m_networkWebRequestsTable)
+        return QString();
+    for (int column = 0; column < m_networkWebRequestsTable->columnCount();
+         ++column) {
+        QTableWidgetItem *head =
+            m_networkWebRequestsTable->horizontalHeaderItem(column);
+        if (!head || head->text() != header)
+            continue;
+        QTableWidgetItem *item = m_networkWebRequestsTable->item(row, column);
+        return item ? item->text() : QString();
+    }
+    return QString();
+}
+
+QString MainWindow::testNetworkWebRequestsStatusText() const
+{
+    return m_networkWebRequestsStatus ? m_networkWebRequestsStatus->text()
+                                      : QString();
+}
+
+int MainWindow::testNetworkWebRequestsChartHeight() const
+{
+    return m_networkWebRequestsChart
+               ? m_networkWebRequestsChart->minimumHeight()
+               : 0;
+}
+
 QStringList MainWindow::testNetworkRepoColumns() const
 {
     QStringList labels;

@@ -3076,7 +3076,10 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
             changed = true;
         }
         if (composerIsCli && m_quickAddClaudeModel) {
-            const QString chosen = selectedModelComboValue(m_quickAddClaudeModel);
+            const QString chosen = (composerProvider == QLatin1String("claude-code")
+                                       ? selectedModelComboValue(m_quickAddClaudeModel)
+                                       : codexChatGptModelId(
+                                           selectedModelComboValue(m_quickAddClaudeModel)));
             if (session->model != chosen) {
                 session->model = chosen;
                 changed = true;
@@ -3687,7 +3690,7 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
         const QString prompt =
             job.value(QStringLiteral("prompt")).toString();
         const QString requestedModel =
-            job.value(QStringLiteral("model")).toString().trimmed();
+            codexChatGptModelId(job.value(QStringLiteral("model")).toString());
         const int issueNumber =
             job.value(QStringLiteral("issueNumber")).toInt();
         const QSet<QString> allowedWebsiteModels = {
@@ -3699,7 +3702,6 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
             QStringLiteral("gpt-5.6-luna"),
             QStringLiteral("gpt-5.6-terra"),
             QStringLiteral("gpt-5.3-codex-spark"),
-            QStringLiteral("gpt-5.3-spark"),
         };
         const QJsonObject security =
             job.value(QStringLiteral("securityCheck")).toObject();
@@ -8231,7 +8233,8 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         config.command = codexCommandSetting();
         config.apiKeyName = QStringLiteral("CODEX_API_KEY");
         config.apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();
-        config.model = QSettings().value(kCodexModelSetting).toString().trimmed();
+        config.model = codexChatGptModelId(
+            QSettings().value(kCodexModelSetting).toString());
         config.preferApiKeyAuth = true;
         config.isolatedHome =
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
@@ -8373,7 +8376,10 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.orgTask = true;
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
-    session.model = model.trimmed(); // empty leaves the provider's own default
+    session.model = (provider == QLatin1String("claude-code") ||
+                     agentIsCodexProvider(provider))
+                        ? codexChatGptModelId(model)
+                        : model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
         session.mode = m_quickAddModeSelector->currentText();
@@ -8741,7 +8747,10 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     // genie even though the "task" button that started it is long since
     // forgotten.
     session.genie = genie;
-    session.model = model.trimmed(); // empty leaves the provider's own default
+    session.model = (provider == QLatin1String("claude-code") ||
+                     agentIsCodexProvider(provider))
+                        ? codexChatGptModelId(model)
+                        : model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
         session.mode = m_quickAddModeSelector->currentText();
@@ -8839,7 +8848,8 @@ void MainWindow::startAgentFromComposer()
         provider == QLatin1String("claude-code")
             ? QSettings().value(kClaudeCodeModelSetting).toString()
             : (agentIsCodexProvider(provider)
-                   ? QSettings().value(kCodexModelSetting).toString()
+                   ? codexChatGptModelId(
+                       QSettings().value(kCodexModelSetting).toString())
                    : QString());
     if (startAdHocAgentForRepo(repoIndex, prompt, provider, /*createPr=*/true,
                                model) > 0)
@@ -10480,8 +10490,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                         agentIsCodexProvider(
                             m_quickAddAgentProvider->currentData().toString())) {
                         mergeLiveCodexModels(m_quickAddClaudeModel, models);
-                        const QString selected =
-                            selectedModelComboValue(m_quickAddClaudeModel);
+                        const QString selected = codexChatGptModelId(
+                            selectedModelComboValue(m_quickAddClaudeModel));
                         QSettings().setValue(kCodexModelSetting, selected);
                         if (m_codexModelEdit)
                             m_codexModelEdit->setText(selected);
