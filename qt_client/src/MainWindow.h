@@ -3561,6 +3561,8 @@ private:
     // it (sync the served mirror) and refresh the Releases panel if it's open.
     void onReleaseMetadataLanded(int runId);
     void refreshActionsTable();
+    void updateActionsSpinTimer();
+    void animateRunningActionIcons();
     void showLatestVisibleActionRun();
     void showRun(int runId);
     void approveSelectedRun();
@@ -7816,6 +7818,8 @@ private:
     QTimer *m_openRepoRefreshTimer = nullptr;
     QTimer *m_agentsSpinTimer = nullptr; // refreshes live Agents metadata
     int m_agentSpinTicks = 0; // paces the detail header's run-stat refresh
+    QTimer *m_actionsSpinTimer = nullptr; // refreshes live Actions status icons
+    int m_actionSpinTicks = 0; // paces the actions table status icon spin
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;
     QLabel *m_actionRunMeta = nullptr;
