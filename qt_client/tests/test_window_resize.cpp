@@ -3437,6 +3437,45 @@ int main(int argc, char *argv[])
                                  "limit and syncs Settings"));
         }
     }
+    // The detail popup answers "which conversation is this, and how do I take it
+    // over?" (adhoc #1584): a Session row carrying ForkMesh's id and the CLI's
+    // own conversation id, and a "Pop out" button beside it that stops the
+    // session here and continues it in a system terminal. A session that never
+    // ran a CLI has nothing to hand over, so the button goes dead and says why.
+    {
+        QPushButton *popOut = window.findChild<QPushButton *>(
+            QStringLiteral("agentPopOutButton"));
+        AgentSession cliSession;
+        cliSession.id = 133892;
+        cliSession.owner = QStringLiteral("me");
+        cliSession.name = QStringLiteral("r");
+        cliSession.provider = QStringLiteral("claude-code");
+        cliSession.prompt = QStringLiteral("Pop-out fixture");
+        cliSession.status = AgentStatus::Stopped;
+        window.testAddAgentSession(cliSession);
+        const QString cliMeta = window.testAgentMetaHtml(cliSession.id);
+        const bool sessionRow =
+            cliMeta.contains(QStringLiteral("Session")) &&
+            cliMeta.contains(QStringLiteral("#133892")) &&
+            cliMeta.contains(QStringLiteral("no CLI conversation yet"));
+        const bool handOffOffered =
+            popOut && popOut->isEnabled() &&
+            popOut->toolTip().contains(QStringLiteral("system terminal"));
+        AgentSession apiSession = cliSession;
+        apiSession.id = 133893;
+        apiSession.provider = QStringLiteral("claude-api");
+        window.testAddAgentSession(apiSession);
+        window.testAgentMetaHtml(apiSession.id);
+        const bool handOffRefused =
+            popOut && !popOut->isEnabled() &&
+            popOut->toolTip().contains(QStringLiteral("run against the API"));
+        check(sessionRow && handOffOffered && handOffRefused,
+              QStringLiteral("the agent detail popup shows the session id and "
+                             "offers the terminal hand-off only for CLI "
+                             "sessions"));
+        window.testRemoveAgentSession(cliSession.id);
+        window.testRemoveAgentSession(apiSession.id);
+    }
     // A restored Codex session can retain its persisted Running status after its
     // app-server transport has gone away. Its Continue action must requeue it;
     // otherwise a follow-up prompt is accepted by the UI but has no process to
