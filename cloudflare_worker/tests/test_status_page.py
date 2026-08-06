@@ -22,7 +22,9 @@ ENTRY = ROOT / "src" / "entry.py"
 # concatenate it so the schema source-contract assertions below still resolve.
 SCHEMA = ENTRY.parent / "schema.py"
 ENTRY_TEXT = (
-    ENTRY.read_text(encoding="utf-8") + "\n" + SCHEMA.read_text(encoding="utf-8"))
+    ENTRY.read_text(encoding="utf-8") + "\n"
+    + ENTRY.with_name("status_monitoring.py").read_text(encoding="utf-8")
+    + "\n" + SCHEMA.read_text(encoding="utf-8"))
 # Route regexes now live in the extracted urls.py module (imported by entry.py);
 # parse it alongside entry.py so the assign nodes below still resolve.
 URLS = ROOT / "src" / "urls.py"
