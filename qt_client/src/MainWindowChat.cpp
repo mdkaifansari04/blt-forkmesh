@@ -4030,7 +4030,9 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // the provider suffix was the same handful of words repeated down the whole
 // menu; the tooltip still carries it. A merge is the durable success signal for
 // an agent run, so models with the most merged work lead the list; power is a
-// stable tie-breaker for equal success counts.
+// stable tie-breaker for equal success counts. Scores count every run this
+// desktop has made, including the ones whose branch and session were cleaned up
+// afterwards (see AgentStore::retiredModelOutcomes).
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -4059,12 +4061,24 @@ void MainWindow::refreshQuickAddAgentModelSelector()
     };
     QHash<QString, int> modelMergedCounts;
     QHash<QString, int> modelRunCounts;
+    // A model's track record has to outlive the work that earned it. Sweeping up
+    // a landed branch deletes its agent session, and while those counts were read
+    // only from the live sessions that meant tidying up reset every model to
+    // "0 merged". AgentStore keeps a tally of what each deleted session scored,
+    // so the ranking below is the retired history plus the sessions still here.
+    if (m_agentStore) {
+        const QHash<QString, AgentModelOutcome> retired =
+            m_agentStore->retiredModelOutcomes();
+        for (auto it = retired.constBegin(); it != retired.constEnd(); ++it) {
+            modelRunCounts[it.key()] += it.value().runs;
+            modelMergedCounts[it.key()] += it.value().merged;
+        }
+    }
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
-        const QString model = session.model.trimmed().toLower();
-        if (model.isEmpty())
-            continue;
         const QString key =
-            session.provider + QLatin1Char('\x1f') + model;
+            AgentStore::modelOutcomeKey(session.provider, session.model);
+        if (key.isEmpty())
+            continue;
         ++modelRunCounts[key];
         if (session.merged)
             ++modelMergedCounts[key];
@@ -4074,8 +4088,7 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                         const QIcon &icon, const QString &label,
                         const QString &provider, const QString &model,
                         const QString &agentName) {
-        const QString key = provider + QLatin1Char('\x1f') +
-                            model.trimmed().toLower();
+        const QString key = AgentStore::modelOutcomeKey(provider, model);
         models.append(Choice{icon, label, provider, model, agentName,
                              modelMergedCounts.value(key),
                              modelRunCounts.value(key),
@@ -4088,16 +4101,12 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
     for (int i = 0; i < claudeModels.count(); ++i) {
         const QString id = claudeModels.itemData(i).toString();
-        const QString lower = id.toLower();
-        int icon = 7;
-        if (lower.contains(QLatin1String("opus")))
-            icon = 0;
-        else if (lower.contains(QLatin1String("fable")))
-            icon = 1;
-        else if (lower.contains(QLatin1String("sonnet")))
-            icon = 2;
-        else if (lower.contains(QLatin1String("haiku")))
-            icon = 3;
+        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
+        // borrowing one model's portrait.
+        const int icon =
+            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
+                ? 7
+                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
         addModel(agentControlIcon(icon),
                  compactModelName(claudeModels.itemText(i)),
                  QStringLiteral("claude-code"), id,
@@ -4107,8 +4116,9 @@ void MainWindow::refreshQuickAddAgentModelSelector()
     QComboBox codexModels;
     populateCodexModelCombo(&codexModels);
     for (int i = 0; i < codexModels.count(); ++i) {
-        addModel(agentControlIcon(4 + (i % 3)), codexModels.itemText(i),
-                 kCodexProvider, codexModels.itemData(i).toString(),
+        const QString id = codexModels.itemData(i).toString();
+        addModel(agentControlIcon(agentModelFaceIconIndex(kCodexProvider, id)),
+                 codexModels.itemText(i), kCodexProvider, id,
                  QStringLiteral("Codex"));
     }
 
@@ -4175,12 +4185,14 @@ void MainWindow::refreshQuickAddAgentModelSelector()
 
     // These API agents do not expose a per-run model chooser in this composer,
     // but remain first-class choices in the combined menu.
-    addChoice(agentControlIcon(4), QStringLiteral("OpenAI API"),
-              QStringLiteral("openai"), QString(),
+    addChoice(agentControlIcon(
+                  agentModelFaceIconIndex(QStringLiteral("openai"), QString())),
+              QStringLiteral("OpenAI API"), QStringLiteral("openai"), QString(),
               QStringLiteral("Headless OpenAI API agent"));
-    addChoice(agentControlIcon(2), QStringLiteral("Claude API"),
-              QStringLiteral("claude-api"), QString(),
-              QStringLiteral("Headless Claude API agent"));
+    addChoice(agentControlIcon(agentModelFaceIconIndex(
+                  QStringLiteral("claude-api"), QString())),
+              QStringLiteral("Claude API"), QStringLiteral("claude-api"),
+              QString(), QStringLiteral("Headless Claude API agent"));
 
     // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
     // rather than starting an agent, so they are appended as their own group
@@ -4193,7 +4205,11 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         // Cloudflare AI only answers a prompt and never creates a branch, so it
         // has no merge outcome to count. Keep its label distinct rather than
         // presenting a misleading permanent "0 merged" score.
-        addChoice(agentControlIcon(5), label, kCloudflareAiProvider,
+        // One face for the whole group: these are relay models, so the per-id
+        // lookup has no portrait of its own to find.
+        addChoice(agentControlIcon(agentModelFaceIconIndex(kCloudflareAiProvider,
+                                                          QString())),
+                  label, kCloudflareAiProvider,
                   cloudflareModels.itemData(i).toString(),
                   QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
                                  "starts no agent").arg(label));
@@ -5850,7 +5866,7 @@ void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace
         m_autoFiledStallSignatures.insert(signature);
         logSystem(QStringLiteral(
             "Auto-started an agent to fix the UI stall (toggle in Settings > "
-            "Agents & IDE)."));
+            "Agents / IDE)."));
     }
 }
 
@@ -7809,6 +7825,11 @@ QWidget *MainWindow::buildBreadcrumb()
                 switchToAgentsTab(sid);
                 dismissTopMessage();
             }
+        } else if (href == QLatin1String("fm:log:errors")) {
+            // Auto-raised error card (alertOnLoggedError): open the Log filtered
+            // to ERROR, where this failure and its neighbours are in full.
+            openFullLogForCategory(QStringLiteral("ERROR"));
+            dismissTopMessage();
         }
     });
     m_topMessage->hide();

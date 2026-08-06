@@ -1131,6 +1131,14 @@ void MainWindow::refreshThemedIcons()
     const auto buttons = findChildren<QPushButton *>();
     for (QPushButton *button : buttons)
         applyStoredOcticon(button);
+    // Section headings and tab bars carry octicons too (Settings, adhoc #1533):
+    // both store the glyph name, so they re-tint from the same sweep.
+    const auto labels = findChildren<QLabel *>();
+    for (QLabel *label : labels)
+        applyStoredLabelOcticon(label);
+    const auto tabWidgets = findChildren<QTabWidget *>();
+    for (QTabWidget *tabs : tabWidgets)
+        refreshTabOcticons(tabs);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)

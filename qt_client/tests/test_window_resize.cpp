@@ -329,6 +329,59 @@ void settleAnimations(int timeoutMs = 400)
         QApplication::processEvents(QEventLoop::AllEvents, 10);
 }
 
+// An error reaching the log has to announce itself: until now a background
+// failure was visible only if the Log section happened to be open. Every
+// ERROR-badged line now pulses the window border and shows the failure as a
+// card — once per failure, and without doubling up the cards callers raise
+// themselves through flashMessage.
+void checkLoggedErrorAlert(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    window.testLogSystem(QStringLiteral("Mirror sync finished"));
+    QApplication::processEvents();
+    check(!window.testErrorBorderVisible(),
+          QStringLiteral("an ordinary log line leaves the window alone"));
+
+    window.testLogSystem(
+        QStringLiteral("Push to mirror7 failed: connection refused"));
+    QApplication::processEvents();
+    check(window.testErrorBorderVisible() &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("connection refused")),
+          QStringLiteral("an error in the log flashes the window and shows the "
+                         "failure"));
+
+    const int queuedAfterFirst = window.testTopMessageQueueDepth();
+    window.testLogSystem(
+        QStringLiteral("Push to mirror7 failed: connection refused"));
+    QApplication::processEvents();
+    check(window.testTopMessageQueueDepth() == queuedAfterFirst,
+          QStringLiteral("a retried failure repeating itself alerts once, not "
+                         "once per attempt"));
+
+    // A caller reporting its own failure still flashes the window, but the log
+    // hook must not stack a second card behind the one it just showed.
+    window.testDismissTopMessage();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+    window.testFlashMessage(QStringLiteral("Clone failed: no live host"), true);
+    QApplication::processEvents();
+    check(window.testErrorBorderVisible() &&
+              window.testTopMessageQueueDepth() == 0 &&
+              window.testTopMessageRaw().contains(QStringLiteral("Clone failed")),
+          QStringLiteral("a reported failure flashes the window and is shown "
+                         "exactly once"));
+
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
 // adhoc #1444: the alert stack has to hug its own content and read as one evenly
 // spaced column that rises into place. The reference screenshot showed a prompt
 // confirmation stretched down the entire window with empty bands between its
@@ -850,6 +903,8 @@ int main(int argc, char *argv[])
         app.arguments().contains(QStringLiteral("--log-timeline-only"));
     const bool footerOverlayOnly =
         app.arguments().contains(QStringLiteral("--footer-overlay-only"));
+    const bool errorAlertOnly =
+        app.arguments().contains(QStringLiteral("--error-alert-only"));
     const bool updateIsolationOnly =
         app.arguments().contains(QStringLiteral("--update-isolation-only"));
 
@@ -1000,7 +1055,7 @@ int main(int argc, char *argv[])
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
     if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly &&
-        !mirrorFleetOnly)
+        !mirrorFleetOnly && !errorAlertOnly)
         check(detailedStartupSteps >= 7 &&
               startupLog.contains(QStringLiteral(
                   "BEGIN MainWindow: read connection state and cached model list")) &&
@@ -1071,6 +1126,14 @@ int main(int argc, char *argv[])
         window.show();
         QApplication::processEvents();
         runLogTimelineChecks(window);
+        stopChildProcesses(window);
+        return failures == 0 ? 0 : 1;
+    }
+
+    if (errorAlertOnly) {
+        window.show();
+        QApplication::processEvents();
+        checkLoggedErrorAlert(window);
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
@@ -1980,6 +2043,8 @@ int main(int argc, char *argv[])
     // filters.
     runLogTimelineChecks(window);
 
+    checkLoggedErrorAlert(window);
+
     // adhoc #1389: notification actions are caption-height controls, not the
     // full-height buttons shown in the reference screenshot. The queued cards
     // share these same object names and theme rules.
@@ -2583,7 +2648,12 @@ int main(int argc, char *argv[])
     // push and when a mirror picks it up) must not grow the window on a small
     // screen.
     QTemporaryDir repoDir;
-    QProcess::execute(QStringLiteral("git"), {"-C", repoDir.path(), "init", "-q"});
+    // Name the initial branch explicitly (as initGitRepo does). On a host with
+    // no init.defaultBranch the repo comes up on "master", and the switch back
+    // to "main" below then pops a modal "Branch not found" that parks the whole
+    // headless run.
+    QProcess::execute(QStringLiteral("git"),
+                      {"-C", repoDir.path(), "init", "-q", "-b", "main"});
     QProcess::execute(QStringLiteral("git"),
                       {"-C", repoDir.path(), "config", "user.email", "a@b.c"});
     QProcess::execute(QStringLiteral("git"),
@@ -6238,6 +6308,20 @@ int main(int argc, char *argv[])
         other.associationOnly = false;
         other.prNumber = 0;
         window.testAddAgentSession(other);
+        // adhoc #1537: a session whose stored status never came off "Running" —
+        // a terminal `result` event that never landed, a run killed with the app,
+        // a completion poll still waiting on a background process (adhoc
+        // #143/#157) — must not make the merge insist the user stop an agent that
+        // finished long ago ("Agent #N is still working" over completed work).
+        // Nothing owns a runner, stream or queue slot for this id, so no work can
+        // be in flight; if the gate believed the status anyway its modal would
+        // block this test instead of letting the merge land below.
+        AgentSession staleRunning = ran;
+        staleRunning.id = 13043;
+        staleRunning.status = AgentStatus::Running;
+        staleRunning.startedAtMs =
+            QDateTime::currentMSecsSinceEpoch() - 3600 * 1000;
+        window.testAddAgentSession(staleRunning);
 
         // A prior crashed ref publication must not poison every later branch
         // merge. Model the orphaned lock from the reported failure; a lock this
@@ -6253,7 +6337,9 @@ int main(int argc, char *argv[])
 
         check(window.testMergeBranchAndCleanUp(cleanBranch),
               QStringLiteral("\"Merge & clean up\" lands the agent branch in the "
-                             "default branch"));
+                             "default branch, and a session left stuck on "
+                             "\"Running\" with nothing executing it doesn't hold "
+                             "the merge back (adhoc #1537)"));
         check(!QFileInfo::exists(staleHeadLock),
               QStringLiteral("merge recovers an orphaned HEAD.lock instead of "
                              "misreporting a content conflict"));
@@ -6266,6 +6352,9 @@ int main(int argc, char *argv[])
         check(!window.testHasAgentSession(13041),
               QStringLiteral("\"Merge & clean up\" deletes the branch's "
                              "provenance-only Agent record too"));
+        check(!window.testHasAgentSession(13043),
+              QStringLiteral("\"Merge & clean up\" also clears the session that was "
+                             "stuck on \"Running\" for the merged branch"));
         check(window.testHasAgentSession(13042),
               QStringLiteral("\"Merge & clean up\" keeps agent entries for other "
                              "branches"));
