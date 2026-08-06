@@ -4555,13 +4555,23 @@ int main(int argc, char *argv[])
                     !iconContainsChromaKey(quickAgentModel->itemIcon(i));
             }
         }
-        // adhoc #1204: rows are the bare model name — no "· Claude Code" /
-        // "· Codex" suffix repeated down the whole menu; the per-row tooltip
-        // still says which agent runs the model.
+        const int gpt55Row = quickAgentModel
+                                 ? quickAgentModel->findText(
+                                       QStringLiteral("GPT-5.5"),
+                                       Qt::MatchStartsWith)
+                                 : -1;
+        // Rows keep the model name plus an explicit merged-success count; the
+        // tooltip still says which agent runs the model.
         check(quickAgentModel && quickAgentModel->isVisible() &&
                   quickAgentModel->maxVisibleItems() >= quickAgentModel->count() &&
-                  agentModelLabels.contains(QStringLiteral("Auto")) &&
-                  agentModelLabels.contains(QStringLiteral("GPT-5.5")) &&
+                  std::any_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
+                              [](const QString &label) {
+                                  return label.startsWith(QStringLiteral("Auto · "));
+                              }) &&
+                  std::any_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
+                              [](const QString &label) {
+                                  return label.startsWith(QStringLiteral("GPT-5.5 · "));
+                              }) &&
                   agentModelLabels.contains(QStringLiteral("OpenAI API")) &&
                   agentModelLabels.contains(QStringLiteral("Claude API")) &&
                   std::none_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
@@ -4570,17 +4580,15 @@ int main(int argc, char *argv[])
                                               QStringLiteral("Claude Code")) ||
                                           label.endsWith(QStringLiteral("Codex"));
                                }) &&
-                  quickAgentModel->itemData(
-                      quickAgentModel->findText(QStringLiteral("GPT-5.5")),
-                      Qt::ToolTipRole).toString() ==
-                      QStringLiteral("GPT-5.5 · Codex") &&
+                  gpt55Row >= 0 &&
+                  quickAgentModel->itemData(gpt55Row, Qt::ToolTipRole).toString()
+                      .startsWith(QStringLiteral("GPT-5.5 · Codex\nMerged success:")) &&
                   allAgentModelsHaveIcons && agentModelIconsAreClean && quickProvider &&
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
               QString("one icon-rich composer dropdown combines agents and models (%1)")
                   .arg(agentModelLabels.join(QStringLiteral(", "))));
-        // The menu is ordered strongest-model-first. Offline this is the static
-        // fallback line-up, so the order is exact: the Auto router above every
-        // concrete model, then every Claude model, then every Codex model.
+        // The menu is ordered by merged-agent success, then model power. With
+        // no merged history the static fallback line-up is strongest first.
         QStringList rankedLabels;
         for (int i = 0; i < quickAgentModel->count(); ++i) {
             // Manual and the two API agents carry no model of their own.
@@ -4594,15 +4602,15 @@ int main(int argc, char *argv[])
                 continue;
             rankedLabels << quickAgentModel->itemText(i);
         }
-        check(rankedLabels == QStringList({QStringLiteral("Auto"),
-                                           QStringLiteral("Fable 5"),
-                                           QStringLiteral("Opus 4.8"),
-                                           QStringLiteral("Sonnet 4.6"),
-                                           QStringLiteral("Haiku 4.5"),
-                                           QStringLiteral("GPT-5.5"),
-                                           QStringLiteral("GPT-5.4"),
-                                           QStringLiteral("GPT-5.4-Mini")}),
-              QString("composer models sort most powerful first and show every model (%1)")
+        check(rankedLabels == QStringList({QStringLiteral("Auto · 0 merged"),
+                                           QStringLiteral("Fable 5 · 0 merged"),
+                                           QStringLiteral("Opus 4.8 · 0 merged"),
+                                           QStringLiteral("Sonnet 4.6 · 0 merged"),
+                                           QStringLiteral("Haiku 4.5 · 0 merged"),
+                                           QStringLiteral("GPT-5.5 · 0 merged"),
+                                           QStringLiteral("GPT-5.4 · 0 merged"),
+                                           QStringLiteral("GPT-5.4-Mini · 0 merged")}),
+              QString("composer models show merged counts and sort strongest first when tied (%1)")
                   .arg(rankedLabels.join(QStringLiteral(", "))));
         QComboBox *canonicalModel =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
@@ -4631,12 +4639,12 @@ int main(int argc, char *argv[])
                   canonicalModel->currentData().toString() == concreteClaudeModel,
               QStringLiteral("one combined-menu click updates provider and model state"));
 
-        // The composer puts most-used models first and keeps the open row to the
-        // model name alone: no last-run ✓ / ✗, quota countdown, or provider text.
+        // The composer puts models with the most merged work first, keeping a
+        // merged-success count beside every model name.
         {
             const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
             const auto addUse = [&seeded](int id, const QString &model,
-                                          qint64 createdAtMs) {
+                                          qint64 createdAtMs, bool merged) {
                 AgentSession session;
                 session.id = id;
                 session.owner = QStringLiteral("me");
@@ -4645,6 +4653,7 @@ int main(int argc, char *argv[])
                 session.provider = QStringLiteral("claude-code");
                 session.model = model;
                 session.status = AgentStatus::Success;
+                session.merged = merged;
                 session.createdAtMs = createdAtMs;
                 session.startedAtMs = createdAtMs;
                 session.finishedAtMs = createdAtMs + 1000;
@@ -4652,10 +4661,10 @@ int main(int argc, char *argv[])
             };
             for (int i = 0; i < 4; ++i)
                 addUse(144501 + i, QStringLiteral("claude-sonnet-4-6"),
-                       nowMs - (i + 1) * 60000);
+                       nowMs - (i + 1) * 60000, i < 3);
             for (int i = 0; i < 2; ++i)
                 addUse(144505 + i, QStringLiteral("claude-opus-4-8"),
-                       nowMs - (i + 5) * 60000);
+                       nowMs - (i + 5) * 60000, i < 1);
             seeded.testRefreshQuickAddAgentModelSelector();
             QApplication::processEvents();
             const QString opusLabel = seeded.testQuickAddAgentModelLabel(
@@ -4665,10 +4674,10 @@ int main(int argc, char *argv[])
             const int sonnetRow = quickAgentModel->findText(sonnetLabel);
             const int opusRow = quickAgentModel->findText(opusLabel);
             check(sonnetRow >= 0 && opusRow > sonnetRow &&
-                      sonnetLabel == QStringLiteral("Sonnet 4.6") &&
-                      opusLabel == QStringLiteral("Opus 4.8"),
-                  QString("the model menu orders by use frequency and shows only "
-                          "model names (Sonnet row %1, Opus row %2)")
+                      sonnetLabel == QStringLiteral("Sonnet 4.6 · 3 merged") &&
+                      opusLabel == QStringLiteral("Opus 4.8 · 1 merged"),
+                  QString("the model menu orders by merged success and shows "
+                          "the count (Sonnet row %1, Opus row %2)")
                       .arg(sonnetRow).arg(opusRow));
             for (int id = 144501; id <= 144506; ++id)
                 seeded.testRemoveAgentSession(id);
@@ -4834,7 +4843,7 @@ int main(int argc, char *argv[])
                   quickAgentModel
                       ->itemData(quickAgentModel->currentIndex(), Qt::ToolTipRole)
                       .toString()
-                      .endsWith(QStringLiteral("· Codex")) &&
+                      .contains(QStringLiteral("· Codex\nMerged success:")) &&
                   !seeded.testQuickAddModelEditable() && codexModels ==
                       QStringList({QStringLiteral("GPT-5.5"),
                                    QStringLiteral("GPT-5.4"),

@@ -3656,11 +3656,12 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // model controls. Each row stores provider in UserRole and model in UserRole+1,
 // allowing a single click to update both without changing the launch contract.
 //
-// Rows read as the bare model name (adhoc #1204): "Opus 5", not "Opus 5 · Claude
-// Code". Which CLI runs a model follows from the model, so the suffix was the
-// same handful of words repeated down the whole menu; the tooltip still carries
-// it. Models the user has run most often lead the list; power is a stable
-// tie-breaker for models with the same history.
+// Rows read as the model name plus its merged-work count: "Opus 5 · 3 merged",
+// not "Opus 5 · Claude Code". Which CLI runs a model follows from the model, so
+// the provider suffix was the same handful of words repeated down the whole
+// menu; the tooltip still carries it. A merge is the durable success signal for
+// an agent run, so models with the most merged work lead the list; power is a
+// stable tie-breaker for equal success counts.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -3683,23 +3684,32 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         QString provider;
         QString model;
         QString agentName; // which CLI/API runs it, for the tooltip
-        int useCount = 0;  // higher sorts nearer the top
+        int mergedCount = 0; // higher sorts nearer the top
+        int runCount = 0;
         int powerRank = 0; // stable tie-breaker for equally-used models
     };
-    QHash<QString, int> modelUseCounts;
+    QHash<QString, int> modelMergedCounts;
+    QHash<QString, int> modelRunCounts;
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
         const QString model = session.model.trimmed().toLower();
-        if (!model.isEmpty())
-            ++modelUseCounts[session.provider + QLatin1Char('\x1f') + model];
+        if (model.isEmpty())
+            continue;
+        const QString key =
+            session.provider + QLatin1Char('\x1f') + model;
+        ++modelRunCounts[key];
+        if (session.merged)
+            ++modelMergedCounts[key];
     }
     QList<Choice> models;
-    auto addModel = [&models, &modelUseCounts](
+    auto addModel = [&models, &modelMergedCounts, &modelRunCounts](
                         const QIcon &icon, const QString &label,
                         const QString &provider, const QString &model,
                         const QString &agentName) {
-        const int useCount = modelUseCounts.value(
-            provider + QLatin1Char('\x1f') + model.trimmed().toLower());
-        models.append(Choice{icon, label, provider, model, agentName, useCount,
+        const QString key = provider + QLatin1Char('\x1f') +
+                            model.trimmed().toLower();
+        models.append(Choice{icon, label, provider, model, agentName,
+                             modelMergedCounts.value(key),
+                             modelRunCounts.value(key),
                              agentModelPowerRank(model, label)});
     };
 
@@ -3733,13 +3743,13 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                  QStringLiteral("Codex"));
     }
 
-    // Most-used first. Power ties (Opus 4.8 and Sonnet 5 score the same) keep
-    // the provider catalog order, so the menu never reshuffles between two
-    // otherwise-equal models from one refresh to the next.
+    // Most merged work first. Power ties (Opus 4.8 and Sonnet 5 score the
+    // same) keep the provider catalog order, so the menu never reshuffles
+    // between two otherwise-equal models from one refresh to the next.
     std::stable_sort(models.begin(), models.end(),
                      [](const Choice &a, const Choice &b) {
-                         if (a.useCount != b.useCount)
-                             return a.useCount > b.useCount;
+                         if (a.mergedCount != b.mergedCount)
+                             return a.mergedCount > b.mergedCount;
                          return a.powerRank > b.powerRank;
                      });
 
@@ -3767,11 +3777,18 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
     QHash<QString, QString> providerIdentities;
     for (const Choice &choice : models) {
-        // The open list is intentionally just model names: status, account,
-        // provider, and quota details belong in the tooltip, not every row.
-        const QString label = choice.label;
+        // Keep the success count in the row so the best model can be spotted
+        // without opening a tooltip. The run total remains in the tooltip: a
+        // session that is still under review must not be mistaken for a failed
+        // merge simply because it has not landed yet.
+        const QString label = QStringLiteral("%1 · %2 merged")
+                                  .arg(choice.label)
+                                  .arg(choice.mergedCount);
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
+        toolTip += QStringLiteral("\nMerged success: %1 of %2 runs")
+                       .arg(choice.mergedCount)
+                       .arg(choice.runCount);
         if (!providerIdentities.contains(choice.provider)) {
             const AgentAccountProfile account =
                 activeAgentAccount(choice.provider);
@@ -3804,6 +3821,9 @@ void MainWindow::refreshQuickAddAgentModelSelector()
     populateCloudflareAiModelCombo(&cloudflareModels);
     for (int i = 0; i < cloudflareModels.count(); ++i) {
         const QString label = cloudflareModels.itemText(i);
+        // Cloudflare AI only answers a prompt and never creates a branch, so it
+        // has no merge outcome to count. Keep its label distinct rather than
+        // presenting a misleading permanent "0 merged" score.
         addChoice(agentControlIcon(5), label, kCloudflareAiProvider,
                   cloudflareModels.itemData(i).toString(),
                   QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
