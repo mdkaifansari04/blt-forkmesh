@@ -679,8 +679,47 @@ void MainWindow::focusRepoDetailTable(int id)
         table->setFocus(Qt::OtherFocusReason);
 }
 
+// Record a panel refresh instead of running it while a batch is open, so a
+// multi-step operation repaints each panel once at the end rather than after
+// every step (see UiRefreshBatch in MainWindow.h). Returns true when the
+// caller should return without doing its work.
+bool MainWindow::deferUiRefresh(unsigned kind)
+{
+    if (m_uiRefreshBatchDepth <= 0)
+        return false;
+    m_uiRefreshPending |= kind;
+    return true;
+}
+
+// Run each recorded refresh exactly once, in the order a user reads the
+// window: the working tree first, then the panels built from it.
+void MainWindow::runPendingUiRefreshes()
+{
+    const unsigned pending = m_uiRefreshPending;
+    m_uiRefreshPending = 0;
+    if (!pending)
+        return;
+    // A forced source-control refresh subsumes an unforced one.
+    if (pending & UiRefreshSourceControlForce)
+        refreshSourceControl(true);
+    else if (pending & UiRefreshSourceControl)
+        refreshSourceControl(false);
+    if (pending & UiRefreshAgents)
+        reloadAgents();
+    if (pending & UiRefreshWorktrees)
+        loadWorktreesPanel();
+    if (pending & UiRefreshBranches)
+        loadBranchesAndTags();
+    if (pending & UiRefreshIssues) {
+        refreshIssueList();
+        updateIssueActionState();
+    }
+}
+
 void MainWindow::loadWorktreesPanel()
 {
+    if (deferUiRefresh(UiRefreshWorktrees))
+        return;
     if (!m_worktreesTable)
         return;
     // Remember the selected worktree so a rebuild (Refresh, or after an
@@ -1528,6 +1567,12 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                                        const QString &worktreePathArg,
                                        bool deleteAgent)
 {
+    // One repaint for the whole operation. Merge, worktree removal, branch
+    // deletion and agent cleanup each used to reload every panel they might
+    // have touched, and those reloads pump the event loop over git — so the
+    // view flashed through several half-updated states and the selection
+    // jumped. The refreshes still all happen, once, when this returns.
+    UiRefreshBatch uiBatch(this);
     // Copy by value: the detached merge below runs the event loop before its
     // callback fires, and a refresh could reassign the m_worktreeSelected* members
     // passed here by reference meanwhile — leaving these refs pointing at a new
@@ -1898,6 +1943,10 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
                                 bool confirm, bool alsoDeleteBranch, bool async,
                                 std::function<void()> onDone)
 {
+    // Same coalescing as the merge path: this is also reached directly from
+    // the Worktrees tab, where it otherwise reloaded the panel up to three
+    // times for one removal.
+    UiRefreshBatch uiBatch(this);
     if (worktreePath.isEmpty())
         return;
     QString repoPath;
