@@ -29,6 +29,7 @@
 #include <QDateTimeEdit>
 #include <QElapsedTimer>
 #include <QFontDatabase>
+#include <QGridLayout>
 #include <QFormLayout>
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
@@ -1911,6 +1912,27 @@ QWidget *MainWindow::buildNetworkLogDock()
     // (kMaxTextChars). QPlainTextEdit has no setMaxLength, so the cap is enforced
     // in the textChanged handler below.
     const int kQuickAddMaxChars = 16000;
+    m_quickAddTargetAgentLabel = new QLabel;
+    m_quickAddTargetAgentLabel->setObjectName(QStringLiteral("quickAddTargetAgentLabel"));
+    m_quickAddTargetAgentLabel->setAlignment(Qt::AlignRight | Qt::AlignTop);
+    m_quickAddTargetAgentLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_quickAddTargetAgentLabel->setStyleSheet(
+        "QLabel#quickAddTargetAgentLabel {"
+        " background: transparent;"
+        " color: rgba(125, 128, 128, 0.45);"
+        " font-size: 9px;"
+        "}");
+    m_quickAddTargetAgentLabel->setVisible(false);
+    auto *quickAddInputHost = new QWidget;
+    auto *quickAddInputLayout = new QGridLayout(quickAddInputHost);
+    quickAddInputLayout->setContentsMargins(0, 0, 0, 0);
+    quickAddInputLayout->setSpacing(0);
+    quickAddInputLayout->addWidget(m_issueQuickAdd, 0, 0);
+    quickAddInputLayout->addWidget(m_quickAddTargetAgentLabel,
+                                  0,
+                                  0,
+                                  Qt::AlignRight | Qt::AlignTop);
+
     // Ctrl+V with an image on the clipboard attaches it (issue #79).
     m_issueQuickAdd->installEventFilter(this);
     // Restore the prompt history persisted from earlier sessions so Up recalls
@@ -2589,7 +2611,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // The editor stretches to fill the freed vertical space (the send column no
     // longer sits below it), and the bottom bar carries its own fixed height, so
     // the border sits right above the text and the controls weld to the foot.
-    promptLeftCol->addWidget(m_issueQuickAdd, 1);
+    promptLeftCol->addWidget(quickAddInputHost, 1);
     promptLeftCol->addWidget(bottomBarScroll, 0);
     promptLayout->addLayout(promptLeftCol, 1);
     promptLayout->addLayout(sendColumn, 0);
