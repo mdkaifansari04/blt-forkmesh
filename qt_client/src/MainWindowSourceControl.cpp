@@ -996,6 +996,9 @@ void MainWindow::showSourceControlLoading(const QString &branch)
 
 void MainWindow::refreshSourceControl(bool force)
 {
+    if (deferUiRefresh(force ? UiRefreshSourceControlForce
+                             : UiRefreshSourceControl))
+        return;
     if (!m_scmTree)
         return;
     // A manual refresh should also recheck commits pending sync (the top "Sync"

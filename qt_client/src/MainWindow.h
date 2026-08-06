@@ -3611,6 +3611,57 @@ private:
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
+
+    // Coalesced panel refreshes.
+    //
+    // A multi-step operation ("Merge & clean up" is the worst case) walks
+    // through merge, worktree removal, branch deletion and agent cleanup,
+    // and each step used to reload every panel it could have touched —
+    // loadWorktreesPanel() alone ran three times per removal. Because those
+    // reloads shell out to git and pump the GUI event loop, every one of
+    // them repainted a half-updated view, which is what made the screen
+    // flash and the selection jump around.
+    //
+    // Inside a batch, a reload records itself instead of running; the batch
+    // then runs each distinct one ONCE at the end. The refreshes themselves
+    // are unchanged, so behaviour is identical — only the redundant
+    // intermediate repaints go away.
+    enum UiRefreshKind : unsigned {
+        UiRefreshSourceControl = 1u << 0,
+        UiRefreshSourceControlForce = 1u << 1,
+        UiRefreshWorktrees = 1u << 2,
+        UiRefreshBranches = 1u << 3,
+        UiRefreshAgents = 1u << 4,
+        UiRefreshIssues = 1u << 5,
+    };
+    int m_uiRefreshBatchDepth = 0;
+    unsigned m_uiRefreshPending = 0;
+    // True when the caller should skip its own work because a batch is open
+    // and has recorded this refresh for later.
+    bool deferUiRefresh(unsigned kind);
+    void runPendingUiRefreshes();
+    // RAII: opens a batch for the enclosing scope and flushes on the way out
+    // (including on an early return, which these merge paths take often).
+    class UiRefreshBatch {
+    public:
+        explicit UiRefreshBatch(MainWindow *window) : m_window(window)
+        {
+            if (m_window)
+                ++m_window->m_uiRefreshBatchDepth;
+        }
+        ~UiRefreshBatch()
+        {
+            if (!m_window)
+                return;
+            if (--m_window->m_uiRefreshBatchDepth == 0)
+                m_window->runPendingUiRefreshes();
+        }
+        UiRefreshBatch(const UiRefreshBatch &) = delete;
+        UiRefreshBatch &operator=(const UiRefreshBatch &) = delete;
+
+    private:
+        MainWindow *m_window = nullptr;
+    };
     // Give the just-opened repo-detail tab's primary list table keyboard focus so
     // the user can arrow up/down through its rows immediately, without clicking a
     // row first. `id` is the m_repoDetailStack index switched to; tabs without a

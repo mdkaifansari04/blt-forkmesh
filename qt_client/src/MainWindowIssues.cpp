@@ -2301,6 +2301,11 @@ void MainWindow::resetIssueFilters()
 
 void MainWindow::refreshIssueList()
 {
+    // Deferred inside a batch so it renders AFTER reloadAgents(): this list
+    // shows agent assignment, and running it against stale sessions was one
+    // of the flashes during "Merge & clean up".
+    if (deferUiRefresh(UiRefreshIssues))
+        return;
     if (!m_issueTable)
         return;
     const QString statusFilter = m_issueStatusFilter->currentText();
