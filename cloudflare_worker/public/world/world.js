@@ -52,6 +52,7 @@ import {
   QR_MODULE_READY,
   SWING_RIDING_ACTIVITY,
   createWorldScene,
+  proceduralAvatarFaceDataURL,
 } from "./world-scene.js";
 
 const THREE_MODULE_URL =
@@ -4185,6 +4186,29 @@ function accountBadgeCopy(identity, settings) {
   return pieces.join(" · ");
 }
 
+// One painted portrait per identity key. updateIdentityUI runs every second
+// while the "Show local time" badge is on, so the canvas work and the base64
+// string are both reused instead of redrawn on every tick.
+let hudFacePortrait = { key: "", url: "" };
+
+// The round launcher in the top-right corner always wears a face. An uploaded
+// account photo wins; everyone else — every guest included, since guests can
+// never have uploaded one — gets the same deterministic portrait their 3D head
+// paints from the same identity key, so the badge and the avatar match.
+function hudAvatarFaceSource(session, identity) {
+  const avatarPng =
+    String(session?.avatarPng || "") &&
+    /^[A-Za-z0-9+/=]+$/.test(String(session.avatarPng))
+      ? String(session.avatarPng)
+      : "";
+  if (avatarPng) return `data:image/png;base64,${avatarPng}`;
+  const key = String(identity?.id || identity?.name || "forkmesh-visitor");
+  if (hudFacePortrait.key !== key) {
+    hudFacePortrait = { key, url: proceduralAvatarFaceDataURL(key) };
+  }
+  return hudFacePortrait.url;
+}
+
 function worldTemplate(identity, settings, mode, landmarkCapabilities) {
   const accountSession = readSession();
   const signedInName =
@@ -4199,6 +4223,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
     /^[A-Za-z0-9+/=]+$/.test(String(accountSession.avatarPng))
       ? String(accountSession.avatarPng)
       : "";
+  const shirtAvatarSource = hudAvatarFaceSource(accountSession, identity);
   // The compact rail only needs the two spatial shortcuts people use while
   // walking. Repository and reward-pool navigation remain in the scene.
   const mapItems = LANDMARKS.filter((landmark) =>
@@ -4475,13 +4500,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <img
                 class="world-shirt-avatar"
                 data-world-shirt-avatar
-                src="${
-                  accountAvatarPng
-                    ? `data:image/png;base64,${accountAvatarPng}`
-                    : ""
-                }"
+                src="${escapeHTML(shirtAvatarSource)}"
                 alt=""
-                ${accountAvatarPng ? "" : "hidden"}
+                ${shirtAvatarSource ? "" : "hidden"}
               />
             </button>
           </nav>
@@ -13177,8 +13198,11 @@ class ForkMeshWorld extends HTMLElement {
         ? String(session.avatarPng)
         : "";
     if (avatar) {
-      avatar.src = avatarPng ? `data:image/png;base64,${avatarPng}` : "";
-      avatar.hidden = !avatarPng;
+      // Never blank the badge: the deterministic portrait stands in whenever
+      // there is no uploaded photo, which is always the case for guests.
+      const source = hudAvatarFaceSource(session, this.identity);
+      if (avatar.getAttribute("src") !== source) avatar.src = source;
+      avatar.hidden = !source;
     }
     const quickAvatar = this.$("[data-world-quick-composer-avatar-image]");
     const quickInitial = this.$("[data-world-quick-composer-avatar-initial]");
