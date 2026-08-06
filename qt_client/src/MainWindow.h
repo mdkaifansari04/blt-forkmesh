@@ -558,6 +558,8 @@ public:
     QStringList testFileExplorerNames() const;
     // Names of `name`'s children, expanding it first (lazy load).
     QStringList testExpandFileExplorerEntry(const QString &name);
+    // Paths of the folders currently open, sorted.
+    QStringList testExpandedFileExplorerPaths() const;
     QStringList testUsersColumns() const;
     QString testUsersCellText(int row, const QString &header) const;
     QStringList testSortUsersBy(const QString &header, Qt::SortOrder order);
@@ -2388,6 +2390,9 @@ private:
     // Fill `item`'s children from disk. Directories are inserted with a dummy
     // child so they show an expand arrow before they have been read.
     void populateFileExplorerItem(QTreeWidgetItem *item);
+    // One explorer row; `parent` null means a top-level row.
+    QTreeWidgetItem *addFileExplorerRow(QTreeWidgetItem *parent,
+                                        const QFileInfo &entry);
     // Entries of `dir` honouring the "Show hidden" toggle, folders first.
     QFileInfoList fileExplorerEntries(const QString &dir) const;
     void showFileExplorerMenu(const QPoint &pos);

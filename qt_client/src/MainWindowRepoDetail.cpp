@@ -773,16 +773,8 @@ QWidget *MainWindow::buildRepoEditorPage()
                 if (item && !item->data(0, Qt::UserRole + 1).toBool())
                     openRepoFile(item->data(0, Qt::UserRole).toString());
             });
-    connect(m_repoFileTree, &QTreeWidget::itemExpanded, this,
-            [this](QTreeWidgetItem *item) {
-                if (item && item->data(0, Qt::UserRole + 1).toBool())
-                    item->setIcon(0, iconForDir(true));
-            });
-    connect(m_repoFileTree, &QTreeWidget::itemCollapsed, this,
-            [this](QTreeWidgetItem *item) {
-                if (item && item->data(0, Qt::UserRole + 1).toBool())
-                    item->setIcon(0, iconForDir(false));
-            });
+    connectFileTreeFolderIcons(m_repoFileTree,
+                               [this](bool opened) { return iconForDir(opened); });
 
     m_repoFileTabs = new QTabWidget;
     m_repoFileTabs->setObjectName("fileTabs");
@@ -967,16 +959,8 @@ QWidget *MainWindow::buildRepoCoveExplorerPage()
                 if (item && !item->data(0, Qt::UserRole + 1).toBool())
                     openCoveExplorerDocument(item->data(0, Qt::UserRole).toString());
             });
-    connect(m_coveExplorerTree, &QTreeWidget::itemExpanded, this,
-            [this](QTreeWidgetItem *item) {
-                if (item && item->data(0, Qt::UserRole + 1).toBool())
-                    item->setIcon(0, iconForDir(true));
-            });
-    connect(m_coveExplorerTree, &QTreeWidget::itemCollapsed, this,
-            [this](QTreeWidgetItem *item) {
-                if (item && item->data(0, Qt::UserRole + 1).toBool())
-                    item->setIcon(0, iconForDir(false));
-            });
+    connectFileTreeFolderIcons(m_coveExplorerTree,
+                               [this](bool opened) { return iconForDir(opened); });
 
     m_coveExplorerTabs = new QTabWidget;
     m_coveExplorerTabs->setObjectName("fileTabs");
@@ -1667,23 +1651,8 @@ void MainWindow::loadRepoFileTree()
     // Preserve the user's place across the rebuild: which folders are expanded
     // and the scroll position, keyed by repo-relative path. Without this a change
     // (e.g. deleting a folder) would collapse the whole tree and jump to the top.
-    QSet<QString> expanded;
-    std::function<void(QTreeWidgetItem *)> collectExpanded =
-        [&](QTreeWidgetItem *parent) {
-            for (int i = 0; i < parent->childCount(); ++i) {
-                QTreeWidgetItem *child = parent->child(i);
-                if (child->isExpanded()) {
-                    const QString p = child->data(0, Qt::UserRole).toString();
-                    if (!p.isEmpty())
-                        expanded.insert(p);
-                }
-                collectExpanded(child);
-            }
-        };
-    collectExpanded(m_repoFileTree->invisibleRootItem());
-    const int scrollValue = m_repoFileTree->verticalScrollBar()
-                                ? m_repoFileTree->verticalScrollBar()->value()
-                                : 0;
+    const QSet<QString> expanded = fileTreeExpandedPaths(m_repoFileTree);
+    const int scrollValue = fileTreeScrollOffset(m_repoFileTree);
 
     m_repoFileTree->clear();
 
@@ -1733,9 +1702,7 @@ void MainWindow::loadRepoFileTree()
 
     // Right-aligned, muted size text in column 1 for both files and folders.
     auto setSize = [](QTreeWidgetItem *item, qint64 bytes) {
-        item->setText(1, formatByteSize(bytes));
-        item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-        item->setForeground(1, QBrush(QColor("#8b949e")));
+        setFileTreeSizeCell(item, 1, formatByteSize(bytes));
     };
 
     QHash<QString, QTreeWidgetItem *> dirs; // accumulated path -> directory node
@@ -1794,22 +1761,9 @@ void MainWindow::loadRepoFileTree()
         new QTreeWidgetItem(m_repoFileTree, {"(empty repository)"});
 
     // Re-expand the folders that were open before and restore the scroll offset,
-    // so refreshing in place keeps the view exactly where the user left it.
-    if (!expanded.isEmpty()) {
-        std::function<void(QTreeWidgetItem *)> restoreExpanded =
-            [&](QTreeWidgetItem *parent) {
-                for (int i = 0; i < parent->childCount(); ++i) {
-                    QTreeWidgetItem *child = parent->child(i);
-                    if (child->data(0, Qt::UserRole + 1).toBool() &&
-                        expanded.contains(child->data(0, Qt::UserRole).toString()))
-                        child->setExpanded(true);
-                    restoreExpanded(child);
-                }
-            };
-        restoreExpanded(m_repoFileTree->invisibleRootItem());
-    }
-    if (m_repoFileTree->verticalScrollBar())
-        m_repoFileTree->verticalScrollBar()->setValue(scrollValue);
+    // so refreshing in place keeps the view exactly where the user left it. The
+    // whole tree is built up front here, so no per-folder reload is needed.
+    restoreFileTreeExpandedPaths(m_repoFileTree, expanded, scrollValue);
 }
 
 // Reject a repo-relative path that would escape the repository or touch .git.
@@ -1895,11 +1849,8 @@ void MainWindow::showRepoFileTreeMenu(const QPoint &pos)
         QApplication::clipboard()->setText(path);
     else if (chosen == copyAbs)
         QApplication::clipboard()->setText(QDir(repoGitDir()).filePath(path));
-    else if (chosen == reveal) {
-        const QString full = QDir(repoGitDir()).filePath(path);
-        QDesktopServices::openUrl(QUrl::fromLocalFile(
-            isDir ? full : QFileInfo(full).absolutePath()));
-    }
+    else if (chosen == reveal)
+        revealInDesktopFileManager(QDir(repoGitDir()).filePath(path));
 }
 
 QString MainWindow::prepareRepoFileOp(QString *base)

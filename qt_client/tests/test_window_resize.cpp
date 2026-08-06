@@ -2582,6 +2582,17 @@ int main(int argc, char *argv[])
     check(window.testExpandFileExplorerEntry(QStringLiteral(".hidden-dir")) ==
               QStringList{QStringLiteral("nested")},
           QStringLiteral("expanding a directory loads its children from disk"));
+    // Re-listing the same directory keeps the folders the user had open — the
+    // shared preservation the repo Explorer already used (FileTreeSupport.h).
+    // Children load lazily here, so restoring has to re-read the folder too.
+    window.testSetFileExplorerRoot(explorerDir.path());
+    check(window.testExpandedFileExplorerPaths() ==
+              QStringList{QDir(explorerDir.path())
+                              .absoluteFilePath(QStringLiteral(".hidden-dir"))},
+          QStringLiteral("refreshing keeps the open folders open"));
+    check(window.testExpandFileExplorerEntry(QStringLiteral(".hidden-dir")) ==
+              QStringList{QStringLiteral("nested")},
+          QStringLiteral("a restored folder still has its children loaded"));
     // The toggle is the only thing that hides them; it re-lists in place.
     window.testSetFileExplorerShowHidden(false);
     const QStringList visibleOnly = window.testFileExplorerNames();

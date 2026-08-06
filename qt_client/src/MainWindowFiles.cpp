@@ -5,6 +5,7 @@
 // usual reason for opening it at all.
 
 #include "MainWindow.h"
+#include "FileTreeSupport.h"
 #include "MainWindowInternal.h"
 
 #include <QCheckBox>
@@ -13,7 +14,6 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
-#include <QFileDialog>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -24,7 +24,6 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSplitter>
-#include <QStandardPaths>
 #include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -32,10 +31,9 @@
 using namespace forkmesh::ui;
 
 namespace {
-// Item data roles on every row of the explorer tree.
-constexpr int kFilePathRole = Qt::UserRole;      // absolute path
-constexpr int kFileIsDirRole = Qt::UserRole + 1; // directory rows expand
-constexpr int kFileLoadedRole = Qt::UserRole + 2; // children already read
+// Rows carry the shared file-tree roles (path + isDir, see FileTreeSupport.h);
+// only "children already read" is specific to this lazily-filled explorer.
+constexpr int kFileLoadedRole = Qt::UserRole + 2;
 
 const char *kFilesRootSetting = "files/explorerRoot";
 const char *kFilesHiddenSetting = "files/showHidden";
@@ -130,17 +128,12 @@ QWidget *MainWindow::buildFilesSection()
     chooseButton->setToolTip(QStringLiteral("Pick a directory to browse"));
     setOcticon(chooseButton, "file-directory", 14);
     connect(chooseButton, &QPushButton::clicked, this, [this] {
-        // The picker lists hidden directories too, so it can reach the same
-        // places the tree below it shows.
-        QFileDialog dialog(this, QStringLiteral("Choose a directory"),
-                           m_fileExplorerRoot);
-        dialog.setFileMode(QFileDialog::Directory);
-        dialog.setOption(QFileDialog::ShowDirsOnly, true);
-        dialog.setFilter(QDir::AllDirs | QDir::Drives | QDir::NoDotAndDotDot |
-                         QDir::Hidden);
-        if (dialog.exec() == QDialog::Accepted &&
-            !dialog.selectedFiles().isEmpty())
-            setFileExplorerRoot(dialog.selectedFiles().first());
+        // Shared picker: lists hidden directories, and can actually return "/"
+        // (the portal picker cannot — see chooseExistingDirectory).
+        const QString picked = chooseExistingDirectory(
+            this, QStringLiteral("Choose a directory"), m_fileExplorerRoot);
+        if (!picked.isEmpty())
+            setFileExplorerRoot(picked);
     });
     heading->addWidget(chooseButton);
 
@@ -200,24 +193,18 @@ QWidget *MainWindow::buildFilesSection()
     m_fileExplorerTree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_fileExplorerTree, &QWidget::customContextMenuRequested, this,
             &MainWindow::showFileExplorerMenu);
+    // Open/closed folder glyphs, shared with the repo and Cove explorers.
+    connectFileTreeFolderIcons(m_fileExplorerTree,
+                               [this](bool opened) { return iconForDir(opened); });
     // Directories fill in the first time they are opened (see
     // populateFileExplorerItem), so browsing a large tree costs one readdir per
     // folder actually visited.
     connect(m_fileExplorerTree, &QTreeWidget::itemExpanded, this,
-            [this](QTreeWidgetItem *item) {
-                populateFileExplorerItem(item);
-                if (item && item->data(0, kFileIsDirRole).toBool())
-                    item->setIcon(0, iconForDir(true));
-            });
-    connect(m_fileExplorerTree, &QTreeWidget::itemCollapsed, this,
-            [this](QTreeWidgetItem *item) {
-                if (item && item->data(0, kFileIsDirRole).toBool())
-                    item->setIcon(0, iconForDir(false));
-            });
+            [this](QTreeWidgetItem *item) { populateFileExplorerItem(item); });
     connect(m_fileExplorerTree, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
                 previewFileExplorerFile(
-                    item ? item->data(0, kFilePathRole).toString() : QString());
+                    item ? item->data(0, kFileTreePathRole).toString() : QString());
             });
     // Double-click descends into a directory (it becomes the new root) or hands
     // a file to whatever the desktop opens it with.
@@ -225,10 +212,10 @@ QWidget *MainWindow::buildFilesSection()
             [this](QTreeWidgetItem *item, int) {
                 if (!item)
                     return;
-                const QString path = item->data(0, kFilePathRole).toString();
+                const QString path = item->data(0, kFileTreePathRole).toString();
                 if (path.isEmpty())
                     return;
-                if (item->data(0, kFileIsDirRole).toBool())
+                if (fileTreeIsDir(item))
                     setFileExplorerRoot(path);
                 else
                     QDesktopServices::openUrl(QUrl::fromLocalFile(path));
@@ -309,10 +296,20 @@ void MainWindow::setFileExplorerRoot(const QString &path)
     }
     target = QDir(target).absolutePath();
 
+    const QString previousRoot = m_fileExplorerRoot;
     m_fileExplorerRoot = target;
     QSettings().setValue(QLatin1String(kFilesRootSetting), target);
     if (m_fileExplorerPath && m_fileExplorerPath->text() != target)
         m_fileExplorerPath->setText(target);
+
+    // Re-listing the same directory (Refresh, or the hidden toggle) keeps the
+    // folders the user had open and the scroll offset, the same way the repo
+    // Explorer does — see restoreFileTreeExpandedPaths.
+    const bool sameRoot = (previousRoot == target);
+    const QSet<QString> expanded =
+        sameRoot ? fileTreeExpandedPaths(m_fileExplorerTree) : QSet<QString>();
+    const int scrollOffset =
+        sameRoot ? fileTreeScrollOffset(m_fileExplorerTree) : 0;
 
     m_fileExplorerTree->clear();
     const QFileInfoList entries = fileExplorerEntries(target);
@@ -320,22 +317,7 @@ void MainWindow::setFileExplorerRoot(const QString &path)
     for (const QFileInfo &entry : entries) {
         if (entry.isHidden())
             ++hidden;
-        auto *item = new QTreeWidgetItem(m_fileExplorerTree);
-        item->setText(0, entry.fileName());
-        item->setData(0, kFilePathRole, entry.absoluteFilePath());
-        const bool isDir = entry.isDir();
-        item->setData(0, kFileIsDirRole, isDir);
-        item->setIcon(0, isDir ? iconForDir(false) : iconForFile(entry.fileName()));
-        if (!isDir) {
-            item->setText(1, formatByteSize(entry.size()));
-            item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-        }
-        item->setText(2, modifiedLabel(entry));
-        item->setToolTip(0, entry.absoluteFilePath());
-        // An unreadable directory still gets its arrow; opening it reports the
-        // failure in place instead of silently collapsing again.
-        if (isDir)
-            item->addChild(new QTreeWidgetItem);
+        addFileExplorerRow(nullptr, entry);
     }
 
     if (entries.isEmpty()) {
@@ -355,12 +337,16 @@ void MainWindow::setFileExplorerRoot(const QString &path)
                          : QString::number(hidden)));
     }
     previewFileExplorerFile(QString());
+    // Children load on expand, so re-opening a folder has to re-read it.
+    restoreFileTreeExpandedPaths(
+        m_fileExplorerTree, expanded, scrollOffset,
+        [this](QTreeWidgetItem *item) { populateFileExplorerItem(item); });
 
     if (selectPath.isEmpty())
         return;
     for (int i = 0; i < m_fileExplorerTree->topLevelItemCount(); ++i) {
         QTreeWidgetItem *item = m_fileExplorerTree->topLevelItem(i);
-        if (item->data(0, kFilePathRole).toString() != selectPath)
+        if (item->data(0, kFileTreePathRole).toString() != selectPath)
             continue;
         m_fileExplorerTree->setCurrentItem(item);
         m_fileExplorerTree->scrollToItem(item);
@@ -368,15 +354,40 @@ void MainWindow::setFileExplorerRoot(const QString &path)
     }
 }
 
+// One row of the explorer, used for both the top level (`parent` null) and for
+// lazily-loaded children, so the two paths cannot drift in icon, columns or
+// placeholder handling.
+QTreeWidgetItem *MainWindow::addFileExplorerRow(QTreeWidgetItem *parent,
+                                                const QFileInfo &entry)
+{
+    auto *item = parent ? new QTreeWidgetItem(parent)
+                        : new QTreeWidgetItem(m_fileExplorerTree);
+    const bool isDir = entry.isDir();
+    item->setText(0, entry.fileName());
+    item->setData(0, kFileTreePathRole, entry.absoluteFilePath());
+    item->setData(0, kFileTreeIsDirRole, isDir);
+    item->setIcon(0, isDir ? iconForDir(false) : iconForFile(entry.fileName()));
+    if (!isDir)
+        setFileTreeSizeCell(item, 1, formatByteSize(entry.size()));
+    item->setText(2, modifiedLabel(entry));
+    item->setToolTip(0, entry.absoluteFilePath());
+    // The placeholder child is what draws the expand arrow before the directory
+    // has been read. Symlinked directories never get one, so a link pointing at
+    // an ancestor cannot loop the tree; an unreadable one does, and says so in
+    // place when it is opened rather than silently collapsing again.
+    if (isDir && !entry.isSymLink())
+        item->addChild(new QTreeWidgetItem);
+    return item;
+}
+
 void MainWindow::populateFileExplorerItem(QTreeWidgetItem *item)
 {
-    if (!item || !item->data(0, kFileIsDirRole).toBool() ||
-        item->data(0, kFileLoadedRole).toBool())
+    if (!fileTreeIsDir(item) || item->data(0, kFileLoadedRole).toBool())
         return;
     item->setData(0, kFileLoadedRole, true);
     qDeleteAll(item->takeChildren()); // drop the expand-arrow placeholder
 
-    const QString dir = item->data(0, kFilePathRole).toString();
+    const QString dir = fileTreePath(item);
     const QFileInfoList entries = fileExplorerEntries(dir);
     if (entries.isEmpty()) {
         const bool readable = QFileInfo(dir).isReadable();
@@ -386,25 +397,8 @@ void MainWindow::populateFileExplorerItem(QTreeWidgetItem *item)
         note->setFlags(Qt::NoItemFlags);
         return;
     }
-    for (const QFileInfo &entry : entries) {
-        auto *child = new QTreeWidgetItem(item);
-        child->setText(0, entry.fileName());
-        child->setData(0, kFilePathRole, entry.absoluteFilePath());
-        const bool isDir = entry.isDir();
-        child->setData(0, kFileIsDirRole, isDir);
-        child->setIcon(0,
-                       isDir ? iconForDir(false) : iconForFile(entry.fileName()));
-        if (!isDir) {
-            child->setText(1, formatByteSize(entry.size()));
-            child->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-        }
-        child->setText(2, modifiedLabel(entry));
-        child->setToolTip(0, entry.absoluteFilePath());
-        // Symlinked directories are listed but never auto-descended into, so a
-        // link pointing at an ancestor cannot loop the tree.
-        if (isDir && !entry.isSymLink())
-            child->addChild(new QTreeWidgetItem);
-    }
+    for (const QFileInfo &entry : entries)
+        addFileExplorerRow(item, entry);
 }
 
 void MainWindow::previewFileExplorerFile(const QString &path)
@@ -435,9 +429,7 @@ void MainWindow::previewFileExplorerFile(const QString &path)
         return;
     }
     const QByteArray head = file.read(kPreviewByteLimit);
-    // A NUL byte in the head is the cheap, dependable binary test; showing the
-    // raw bytes of an executable or an image helps nobody.
-    if (head.contains('\0')) {
+    if (fileContentIsBinary(head)) {
         m_fileExplorerPreview->setPlainText(
             header + QStringLiteral("Binary file — no preview."));
         return;
@@ -473,6 +465,13 @@ QStringList MainWindow::testFileExplorerNames() const
     return names;
 }
 
+QStringList MainWindow::testExpandedFileExplorerPaths() const
+{
+    QStringList paths(fileTreeExpandedPaths(m_fileExplorerTree).values());
+    paths.sort();
+    return paths;
+}
+
 QStringList MainWindow::testExpandFileExplorerEntry(const QString &name)
 {
     QStringList names;
@@ -497,8 +496,11 @@ void MainWindow::showFileExplorerMenu(const QPoint &pos)
     if (!m_fileExplorerTree)
         return;
     QTreeWidgetItem *item = m_fileExplorerTree->itemAt(pos);
-    const QString path = item ? item->data(0, kFilePathRole).toString()
-                              : m_fileExplorerRoot;
+    // Placeholder rows ("(empty directory)", "(not readable)") carry no path;
+    // fall back to the directory being listed, as the repo tree menu does.
+    QString path = fileTreePath(item);
+    if (path.isEmpty())
+        path = m_fileExplorerRoot;
     if (path.isEmpty())
         return;
     const QFileInfo info(path);
@@ -522,9 +524,7 @@ void MainWindow::showFileExplorerMenu(const QPoint &pos)
         else
             QDesktopServices::openUrl(QUrl::fromLocalFile(path));
     } else if (chosen == reveal) {
-        // A file has no folder to open, so reveal its parent directory.
-        QDesktopServices::openUrl(
-            QUrl::fromLocalFile(isDir ? path : info.absolutePath()));
+        revealInDesktopFileManager(path);
     } else if (chosen == copyPath) {
         QGuiApplication::clipboard()->setText(info.absoluteFilePath());
         flashMessage(QStringLiteral("Path copied."));

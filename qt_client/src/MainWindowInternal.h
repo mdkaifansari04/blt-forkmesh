@@ -16,6 +16,7 @@
 #include "ActionRunner.h"
 #include "BackgroundActivity.h"
 #include "BackoffNetworkAccessManager.h"
+#include "FileTreeSupport.h"
 #include "GuiPump.h"
 #include "ClaudeAgentScript.h"
 #include "ClaudeIdeBridge.h"
@@ -6045,8 +6046,9 @@ protected:
         }
         const QString target =
             rel.isEmpty() ? m_basePath : QDir(m_basePath).filePath(rel);
-        // File slices reveal their containing directory (a file itself can't
-        // be opened as a folder).
+        // Only offer the menu for something that is still on disk. File slices
+        // resolve to their containing directory — revealInDesktopFileManager
+        // applies that same rule when the action actually fires.
         const QFileInfo targetInfo(target);
         const QString dir = targetInfo.isDir()
                                 ? target
@@ -6060,7 +6062,7 @@ protected:
         QAction *open = menu.addAction(
             QStringLiteral("Open \"%1\" in file explorer").arg(label));
         connect(open, &QAction::triggered, this,
-                [dir] { QDesktopServices::openUrl(QUrl::fromLocalFile(dir)); });
+                [target] { revealInDesktopFileManager(target); });
         menu.exec(event->globalPos());
     }
 
