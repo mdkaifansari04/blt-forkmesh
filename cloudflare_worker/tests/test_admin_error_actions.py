@@ -10,7 +10,15 @@ from urllib.parse import quote
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 ENTRY_TEXT = (
-    ENTRY.read_text(encoding="utf-8") + "\n"
+    (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+) + "\n"
     + ENTRY.with_name("admin_console.py").read_text(encoding="utf-8")
 )
 

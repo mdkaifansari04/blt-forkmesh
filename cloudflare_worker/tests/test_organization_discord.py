@@ -902,7 +902,15 @@ def test_route_schema_and_worker_adapter_keep_the_secret_server_side():
 
 
 def test_discord_oauth_redirect_is_bound_to_the_canonical_public_origin():
-    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    tree = ast.parse((
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+), filename=str(ENTRY))
     function_node = next(
         node for node in tree.body
         if isinstance(node, ast.FunctionDef)

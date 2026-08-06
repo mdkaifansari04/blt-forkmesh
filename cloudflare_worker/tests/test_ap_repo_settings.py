@@ -50,7 +50,15 @@ def _sibling_module(name):
 
 activitypub = _sibling_module("activitypub")
 activitypub_threads = _sibling_module("activitypub_threads")
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+ENTRY_TEXT = (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+)
 
 
 def _load(*names, extra_globals=None):
