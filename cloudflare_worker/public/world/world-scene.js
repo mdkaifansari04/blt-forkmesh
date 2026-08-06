@@ -17357,7 +17357,7 @@ export function createWorldScene({
     setShadows(bike);
     world.add(bike);
     registerWorldElement("bikes", "World bikes", "Vehicles & rides", bike);
-    const state = { bike, wheels, seat, moving: false, angle: 0 };
+    const state = { bike, wheels, seat, hint, moving: false, angle: 0 };
     placeBikeOnLane(state, along * Math.PI * 2);
     bikeStates.push(state);
   }

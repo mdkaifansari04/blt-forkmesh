@@ -1605,7 +1605,10 @@
 
       // Chat is wired by /dashboard-chat.js.
 	      initProfileMenu();
-	      lucide.createIcons();
+	      // The lucide CDN script is deferred, so it has not executed yet while
+	      // this inline script parses; dashboard.js re-runs createIcons once
+	      // lucide exists. A bare call here throws on every page load.
+	      window.lucide?.createIcons();
     </script>
   </body>
 </html>
