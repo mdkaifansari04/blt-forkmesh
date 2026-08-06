@@ -74,6 +74,33 @@ WWW_TREES = ["blog", "docs"]
 # route to the relay, so nothing else needs to be staged.
 WORLD_TREES = ["world"]
 
+# Everything the forkmesh-api Worker's Python code reads through its ASSETS
+# binding while answering /api/* (it never serves an asset by URL — only
+# /api/* is routed to it). Audited from the env.ASSETS.fetch sites in
+# src/entry.py: the homepage no-cache origin probe (index.html), the blog
+# board's feed build + per-post network lookups (blog.html, blog/*), the
+# install-script and repo-shell readers (install.sh, dashboard/repo.html),
+# and the 404 document its assets config names.
+API_DOCUMENTS = [
+    "404.html",
+    "blog.html",
+    "index.html",
+    "install.sh",
+]
+API_TREES = ["blog"]
+API_EXTRAS = [Path("dashboard") / "repo.html"]
+
+# What the slimmed relay DROPS from its copy of public/: the paths owned by
+# the split Workers that no relay-served route or ASSETS read touches.
+# blog.html and blog/ stay — the relay's /rss.xml and its cron-driven blog
+# board refresh read them through ASSETS — as do index.html (homepage), the
+# auth/chat documents, every root-level script/stylesheet, dashboard/,
+# notes/, assets/ and favicon/ (all still relay-routed URLs).
+RELAY_DROP_TREES = {"world", "docs"}
+RELAY_DROP_DOCUMENTS = {
+    name for name in WWW_DOCUMENTS if name not in ("404.html", "blog.html")
+} | {"docs.html"}
+
 
 def _reset(directory: Path) -> None:
     if directory.exists():
@@ -145,9 +172,45 @@ def stage_world() -> Path:
     return staged
 
 
+def stage_api() -> Path:
+    staged = ROOT / "public_api"
+    _reset(staged)
+    for name in API_DOCUMENTS:
+        shutil.copy2(PUBLIC / name, staged / name)
+    for tree in API_TREES:
+        shutil.copytree(PUBLIC / tree, staged / tree)
+    for extra in API_EXTRAS:
+        (staged / extra).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PUBLIC / extra, staged / extra)
+    return staged
+
+
+def stage_relay() -> Path:
+    staged = ROOT / "public_relay"
+    if staged.exists():
+        shutil.rmtree(staged)
+
+    def _drop(directory: str, names: list[str]) -> list[str]:
+        if Path(directory) != PUBLIC:
+            return []
+        return [
+            name
+            for name in names
+            if name in RELAY_DROP_TREES or name in RELAY_DROP_DOCUMENTS
+        ]
+
+    shutil.copytree(PUBLIC, staged, ignore=_drop)
+    return staged
+
+
 def main(argv: list[str]) -> int:
-    targets = argv[1:] or ["www", "world"]
-    stagers = {"www": stage_www, "world": stage_world}
+    targets = argv[1:] or ["www", "world", "api", "relay"]
+    stagers = {
+        "www": stage_www,
+        "world": stage_world,
+        "api": stage_api,
+        "relay": stage_relay,
+    }
     for target in targets:
         if target not in stagers:
             print(f"unknown split target: {target}", file=sys.stderr)
