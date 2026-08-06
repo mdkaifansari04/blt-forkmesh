@@ -309,8 +309,13 @@ def test_route_verification_proves_ownership_with_worker_markers():
         assert probe in DEPLOY, probe
     # The Python Workers identify themselves in their payloads rather than
     # via the assets-layer marker header: /api/version must come back from
-    # the api role and the relay-routed /health from the relay, carrying the
-    # relay's build stamp.
-    assert '"worker"[[:space:]]*:[[:space:]]*"api"' in DEPLOY
+    # whichever Python Worker currently owns /api/* (forkmesh-api is parked
+    # behind FORKMESH_DEPLOY_API_WORKER while the startup-memory ceiling
+    # makes a second cold Python Worker melt its fresh isolates), and the
+    # relay-routed /health always answers as the relay with its build stamp.
+    assert 'FORKMESH_DEPLOY_API_WORKER' in DEPLOY
+    assert '"worker"[[:space:]]*:[[:space:]]*"\'"$expected_api_worker"\'"' in (
+        DEPLOY
+    )
     assert '"worker"[[:space:]]*:[[:space:]]*"relay"' in DEPLOY
     assert 'relay /health reports rev' in DEPLOY
