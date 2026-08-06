@@ -2132,6 +2132,12 @@ private:
                                        const QString &successMessage,
                                        int attempt = 0);
     void finishVultrProvision(bool ok, const QString &message);
+    // Opt-in desired-capacity controller for ForkMesh-managed Vultr mirrors.
+    // It reads the public flagship mirror catalog, creates one replacement
+    // when healthy capacity is short, and destroys one excess managed instance
+    // at a time when the target is lowered. Manually added hosts are excluded.
+    void reconcileDesiredMirrorFleet();
+    void destroyDesiredMirrorFleetNode(const QString &node);
     // Print the per-attempt record collected for this provision run into the
     // install log, so a finished run shows what every attempt did (adhoc #342).
     void appendVultrAttemptHistory();
@@ -5832,6 +5838,11 @@ private:
     QCheckBox *m_vultrAgentClisCheck = nullptr;
     QPushButton *m_vultrCreateButton = nullptr;
     QLabel *m_vultrStatus = nullptr;
+    QCheckBox *m_mirrorFleetEnabledCheck = nullptr;
+    QSpinBox *m_mirrorFleetDesiredSpin = nullptr;
+    QLabel *m_mirrorFleetStatus = nullptr;
+    bool m_mirrorFleetReconcileInFlight = false;
+    bool m_mirrorFleetMutationInFlight = false;
     QWidget *m_vultrProgressPanel = nullptr;
     QList<QLabel *> m_vultrStageNumbers;
     QList<QLabel *> m_vultrStageLabels;

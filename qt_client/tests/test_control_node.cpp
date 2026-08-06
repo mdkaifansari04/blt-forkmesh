@@ -1203,6 +1203,85 @@ int main(int argc, char **argv)
           "a destroy call is refused without a plausible API key and instance "
           "id");
 
+    // --- Desired healthy Vultr mirror fleet --------------------------------
+    const auto managedHost = [](const QString &name, const QString &id) {
+        return QJsonObject{
+            {QStringLiteral("name"), name},
+            {QStringLiteral("provider"), QStringLiteral("Vultr")},
+            {QStringLiteral("instanceId"), id},
+        };
+    };
+    const auto healthyMirror = [](const QString &name) {
+        return QJsonObject{
+            {QStringLiteral("node"), name},
+            {QStringLiteral("status"), QStringLiteral("online")},
+            {QStringLiteral("integrity"), QStringLiteral("ok")},
+            {QStringLiteral("lastSync"), 123456},
+            {QStringLiteral("cloneAvailable"), true},
+            {QStringLiteral("endpointHealthy"), true},
+            {QStringLiteral("endpointFresh"), true},
+        };
+    };
+    const QString destroyId2 =
+        QStringLiteral("2f2e3d4c-5b6a-4798-8899-aabbccddeeff");
+    const QString destroyId3 =
+        QStringLiteral("3f2e3d4c-5b6a-4798-8899-aabbccddeeff");
+    const QJsonArray managedFleet{
+        managedHost(QStringLiteral("mirror1"), destroyId),
+        managedHost(QStringLiteral("mirror2"), destroyId2),
+        managedHost(QStringLiteral("mirror3"), destroyId3),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("manual-host")},
+                    {QStringLiteral("provider"), QStringLiteral("manual")}},
+    };
+    const QJsonArray twoHealthy{
+        healthyMirror(QStringLiteral("MIRROR1")),
+        healthyMirror(QStringLiteral("mirror2")),
+    };
+    const auto steadyPlan =
+        forkmesh::control::planMirrorFleetReconciliation(
+            3, managedFleet,
+            QJsonArray{healthyMirror(QStringLiteral("mirror1")),
+                       healthyMirror(QStringLiteral("mirror2")),
+                       healthyMirror(QStringLiteral("mirror3"))});
+    check(steadyPlan.action == forkmesh::control::MirrorFleetAction::None &&
+              steadyPlan.managedCount == 3 && steadyPlan.healthyCount == 3,
+          "a healthy managed Vultr fleet at its target is left unchanged");
+
+    const auto replacementPlan =
+        forkmesh::control::planMirrorFleetReconciliation(
+            3, managedFleet, twoHealthy);
+    check(replacementPlan.action ==
+                  forkmesh::control::MirrorFleetAction::Create &&
+              replacementPlan.managedCount == 3 &&
+              replacementPlan.healthyCount == 2,
+          "an unhealthy managed mirror at the target requests one replacement");
+
+    const auto shrinkPlan =
+        forkmesh::control::planMirrorFleetReconciliation(
+            2, managedFleet, twoHealthy);
+    check(shrinkPlan.action ==
+                  forkmesh::control::MirrorFleetAction::Destroy &&
+              shrinkPlan.nodeName == QStringLiteral("mirror3"),
+          "scale-down destroys the newest unhealthy managed mirror first");
+
+    const auto shrinkHealthyPlan =
+        forkmesh::control::planMirrorFleetReconciliation(
+            1,
+            QJsonArray{managedHost(QStringLiteral("mirror1"), destroyId),
+                       managedHost(QStringLiteral("mirror2"), destroyId2)},
+            twoHealthy);
+    check(shrinkHealthyPlan.action ==
+                  forkmesh::control::MirrorFleetAction::Destroy &&
+              shrinkHealthyPlan.nodeName == QStringLiteral("mirror2"),
+          "lowering a fully healthy fleet removes its newest excess mirror");
+
+    QJsonObject staleMirror = healthyMirror(QStringLiteral("mirror1"));
+    staleMirror.insert(QStringLiteral("endpointFresh"), false);
+    check(forkmesh::control::mirrorCatalogEntryIsHealthy(
+              healthyMirror(QStringLiteral("mirror1"))) &&
+              !forkmesh::control::mirrorCatalogEntryIsHealthy(staleMirror),
+          "fleet health requires the complete public traffic health contract");
+
     // --- Installing a fresh mirror without a published release (adhoc #408) -
     check(forkmesh::control::localBinaryRunsOnVultrMirror(
               QStringLiteral("linux"), QStringLiteral("x86_64")) &&

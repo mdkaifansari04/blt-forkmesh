@@ -2305,6 +2305,82 @@ QString validateVultrDestroyRequest(const QString &apiKey,
     return {};
 }
 
+bool mirrorCatalogEntryIsHealthy(const QJsonObject &mirror)
+{
+    return mirror.value(QStringLiteral("status"))
+                   .toString()
+                   .compare(QStringLiteral("online"),
+                            Qt::CaseInsensitive) == 0 &&
+           mirror.value(QStringLiteral("integrity"))
+                   .toString()
+                   .compare(QStringLiteral("ok"),
+                            Qt::CaseInsensitive) == 0 &&
+           mirror.value(QStringLiteral("lastSync")).toVariant().toLongLong() >
+               0 &&
+           mirror.value(QStringLiteral("cloneAvailable")).toBool() &&
+           mirror.value(QStringLiteral("endpointHealthy")).toBool() &&
+           mirror.value(QStringLiteral("endpointFresh")).toBool();
+}
+
+MirrorFleetReconcilePlan planMirrorFleetReconciliation(
+    int desiredHealthy, const QJsonArray &savedHosts,
+    const QJsonArray &catalogMirrors)
+{
+    MirrorFleetReconcilePlan plan;
+    desiredHealthy = std::max(0, desiredHealthy);
+
+    QStringList managedNodes;
+    QSet<QString> managedNames;
+    for (const QJsonValue &value : savedHosts) {
+        const QJsonObject host = value.toObject();
+        if (savedHostVultrInstanceId(host).isEmpty())
+            continue;
+        const QString node =
+            host.value(QStringLiteral("name")).toString().trimmed();
+        const QString normalized = node.toLower();
+        if (normalized.isEmpty() || managedNames.contains(normalized))
+            continue;
+        managedNodes.append(node);
+        managedNames.insert(normalized);
+    }
+    plan.managedCount = managedNodes.size();
+
+    QSet<QString> healthyNames;
+    for (const QJsonValue &value : catalogMirrors) {
+        const QJsonObject mirror = value.toObject();
+        if (!mirrorCatalogEntryIsHealthy(mirror))
+            continue;
+        QString node =
+            mirror.value(QStringLiteral("node")).toString().trimmed();
+        if (node.isEmpty())
+            node = mirror.value(QStringLiteral("owner")).toString().trimmed();
+        const QString normalized = node.toLower();
+        if (managedNames.contains(normalized))
+            healthyNames.insert(normalized);
+    }
+    plan.healthyCount = healthyNames.size();
+
+    if (plan.managedCount > desiredHealthy) {
+        // Saved-host order is creation order: walk backwards so a scale-down
+        // preserves the older stable fleet. Prefer an unhealthy node, which
+        // also completes replacement without sacrificing healthy capacity.
+        for (int i = managedNodes.size() - 1; i >= 0; --i) {
+            if (!healthyNames.contains(managedNodes.at(i).toLower())) {
+                plan.action = MirrorFleetAction::Destroy;
+                plan.nodeName = managedNodes.at(i);
+                return plan;
+            }
+        }
+        plan.action = MirrorFleetAction::Destroy;
+        plan.nodeName = managedNodes.constLast();
+        return plan;
+    }
+
+    if (plan.healthyCount < desiredHealthy)
+        plan.action = MirrorFleetAction::Create;
+    return plan;
+}
+
 bool agentCliCredentialsAreEmpty(const AgentCliCredentials &credentials)
 {
     return credentials.claudeCredentials.trimmed().isEmpty() &&
