@@ -4844,7 +4844,38 @@ inline QString agentModelLabel(const QString &model)
         {QStringLiteral("gpt-5.5"), QStringLiteral("GPT-5.5")},
         {QStringLiteral("gpt-5.5-codex"), QStringLiteral("GPT-5.5 Codex")},
     };
-    return kLabels.value(model.trimmed(), model.trimmed());
+    const QString id = model.trimmed();
+    if (const QString mapped = kLabels.value(id); !mapped.isEmpty())
+        return mapped;
+    // New Claude ids ship before this map learns them ("claude-opus-5" showed
+    // as its raw id in the status pill). Prettify "claude-<family>-<n>-<n>…"
+    // instead: capitalise the family word and dot-join the numeric version,
+    // dropping a trailing build-date stamp — "claude-opus-5" → "Opus 5",
+    // "claude-haiku-4-5-20251001" → "Haiku 4.5". Ids whose family slot isn't a
+    // word (the legacy "claude-3-5-sonnet" order) stay raw rather than mangled.
+    if (id.startsWith(QLatin1String("claude-"))) {
+        const QStringList parts =
+            id.mid(7).split(QLatin1Char('-'), Qt::SkipEmptyParts);
+        const auto numeric = [](const QString &p) {
+            return std::all_of(p.cbegin(), p.cend(),
+                               [](QChar c) { return c.isDigit(); });
+        };
+        if (!parts.isEmpty() && !numeric(parts.first())) {
+            QString family = parts.first();
+            family[0] = family.at(0).toUpper();
+            QStringList version;
+            for (int i = 1; i < parts.size(); ++i) {
+                if (!numeric(parts.at(i)) || parts.at(i).size() >= 8)
+                    break;
+                version << parts.at(i);
+            }
+            return version.isEmpty()
+                       ? family
+                       : family + QLatin1Char(' ') +
+                             version.join(QLatin1Char('.'));
+        }
+    }
+    return id;
 }
 
 // The running-session status pill has no room for "Opus 4.8" alongside its
