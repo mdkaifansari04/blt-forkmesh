@@ -25,9 +25,15 @@ REPO_SPEC="${2:-forkmesh/forkmesh}"
 REPO_OWNER="${REPO_SPEC%%/*}"
 REPO_NAME="${REPO_SPEC##*/}"
 
-REPO_ROOT_DEFAULT="/var/lib/forkmesh/.local/share/ForkMesh/ForkMesh/mirrors"
+# The gateway requires a ROOT-OWNED repository root, but the bare mirror is
+# owned by the node account that writes it. Publish it through a read-only
+# bind mount under a root-owned root: the node keeps ownership and all signing
+# material, and the gateway can only ever read.
+SOURCE_ROOT_DEFAULT="/var/lib/forkmesh/.local/share/ForkMesh/ForkMesh/mirrors"
+REPO_ROOT_DEFAULT="/srv/forkmesh-git"
 REPO_DIR_DEFAULT="forkmesh-forkmesh.git"
 REPO_ROOT="${FORKMESH_GATEWAY_REPO_ROOT:-$REPO_ROOT_DEFAULT}"
+SOURCE_ROOT="${FORKMESH_GATEWAY_SOURCE_ROOT:-$SOURCE_ROOT_DEFAULT}"
 REPO_DIR="${FORKMESH_GATEWAY_REPO_DIR:-$REPO_DIR_DEFAULT}"
 
 cd "$(dirname "$0")/.."
@@ -65,7 +71,7 @@ scp "${SSH_OPTS[@]}" -q "$stage"/* "root@$HOST:/root/.forkmesh-gateway-stage/"
 
 ssh "${SSH_OPTS[@]}" "root@$HOST" \
     "REPO_OWNER='$REPO_OWNER' REPO_NAME='$REPO_NAME' REPO_ROOT='$REPO_ROOT' \
-     REPO_DIR='$REPO_DIR' API_ORIGIN='$api_origin' bash -s" <<'REMOTE'
+     REPO_DIR='$REPO_DIR' SOURCE_ROOT='$SOURCE_ROOT' API_ORIGIN='$api_origin' bash -s" <<'REMOTE'
 set -euo pipefail
 umask 077
 
@@ -84,20 +90,25 @@ done
 usermod -aG forkmesh-ssh-gateway git
 usermod -aG forkmesh-ssh-gateway forkmesh-ssh-lookup
 
-# The gateway reads the bare mirror through the repository-sharing group; the
-# mirror node account keeps ownership and all signing material.
+# Publish the bare mirror read-only under the root-owned gateway root. The
+# bind mount is recorded in fstab so it survives a reboot; the node account
+# keeps ownership of the real directory and remains its only writer.
+source_path="$SOURCE_ROOT/$REPO_DIR"
 repo_path="$REPO_ROOT/$REPO_DIR"
-if [ ! -d "$repo_path" ]; then
-    echo "ERROR: bare repository $repo_path not found on this host." >&2
+if [ ! -d "$source_path" ]; then
+    echo "ERROR: bare repository $source_path not found on this host." >&2
     exit 1
 fi
-mirror_owner="$(stat -c '%U' "$repo_path")"
-usermod -aG "$(stat -c '%G' "$repo_path")" git || true
-# Traverse-only on the parents, read+execute inside the bare repository.
+install -d -m 0755 -o root -g root "$REPO_ROOT"
+install -d -m 0755 -o root -g root "$repo_path"
+fstab_line="$source_path $repo_path none bind,ro 0 0"
+grep -qxF "$fstab_line" /etc/fstab || printf '%s\n' "$fstab_line" >> /etc/fstab
+mountpoint -q "$repo_path" || mount --bind -o ro "$source_path" "$repo_path"
+# Traverse-only on the private parents so the read-only view is reachable.
 chmod o+x /var/lib/forkmesh /var/lib/forkmesh/.local \
     /var/lib/forkmesh/.local/share /var/lib/forkmesh/.local/share/ForkMesh \
-    /var/lib/forkmesh/.local/share/ForkMesh/ForkMesh "$REPO_ROOT" 2>/dev/null || true
-chmod -R o+rX "$repo_path" 2>/dev/null || true
+    /var/lib/forkmesh/.local/share/ForkMesh/ForkMesh "$SOURCE_ROOT" 2>/dev/null || true
+chmod -R o+rX "$source_path" 2>/dev/null || true
 
 # --- programs -----------------------------------------------------------
 install -d -m 0755 -o root -g root /opt/forkmesh-mirror
