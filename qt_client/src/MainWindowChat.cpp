@@ -812,14 +812,25 @@ void MainWindow::selectAgentAccount(const QString &provider,
         return;
 
     const bool codex = agentIsCodexProvider(provider);
+    // The "ran out" flags travel with the account too (issue #346 tracks them per
+    // provider). Leaving them behind made the account just switched to inherit
+    // the exhausted one's "usage limit reached" — on the very screen the user is
+    // looking at while switching away from a limit, and on a login with usage to
+    // spare. An account with no flag of its own reads as not exhausted, which is
+    // the truth until its own run reports otherwise.
     const QStringList globals = codex
         ? QStringList{kCodexUsage5hPctSetting, kCodexUsageWeekPctSetting,
                       kCodexUsage5hResetSetting, kCodexUsageWeekResetSetting,
-                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting}
+                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting,
+                      kCodexUsage5hExhaustedSetting,
+                      kCodexUsageWeekExhaustedSetting}
         : QStringList{kClaudeUsage5hPctSetting, kClaudeUsageWeekPctSetting,
                       kClaudeUsageFablePctSetting, kClaudeUsage5hResetSetting,
                       kClaudeUsageWeekResetSetting, kClaudeUsageFableResetSetting,
-                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting};
+                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting,
+                      kClaudeUsage5hExhaustedSetting,
+                      kClaudeUsageWeekExhaustedSetting,
+                      kClaudeUsageFableExhaustedSetting};
     QSettings settings;
     const QString oldId = activeAgentAccount(provider).id;
     // Preserve the current account's last provider reading before replacing the
@@ -840,6 +851,10 @@ void MainWindow::selectAgentAccount(const QString &provider,
         else
             settings.remove(global);
     }
+    // Re-arm the "your limit has refilled" reminders against the account now
+    // selected: the ones standing were armed from the previous account's
+    // exhausted windows, which this login neither shares nor waits on.
+    restoreUsageLimitReminders();
 
     if (codex) {
         refreshCodexUsageRemaining();
