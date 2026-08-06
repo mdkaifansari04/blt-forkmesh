@@ -253,6 +253,28 @@ CLIENT_ERROR_SURFACES = frozenset({
 # without pagehide (GPU/OOM kill, tab discard) or a lost WebGL context, with
 # the last heartbeat's diagnostics in the message.
 CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection", "crash"})
+# Desktop-app failures the Qt client used to only ever show to itself: a warning
+# modal on a machine nobody is sitting in front of, a red toast on a headless
+# node. They join the same operational error_log as browser and Worker errors, so
+# the first sighting of a distinct failure raises the existing administrator
+# "new error group" ping (adhoc #1538) instead of dying on one screen.
+#
+# Admission differs from the browser collector: a Qt client has no Origin header
+# and no session cookie, so a report is stored only when it carries the same
+# signed owner token as GET /api/sync. Anonymous desktop reports are refused
+# rather than opening a second unauthenticated write path into D1.
+DESKTOP_ERROR_MAX_BODY = 8 * 1024
+DESKTOP_ERROR_RATE_WINDOW_MS = 60 * 1000
+DESKTOP_ERROR_RATE_PER_OWNER = 6
+DESKTOP_ERROR_RATE_GLOBAL = 60
+# Which kind of install hit it, never a free-text label: it becomes the
+# error_log path, which the admin view and the ping dedupe both group on. The
+# split is the one that changes what the report means — a modal on a headless
+# mirror is a node parked until somebody clicks OK, while the same modal on a
+# desktop is a person reading it.
+DESKTOP_ERROR_SURFACES = frozenset({"app", "headless"})
+# How the failure reached the operator: a modal dialog or the in-app error toast.
+DESKTOP_ERROR_KINDS = frozenset({"dialog", "toast"})
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
@@ -34907,6 +34929,127 @@ async def client_error_handler(env, request):
     )
 
 
+def _desktop_error_fields(payload):
+    """Validate one desktop report and fold it into a single error_log line."""
+    if not isinstance(payload, dict):
+        return None
+    surface = str(payload.get("surface") or "").strip().lower()
+    kind = str(payload.get("kind") or "").strip().lower()
+    if surface not in DESKTOP_ERROR_SURFACES or kind not in DESKTOP_ERROR_KINDS:
+        return None
+    # The dialog title is the operator's own name for the failing operation
+    # ("Sync inbox"), which is most of the triage value in one short string.
+    title = _sanitize_client_error_text(payload.get("title"), 120)
+    message = _sanitize_client_error_text(payload.get("message"), 700)
+    if not message:
+        return None
+    detail = "desktop %s [%s] %s" % (kind, surface, message)
+    if title:
+        detail = "desktop %s [%s] %s — %s" % (kind, surface, title, message)
+    return surface, detail[:1000]
+
+
+async def desktop_error_handler(env, request):
+    """Record a signed desktop client's user-visible failure in error_log.
+
+    The client already deduplicates and rate-limits its own reports, and it
+    holds a report back entirely while the relay is in a 429 cooldown; the
+    bounds here exist because a client is a client — one broken or hostile node
+    must not be able to displace Worker errors or grow D1.
+    """
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            extra_headers={"allow": "POST"},
+        )
+    try:
+        payload = await bounded_json_request(request, DESKTOP_ERROR_MAX_BODY)
+    except RequestBodyTooLarge:
+        return json_response({"error": "payload_too_large"}, status=413)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    fields = _desktop_error_fields(payload)
+    if not fields:
+        return json_response({"error": "invalid_desktop_error"}, status=400)
+    # Same signed owner/ts/sig proof as GET /api/sync, checked before any
+    # bounded-row read: an unsigned report is refused, never stored anonymously.
+    params = parse_qs(urlparse(request.url).query)
+    owner = safe_segment(params.get("owner", [""])[0])
+    if not owner or not await _authorize_owner(env, request, owner):
+        return json_response({"error": "unauthorized"}, status=401)
+    surface, detail = fields
+    now = int(Date.now())
+    try:
+        owner_hash = await blind_index(env, "desktop-error:" + owner)
+    except Exception:
+        owner_hash = "unknown"
+    source_key = "app:" + str(owner_hash)[:32]
+    path = "/desktop-error/" + surface
+    try:
+        await ensure_schema(env)
+        per_owner = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts>=? AND method='APP' AND ray=?",
+            now - DESKTOP_ERROR_RATE_WINDOW_MS,
+            source_key,
+        )
+        global_rate = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts>=? AND method='APP'",
+            now - DESKTOP_ERROR_RATE_WINDOW_MS,
+        )
+        duplicate = await d1_first(
+            env,
+            "SELECT 1 AS one FROM error_log "
+            "WHERE ts>=? AND method='APP' AND path=? AND message=? AND ray=? "
+            "LIMIT 1",
+            now - DESKTOP_ERROR_RATE_WINDOW_MS,
+            path,
+            detail,
+            source_key,
+        )
+        if (
+            duplicate
+            or int((per_owner or {}).get("n") or 0)
+            >= DESKTOP_ERROR_RATE_PER_OWNER
+            or int((global_rate or {}).get("n") or 0)
+            >= DESKTOP_ERROR_RATE_GLOBAL
+        ):
+            return json_response(
+                {"ok": True, "stored": False},
+                status=202,
+                cache_control="no-store",
+            )
+        # 521 rather than the browser collector's 520: the status is part of the
+        # group key and of the ping title, so a desktop failure reads apart from
+        # a browser one without any per-row lookup. The account is the proven
+        # signer, so the admin "related users" column names the node's owner.
+        await _write_error_log(
+            env,
+            521,
+            "APP",
+            path,
+            detail,
+            source_key,
+            owner,
+        )
+    except Exception:
+        # Error reporting must never become a new user-visible error.
+        return json_response(
+            {"ok": True, "stored": False},
+            status=202,
+            cache_control="no-store",
+        )
+    return json_response(
+        {"ok": True, "stored": True},
+        status=202,
+        cache_control="no-store",
+    )
+
+
 async def world_admin_errors_handler(env, request):
     """Return the admin HUD cursor and, on demand, a bounded error table."""
     method = method_name(request)
@@ -41520,6 +41663,11 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/client-errors", "/api/client-errors/"):
             return await client_error_handler(self.env, request)
+
+        # Desktop-app failures (warning dialogs, error toasts) from a signed
+        # node, so an error nobody was watching still pings the administrators.
+        if url.path in ("/api/desktop-errors", "/api/desktop-errors/"):
+            return await desktop_error_handler(self.env, request)
 
         # Private vulnerability reports — stored encrypted, emailed to security@.
         if url.path in ("/api/security/report", "/api/security/report/"):
