@@ -1135,6 +1135,11 @@ void MainWindow::refreshThemedIcons()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    // A background auto-update's clone/build chain can still be running when the
+    // user closes the window; installAndRelaunch() checks this flag right before
+    // spawning the replacement process so the app never pops back up after the
+    // user has already chosen to close it (adhoc #1530).
+    m_closingDown = true;
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
     // Bank the still-running uptime clock exactly: the periodic persist in
     // updateHomeStats() is throttled, so quitting mid-session would otherwise
