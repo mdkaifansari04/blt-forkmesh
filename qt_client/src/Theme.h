@@ -657,6 +657,20 @@ QPushButton#memberDeleteButton:hover {
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
+/* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
+   button pops the prompt out into its own window. */
+#promptDragHandle { background: transparent; border: none; }
+#promptDragPill {
+    background-color: rgba(139,148,158,0.55); border: none; border-radius: 1px;
+}
+#promptResizeGrip {
+    background-color: rgba(139,148,158,0.5); border: none; border-radius: 2px;
+}
+#promptResizeGrip:hover { background-color: rgba(57,211,83,0.65); }
+QPushButton#promptDetachButton {
+    background: transparent; border: none; padding: 0;
+}
+#promptDetachWindow { background-color: #010409; }
 #footerLogPanel {
     background-color: #0d1117;
     border: 1px solid rgba(57,211,83,0.55);
@@ -1078,6 +1092,20 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
+/* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
+   button pops the prompt out into its own window. */
+#promptDragHandle { background: transparent; border: none; }
+#promptDragPill {
+    background-color: rgba(139,148,158,0.55); border: none; border-radius: 1px;
+}
+#promptResizeGrip {
+    background-color: rgba(139,148,158,0.5); border: none; border-radius: 2px;
+}
+#promptResizeGrip:hover { background-color: rgba(57,211,83,0.65); }
+QPushButton#promptDetachButton {
+    background: transparent; border: none; padding: 0;
+}
+#promptDetachWindow { background-color: #010409; }
 #footerLogPanel {
     background-color: #0d1117;
     border: 1px solid rgba(57,211,83,0.55);
@@ -2062,6 +2090,20 @@ QPushButton#memberDeleteButton:hover {
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
+/* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
+   button pops the prompt out into its own window. */
+#promptDragHandle { background: transparent; border: none; }
+#promptDragPill {
+    background-color: rgba(87,96,106,0.55); border: none; border-radius: 1px;
+}
+#promptResizeGrip {
+    background-color: rgba(87,96,106,0.5); border: none; border-radius: 2px;
+}
+#promptResizeGrip:hover { background-color: rgba(26,127,55,0.65); }
+QPushButton#promptDetachButton {
+    background: transparent; border: none; padding: 0;
+}
+#promptDetachWindow { background-color: #f6f8fa; }
 #footerLogPanel {
     background-color: #ffffff;
     border: 1px solid rgba(26,127,55,0.5);
@@ -2479,6 +2521,20 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
+/* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
+   button pops the prompt out into its own window. */
+#promptDragHandle { background: transparent; border: none; }
+#promptDragPill {
+    background-color: rgba(87,96,106,0.55); border: none; border-radius: 1px;
+}
+#promptResizeGrip {
+    background-color: rgba(87,96,106,0.5); border: none; border-radius: 2px;
+}
+#promptResizeGrip:hover { background-color: rgba(26,127,55,0.65); }
+QPushButton#promptDetachButton {
+    background: transparent; border: none; padding: 0;
+}
+#promptDetachWindow { background-color: #f6f8fa; }
 #footerLogPanel {
     background-color: #ffffff;
     border: 1px solid rgba(26,127,55,0.5);

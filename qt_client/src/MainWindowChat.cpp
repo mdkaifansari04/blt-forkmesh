@@ -1493,7 +1493,12 @@ QWidget *MainWindow::buildChatPage()
     m_globalOverlayHost = content;
     logDock->setParent(content);
     content->installEventFilter(this);
-    QTimer::singleShot(0, this, &MainWindow::positionGlobalFooterOverlays);
+    // The overlay host has to exist before a persisted free/popped-out placement
+    // can be restored onto it, so both happen on the first event-loop turn.
+    QTimer::singleShot(0, this, [this] {
+        loadPromptOverlayPlacement();
+        positionGlobalFooterOverlays();
+    });
     layout->addLayout(bodyLayout, 1);
 
     // One persistent VS Code-style rail owns app navigation. It begins below
@@ -2377,9 +2382,68 @@ QWidget *MainWindow::buildNetworkLogDock()
     // a left column, and the genie/add/new buttons form a full-height column down
     // the right edge. The text entry therefore ends flush against the buttons and
     // the whole box is exactly as tall as the stacked buttons.
-    auto *promptLayout = new QHBoxLayout(promptWrapper);
+    // Placement strip along the composer's top edge (adhoc #1536): a corner
+    // grip on the left resizes the panel, the centre pill drags it anywhere over
+    // the workspace, and the right-hand button pops it out into a window of its
+    // own. Double-clicking the strip puts it back on the footer anchor. It is
+    // deliberately the thinnest row that still gives each of the three a real
+    // target, so the four prompt lines below it are untouched.
+    auto *promptHandle = new QWidget;
+    m_promptDragHandle = promptHandle;
+    promptHandle->setObjectName(QStringLiteral("promptDragHandle"));
+    promptHandle->setFixedHeight(16);
+    promptHandle->setCursor(Qt::OpenHandCursor);
+    promptHandle->setToolTip(
+        QStringLiteral("Drag to move the prompt; double-click to snap it back "
+                       "to the corner"));
+    promptHandle->installEventFilter(this);
+    auto *promptHandleRow = new QHBoxLayout(promptHandle);
+    promptHandleRow->setContentsMargins(4, 2, 4, 2);
+    promptHandleRow->setSpacing(4);
+
+    // A QFrame, not a bare QWidget: only styled widgets paint a QSS background,
+    // and the grip is nothing but its background.
+    m_promptResizeGrip = new QFrame;
+    m_promptResizeGrip->setObjectName(QStringLiteral("promptResizeGrip"));
+    m_promptResizeGrip->setFixedSize(12, 12);
+    // Top-left corner grip: dragging it up and to the left grows the panel while
+    // its lower-right corner stays put, which is the direction there is room in.
+    m_promptResizeGrip->setCursor(Qt::SizeFDiagCursor);
+    m_promptResizeGrip->setToolTip(QStringLiteral("Drag to resize the prompt"));
+    m_promptResizeGrip->installEventFilter(this);
+    promptHandleRow->addWidget(m_promptResizeGrip, 0);
+    promptHandleRow->addStretch(1);
+
+    // Font-independent grab affordance: a short pill rather than a glyph that
+    // may not exist in the user's monospace face.
+    auto *promptDragPill = new QFrame;
+    promptDragPill->setObjectName(QStringLiteral("promptDragPill"));
+    promptDragPill->setFixedSize(36, 3);
+    promptDragPill->setAttribute(Qt::WA_TransparentForMouseEvents);
+    promptHandleRow->addWidget(promptDragPill, 0, Qt::AlignVCenter);
+    promptHandleRow->addStretch(1);
+
+    // Its own name, not the shared ghostButton one: that rule pads 4px/8px,
+    // which would swallow a 10px glyph in a 16px button.
+    m_promptDetachButton = new QPushButton;
+    m_promptDetachButton->setObjectName(QStringLiteral("promptDetachButton"));
+    m_promptDetachButton->setCursor(Qt::PointingHandCursor);
+    m_promptDetachButton->setFixedSize(16, 16);
+    setOcticon(m_promptDetachButton, "screen-full", 10);
+    m_promptDetachButton->setToolTip(
+        QStringLiteral("Pop the prompt out into its own window"));
+    connect(m_promptDetachButton, &QPushButton::clicked, this,
+            [this] { setPromptOverlayDetached(!m_promptOverlayDetached); });
+    promptHandleRow->addWidget(m_promptDetachButton, 0);
+
+    auto *promptStack = new QVBoxLayout(promptWrapper);
+    promptStack->setContentsMargins(0, 0, 0, 0);
+    promptStack->setSpacing(0);
+    promptStack->addWidget(promptHandle, 0);
+    auto *promptLayout = new QHBoxLayout;
     promptLayout->setContentsMargins(0, 0, 0, 0);
     promptLayout->setSpacing(0);
+    promptStack->addLayout(promptLayout, 1);
     auto *promptLeftCol = new QVBoxLayout;
     promptLeftCol->setContentsMargins(0, 0, 0, 0);
     promptLeftCol->setSpacing(0);
@@ -2644,6 +2708,279 @@ void MainWindow::setPromptOverlayCollapsed(bool collapsed)
     positionGlobalFooterOverlays();
 }
 
+namespace {
+// Persisted composer placement (adhoc #1536).
+const char kPromptFloatingSetting[] = "prompt/floating";
+const char kPromptFloatPosSetting[] = "prompt/floatPos";
+const char kPromptFloatSizeSetting[] = "prompt/floatSize";
+const char kPromptDetachedSetting[] = "prompt/detached";
+const char kPromptDetachGeometrySetting[] = "prompt/detachGeometry";
+// Below this the four prompt lines and the send column stop being usable, so
+// the resize grip refuses to go smaller rather than letting the panel vanish.
+constexpr int kPromptMinWidth = 280;
+constexpr int kPromptMinHeight = 120;
+} // namespace
+
+// Keep a free-floating composer inside the workspace, at the size the user
+// dragged it to. Called on every layout pass, so a shrinking window pushes the
+// panel back into view instead of stranding it off the edge.
+void MainWindow::clampPromptOverlayIntoHost()
+{
+    if (!m_globalOverlayHost || !m_promptOverlayHost)
+        return;
+    if (m_promptOverlayHost->parentWidget() != m_globalOverlayHost)
+        m_promptOverlayHost->setParent(m_globalOverlayHost);
+    QSize size = m_promptOverlaySize.isValid()
+                     ? m_promptOverlaySize
+                     : QSize(qMin(560, m_globalOverlayHost->width()),
+                             m_promptWrapper ? m_promptWrapper->sizeHint().height()
+                                             : kPromptMinHeight);
+    if (m_promptOverlayCollapsed) {
+        // Collapsed to the round launcher: keep the free position, drop the
+        // size — positionGlobalFooterOverlays has already pinned it to 34x34.
+        size = QSize(34, 34);
+    } else {
+        size.setWidth(qBound(kPromptMinWidth, size.width(),
+                             qMax(kPromptMinWidth, m_globalOverlayHost->width())));
+        size.setHeight(qBound(kPromptMinHeight, size.height(),
+                              qMax(kPromptMinHeight, m_globalOverlayHost->height())));
+    }
+    const QPoint pos(
+        qBound(0, m_promptOverlayPos.x(),
+               qMax(0, m_globalOverlayHost->width() - size.width())),
+        qBound(0, m_promptOverlayPos.y(),
+               qMax(0, m_globalOverlayHost->height() - size.height())));
+    m_promptOverlayPos = pos;
+    m_promptOverlayHost->setGeometry(QRect(pos, size));
+}
+
+// Pop the composer out of the app into a window of its own — and back. The
+// window is parented to the main window so it closes with it, but it is a real
+// top-level: the window manager can move it onto a second monitor or park it
+// beside an editor, which is the point.
+void MainWindow::setPromptOverlayDetached(bool detached)
+{
+    if (!m_promptOverlayHost || detached == m_promptOverlayDetached)
+        return;
+    auto *dockRow = m_footerDock
+                        ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
+                        : nullptr;
+    if (detached) {
+        if (!m_promptDetachWindow) {
+            m_promptDetachWindow = new QWidget(this, Qt::Window);
+            m_promptDetachWindow->setObjectName(QStringLiteral("promptDetachWindow"));
+            m_promptDetachWindow->setAttribute(Qt::WA_StyledBackground, true);
+            m_promptDetachWindow->setWindowTitle(QStringLiteral("ForkMesh Prompt"));
+            auto *windowLayout = new QVBoxLayout(m_promptDetachWindow);
+            windowLayout->setContentsMargins(6, 6, 6, 6);
+            // Closing the window is the same gesture as pressing the button
+            // again: dock the composer, never destroy it.
+            m_promptDetachWindow->installEventFilter(this);
+        }
+        const QSize previous = m_promptOverlayHost->size();
+        if (dockRow)
+            dockRow->removeWidget(m_promptOverlayHost);
+        m_promptDetachWindow->layout()->addWidget(m_promptOverlayHost);
+        m_promptOverlayDetached = true;
+        // Collapsed makes no sense once it has its own window.
+        m_promptOverlayCollapsed = false;
+        m_promptOverlayHost->show();
+        if (m_promptDetachGeometry.isValid())
+            m_promptDetachWindow->setGeometry(m_promptDetachGeometry);
+        else
+            m_promptDetachWindow->resize(
+                qMax(kPromptMinWidth, previous.width() + 12),
+                qMax(kPromptMinHeight, previous.height() + 12));
+        m_promptDetachWindow->show();
+        m_promptDetachWindow->raise();
+        m_promptDetachWindow->activateWindow();
+    } else {
+        if (m_promptDetachWindow) {
+            m_promptDetachGeometry = m_promptDetachWindow->geometry();
+            m_promptDetachWindow->layout()->removeWidget(m_promptOverlayHost);
+            m_promptDetachWindow->hide();
+        }
+        m_promptOverlayDetached = false;
+        if (m_promptOverlayFloating) {
+            m_promptOverlayHost->setParent(m_globalOverlayHost);
+        } else if (dockRow) {
+            // It was the row's last item before it left, so appending restores
+            // the original left-region / spacer / composer order.
+            dockRow->addWidget(m_promptOverlayHost, 1,
+                               Qt::AlignRight | Qt::AlignBottom);
+        }
+        m_promptOverlayHost->show();
+    }
+    if (m_promptDetachButton) {
+        setOcticon(m_promptDetachButton,
+                   m_promptOverlayDetached ? "sign-in" : "screen-full", 10);
+        m_promptDetachButton->setToolTip(
+            m_promptOverlayDetached
+                ? QStringLiteral("Dock the prompt back into the window")
+                : QStringLiteral("Pop the prompt out into its own window"));
+    }
+    positionGlobalFooterOverlays();
+    savePromptOverlayPlacement();
+}
+
+// Back to the footer's lower-right anchor: forget the free position, the
+// dragged size and the popped-out window.
+void MainWindow::resetPromptOverlayPlacement()
+{
+    if (m_promptOverlayDetached)
+        setPromptOverlayDetached(false);
+    if (!m_promptOverlayFloating)
+        return;
+    m_promptOverlayFloating = false;
+    m_promptOverlaySize = QSize();
+    m_promptOverlayPos = QPoint();
+    if (auto *dockRow = m_footerDock
+                            ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
+                            : nullptr) {
+        dockRow->addWidget(m_promptOverlayHost, 1,
+                           Qt::AlignRight | Qt::AlignBottom);
+    }
+    positionGlobalFooterOverlays();
+    savePromptOverlayPlacement();
+}
+
+void MainWindow::savePromptOverlayPlacement()
+{
+    QSettings settings;
+    settings.setValue(QLatin1String(kPromptFloatingSetting), m_promptOverlayFloating);
+    settings.setValue(QLatin1String(kPromptFloatPosSetting), m_promptOverlayPos);
+    settings.setValue(QLatin1String(kPromptFloatSizeSetting), m_promptOverlaySize);
+    settings.setValue(QLatin1String(kPromptDetachedSetting), m_promptOverlayDetached);
+    if (m_promptOverlayDetached && m_promptDetachWindow)
+        m_promptDetachGeometry = m_promptDetachWindow->geometry();
+    settings.setValue(QLatin1String(kPromptDetachGeometrySetting),
+                      m_promptDetachGeometry);
+}
+
+void MainWindow::loadPromptOverlayPlacement()
+{
+    if (!m_promptOverlayHost)
+        return;
+    QSettings settings;
+    m_promptOverlaySize =
+        settings.value(QLatin1String(kPromptFloatSizeSetting)).toSize();
+    m_promptOverlayPos =
+        settings.value(QLatin1String(kPromptFloatPosSetting)).toPoint();
+    m_promptDetachGeometry =
+        settings.value(QLatin1String(kPromptDetachGeometrySetting)).toRect();
+    if (settings.value(QLatin1String(kPromptFloatingSetting), false).toBool()) {
+        m_promptOverlayFloating = true;
+        if (auto *dockRow = m_footerDock
+                                ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
+                                : nullptr)
+            dockRow->removeWidget(m_promptOverlayHost);
+        m_promptOverlayHost->setParent(m_globalOverlayHost);
+        m_promptOverlayHost->show();
+    }
+    if (settings.value(QLatin1String(kPromptDetachedSetting), false).toBool())
+        setPromptOverlayDetached(true);
+}
+
+// Drag/resize gestures on the composer's top strip. Everything is done in
+// global coordinates so a gesture that starts while the panel is still anchored
+// survives the reparent into free-floating mode halfway through.
+bool MainWindow::handlePromptPlacementEvent(QObject *object, QEvent *event)
+{
+    const bool onHandle = object == m_promptDragHandle;
+    const bool onGrip = object == m_promptResizeGrip;
+    if (!onHandle && !onGrip)
+        return false;
+    if (!m_promptOverlayHost || !m_globalOverlayHost)
+        return false;
+
+    switch (event->type()) {
+    case QEvent::MouseButtonDblClick:
+        if (onHandle) {
+            resetPromptOverlayPlacement();
+            return true;
+        }
+        return false;
+    case QEvent::MouseButtonPress: {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() != Qt::LeftButton)
+            return false;
+        // A popped-out composer is moved and resized by the window manager;
+        // dragging the strip there would fight it.
+        if (m_promptOverlayDetached)
+            return false;
+        // The first drag or resize is what takes the panel off its anchor. Seed
+        // the free position from where it is sitting right now so it does not
+        // jump under the cursor.
+        if (!m_promptOverlayFloating) {
+            const QPoint topLeft = m_globalOverlayHost->mapFromGlobal(
+                m_promptOverlayHost->mapToGlobal(QPoint()));
+            m_promptOverlayPos = topLeft;
+            m_promptOverlaySize = m_promptOverlayHost->size();
+            m_promptOverlayFloating = true;
+            if (auto *dockRow =
+                    m_footerDock
+                        ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
+                        : nullptr)
+                dockRow->removeWidget(m_promptOverlayHost);
+            m_promptOverlayHost->setParent(m_globalOverlayHost);
+            m_promptOverlayHost->show();
+            positionGlobalFooterOverlays();
+        }
+        m_promptPlacementGrab = mouse->globalPosition().toPoint();
+        m_promptPlacementStartRect =
+            QRect(m_promptOverlayPos, m_promptOverlayHost->size());
+        m_promptPlacementDragging = onHandle;
+        m_promptPlacementResizing = onGrip;
+        if (onHandle)
+            m_promptDragHandle->setCursor(Qt::ClosedHandCursor);
+        // Grab explicitly, and only after the reparent above: an implicit grab
+        // would not survive the move into m_globalOverlayHost, and without one
+        // the drag stops the moment the cursor leaves this 16px strip.
+        (onHandle ? m_promptDragHandle : m_promptResizeGrip)->grabMouse();
+        return true;
+    }
+    case QEvent::MouseMove: {
+        if (!m_promptPlacementDragging && !m_promptPlacementResizing)
+            return false;
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        const QPoint delta =
+            mouse->globalPosition().toPoint() - m_promptPlacementGrab;
+        if (m_promptPlacementDragging) {
+            m_promptOverlayPos = m_promptPlacementStartRect.topLeft() + delta;
+        } else {
+            // The grip is the panel's top-left corner: the lower-right corner
+            // stays where it is, so growing goes into the empty workspace.
+            const QSize size(m_promptPlacementStartRect.width() - delta.x(),
+                             m_promptPlacementStartRect.height() - delta.y());
+            m_promptOverlaySize =
+                QSize(qMax(kPromptMinWidth, size.width()),
+                      qMax(kPromptMinHeight, size.height()));
+            m_promptOverlayPos =
+                m_promptPlacementStartRect.bottomRight() -
+                QPoint(m_promptOverlaySize.width() - 1,
+                       m_promptOverlaySize.height() - 1);
+        }
+        clampPromptOverlayIntoHost();
+        m_promptOverlayHost->raise();
+        return true;
+    }
+    case QEvent::MouseButtonRelease: {
+        if (!m_promptPlacementDragging && !m_promptPlacementResizing)
+            return false;
+        (onHandle ? m_promptDragHandle : m_promptResizeGrip)->releaseMouse();
+        m_promptPlacementDragging = false;
+        m_promptPlacementResizing = false;
+        if (m_promptDragHandle)
+            m_promptDragHandle->setCursor(Qt::OpenHandCursor);
+        m_promptOverlaySize = m_promptOverlayHost->size();
+        savePromptOverlayPlacement();
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 void MainWindow::positionGlobalFooterOverlays()
 {
     if (!m_globalOverlayHost || !m_footerDock)
@@ -2652,7 +2989,13 @@ void MainWindow::positionGlobalFooterOverlays()
         (!m_sectionStack || m_sectionStack->currentIndex() == 0) &&
         m_repoDetailStack &&
         m_repoDetailStack->currentIndex() == kRepoAgentsTab;
-    const bool dockAgentPrompt = onAgents && !m_promptOverlayCollapsed;
+    // Once the composer has been dragged off its anchor or popped out of the
+    // window it owns its own geometry, so the footer row lays out around a gap
+    // where it used to sit (adhoc #1536).
+    const bool anchoredPrompt =
+        !m_promptOverlayFloating && !m_promptOverlayDetached;
+    const bool dockAgentPrompt =
+        onAgents && !m_promptOverlayCollapsed && anchoredPrompt;
 
     // Agents is the one conversation-first workspace: dock the composer in the
     // transcript pane's half of the foot and keep the transcript/list layout
@@ -2672,13 +3015,14 @@ void MainWindow::positionGlobalFooterOverlays()
                             : Qt::AlignRight | Qt::AlignBottom);
     }
     if (m_promptOverlayHost && m_promptWrapper) {
-        const bool showPrompt = !m_promptOverlayCollapsed;
+        // A popped-out composer is never collapsed: its window is the toggle.
+        const bool showPrompt = !m_promptOverlayCollapsed || m_promptOverlayDetached;
         m_promptWrapper->setVisible(showPrompt);
         if (!showPrompt) {
             m_promptOverlayHost->setFixedSize(34, 34);
             m_userAvatarNavButton->setToolTip(
                 QStringLiteral("Show the prompt overlay"));
-        } else {
+        } else if (anchoredPrompt) {
             m_promptOverlayHost->setMinimumSize(0, 0);
             m_promptOverlayHost->setMaximumSize(
                 dockAgentPrompt ? QWIDGETSIZE_MAX : 560, QWIDGETSIZE_MAX);
@@ -2690,7 +3034,25 @@ void MainWindow::positionGlobalFooterOverlays()
                 dockAgentPrompt
                     ? QStringLiteral("The prompt is docked on the Agents page")
                     : QStringLiteral("Collapse the prompt overlay"));
+        } else {
+            // Free or popped out: the user's drag decides the size, so drop the
+            // anchored caps entirely and let the panel take the geometry given.
+            m_promptOverlayHost->setMinimumSize(0, 0);
+            m_promptOverlayHost->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+            m_promptOverlayHost->setSizePolicy(QSizePolicy::Expanding,
+                                               QSizePolicy::Expanding);
+            m_userAvatarNavButton->setToolTip(
+                m_promptOverlayDetached
+                    ? QStringLiteral("The prompt is in its own window")
+                    : QStringLiteral("Collapse the prompt overlay"));
         }
+    }
+    // Free-floating: place the panel ourselves over the workspace, above the
+    // footer dock so it can be dragged across the log strip.
+    if (m_promptOverlayFloating && !m_promptOverlayDetached && m_promptOverlayHost) {
+        clampPromptOverlayIntoHost();
+        m_promptOverlayHost->show();
+        m_promptOverlayHost->raise();
     }
     constexpr int kHorizontalMargin = 8;
     const int height = m_footerDock->sizeHint().height();
@@ -2720,9 +3082,16 @@ void MainWindow::positionGlobalFooterOverlays()
     QRegion interactive;
     if (m_footerLeftRegion && m_footerLeftRegion->isVisible())
         interactive += m_footerLeftRegion->geometry();
-    if (m_promptOverlayHost && m_promptOverlayHost->isVisible())
+    // Only count the composer when it is still one of the dock's children; once
+    // it floats or pops out its geometry is in another coordinate space, and
+    // adding it here would punch a hole in the wrong corner of the mask.
+    if (anchoredPrompt && m_promptOverlayHost && m_promptOverlayHost->isVisible())
         interactive += m_promptOverlayHost->geometry();
     m_footerDock->setMask(interactive);
+    // The dock was just raised, so a free-floating composer has to come back on
+    // top of it — otherwise dragging it over the log strip hides it behind one.
+    if (m_promptOverlayFloating && !m_promptOverlayDetached && m_promptOverlayHost)
+        m_promptOverlayHost->raise();
 }
 
 // Apply the compact public /status projection to both footer icon surfaces.
