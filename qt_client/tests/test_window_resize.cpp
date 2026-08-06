@@ -156,10 +156,10 @@ void checkFooterOverlayGeometry(MainWindow &window)
         QStringLiteral("statusVersionButton"));
     check(dock && log && prompt && lights && header && debugBar && version &&
               !log->isVisible() && !debugBar->isVisible() && lights->isDebug() &&
-              lights->lightCount() == 30 &&
+              lights->lightCount() == 31 &&
               prompt->geometry().center().x() > dock->rect().center().x() &&
               prompt->geometry().bottom() == dock->rect().bottom(),
-          QStringLiteral("all 30 labeled log categories start collapsed in the "
+          QStringLiteral("all 31 labeled log categories start collapsed in the "
                          "version-controlled debug bar"));
     if (version && debugBar) {
         version->click();
@@ -204,6 +204,20 @@ void checkFooterOverlayGeometry(MainWindow &window)
                       QStringLiteral("down"),
               QStringLiteral("the debug row appends labeled green/red website "
                              "minute states"));
+
+        // A Cloudflare-edge failure of /api/status itself (e.g. a 1101 worker
+        // exception) must not leave the last-fetched green/red minutes on
+        // screen forever as though nothing happened — the relay-reported rows
+        // should go grey/unknown until a real payload is fetched again.
+        window.testApplyFooterWebsiteStatusFailure(500);
+        check(lights->websiteStatusCount() == 2 &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("unknown") &&
+                  lights->websiteStatusFor(QStringLiteral("api")) ==
+                      QStringLiteral("unknown"),
+              QStringLiteral("an HTTP error from the status API itself marks "
+                             "the relay-reported rows unknown instead of "
+                             "keeping the stale cached minute"));
 
         // adhoc #1564: the relay grades itself from inside Cloudflare, so the
         // last two dots are checked here instead — the site and the /status
@@ -413,12 +427,12 @@ void checkFooterOverlayGeometry(MainWindow &window)
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
     check(log && lights && header && log->isVisible() && lights->isVisible() &&
-              header->isVisible() && header->lightCount() == 30 &&
+              header->isVisible() && header->lightCount() == 31 &&
               log->geometry().center().x() < dock->rect().center().x() &&
               log->geometry().bottom() == dock->rect().bottom() &&
               header->geometry().top() >= log->rect().top(),
           QStringLiteral("the compact log opens at the lower-left with its "
-                         "expanded 30-category header"));
+                         "expanded 31-category header"));
 
     window.testShowLogSection();
     QApplication::processEvents();
@@ -1958,8 +1972,11 @@ int main(int argc, char *argv[])
     window.testShowLogSection();
     QApplication::processEvents();
     check(window.findChild<QPushButton *>(
-              QStringLiteral("cloudflareWorkerLogsButton")) != nullptr,
-          QStringLiteral("network log exposes the Cloudflare live-log viewer"));
+              QStringLiteral("cloudflareWorkerLogsButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("logPopoutButton")) != nullptr,
+          QStringLiteral("the debug strip keeps the Cloudflare live-log viewer "
+                         "and the Log page pops the whole log out"));
     check(window.findChild<QTableWidget *>(
               QStringLiteral("controlPermissionsTable")) != nullptr &&
               window.findChild<QPushButton *>(
@@ -2263,6 +2280,65 @@ int main(int argc, char *argv[])
         check(!executable.startsWith(workingRoot),
               QStringLiteral("updated executable is separate from the working copy"));
     }
+    // adhoc #1563: a rebuild used to run the compiler with the default TMPDIR,
+    // so a full RAM-backed /tmp killed it mid-compile ("No space left on
+    // device") even with room on the build disk, and the status label showed a
+    // fixed 300-character slice of the error tail that landed mid-word
+    // ("Update failed: vice"). The scratch now lives inside the build tree and
+    // the summary picks the real diagnostic.
+    {
+        check(forkmesh::ui::buildScratchDir(QStringLiteral("/opt/forkmesh/qt_client/build")) ==
+                  QStringLiteral("/opt/forkmesh/qt_client/build/.forkmesh-tmp"),
+              QStringLiteral("compiler scratch stays inside the build tree (#1563)"));
+
+        // Free space is read from the nearest existing ancestor, so a build
+        // directory CMake has not created yet still reports its future volume
+        // instead of the "unknown" sentinel (which would skip the pre-flight).
+        QTemporaryDir spaceProbe;
+        if (spaceProbe.isValid()) {
+            const QString buildDir = spaceProbe.filePath(QStringLiteral("build"));
+            check(forkmesh::ui::freeBytesForPath(
+                      buildDir + QStringLiteral("/nested/not-yet")) > 0,
+                  QStringLiteral("free space walks up to an existing ancestor (#1563)"));
+
+            // An unbuilt tree has to fit the whole ~2 GB of objects; one that
+            // already has them overwrites in place, so demanding the full
+            // figure again would block a viable incremental update.
+            const qint64 fresh = forkmesh::ui::rebuildFreeBytesRequired(buildDir);
+            check(QDir().mkpath(buildDir + QStringLiteral("/CMakeFiles/forkmesh.dir")),
+                  QStringLiteral("test can stage an existing build tree (#1563)"));
+            check(forkmesh::ui::rebuildFreeBytesRequired(buildDir) < fresh,
+                  QStringLiteral("an existing build tree needs less free space (#1563)"));
+        }
+
+        const QString diskFull =
+            QStringLiteral("[ 24%] Building CXX object MainWindowNotes.cpp.o\n"
+                           "src/MainWindowNotes.cpp:894:1: fatal error: error "
+                           "writing to /tmp/ccIQExpV.s: No space left on device\n"
+                           "gmake: *** [Makefile:136: all] Error 2");
+        check(forkmesh::ui::updateFailureSummary(diskFull).contains(QStringLiteral("disk filled up")),
+              QStringLiteral("a full disk is reported as a full disk (#1563)"));
+        check(!forkmesh::ui::updateFailureSummary(diskFull).contains(QStringLiteral("gmake")),
+              QStringLiteral("a full disk is not reported as the make exit code (#1563)"));
+
+        const QString compileError =
+            QStringLiteral("[ 12%] Building CXX object MainWindow.cpp.o\n"
+                           "src/MainWindow.cpp:12:3: error: no member named 'nope'\n"
+                           "gmake[1]: *** [CMakeFiles/Makefile2:126] Error 2\n"
+                           "gmake: *** [Makefile:136: all] Error 2");
+        check(forkmesh::ui::updateFailureSummary(compileError) ==
+                  QStringLiteral("src/MainWindow.cpp:12:3: error: no member named 'nope'"),
+              QStringLiteral("the first diagnostic beats the make tail (#1563)"));
+
+        // No recognisable diagnostic: the tail is cut on a line boundary rather
+        // than mid-word, which is what produced "Update failed: vice".
+        const QString noisy = QStringLiteral("%1\nthe last whole line")
+                                  .arg(QString(400, QLatin1Char('x')));
+        const QString summary = forkmesh::ui::updateFailureSummary(noisy);
+        check(summary == QStringLiteral("the last whole line"),
+              QStringLiteral("an unrecognised tail is cut on a line boundary (#1563)"));
+    }
+
     if (updateIsolationOnly) {
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
@@ -2573,6 +2649,59 @@ int main(int argc, char *argv[])
     // not the machine's own copies.
     check(window.testReposNavBadgeCount() == 2,
           QStringLiteral("Repos rail badge counts the repositories on the network"));
+
+    // adhoc #1575: the Network section grows a Web Requests tab right after
+    // Endpoints -- the Worker's own inbound traffic from /api/metrics/summary,
+    // grouped by masked route, charted and listed most frequent first.
+    const auto webRequestsGroup = [](const char *group, int requests,
+                                     int errors) {
+        return QJsonObject{
+            {QStringLiteral("group"), QLatin1String(group)},
+            {QStringLiteral("requests"), requests},
+            {QStringLiteral("errors"), errors},
+            {QStringLiteral("avg_ms"), 12},
+            {QStringLiteral("dur_ms_max"), 340},
+            {QStringLiteral("classes"),
+             QJsonObject{{QStringLiteral("2xx"), requests - errors},
+                         {QStringLiteral("3xx"), 0},
+                         {QStringLiteral("4xx"), 0},
+                         {QStringLiteral("5xx"), errors}}}};
+    };
+    // Deliberately out of order: the tab must order by volume itself.
+    window.testRenderNetworkWebRequests(QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("windowMinutes"), 60},
+        {QStringLiteral("groups"),
+         QJsonArray{webRequestsGroup("status", 50, 0),
+                    webRequestsGroup("version", 1200, 2),
+                    webRequestsGroup("repo/*/*/pending", 900, 0)}}});
+    const QStringList networkTabLabels = window.testNetworkTabLabels();
+    const int endpointsTabIndex =
+        networkTabLabels.indexOf(QStringLiteral("Endpoints"));
+    check(endpointsTabIndex >= 0 &&
+              networkTabLabels.value(endpointsTabIndex + 1) ==
+                  QStringLiteral("Web Requests"),
+          QStringLiteral("Web Requests tab sits right after Endpoints"));
+    check(window.testNetworkWebRequestsGroups() ==
+              QStringList{QStringLiteral("version"),
+                          QStringLiteral("repo/*/*/pending"),
+                          QStringLiteral("status")},
+          QStringLiteral(
+              "Web Requests lists every group, most frequent first"));
+    check(window.testNetworkWebRequestsCellText(
+              0, QStringLiteral("Requests")) == QStringLiteral("1,200") &&
+              window.testNetworkWebRequestsCellText(
+                  0, QStringLiteral("Share")) == QStringLiteral("55.8%") &&
+              window.testNetworkWebRequestsCellText(
+                  0, QStringLiteral("5xx")) == QStringLiteral("2"),
+          QStringLiteral(
+              "Web Requests rows carry counts, share and status classes"));
+    check(window.testNetworkWebRequestsChartHeight() == 3 * 26 + 8,
+          QStringLiteral("Web Requests chart sizes to one bar per group"));
+    check(window.testNetworkWebRequestsStatusText().contains(QStringLiteral(
+              "2,150 request(s) across 3 route group(s)")),
+          QStringLiteral("Web Requests summarises the window's traffic"));
+
 
     // Reward settings must never launch the former reserve/donation/finalize
     // account funnel. A mock account flow is installed specifically to prove it
@@ -4898,18 +5027,13 @@ int main(int argc, char *argv[])
                                        QStringLiteral("GPT-5.5"),
                                        Qt::MatchStartsWith)
                                  : -1;
-        // Rows keep the model name plus an explicit merged-success count; the
-        // tooltip still says which agent runs the model.
+        // Rows are the bare model name — the merged-success count is painted
+        // beside it in the open popup only — and the tooltip still says which
+        // agent runs the model.
         check(quickAgentModel && quickAgentModel->isVisible() &&
                   quickAgentModel->maxVisibleItems() >= quickAgentModel->count() &&
-                  std::any_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
-                              [](const QString &label) {
-                                  return label.startsWith(QStringLiteral("Auto · "));
-                              }) &&
-                  std::any_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
-                              [](const QString &label) {
-                                  return label.startsWith(QStringLiteral("GPT-5.5 · "));
-                              }) &&
+                  agentModelLabels.contains(QStringLiteral("Auto")) &&
+                  agentModelLabels.contains(QStringLiteral("GPT-5.5")) &&
                   agentModelLabels.contains(QStringLiteral("OpenAI API")) &&
                   agentModelLabels.contains(QStringLiteral("Claude API")) &&
                   std::none_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
@@ -4919,12 +5043,20 @@ int main(int argc, char *argv[])
                                           label.endsWith(QStringLiteral("Codex"));
                                }) &&
                   gpt55Row >= 0 &&
+                  // The tooltip opens with the account the run would use, so the
+                  // model/agent line and its merged tally sit below that.
                   quickAgentModel->itemData(gpt55Row, Qt::ToolTipRole).toString()
-                      .startsWith(QStringLiteral("GPT-5.5 · Codex\nMerged success:")) &&
+                      .contains(QStringLiteral("GPT-5.5 · Codex\nMerged success:")) &&
                   allAgentModelsHaveIcons && agentModelIconsAreClean && quickProvider &&
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
-              QString("one icon-rich composer dropdown combines agents and models (%1)")
-                  .arg(agentModelLabels.join(QStringLiteral(", "))));
+              QString("one icon-rich composer dropdown combines agents and models "
+                      "(%1 | GPT-5.5 tooltip: %2)")
+                  .arg(agentModelLabels.join(QStringLiteral(", ")),
+                       gpt55Row >= 0
+                           ? quickAgentModel->itemData(gpt55Row, Qt::ToolTipRole)
+                                 .toString()
+                                 .replace(QLatin1Char('\n'), QLatin1Char('|'))
+                           : QStringLiteral("missing")));
         // Only the top model lines wear the World's robot portraits. Everything
         // below them — the raw API agents, the Cloudflare chat models — keeps the
         // abstract mark it always had, so the menu does not read as one wall of
@@ -4992,16 +5124,32 @@ int main(int argc, char *argv[])
                 continue;
             rankedLabels << quickAgentModel->itemText(i);
         }
-        check(rankedLabels == QStringList({QStringLiteral("Auto · 0 merged"),
-                                           QStringLiteral("Fable 5 · 0 merged"),
-                                           QStringLiteral("Opus 4.8 · 0 merged"),
-                                           QStringLiteral("Sonnet 4.6 · 0 merged"),
-                                           QStringLiteral("Haiku 4.5 · 0 merged"),
-                                           QStringLiteral("GPT-5.5 · 0 merged"),
-                                           QStringLiteral("GPT-5.4 · 0 merged"),
-                                           QStringLiteral("GPT-5.4-Mini · 0 merged")}),
-              QString("composer models show merged counts and sort strongest first when tied (%1)")
+        check(rankedLabels == QStringList({QStringLiteral("Auto"),
+                                           QStringLiteral("Fable 5"),
+                                           QStringLiteral("Opus 5"),
+                                           QStringLiteral("Sonnet 5"),
+                                           QStringLiteral("Opus 4.8"),
+                                           QStringLiteral("Opus 4.7"),
+                                           QStringLiteral("Opus 4.6"),
+                                           QStringLiteral("Opus 4.5"),
+                                           QStringLiteral("Sonnet 4.6"),
+                                           QStringLiteral("Sonnet 4.5"),
+                                           QStringLiteral("Haiku 4.5"),
+                                           QStringLiteral("GPT-5.5"),
+                                           QStringLiteral("GPT-5.4"),
+                                           QStringLiteral("GPT-5.4-Mini")}),
+              QString("composer model rows are bare model names, sorted strongest first when tied (%1)")
                   .arg(rankedLabels.join(QStringLiteral(", "))));
+        // The merged tally rides the popup-only description role, so the badge on
+        // the prompt stays the model name alone (adhoc #1565).
+        check(seeded.testQuickAddAgentModelMergedNote(
+                  QStringLiteral("claude-opus-4-8")) ==
+                      QStringLiteral("0 merged") &&
+                  !seeded.testQuickAddAgentModelLabel(
+                       QStringLiteral("claude-opus-4-8"))
+                       .contains(QStringLiteral("merged")),
+              QStringLiteral("merged counts live in the popup rows, not the "
+                             "closed model badge"));
         QComboBox *canonicalModel =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
         int concreteClaudeChoice = -1;
@@ -5064,11 +5212,66 @@ int main(int argc, char *argv[])
             const int sonnetRow = quickAgentModel->findText(sonnetLabel);
             const int opusRow = quickAgentModel->findText(opusLabel);
             check(sonnetRow >= 0 && opusRow > sonnetRow &&
-                      sonnetLabel == QStringLiteral("Sonnet 4.6 · 3 merged") &&
-                      opusLabel == QStringLiteral("Opus 4.8 · 1 merged"),
+                      sonnetLabel == QStringLiteral("Sonnet 4.6") &&
+                      opusLabel == QStringLiteral("Opus 4.8") &&
+                      seeded.testQuickAddAgentModelMergedNote(
+                          QStringLiteral("claude-sonnet-4-6")) ==
+                          QStringLiteral("3 merged") &&
+                      seeded.testQuickAddAgentModelMergedNote(
+                          QStringLiteral("claude-opus-4-8")) ==
+                          QStringLiteral("1 merged"),
                   QString("the model menu orders by merged success and shows "
                           "the count (Sonnet row %1, Opus row %2)")
                       .arg(sonnetRow).arg(opusRow));
+            // The record has to be on the menu from the first frame (adhoc
+            // #1565). The composer is built before initAgents() reads the
+            // sessions off disk, so a restart used to open with every model on
+            // "0 merged" until some later reload happened to refresh the menu —
+            // the user's whole merged history, apparently wiped.
+            {
+                // Same window proves the composer comes back to its corner: a
+                // prompt left floating mid-workspace in the last session must not
+                // be where the next launch opens (adhoc #1565).
+                QSettings placement;
+                placement.setValue(QStringLiteral("prompt/floating"), true);
+                placement.setValue(QStringLiteral("prompt/floatPos"),
+                                   QPoint(24, 48));
+                placement.setValue(QStringLiteral("prompt/floatSize"),
+                                   QSize(320, 200));
+                MainWindow restarted;
+                const QString restartedSonnet =
+                    restarted.testQuickAddAgentModelMergedNote(
+                        QStringLiteral("claude-sonnet-4-6"));
+                const QString restartedOpus =
+                    restarted.testQuickAddAgentModelMergedNote(
+                        QStringLiteral("claude-opus-4-8"));
+                check(restartedSonnet == QStringLiteral("3 merged") &&
+                          restartedOpus == QStringLiteral("1 merged"),
+                      QString("a fresh window shows the stored merged counts "
+                              "without waiting for a reload (Sonnet %1, Opus %2)")
+                          .arg(restartedSonnet, restartedOpus));
+                restarted.resize(1200, 720);
+                restarted.show();
+                QApplication::processEvents();
+                auto *restartedDock =
+                    restarted.findChild<QWidget *>(QStringLiteral("logDock"));
+                auto *restartedPrompt = restarted.findChild<QWidget *>(
+                    QStringLiteral("promptOverlayHost"));
+                check(restarted.testPromptOverlayPlacement() ==
+                              QStringLiteral("anchored") &&
+                          restartedDock && restartedPrompt &&
+                          restartedPrompt->parentWidget() == restartedDock &&
+                          restartedPrompt->geometry().center().x() >
+                              restartedDock->rect().center().x() &&
+                          restartedPrompt->geometry().bottom() ==
+                              restartedDock->rect().bottom() &&
+                          !placement.value(QStringLiteral("prompt/floating"))
+                               .toBool(),
+                      QString("a launch pins the prompt to the lower-right corner "
+                              "however it was left (placement %1)")
+                          .arg(restarted.testPromptOverlayPlacement()));
+                stopChildProcesses(restarted);
+            }
             for (int id = 144501; id <= 144506; ++id)
                 seeded.testRemoveAgentSession(id);
             seeded.testRefreshQuickAddAgentModelSelector();
@@ -6363,6 +6566,34 @@ int main(int argc, char *argv[])
         window.testResetNetworkLog();
         check(window.testLogFilterChipLabels().contains(QStringLiteral("STALL")),
               QStringLiteral("an empty category's chip shows no count at all"));
+    }
+
+    // Background outcome lines split by which side of the ✓ / ✕ they report, so
+    // "how much of this session was not backgrounded" is countable on its own
+    // instead of sharing one tally with the healthy runs.
+    {
+        window.testResetNetworkLog();
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 1, 48, QString(), /*backgrounded=*/true));
+        QStringList stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("BGTASK"),
+              QStringLiteral("a backgrounded outcome line badges as BGTASK"));
+
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 3, 1400, QString(), /*backgrounded=*/false));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("BGBLOCK"),
+              QStringLiteral("work that was not backgrounded badges as BGBLOCK, "
+                             "its own category"));
+
+        const QStringList labels = window.testLogFilterChipLabels();
+        check(labels.contains(QStringLiteral("BGTASK 1")) &&
+                  labels.contains(QStringLiteral("BGBLOCK 1")),
+              QStringLiteral("the log filter row counts the backgrounded and "
+                             "not-backgrounded halves separately"));
+        window.testResetNetworkLog();
     }
 
     // adhoc #1546: red means "this request failed". The verbose net line quotes

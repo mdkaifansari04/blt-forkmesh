@@ -14,6 +14,7 @@
 
 #include <QFutureWatcher>
 #include <QNetworkInformation>
+#include <QProcessEnvironment>
 #include <QtConcurrent/QtConcurrentRun>
 
 using namespace forkmesh::ui;
@@ -1375,6 +1376,68 @@ QString MainWindow::testNetworkRepoMirrorHeader() const
         !m_networkReposTable->horizontalHeaderItem(2))
         return QString();
     return m_networkReposTable->horizontalHeaderItem(2)->text();
+}
+
+QStringList MainWindow::testNetworkTabLabels() const
+{
+    QStringList labels;
+    if (m_networkTabs)
+        for (int index = 0; index < m_networkTabs->count(); ++index)
+            labels.append(m_networkTabs->tabText(index));
+    return labels;
+}
+
+void MainWindow::testRenderNetworkWebRequests(const QJsonObject &payload)
+{
+    showSection(kNetworkDiagnosticsSectionIndex);
+    if (m_networkTabs)
+        m_networkTabs->setCurrentIndex(m_networkWebRequestsTabIndex);
+    // The real fetch the tab switch starts (if any) only answers on the event
+    // loop and only renders an ok payload; the fixture below owns the widgets
+    // deterministically.
+    renderNetworkWebRequests(payload);
+}
+
+QStringList MainWindow::testNetworkWebRequestsGroups() const
+{
+    QStringList groups;
+    if (!m_networkWebRequestsTable)
+        return groups;
+    for (int row = 0; row < m_networkWebRequestsTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_networkWebRequestsTable->item(row, 0))
+            groups.append(item->text());
+    }
+    return groups;
+}
+
+QString MainWindow::testNetworkWebRequestsCellText(int row,
+                                                   const QString &header) const
+{
+    if (!m_networkWebRequestsTable)
+        return QString();
+    for (int column = 0; column < m_networkWebRequestsTable->columnCount();
+         ++column) {
+        QTableWidgetItem *head =
+            m_networkWebRequestsTable->horizontalHeaderItem(column);
+        if (!head || head->text() != header)
+            continue;
+        QTableWidgetItem *item = m_networkWebRequestsTable->item(row, column);
+        return item ? item->text() : QString();
+    }
+    return QString();
+}
+
+QString MainWindow::testNetworkWebRequestsStatusText() const
+{
+    return m_networkWebRequestsStatus ? m_networkWebRequestsStatus->text()
+                                      : QString();
+}
+
+int MainWindow::testNetworkWebRequestsChartHeight() const
+{
+    return m_networkWebRequestsChart
+               ? m_networkWebRequestsChart->minimumHeight()
+               : 0;
 }
 
 QStringList MainWindow::testNetworkRepoColumns() const
@@ -4102,10 +4165,15 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
                     .arg(time);
+    // Non-breaking padding, wide enough for the longest badge: plain trailing
+    // spaces collapse in HTML, which left this column ragged (adhoc #1559).
     html += QStringLiteral(
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
                 "<span style='color:#1f2328'>%3</span>")
-                .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
+                .arg(accent,
+                     badge.toHtmlEscaped() +
+                         QStringLiteral("&nbsp;")
+                             .repeated(qMax(0, 8 - badge.size())),
                      forkmesh::colorizeBackgroundMarker(message.toHtmlEscaped()));
     return html;
 }
@@ -4229,9 +4297,16 @@ QStringList MainWindow::testBuildAndPreviewSteps(const QString &gitDir,
 void MainWindow::runUpdateStep(const QString &program, const QStringList &arguments,
                                const QString &workingDir,
                                std::function<void()> onSuccess,
-                               std::function<void()> onFailure)
+                               std::function<void()> onFailure,
+                               const QMap<QString, QString> &extraEnv)
 {
-    const QString commandLine = (QStringList{program} + arguments).join(QLatin1Char(' '));
+    QStringList envPrefix;
+    for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+        envPrefix << (it.key() + QLatin1Char('=') + it.value());
+    // Show the overrides in the echoed command line so the log stays an exact
+    // record of what ran.
+    const QString commandLine =
+        (envPrefix + QStringList{program} + arguments).join(QLatin1Char(' '));
     logRestart(QStringLiteral("run: %1").arg(commandLine));
     // Echo the exact command and its working directory into the live log, then
     // stream the process's merged stdout+stderr as it runs.
@@ -4240,6 +4315,12 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
     stepTimer.start();
     auto *process = new QProcess(this);
     process->setWorkingDirectory(workingDir);
+    if (!extraEnv.isEmpty()) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+            env.insert(it.key(), it.value());
+        process->setProcessEnvironment(env);
+    }
     process->setProcessChannelMode(QProcess::MergedChannels);
     // Keep a bounded copy of the output so a failure can surface its tail in the
     // status label even though the full detail is already in the log window.
@@ -4274,7 +4355,8 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
                     }
                     stopRefreshSpin();
                     stopRestartSpin();
-                    setUpdateStatus("Update failed: " + output->trimmed().right(300), true);
+                    setUpdateStatus("Update failed: " + updateFailureSummary(*output),
+                                    true);
                     if (m_buildButton)
                         m_buildButton->setEnabled(true);
                     return;
@@ -4334,16 +4416,25 @@ void MainWindow::runUpdateStepUser(const QString &program,
                                    const QStringList &arguments,
                                    const QString &workingDir,
                                    std::function<void()> onSuccess,
-                                   std::function<void()> onFailure)
+                                   std::function<void()> onFailure,
+                                   const QMap<QString, QString> &extraEnv)
 {
     if (m_updateAsUser.isEmpty()) {
         runUpdateStep(program, arguments, workingDir, std::move(onSuccess),
-                      std::move(onFailure));
+                      std::move(onFailure), extraEnv);
         return;
     }
     // Run the command as the invoking non-root user so files it writes are owned
     // by them and land under their home, never under /root.
-    QStringList wrapped{"-u", m_updateAsUser, "-H", program};
+    QStringList wrapped{"-u", m_updateAsUser, "-H"};
+    // sudo resets the environment, so the overrides cannot ride along on the
+    // QProcess — hand them to the target through env(1) instead.
+    if (!extraEnv.isEmpty()) {
+        wrapped << "env";
+        for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+            wrapped << (it.key() + QLatin1Char('=') + it.value());
+    }
+    wrapped << program;
     wrapped += arguments;
     runUpdateStep("sudo", wrapped, workingDir, std::move(onSuccess),
                   std::move(onFailure));
@@ -4357,18 +4448,51 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
                                 ? QCoreApplication::applicationFilePath()
                                 : relaunchPath;
     const QString buildDir = clientDir + "/build";
+
+    // Pre-flight the disk before touching anything. A rebuild that runs out of
+    // space dies at whichever translation unit happened to be compiling, and
+    // the only thing the user ever saw was a mid-word slice of the error tail.
+    // Refusing up front costs nothing (the running node is untouched either
+    // way) and can name the remedy.
+    const qint64 freeBytes = freeBytesForPath(buildDir);
+    const qint64 requiredBytes = rebuildFreeBytesRequired(buildDir);
+    if (freeBytes >= 0 && freeBytes < requiredBytes) {
+        stopRefreshSpin();
+        stopRestartSpin();
+        setUpdateStatus(QStringLiteral("Update cancelled: only %1 free on the "
+                                       "volume holding %2, and the rebuild "
+                                       "needs at least %3. Free some space and "
+                                       "try again — nothing was changed.")
+                            .arg(formatByteSize(freeBytes), buildDir,
+                                 formatByteSize(requiredBytes)),
+                        true);
+        if (m_buildButton)
+            m_buildButton->setEnabled(true);
+        return;
+    }
+
+    // Give the compiler its own scratch inside the build tree (see
+    // buildScratchDir) instead of letting it fill a RAM-backed /tmp, and clear
+    // whatever a previously killed build left behind there.
+    const QString scratchDir = buildScratchDir(buildDir);
     setRestartSpinProgress(35);
     setUpdateStatus("Configuring...");
-    runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
-                      clientDir, [this, buildDir, appPath] {
-        setRestartSpinProgress(60);
-        setUpdateStatus("Rebuilding...");
-        runUpdateStepUser("cmake",
-                          {"--build", buildDir, "-j",
-                           QString::number(ramCappedBuildJobs())},
-                          buildDir, [this, buildDir, appPath] {
-            const QString built = builtExecutablePath(buildDir);
-            installAndRelaunch(built, appPath);
+    runUpdateStepUser("rm", {"-rf", scratchDir}, clientDir,
+                      [this, clientDir, buildDir, scratchDir, buildType, appPath] {
+        runUpdateStepUser("mkdir", {"-p", scratchDir}, clientDir,
+                          [this, clientDir, buildDir, scratchDir, buildType, appPath] {
+            runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
+                              clientDir, [this, buildDir, scratchDir, appPath] {
+                setRestartSpinProgress(60);
+                setUpdateStatus("Rebuilding...");
+                runUpdateStepUser("cmake",
+                                  {"--build", buildDir, "-j",
+                                   QString::number(ramCappedBuildJobs())},
+                                  buildDir, [this, buildDir, appPath] {
+                    const QString built = builtExecutablePath(buildDir);
+                    installAndRelaunch(built, appPath);
+                }, {}, {{QStringLiteral("TMPDIR"), scratchDir}});
+            });
         });
     });
 }

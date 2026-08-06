@@ -74,23 +74,24 @@ def test_world_routes_own_exactly_the_world_prefix():
 
 def test_api_worker_is_the_same_application_behind_api_routes():
     # forkmesh-api is a second deployment of the relay's Python application,
-    # differing ONLY in ownership: /api/* zone routes, a WORKER_ROLE marker,
-    # no cron (the relay's schedule must not double-run), and no Durable
-    # Object migrations (the classes live in the relay script and are
-    # reached cross-script, so both Workers share the same live rooms).
+    # differing ONLY in ownership: the api.forkmesh.com custom domain, a
+    # WORKER_ROLE marker, no cron (the relay's schedule must not double-run),
+    # and no Durable Object migrations (the classes live in the relay script
+    # and are reached cross-script, so both Workers share the same live
+    # rooms).
     assert API["name"] == "forkmesh-api"
-    assert API["main"] == RELAY["main"] == "src/entry.py"
+    assert API["main"] == RELAY["main"] == "src_build/entry.py"
     assert API["compatibility_flags"] == RELAY["compatibility_flags"]
     assert API["compatibility_date"] == RELAY["compatibility_date"]
     # api.forkmesh.com is the canonical API host (custom domain, so
-    # Cloudflare owns its DNS record); the forkmesh.com/api/* zone routes
-    # keep every same-origin caller working with no CORS surface.
+    # Cloudflare owns its DNS record). The forkmesh.com/api/* zone routes are
+    # deliberately NOT claimed: forkmesh-api melts fresh isolates under
+    # cold-start churn, so same-origin API traffic must keep resolving on
+    # the relay's custom-domain catch-all.
     custom = [r for r in API["routes"] if r.get("custom_domain")]
     assert [r["pattern"] for r in custom] == ["api.forkmesh.com"]
     zone_routes = [r for r in API["routes"] if not r.get("custom_domain")]
-    assert {r["pattern"] for r in zone_routes} == {
-        "forkmesh.com/api/*", "www.forkmesh.com/api/*"}
-    assert all(r["zone_name"] == "forkmesh.com" for r in zone_routes)
+    assert zone_routes == []
     assert API["assets"]["directory"] == "./public_api"
     assert API["assets"]["binding"] == "ASSETS"
     # "/" runs the Worker so api.forkmesh.com's root serves the diagnostics
@@ -99,7 +100,8 @@ def test_api_worker_is_the_same_application_behind_api_routes():
     assert "triggers" not in API
     assert "migrations" not in API
     assert API["build"]["command"] == (
-        "python3 tools/build_split_assets.py api"
+        "python3 tools/build_worker_python.py"
+        " && python3 tools/build_split_assets.py api"
     )
     for binding in API["durable_objects"]["bindings"]:
         assert binding["script_name"] == "forkmesh-relay", binding
@@ -355,14 +357,13 @@ def test_route_verification_proves_ownership_with_worker_markers():
                   '_split_check "$base/pricing.html" "" 404'):
         assert probe in DEPLOY, probe
     # The Python Workers identify themselves in their payloads rather than
-    # via the assets-layer marker header: /api/version must come back from
-    # whichever Python Worker currently owns /api/* (forkmesh-api is parked
-    # behind FORKMESH_DEPLOY_API_WORKER while the startup-memory ceiling
-    # makes a second cold Python Worker melt its fresh isolates), and the
+    # via the assets-layer marker header: same-origin /api/version always
+    # answers as the relay (forkmesh-api deliberately claims no
+    # forkmesh.com/api/* zone routes), forkmesh-api proves itself on
+    # api.forkmesh.com while shipped (FORKMESH_DEPLOY_API_WORKER), and the
     # relay-routed /health always answers as the relay with its build stamp.
     assert 'FORKMESH_DEPLOY_API_WORKER' in DEPLOY
-    assert '"worker"[[:space:]]*:[[:space:]]*"\'"$expected_api_worker"\'"' in (
-        DEPLOY
-    )
     assert '"worker"[[:space:]]*:[[:space:]]*"relay"' in DEPLOY
+    assert '"worker"[[:space:]]*:[[:space:]]*"api"' in DEPLOY
+    assert 'https://api.forkmesh.com/api/version' in DEPLOY
     assert 'relay /health reports rev' in DEPLOY

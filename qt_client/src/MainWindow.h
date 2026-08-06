@@ -510,6 +510,13 @@ public:
     {
         return applyFooterWebsiteStatusPayload(payload);
     }
+    // Exercises the "the relay answered but not with a status payload" path
+    // (an HTTP error/Cloudflare error page/malformed JSON), same as a live
+    // fetch would after a bad reply.
+    void testApplyFooterWebsiteStatusFailure(int httpStatus)
+    {
+        applyFooterWebsiteStatusFailure(httpStatus);
+    }
     // Hands one desktop-side edge probe the answer it would have received and
     // returns the graded state, so Cloudflare-error grading is exercised
     // without a live network.
@@ -554,6 +561,15 @@ public:
     QString testNetworkRepoCellText(int row, const QString &header) const;
     bool testNetworkRepoHasCommitSparkline(int row) const;
     QString testNetworkRepoCommitActivitySummary(int row) const;
+    // Web Requests tab (adhoc #1575): the Network tab labels in order, a
+    // fixture-driven render of the /api/metrics/summary payload, and readers
+    // over the resulting chart, table and summary line.
+    QStringList testNetworkTabLabels() const;
+    void testRenderNetworkWebRequests(const QJsonObject &payload);
+    QStringList testNetworkWebRequestsGroups() const;
+    QString testNetworkWebRequestsCellText(int row, const QString &header) const;
+    QString testNetworkWebRequestsStatusText() const;
+    int testNetworkWebRequestsChartHeight() const;
     // Badge riding the activity rail's Repos icon.
     int testReposNavBadgeCount() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
@@ -767,6 +783,12 @@ public:
     // tests of ordering and the model-only visible text.
     void testRefreshQuickAddAgentModelSelector();
     QString testQuickAddAgentModelLabel(const QString &model) const;
+    // The merged tally the popup paints beside a row's label, which the closed
+    // control deliberately does not show (adhoc #1565).
+    QString testQuickAddAgentModelMergedNote(const QString &model) const;
+    // Where the composer sits: "anchored", "floating" or "detached". A launch
+    // always begins anchored on the footer's lower-right corner.
+    QString testPromptOverlayPlacement() const;
     // Prompt shortcuts can pin a dedicated CLI agent/model in their metadata.
     // Return the parsed fields plus launch prompt so tests cover both the pin and
     // removal of configuration headers from what the agent receives.
@@ -1417,15 +1439,19 @@ private:
     void installAndRelaunch(const QString &built, const QString &appPath);
     // When onFailure is set it is invoked instead of the default "Update failed"
     // handling if the step exits non-zero, letting callers recover (e.g. re-clone
-    // a checkout that has diverged from the mirror).
+    // a checkout that has diverged from the mirror). extraEnv is merged over the
+    // inherited environment (used to point the compiler's TMPDIR at the build
+    // tree) and is echoed into the update log alongside the command.
     void runUpdateStep(const QString &program, const QStringList &arguments,
                        const QString &workingDir, std::function<void()> onSuccess,
-                       std::function<void()> onFailure = {});
+                       std::function<void()> onFailure = {},
+                       const QMap<QString, QString> &extraEnv = {});
     // Like runUpdateStep, but runs the command as m_updateAsUser (via sudo -u)
     // when that is set, so root-launched updates write files owned by the user.
     void runUpdateStepUser(const QString &program, const QStringList &arguments,
                            const QString &workingDir, std::function<void()> onSuccess,
-                           std::function<void()> onFailure = {});
+                           std::function<void()> onFailure = {},
+                           const QMap<QString, QString> &extraEnv = {});
     void setUpdateStatus(const QString &status, bool isError = false);
     // Open (or reset) the live update/rebuild log window and append to it.
     void showUpdateLog();
@@ -1470,6 +1496,10 @@ private:
     // projection once a minute and retain the newest completed minute per row.
     void refreshFooterWebsiteStatus();
     bool applyFooterWebsiteStatusPayload(const QJsonObject &payload);
+    // The relay answered but not with a usable payload (HTTP error, Cloudflare
+    // error document, malformed JSON): mark the relay-reported rows unknown
+    // instead of silently repainting a stale cached minute as still current.
+    void applyFooterWebsiteStatusFailure(int httpStatus);
     // Two dots the relay cannot honestly produce for itself (adhoc #1564): its
     // own /status samplers run inside the Worker and deliberately avoid a
     // hairpin through the public hostname, so a Cloudflare edge failure (520-527,
@@ -1675,6 +1705,8 @@ private:
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
     void showCloudflareWorkerLogs();
+    // The same log in a window of its own: everything retained, unfiltered.
+    void showNetworkLogPopout();
 
     // Mainnode relays (shown in the top-bar relay switcher)
     void loadServers();
@@ -2330,6 +2362,12 @@ private:
     // to be on navigation.
     void refreshNetworkTab(int tabIndex);
     void showEndpointRequestDetails(int row, int column);
+    // Web Requests tab: the inbound traffic the Worker itself answered, from
+    // the public /api/metrics/summary buckets — the same masked route groups
+    // and most-frequent-first ordering as the api.forkmesh.com landing page,
+    // drawn as a bar chart plus the full un-paginated group table.
+    void refreshNetworkWebRequests();
+    void renderNetworkWebRequests(const QJsonObject &payload);
 
     // Admin-only Users page: the same privacy-filtered account facts shown on
     // World avatar chests, laid out as one sortable table. It deliberately
@@ -3195,6 +3233,7 @@ private:
     // mirrors. Shared by the key handler and updateQuickAddEnterTarget so the
     // two can never drift apart.
     bool quickAddShouldFollowUpAgent() const;
+    void updateQuickAddTargetAgentLabel();
     void updateIssueAgentUi(const Issue &issue);
     // Issue #145: populate the issue detail's "Files changed" tab from a linked
     // pull request's patch or a linked agent session's branch diff, and show or
@@ -5088,6 +5127,11 @@ private:
     void updateLogTimelineSummary();
     void chooseCustomLogTimelineRange();
     void rebuildNetworkLogView();   // re-render the log honoring m_logFilter
+    // Pop-out plumbing: one entry's markup against that window's own document,
+    // the live append that keeps it current, and its header line.
+    QString popoutLogLineHtml(const QString &storedLine, QString &runningDate);
+    void appendNetworkLogPopoutLine(const QString &storedLine);
+    void updateNetworkLogPopoutStatus();
     QString networkLogPath() const; // on-disk path for the persisted log
     void loadNetworkLog();          // restore log history at startup
     void saveNetworkLog();          // rewrite (and trim) the on-disk log
@@ -5160,6 +5204,9 @@ private:
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
+    // Refresh just the prompt bubble's status line, e.g. as the agent streams
+    // (adhoc #1570) — cheaper than a full renderTopMessage() per event.
+    void updateTopMessagePromptLiveStatus(const QString &line);
     void renderTopMessagePromptImages(); // rebuild thumbnails for a sent prompt
     // Size + anchor the bubble above the prompt. animate=true glides the stack
     // to its new anchor (a card arrived or left) instead of snapping it there.
@@ -6234,6 +6281,16 @@ private:
     QPushButton *m_networkDiagnosticsRefreshButton = nullptr;
     bool m_networkEndpointFadeScheduled = false;
     bool m_networkEndpointsUserSorted = false;
+    // Web Requests tab: inbound Worker traffic from /api/metrics/summary. The
+    // chart is a file-local widget class, so it rides in a QWidget pointer.
+    QWidget *m_networkWebRequestsChart = nullptr;
+    QTableWidget *m_networkWebRequestsTable = nullptr;
+    QLabel *m_networkWebRequestsStatus = nullptr;
+    QComboBox *m_networkWebRequestsRange = nullptr;
+    int m_networkWebRequestsTabIndex = -1;
+    int m_networkWebRequestsMinutes = 60;
+    bool m_networkWebRequestsInFlight = false;
+    bool m_networkWebRequestsUserSorted = false;
     // The Network section's tab bar. Its first three tabs are the Relays, Nodes
     // and Hosts pages (adhoc #54); their counts ride the tab labels and total on
     // the rail's Network badge.
@@ -6304,6 +6361,14 @@ private:
     QLabel *m_settingsAvatarPreview = nullptr;
     QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
     QTextBrowser *m_settingsLog = nullptr;
+    // The pop-out log window (adhoc #1559) and its live-append state. Guarded
+    // pointers: the window is WA_DeleteOnClose, so these go null on their own.
+    QPointer<QDialog> m_logPopout;
+    QPointer<QTextBrowser> m_logPopoutView;
+    QPointer<QLabel> m_logPopoutStatus;
+    QString m_logPopoutDate;         // last day divider written to the pop-out
+    bool m_logPopoutFilling = false; // history render in progress
+    QStringList m_logPopoutPending;  // lines logged while it was filling
     LogTimelineChart *m_logTimelineChart = nullptr;
     QLabel *m_logTimelineSummary = nullptr;
     QPushButton *m_logTimelineResetZoom = nullptr;
@@ -6395,6 +6460,7 @@ private:
     // line, so a typed prompt actually shows on two lines. Enter sends,
     // Shift+Enter inserts a newline; Up/Down still walk the prompt history.
     QPlainTextEdit *m_issueQuickAdd = nullptr;
+    QLabel *m_quickAddTargetAgentLabel = nullptr;
     QFrame *m_promptWrapper = nullptr; // geometry anchor for notification/prompt bubbles
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     // Canonical provider state behind the combined visible picker. It also

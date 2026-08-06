@@ -4510,8 +4510,8 @@ inline QString codexChatGptModelId(const QString &model)
     const QString trimmed = model.trimmed();
     if (trimmed.isEmpty())
         return QStringLiteral("gpt-5.5");
-    if (trimmed == QLatin1String("gpt-5.3-codex-spark"))
-        return QStringLiteral("gpt-5.3-spark");
+    if (trimmed == QLatin1String("gpt-5.3-spark"))
+        return QStringLiteral("gpt-5.3-codex-spark");
     if (trimmed == QLatin1String("gpt-5.5-codex"))
         return QStringLiteral("gpt-5.5");
     if (trimmed == QLatin1String("gpt-5.4"))
@@ -4532,6 +4532,7 @@ inline void populateCodexModelCombo(QComboBox *combo)
     combo->setEditable(false);
     combo->setInsertPolicy(QComboBox::NoInsert);
     combo->setProperty("allowAutoModel", false);
+    QSet<QString> seen;
     const QJsonArray live = QJsonDocument::fromJson(
                                 QSettings().value(kCodexModelsCacheSetting).toByteArray())
                                 .array();
@@ -4542,8 +4543,11 @@ inline void populateCodexModelCombo(QComboBox *combo)
         QString id = model.value(QStringLiteral("model")).toString().trimmed();
         if (id.isEmpty())
             id = model.value(QStringLiteral("id")).toString().trimmed();
-        if (!id.isEmpty())
+        id = codexChatGptModelId(id);
+        if (!id.isEmpty() && !seen.contains(id)) {
             combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
+            seen.insert(id);
+        }
     }
     if (combo->count() == 0) {
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
@@ -4642,9 +4646,10 @@ inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
     if (!combo || models.isEmpty())
         return;
     QSignalBlocker blocker(combo);
-    const QVariant selected = combo->currentData();
+    const QString selected = codexChatGptModelId(combo->currentData().toString());
     combo->clear();
     QString defaultId;
+    QSet<QString> seen;
     for (const QJsonValue &value : models) {
         const QJsonObject model = value.toObject();
         if (model.value(QStringLiteral("hidden")).toBool())
@@ -4652,10 +4657,12 @@ inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
         QString id = model.value(QStringLiteral("model")).toString().trimmed();
         if (id.isEmpty())
             id = model.value(QStringLiteral("id")).toString().trimmed();
-        if (!id.isEmpty()) {
+        id = codexChatGptModelId(id);
+        if (!id.isEmpty() && !seen.contains(id)) {
             combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
             if (model.value(QStringLiteral("isDefault")).toBool())
                 defaultId = id;
+            seen.insert(id);
         }
     }
     const int restored = combo->findData(selected);
@@ -5293,6 +5300,81 @@ inline int ramCappedBuildJobs()
     if (totalRam > 0)
         jobs = qBound(1, int(totalRam / (3LL * 1024 * 1024 * 1024)), jobs);
     return jobs;
+}
+
+// The scratch directory a rebuild points the toolchain's TMPDIR at. GCC and
+// Clang stream every translation unit's assembly through TMPDIR, so a -j<N>
+// build of qt_client has hundreds of megabytes of .s files live there at once.
+// On most desktop Linux installs /tmp is a RAM-backed tmpfs that ForkMesh also
+// shares with agent worktrees and mirror materializations, so a rebuild with
+// gigabytes free on the build disk still dies mid-compile with "No space left
+// on device" (adhoc #1563). Keeping the scratch inside the build tree puts it
+// on the one filesystem the build already has to fit on.
+inline QString buildScratchDir(const QString &buildDir)
+{
+    return buildDir + QStringLiteral("/.forkmesh-tmp");
+}
+
+// Free bytes on the filesystem holding `path`, walking up to the nearest
+// existing ancestor because the build directory may not exist yet. Returns -1
+// when the volume cannot be read, which callers must treat as "unknown" rather
+// than "full" so an unreadable mount never blocks an update.
+inline qint64 freeBytesForPath(const QString &path)
+{
+    QString probe = QDir::cleanPath(path);
+    while (!probe.isEmpty() && !QFileInfo::exists(probe)) {
+        const QString parent = QFileInfo(probe).absolutePath();
+        if (parent == probe || parent.isEmpty())
+            break;
+        probe = parent;
+    }
+    const QStorageInfo volume(probe);
+    if (!volume.isValid() || !volume.isReady())
+        return -1;
+    return volume.bytesAvailable();
+}
+
+// How much free space a rebuild into `buildDir` must have before it is worth
+// starting. A build tree from scratch is ~2 GB of objects plus the linked
+// binary and the assembler scratch above; an incremental rebuild overwrites
+// those objects in place, so it only needs headroom for the scratch and the
+// new binary. Getting this wrong in the strict direction would block a
+// perfectly viable update on a tight disk, so an existing tree is judged by
+// the smaller figure.
+inline qint64 rebuildFreeBytesRequired(const QString &buildDir)
+{
+    const bool incremental =
+        QFileInfo::exists(buildDir + QStringLiteral("/CMakeFiles/forkmesh.dir"));
+    return incremental ? 1024LL * 1024 * 1024 : 3LL * 1024 * 1024 * 1024;
+}
+
+// The one-line summary shown on the status label when an update step exits
+// non-zero. The raw output tail used to be chopped at a fixed 300 characters,
+// which routinely landed mid-word ("Update failed: vice") and told the user
+// nothing. Prefer the first real diagnostic — the tail of a parallel make is
+// just "gmake: *** [Makefile:136: all] Error 2" — and special-case a full disk,
+// which is the one failure with an obvious remedy.
+inline QString updateFailureSummary(const QString &output)
+{
+    if (output.contains(QLatin1String("No space left on device")))
+        return QStringLiteral(
+            "the disk filled up during the build. Free space on the volume "
+            "holding the build directory, then start the update again — "
+            "nothing was replaced.");
+    const QStringList lines = output.split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+        if (trimmed.contains(QLatin1String("error:")) ||
+            trimmed.startsWith(QLatin1String("fatal:")))
+            return trimmed.left(300);
+    }
+    // Nothing recognisable: fall back to the tail, but drop the partial first
+    // line so the label never starts mid-word.
+    QString tail = output.trimmed().right(300);
+    const int newline = tail.indexOf(QLatin1Char('\n'));
+    if (newline >= 0 && newline < tail.size() - 1)
+        tail = tail.mid(newline + 1);
+    return tail.trimmed();
 }
 
 inline QStringList cmakeConfigureArgs(const QString &clientDir, const QString &buildDir,
@@ -7572,6 +7654,28 @@ public:
     }
 
     int lightCount() const { return categoryCount(); }
+
+    // The category taxonomy this strip paints, published so the Log page's
+    // quick-filter chips can wear the same glyph, in the same order, for the
+    // same badge (adhoc #1559) instead of keeping a second list in step by hand.
+    static QStringList badges()
+    {
+        QStringList names;
+        names.reserve(categoryCount());
+        for (int i = 0; i < categoryCount(); ++i)
+            names << QString::fromLatin1(categories()[i].badge);
+        return names;
+    }
+
+    static QString iconForBadge(const QString &badge)
+    {
+        for (int i = 0; i < categoryCount(); ++i) {
+            if (badge == QLatin1String(categories()[i].badge))
+                return QString::fromLatin1(categories()[i].icon);
+        }
+        return QStringLiteral("info");
+    }
+
     quint64 countFor(const QString &badge) const
     {
         const int lane = categoryIndex(badge);
@@ -7596,6 +7700,7 @@ public:
     bool isDebug() const { return m_presentation == Debug; }
 
     std::function<void(const QString &category)> onCategoryClicked;
+    std::function<void(const QString &statusId)> onWebsiteClicked;
     std::function<void()> onStallClicked;
     std::function<void()> onStallContextMenu;
     std::function<void()> onClicked;
@@ -7728,6 +7833,9 @@ protected:
                 }
                 if (!status.reason.isEmpty())
                     tip += QLatin1Char('\n') + status.reason;
+                if (onWebsiteClicked)
+                    tip += QStringLiteral(
+                        "\nClick to open the related website page.");
                 QToolTip::showText(help->globalPos(), tip, this);
                 return true;
             }
@@ -7739,9 +7847,19 @@ protected:
     {
         if (event->button() == Qt::LeftButton && rect().contains(event->pos())) {
             const int lane = categoryAt(event->pos());
-            if (lane == stallCategoryIndex() && onStallClicked)
+            if (lane == stallCategoryIndex() && onStallClicked) {
                 onStallClicked();
-            else if (m_presentation != Header) {
+            } else if (lane < 0) {
+                // Outside the category glyphs. The website dots are the relay's
+                // own health, so they open related pages in the website (adhoc
+                // #1559); nothing else in the strip claims this area. Reading
+                // categories()[-1] is what this branch used to do.
+                const int website = websiteStatusAt(event->pos());
+                if (website >= 0 && onWebsiteClicked) {
+                    onWebsiteClicked(m_websiteStatuses.at(website).id);
+                } else if (onClicked)
+                    onClicked();
+            } else if (m_presentation != Header) {
                 if (onCategoryClicked)
                     onCategoryClicked(categories()[lane].badge);
                 else if (onClicked)
@@ -7788,6 +7906,7 @@ private:
             {"PIN", "#79c0ff", "shield-check"},
             {"GIT", "#58a6ff", "git-commit"},
             {"BGTASK", "#8b949e", "gear"},
+            {"BGBLOCK", "#f0883e", "stop"},
             {"PUBLISH", "#58a6ff", "upload"},
             {"PULL", "#3fb950", "git-pull-request"},
             {"MERGE", "#a371f7", "git-merge"},
@@ -7805,13 +7924,20 @@ private:
             {"ERROR", "#f85149", "x"},
             {"INFO", "#6e7681", "info"},
         };
+        static_assert(sizeof(values) / sizeof(values[0]) == kCategoryCount,
+                      "kCategoryCount must match the taxonomy above");
         return values;
     }
 
-    static constexpr int categoryCount() { return 30; }
-    static constexpr int stallCategoryIndex() { return 27; }
-    static constexpr int kCompactColumns = 10;
+    // One entry per row of categories() above; the per-lane arrays below and the
+    // compact grid are both sized from it.
+    static constexpr int kCategoryCount = 31;
+    static constexpr int categoryCount() { return kCategoryCount; }
     static constexpr int kCompactRows = 3;
+    // Enough columns to hold the whole taxonomy in those rows, so adding a
+    // category widens the grid instead of dropping the overflow off the bottom.
+    static constexpr int kCompactColumns =
+        (kCategoryCount + kCompactRows - 1) / kCompactRows;
     static constexpr int kCompactCell = 16;
     static constexpr int kCompactPadding = 7;
     static constexpr int kHeaderHeight = 32;
@@ -7827,6 +7953,15 @@ private:
                 return i;
         }
         return categoryCount() - 1; // unknown future categories pulse INFO
+    }
+
+    // Looked up rather than hard-coded: STALL's lane shifts every time a
+    // category is inserted above it, and a stale index would silently hand the
+    // stall click/tooltip to whatever category took its place.
+    static int stallCategoryIndex()
+    {
+        static const int index = categoryIndex(QStringLiteral("STALL"));
+        return index;
     }
 
     int compactCategoryWidth() const
@@ -8063,8 +8198,9 @@ private:
             return;
         }
         setToolTip(QStringLiteral(
-            "30 live-log categories%1 — hover an icon for its count; click for full "
+            "%1 live-log categories%2 — hover an icon for its count; click for full "
             "Log page filtered to this category")
+                       .arg(categoryCount())
                        .arg(m_websiteStatuses.isEmpty()
                                 ? QString()
                                 : QStringLiteral(" and %1 website status results")
@@ -8072,10 +8208,10 @@ private:
     }
 
     Presentation m_presentation = Compact;
-    quint64 m_counts[30] = {};
-    bool m_blinkVisible[30] = {};
-    bool m_blinking[30] = {};
-    int m_generation[30] = {};
+    quint64 m_counts[kCategoryCount] = {};
+    bool m_blinkVisible[kCategoryCount] = {};
+    bool m_blinking[kCategoryCount] = {};
+    int m_generation[kCategoryCount] = {};
     bool m_expanded = false;
     QList<WebsiteStatus> m_websiteStatuses;
     QString m_stallToolTip;
@@ -10698,6 +10834,29 @@ inline QString backgroundTaskWordFromLogMessage(const QString &storedLine)
     return line.left(split < 0 ? line.size() : split).toLower();
 }
 
+// A blank the exact size of an icon. Every log entry reserves the same icon
+// slots whether or not it fills them (adhoc #1559), so timestamps, badges and
+// message text all start in the same column instead of stepping left and right
+// with whichever glyphs a line happened to earn.
+inline QString logIconSpacerTag(QTextEdit *view, int size)
+{
+    if (!view)
+        return QString();
+    static QHash<int, QPixmap> blanks;
+    if (!blanks.contains(size)) {
+        QPixmap blank(size, size);
+        blank.fill(Qt::transparent);
+        blanks.insert(size, blank);
+    }
+    const QString resource = QStringLiteral("logspacer://%1").arg(size);
+    view->document()->addResource(QTextDocument::ImageResource, QUrl(resource),
+                                  blanks.value(size));
+    return QStringLiteral("<img src='%1' width='%2' height='%2' "
+                          "style='vertical-align:middle'>&nbsp;")
+        .arg(resource)
+        .arg(size);
+}
+
 inline QString logBgtaskIconTag(QTextEdit *view, const QString &storedLine)
 {
     if (!view)
@@ -10707,7 +10866,7 @@ inline QString logBgtaskIconTag(QTextEdit *view, const QString &storedLine)
         message = storedLine.mid(21);
     const QString word = backgroundTaskWordFromLogMessage(message);
     if (word.isEmpty())
-        return QString();
+        return logIconSpacerTag(view, 11);
     const QString icon = octiconForBackgroundTaskWord(word);
     const QString resource = QStringLiteral("logbgtask://") + word + QLatin1String("-")
                              + icon;
