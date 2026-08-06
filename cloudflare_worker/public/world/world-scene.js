@@ -351,6 +351,67 @@ const WORLD_AGENT_BOTS = Object.freeze([
     glow: "#8fffe0",
   },
 ]);
+// Model emblem art for the per-session agent robots. Each entry mirrors one
+// portrait in /assets/bot-avatars/ (the -face.webp files are 512px repacks of
+// the same art, small enough for a fleet): the emblem becomes the robot's
+// face plate and the shell/glow colours repaint its body to match the
+// portrait's armor and accent light.
+const WORLD_AGENT_BOT_AVATAR_LOOKS = Object.freeze({
+  opus: {
+    texture: "/assets/bot-avatars/opus-face.webp",
+    shell: "#b8892f",
+    glow: "#b07bff",
+  },
+  sonnet: {
+    texture: "/assets/bot-avatars/sonnet-face.webp",
+    shell: "#d09a3c",
+    glow: "#ff70bd",
+  },
+  haiku: {
+    texture: "/assets/bot-avatars/haiku-face.webp",
+    shell: "#c3ced1",
+    glow: "#59e5e8",
+  },
+  fable: {
+    texture: "/assets/bot-avatars/fable-face.webp",
+    shell: "#a08434",
+    glow: "#4fd9c2",
+  },
+  sol: {
+    texture: "/assets/bot-avatars/sol-face.webp",
+    shell: "#e9b23a",
+    glow: "#ffd25e",
+  },
+  luna: {
+    texture: "/assets/bot-avatars/luna-face.webp",
+    shell: "#4a4173",
+    glow: "#9678ff",
+  },
+  terra: {
+    texture: "/assets/bot-avatars/terra-face.webp",
+    shell: "#8e7a3d",
+    glow: "#79e77f",
+  },
+});
+// A session names its model freely ("opus", "claude-sonnet-5", …), so match
+// by substring first and only then fall back to a provider default: Claude
+// runs read as Sonnet, Codex as Sol, OpenAI API as Luna, anything else as
+// Terra. The lookup never fails — every robot gets a face.
+function agentBotAvatarLook(provider, model) {
+  const wantedModel = String(model || "").toLowerCase();
+  for (const [name, look] of Object.entries(WORLD_AGENT_BOT_AVATAR_LOOKS)) {
+    if (wantedModel.includes(name)) return { name, ...look };
+  }
+  const wantedProvider = String(provider || "").toLowerCase();
+  const fallback = wantedProvider.startsWith("claude")
+    ? "sonnet"
+    : wantedProvider === "codex"
+      ? "sol"
+      : wantedProvider === "openai"
+        ? "luna"
+        : "terra";
+  return { name: fallback, ...WORLD_AGENT_BOT_AVATAR_LOOKS[fallback] };
+}
 // The public World has one shared ground plane plus three regional labels.
 // Deprecated off-world destinations are deliberately not valid spawn spaces.
 const WORLD_SPACE_FLOORS = Object.freeze({
@@ -19690,6 +19751,9 @@ export function createWorldScene({
       ],
     };
     const botKey = `session:${sessionId}`;
+    // The robot wears its model's portrait: emblem face plate, matching body
+    // paint, and the portrait's accent light as its halo and status glow.
+    const look = agentBotAvatarLook(session?.provider, session?.model);
     const avatar = new THREE.Group();
     avatar.name = `${config.id}-agent-droid-${sessionId}`;
     avatar.userData.name = `${config.label} ${
@@ -19708,7 +19772,7 @@ export function createWorldScene({
       makeMaterial(THREE, "#162d32", {
         metalness: 0.7,
         roughness: 0.24,
-        emissive: config.shell,
+        emissive: look.shell,
         emissiveIntensity: 0.25,
       }),
     );
@@ -19716,23 +19780,69 @@ export function createWorldScene({
     avatar.add(ball);
     const shell = new THREE.Mesh(
       new THREE.CylinderGeometry(0.48, 0.54, 0.72, 18),
-      makeMaterial(THREE, config.shell, {
-        metalness: 0.45,
-        roughness: 0.3,
-        emissive: config.shell,
-        emissiveIntensity: 0.22,
+      makeMaterial(THREE, look.shell, {
+        metalness: 0.55,
+        roughness: 0.28,
+        emissive: look.shell,
+        emissiveIntensity: 0.2,
       }),
     );
     shell.position.y = 1.08;
     avatar.add(shell);
+    // Every portrait shares the same ornate gold rim, so the armor gets thin
+    // gold bands at the shell's edges regardless of model colourway.
+    const trimMaterial = makeMaterial(THREE, "#d8b04a", {
+      metalness: 0.9,
+      roughness: 0.24,
+      emissive: "#8a6a1d",
+      emissiveIntensity: 0.28,
+    });
+    const trimTop = new THREE.Mesh(
+      new THREE.TorusGeometry(0.482, 0.02, 8, 36),
+      trimMaterial,
+    );
+    trimTop.rotation.x = Math.PI / 2;
+    trimTop.position.y = 1.42;
+    avatar.add(trimTop);
+    const trimBottom = new THREE.Mesh(
+      new THREE.TorusGeometry(0.538, 0.02, 8, 36),
+      trimMaterial,
+    );
+    trimBottom.rotation.x = Math.PI / 2;
+    trimBottom.position.y = 0.74;
+    avatar.add(trimBottom);
+    // Face plate: the model emblem itself. The texture is cached per path, so
+    // a 50-robot fleet decodes at most the seven portraits; the emissive copy
+    // keeps the face readable after the world switches to night.
+    const faceTexture = projectAssetTexture(THREE, look.texture);
+    const face = new THREE.Mesh(
+      new THREE.CircleGeometry(0.26, 36),
+      new THREE.MeshStandardMaterial({
+        map: faceTexture,
+        emissive: "#ffffff",
+        emissiveMap: faceTexture,
+        emissiveIntensity: 0.72,
+        roughness: 0.52,
+        metalness: 0.18,
+      }),
+    );
+    face.name = `agent-face:${sessionId}`;
+    face.userData.sharedAssetMap = true;
+    face.position.set(0, 1.18, 0.548);
+    avatar.add(face);
+    // The halo ring around the face carries the old eye's status pulse: it is
+    // registered as the state's `eye`, so updateAgentBots keeps animating the
+    // same material slot it always has.
     const eye = new THREE.Mesh(
-      new THREE.SphereGeometry(0.1, 12, 8),
-      makeMaterial(THREE, config.glow, {
-        emissive: config.glow,
+      new THREE.TorusGeometry(0.276, 0.024, 10, 44),
+      makeMaterial(THREE, "#d8b04a", {
+        metalness: 0.85,
+        roughness: 0.22,
+        emissive: look.glow,
         emissiveIntensity: 1.8,
       }),
     );
-    eye.position.set(0, 1.27, 0.5);
+    eye.position.set(0, 1.18, 0.542);
     avatar.add(eye);
     const statusStem = new THREE.Mesh(
       new THREE.CylinderGeometry(0.025, 0.025, 0.34, 7),
@@ -19753,23 +19863,26 @@ export function createWorldScene({
     statusLight.name = `agent-status-light:${sessionId}`;
     statusLight.position.set(0, 1.94, 0);
     avatar.add(statusLight);
+    const screenLabel = `${config.label} · ${look.name.toUpperCase()}`;
     const screenTexture = canvasTexture(THREE, 512, 176, (context, canvas) => {
       context.fillStyle = "#071917";
       context.fillRect(0, 0, canvas.width, canvas.height);
-      context.strokeStyle = config.glow;
+      context.strokeStyle = look.glow;
       context.lineWidth = 10;
       context.strokeRect(6, 6, canvas.width - 12, canvas.height - 12);
-      context.fillStyle = config.glow;
+      context.fillStyle = look.glow;
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.font = '800 62px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(config.label, canvas.width / 2, canvas.height / 2);
+      context.font = screenLabel.length > 12
+        ? '800 46px "ForkMesh Mono", ui-monospace, monospace'
+        : '800 62px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(screenLabel, canvas.width / 2, canvas.height / 2);
     });
     const screen = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.82, 0.28),
+      new THREE.PlaneGeometry(0.66, 0.24),
       new THREE.MeshBasicMaterial({ map: screenTexture, toneMapped: false }),
     );
-    screen.position.set(0, 1.02, 0.57);
+    screen.position.set(0, 0.79, 0.575);
     avatar.add(screen);
     avatar.userData.rollingBall = ball;
     avatar.traverse((child) => {
@@ -19781,6 +19894,7 @@ export function createWorldScene({
     agentBots.set(botKey, avatar);
     agentBotStates.set(botKey, {
       config,
+      look,
       avatar,
       botKey,
       session,
@@ -19816,13 +19930,17 @@ export function createWorldScene({
         interactiveIndex = interactive.indexOf(child);
       }
       child.geometry?.dispose?.();
+      // Face plates borrow the model portrait from the shared per-path
+      // texture cache; disposing it here would blank every other robot
+      // wearing the same emblem, so only bot-private maps are released.
+      const sharedMap = Boolean(child.userData.sharedAssetMap);
       if (Array.isArray(child.material)) {
         child.material.forEach((material) => {
-          material?.map?.dispose?.();
+          if (!sharedMap) material?.map?.dispose?.();
           material?.dispose?.();
         });
       } else {
-        child.material?.map?.dispose?.();
+        if (!sharedMap) child.material?.map?.dispose?.();
         child.material?.dispose?.();
       }
     });
