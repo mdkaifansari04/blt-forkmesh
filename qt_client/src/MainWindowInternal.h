@@ -302,25 +302,19 @@ void setDiffSplitPref(bool split);
 // overlay (adhoc #56). Unlike diffFileHeaderHtml this carries no Viewed toggle
 // or table layout — it renders inline in a QLabel.
 QString diffStickyLabelHtml(const DiffFileEntry &f);
-// Progressive, paged diff rendering. QTextEdit::setHtml() parses, styles and
-// lays out the whole document synchronously on the GUI thread, so handing it a
-// multi-megabyte diff freezes the window. Large files are split at row
-// boundaries and grouped into bounded pages; one page is resident at a time and
-// its small fragments stream one event-loop turn at a time. No diff rows are
-// discarded.
+// Progressive, continuously scrollable diff rendering. QTextEdit::setHtml()
+// parses, styles and lays out the whole document synchronously on the GUI
+// thread, so large files are split at row boundaries and their small fragments
+// stream one event-loop turn at a time. No diff rows are discarded.
 void renderDiffStreamed(QTextEdit *view, const QString &html,
                         const QString &styleSheet);
-// Repaint the resident page with a new stylesheet (diff zoom/theme changes)
-// without retaining a second copy of the complete source HTML on the widget.
+// Repaint the streamed document with a new stylesheet (diff zoom/theme
+// changes) without retaining a second copy of the complete source HTML on the
+// widget.
 bool restyleDiffStreamed(QTextEdit *view, const QString &styleSheet);
-// Select the page containing an anchor and scroll to it once that page's
-// progressive render reaches the anchor. Used by changed-file navigation.
+// Scroll to an anchor once its progressive render reaches it. Used by
+// changed-file navigation.
 void scrollDiffToAnchor(QTextEdit *view, const QString &anchor);
-// Introspection/navigation used by the embedded page controls and performance
-// regression test.
-int diffPageCount(QTextEdit *view);
-int diffCurrentPage(QTextEdit *view);
-void showDiffPage(QTextEdit *view, int page);
 // Ensure a streamed diff continues filling. This deliberately does *not* force
 // its remaining HTML into the document synchronously: doing that from an anchor
 // jump or a document-wide search bypassed the streaming limits and recreated the
