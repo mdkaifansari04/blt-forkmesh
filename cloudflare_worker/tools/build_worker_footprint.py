@@ -27,6 +27,7 @@ LAZY_MODULES = {
     "badges.py",
     "blog_feed.py",
     "forkbot.py",
+    "fediverse_routes.py",
     "catalog.py",
     "chat_channels_api.py",
     "chat_direct_messages_api.py",
@@ -155,6 +156,7 @@ def _component_for(name):
     if name.startswith("community_") or name in {
         "blog_feed.py",
     "forkbot.py",
+    "fediverse_routes.py",
         "contributions.py",
         "og_card.py",
     }:

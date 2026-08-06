@@ -14,7 +14,15 @@ from worker_test_helpers import json_from_request_double
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8") + "\n" + CATALOG.read_text(encoding="utf-8")
+ENTRY_TEXT = (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+) + "\n" + CATALOG.read_text(encoding="utf-8")
 
 FUNCS = {
     "issues_handler",

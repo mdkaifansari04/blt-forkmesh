@@ -26,7 +26,15 @@ ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
 SCHEMA = ENTRY.parent / "schema.py"
 ENTRY_TEXT = (
-    ENTRY.read_text(encoding="utf-8") + "\n" + CATALOG.read_text(encoding="utf-8")
+    (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+) + "\n" + CATALOG.read_text(encoding="utf-8")
     + "\n" + SCHEMA.read_text(encoding="utf-8"))
 
 FUNCS = {
