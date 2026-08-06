@@ -425,8 +425,10 @@ struct DiffStreamState {
     int gen = 0;
     QString styleSheet;
     QString pendingAnchor;
-    // A viewport-height black end cap supplies trailing scroll range so the
-    // final source line can be scrolled all the way to the top.
+    // A viewport-height end cap supplies trailing scroll range so the final
+    // source line can be scrolled all the way to the top. It is painted in the
+    // view's own background colour with a single line-tall black bar along its
+    // top edge, so the page stays white and only that bar marks end-of-diff.
     int endCapPosition = -1;
     bool endCapResizePending = false;
     bool endCapResizeFilterInstalled = false;
@@ -454,6 +456,43 @@ DiffStreamState &diffStreamState(QTextEdit *view)
     return streams[view];
 }
 
+// The end cap's URL. The image behind it is regenerated (not merely rescaled)
+// whenever the viewport height changes, so the bar along its top edge stays
+// exactly one text line tall instead of stretching with the cap.
+const QUrl &diffEndCapResource()
+{
+    static const QUrl resource(QStringLiteral("forkmesh-diff-end-cap"));
+    return resource;
+}
+
+// A one-pixel-wide column: the top `barHeight` rows black, the rest the diff
+// view's own background. Stretched horizontally to the viewport width it paints
+// a full-width black bar under the last diff line and nothing but page colour
+// below it. Only one pixel per row is stored, so a full-height cap costs a few
+// kilobytes regardless of how wide the window is.
+QImage diffEndCapImage(QTextEdit *view, int capHeight, int barHeight)
+{
+    // The view's own painted background, not a theme guess: Qt's stylesheet
+    // style folds #diffView's background-color into the viewport palette, so
+    // this tracks the page in either theme and under any per-view override.
+    QWidget *page = view->viewport();
+    QColor background = page->palette().color(page->backgroundRole());
+    if (!background.isValid())
+        background = qApp->palette().color(QPalette::Base);
+    QImage cap(1, qMax(1, capHeight), QImage::Format_ARGB32);
+    cap.fill(background);
+    QPainter painter(&cap);
+    painter.fillRect(0, 0, 1, qBound(1, barHeight, cap.height()), Qt::black);
+    painter.end();
+    return cap;
+}
+
+// One text line of the view's own font: what "end of the file" is worth.
+int diffEndCapBarHeight(QTextEdit *view)
+{
+    return qMax(1, view->fontMetrics().lineSpacing());
+}
+
 void resizeDiffEndCap(QTextEdit *view, DiffStreamState &state)
 {
     if (!view || state.endCapPosition < 0)
@@ -464,8 +503,16 @@ void resizeDiffEndCap(QTextEdit *view, DiffStreamState &state)
     QTextImageFormat image = cursor.charFormat().toImageFormat();
     if (!image.isValid())
         return;
+    // Total trailing range stays one viewport tall — the bar is part of it, not
+    // added on top — so the last source line still lands exactly at the top edge.
+    const int barHeight = diffEndCapBarHeight(view);
+    const int capHeight = qMax(barHeight, view->viewport()->height());
+    view->document()->addResource(QTextDocument::ImageResource,
+                                  diffEndCapResource(),
+                                  diffEndCapImage(view, capHeight, barHeight));
     image.setWidth(qMax(1, view->viewport()->width()));
-    image.setHeight(qMax(1, view->viewport()->height()));
+    // Drawn at the image's own height, so the bar is never scaled off its line.
+    image.setHeight(capHeight);
     cursor.setCharFormat(image);
 }
 
@@ -513,12 +560,13 @@ void appendDiffEndCap(QTextEdit *view, DiffStreamState &state)
     QTextCursor cursor(view->document());
     cursor.movePosition(QTextCursor::End);
     cursor.insertBlock();
-    QImage black(1, 1, QImage::Format_ARGB32);
-    black.fill(Qt::black);
-    static const QUrl resource(QStringLiteral("forkmesh-diff-end-cap"));
-    view->document()->addResource(QTextDocument::ImageResource, resource, black);
+    const int barHeight = diffEndCapBarHeight(view);
+    view->document()->addResource(
+        QTextDocument::ImageResource, diffEndCapResource(),
+        diffEndCapImage(view, qMax(barHeight, view->viewport()->height()),
+                        barHeight));
     QTextImageFormat image;
-    image.setName(resource.toString());
+    image.setName(diffEndCapResource().toString());
     state.endCapPosition = cursor.position();
     cursor.insertImage(image);
     resizeDiffEndCap(view, state);
