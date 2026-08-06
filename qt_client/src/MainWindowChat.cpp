@@ -3769,7 +3769,9 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // the provider suffix was the same handful of words repeated down the whole
 // menu; the tooltip still carries it. A merge is the durable success signal for
 // an agent run, so models with the most merged work lead the list; power is a
-// stable tie-breaker for equal success counts.
+// stable tie-breaker for equal success counts. Scores count every run this
+// desktop has made, including the ones whose branch and session were cleaned up
+// afterwards (see AgentStore::retiredModelOutcomes).
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -3798,12 +3800,24 @@ void MainWindow::refreshQuickAddAgentModelSelector()
     };
     QHash<QString, int> modelMergedCounts;
     QHash<QString, int> modelRunCounts;
+    // A model's track record has to outlive the work that earned it. Sweeping up
+    // a landed branch deletes its agent session, and while those counts were read
+    // only from the live sessions that meant tidying up reset every model to
+    // "0 merged". AgentStore keeps a tally of what each deleted session scored,
+    // so the ranking below is the retired history plus the sessions still here.
+    if (m_agentStore) {
+        const QHash<QString, AgentModelOutcome> retired =
+            m_agentStore->retiredModelOutcomes();
+        for (auto it = retired.constBegin(); it != retired.constEnd(); ++it) {
+            modelRunCounts[it.key()] += it.value().runs;
+            modelMergedCounts[it.key()] += it.value().merged;
+        }
+    }
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
-        const QString model = session.model.trimmed().toLower();
-        if (model.isEmpty())
-            continue;
         const QString key =
-            session.provider + QLatin1Char('\x1f') + model;
+            AgentStore::modelOutcomeKey(session.provider, session.model);
+        if (key.isEmpty())
+            continue;
         ++modelRunCounts[key];
         if (session.merged)
             ++modelMergedCounts[key];
@@ -3813,8 +3827,7 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                         const QIcon &icon, const QString &label,
                         const QString &provider, const QString &model,
                         const QString &agentName) {
-        const QString key = provider + QLatin1Char('\x1f') +
-                            model.trimmed().toLower();
+        const QString key = AgentStore::modelOutcomeKey(provider, model);
         models.append(Choice{icon, label, provider, model, agentName,
                              modelMergedCounts.value(key),
                              modelRunCounts.value(key),

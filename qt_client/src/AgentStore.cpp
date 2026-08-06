@@ -4,8 +4,10 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QVariant>
 
 #include <algorithm>
@@ -180,9 +182,94 @@ bool AgentStore::saveSession(const AgentSession &session) const
 bool AgentStore::deleteSession(const AgentSession &session) const
 {
     QDir dir(sessionDir(session));
+    // Nothing on disk means nothing to retire: a second delete of the same
+    // session must not credit its model twice.
     if (!dir.exists())
         return true;
-    return dir.removeRecursively();
+    if (!dir.removeRecursively())
+        return false;
+    recordRetiredSession(session);
+    return true;
+}
+
+QString AgentStore::modelOutcomeKey(const QString &provider, const QString &model)
+{
+    const QString id = model.trimmed().toLower();
+    if (id.isEmpty())
+        return QString();
+    return provider + QLatin1Char('\x1f') + id;
+}
+
+QString AgentStore::modelOutcomesPath() const
+{
+    return m_root + QStringLiteral("/model-outcomes.json");
+}
+
+QHash<QString, AgentModelOutcome> AgentStore::retiredModelOutcomes() const
+{
+    QHash<QString, AgentModelOutcome> outcomes;
+    QFile file(modelOutcomesPath());
+    if (!file.open(QIODevice::ReadOnly))
+        return outcomes;
+    const QJsonArray models =
+        QJsonDocument::fromJson(file.readAll()).object().value("models").toArray();
+    for (const QJsonValue &value : models) {
+        const QJsonObject entry = value.toObject();
+        const QString key = modelOutcomeKey(entry.value("provider").toString(),
+                                            entry.value("model").toString());
+        if (key.isEmpty())
+            continue;
+        AgentModelOutcome &outcome = outcomes[key];
+        outcome.runs += qMax(0, entry.value("runs").toInt());
+        outcome.merged += qMax(0, entry.value("merged").toInt());
+    }
+    return outcomes;
+}
+
+// Fold one about-to-vanish session into the durable tally. Read-modify-write of
+// a file this small is cheaper than any index, and writing through QSaveFile
+// keeps a crash mid-delete from truncating the whole history.
+void AgentStore::recordRetiredSession(const AgentSession &session) const
+{
+    const QString key = modelOutcomeKey(session.provider, session.model);
+    if (key.isEmpty())
+        return;
+    QJsonArray models;
+    QFile existing(modelOutcomesPath());
+    if (existing.open(QIODevice::ReadOnly)) {
+        models = QJsonDocument::fromJson(existing.readAll())
+                     .object()
+                     .value("models")
+                     .toArray();
+        existing.close();
+    }
+    bool credited = false;
+    for (int i = 0; i < models.size() && !credited; ++i) {
+        QJsonObject entry = models.at(i).toObject();
+        if (modelOutcomeKey(entry.value("provider").toString(),
+                            entry.value("model").toString()) != key)
+            continue;
+        entry["runs"] = qMax(0, entry.value("runs").toInt()) + 1;
+        entry["merged"] =
+            qMax(0, entry.value("merged").toInt()) + (session.merged ? 1 : 0);
+        models.replace(i, entry);
+        credited = true;
+    }
+    if (!credited) {
+        models.append(QJsonObject{
+            {"provider", session.provider},
+            {"model", session.model.trimmed().toLower()},
+            {"runs", 1},
+            {"merged", session.merged ? 1 : 0},
+        });
+    }
+    QDir().mkpath(m_root);
+    QSaveFile file(modelOutcomesPath());
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+    file.write(QJsonDocument(QJsonObject{{"version", 1}, {"models", models}})
+                   .toJson(QJsonDocument::Indented));
+    file.commit();
 }
 
 void AgentStore::appendLog(const AgentSession &session, const QString &text) const
