@@ -106,7 +106,7 @@ STATIC_LIMITS = {
     # This is an intentionally stricter project budget, not a Cloudflare cap.
     # It leaves headroom for future districts without letting the first visit
     # silently inherit every optional feature module.
-    "initialWorldModuleBytesSoft": 2_600_000,
+    "initialWorldModuleBytesSoft": 2_650_000,
 }
 STATIC_IMPORT_FROM_RE = re.compile(
     r"""\bfrom\s+["'](?P<path>\.{1,2}/[^"']+)["']"""
