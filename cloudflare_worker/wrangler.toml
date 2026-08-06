@@ -6,8 +6,11 @@ main = "src/entry.py"
 compatibility_flags = [ "python_workers" ]
 # Keep the Python/Pyodide runtime on Cloudflare's current snapshot. The older
 # 2026-06-14 snapshot could re-enter one scheduled wrapper task while another
-# request wrapper was executing ("Cannot enter into task ...").
-compatibility_date = "2026-07-23"
+# request wrapper was executing ("Cannot enter into task ..."); the 2026-07-23
+# snapshot still did the same between concurrent REQUEST wrappers under
+# cold-isolate polling bursts (2026-08-06: poisoned isolates 500ing
+# /api/repo/*/pending and git info/refs), so track the newest snapshot.
+compatibility_date = "2026-08-05"
 
 # Runs automatically before every deploy: applies the D1 schema (idempotent)
 # and stages the relay's slimmed asset copy (public/ minus the trees owned by
