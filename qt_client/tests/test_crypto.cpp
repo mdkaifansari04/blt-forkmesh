@@ -7611,7 +7611,10 @@ int main(int argc, char *argv[])
         forkmesh::installPlatformLogFilter(); // chains to captureMessages
 
         QList<QPair<QtMsgType, QString>> sunk;
-        const auto record = [&sunk](QtMsgType type, const QString &message) {
+        // The sink also receives the emitting file and line (adhoc #1587); this
+        // suite only cares which messages reach it.
+        const auto record = [&sunk](QtMsgType type, const QString &message,
+                                    const QString &, int) {
             sunk.append({type, message});
         };
 
@@ -7627,7 +7630,8 @@ int main(int argc, char *argv[])
 
         // A sink that logs would otherwise re-enter itself forever.
         forkmesh::setAppLogSink(
-            [&sunk](QtMsgType type, const QString &message) {
+            [&sunk](QtMsgType type, const QString &message, const QString &,
+                    int) {
                 sunk.append({type, message});
                 if (!message.startsWith(QLatin1String("re-entrant")))
                     qWarning("re-entrant sink line");

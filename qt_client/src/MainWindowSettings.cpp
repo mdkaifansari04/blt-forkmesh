@@ -17,6 +17,7 @@
 #include <QClipboard>
 #include <QColor>
 #include <QColorDialog>
+#include <QDesktopServices>
 #include <QPixmap>
 #include <QTextDocument>
 #include <QDialog>
@@ -3335,7 +3336,12 @@ void MainWindow::attachBackend(ChatBackend *backend)
             &MainWindow::onAdminDeleteRequested);
     connect(backend, &ChatBackend::avatarChanged, this, &MainWindow::onAvatar);
     connect(backend, &ChatBackend::typingChanged, this, &MainWindow::onTypingChanged);
-    connect(backend, &ChatBackend::systemMessage, this, &MainWindow::logSystem);
+    // Through a lambda rather than straight at &MainWindow::logSystem: the
+    // origin arguments are defaults, which a pointer-to-member connection
+    // cannot supply. This relays the backend's messages, so the origin they
+    // record is this line — which is the truth about how they reached the log.
+    connect(backend, &ChatBackend::systemMessage, this,
+            [this](const QString &text) { logSystem(text); });
     connect(backend, &ChatBackend::channelsChanged, this, &MainWindow::setChannels);
     connect(backend, &ChatBackend::privateChannelJoined, this,
             [this](const QString &channel) {
@@ -4306,10 +4312,12 @@ QString accentForBadge(const QString &badge)
     return QStringLiteral("#8b949e");
 }
 
-// Stored format: "yyyy-MM-dd HH:mm:ss  message". Parses leniently so any
-// legacy/odd line still renders (as a plain message with no timestamp).
+// Stored format: "yyyy-MM-dd HH:mm:ss  message  [path:line]". Parses leniently
+// so any legacy/odd line still renders (as a plain message with no timestamp),
+// and lines predating the source tail simply report no origin.
 void parseStoredLogLine(const QString &storedLine, QString &date, QString &time,
-                         QString &message)
+                         QString &message, QString *sourcePath = nullptr,
+                         int *sourceLine = nullptr)
 {
     message = storedLine;
     if (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' ')) {
@@ -4317,6 +4325,9 @@ void parseStoredLogLine(const QString &storedLine, QString &date, QString &time,
         time = storedLine.mid(11, 8);
         message = storedLine.mid(21);
     }
+    QString body;
+    if (forkmesh::splitLogSource(message, &body, sourcePath, sourceLine))
+        message = body;
 }
 
 QString formatDayDividerHtml(const QString &date, bool dark)
@@ -4381,7 +4392,9 @@ QString firstUrlHost(const QString &message)
 }
 
 QString formatLogLineHtml(const QString &time, const QString &message, bool dark,
-                          const QString &iconHtml = QString())
+                          const QString &iconHtml = QString(),
+                          const QString &sourcePath = QString(),
+                          int sourceLine = 0)
 {
     const QString messageColor =
         dark ? QStringLiteral("#adbac7") : QStringLiteral("#1f2328");
@@ -4408,6 +4421,10 @@ QString formatLogLineHtml(const QString &time, const QString &message, bool dark
                      messageColor,
                      forkmesh::colorizeBackgroundMarker(
                          linkifyEscapedMessage(message.toHtmlEscaped())));
+    // Closing the entry: the file and line that logged it (adhoc #1587), dim
+    // enough to stay out of the way of the message and clickable — it opens
+    // that file in the Files explorer at that line.
+    html += logSourceAnchorHtml(sourcePath, sourceLine, dark);
     return html;
 }
 } // namespace
@@ -4488,8 +4505,9 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     // on the near-black canvas; light uses GitHub's near-black body text.
     const bool dark = currentThemeIsDark();
 
-    QString date, time, message;
-    parseStoredLogLine(storedLine, date, time, message);
+    QString date, time, message, sourcePath;
+    int sourceLine = 0;
+    parseStoredLogLine(storedLine, date, time, message, &sourcePath, &sourceLine);
 
     // Day divider whenever the calendar date changes from the previous line.
     if (!date.isEmpty() && date != m_lastLogRenderDate) {
@@ -4500,7 +4518,8 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     m_settingsLog->append(formatLogLineHtml(
         time, message, dark,
         logPromptIconTag(m_settingsLog, storedLine) +
-            logFaviconTag(message, m_settingsLog)));
+            logFaviconTag(message, m_settingsLog),
+        sourcePath, sourceLine));
 }
 
 // One rendered entry for the pop-out window: the same markup the Log page uses,
@@ -4511,8 +4530,9 @@ QString MainWindow::popoutLogLineHtml(const QString &storedLine,
     if (!m_logPopoutView)
         return QString();
     const bool dark = currentThemeIsDark();
-    QString date, time, message;
-    parseStoredLogLine(storedLine, date, time, message);
+    QString date, time, message, sourcePath;
+    int sourceLine = 0;
+    parseStoredLogLine(storedLine, date, time, message, &sourcePath, &sourceLine);
     QString html;
     if (!date.isEmpty() && date != runningDate) {
         runningDate = date;
@@ -4523,7 +4543,8 @@ QString MainWindow::popoutLogLineHtml(const QString &storedLine,
                 .arg(formatLogLineHtml(
                     time, message, dark,
                     logPromptIconTag(m_logPopoutView, storedLine) +
-                        logFaviconTag(message, m_logPopoutView)));
+                        logFaviconTag(message, m_logPopoutView),
+                    sourcePath, sourceLine));
     return html;
 }
 
@@ -4562,7 +4583,30 @@ void MainWindow::showNetworkLogPopout()
     m_logPopoutView = view;
     view->setObjectName(QStringLiteral("networkLogPopoutView"));
     view->setReadOnly(true);
-    view->setOpenExternalLinks(true);
+    // Navigation is handled here rather than by the browser: the origin link
+    // closing each entry (adhoc #1587) is ours to act on, and left to itself
+    // QTextBrowser would try to *load* "fmlogsrc:…" over this document.
+    // Everything else still opens in the system browser, as it did.
+    view->setOpenLinks(false);
+    connect(view, &QTextBrowser::anchorClicked, this, [this](const QUrl &url) {
+        const QString href = url.toString();
+        QString sourcePath;
+        int sourceLine = 0;
+        if (logSourceAnchorTarget(href, &sourcePath, &sourceLine)) {
+            revealLogSourceInExplorer(sourcePath, sourceLine);
+            return;
+        }
+        // The leading plus does here what it does on the Log page (adhoc #114);
+        // handling links ourselves is what finally makes it work in this window.
+        const QString promptLine = logPromptAnchorLine(href);
+        if (!promptLine.isEmpty()) {
+            appendTextToActivePrompt(promptLine);
+            return;
+        }
+        if (!url.scheme().startsWith(QLatin1String("http")))
+            return;
+        QDesktopServices::openUrl(url);
+    });
     view->setLineWrapMode(QTextEdit::NoWrap);
     // 20,000 entries is a large document; skipping the undo stack keeps what it
     // costs down to the text itself.
@@ -4700,8 +4744,10 @@ void MainWindow::loadOlderNetworkLogSegment()
     QString runningDate;
     QString html;
     for (const QString &storedLine : std::as_const(segment)) {
-        QString date, time, message;
-        parseStoredLogLine(storedLine, date, time, message);
+        QString date, time, message, sourcePath;
+        int sourceLine = 0;
+        parseStoredLogLine(storedLine, date, time, message, &sourcePath,
+                           &sourceLine);
         if (!date.isEmpty() && date != runningDate) {
             runningDate = date;
             html += QStringLiteral("<div>%1</div>").arg(formatDayDividerHtml(date, dark));
@@ -4710,7 +4756,8 @@ void MainWindow::loadOlderNetworkLogSegment()
                     .arg(formatLogLineHtml(
                         time, message, dark,
                         logPromptIconTag(m_settingsLog, storedLine) +
-                            logFaviconTag(message, m_settingsLog)));
+                            logFaviconTag(message, m_settingsLog),
+                        sourcePath, sourceLine));
     }
 
     QScrollBar *sb = m_settingsLog->verticalScrollBar();
@@ -4735,24 +4782,25 @@ void MainWindow::onNetworkLogScrolled(int value)
         loadOlderNetworkLogSegment();
 }
 
-QString MainWindow::logBadgeFor(const QString &storedLine) const
+// Stored format: "yyyy-MM-dd HH:mm:ss  message  [path:line]" — the badge comes
+// from the message alone. The trailing origin is dropped first: a line logged
+// from MainWindowIssues.cpp would otherwise badge as ISSUE whatever it says.
+static QString storedLogMessage(const QString &storedLine)
 {
-    // Stored format: "yyyy-MM-dd HH:mm:ss  message" — classify by the message.
-    const QString message =
+    return forkmesh::logMessageBody(
         (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' '))
             ? storedLine.mid(21)
-            : storedLine;
-    return networkLogStyleFor(message).badge;
+            : storedLine);
+}
+
+QString MainWindow::logBadgeFor(const QString &storedLine) const
+{
+    return networkLogStyleFor(storedLogMessage(storedLine)).badge;
 }
 
 QString MainWindow::logAccentFor(const QString &storedLine) const
 {
-    // Stored format: "yyyy-MM-dd HH:mm:ss  message" — classify by the message.
-    const QString message =
-        (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' '))
-            ? storedLine.mid(21)
-            : storedLine;
-    return networkLogStyleFor(message).accent;
+    return networkLogStyleFor(storedLogMessage(storedLine)).accent;
 }
 
 void MainWindow::rebuildLogFilterButtons()
@@ -4993,11 +5041,13 @@ void MainWindow::openFullLogAtFooterLine(const QString &rawLine)
     if (!m_settingsLog)
         return;
 
-    // The footer stores the full dated line ("yyyy-MM-dd HH:mm:ss  message"); the
-    // Log view renders the timestamp separately, so match on the message body.
+    // The footer stores the full dated line ("yyyy-MM-dd HH:mm:ss  message  [
+    // path:line]"); the Log view renders the timestamp and the origin as their
+    // own pieces, so match on the message body between them.
     QString message = rawLine.trimmed();
     if (message.size() >= 21 && message.at(10) == QLatin1Char(' '))
         message = message.mid(21);
+    message = forkmesh::logMessageBody(message);
     if (message.isEmpty())
         return;
 
@@ -5048,7 +5098,8 @@ void MainWindow::saveNetworkLog()
     m_networkLogDiskLines = m_networkLog.size();
 }
 
-void MainWindow::logCapturedMessage(QtMsgType type, const QString &text)
+void MainWindow::logCapturedMessage(QtMsgType type, const QString &text,
+                                    const QString &sourceFile, int sourceLine)
 {
     QString line = text.trimmed();
     if (line.isEmpty())
@@ -5068,10 +5119,28 @@ void MainWindow::logCapturedMessage(QtMsgType type, const QString &text)
     default:
         break;
     }
+    // A qInfo()/qWarning() belongs to whoever emitted it, not to this relay —
+    // so when Qt kept the caller's context (QT_MESSAGELOGCONTEXT builds), the
+    // entry names that call site. Without it, the default arguments name this
+    // line, which is at least where the message entered the app log.
+    if (!sourceFile.isEmpty() && sourceLine > 0) {
+        logSystemFrom(line,
+                      forkmesh::logSourceRelativePath(
+                          sourceFile.toUtf8().constData()),
+                      sourceLine);
+        return;
+    }
     logSystem(line);
 }
 
-void MainWindow::logSystem(const QString &text)
+void MainWindow::logSystem(const QString &text, const char *sourceFile,
+                           int sourceLine)
+{
+    logSystemFrom(text, forkmesh::logSourceRelativePath(sourceFile), sourceLine);
+}
+
+void MainWindow::logSystemFrom(const QString &text, const QString &sourcePath,
+                               int sourceLine)
 {
     // Some callers (e.g. flashMessage("") to dismiss the toast) pass empty or
     // whitespace-only text; skip those instead of leaving a blank log entry.
@@ -5083,7 +5152,12 @@ void MainWindow::logSystem(const QString &text)
     QString plain = text;
     plain.replace(QChar(0x2014), QLatin1Char('-'));
     plain.replace(QChar(0x2026), QStringLiteral("..."));
-    const QString line = time + "  " + plain;
+    // The origin is appended to the stored line, not to `plain`: everything
+    // that reads an entry by its words — the badge rules, the repeat-suppressed
+    // error alert, the node's self-check tally — must see the message the
+    // caller wrote and not a path that happens to contain "issue" or "node".
+    const QString line =
+        time + "  " + plain + forkmesh::logSourceSuffix(sourcePath, sourceLine);
     // Feed the node's self-check (adhoc #27): error lines here are what a
     // headless node would otherwise only ever tell a terminal nobody reads, and
     // the running tally is pushed to every node list with the heartbeat.
@@ -5964,7 +6038,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
 void MainWindow::flashMessage(const QString &text, bool error,
                               const QString &clickHref, int durationSeconds,
-                              const QString &kind, int actionRunId)
+                              const QString &kind, int actionRunId,
+                              const char *sourceFile, int sourceLine)
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
@@ -5973,7 +6048,8 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // toast is the one that shows it — say so, so the hook doesn't queue a
     // second card with the same text.
     m_topMessageOwnsLoggedError = true;
-    logSystem(text);
+    // The toast's caller, not this line: see the declaration.
+    logSystem(text, sourceFile, sourceLine);
     m_topMessageOwnsLoggedError = false;
     // An error toast is the whole record of the failure on this machine; report
     // it so it also becomes an operational record and a ping (adhoc #1538).

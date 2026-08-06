@@ -31,8 +31,12 @@ bool isFontDatabaseNoise(const QString &message);
 void installPlatformLogFilter();
 
 // Destination for the messages the filter keeps: called with the message type
-// and text, from whichever thread emitted them.
-using AppLogSink = std::function<void(QtMsgType, const QString &)>;
+// and text, from whichever thread emitted them, plus the file and line the
+// message was emitted from. Those two are what Qt's QMessageLogContext carried
+// — populated only in builds compiled with QT_MESSAGELOGCONTEXT, so the sink
+// must cope with an empty file and a zero line.
+using AppLogSink =
+    std::function<void(QtMsgType, const QString &, const QString &, int)>;
 
 // Send every surviving message to `sink` — the app's Log view — instead of the
 // terminal. This is where the app's own qInfo() progress lines (catalog
