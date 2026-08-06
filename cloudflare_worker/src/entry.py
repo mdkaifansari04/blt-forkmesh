@@ -34801,6 +34801,16 @@ async def repo_pending_counts_handler(env, request, owner, repo):
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
+    # The whole fleet polls these badges (plus every open repo page), so a
+    # colo answers from its edge cache for 30s and a polling burst collapses
+    # to one D1 UNION per colo per TTL. Only the public 200 is cached — the
+    # private/unpublished 404 above stays uncached and instant to reverse.
+    pending_cache_key = (
+        "https://edge-cache.forkmesh.internal/repo-pending/"
+        + quote(owner) + "/" + quote(repo))
+    cached = await edge_cache_match(pending_cache_key)
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     # Count the SAME key the drains read (see _inbox_repo_key), or an aliased
     # repo's badge sticks at "N pending" forever against a queue the owner node
@@ -34818,14 +34828,16 @@ async def repo_pending_counts_handler(env, request, owner, repo):
         repo_bi, repo_bi, repo_bi,
     )
     counts = {str(r.get("k") or ""): int(r.get("c") or 0) for r in rows or []}
-    return json_response({
+    resp = json_response({
         "ok": True,
         "pending": {
             "issues": counts.get("issues", 0),
             "pulls": counts.get("pulls", 0),
             "discussions": counts.get("discussions", 0),
         },
-    }, cache_control="no-store, max-age=0, must-revalidate")
+    }, cache_control="public, max-age=30")
+    await edge_cache_put(pending_cache_key, resp)
+    return resp
 
 
 async def sync_handler(env, request):
@@ -44389,6 +44401,13 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/metrics/summary", "/api/metrics/summary/"):
             return await _api_metrics.metrics_summary_handler(
                 self.env, request)
+
+        if url.path in ("/api/metrics/endpoints", "/api/metrics/endpoints/"):
+            return await _api_metrics.endpoint_catalog_handler(
+                self.env, request)
+
+        if url.path in ("/api/openapi.json", "/api/openapi.json/"):
+            return await _api_metrics.openapi_handler(self.env, request)
 
         if url.path in ("/api/world/context", "/api/world/context/"):
             return world_context_handler(request)
