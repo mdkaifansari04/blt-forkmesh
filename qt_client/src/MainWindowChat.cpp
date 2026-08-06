@@ -4313,8 +4313,8 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         // Cloudflare AI only answers a prompt and never creates a branch, so it
         // has no merge outcome to count. Keep its label distinct rather than
         // presenting a misleading permanent "0 merged" score.
-        // One face for the whole group: these are relay models, so the per-id
-        // lookup has no portrait of its own to find.
+        // One mark for the whole group: these are relay chat models, not one of
+        // the top lines the World drew a portrait for.
         addChoice(agentControlIcon(agentModelFaceIconIndex(kCloudflareAiProvider,
                                                           QString())),
                   label, kCloudflareAiProvider,
