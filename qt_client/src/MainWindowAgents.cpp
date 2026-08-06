@@ -8684,7 +8684,8 @@ void MainWindow::updateIssueLooperButton()
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr,
                                        const QString &model,
-                                       const QString &titleOverride, bool genie)
+                                       const QString &titleOverride, bool genie,
+                                       bool switchToTab)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -8758,7 +8759,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     if (runningAgentCount() >= maxRunningAgents()) {
         m_agentQueue.append(session.id);
         reloadAgents();
-        switchToAgentsTab(session.id);
+        if (switchToTab)
+            switchToAgentsTab(session.id);
         flashMessage(QStringLiteral("Queued \xE2\x80\x94 %1 agents are already "
                                     "running (limit set in Settings).")
                          .arg(maxRunningAgents()));
@@ -8768,7 +8770,7 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     if (provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) {
         // Both CLI-backed agents render through their structured protocols; the
         // typed prompt is their task verbatim.
-        startCliTranscript(session, Issue(), repo.localPath, task);
+        startCliTranscript(session, Issue(), repo.localPath, task, switchToTab);
     } else {
         // API-key agents run headlessly through a runner. There's no issue to
         // anchor to, so the task rides through the config as an override prompt.
@@ -8785,7 +8787,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         markAgentLimitWindow(provider);
         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
         reloadAgents();
-        switchToAgentsTab(session.id);
+        if (switchToTab)
+            switchToAgentsTab(session.id);
     }
     return session.id;
 }
@@ -10067,7 +10070,8 @@ QString MainWindow::issueContextPrompt(const Issue &issue) const
 
 void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                     const QString &repoPath,
-                                    const QString &customPrompt)
+                                    const QString &customPrompt,
+                                    bool switchToTab)
 {
     if (!m_agentStore)
         return;
@@ -10538,12 +10542,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Skip the jump when the user is already viewing this session (e.g. they
     // pressed Enter in the composer on the Agents tab): switchToAgentsTab fires
     // extra reloadAgents() calls that can reset the table selection to row 0 and
-    // navigate away from the session the user was working with.
+    // navigate away from the session the user was working with. switchToTab is
+    // false for a quick-add bar launch (adhoc #1573): the prompt bar is docked
+    // on every page, so starting a run from it must not yank the user onto the
+    // Agents tab away from whatever they were looking at.
     const bool startupQuiet =
         m_startupQuietAgentSessions.remove(sid) || m_agentQuietResume;
     if (!startupQuiet) {
         m_terminalSessionId = sid;
-        if (m_selectedAgentSessionId != sid)
+        if (switchToTab && m_selectedAgentSessionId != sid)
             switchToAgentsTab(sid);
         showAgentSession(sid); // renders the buffered turn + selects the surface
         if (m_transcriptModeButton)

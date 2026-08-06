@@ -8061,10 +8061,13 @@ private:
     QHash<int, QString> m_streamAccountId;
     // customPrompt, when non-empty, is used as the agent's task verbatim (the
     // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
-    // derived from `issue`.
+    // derived from `issue`. switchToTab=false keeps the caller's current page
+    // in view instead of jumping to the new session's transcript (adhoc #1573:
+    // the quick-add bar's "new"/"add" buttons must not navigate away).
     void startCliTranscript(AgentSession &session, const Issue &issue,
                             const QString &repoPath,
-                            const QString &customPrompt = QString());
+                            const QString &customPrompt = QString(),
+                            bool switchToTab = true);
     // Auto model mode (adhoc #91): resolve the "auto" sentinel to a concrete
     // model before launching the CLI. A routed choice recorded earlier in this
     // session's transcript is reused; otherwise a local heuristic pass runs,
@@ -8303,7 +8306,7 @@ private:
                                const QString &provider, bool createPr,
                                const QString &model = QString(),
                                const QString &titleOverride = QString(),
-                               bool genie = false);
+                               bool genie = false, bool switchToTab = true);
     // Save a clipboard image to a stable temp file so a launched agent can read it
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
