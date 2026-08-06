@@ -164,8 +164,8 @@ int main(int argc, char *argv[])
 
     // --- Pathological rich-text diff: a single generated file used to bypass
     // per-file streaming and block QTextDocument layout for 2-12 seconds. The
-    // renderer keeps the complete diff without an omission cap, while keeping
-    // one bounded rich-text page resident and every row on navigable pages.
+    // renderer keeps the complete diff without an omission cap while streaming
+    // bounded rich-text fragments into one continuously scrollable document.
     QString hugeDiffHtml =
         QStringLiteral("<a name=\"file-0\"></a><div class='fileblock'>"
                        "<div class='fileheader'>large/generated.json</div>"
@@ -192,18 +192,34 @@ int main(int argc, char *argv[])
         forkmesh::ui::diffStyleSheet());
     checkBudget(QStringLiteral("single-file 4 MiB diff render"),
                 hugeDiffTimer.elapsed(), diffBudgetMs);
-    if (forkmesh::ui::diffPageCount(&hugeDiffView) <= 1) {
-        qCritical("FAIL: oversized diff was not split into bounded pages");
-        ++failures;
-    }
-    const int lastPage = forkmesh::ui::diffPageCount(&hugeDiffView) - 1;
-    forkmesh::ui::showDiffPage(&hugeDiffView, lastPage);
     for (int i = 0; i < 20; ++i)
         QApplication::processEvents();
-    if (forkmesh::ui::diffCurrentPage(&hugeDiffView) != lastPage ||
+    if (hugeDiffView.toHtml().contains(
+            QStringLiteral("All diff content is available across these pages")) ||
         hugeDiffView.toPlainText().contains(QStringLiteral("content omitted")) ||
         !hugeDiffView.toPlainText().contains(QStringLiteral("generated-key"))) {
-        qCritical("FAIL: oversized diff pages did not preserve all row content");
+        qCritical("FAIL: oversized diff did not stream as one continuous document");
+        ++failures;
+    }
+
+    // The black end cap supplies a viewport of trailing scroll range, so the
+    // final line of the final file can reach the top edge of the diff viewport.
+    QTextEdit endCapDiff;
+    endCapDiff.resize(640, 320);
+    endCapDiff.show();
+    forkmesh::ui::renderDiffStreamed(
+        &endCapDiff,
+        QStringLiteral("<div class='fileblock'>first line<br>last source line</div>"),
+        forkmesh::ui::diffStyleSheet());
+    for (int i = 0; i < 4; ++i)
+        QApplication::processEvents();
+    QScrollBar *endCapBar = endCapDiff.verticalScrollBar();
+    endCapBar->setValue(endCapBar->maximum());
+    const QTextCursor lastSource =
+        endCapDiff.document()->find(QStringLiteral("last source line"));
+    if (endCapBar->maximum() <= 0 || lastSource.isNull() ||
+        endCapDiff.cursorRect(lastSource).top() > endCapDiff.fontMetrics().height()) {
+        qCritical("FAIL: diff end cap did not let the final source line reach the top");
         ++failures;
     }
 
