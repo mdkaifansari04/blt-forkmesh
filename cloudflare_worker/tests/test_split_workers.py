@@ -82,10 +82,20 @@ def test_api_worker_is_the_same_application_behind_api_routes():
     assert API["main"] == RELAY["main"] == "src/entry.py"
     assert API["compatibility_flags"] == RELAY["compatibility_flags"]
     assert API["compatibility_date"] == RELAY["compatibility_date"]
-    assert _paths(API) == {"/api/*"}
+    # api.forkmesh.com is the canonical API host (custom domain, so
+    # Cloudflare owns its DNS record); the forkmesh.com/api/* zone routes
+    # keep every same-origin caller working with no CORS surface.
+    custom = [r for r in API["routes"] if r.get("custom_domain")]
+    assert [r["pattern"] for r in custom] == ["api.forkmesh.com"]
+    zone_routes = [r for r in API["routes"] if not r.get("custom_domain")]
+    assert {r["pattern"] for r in zone_routes} == {
+        "forkmesh.com/api/*", "www.forkmesh.com/api/*"}
+    assert all(r["zone_name"] == "forkmesh.com" for r in zone_routes)
     assert API["assets"]["directory"] == "./public_api"
     assert API["assets"]["binding"] == "ASSETS"
-    assert API["assets"]["run_worker_first"] == ["/api/*"]
+    # "/" runs the Worker so api.forkmesh.com's root serves the diagnostics
+    # landing page rather than a 404 from the (asset-free) root.
+    assert API["assets"]["run_worker_first"] == ["/api/*", "/"]
     assert "triggers" not in API
     assert "migrations" not in API
     assert API["build"]["command"] == (
@@ -109,6 +119,43 @@ def test_api_worker_is_the_same_application_behind_api_routes():
     api_vars = dict(API["vars"])
     assert api_vars.pop("WORKER_ROLE") == "api"
     assert api_vars == RELAY["vars"]
+
+
+def test_api_metrics_route_groups_are_bounded_and_identifier_free():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "api_metrics", ROOT / "src" / "api_metrics.py")
+    api_metrics = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api_metrics)
+    # Owner/repo and id-shaped segments never reach the metrics table.
+    assert api_metrics.route_group(
+        "/api/repo/SomeOwner/Repo-1/pending") == "repo/*/*/pending"
+    assert api_metrics.route_group("/api/version") == "version"
+    assert api_metrics.route_group("/api/nodes/events") == "nodes/events"
+    assert api_metrics.route_group(
+        "/api/notes/0123abcd0123abcd0123abcd0123abcd") == "notes/*"
+    assert api_metrics.route_group("/api/orgs/MyOrg/teams") == "orgs/*/teams"
+    # Cardinality is capped: past the per-isolate limit new labels fold into
+    # "other" instead of growing the table (and the top-endpoints chart).
+    api_metrics._groups_seen.clear()
+    for index in range(api_metrics.GROUP_LIMIT):
+        api_metrics._groups_seen.add("seen-%d" % index)
+    assert api_metrics.route_group("/api/never-seen-before") == "other"
+    api_metrics._groups_seen.clear()
+    # The landing page is self-contained (no CDNs — its CSP allows only
+    # inline + self) and charts with the validated dark-mode palette:
+    # categorical slot 1 for the request series, status-critical for 5xx.
+    html = api_metrics._LANDING_PAGE_HTML
+    assert "#3987e5" in html and "#d03b3b" in html
+    assert "/api/metrics/summary" in html
+    assert "https://" not in html and "http://" not in html
+    entry = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+    assert '_api_metrics = _LazyModule("api_metrics")' in entry
+    assert "record_api_request(" in entry
+    assert 'url.path in ("/api/metrics/summary", "/api/metrics/summary/")' \
+        in entry
+    schema = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
+    assert "api_metrics_minute" in schema
 
 
 def test_version_and_health_endpoints_identify_their_worker():
