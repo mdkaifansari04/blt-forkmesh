@@ -6,6 +6,9 @@ public_www/
 public_world/
 public_api/
 public_relay/
+# Comment/docstring-stripped copy of src/ that the Worker ships (built by
+# tools/build_worker_python.py; src/ stays the source of truth).
+src_build/
 .venv/
 __pycache__/
 .mypy_cache/
