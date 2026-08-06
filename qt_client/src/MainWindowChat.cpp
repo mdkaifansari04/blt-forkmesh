@@ -17833,6 +17833,10 @@ enum UsersColumn {
     kUsersColJoined,
     kUsersColWorldActivity,
     kUsersColActivityRecency,
+    kUsersColPulls,
+    kUsersColIssues,
+    kUsersColCommits,
+    kUsersColDiscussions,
     kUsersColLastEmail,
     kUsersColEmailDelivery,
     kUsersColCountry,
@@ -17848,7 +17852,9 @@ QStringList usersTableHeaders()
             QStringLiteral("Email verified"),
             QStringLiteral("Status"), QStringLiteral("Joined"),
             QStringLiteral("World activity"),
-            QStringLiteral("Activity recency"), QStringLiteral("Last email"),
+            QStringLiteral("Activity recency"), QStringLiteral("PRs"),
+            QStringLiteral("Issues"), QStringLiteral("Commits"),
+            QStringLiteral("Discussions"), QStringLiteral("Last email"),
             QStringLiteral("Email delivery"), QStringLiteral("Country"),
             QStringLiteral("Browser"), QStringLiteral("OS"),
             QStringLiteral("Nodes")};
@@ -18038,6 +18044,30 @@ void MainWindow::renderUsersPage(const QJsonArray &users)
         m_usersTable->setItem(
             row, kUsersColActivityRecency,
             usersTableItem(recency.first, recency.second));
+
+        const int pulls =
+            static_cast<int>(user.value(QStringLiteral("pulls")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColPulls,
+            usersTableItem(QString::number(pulls), pulls));
+
+        const int issues =
+            static_cast<int>(user.value(QStringLiteral("issues")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColIssues,
+            usersTableItem(QString::number(issues), issues));
+
+        const int commits =
+            static_cast<int>(user.value(QStringLiteral("commits")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColCommits,
+            usersTableItem(QString::number(commits), commits));
+
+        const int discussions =
+            static_cast<int>(user.value(QStringLiteral("discussions")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColDiscussions,
+            usersTableItem(QString::number(discussions), discussions));
 
         const qint64 lastEmail = static_cast<qint64>(
             user.value(QStringLiteral("lastEmailAt")).toDouble());

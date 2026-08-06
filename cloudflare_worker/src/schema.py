@@ -493,7 +493,8 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS contributor_activity (
         author_bi TEXT PRIMARY KEY, name TEXT NOT NULL,
         issues INTEGER NOT NULL DEFAULT 0, pulls INTEGER NOT NULL DEFAULT 0,
-        commits INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,
+        commits INTEGER NOT NULL DEFAULT 0, discussions INTEGER NOT NULL DEFAULT 0,
+        total INTEGER NOT NULL DEFAULT 0,
         last_ts INTEGER)""",
     "CREATE INDEX IF NOT EXISTS idx_contributor_activity_total ON contributor_activity(total)",
     # Cumulative funds (lamports) actually disbursed to each recipient, for the
