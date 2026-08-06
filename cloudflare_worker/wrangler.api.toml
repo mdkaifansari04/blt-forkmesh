@@ -1,0 +1,132 @@
+# forkmesh-api — the API split of the site (see docs/worker-split.md).
+#
+# This deploys the SAME Python application as wrangler.toml under a second
+# Worker that owns /api/* through the zone routes below, so API traffic is
+# versioned, observed, and isolated separately from the page-serving relay.
+# The relay stays the catch-all through its custom domains and still serves
+# every non-/api path (pages, git smart-HTTP, /ap/*, the secret admin
+# dashboard) plus the cron triggers — deleting this Worker rolls /api/*
+# straight back to it.
+#
+# Deliberate differences from wrangler.toml:
+#   - [[routes]] carve /api/* (which is why forks must not deploy this file;
+#     deploy.sh gates on the canonical PUBLIC_BASE_URL).
+#   - WORKER_ROLE = "api": /api/version echoes it as "worker" so deploy
+#     verification can prove the zone routes actually carved the traffic.
+#   - No [triggers]: the relay owns the cron schedule; two schedules would
+#     double-run maintenance.
+#   - No [[migrations]]: Durable Object classes live in (and are migrated
+#     by) the relay script; the bindings below reach them cross-script via
+#     script_name, so both Workers share the same live rooms and channels.
+#   - No [build]: the relay's deploy already rebuilt the dashboard assets
+#     and validated the footprint; this deploy ships the same tree.
+#
+# The [vars] block must stay value-identical to wrangler.toml (except
+# WORKER_ROLE) — tests/test_split_workers.py enforces parity so the two
+# deployments of the same code never diverge in configuration.
+name = "forkmesh-api"
+main = "src/entry.py"
+compatibility_flags = [ "python_workers" ]
+compatibility_date = "2026-07-23"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+html_handling = "none"
+not_found_handling = "404-page"
+run_worker_first = [
+  "/api/*",
+]
+
+[vars]
+NODE_NAME = "forkmesh-mainnode"
+PUBLIC_BASE_URL = "https://forkmesh.com"
+DISCORD_OAUTH_REDIRECT_URI = "https://forkmesh.com/api/integrations/discord/callback"
+NODE_SOLANA_ADDRESS = ""
+COMMUNITY_REWARD_NETWORK = "mainnet-beta"
+COMMUNITY_REWARD_RPC_URL = "https://api.mainnet-beta.solana.com"
+REWARD_INTERVAL_MS = "3600000"
+REWARD_JITTER_MAX_MS = "2700000"
+REWARD_AMOUNT_LAMPORTS = "100000"
+REWARD_MIN_UPTIME_MS = "1800000"
+REWARD_MIN_CONTRIBUTION_UNITS = "0"
+REWARD_HEALTH_FRESH_MS = "600000"
+FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+USERNAME_MODERATION_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+WORKER_ROLE = "api"
+
+[ai]
+binding = "AI"
+
+[[kv_namespaces]]
+binding = "REPOSITORY_METADATA"
+id = "ee8854d698c14e93a9950ec0f3e6538f"
+
+# Durable Objects are owned by the forkmesh-relay script (which carries the
+# migrations); these cross-script bindings mean an /api/* WebSocket lands in
+# the very same room instance a relay-served page would reach.
+[[durable_objects.bindings]]
+name = "FORKMESH_MAINNODE_ROOM"
+class_name = "ForkMeshRoom"
+script_name = "forkmesh-relay"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_WORLD"
+class_name = "ForkMeshWorld"
+script_name = "forkmesh-relay"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_OFFICE_ROOM"
+class_name = "ForkMeshOfficeRoom"
+script_name = "forkmesh-relay"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_NODES"
+class_name = "ForkMeshNodes"
+script_name = "forkmesh-relay"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_NOTE_ROOM"
+class_name = "ForkMeshNoteRoom"
+script_name = "forkmesh-relay"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_CRON_WATCHDOG"
+class_name = "ForkMeshCronWatchdog"
+script_name = "forkmesh-relay"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_CRON_RUNNER"
+class_name = "ForkMeshCronRunner"
+script_name = "forkmesh-relay"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_DISCORD_GATE"
+class_name = "ForkMeshDiscordGate"
+script_name = "forkmesh-relay"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "forkmesh"
+database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
+migrations_dir = "migrations"
+
+[[routes]]
+pattern = "forkmesh.com/api/*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/api/*"
+zone_name = "forkmesh.com"
+
+[observability]
+enabled = true
+head_sampling_rate = 0.05
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 0.05
+invocation_logs = false
+
+[observability.traces]
+enabled = false
