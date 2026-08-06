@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = (
     ENTRY.read_text(encoding="utf-8") + "\n"
-    + ENTRY.with_name("admin_console.py").read_text(encoding="utf-8")
+    + ENTRY.with_name("admin_console.py").read_text(encoding="utf-8") + "\n"
+    + ENTRY.with_name("status_monitoring.py").read_text(encoding="utf-8")
 )
 
 
@@ -146,7 +147,7 @@ def test_attention_email_survives_missing_or_failed_log_access():
 def test_only_non_green_component_mail_receives_cloudflare_log_tail():
     transition = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _record_status_monitor_transitions"):
-        ENTRY_TEXT.index("\ndef _status_expected_checks_for_hour")
+        ENTRY_TEXT.index("\n\nasync def record_status_sample")
     ]
     assert 'if any(not alert["is_up"] for alert in pending)' in transition
     assert 'if not alert["is_up"]:' in transition
