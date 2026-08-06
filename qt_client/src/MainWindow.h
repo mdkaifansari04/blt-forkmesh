@@ -455,6 +455,27 @@ public:
     QRect testTopMessageRect() { return topMessageBubbleRect(); }
     int testTopMessageQueueDepth() const { return m_topMessageQueue.size(); }
     void testDismissTopMessage() { dismissTopMessage(); }
+    // Plain text of the card currently on screen, and whether the red edge
+    // pulse is up: what a logged error is supposed to produce.
+    QString testTopMessageRaw() const { return m_topMessageRaw; }
+    bool testErrorBorderVisible() const
+    {
+        return m_errorBorderOverlay && m_errorBorderOverlay->isVisible();
+    }
+    // Clears the repeat/burst bookkeeping (and any lit border) so consecutive
+    // checks in one run don't de-duplicate against each other.
+    void testResetLoggedErrorAlerts()
+    {
+        m_lastLoggedErrorText.clear();
+        m_lastLoggedErrorAtMs = 0;
+        m_loggedErrorBurstStartMs = 0;
+        m_loggedErrorBurstCount = 0;
+        m_loggedErrorBurstNoticeShown = false;
+        if (m_errorBorderTimer)
+            m_errorBorderTimer->stop();
+        if (m_errorBorderOverlay)
+            m_errorBorderOverlay->hide();
+    }
     // False (without opening the modal fallback dialog, which would block a test
     // run) when this window has no footer composer to draft into.
     bool testDraftStallPromptInComposer();
@@ -4926,6 +4947,19 @@ private:
                       const QString &clickHref = QString(),
                       int durationSeconds = 0,
                       const QString &kind = QString(), int actionRunId = -1);
+    // The presentation half of flashMessage: puts the bubble on screen without
+    // recording anything. Split out so an error that reaches the log by some
+    // other route (logSystem's alert hook) can raise the same toast without
+    // logging the line a second time.
+    void showTopMessage(const QString &text, bool error,
+                        const QString &clickHref = QString(),
+                        int durationSeconds = 0,
+                        const QString &kind = QString(), int actionRunId = -1);
+    // Every ERROR-badged log line flashes the window and surfaces itself as a
+    // toast, so a background failure can't scroll past unseen while the Log
+    // section is closed. Identical text repeating inside
+    // kLoggedErrorAlertRepeatMs alerts once.
+    void alertOnLoggedError(const QString &message);
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
     void queueTopMessage(const QString &text, bool error,
@@ -5505,6 +5539,19 @@ private:
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
     QTimer *m_errorBorderTimer = nullptr;
+    // Set while flashMessage is recording its own text, so the ERROR hook in
+    // logSystem flashes the window but leaves the toast to the caller instead
+    // of stacking a duplicate card behind it.
+    bool m_topMessageOwnsLoggedError = false;
+    bool m_inLoggedErrorAlert = false;    // re-entrancy guard for alertOnLoggedError
+    QString m_lastLoggedErrorText;        // last error alerted on, for repeat de-duplication
+    qint64 m_lastLoggedErrorAtMs = 0;
+    // Rolling window of auto-raised error cards: past the cap, one "open the
+    // Log" notice stands in for the rest so a failing subsystem can't paper the
+    // screen over with cards (the window still flashes for every one).
+    qint64 m_loggedErrorBurstStartMs = 0;
+    int m_loggedErrorBurstCount = 0;
+    bool m_loggedErrorBurstNoticeShown = false;
     // Amber counterpart to the transient red error border.  This stays active
     // for the full restart operation, blinking to distinguish caution from an
     // error state.
