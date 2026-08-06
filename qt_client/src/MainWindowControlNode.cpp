@@ -242,19 +242,6 @@ bool writeEnvAssignments(const QString &path,
     return true;
 }
 
-bool validRouterPublicKey(const QString &value)
-{
-    static const QRegularExpression pattern(
-        QStringLiteral("^[A-Za-z0-9_-]{43}$"));
-    if (!pattern.match(value).hasMatch())
-        return false;
-    return QByteArray::fromBase64(
-               value.toLatin1(),
-               QByteArray::Base64UrlEncoding |
-                   QByteArray::AbortOnBase64DecodingErrors)
-               .size() == 32;
-}
-
 QString normalizedHttpsOrigin(const QString &hostname)
 {
     const QString host = hostname.trimmed().toLower();
@@ -1436,7 +1423,7 @@ void MainWindow::updateControlRepositoryPermission(QTableWidgetItem *item)
         else
             syncRepository(index, /*quiet=*/false);
     } else if (permission == QLatin1String("serve") &&
-               !repo.publishToNetwork) {
+               !repo.publishToNetwork && directMirrorGatewayConfigured()) {
         QString gatewayError;
         if (!rebuildDirectMirrorGatewayConfiguration(
                 &gatewayError, true)) {
@@ -1488,23 +1475,23 @@ void MainWindow::saveControlWalletAddress()
     refreshControlNode();
 }
 
-bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
-    QString *error, bool restartRunningGateway)
+bool MainWindow::directMirrorGatewayConfigured() const
 {
-    if ((!m_profileIdentity.isValid() && !m_profileIdentity.load()) ||
-        !m_profileIdentity.isValid()) {
-        if (error)
-            *error = QStringLiteral(
-                "The local node identity is unavailable.");
-        return false;
-    }
+    return resolveDirectMirrorGatewayIdentity(nullptr, nullptr, nullptr);
+}
+
+bool MainWindow::resolveDirectMirrorGatewayIdentity(
+    QString *nodeName, QString *hostname, QString *routerPublicKey) const
+{
+    // An in-flight deployment holds the hostname and router key it just
+    // negotiated in memory; everything else reads what this node saved.
     QSettings settings;
     const QString node =
         settings.value(QStringLiteral("control/cloudflareNodeName"))
             .toString()
             .trimmed()
             .toLower();
-    const QString hostname =
+    const QString host =
         (m_directMirrorHostname.isEmpty()
              ? settings
                    .value(QStringLiteral(
@@ -1521,11 +1508,31 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
                    .toString()
              : m_directMirrorRouterPublicKey)
             .trimmed();
-    const QString origin = normalizedHttpsOrigin(hostname);
-    static const QRegularExpression nodePattern(
-        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
-    if (!nodePattern.match(node).hasMatch() || origin.isEmpty() ||
-        !validRouterPublicKey(routerKey)) {
+    if (nodeName)
+        *nodeName = node;
+    if (hostname)
+        *hostname = host;
+    if (routerPublicKey)
+        *routerPublicKey = routerKey;
+    return forkmesh::control::directMirrorGatewayIsConfigured(
+        node, normalizedHttpsOrigin(host), routerKey);
+}
+
+bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
+    QString *error, bool restartRunningGateway)
+{
+    if ((!m_profileIdentity.isValid() && !m_profileIdentity.load()) ||
+        !m_profileIdentity.isValid()) {
+        if (error)
+            *error = QStringLiteral(
+                "The local node identity is unavailable.");
+        return false;
+    }
+    QSettings settings;
+    QString node;
+    QString hostname;
+    QString routerKey;
+    if (!resolveDirectMirrorGatewayIdentity(&node, &hostname, &routerKey)) {
         if (error) {
             *error = QStringLiteral(
                 "The mirror hostname, node name, or Worker router public key "
@@ -1533,6 +1540,7 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
         }
         return false;
     }
+    const QString origin = normalizedHttpsOrigin(hostname);
     const QString gatewayScript =
         forkmesh::control::findMirrorGatewayScript(
             QStringLiteral(FORKMESH_SOURCE_DIR),
@@ -2458,7 +2466,8 @@ void MainWindow::provisionDirectMirrorEndpoint(bool dryRun)
                 status == 200 &&
                 object.value(QStringLiteral("ok"))
                     .toBool() &&
-                validRouterPublicKey(routerKey);
+                forkmesh::control::isValidMirrorRouterPublicKey(
+                    routerKey);
             reply->deleteLater();
             if (!ok) {
                 appendControlNodeOutput(

@@ -541,15 +541,18 @@ void MainWindow::scanActionSpool()
                     // refresh. Rebuild the gateway's exact refs pin before
                     // re-attesting the new catalog state, otherwise the direct
                     // endpoint stays online while quarantining the push it
-                    // just accepted.
-                    QString gatewayError;
-                    if (!rebuildDirectMirrorGatewayConfiguration(
-                            &gatewayError, true)) {
-                        logSystem(
-                            QStringLiteral(
-                                "Direct gateway refresh after pushed refs "
-                                "failed: %1")
-                                .arg(gatewayError));
+                    // just accepted. A relay-only node has no such endpoint,
+                    // so there is nothing to rebuild and nothing to report.
+                    if (directMirrorGatewayConfigured()) {
+                        QString gatewayError;
+                        if (!rebuildDirectMirrorGatewayConfiguration(
+                                &gatewayError, true)) {
+                            logSystem(
+                                QStringLiteral(
+                                    "Direct gateway refresh after pushed refs "
+                                    "failed: %1")
+                                    .arg(gatewayError));
+                        }
                     }
                     publishRepository(idx, false);
                 }
