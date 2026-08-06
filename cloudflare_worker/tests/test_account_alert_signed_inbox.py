@@ -4,7 +4,7 @@
 The desktop Alerts page mirrors the website's notification bell. A desktop that
 authenticated silently owns its account's Ed25519 key and holds no session
 token, so it can only reach /api/notifications by signing a proof onto the URL.
-These checks pin how narrow that credential is: three operations, each with its
+These checks pin how narrow that credential is: four operations, each with its
 own proof (and the delete proof additionally bound to the row being removed),
 the collection path only, and no authority for an account that is not an active
 user.
@@ -35,6 +35,7 @@ CONSTANTS = {
     "ACCOUNT_ALERT_LIST_PROOF",
     "ACCOUNT_ALERT_READ_PROOF",
     "ACCOUNT_ALERT_DELETE_PROOF",
+    "ACCOUNT_ALERT_CLEAR_PROOF",
     "ACCOUNT_ALERT_COLLECTION_RE",
 }
 
@@ -147,6 +148,17 @@ def _signed_delete_url(namespace, item_id, node="alice", pubkey="PK-alice",
     )
 
 
+def _signed_clear_url(namespace, node="alice", pubkey="PK-alice",
+                      ts="1700000000000"):
+    canonical = (namespace["ACCOUNT_ALERT_CLEAR_PROOF"] + "\n" + node
+                 + "\nall\n" + ts)
+    sig = _fake_sig(pubkey, canonical.encode())
+    return (
+        "https://forkmesh.test/api/notifications"
+        "?node=" + node + "&ts=" + ts + "&sig=" + sig
+    )
+
+
 def _user(**overrides):
     record = {"pubkey": "PK-alice", "status": "active", "kind": "user"}
     record.update(overrides)
@@ -207,6 +219,21 @@ def test_deleting_an_alert_needs_its_own_proof_bound_to_the_row():
         url=_signed_delete_url(namespace, row)), "")) == ""
 
 
+def test_clearing_an_inbox_needs_a_separate_all_rows_proof():
+    namespace, env = _harness({"alice": _user()})
+    resolve = namespace["_account_alert_signed_session"]
+    row = "a" * 64
+
+    assert asyncio.run(resolve(env, _Request(
+        method="DELETE", url=_signed_clear_url(namespace)), "all")) == "alice"
+    # A clear credential must not authorize a single row, and a row credential
+    # must not become a bulk-delete credential.
+    assert asyncio.run(resolve(env, _Request(
+        method="DELETE", url=_signed_clear_url(namespace)), row)) == ""
+    assert asyncio.run(resolve(env, _Request(
+        method="DELETE", url=_signed_delete_url(namespace, row)), "all")) == ""
+
+
 def test_a_read_or_list_proof_is_never_replayable_as_a_delete():
     namespace, env = _harness({"alice": _user()})
     resolve = namespace["_account_alert_signed_session"]
@@ -216,11 +243,14 @@ def test_a_read_or_list_proof_is_never_replayable_as_a_delete():
             method="DELETE",
             url=_signed_url(
                 namespace, "/api/notifications", proof)), row)) == "", proof
-    # The delete proof is likewise inert on the read verbs.
+    # The delete and clear proofs are likewise inert on the read verbs.
     for method in ("GET", "POST"):
         assert asyncio.run(resolve(env, _Request(
             method=method,
             url=_signed_delete_url(namespace, row)))) == "", method
+        assert asyncio.run(resolve(env, _Request(
+            method=method,
+            url=_signed_clear_url(namespace)))) == "", method
 
 
 def test_no_other_verb_is_signature_authorized():
@@ -228,7 +258,7 @@ def test_no_other_verb_is_signature_authorized():
     resolve = namespace["_account_alert_signed_session"]
     for method in ("PATCH", "PUT"):
         for proof in ("ACCOUNT_ALERT_LIST_PROOF", "ACCOUNT_ALERT_READ_PROOF",
-                      "ACCOUNT_ALERT_DELETE_PROOF"):
+                      "ACCOUNT_ALERT_DELETE_PROOF", "ACCOUNT_ALERT_CLEAR_PROOF"):
             assert asyncio.run(resolve(env, _Request(
                 method=method,
                 url=_signed_url(
@@ -313,10 +343,10 @@ def test_the_inbox_handler_uses_the_shared_gate_for_every_verb():
         "async def mirror_requests_handler(", start)]
     assert handler.count("_alert_inbox_account_name(") == 3
     assert "_authed_account_name(" not in handler
-    # The DELETE branch hands the row id to the gate, so the signature it
-    # accepts is the one that named this row (adhoc #77).
+    # The DELETE branch hands either the row id or explicit all-inbox resource
+    # to the gate, so a single-row proof cannot be replayed as a bulk clear.
     delete_branch = handler[handler.index('if method == "DELETE":'):]
-    assert "resource=item_id" in delete_branch
+    assert 'resource=("all" if clear_all else item_id)' in delete_branch
 
 
 def test_desktop_and_worker_agree_on_the_canonical_proof_strings():
@@ -325,6 +355,7 @@ def test_desktop_and_worker_agree_on_the_canonical_proof_strings():
     ).read_text(encoding="utf-8")
     for proof in ("forkmesh-account-alert-list-v1",
                   "forkmesh-account-alert-read-v1",
-                  "forkmesh-account-alert-delete-v1"):
+                  "forkmesh-account-alert-delete-v1",
+                  "forkmesh-account-alert-clear-v1"):
         assert '"%s"' % proof in ENTRY_TEXT
         assert '"%s"' % proof in qt
