@@ -18783,6 +18783,7 @@ void MainWindow::showNetworkWebRequestsFailure(const QString &detail,
     }
 }
 
+#ifdef FORKMESH_WINDOW_TESTS
 QString MainWindow::testNetworkWebRequestsFailureText(
     int httpStatus, const QString &transportError, const QString &parseError,
     const QString &payloadError, const QByteArray &body, qint64 cooldownMs,
@@ -18797,6 +18798,7 @@ QString MainWindow::testNetworkWebRequestsFailureText(
     m_networkWebRequestsAttempt = 0;
     return testNetworkWebRequestsStatusText();
 }
+#endif // FORKMESH_WINDOW_TESTS
 
 void MainWindow::refreshNetworkWebRequests(bool isRetry)
 {
