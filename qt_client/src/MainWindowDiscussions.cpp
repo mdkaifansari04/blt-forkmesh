@@ -1051,8 +1051,7 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo,
                         "this repo yet. Local discussions still work.");
                 return;
             }
-            m_pollBackoff.noteFailure(inboxBackoffKey,
-                                      QDateTime::currentMSecsSinceEpoch());
+            noteInboxDrainFailure(inboxBackoffKey, status, mirrorIntake);
             if (interactive)
                 setDiscussionInlineNotice("Could not reach the inbox: " +
                                               reply->errorString(),
@@ -1060,7 +1059,7 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo,
             return;
         }
         m_discussionInboxBackoff.clear(inboxBackoffKey);
-        m_pollBackoff.noteSuccess(inboxBackoffKey);
+        noteInboxDrainSuccess(inboxBackoffKey);
         const QJsonArray pending =
             QJsonDocument::fromJson(reply->readAll())
                 .object()
