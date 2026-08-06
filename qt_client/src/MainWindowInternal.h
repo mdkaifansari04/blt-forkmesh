@@ -4274,7 +4274,11 @@ protected:
 // Slots 0-6 are the seven robot portraits an agent bot already wears in the
 // World (cloudflare_worker/public/assets/bot-avatars), in that table's own
 // order, so one model reads the same in the composer picker, the Agents list
-// and the World. Use agentModelFaceIconIndex() rather than these numbers.
+// and the World. Slots 16-22 are the abstract marks every model used to wear,
+// in the matching order (starburst/feather/mountain-blossom/book-quill for
+// Opus/Sonnet/Haiku/Fable, sun/crescent-moon/globe-leaf for Sol/Luna/Terra):
+// only a model the World actually drew a portrait for gets one, so everything
+// else keeps its mark. Use agentModelFaceIconIndex() rather than these numbers.
 inline QIcon agentControlIcon(int index)
 {
     static const char *const paths[] = {
@@ -4294,8 +4298,15 @@ inline QIcon agentControlIcon(int index)
         ":/agent-ui/icons/effort-high.png",
         ":/agent-ui/icons/effort-ultra.png",
         ":/agent-ui/icons/effort-max.png",
+        ":/agent-ui/icons/model-starburst.png",
+        ":/agent-ui/icons/model-feather.png",
+        ":/agent-ui/icons/model-mountain-blossom.png",
+        ":/agent-ui/icons/model-book-quill.png",
+        ":/agent-ui/icons/model-sun.png",
+        ":/agent-ui/icons/model-crescent-moon.png",
+        ":/agent-ui/icons/model-globe-leaf.png",
     };
-    if (index < 0 || index >= 16)
+    if (index < 0 || index >= 23)
         return QIcon();
     static QHash<int, QIcon> cache;
     if (const auto cached = cache.constFind(index); cached != cache.cend())
@@ -4371,35 +4382,51 @@ inline bool agentModelMatchesProvider(const QString &provider, const QString &mo
     return !agentModelIsClaudeStyle(model);
 }
 
-// agentControlIcon() slot holding the portrait a model wears. A session names
-// its model freely ("opus", "claude-sonnet-5", "gpt-5.5-codex"), so match the
-// face names by substring first and only then fall back per provider, exactly
-// as the World does: Claude reads as Sonnet, Codex as Sol, the OpenAI API as
-// Luna, anything else as Terra. Codex and OpenAI ids carry no face name of
-// their own, so the small models take Luna and the Codex line takes Sol. The
-// lookup never fails — every model gets a face.
-inline int agentModelFaceIconIndex(const QString &provider, const QString &model)
+// Which of the World's seven bot portraits a model is named after, or -1 when
+// none is. A session names its model freely ("opus", "claude-sonnet-5",
+// "gpt-5.6-sol"), so match the portrait names by substring — the portrait
+// belongs to the model line, not to one version of it, exactly as in the World.
+inline int agentModelPortraitIconIndex(const QString &model)
 {
     static const char *const kFaces[] = {"opus", "sonnet", "haiku", "fable",
                                          "sol",  "luna",   "terra"};
-    constexpr int kSonnetFace = 1;
-    constexpr int kSolFace = 4;
-    constexpr int kLunaFace = 5;
-    constexpr int kTerraFace = 6;
     const QString m = model.trimmed().toLower();
     for (int i = 0; i < 7; ++i)
         if (m.contains(QLatin1String(kFaces[i])))
             return i;
+    return -1;
+}
+
+// agentControlIcon() slot holding the icon a model wears. Only the top models —
+// the lines the World drew a portrait for — wear a portrait; everything below
+// them (the smaller Codex tiers, the raw API agents, the Cloudflare chat models)
+// keeps the abstract mark it always had, so the menu does not read as one
+// undifferentiated wall of robot faces. The marks a row falls back to are the
+// ones it already showed before the portraits landed: the Claude API keeps the
+// feather, the Codex line and the OpenAI API the sun, the small models the
+// crescent moon, and the Cloudflare chat models the globe. The lookup never
+// fails — every model gets an icon.
+inline int agentModelFaceIconIndex(const QString &provider, const QString &model)
+{
+    if (const int portrait = agentModelPortraitIconIndex(model); portrait >= 0)
+        return portrait;
+    // Each mark sits a fixed table apart from the portrait it pairs with, so a
+    // fallback names the line it stands in for rather than a raw slot number.
+    constexpr int kMarkOffset = 16;
+    constexpr int kSonnetMark = kMarkOffset + 1;
+    constexpr int kSolMark = kMarkOffset + 4;
+    constexpr int kLunaMark = kMarkOffset + 5;
+    constexpr int kTerraMark = kMarkOffset + 6;
+    const QString m = model.trimmed().toLower();
     const QString p = provider.trimmed().toLower();
     if (agentIsClaudeProvider(p) || agentModelIsClaudeStyle(m))
-        return kSonnetFace;
+        return kSonnetMark;
     if (m.contains(QLatin1String("mini")) || m.contains(QLatin1String("nano")))
-        return kLunaFace;
-    if (agentIsCodexProvider(p) || m.contains(QLatin1String("codex")))
-        return kSolFace;
-    if (agentUsesOpenAiKey(p))
-        return kLunaFace;
-    return kTerraFace;
+        return kLunaMark;
+    if (agentIsCodexProvider(p) || m.contains(QLatin1String("codex")) ||
+        agentUsesOpenAiKey(p))
+        return kSolMark;
+    return kTerraMark;
 }
 
 // Pre-model router for auto mode: a self-hosted, zero-cost heuristic pass over
