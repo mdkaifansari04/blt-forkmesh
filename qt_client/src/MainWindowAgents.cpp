@@ -5900,6 +5900,8 @@ void MainWindow::reloadAgents()
         showAgentSession(m_selectedAgentSessionId);
     updateAgentsTabIndicator();
     refreshAgentDotMatrix();
+    for (const AgentSession &session : std::as_const(m_agentSessions))
+        syncOrgTaskAgentStatus(session.id);
     updateAgentsNavBadge();
     // Every agent-completion path reaches this reload (adhoc #111: the process-exit
     // handler for stream/codex sessions, and the embedded-terminal path, both call
@@ -11858,6 +11860,7 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     AgentSession *s = findAgentSession(sessionId);
     if (!s)
         return;
+    syncOrgTaskAgentStatus(sessionId);
     // anyAgentRunning() falls back to this frozen creation-time snapshot for a
     // stream/codex session that hasn't landed in m_agentSessions yet (see
     // startCliTranscript). Keep it in step with every real transition here so a
@@ -13121,6 +13124,8 @@ void MainWindow::recordOrgTaskFields(int sessionId, const QString &taskId,
     if (!finishedByBot.isEmpty())
         s->finishedByBot = finishedByBot;
     m_agentStore->saveSession(*s);
+    if (!taskId.isEmpty())
+        syncOrgTaskAgentStatus(sessionId);
 }
 
 void MainWindow::openOrgTaskForSession(const AgentSession &session)
@@ -13168,6 +13173,7 @@ void MainWindow::openOrgTaskForSession(const AgentSession &session)
              {QStringLiteral("mode"), session.mode},
              {QStringLiteral("strength"), session.strength},
              {QStringLiteral("sessionId"), QString::number(session.id)},
+             {QStringLiteral("status"), session.status},
          }},
     };
     const int sessionId = session.id;
@@ -13198,6 +13204,46 @@ void MainWindow::openOrgTaskForSession(const AgentSession &session)
             return;
         recordOrgTaskFields(sessionId, taskId, QString());
     });
+}
+
+void MainWindow::syncOrgTaskAgentStatus(int sessionId)
+{
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->orgTaskId.isEmpty() || isExternalSession(sessionId) ||
+        !m_networkAccess)
+        return;
+    const QString status = session->status.trimmed().toLower();
+    if (status != AgentStatus::Queued && status != AgentStatus::Running &&
+        status != AgentStatus::Waiting && status != AgentStatus::Success &&
+        status != AgentStatus::Failed && status != AgentStatus::Stopped)
+        return;
+    if (m_orgTaskAgentStatusSent.value(sessionId) == status)
+        return;
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/tasks/") + session->orgTaskId +
+                QStringLiteral("/agent-status"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    QNetworkRequest request;
+    if (!authenticateOrgTaskRequest(url, request, kOrgTaskAgentStatusProof,
+                                    session->orgTaskId))
+        return;
+    m_orgTaskAgentStatusSent.insert(sessionId, status);
+    QNetworkReply *reply = m_networkAccess->post(
+        request,
+        QJsonDocument(QJsonObject{{QStringLiteral("status"), status}})
+            .toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, sessionId, status] {
+                const int response =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                reply->deleteLater();
+                if ((response < 200 || response >= 300) &&
+                    m_orgTaskAgentStatusSent.value(sessionId) == status)
+                    m_orgTaskAgentStatusSent.remove(sessionId);
+            });
 }
 
 void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followUp)
@@ -13272,6 +13318,7 @@ void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followU
              {QStringLiteral("model"), session.model},
              {QStringLiteral("mode"), session.mode},
              {QStringLiteral("strength"), session.strength},
+             {QStringLiteral("status"), session.status},
          }},
     };
     QNetworkReply *reply = m_networkAccess->post(
