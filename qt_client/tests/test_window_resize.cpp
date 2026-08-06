@@ -766,6 +766,8 @@ int main(int argc, char *argv[])
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
     const bool hostsLayoutOnly =
         app.arguments().contains(QStringLiteral("--hosts-layout-only"));
+    const bool mirrorFleetOnly =
+        app.arguments().contains(QStringLiteral("--mirror-fleet-only"));
     const bool issuesRedesignOnly =
         app.arguments().contains(QStringLiteral("--issues-redesign-only"));
     const bool logTimelineOnly =
@@ -921,7 +923,8 @@ int main(int argc, char *argv[])
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
-    if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly)
+    if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly &&
+        !mirrorFleetOnly)
         check(detailedStartupSteps >= 7 &&
               startupLog.contains(QStringLiteral(
                   "BEGIN MainWindow: read connection state and cached model list")) &&
@@ -937,6 +940,56 @@ int main(int argc, char *argv[])
           QString("startup log names and times every material constructor phase "
                   "(detailed steps=%1)")
                   .arg(detailedStartupSteps));
+
+    if (mirrorFleetOnly) {
+        const QJsonArray managedHostFixture{
+            QJsonObject{
+                {QStringLiteral("name"), QStringLiteral("mirror7")},
+                {QStringLiteral("ip"), QStringLiteral("203.0.113.7")},
+                {QStringLiteral("user"), QStringLiteral("root")},
+                {QStringLiteral("status"), QStringLiteral("installed")},
+                {QStringLiteral("provider"), QStringLiteral("Vultr")},
+                {QStringLiteral("instanceId"),
+                 QStringLiteral("1f2e3d4c-5b6a-4798-8899-aabbccddeeff")},
+            },
+        };
+        QSettings settings;
+        settings.remove(QStringLiteral("hosts/healthyMirrorFleet/enabled"));
+        settings.remove(QStringLiteral("hosts/healthyMirrorFleet/desired"));
+        settings.setValue(
+            QStringLiteral("hosts/list"),
+            QString::fromUtf8(
+                QJsonDocument(managedHostFixture).toJson(
+                    QJsonDocument::Compact)));
+        window.testShowHostsSection();
+        QApplication::processEvents();
+        QCheckBox *enabled = window.findChild<QCheckBox *>(
+            QStringLiteral("healthyMirrorFleetEnabled"));
+        QSpinBox *desired = window.findChild<QSpinBox *>(
+            QStringLiteral("desiredHealthyMirrorCount"));
+        QLabel *status = window.findChild<QLabel *>(
+            QStringLiteral("healthyMirrorFleetStatus"));
+        check(enabled && desired && status && !enabled->isChecked() &&
+                  desired->value() == 1 && desired->isEnabled() &&
+                  status->text().contains(QStringLiteral("off")) &&
+                  enabled->toolTip().contains(
+                      QStringLiteral("permanently destroys")),
+              QStringLiteral(
+                  "healthy mirror fleet UI is opt-in and safely seeds its target from managed Vultr hosts"));
+        if (desired)
+            desired->setValue(2);
+        QApplication::processEvents();
+        check(settings.value(
+                  QStringLiteral("hosts/healthyMirrorFleet/desired"))
+                      .toInt() == 2,
+              QStringLiteral(
+                  "editing the desired healthy mirror count persists while automation is off"));
+        settings.remove(QStringLiteral("hosts/list"));
+        settings.remove(QStringLiteral("hosts/healthyMirrorFleet/enabled"));
+        settings.remove(QStringLiteral("hosts/healthyMirrorFleet/desired"));
+        stopChildProcesses(window);
+        return failures == 0 ? 0 : 1;
+    }
 
     if (logTimelineOnly) {
         window.show();
@@ -1725,6 +1778,20 @@ int main(int argc, char *argv[])
               hostsPageLayout->indexOf(hostsProvisioningRow) == 1,
           QStringLiteral(
               "Hosts puts the saved-host fleet first and provisioning cards next"));
+    QCheckBox *healthyFleetEnabled = window.findChild<QCheckBox *>(
+        QStringLiteral("healthyMirrorFleetEnabled"));
+    QSpinBox *desiredHealthyMirrors = window.findChild<QSpinBox *>(
+        QStringLiteral("desiredHealthyMirrorCount"));
+    QLabel *healthyFleetStatus = window.findChild<QLabel *>(
+        QStringLiteral("healthyMirrorFleetStatus"));
+    check(healthyFleetEnabled && desiredHealthyMirrors && healthyFleetStatus &&
+              !healthyFleetEnabled->isChecked() &&
+              desiredHealthyMirrors->isEnabled() &&
+              desiredHealthyMirrors->value() == 0 &&
+              healthyFleetEnabled->toolTip().contains(
+                  QStringLiteral("permanently destroys")),
+          QStringLiteral(
+              "Hosts exposes an explicit opt-in desired healthy mirror count with destructive scaling explained"));
     const QList<QPushButton *> inlineHelpButtons =
         window.findChildren<QPushButton *>(QStringLiteral("inlineHelpButton"));
     QSet<QString> inlineHelpNames;
