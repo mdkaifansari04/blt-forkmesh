@@ -2518,13 +2518,16 @@ void MainWindow::deleteRepositoryAt(int index, bool reopenRepoDetail)
     // the same owner/name indefinitely.
     m_repositories.removeAt(index);
     saveRepositories();
-    QString gatewayError;
-    if (!rebuildDirectMirrorGatewayConfiguration(
-            &gatewayError, true)) {
-        logSystem(
-            QStringLiteral(
-                "Direct gateway refresh after repository deletion failed: %1")
-                .arg(gatewayError));
+    if (directMirrorGatewayConfigured()) {
+        QString gatewayError;
+        if (!rebuildDirectMirrorGatewayConfiguration(
+                &gatewayError, true)) {
+            logSystem(
+                QStringLiteral(
+                    "Direct gateway refresh after repository deletion "
+                    "failed: %1")
+                    .arg(gatewayError));
+        }
     }
     startRepoHosts();
     refreshRepositoryList();
@@ -7547,14 +7550,20 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                             // advertising the new catalog state; otherwise the
                             // gateway remains online but correctly quarantines
                             // the repository it just fetched as unavailable.
-                            QString gatewayError;
-                            if (!rebuildDirectMirrorGatewayConfiguration(
-                                    &gatewayError, true)) {
-                                logSystem(
-                                    QStringLiteral(
-                                        "Direct gateway refresh after mirror "
-                                        "sync failed: %1")
-                                        .arg(gatewayError));
+                            // Nodes that never provisioned a direct endpoint
+                            // serve through the relay and have no pin to
+                            // refresh, so don't rebuild — and don't report a
+                            // failure — for a setup that is working as chosen.
+                            if (directMirrorGatewayConfigured()) {
+                                QString gatewayError;
+                                if (!rebuildDirectMirrorGatewayConfiguration(
+                                        &gatewayError, true)) {
+                                    logSystem(
+                                        QStringLiteral(
+                                            "Direct gateway refresh after "
+                                            "mirror sync failed: %1")
+                                            .arg(gatewayError));
+                                }
                             }
                             publishRepository(index, false);
                             // Refresh the compatibility lifecycle hook after the

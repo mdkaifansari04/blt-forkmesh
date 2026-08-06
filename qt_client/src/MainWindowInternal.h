@@ -4776,6 +4776,39 @@ inline int agentModelPowerRank(const QString &model, const QString &label)
     return 500 + int(version * 100.0 + 0.5) + tier;
 }
 
+// Which rows the composer's agent/model dropdown leaves out (adhoc #1557). The
+// menu lists every model each installed provider offers, which is more choice
+// than most people want in a picker they open dozens of times a day; this is the
+// set they have switched off in Settings → Agents.
+//
+// Stored as the *hidden* set rather than the shown one so a model that appears
+// after this list was last edited — a live /v1/models fetch, a new Codex catalog
+// entry — shows up by default instead of being silently suppressed.
+const QString kComposerHiddenModelsSetting =
+    QStringLiteral("agents/composerHiddenModels");
+
+// Stable identity for one composer row. Provider-only agents (OpenAI API, Claude
+// API, Manual) carry no model of their own, so their key is just the provider.
+inline QString composerModelKey(const QString &provider, const QString &model)
+{
+    return provider.trimmed().toLower() + QLatin1Char('\x1f') +
+           model.trimmed().toLower();
+}
+
+inline QSet<QString> hiddenComposerModels()
+{
+    const QStringList saved =
+        QSettings().value(kComposerHiddenModelsSetting).toStringList();
+    return QSet<QString>(saved.cbegin(), saved.cend());
+}
+
+inline void saveHiddenComposerModels(const QSet<QString> &hidden)
+{
+    QStringList keys(hidden.cbegin(), hidden.cend());
+    keys.sort(); // stable on disk, so a no-op edit doesn't rewrite the file
+    QSettings().setValue(kComposerHiddenModelsSetting, keys);
+}
+
 inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
@@ -5260,6 +5293,81 @@ inline int ramCappedBuildJobs()
     if (totalRam > 0)
         jobs = qBound(1, int(totalRam / (3LL * 1024 * 1024 * 1024)), jobs);
     return jobs;
+}
+
+// The scratch directory a rebuild points the toolchain's TMPDIR at. GCC and
+// Clang stream every translation unit's assembly through TMPDIR, so a -j<N>
+// build of qt_client has hundreds of megabytes of .s files live there at once.
+// On most desktop Linux installs /tmp is a RAM-backed tmpfs that ForkMesh also
+// shares with agent worktrees and mirror materializations, so a rebuild with
+// gigabytes free on the build disk still dies mid-compile with "No space left
+// on device" (adhoc #1563). Keeping the scratch inside the build tree puts it
+// on the one filesystem the build already has to fit on.
+inline QString buildScratchDir(const QString &buildDir)
+{
+    return buildDir + QStringLiteral("/.forkmesh-tmp");
+}
+
+// Free bytes on the filesystem holding `path`, walking up to the nearest
+// existing ancestor because the build directory may not exist yet. Returns -1
+// when the volume cannot be read, which callers must treat as "unknown" rather
+// than "full" so an unreadable mount never blocks an update.
+inline qint64 freeBytesForPath(const QString &path)
+{
+    QString probe = QDir::cleanPath(path);
+    while (!probe.isEmpty() && !QFileInfo::exists(probe)) {
+        const QString parent = QFileInfo(probe).absolutePath();
+        if (parent == probe || parent.isEmpty())
+            break;
+        probe = parent;
+    }
+    const QStorageInfo volume(probe);
+    if (!volume.isValid() || !volume.isReady())
+        return -1;
+    return volume.bytesAvailable();
+}
+
+// How much free space a rebuild into `buildDir` must have before it is worth
+// starting. A build tree from scratch is ~2 GB of objects plus the linked
+// binary and the assembler scratch above; an incremental rebuild overwrites
+// those objects in place, so it only needs headroom for the scratch and the
+// new binary. Getting this wrong in the strict direction would block a
+// perfectly viable update on a tight disk, so an existing tree is judged by
+// the smaller figure.
+inline qint64 rebuildFreeBytesRequired(const QString &buildDir)
+{
+    const bool incremental =
+        QFileInfo::exists(buildDir + QStringLiteral("/CMakeFiles/forkmesh.dir"));
+    return incremental ? 1024LL * 1024 * 1024 : 3LL * 1024 * 1024 * 1024;
+}
+
+// The one-line summary shown on the status label when an update step exits
+// non-zero. The raw output tail used to be chopped at a fixed 300 characters,
+// which routinely landed mid-word ("Update failed: vice") and told the user
+// nothing. Prefer the first real diagnostic — the tail of a parallel make is
+// just "gmake: *** [Makefile:136: all] Error 2" — and special-case a full disk,
+// which is the one failure with an obvious remedy.
+inline QString updateFailureSummary(const QString &output)
+{
+    if (output.contains(QLatin1String("No space left on device")))
+        return QStringLiteral(
+            "the disk filled up during the build. Free space on the volume "
+            "holding the build directory, then start the update again — "
+            "nothing was replaced.");
+    const QStringList lines = output.split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+        if (trimmed.contains(QLatin1String("error:")) ||
+            trimmed.startsWith(QLatin1String("fatal:")))
+            return trimmed.left(300);
+    }
+    // Nothing recognisable: fall back to the tail, but drop the partial first
+    // line so the label never starts mid-word.
+    QString tail = output.trimmed().right(300);
+    const int newline = tail.indexOf(QLatin1Char('\n'));
+    if (newline >= 0 && newline < tail.size() - 1)
+        tail = tail.mid(newline + 1);
+    return tail.trimmed();
 }
 
 inline QStringList cmakeConfigureArgs(const QString &clientDir, const QString &buildDir,
