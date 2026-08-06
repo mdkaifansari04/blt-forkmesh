@@ -45,12 +45,17 @@ def _paths(config):
 def test_split_workers_are_assets_only_and_mirror_relay_asset_semantics():
     for config in (WWW, WORLD):
         assert "main" not in config
-        assert config["assets"]["html_handling"] == "none"
         assert config["assets"]["not_found_handling"] == "404-page"
         # No application config may leak onto the assets-only Workers.
         for key in ("durable_objects", "d1_databases", "kv_namespaces",
                     "ai", "triggers", "vars"):
             assert key not in config, key
+    # The world Worker mirrors the relay's assets semantics exactly; the www
+    # Worker instead uses the platform's native clean-URL handling because
+    # the relay's _redirects table cannot be shipped on it (100-rule dynamic
+    # cap, and placeholder rules beat the exact feed safety net live).
+    assert WORLD["assets"]["html_handling"] == "none"
+    assert WWW["assets"]["html_handling"] == "auto-trailing-slash"
     assert WWW["name"] == "forkmesh-www"
     assert WWW["assets"]["directory"] == "./public_www"
     assert WORLD["name"] == "forkmesh-world"
@@ -113,13 +118,31 @@ def test_staging_copies_control_files_verbatim_plus_worker_marker(tmp_path):
         for staged, marker in (("public_www", "www"),
                                ("public_world", "world")):
             staged_dir = ROOT / staged
-            assert (staged_dir / "_redirects").read_bytes() == (
-                source_redirects
-            )
             headers = (staged_dir / "_headers").read_text(encoding="utf-8")
             assert headers.startswith(source_headers)
             assert f"x-forkmesh-worker: {marker}" in headers
             assert (staged_dir / "404.html").is_file()
+        # The world copy of _redirects is verbatim; the www Worker gets the
+        # tiny generated file instead — clean URLs come from
+        # auto-trailing-slash, and only the feed bounces plus the /blogs
+        # alias need rules. No placeholders allowed: live Cloudflare
+        # resolved /blog/rss.xml through a placeholder rule (-> 404) in
+        # preference to the exact safety-net rule above it.
+        assert (ROOT / "public_world" / "_redirects").read_bytes() == (
+            source_redirects
+        )
+        www_redirects = (ROOT / "public_www" / "_redirects").read_text(
+            encoding="utf-8"
+        )
+        assert ":" not in www_redirects
+        assert "/blog/rss.xml /rss.xml 308" in www_redirects
+        assert "/blog/feed.xml /rss.xml 308" in www_redirects
+        assert "/blog/rss.xml/ /rss.xml 308" in www_redirects
+        assert "/blogs /blog 308" in www_redirects
+        # docs.html must not be staged: with auto-trailing-slash it would
+        # shadow docs/index.html for /docs (live /docs serves the tree
+        # index). /docs.html stays a relay-owned canonical 404.
+        assert not (ROOT / "public_www" / "docs.html").exists()
         # The www tree serves the marketing documents and their clean-URL
         # rewrite targets; the homepage must NOT be staged (it stays on the
         # relay for site_referrers).

@@ -32,7 +32,15 @@ command = "python3 tools/build_split_assets.py www"
 
 [assets]
 directory = "./public_www"
-html_handling = "none"
+# Unlike the relay (html_handling "none" + the full _redirects table, because
+# its Worker owns many sibling paths), this assets-only Worker uses the
+# platform's native clean-URL handling: /pricing serves pricing.html and
+# /blog/<slug> serves the post directory index without any redirect rules.
+# Its staged _redirects is a tiny generated file (feed bounces + /blogs
+# alias) — Cloudflare caps "dynamic" _redirects rules at 100, which rules
+# out shipping the relay's placeholder table or enumerating posts, and a
+# placeholder rule was observed beating the exact /blog/rss.xml safety net.
+html_handling = "auto-trailing-slash"
 not_found_handling = "404-page"
 
 # Marketing document routes, on both public hostnames. Exact patterns (no
