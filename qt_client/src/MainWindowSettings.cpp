@@ -284,6 +284,17 @@ QWidget *MainWindow::buildSettingsSection()
     connect(autoUpdateCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kAutoUpdateSetting, enabled);
     });
+    auto *autoRestartCheck = new QCheckBox(
+        "Allow automatic app restarts for update/install");
+    autoRestartCheck->setChecked(
+        QSettings().value(kAutoUpdateRestartSetting, true).toBool());
+    autoRestartCheck->setToolTip(
+        "When disabled, automatic update checks never relaunch ForkMesh "
+        "automatically. Use manual update/restart actions to apply updates.");
+    connect(autoRestartCheck, &QCheckBox::toggled, this,
+            [](bool enabled) {
+                QSettings().setValue(kAutoUpdateRestartSetting, enabled);
+            });
 
     // Boot-scoped KVM workspace. The Qt desktop remains on the host so native
     // display, keychain and notifications keep working; every coding-agent CLI
@@ -1991,6 +2002,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(m_autostartInfo);
     generalCol->addLayout(autostartRemoveRow);
     generalCol->addWidget(autoUpdateCheck);
+    generalCol->addWidget(autoRestartCheck);
     generalCol->addSpacing(6);
     generalCol->addWidget(vmLabel);
     generalCol->addWidget(vmHint);
@@ -3062,6 +3074,8 @@ void MainWindow::maybeAutoUpdate()
     // node still auto-updates if that seed never persisted (e.g. an unwritable
     // config dir). An explicit operator opt-out writes false and is respected.
     if (!QSettings().value(kAutoUpdateSetting, m_headless).toBool())
+        return;
+    if (!QSettings().value(kAutoUpdateRestartSetting, true).toBool())
         return;
     if (m_autoUpdateChecking)
         return; // a check from an earlier tick is still in flight
