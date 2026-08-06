@@ -135,6 +135,7 @@ ADMIN_STYLE = """
         font:600 11px system-ui,sans-serif}
  .ab-root .error-source.javascript{border-color:#8957e5;color:#a371f7}
  .ab-root .error-source.worker{border-color:var(--ab-link);color:var(--ab-link)}
+ .ab-root .error-source.desktop{border-color:#2ea043;color:#3fb950}
  .ab-root .error-delete{background:transparent;color:var(--ab-danger);
         border-color:var(--ab-danger);padding:3px 8px;font-size:11px}
  .ab-root .error-delete:hover{background:var(--ab-danger);color:#fff}
@@ -373,6 +374,13 @@ def _admin_row_checkbox(rowid):
 
 def _admin_error_source(method, path):
     """Stable display classification for the shared operational error log."""
+    # Reports posted by the Qt desktop app (POST /api/desktop-errors) share the
+    # log with browser and Worker errors: a third source, not a Worker fault.
+    if (
+        str(method or "").strip().upper() == "APP"
+        or str(path or "").startswith("/desktop-error/")
+    ):
+        return "Desktop"
     is_javascript = (
         str(method or "").strip().upper() == "JS"
         or str(path or "").startswith("/client-error/")
