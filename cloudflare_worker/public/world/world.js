@@ -13751,14 +13751,17 @@ class ForkMeshWorld extends HTMLElement {
           .join("")}
         ${anonymous ? `<i title="${anonymous.toLocaleString()} anonymous occurrence(s)">?</i>` : ""}
       </span>`;
-    const errorSource = (item) =>
-      item.method === "JS" || String(item.path || "").startsWith("/client-error/")
-        ? "JavaScript"
-        : "Worker";
+    const errorSource = (item) => {
+      if (item.method === "APP" || String(item.path || "").startsWith("/desktop-error/"))
+        return "Desktop";
+      if (item.method === "JS" || String(item.path || "").startsWith("/client-error/"))
+        return "JavaScript";
+      return "Worker";
+    };
     const sourceBadge = (item) =>
-      `<span class="world-error-source world-error-source--${
-        errorSource(item) === "JavaScript" ? "javascript" : "worker"
-      }">${errorSource(item)}</span>`;
+      `<span class="world-error-source world-error-source--${errorSource(
+        item,
+      ).toLowerCase()}">${errorSource(item)}</span>`;
     const exactTime = (timestamp) => {
       const instant = new Date(timestamp);
       return Number.isNaN(instant.getTime()) ? "Unknown time" : instant.toLocaleString();

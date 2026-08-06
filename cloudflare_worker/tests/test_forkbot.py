@@ -19,7 +19,24 @@ ENTRY = ROOT / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
 WRANGLER = ROOT / "wrangler.toml"
 PUBLIC = ROOT / "public"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+# The ForkBot domain now lives in its own lazily-imported module (entry.py
+# reaches it through a _LazyModule proxy so Cloudflare's startup-memory
+# validation does not pay for it on every isolate). Source-text assertions
+# and the AST loader below read both files as one program.
+FORKBOT = ENTRY.parent / "forkbot.py"
+ENTRY_TEXT = (
+    (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+)
+    + "\n"
+    + FORKBOT.read_text(encoding="utf-8")
+)
 CATALOG_TEXT = CATALOG.read_text(encoding="utf-8")
 CHAT_TEXT = (PUBLIC / "chat.js").read_text(encoding="utf-8")
 DASHBOARD_CHAT_TEXT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
