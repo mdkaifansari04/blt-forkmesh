@@ -5570,9 +5570,18 @@ void MainWindow::refreshClaudeCodeUsage(bool fromHover)
         // On any error (expired token, offline) keep the last-known figures
         // rather than blanking the gauge; the next poll retries — with a
         // growing backoff so a sustained failure stops hammering the endpoint.
+        // A 429 usually names its own cooldown via Retry-After; honour that
+        // as a floor on top of the exponential curve so a burst of hovers
+        // right after a rate limit doesn't immediately trip another one.
         if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(pollKey,
-                                      QDateTime::currentMSecsSinceEpoch());
+            const QByteArray retryAfter = reply->rawHeader("Retry-After");
+            bool retryAfterOk = false;
+            const qint64 retryAfterMs =
+                QString::fromLatin1(retryAfter).trimmed().toLongLong(&retryAfterOk) * 1000;
+            m_pollBackoff.noteFailure(
+                pollKey, QDateTime::currentMSecsSinceEpoch(),
+                NetworkBackoff::kDefaultBaseMs, NetworkBackoff::kDefaultCapMs,
+                retryAfterOk && retryAfterMs > 0 ? retryAfterMs : 0);
             if (fromHover)
                 flashUsageChart(m_navTokenUsage, false);
             return;
