@@ -5494,7 +5494,7 @@ void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace
         m_autoFiledStallSignatures.insert(signature);
         logSystem(QStringLiteral(
             "Auto-started an agent to fix the UI stall (toggle in Settings > "
-            "Agents & IDE)."));
+            "Agents / IDE)."));
     }
 }
 
