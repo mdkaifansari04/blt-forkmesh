@@ -627,14 +627,25 @@ deploy_split_site_workers() {
     # deploys through pywrangler (which vendors the Python modules) with the
     # same build stamps, then refreshes its copy of the production
     # credentials. Those persist across deploys, so steady-state deploys
-    # have no unconfigured window; the Worker was bootstrapped before its
-    # /api/* routes first attached.
-    echo "Deploying split site Worker from wrangler.api.toml ..."
-    pywrangler deploy --config wrangler.api.toml --env "" \
-        --var "BUILD_REV:${BUILD_REV}" \
-        --var "APP_VERSION:${APP_VERSION}" \
-        --var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}"
-    SPLIT_SECRET_WORKER=forkmesh-api push_secrets
+    # have no unconfigured window.
+    #
+    # PARKED (2026-08-06): concentrating cold /api/* traffic on a second
+    # near-startup-ceiling Python Worker melted its fresh isolates
+    # ("Attempted to use PyProxy when Python GIL not held" at initPyInstance
+    # → "Cannot enter into task" wedges on /api/repo/*/pending), so
+    # forkmesh-api was deleted and /api/* rolled back to the always-warm
+    # relay. Re-enable with FORKMESH_DEPLOY_API_WORKER=1 once the
+    # startup-memory work brings entry.py comfortably under the ceiling.
+    if [ "${FORKMESH_DEPLOY_API_WORKER:-0}" = "1" ]; then
+        echo "Deploying split site Worker from wrangler.api.toml ..."
+        pywrangler deploy --config wrangler.api.toml --env "" \
+            --var "BUILD_REV:${BUILD_REV}" \
+            --var "APP_VERSION:${APP_VERSION}" \
+            --var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}"
+        SPLIT_SECRET_WORKER=forkmesh-api push_secrets
+    else
+        echo "note: forkmesh-api stays parked (set FORKMESH_DEPLOY_API_WORKER=1 to ship it)." >&2
+    fi
 }
 
 # One split-route probe: the staged _headers of each split Worker append an
@@ -677,12 +688,17 @@ verify_split_site_workers() {
     base="${base%/}"
     echo "Verifying the split Workers own their routes on $base ..."
     local failed=0
-    # /api/* must be answered by the forkmesh-api deployment of this build
-    # (verify_deploy already matched its rev on /api/version) ...
-    local api_body
+    # /api/* is answered by forkmesh-api only while that Worker is shipped
+    # (see the PARKED note in deploy_split_site_workers); otherwise the
+    # relay's custom-domain catch-all owns it and must say so.
+    local api_body expected_api_worker
+    expected_api_worker="relay"
+    if [ "${FORKMESH_DEPLOY_API_WORKER:-0}" = "1" ]; then
+        expected_api_worker="api"
+    fi
     api_body="$(curl -sS --max-time 25 "$base/api/version" 2>/dev/null || true)"
-    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"api"' <<<"$api_body"; then
-        echo "ERROR: $base/api/version is not served by forkmesh-api (got: ${api_body:-<none>})." >&2
+    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"'"$expected_api_worker"'"' <<<"$api_body"; then
+        echo "ERROR: $base/api/version is not served by the $expected_api_worker Worker (got: ${api_body:-<none>})." >&2
         failed=1
     fi
     # ... while the relay proves its own build through the relay-routed

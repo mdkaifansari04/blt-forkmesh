@@ -3778,7 +3778,7 @@ async def _record_status_deploy_sample(env, now):
     )
 
 
-async def _claim_status_sample_minute(env, now):
+async def _claim_status_sample_minute(env, now, source="trigger"):
     """At-most-once gate for this minute's /status health sample.
 
     Two independent schedulers call record_status_sample: the platform Cron
@@ -3800,6 +3800,10 @@ async def _claim_status_sample_minute(env, now):
         claim = "".join("%02x" % int(rnd[i]) for i in range(16))
     except Exception:
         claim = ("%032x" % int(Date.now()))[-32:]
+    # The prefix records WHICH scheduler landed the minute, so the trigger
+    # can skip its expensive direct probe run while the runner is provably
+    # alive (see _runner_status_sample_is_stale).
+    claim = str(source or "trigger") + "-" + claim
     try:
         await d1_run(
             env,
@@ -3817,6 +3821,59 @@ async def _claim_status_sample_minute(env, now):
         return True
     winner = str((row or {}).get("claim") or "")
     return (not winner) or winner == claim
+
+
+# The runner's liveness heartbeat rides the claim table as one sentinel row.
+# Its minute_ts sits far above any real minute (year 9999) because retention
+# prunes `minute_ts < cutoff`; a low sentinel would be deleted every sweep.
+RUNNER_HEARTBEAT_SENTINEL_TS = 253402300800000
+
+
+async def _record_runner_status_heartbeat(env):
+    """Prove the alarm runner's batch ran, independent of the sample claim.
+
+    The runner usually LOSES the per-minute sample claim to the Cron
+    Trigger (which fires at second :00 while the alarm lands mid-minute),
+    so claim rows alone cannot show the runner is alive — the trigger would
+    keep probing directly forever. This sentinel row is updated on every
+    batch regardless of who won the minute.
+    """
+    await d1_run(
+        env,
+        "INSERT INTO system_status_sample_claim "
+        "(minute_ts, claim, claimed_at) VALUES (?, 'runner-heartbeat', ?) "
+        "ON CONFLICT(minute_ts) DO UPDATE SET "
+        "claimed_at=excluded.claimed_at",
+        RUNNER_HEARTBEAT_SENTINEL_TS, int(Date.now()),
+    )
+
+
+async def _runner_status_sample_is_stale(env, now):
+    """True when the alarm runner has not heartbeated for three minutes.
+
+    The Cron Trigger's direct sample exists so a wedged/over-quota Durable
+    Object subsystem cannot leave multi-hour fake-downtime gaps on /status.
+    But the direct probe run holds the scheduled wrapper open for ~25s of
+    awaited I/O every minute inside serving isolates, and overlapping a
+    request wrapper that long re-triggers the Pyodide "Cannot enter into
+    task" wedge that poisoned isolates on the git clone path (2026-08-06).
+    So the trigger only probes directly while the runner is provably NOT
+    running (heartbeat older than three minutes — at most a three-minute
+    sample gap once, exactly when the independent watchdog already emails).
+    One cheap D1 read replaces the probe run in the steady state; any claim
+    infrastructure error fails open into the direct sample.
+    """
+    try:
+        row = await d1_first(
+            env,
+            "SELECT claimed_at FROM system_status_sample_claim "
+            "WHERE minute_ts = ?",
+            RUNNER_HEARTBEAT_SENTINEL_TS,
+        )
+    except Exception:
+        return True
+    last = int((row or {}).get("claimed_at") or 0)
+    return int(now) - last > 3 * STATUS_SAMPLE_WINDOW_MS
 
 
 async def _email_delivery_status(env, now):
@@ -43295,16 +43352,23 @@ class Default(WorkerEntrypoint):
         # The platform Cron Trigger does two things, cheapest and most public
         # first.
         #
-        # (1) It records the /status health sample DIRECTLY. The trigger is
-        # the only per-minute schedule the platform itself guarantees, so the
-        # public minute strip must not depend on the Durable Object subsystem
-        # being healthy: a wedged runner isolate or exhausted free-tier DO
-        # allowance left multi-hour "no health sample was recorded" gaps that
-        # read as fake downtime. The per-minute claim inside
-        # record_status_sample keeps this sample and the runner's own from
-        # double-counting an hour's checks — whichever lands first wins.
+        # (1) It records the /status health sample DIRECTLY — but only while
+        # the alarm runner is provably not doing so. The trigger is the only
+        # per-minute schedule the platform itself guarantees, so the public
+        # minute strip must not depend on the Durable Object subsystem being
+        # healthy: a wedged runner isolate or exhausted free-tier DO
+        # allowance left multi-hour "no health sample was recorded" gaps
+        # that read as fake downtime. The direct probe run, however, holds
+        # this scheduled wrapper open for ~25s of awaited I/O inside a
+        # serving isolate, and that overlap re-triggered the Pyodide
+        # "Cannot enter into task" wedge on the clone path (2026-08-06) —
+        # so in the steady state the trigger spends one D1 read confirming
+        # runner-tagged claims exist and skips the probes. The per-minute
+        # claim inside record_status_sample still keeps this sample and the
+        # runner's own from double-counting — whichever lands first wins.
         try:
-            await record_status_sample(self.env)
+            if await _runner_status_sample_is_stale(self.env, Date.now()):
+                await record_status_sample(self.env)
         except BaseException as error:
             try:
                 await log_cron_error(
@@ -43374,8 +43438,16 @@ class Default(WorkerEntrypoint):
         # downtime, so a tick that dies partway (cold Pyodide isolate blowing
         # the invocation limits — cron runs in its own colo, where user
         # traffic never warms the isolate) has already landed its samples.
+        # The heartbeat below (not the claim, which the trigger usually wins)
+        # is what lets the Cron Trigger's scheduled() skip its own direct
+        # probe run while this batch is provably alive
+        # (_runner_status_sample_is_stale).
         try:
-            await record_status_sample(self.env)
+            await _record_runner_status_heartbeat(self.env)
+        except BaseException:
+            pass
+        try:
+            await record_status_sample(self.env, source="runner")
         except BaseException as error:
             await log_cron_error(
                 self.env, "/cron/record-status-sample",

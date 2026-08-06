@@ -6,7 +6,7 @@ Since 2026-08, the public site is served by four Cloudflare Workers on the
 | Worker | Config | Owns | How traffic reaches it |
 |---|---|---|---|
 | `forkmesh-relay` | `wrangler.toml` | The Python application's page/protocol surface: realtime Durable Objects (owner of the classes), git smart-HTTP, ActivityPub (`/ap/*`, `/@handle`), the dashboard, repo pages, auth pages, the homepage `/`, the Worker-built RSS feeds, `.html` canonical 404s, `/health`, the secret admin dashboard, cron — plus the **complete** `public/` asset tree | Custom domains `forkmesh.com` and `www.forkmesh.com` (the catch-all) |
-| `forkmesh-api` | `wrangler.api.toml` | The **same Python application**, answering every `/api/*` route (REST + WebSockets; the sockets reach the relay-owned Durable Objects through cross-script bindings) | Zone routes `…/api/*` |
+| `forkmesh-api` | `wrangler.api.toml` | **PARKED (2026-08-06)** — the same Python application answering every `/api/*` route. Concentrating cold API traffic on a second near-startup-ceiling Python Worker melted its fresh isolates (NoGilError at initPyInstance → task wedges on `/api/repo/*/pending`), so it was deleted and `/api/*` rolled back to the always-warm relay. Re-enable with `FORKMESH_DEPLOY_API_WORKER=1` once entry.py sits comfortably under the startup-memory ceiling | Zone routes `…/api/*` (when shipped) |
 | `forkmesh-www` | `wrangler.www.toml` | Marketing documents: `/pricing`, `/about`, `/features`, `/docs*`, `/blog*`, `/status`, and the other static pages | Exact/prefix zone routes (more specific than the custom domain, so they win) |
 | `forkmesh-world` | `wrangler.world.toml` | The `/world` three.js application shell and its module graph `/world/*` | Zone routes `…/world` and `…/world/*` |
 
