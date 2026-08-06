@@ -225,6 +225,82 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("hovering the minimized avatar restores the prompt"));
     }
 
+    // The composer is a movable panel (adhoc #1536): dragging its top strip
+    // takes it off the footer anchor and onto the workspace, the corner grip
+    // resizes it, the button pops it out into a window of its own, and
+    // double-clicking the strip snaps everything back.
+    auto *promptHandle =
+        window.findChild<QWidget *>(QStringLiteral("promptDragHandle"));
+    auto *promptGrip =
+        window.findChild<QWidget *>(QStringLiteral("promptResizeGrip"));
+    auto *promptDetach =
+        window.findChild<QPushButton *>(QStringLiteral("promptDetachButton"));
+    if (promptHandle && promptGrip && promptDetach && prompt && dock) {
+        const auto sendMouse = [](QWidget *target, QEvent::Type type,
+                                  const QPoint &global) {
+            QMouseEvent event(type, target->mapFromGlobal(global),
+                              QPointF(global), Qt::LeftButton,
+                              type == QEvent::MouseButtonRelease ? Qt::NoButton
+                                                                 : Qt::LeftButton,
+                              Qt::NoModifier);
+            QApplication::sendEvent(target, &event);
+        };
+        // Global, not parent-relative: the drag reparents the panel out of the
+        // dock, so the two geometries are not in the same coordinate space.
+        const QPoint anchoredTopLeft = prompt->mapToGlobal(QPoint());
+        const QPoint grabAt = promptHandle->mapToGlobal(
+            QPoint(promptHandle->width() / 2, promptHandle->height() / 2));
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-120, -160));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease,
+                  grabAt + QPoint(-120, -160));
+        QApplication::processEvents();
+        check(prompt->parentWidget() != dock &&
+                  prompt->mapToGlobal(QPoint()).y() < anchoredTopLeft.y(),
+              QStringLiteral("dragging the prompt's handle lifts it off the "
+                             "footer anchor and onto the workspace"));
+
+        const QSize dragged = prompt->size();
+        const QPoint gripAt = promptGrip->mapToGlobal(
+            QPoint(promptGrip->width() / 2, promptGrip->height() / 2));
+        sendMouse(promptGrip, QEvent::MouseButtonPress, gripAt);
+        sendMouse(promptGrip, QEvent::MouseMove, gripAt + QPoint(-60, -40));
+        sendMouse(promptGrip, QEvent::MouseButtonRelease, gripAt + QPoint(-60, -40));
+        QApplication::processEvents();
+        check(prompt->width() > dragged.width() &&
+                  prompt->height() > dragged.height(),
+              QStringLiteral("the corner grip resizes the floating prompt"));
+
+        promptDetach->click();
+        QApplication::processEvents();
+        auto *detachWindow =
+            window.findChild<QWidget *>(QStringLiteral("promptDetachWindow"));
+        check(detachWindow && detachWindow->isWindow() &&
+                  prompt->window() == detachWindow &&
+                  promptWrapper && promptWrapper->isVisible(),
+              QStringLiteral("the detach button moves the prompt into a window "
+                             "of its own, outside the app's own window"));
+
+        promptDetach->click();
+        QApplication::processEvents();
+        check(prompt->window() == &window &&
+                  (!detachWindow || !detachWindow->isVisible()),
+              QStringLiteral("pressing detach again brings the prompt back "
+                             "inside the app"));
+
+        QMouseEvent snapBack(QEvent::MouseButtonDblClick,
+                             QPointF(promptHandle->width() / 2.0,
+                                     promptHandle->height() / 2.0),
+                             QPointF(promptHandle->mapToGlobal(QPoint(0, 0))),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(promptHandle, &snapBack);
+        QApplication::processEvents();
+        check(prompt->parentWidget() == dock &&
+                  prompt->geometry().bottom() == dock->rect().bottom(),
+              QStringLiteral("double-clicking the handle snaps the prompt back "
+                             "to the footer anchor"));
+    }
+
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
     check(log && lights && header && log->isVisible() && lights->isVisible() &&
