@@ -1,6 +1,9 @@
 qt_client/build-forkmesh/
 qt_client/build-ci/
 qt_client/build-release/
+# CMake writes here when a worktree is configured with the conventional
+# `-B build`; its ~700 generated files otherwise swamp the branch's diff.
+build/
 cloudflare_worker/python_modules/
 .wrangler/
 

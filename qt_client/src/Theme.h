@@ -1491,7 +1491,7 @@ QToolButton#agentStatusPill {
     background-color: transparent;
     border: 1px solid #d1d5db;
     border-radius: 12px;
-    padding: 2px 7px 2px 4px;
+    padding: 0px 7px 0px 4px;
     font-size: 11px;
     font-weight: 600;
     color: #1f2937;
@@ -2926,7 +2926,7 @@ QToolButton#agentStatusPill {
     background-color: transparent;
     border: 1px solid #d0d7de;
     border-radius: 12px;
-    padding: 2px 7px 2px 4px;
+    padding: 0px 7px 0px 4px;
     font-size: 11px;
     font-weight: 600;
 }
