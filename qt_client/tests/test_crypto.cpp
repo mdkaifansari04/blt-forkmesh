@@ -6478,6 +6478,65 @@ int main(int argc, char *argv[])
               "restart rebuilds the queued agent backlog oldest-first");
     }
 
+    // The composer ranks models by merged work, so that score must outlive the
+    // sessions it was earned by: deleting a landed branch and its agent used to
+    // take the model's whole record with it ("0 merged" for every model).
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "model-outcome store temp dir is valid");
+        AgentStore store(tmp.path());
+        check(store.retiredModelOutcomes().isEmpty(),
+              "a fresh store has retired no model outcomes");
+
+        const QString key =
+            AgentStore::modelOutcomeKey("claude-code", "claude-opus-5");
+        check(key == AgentStore::modelOutcomeKey("claude-code", "  Claude-Opus-5 "),
+              "outcome keys ignore model case and surrounding space");
+        check(AgentStore::modelOutcomeKey("claude-code", "  ").isEmpty(),
+              "a session with no model has no outcome key");
+
+        auto landed = [&store](const QString &model, bool merged) {
+            AgentSession session;
+            session.owner = "octo";
+            session.name = "demo";
+            session.provider = "claude-code";
+            session.model = model;
+            session = store.createSession(session);
+            session.merged = merged;
+            store.saveSession(session);
+            return session;
+        };
+        const AgentSession first = landed("claude-opus-5", true);
+        const AgentSession second = landed("claude-opus-5", false);
+        const AgentSession other = landed("claude-sonnet-5", true);
+        const AgentSession modelless = landed(QString(), true);
+        check(store.retiredModelOutcomes().isEmpty(),
+              "living sessions are not counted as retired outcomes");
+
+        check(store.deleteSession(first) && store.deleteSession(second) &&
+                  store.deleteSession(other) && store.deleteSession(modelless),
+              "deleting the sessions succeeds");
+        AgentStore reopened(tmp.path());
+        const QHash<QString, AgentModelOutcome> outcomes =
+            reopened.retiredModelOutcomes();
+        check(outcomes.value(key).merged == 1 && outcomes.value(key).runs == 2,
+              "a deleted session's merge is still credited to its model after a "
+              "restart");
+        check(outcomes.value(AgentStore::modelOutcomeKey("claude-code",
+                                                         "claude-sonnet-5"))
+                      .merged == 1,
+              "each model keeps its own retired tally");
+        check(outcomes.size() == 2,
+              "a session with no model is credited to nothing");
+
+        // nextId() hands a deleted id straight back out, so the tally must never
+        // be keyed by session id: re-deleting the same record must not double it.
+        check(store.deleteSession(first),
+              "deleting an already-deleted session still succeeds");
+        check(reopened.retiredModelOutcomes().value(key).runs == 2,
+              "a repeated delete does not double-count the model");
+    }
+
     // The quick-add "YOLO" toggle is stamped onto the session at launch (adhoc
     // #12), so the auto-merge decision survives a restart and never depends on
     // where the checkbox happens to sit when the run finishes.
