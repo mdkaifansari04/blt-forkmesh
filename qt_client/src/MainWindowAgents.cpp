@@ -273,29 +273,38 @@ int agentStatusModelIconIndex(const AgentSession &session)
 
 QString agentStatusBadgeText(const AgentSession &session)
 {
+    QString state;
     if (session.merged)
-        return QStringLiteral("Merged");
-    if (session.status == AgentStatus::Success)
-        return QStringLiteral("Done");
-    if (session.status == AgentStatus::Failed)
-        return QStringLiteral("Failed");
-    if (session.status == AgentStatus::Stopped)
-        return QStringLiteral("Stopped");
-    if (session.status == AgentStatus::Running) {
-        const QString modelWord = agentModelShortLabel(session.model);
-        return modelWord.isEmpty() ? QStringLiteral("Working") : modelWord;
+        state = QStringLiteral("merged");
+    else if (session.status == AgentStatus::Success)
+        state = QStringLiteral("done");
+    else if (session.status == AgentStatus::Failed)
+        state = QStringLiteral("failed");
+    else if (session.status == AgentStatus::Stopped)
+        state = QStringLiteral("stopped");
+    else if (session.status == AgentStatus::Running)
+        state = QStringLiteral("running");
+    else if (session.status == AgentStatus::Waiting)
+        state = QStringLiteral("waiting");
+    else if (session.status == AgentStatus::Queued)
+        state = QStringLiteral("queued");
+    else
+        state = QStringLiteral("idle");
+    // "Opus is: running" — the model wears the state, so the pill answers who
+    // is doing what in one read. Sessions with no model recorded fall back to
+    // the bare state word.
+    const QString modelWord = agentModelShortLabel(session.model);
+    if (modelWord.isEmpty()) {
+        state[0] = state.at(0).toUpper();
+        return state;
     }
-    if (session.status == AgentStatus::Waiting)
-        return QStringLiteral("Waiting");
-    if (session.status == AgentStatus::Queued)
-        return QStringLiteral("Queued");
-    return QStringLiteral("Idle");
+    return QStringLiteral("%1 is: %2").arg(modelWord, state);
 }
 
 QIcon agentStatusPillIcon(const AgentSession &session)
 {
     if (session.merged || session.status == AgentStatus::Success)
-        return themedOcticon("check-circle", QColor("#3fb950"), 14);
+        return themedOcticon("check-circle", QColor("#3fb950"), 22);
     return agentControlIcon(agentStatusModelIconIndex(session));
 }
 
@@ -2503,12 +2512,14 @@ QWidget *MainWindow::buildAgentsTab()
             &MainWindow::createLinkedIssueForSelectedSession);
 
     // The model icon doubles as the compact outcome control. Its outline is
-    // outcome-coloured and the one-word label keeps the header scannable; hover
-    // or click reveals the fuller session detail without restoring a long pill.
+    // outcome-coloured and the "<Model> is: <state>" label reads who is doing
+    // what at a glance; hover or click reveals the fuller session detail
+    // without restoring a long pill. The icon size pairs with the pill's zero
+    // vertical padding in Theme.h so the portrait fills the pill top to bottom.
     m_agentStatusPill = new QToolButton;
     m_agentStatusPill->setObjectName("agentStatusPill");
     m_agentStatusPill->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_agentStatusPill->setIconSize(QSize(18, 18));
+    m_agentStatusPill->setIconSize(QSize(22, 22));
     m_agentStatusPill->setCursor(Qt::PointingHandCursor);
     m_agentStatusPill->installEventFilter(this);
     connect(m_agentStatusPill, &QToolButton::clicked, this,
@@ -3076,7 +3087,10 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
             changed = true;
         }
         if (composerIsCli && m_quickAddClaudeModel) {
-            const QString chosen = selectedModelComboValue(m_quickAddClaudeModel);
+            const QString chosen = (composerProvider == QLatin1String("claude-code")
+                                       ? selectedModelComboValue(m_quickAddClaudeModel)
+                                       : codexChatGptModelId(
+                                           selectedModelComboValue(m_quickAddClaudeModel)));
             if (session->model != chosen) {
                 session->model = chosen;
                 changed = true;
@@ -3687,7 +3701,7 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
         const QString prompt =
             job.value(QStringLiteral("prompt")).toString();
         const QString requestedModel =
-            job.value(QStringLiteral("model")).toString().trimmed();
+            codexChatGptModelId(job.value(QStringLiteral("model")).toString());
         const int issueNumber =
             job.value(QStringLiteral("issueNumber")).toInt();
         const QSet<QString> allowedWebsiteModels = {
@@ -3699,7 +3713,6 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
             QStringLiteral("gpt-5.6-luna"),
             QStringLiteral("gpt-5.6-terra"),
             QStringLiteral("gpt-5.3-codex-spark"),
-            QStringLiteral("gpt-5.3-spark"),
         };
         const QJsonObject security =
             job.value(QStringLiteral("securityCheck")).toObject();
@@ -5559,9 +5572,18 @@ void MainWindow::refreshClaudeCodeUsage(bool fromHover)
         // On any error (expired token, offline) keep the last-known figures
         // rather than blanking the gauge; the next poll retries — with a
         // growing backoff so a sustained failure stops hammering the endpoint.
+        // A 429 usually names its own cooldown via Retry-After; honour that
+        // as a floor on top of the exponential curve so a burst of hovers
+        // right after a rate limit doesn't immediately trip another one.
         if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(pollKey,
-                                      QDateTime::currentMSecsSinceEpoch());
+            const QByteArray retryAfter = reply->rawHeader("Retry-After");
+            bool retryAfterOk = false;
+            const qint64 retryAfterMs =
+                QString::fromLatin1(retryAfter).trimmed().toLongLong(&retryAfterOk) * 1000;
+            m_pollBackoff.noteFailure(
+                pollKey, QDateTime::currentMSecsSinceEpoch(),
+                NetworkBackoff::kDefaultBaseMs, NetworkBackoff::kDefaultCapMs,
+                retryAfterOk && retryAfterMs > 0 ? retryAfterMs : 0);
             if (fromHover)
                 flashUsageChart(m_navTokenUsage, false);
             return;
@@ -7764,6 +7786,7 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
+    updateQuickAddTargetAgentLabel();
     // The session on screen is the Agents tab's place, so Back walks between
     // sessions the same way it walks between issues (adhoc #50).
     scheduleNavRecord();
@@ -7799,6 +7822,7 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLogSession = -1; // log emptied out-of-band; force the next set to render
         m_agentDetailTabSession = -1; // next opened session re-starts on the Agent tab
         updateAgentActionState();
+        updateQuickAddTargetAgentLabel();
         return;
     }
     // Several detail helpers resolve git/worktree state through keep-alive
@@ -7823,6 +7847,8 @@ void MainWindow::showAgentSession(int sessionId)
     // sessions; the live re-fetch only happens on the top-bar chart's hover.
     applyLiveClaudeModelsToCombos();
     if (m_agentTitle) {
+        const QString sessionLabel =
+            QStringLiteral("Agent #%1").arg(sessionId);
         if (isExternalSession(sessionId)) {
             const QString label = !session->issueTitle.isEmpty()
                                       ? session->issueTitle
@@ -7831,7 +7857,8 @@ void MainWindow::showAgentSession(int sessionId)
                                              : session->branchName);
             setAgentTitleText(
                 m_agentTitle,
-                QStringLiteral("External Claude Code · %1").arg(label));
+                QStringLiteral("%1 · External Claude Code · %2")
+                    .arg(sessionLabel, label));
         } else {
             // Older ad-hoc sessions may still carry a historically shortened
             // issueTitle, so prefer the prompt's complete first line when it is
@@ -7843,7 +7870,8 @@ void MainWindow::showAgentSession(int sessionId)
             setAgentTitleText(
                 m_agentTitle,
                 session->issueNumber > 0
-                    ? QStringLiteral("#%1 · %2")
+                    ? QStringLiteral("%1 · #%2 · %3")
+                          .arg(sessionLabel)
                           .arg(session->issueNumber)
                           .arg(session->issueTitle.isEmpty()
                                    ? agentProviderName(session->provider)
@@ -7851,7 +7879,8 @@ void MainWindow::showAgentSession(int sessionId)
                     // Ad-hoc sessions (no issue) lead with the prompt-derived
                     // title rather than "pull #0" — before a PR exists prNumber
                     // is 0, and the prompt is what identifies the run anyway.
-                    : QStringLiteral("%1 · %2")
+                    : QStringLiteral("%1 · %2 · %3")
+                          .arg(sessionLabel)
                           .arg(agentProviderName(session->provider))
                           .arg(adHocTitle.isEmpty()
                                    ? QStringLiteral("pull #%1").arg(session->prNumber)
@@ -8215,7 +8244,8 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         config.command = codexCommandSetting();
         config.apiKeyName = QStringLiteral("CODEX_API_KEY");
         config.apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();
-        config.model = QSettings().value(kCodexModelSetting).toString().trimmed();
+        config.model = codexChatGptModelId(
+            QSettings().value(kCodexModelSetting).toString());
         config.preferApiKeyAuth = true;
         config.isolatedHome =
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
@@ -8357,7 +8387,10 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.orgTask = true;
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
-    session.model = model.trimmed(); // empty leaves the provider's own default
+    session.model = (provider == QLatin1String("claude-code") ||
+                     agentIsCodexProvider(provider))
+                        ? codexChatGptModelId(model)
+                        : model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
         session.mode = m_quickAddModeSelector->currentText();
@@ -8690,7 +8723,8 @@ void MainWindow::updateIssueLooperButton()
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr,
                                        const QString &model,
-                                       const QString &titleOverride, bool genie)
+                                       const QString &titleOverride, bool genie,
+                                       bool switchToTab)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -8725,7 +8759,10 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     // genie even though the "task" button that started it is long since
     // forgotten.
     session.genie = genie;
-    session.model = model.trimmed(); // empty leaves the provider's own default
+    session.model = (provider == QLatin1String("claude-code") ||
+                     agentIsCodexProvider(provider))
+                        ? codexChatGptModelId(model)
+                        : model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
         session.mode = m_quickAddModeSelector->currentText();
@@ -8764,7 +8801,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     if (runningAgentCount() >= maxRunningAgents()) {
         m_agentQueue.append(session.id);
         reloadAgents();
-        switchToAgentsTab(session.id);
+        if (switchToTab)
+            switchToAgentsTab(session.id);
         flashMessage(QStringLiteral("Queued \xE2\x80\x94 %1 agents are already "
                                     "running (limit set in Settings).")
                          .arg(maxRunningAgents()));
@@ -8774,7 +8812,7 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     if (provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) {
         // Both CLI-backed agents render through their structured protocols; the
         // typed prompt is their task verbatim.
-        startCliTranscript(session, Issue(), repo.localPath, task);
+        startCliTranscript(session, Issue(), repo.localPath, task, switchToTab);
     } else {
         // API-key agents run headlessly through a runner. There's no issue to
         // anchor to, so the task rides through the config as an override prompt.
@@ -8791,7 +8829,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         markAgentLimitWindow(provider);
         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
         reloadAgents();
-        switchToAgentsTab(session.id);
+        if (switchToTab)
+            switchToAgentsTab(session.id);
     }
     return session.id;
 }
@@ -8823,7 +8862,8 @@ void MainWindow::startAgentFromComposer()
         provider == QLatin1String("claude-code")
             ? QSettings().value(kClaudeCodeModelSetting).toString()
             : (agentIsCodexProvider(provider)
-                   ? QSettings().value(kCodexModelSetting).toString()
+                   ? codexChatGptModelId(
+                       QSettings().value(kCodexModelSetting).toString())
                    : QString());
     if (startAdHocAgentForRepo(repoIndex, prompt, provider, /*createPr=*/true,
                                model) > 0)
@@ -10073,7 +10113,8 @@ QString MainWindow::issueContextPrompt(const Issue &issue) const
 
 void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                     const QString &repoPath,
-                                    const QString &customPrompt)
+                                    const QString &customPrompt,
+                                    bool switchToTab)
 {
     if (!m_agentStore)
         return;
@@ -10464,8 +10505,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                         agentIsCodexProvider(
                             m_quickAddAgentProvider->currentData().toString())) {
                         mergeLiveCodexModels(m_quickAddClaudeModel, models);
-                        const QString selected =
-                            selectedModelComboValue(m_quickAddClaudeModel);
+                        const QString selected = codexChatGptModelId(
+                            selectedModelComboValue(m_quickAddClaudeModel));
                         QSettings().setValue(kCodexModelSetting, selected);
                         if (m_codexModelEdit)
                             m_codexModelEdit->setText(selected);
@@ -10544,12 +10585,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Skip the jump when the user is already viewing this session (e.g. they
     // pressed Enter in the composer on the Agents tab): switchToAgentsTab fires
     // extra reloadAgents() calls that can reset the table selection to row 0 and
-    // navigate away from the session the user was working with.
+    // navigate away from the session the user was working with. switchToTab is
+    // false for a quick-add bar launch (adhoc #1573): the prompt bar is docked
+    // on every page, so starting a run from it must not yank the user onto the
+    // Agents tab away from whatever they were looking at.
     const bool startupQuiet =
         m_startupQuietAgentSessions.remove(sid) || m_agentQuietResume;
     if (!startupQuiet) {
         m_terminalSessionId = sid;
-        if (m_selectedAgentSessionId != sid)
+        if (switchToTab && m_selectedAgentSessionId != sid)
             switchToAgentsTab(sid);
         showAgentSession(sid); // renders the buffered turn + selects the surface
         if (m_transcriptModeButton)
@@ -11347,6 +11391,7 @@ void MainWindow::unsurfaceExternalSession(int sessionId)
     m_externalSig.clear();
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
+    updateQuickAddTargetAgentLabel();
     reloadAgents();
 }
 
@@ -11443,6 +11488,7 @@ void MainWindow::onExternalClaudeTick()
             m_externalSig.clear();
             if (isExternalSession(m_selectedAgentSessionId))
                 m_selectedAgentSessionId = -1;
+            updateQuickAddTargetAgentLabel();
             injectExternalSessions();
             refreshAgentTable();
             updateAgentsTabIndicator();
@@ -11869,6 +11915,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
             const bool userStopped = as->status == AgentStatus::Stopped;
             if (!userStopped && ClaudeTranscriptView::resultIsError(ev)) {
                 m_agentCompletionChecks.remove(sessionId);
+                m_agentCompletionPollCounts.remove(sessionId);
                 as->status = AgentStatus::Failed;
                 as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 // Same wording the transcript's "✗ Failed" row shows, so the
@@ -11886,6 +11933,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
                 awaitSubprocesses = true;
             } else if (userStopped) {
                 m_agentCompletionChecks.remove(sessionId);
+                m_agentCompletionPollCounts.remove(sessionId);
             }
             if (m_agentStore && !isExternalSession(sessionId))
                 m_agentStore->saveSession(*as);
@@ -12001,6 +12049,7 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     // A fresh turn supersedes any delayed completion poll from the previous
     // result; that old poll must never turn this new turn into Done.
     m_agentCompletionChecks.remove(sessionId);
+    m_agentCompletionPollCounts.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status == AgentStatus::Running)
         return;
@@ -12017,6 +12066,16 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     updateAgentStatusCell(sessionId);
 }
 
+// A build/test child usually exits within a poll or two of the CLI's `result`
+// event. An orphaned helper the CLI never reaped (e.g. a screenshot-capture
+// python3 process) can linger indefinitely, and without a cap this poll would
+// have left the session stuck showing "Running" forever (adhoc #1583). Escalate
+// to a kill after a 10s grace period, and give up waiting on the tree entirely
+// after 20s so the session always reaches Success once the CLI's own turn
+// finished, even if a straggler proves unkillable.
+static constexpr int kAgentCompletionKillAfterPolls = 40;   // 40 * 250ms = 10s
+static constexpr int kAgentCompletionGiveUpAfterPolls = 80; // 80 * 250ms = 20s
+
 void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
 {
     if (!m_agentCompletionChecks.contains(sessionId))
@@ -12024,12 +12083,21 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
     AgentSession *session = findAgentSession(sessionId);
     if (!session || session->status != AgentStatus::Running) {
         m_agentCompletionChecks.remove(sessionId);
+        m_agentCompletionPollCounts.remove(sessionId);
         return;
     }
 
     const QList<SystemStats::DescendantProcess> subprocesses =
         SystemStats::descendantProcesses(agentSessionProcessId(sessionId));
-    if (!subprocesses.isEmpty()) {
+    const int pollCount = subprocesses.isEmpty() ? 0 : ++m_agentCompletionPollCounts[sessionId];
+    if (!subprocesses.isEmpty() && pollCount < kAgentCompletionGiveUpAfterPolls) {
+        if (pollCount == kAgentCompletionKillAfterPolls) {
+            QList<qint64> pids;
+            pids.reserve(subprocesses.size());
+            for (const SystemStats::DescendantProcess &p : subprocesses)
+                pids.append(p.pid);
+            killExternalSessionPids(pids);
+        }
         // Keep the session visibly Working and let the detail popup expose the
         // snapshot above. A short, single-shot poll avoids a permanent timer
         // for idle sessions and lets a just-exited child disappear promptly.
@@ -12042,6 +12110,7 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
     }
 
     m_agentCompletionChecks.remove(sessionId);
+    m_agentCompletionPollCounts.remove(sessionId);
     session->status = AgentStatus::Success;
     session->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
     session->lastError.clear();
@@ -12055,6 +12124,7 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
 void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
 {
     m_agentCompletionChecks.remove(sessionId);
+    m_agentCompletionPollCounts.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status != AgentStatus::Running)
         return; // only meaningful for a session that was actively running
@@ -13959,4 +14029,19 @@ void MainWindow::updateQuickAddEnterTarget()
     apply(m_quickAddSendToAgentButton, toAgent,
           QStringLiteral("Send to the agent open above, as a follow-up message"));
     apply(m_quickAddSendButton, !toAgent, QStringLiteral("Send to a new agent"));
+    updateQuickAddTargetAgentLabel();
+}
+
+void MainWindow::updateQuickAddTargetAgentLabel()
+{
+    if (!m_quickAddTargetAgentLabel)
+        return;
+    if (!quickAddShouldFollowUpAgent()) {
+        m_quickAddTargetAgentLabel->clear();
+        m_quickAddTargetAgentLabel->hide();
+        return;
+    }
+    m_quickAddTargetAgentLabel->setText(
+        QStringLiteral("Agent #%1").arg(m_selectedAgentSessionId));
+    m_quickAddTargetAgentLabel->show();
 }

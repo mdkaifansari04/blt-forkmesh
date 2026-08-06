@@ -581,6 +581,15 @@ public:
     QString testNetworkRepoCellText(int row, const QString &header) const;
     bool testNetworkRepoHasCommitSparkline(int row) const;
     QString testNetworkRepoCommitActivitySummary(int row) const;
+    // Web Requests tab (adhoc #1575): the Network tab labels in order, a
+    // fixture-driven render of the /api/metrics/summary payload, and readers
+    // over the resulting chart, table and summary line.
+    QStringList testNetworkTabLabels() const;
+    void testRenderNetworkWebRequests(const QJsonObject &payload);
+    QStringList testNetworkWebRequestsGroups() const;
+    QString testNetworkWebRequestsCellText(int row, const QString &header) const;
+    QString testNetworkWebRequestsStatusText() const;
+    int testNetworkWebRequestsChartHeight() const;
     // Badge riding the activity rail's Repos icon.
     int testReposNavBadgeCount() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
@@ -2375,6 +2384,12 @@ private:
     // to be on navigation.
     void refreshNetworkTab(int tabIndex);
     void showEndpointRequestDetails(int row, int column);
+    // Web Requests tab: the inbound traffic the Worker itself answered, from
+    // the public /api/metrics/summary buckets — the same masked route groups
+    // and most-frequent-first ordering as the api.forkmesh.com landing page,
+    // drawn as a bar chart plus the full un-paginated group table.
+    void refreshNetworkWebRequests();
+    void renderNetworkWebRequests(const QJsonObject &payload);
 
     // Admin-only Users page: the same privacy-filtered account facts shown on
     // World avatar chests, laid out as one sortable table. It deliberately
@@ -3259,6 +3274,7 @@ private:
     // mirrors. Shared by the key handler and updateQuickAddEnterTarget so the
     // two can never drift apart.
     bool quickAddShouldFollowUpAgent() const;
+    void updateQuickAddTargetAgentLabel();
     void updateIssueAgentUi(const Issue &issue);
     // Issue #145: populate the issue detail's "Files changed" tab from a linked
     // pull request's patch or a linked agent session's branch diff, and show or
@@ -5499,8 +5515,9 @@ private:
     void startRepoHosts();
     void stopRepoHosts();
     // Live relay event channel (ForkMeshNodes DO): pushed event frames run
-    // scheduleRelaySync() the moment the relay records a change, so the
-    // m_inboxPollTimer HTTPS poll is only the reconnect-gap safety net.
+    // scheduleRelaySync() the moment the relay records a change. The channel
+    // is the only sync trigger — no fallback poll; reconnect gaps are covered
+    // by one catch-up sync per (re)connect.
     void startNodeEventSocket();
     void stopNodeEventSocket();
     void onRequestServed(const QString &owner, const QString &name, bool clone);
@@ -6307,6 +6324,16 @@ private:
     QPushButton *m_networkDiagnosticsRefreshButton = nullptr;
     bool m_networkEndpointFadeScheduled = false;
     bool m_networkEndpointsUserSorted = false;
+    // Web Requests tab: inbound Worker traffic from /api/metrics/summary. The
+    // chart is a file-local widget class, so it rides in a QWidget pointer.
+    QWidget *m_networkWebRequestsChart = nullptr;
+    QTableWidget *m_networkWebRequestsTable = nullptr;
+    QLabel *m_networkWebRequestsStatus = nullptr;
+    QComboBox *m_networkWebRequestsRange = nullptr;
+    int m_networkWebRequestsTabIndex = -1;
+    int m_networkWebRequestsMinutes = 60;
+    bool m_networkWebRequestsInFlight = false;
+    bool m_networkWebRequestsUserSorted = false;
     // The Network section's tab bar. Its first three tabs are the Relays, Nodes
     // and Hosts pages (adhoc #54); their counts ride the tab labels and total on
     // the rail's Network badge.
@@ -6440,7 +6467,6 @@ private:
     QPlainTextEdit *m_agentPromptPreambleEdit = nullptr;
     QPlainTextEdit *m_prioritizePromptEdit = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
-    QTimer *m_inboxPollTimer = nullptr; // slow fallback tick for performRelaySync()
     // Coalesces control-channel "event" frames into one /api/sync.
     QTimer *m_relaySyncDebounce = nullptr;
     // False after the relay 404s /api/sync (older worker): fall back to the
@@ -6476,6 +6502,7 @@ private:
     // line, so a typed prompt actually shows on two lines. Enter sends,
     // Shift+Enter inserts a newline; Up/Down still walk the prompt history.
     QPlainTextEdit *m_issueQuickAdd = nullptr;
+    QLabel *m_quickAddTargetAgentLabel = nullptr;
     QFrame *m_promptWrapper = nullptr; // geometry anchor for notification/prompt bubbles
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     // Canonical provider state behind the combined visible picker. It also
@@ -8116,6 +8143,10 @@ private:
     // Sessions that delivered a clean result but still have agent-owned child
     // processes. Their status stays Running until the tree is empty.
     QSet<int> m_agentCompletionChecks;
+    // How many completeAgentSessionWhenSubprocessesExit() polls a session has
+    // spent waiting on a non-empty process tree — used to escalate a stuck
+    // wait to a kill, then to giving up on the tree entirely (adhoc #1583).
+    QHash<int, int> m_agentCompletionPollCounts;
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
@@ -8153,10 +8184,13 @@ private:
     QHash<int, QString> m_streamAccountId;
     // customPrompt, when non-empty, is used as the agent's task verbatim (the
     // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
-    // derived from `issue`.
+    // derived from `issue`. switchToTab=false keeps the caller's current page
+    // in view instead of jumping to the new session's transcript (adhoc #1573:
+    // the quick-add bar's "new"/"add" buttons must not navigate away).
     void startCliTranscript(AgentSession &session, const Issue &issue,
                             const QString &repoPath,
-                            const QString &customPrompt = QString());
+                            const QString &customPrompt = QString(),
+                            bool switchToTab = true);
     // Auto model mode (adhoc #91): resolve the "auto" sentinel to a concrete
     // model before launching the CLI. A routed choice recorded earlier in this
     // session's transcript is reused; otherwise a local heuristic pass runs,
@@ -8395,7 +8429,7 @@ private:
                                const QString &provider, bool createPr,
                                const QString &model = QString(),
                                const QString &titleOverride = QString(),
-                               bool genie = false);
+                               bool genie = false, bool switchToTab = true);
     // Save a clipboard image to a stable temp file so a launched agent can read it
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);

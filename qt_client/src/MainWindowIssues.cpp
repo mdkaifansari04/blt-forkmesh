@@ -4404,8 +4404,12 @@ void MainWindow::quickAddIssue()
                 prompt += QLatin1Char('\n');
             prompt += QStringLiteral("Attached image: %1").arg(img);
         }
+        // switchToTab=false: this is the quick-add bar's "new" button, docked on
+        // every page — starting a run from it must not jump the user onto the
+        // Agents tab away from whatever they were looking at (adhoc #1573).
         const int agentSessionId = startAdHocAgentForRepo(
-            issuesRepoIndex(), prompt, provider, createPr, model);
+            issuesRepoIndex(), prompt, provider, createPr, model, QString(),
+            /*genie=*/false, /*switchToTab=*/false);
         if (agentSessionId > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();

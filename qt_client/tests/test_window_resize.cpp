@@ -2755,6 +2755,59 @@ int main(int argc, char *argv[])
     check(window.testReposNavBadgeCount() == 2,
           QStringLiteral("Repos rail badge counts the repositories on the network"));
 
+    // adhoc #1575: the Network section grows a Web Requests tab right after
+    // Endpoints -- the Worker's own inbound traffic from /api/metrics/summary,
+    // grouped by masked route, charted and listed most frequent first.
+    const auto webRequestsGroup = [](const char *group, int requests,
+                                     int errors) {
+        return QJsonObject{
+            {QStringLiteral("group"), QLatin1String(group)},
+            {QStringLiteral("requests"), requests},
+            {QStringLiteral("errors"), errors},
+            {QStringLiteral("avg_ms"), 12},
+            {QStringLiteral("dur_ms_max"), 340},
+            {QStringLiteral("classes"),
+             QJsonObject{{QStringLiteral("2xx"), requests - errors},
+                         {QStringLiteral("3xx"), 0},
+                         {QStringLiteral("4xx"), 0},
+                         {QStringLiteral("5xx"), errors}}}};
+    };
+    // Deliberately out of order: the tab must order by volume itself.
+    window.testRenderNetworkWebRequests(QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("windowMinutes"), 60},
+        {QStringLiteral("groups"),
+         QJsonArray{webRequestsGroup("status", 50, 0),
+                    webRequestsGroup("version", 1200, 2),
+                    webRequestsGroup("repo/*/*/pending", 900, 0)}}});
+    const QStringList networkTabLabels = window.testNetworkTabLabels();
+    const int endpointsTabIndex =
+        networkTabLabels.indexOf(QStringLiteral("Endpoints"));
+    check(endpointsTabIndex >= 0 &&
+              networkTabLabels.value(endpointsTabIndex + 1) ==
+                  QStringLiteral("Web Requests"),
+          QStringLiteral("Web Requests tab sits right after Endpoints"));
+    check(window.testNetworkWebRequestsGroups() ==
+              QStringList{QStringLiteral("version"),
+                          QStringLiteral("repo/*/*/pending"),
+                          QStringLiteral("status")},
+          QStringLiteral(
+              "Web Requests lists every group, most frequent first"));
+    check(window.testNetworkWebRequestsCellText(
+              0, QStringLiteral("Requests")) == QStringLiteral("1,200") &&
+              window.testNetworkWebRequestsCellText(
+                  0, QStringLiteral("Share")) == QStringLiteral("55.8%") &&
+              window.testNetworkWebRequestsCellText(
+                  0, QStringLiteral("5xx")) == QStringLiteral("2"),
+          QStringLiteral(
+              "Web Requests rows carry counts, share and status classes"));
+    check(window.testNetworkWebRequestsChartHeight() == 3 * 26 + 8,
+          QStringLiteral("Web Requests chart sizes to one bar per group"));
+    check(window.testNetworkWebRequestsStatusText().contains(QStringLiteral(
+              "2,150 request(s) across 3 route group(s)")),
+          QStringLiteral("Web Requests summarises the window's traffic"));
+
+
     // Reward settings must never launch the former reserve/donation/finalize
     // account funnel. A mock account flow is installed specifically to prove it
     // remains untouched.

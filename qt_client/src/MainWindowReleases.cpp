@@ -3473,15 +3473,16 @@ void MainWindow::fetchMirrorPendingCounts(const QString &owner,
     if (!m_networkAccess || owner.isEmpty() || repo.isEmpty() || source.isEmpty() ||
         m_mirrorPendingInFlight.contains(source))
         return;
-    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     const QJsonObject cached = m_mirrorPendingCache.value(source);
     const qint64 fetchedAt =
         qint64(cached.value(QStringLiteral("clientFetchedAt")).toDouble());
-    // One badge refresh per ten minutes per repo: the relay answers this
-    // from a ten-minute edge cache, so anything faster only re-reads the
-    // same cached counts while making /pending the busiest endpoint on the
-    // API traffic chart.
-    if (fetchedAt > 0 && nowMs - fetchedAt < 10 * 60 * 1000)
+    // Fetch-once, not TTL: one fetch per repo populates the badges and every
+    // later roster/refresh tick reuses the cache with no HTTP (the no-polling
+    // policy, docs/operations/polling-elimination.md). The entry is
+    // invalidated — clientFetchedAt zeroed — when the node event socket
+    // pushes new inbox work or a local drain changes the counts, and the next
+    // badge refresh refetches then.
+    if (fetchedAt > 0)
         return;
 
     QUrl url = catalogApiUrl();
@@ -3967,6 +3968,26 @@ void MainWindow::promptNewRelease()
         "in this repository's history, keeping only the one just published. "
         "This cannot be undone, and links to those older releases will stop "
         "working."));
+    // Same fan-out the per-release "Push to mirrors" button performs, offered up
+    // front so publishing and rolling out is one trip through the dialog.
+    auto *rolloutCheck = new QCheckBox(
+        QStringLiteral("Roll out the release to the mirror nodes"));
+    bool canRollOut = false;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        canRollOut = !repo.previewOnly && !repo.isPrivate &&
+                     !repo.localPath.trimmed().isEmpty();
+    }
+    rolloutCheck->setEnabled(canRollOut);
+    rolloutCheck->setToolTip(
+        canRollOut
+            ? QStringLiteral(
+                  "Once the tag is created, push it to the configured SSH mirror "
+                  "gateways and notify online peer mirrors. Release artifacts "
+                  "follow through the existing SHA-256-verified mirror path.")
+            : QStringLiteral(
+                  "Only a public repository's source working copy can push "
+                  "releases to mirrors."));
     auto *genNotesButton = new QPushButton("Generate release notes");
     genNotesButton->setObjectName("ghostButton");
     genNotesButton->setCursor(Qt::PointingHandCursor);
@@ -4118,6 +4139,7 @@ void MainWindow::promptNewRelease()
     form->addRow("Notes", notesEdit);
     form->addRow(QString(), pruneArtifactsCheck);
     form->addRow(QString(), pruneTagsCheck);
+    form->addRow(QString(), rolloutCheck);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     buttons->button(QDialogButtonBox::Ok)->setText("Publish release");
     form->addRow(buttons);
@@ -4183,6 +4205,9 @@ void MainWindow::promptNewRelease()
         pruneReleaseArtifactsForCurrentRepo(tag);
     if (pruneTagsCheck->isChecked())
         pruneReleaseTagsForCurrentRepo(tag);
+    // After any pruning, so what the mirrors receive is the final tag set.
+    if (rolloutCheck->isChecked() && rolloutCheck->isEnabled())
+        pushReleaseToMirrors(tag);
 
     // Trigger any `on: release` workflow (e.g. .forkmesh/release.yml, which
     // builds and publishes the desktop binary for this platform). Resolve the

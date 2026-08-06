@@ -3705,14 +3705,15 @@ void MainWindow::startRepoHosts()
 // One WebSocket per signed-in owner account to the relay's ForkMeshNodes
 // Durable Object. The relay pushes a payload-free {"type":"event","topic"}
 // frame the instant a web submission lands for any owned repo; the node
-// answers with its usual debounced signed GET /api/sync. While the channel is
-// up the 5-minute fallback poll relaxes to 15 minutes — pushes carry the fast
-// path, so steady-state HTTPS polling drops to a third.
+// answers with its usual debounced signed GET /api/sync. This channel IS the
+// sync trigger — there is no fallback poll (the no-polling policy,
+// docs/operations/polling-elimination.md); dropped connections are covered by
+// the socket's own reconnect plus the catch-up sync in connectedChanged.
 void MainWindow::startNodeEventSocket()
 {
     if (m_nodeOffline) {
         // Honour a node parked offline: no serving, no heartbeat, no live
-        // event channel. The bounded sync poll still runs.
+        // event channel — and therefore no relay syncs until it comes back.
         stopNodeEventSocket();
         return;
     }
@@ -3751,20 +3752,24 @@ void MainWindow::startNodeEventSocket()
             [this](const QString &topic, const QString &repo) {
                 Q_UNUSED(topic);
                 Q_UNUSED(repo);
+                // New inbox work also outdates the cached /pending tallies
+                // behind the toolbar badges; zeroing clientFetchedAt lets the
+                // badge refresh refetch them (fetchMirrorPendingCounts is
+                // otherwise fetch-once — the badges are push-driven too).
+                for (auto it = m_mirrorPendingCache.begin();
+                     it != m_mirrorPendingCache.end(); ++it)
+                    it.value().insert(QStringLiteral("clientFetchedAt"), 0);
                 scheduleRelaySync();
+                refreshPendingInboxBadges();
             });
     connect(m_nodeEventSocket, &NodeEventSocket::connectedChanged, this,
             [this](bool connected) {
-                if (!m_inboxPollTimer)
-                    return;
-                if (connected) {
-                    // Catch up on anything queued while the channel was down,
-                    // then let pushes carry the fast path.
+                // One catch-up sync per (re)connect drains anything queued
+                // while the channel was down. That catch-up is the whole
+                // missed-event story: there is no fallback poll behind the
+                // socket (docs/operations/polling-elimination.md).
+                if (connected)
                     scheduleRelaySync();
-                    m_inboxPollTimer->setInterval(15 * 60 * 1000);
-                } else {
-                    m_inboxPollTimer->setInterval(5 * 60 * 1000);
-                }
             });
     connect(m_nodeEventSocket, &NodeEventSocket::systemMessage, this,
             [this](const QString &text) { logSystem(text); });
@@ -3778,8 +3783,6 @@ void MainWindow::stopNodeEventSocket()
     m_nodeEventSocket->stop();
     m_nodeEventSocket->deleteLater();
     m_nodeEventSocket = nullptr;
-    if (m_inboxPollTimer)
-        m_inboxPollTimer->setInterval(5 * 60 * 1000);
 }
 
 void MainWindow::onRequestServed(const QString &owner, const QString &name, bool clone)

@@ -29,6 +29,7 @@
 #include <QDateTimeEdit>
 #include <QElapsedTimer>
 #include <QFontDatabase>
+#include <QGridLayout>
 #include <QFormLayout>
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
@@ -1912,6 +1913,27 @@ QWidget *MainWindow::buildNetworkLogDock()
     // (kMaxTextChars). QPlainTextEdit has no setMaxLength, so the cap is enforced
     // in the textChanged handler below.
     const int kQuickAddMaxChars = 16000;
+    m_quickAddTargetAgentLabel = new QLabel;
+    m_quickAddTargetAgentLabel->setObjectName(QStringLiteral("quickAddTargetAgentLabel"));
+    m_quickAddTargetAgentLabel->setAlignment(Qt::AlignRight | Qt::AlignTop);
+    m_quickAddTargetAgentLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_quickAddTargetAgentLabel->setStyleSheet(
+        "QLabel#quickAddTargetAgentLabel {"
+        " background: transparent;"
+        " color: rgba(125, 128, 128, 0.45);"
+        " font-size: 9px;"
+        "}");
+    m_quickAddTargetAgentLabel->setVisible(false);
+    auto *quickAddInputHost = new QWidget;
+    auto *quickAddInputLayout = new QGridLayout(quickAddInputHost);
+    quickAddInputLayout->setContentsMargins(0, 0, 0, 0);
+    quickAddInputLayout->setSpacing(0);
+    quickAddInputLayout->addWidget(m_issueQuickAdd, 0, 0);
+    quickAddInputLayout->addWidget(m_quickAddTargetAgentLabel,
+                                  0,
+                                  0,
+                                  Qt::AlignRight | Qt::AlignTop);
+
     // Ctrl+V with an image on the clipboard attaches it (issue #79).
     m_issueQuickAdd->installEventFilter(this);
     // Restore the prompt history persisted from earlier sessions so Up recalls
@@ -2590,7 +2612,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // The editor stretches to fill the freed vertical space (the send column no
     // longer sits below it), and the bottom bar carries its own fixed height, so
     // the border sits right above the text and the controls weld to the foot.
-    promptLeftCol->addWidget(m_issueQuickAdd, 1);
+    promptLeftCol->addWidget(quickAddInputHost, 1);
     promptLeftCol->addWidget(bottomBarScroll, 0);
     promptLayout->addLayout(promptLeftCol, 1);
     promptLayout->addLayout(sendColumn, 0);
@@ -2791,9 +2813,21 @@ QWidget *MainWindow::buildNetworkLogDock()
         openFullLogForCategory(category);
     };
     // The status dots to the right of the categories are the deployed Worker's
-    // own health, so clicking them opens its live logs (adhoc #1559) — the
-    // viewer that used to be a button on the Log page.
-    m_logActivityLights->onWebsiteClicked = [this] { showCloudflareWorkerLogs(); };
+    // own health checks, so clicking them opens the matching website page (adhoc
+    // #1559); the viewer that used to be a button on the Log page stays
+    // available on the dedicated Cloudflare tool button.
+    m_logActivityLights->onWebsiteClicked = [this](const QString &statusId) {
+        QUrl url = catalogApiUrl();
+        if (!url.isValid() || url.host().isEmpty())
+            return;
+        if (statusId == QStringLiteral("desktop_status_page"))
+            url.setPath(QStringLiteral("/status"));
+        else
+            url.setPath(QStringLiteral("/"));
+        url.setQuery(QString());
+        url.setFragment(QString());
+        QDesktopServices::openUrl(url);
+    };
     const QString stallTip = QStringLiteral(
         "Click to draft a fix-it prompt for recorded UI stalls; right-click "
         "for the captured backtraces.");
@@ -9158,7 +9192,12 @@ void MainWindow::updateSignInButton()
 {
     if (!m_navSignInButton)
         return;
-    const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
+    // Signed-in state is now tracked explicitly on the auth path (`hasActive`
+    // includes a successful in-app login or matching desktop key binding). Use
+    // that primary signal and fall back to owner-name inference for any older
+    // state where the cached relay profile has already resolved the owner.
+    const bool signedIn = hasActiveAccountSession() ||
+                         !nodeOwnerDisplayName().trimmed().isEmpty();
     m_navSignInButton->setVisible(!m_headless && m_startupAuthResolved && !signedIn);
 }
 
@@ -11892,6 +11931,8 @@ void MainWindow::showSection(int index)
     } else if (index == kNetworkDiagnosticsSectionIndex) {
         refreshFirewallTables();
         refreshNetworkDiagnostics();
+        // Guards itself on the Web Requests tab being the current one.
+        refreshNetworkWebRequests();
     } else if (index == kControlNodeSectionIndex) {
         refreshControlNode();
     } else if (index == kOrganizationTasksSectionIndex) {
@@ -11920,6 +11961,12 @@ void MainWindow::showNetworkTab(int tabIndex)
 
 void MainWindow::refreshNetworkTab(int tabIndex)
 {
+    if (tabIndex >= 0 && tabIndex == m_networkWebRequestsTabIndex) {
+        // Web Requests reads the Worker's own traffic buckets, not local
+        // state, so it has its own fetch instead of the diagnostics rebuild.
+        refreshNetworkWebRequests();
+        return;
+    }
     switch (tabIndex) {
     case kNetworkRelaysTab:
         // Re-list and re-probe the relays each time the Relays tab opens.
@@ -17575,6 +17622,188 @@ QWidget *networkTabPage()
     return page;
 }
 
+// Web Requests tab columns: identity first, then volume, the status-class
+// split, and latency. Everything /api/metrics/summary publishes per group.
+enum WebRequestsColumn {
+    kWebRequestsColGroup = 0,
+    kWebRequestsColRequests,
+    kWebRequestsColShare,
+    kWebRequestsCol2xx,
+    kWebRequestsCol3xx,
+    kWebRequestsCol4xx,
+    kWebRequestsCol5xx,
+    kWebRequestsColAvg,
+    kWebRequestsColMax,
+    kWebRequestsColCount,
+};
+
+// A table item that displays a formatted count but sorts by the raw value
+// (QTableWidgetItem's default comparison is lexical over the display text).
+class WebRequestsNumberItem final : public QTableWidgetItem
+{
+public:
+    WebRequestsNumberItem(qlonglong value, const QString &text)
+        : QTableWidgetItem(text)
+    {
+        setData(Qt::UserRole, value);
+        setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    }
+
+    bool operator<(const QTableWidgetItem &other) const override
+    {
+        return data(Qt::UserRole).toLongLong() <
+               other.data(Qt::UserRole).toLongLong();
+    }
+};
+
+// The landing page's "Top endpoints" bar chart redrawn as a QWidget: one
+// horizontal bar per route group, most frequent first. Identity rides the row
+// label and the value a direct label at the bar's end, so a single hue is
+// enough — categorical slot 1 (#3987e5), the same hue the landing page's
+// charts use for the request series.
+class WebRequestsBarChart final : public QWidget
+{
+public:
+    struct Entry {
+        QString group;
+        qlonglong requests = 0;
+        QString valueLabel;
+        QString tooltip;
+    };
+
+    explicit WebRequestsBarChart(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("webRequestsChart"));
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setMouseTracking(true);
+        setFixedHeight(kRowHeight + 2 * kPadding);
+    }
+
+    void setEntries(const QVector<Entry> &entries, const QString &emptyText)
+    {
+        m_entries = entries;
+        m_emptyText = emptyText;
+        m_hovered = -1;
+        setFixedHeight(qMax(1, int(m_entries.size())) * kRowHeight +
+                       2 * kPadding);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const QColor ink = palette().color(QPalette::WindowText);
+        if (m_entries.isEmpty()) {
+            QColor muted = ink;
+            muted.setAlpha(150);
+            painter.setPen(muted);
+            painter.drawText(rect(), Qt::AlignCenter, m_emptyText);
+            return;
+        }
+
+        QFont valueFont = font();
+        valueFont.setPointSizeF(qMax(7.0, valueFont.pointSizeF() - 1.0));
+        const QFontMetrics labelMetrics(font());
+        const QFontMetrics valueMetrics(valueFont);
+
+        qlonglong maxRequests = 1;
+        int labelWidth = 0;
+        int valueWidth = 0;
+        for (const Entry &entry : m_entries) {
+            maxRequests = qMax(maxRequests, entry.requests);
+            labelWidth = qMax(labelWidth,
+                              labelMetrics.horizontalAdvance(entry.group));
+            valueWidth = qMax(
+                valueWidth, valueMetrics.horizontalAdvance(entry.valueLabel));
+        }
+        labelWidth = qMin(labelWidth, width() / 3);
+        const qreal barLeft = labelWidth + 12.0;
+        const qreal barSpan =
+            qMax(1.0, width() - barLeft - valueWidth - 12.0);
+
+        for (int row = 0; row < m_entries.size(); ++row) {
+            const Entry &entry = m_entries.at(row);
+            const qreal top = kPadding + row * kRowHeight;
+
+            if (row == m_hovered) {
+                QColor highlight = ink;
+                highlight.setAlpha(14);
+                painter.fillRect(QRectF(0, top, width(), kRowHeight),
+                                 highlight);
+            }
+
+            painter.setFont(font());
+            painter.setPen(ink);
+            painter.drawText(
+                QRectF(0, top, labelWidth, kRowHeight),
+                Qt::AlignRight | Qt::AlignVCenter,
+                labelMetrics.elidedText(entry.group, Qt::ElideMiddle,
+                                        labelWidth));
+
+            const qreal barWidth = qMax(
+                2.0, barSpan * (qreal(entry.requests) / qreal(maxRequests)));
+            const QRectF bar(barLeft, top + (kRowHeight - kBarHeight) / 2.0,
+                             barWidth, kBarHeight);
+            // Rounded data end, square baseline end. Winding fill so the two
+            // overlapping rects union instead of odd-even cancelling.
+            QPainterPath path;
+            path.setFillRule(Qt::WindingFill);
+            path.addRoundedRect(bar, 4.0, 4.0);
+            path.addRect(bar.left(), bar.top(),
+                         qMin(4.0, bar.width() / 2.0), bar.height());
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(QStringLiteral("#3987e5")));
+            painter.drawPath(path);
+
+            QColor valueInk = ink;
+            valueInk.setAlpha(190);
+            painter.setFont(valueFont);
+            painter.setPen(valueInk);
+            painter.drawText(
+                QRectF(bar.right() + 6.0, top,
+                       qMax(0.0, width() - bar.right() - 6.0), kRowHeight),
+                Qt::AlignLeft | Qt::AlignVCenter, entry.valueLabel);
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int row = rowAt(event->pos());
+        if (row != m_hovered) {
+            m_hovered = row;
+            update();
+        }
+        if (row >= 0 && row < m_entries.size())
+            QToolTip::showText(event->globalPosition().toPoint(),
+                               m_entries.at(row).tooltip, this);
+        else
+            QToolTip::hideText();
+    }
+
+    void leaveEvent(QEvent *) override
+    {
+        m_hovered = -1;
+        update();
+    }
+
+private:
+    int rowAt(const QPoint &pos) const
+    {
+        const int row = (pos.y() - kPadding) / kRowHeight;
+        return row >= 0 && row < m_entries.size() ? row : -1;
+    }
+
+    static constexpr int kRowHeight = 26;
+    static constexpr int kBarHeight = 12;
+    static constexpr int kPadding = 4;
+    QVector<Entry> m_entries;
+    QString m_emptyText;
+    int m_hovered = -1;
+};
+
 enum UsersColumn {
     kUsersColName = 0,
     kUsersColSolana,
@@ -17928,6 +18157,7 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
             [this] {
                 refreshFirewallTables();
                 refreshNetworkDiagnostics();
+                refreshNetworkWebRequests();
             });
     header->addWidget(m_networkDiagnosticsRefreshButton);
     outer->addLayout(header);
@@ -17984,6 +18214,65 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
             [this] { m_networkEndpointsUserSorted = true; });
     endpointsLayout->addWidget(m_networkEndpointsTable, 1);
     tabs->addTab(endpointsPage, QStringLiteral("Endpoints"));
+
+    // Web Requests: the mirror image of Endpoints. That table is the traffic
+    // this client sends; this one is everything the Worker answered, fetched
+    // from the same public /api/metrics/summary buckets the api.forkmesh.com
+    // landing page charts — masked route groups, most frequent first. The
+    // chart carries the busiest groups; the table lists every group the
+    // Worker reported, without pagination.
+    auto *webRequestsPage = networkTabPage();
+    auto *webRequestsLayout =
+        qobject_cast<QVBoxLayout *>(webRequestsPage->layout());
+    auto *webRequestsRow = new QHBoxLayout;
+    webRequestsRow->setContentsMargins(0, 0, 0, 0);
+    webRequestsRow->setSpacing(8);
+    m_networkWebRequestsStatus = new QLabel(
+        QStringLiteral("Open this tab to load the worker's web requests."));
+    m_networkWebRequestsStatus->setObjectName("mutedLabel");
+    webRequestsRow->addWidget(m_networkWebRequestsStatus, 1);
+    m_networkWebRequestsRange = new QComboBox;
+    m_networkWebRequestsRange->setCursor(Qt::PointingHandCursor);
+    m_networkWebRequestsRange->addItem(QStringLiteral("Last hour"), 60);
+    m_networkWebRequestsRange->addItem(QStringLiteral("Last 6 hours"), 360);
+    m_networkWebRequestsRange->addItem(QStringLiteral("Last 24 hours"), 1440);
+    connect(m_networkWebRequestsRange, &QComboBox::currentIndexChanged, this,
+            [this](int) {
+                m_networkWebRequestsMinutes =
+                    m_networkWebRequestsRange->currentData().toInt();
+                refreshNetworkWebRequests();
+            });
+    webRequestsRow->addWidget(m_networkWebRequestsRange);
+    webRequestsLayout->addLayout(webRequestsRow);
+
+    m_networkWebRequestsChart = new WebRequestsBarChart;
+    webRequestsLayout->addWidget(m_networkWebRequestsChart);
+
+    m_networkWebRequestsTable = new QTableWidget(0, kWebRequestsColCount);
+    installColumnHeaderMenu(m_networkWebRequestsTable);
+    m_networkWebRequestsTable->setObjectName("issueTable");
+    m_networkWebRequestsTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Route group"), QStringLiteral("Requests"),
+         QStringLiteral("Share"), QStringLiteral("2xx"), QStringLiteral("3xx"),
+         QStringLiteral("4xx"), QStringLiteral("5xx"), QStringLiteral("Avg ms"),
+         QStringLiteral("Max ms")});
+    m_networkWebRequestsTable->verticalHeader()->setVisible(false);
+    m_networkWebRequestsTable->setSelectionBehavior(
+        QAbstractItemView::SelectRows);
+    m_networkWebRequestsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_networkWebRequestsTable->setShowGrid(false);
+    m_networkWebRequestsTable->setSortingEnabled(true);
+    networkPrepareFullTable(m_networkWebRequestsTable);
+    for (int c = 0; c < m_networkWebRequestsTable->columnCount(); ++c)
+        m_networkWebRequestsTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_networkWebRequestsTable);
+    connect(m_networkWebRequestsTable->horizontalHeader(),
+            &QHeaderView::sortIndicatorChanged, this,
+            [this] { m_networkWebRequestsUserSorted = true; });
+    webRequestsLayout->addWidget(m_networkWebRequestsTable, 1);
+    m_networkWebRequestsTabIndex =
+        tabs->addTab(webRequestsPage, QStringLiteral("Web Requests"));
 
     auto *socketsPage = networkTabPage();
     auto *socketsLayout = qobject_cast<QVBoxLayout *>(socketsPage->layout());
@@ -18357,6 +18646,215 @@ void MainWindow::refreshNetworkDiagnostics()
     m_networkDiagnosticsTable->setSortingEnabled(true);
     m_networkDiagnosticsTable->resizeColumnsToContents();
     m_networkDiagnosticsTable->resizeRowsToContents();
+}
+
+void MainWindow::refreshNetworkWebRequests()
+{
+    if (!m_networkWebRequestsTable || !m_networkAccess ||
+        m_networkWebRequestsInFlight)
+        return;
+    // Same visibility discipline as refreshNetworkDiagnostics(), one level
+    // down: only fetch while this tab is actually on screen. Opening the tab
+    // (or the section with it in front) refreshes it, so nothing goes stale.
+    if (m_sectionStack &&
+        m_sectionStack->currentIndex() != kNetworkDiagnosticsSectionIndex)
+        return;
+    if (m_networkTabs &&
+        m_networkTabs->currentIndex() != m_networkWebRequestsTabIndex)
+        return;
+
+    QUrl url = catalogApiUrl();
+    if (!url.isValid() || url.host().isEmpty())
+        return;
+    url.setPath(QStringLiteral("/api/metrics/summary"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("minutes"),
+                       QString::number(m_networkWebRequestsMinutes));
+    // Every group the Worker holds, not the landing page's top-40 slice —
+    // route_group() already caps cardinality before folding into "other".
+    query.addQueryItem(QStringLiteral("limit"), QStringLiteral("500"));
+    url.setQuery(query);
+    url.setFragment(QString());
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("accept", "application/json");
+    request.setTransferTimeout(8000);
+    m_networkWebRequestsInFlight = true;
+    if (m_networkWebRequestsStatus)
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral("Loading web requests..."));
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        m_networkWebRequestsInFlight = false;
+        const QByteArray body = reply->readAll();
+        const bool transportOk = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        QJsonParseError parseError;
+        const QJsonDocument document =
+            QJsonDocument::fromJson(body, &parseError);
+        if (!transportOk || parseError.error != QJsonParseError::NoError ||
+            !document.isObject() ||
+            !document.object().value(QStringLiteral("ok")).toBool()) {
+            if (m_networkWebRequestsStatus)
+                m_networkWebRequestsStatus->setText(QStringLiteral(
+                    "Could not load web requests from the worker."));
+            return;
+        }
+        renderNetworkWebRequests(document.object());
+    });
+}
+
+void MainWindow::renderNetworkWebRequests(const QJsonObject &payload)
+{
+    if (!m_networkWebRequestsTable || !m_networkWebRequestsChart)
+        return;
+
+    // The Worker answers most-frequent-first already, but sort defensively:
+    // the chart's bar order and its top-N cut both depend on it.
+    QVector<QJsonObject> groups;
+    const QJsonArray groupsPayload =
+        payload.value(QStringLiteral("groups")).toArray();
+    groups.reserve(groupsPayload.size());
+    for (const QJsonValue &value : groupsPayload)
+        groups.append(value.toObject());
+    std::sort(groups.begin(), groups.end(),
+              [](const QJsonObject &a, const QJsonObject &b) {
+                  return a.value(QStringLiteral("requests")).toDouble() >
+                         b.value(QStringLiteral("requests")).toDouble();
+              });
+    qlonglong totalRequests = 0;
+    qlonglong totalErrors = 0;
+    for (const QJsonObject &group : std::as_const(groups)) {
+        totalRequests +=
+            qlonglong(group.value(QStringLiteral("requests")).toDouble());
+        totalErrors +=
+            qlonglong(group.value(QStringLiteral("errors")).toDouble());
+    }
+    const auto share = [totalRequests](qlonglong requests) {
+        return totalRequests > 0 ? 100.0 * requests / totalRequests : 0.0;
+    };
+
+    // The chart carries the busiest groups (the landing page's top-12 cut);
+    // the table below is the full list.
+    QVector<WebRequestsBarChart::Entry> chartEntries;
+    for (const QJsonObject &group : std::as_const(groups)) {
+        if (chartEntries.size() >= 12)
+            break;
+        const QJsonObject classes =
+            group.value(QStringLiteral("classes")).toObject();
+        WebRequestsBarChart::Entry entry;
+        entry.group = group.value(QStringLiteral("group")).toString();
+        entry.requests =
+            qlonglong(group.value(QStringLiteral("requests")).toDouble());
+        entry.valueLabel = formatCount(entry.requests);
+        entry.tooltip =
+            QStringLiteral("%1\n%2 request(s) - %3% of the window\n"
+                           "avg %4 ms - max %5 ms\n2xx %6 - 3xx %7 - 4xx %8 - "
+                           "5xx %9")
+                .arg(entry.group, formatCount(entry.requests),
+                     QString::number(share(entry.requests), 'f', 1),
+                     QString::number(qlonglong(
+                         group.value(QStringLiteral("avg_ms")).toDouble())),
+                     QString::number(qlonglong(
+                         group.value(QStringLiteral("dur_ms_max")).toDouble())),
+                     formatCount(qlonglong(
+                         classes.value(QStringLiteral("2xx")).toDouble())),
+                     formatCount(qlonglong(
+                         classes.value(QStringLiteral("3xx")).toDouble())),
+                     formatCount(qlonglong(
+                         classes.value(QStringLiteral("4xx")).toDouble())))
+                .arg(formatCount(qlonglong(
+                    classes.value(QStringLiteral("5xx")).toDouble())));
+        chartEntries.append(entry);
+    }
+    static_cast<WebRequestsBarChart *>(m_networkWebRequestsChart)
+        ->setEntries(chartEntries,
+                     QStringLiteral(
+                         "No web requests reached the worker in this window."));
+
+    {
+        TableRepaintGuard repaintGuard(m_networkWebRequestsTable);
+        const int sortColumn = m_networkWebRequestsTable->horizontalHeader()
+                                   ->sortIndicatorSection();
+        const Qt::SortOrder sortOrder =
+            m_networkWebRequestsTable->horizontalHeader()->sortIndicatorOrder();
+        m_networkWebRequestsTable->setSortingEnabled(false);
+        m_networkWebRequestsTable->setRowCount(0);
+        for (const QJsonObject &group : std::as_const(groups)) {
+            const QJsonObject classes =
+                group.value(QStringLiteral("classes")).toObject();
+            const qlonglong requests =
+                qlonglong(group.value(QStringLiteral("requests")).toDouble());
+            const int row = m_networkWebRequestsTable->rowCount();
+            m_networkWebRequestsTable->insertRow(row);
+            const QString name =
+                group.value(QStringLiteral("group")).toString();
+            m_networkWebRequestsTable->setItem(row, kWebRequestsColGroup,
+                                               networkDiagItem(name, name));
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColRequests,
+                new WebRequestsNumberItem(requests, formatCount(requests)));
+            const double sharePercent = share(requests);
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColShare,
+                new WebRequestsNumberItem(
+                    qlonglong(sharePercent * 10.0),
+                    QStringLiteral("%1%").arg(sharePercent, 0, 'f', 1)));
+            const struct {
+                WebRequestsColumn column;
+                const char *key;
+            } classColumns[] = {{kWebRequestsCol2xx, "2xx"},
+                                {kWebRequestsCol3xx, "3xx"},
+                                {kWebRequestsCol4xx, "4xx"},
+                                {kWebRequestsCol5xx, "5xx"}};
+            for (const auto &classColumn : classColumns) {
+                const qlonglong count = qlonglong(
+                    classes.value(QLatin1String(classColumn.key)).toDouble());
+                auto *item =
+                    new WebRequestsNumberItem(count, formatCount(count));
+                if (classColumn.column == kWebRequestsCol5xx && count > 0)
+                    item->setForeground(QColor(QStringLiteral("#f85149")));
+                m_networkWebRequestsTable->setItem(row, classColumn.column,
+                                                   item);
+            }
+            const qlonglong avgMs =
+                qlonglong(group.value(QStringLiteral("avg_ms")).toDouble());
+            const qlonglong maxMs = qlonglong(
+                group.value(QStringLiteral("dur_ms_max")).toDouble());
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColAvg,
+                new WebRequestsNumberItem(avgMs, formatCount(avgMs)));
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColMax,
+                new WebRequestsNumberItem(maxMs, formatCount(maxMs)));
+        }
+        m_networkWebRequestsTable->setSortingEnabled(true);
+        if (m_networkWebRequestsUserSorted)
+            m_networkWebRequestsTable->sortItems(sortColumn, sortOrder);
+        else
+            m_networkWebRequestsTable->sortItems(kWebRequestsColRequests,
+                                                 Qt::DescendingOrder);
+        m_networkWebRequestsTable->resizeColumnsToContents();
+        m_networkWebRequestsTable->resizeRowsToContents();
+    }
+
+    if (m_networkWebRequestsStatus) {
+        const int windowMinutes =
+            payload.value(QStringLiteral("windowMinutes"))
+                .toInt(m_networkWebRequestsMinutes);
+        const QString window =
+            windowMinutes % 60 == 0
+                ? QStringLiteral("%1 hour(s)").arg(windowMinutes / 60)
+                : QStringLiteral("%1 minute(s)").arg(windowMinutes);
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral(
+                "%1 request(s) across %2 route group(s) in the last %3 - "
+                "%4 5xx")
+                .arg(formatCount(totalRequests), formatCount(groups.size()),
+                     window, formatCount(totalErrors)));
+    }
 }
 
 void MainWindow::showEndpointRequestDetails(int row, int column)

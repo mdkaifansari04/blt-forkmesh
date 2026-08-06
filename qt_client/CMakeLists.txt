@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.16 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.17 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -711,6 +711,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ActionStore.cpp
         src/ActionRunner.h
         src/ActionRunner.cpp
+        src/SystemStats.h
+        src/SystemStats.cpp
     )
     target_include_directories(forkmesh-action-security-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
