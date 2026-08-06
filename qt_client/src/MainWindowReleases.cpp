@@ -3464,6 +3464,12 @@ void MainWindow::fetchMirrorPendingCounts(const QString &owner,
                                           const QString &repo,
                                           const QString &source)
 {
+    // These counts only feed GUI badges (mirrors view, pull/issue sync
+    // buttons). A headless node renders neither, yet the whole fleet was
+    // polling /api/repo/*/pending through every refresh tick — the single
+    // largest request group on the API traffic chart (2026-08-06).
+    if (m_headless)
+        return;
     if (!m_networkAccess || owner.isEmpty() || repo.isEmpty() || source.isEmpty() ||
         m_mirrorPendingInFlight.contains(source))
         return;
@@ -3471,7 +3477,10 @@ void MainWindow::fetchMirrorPendingCounts(const QString &owner,
     const QJsonObject cached = m_mirrorPendingCache.value(source);
     const qint64 fetchedAt =
         qint64(cached.value(QStringLiteral("clientFetchedAt")).toDouble());
-    if (fetchedAt > 0 && nowMs - fetchedAt < 15 * 1000)
+    // One badge refresh per minute per repo is plenty: the relay now also
+    // answers from a 30s edge cache, so faster client polling only re-reads
+    // the same cached counts anyway.
+    if (fetchedAt > 0 && nowMs - fetchedAt < 60 * 1000)
         return;
 
     QUrl url = catalogApiUrl();
