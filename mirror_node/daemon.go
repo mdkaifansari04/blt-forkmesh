@@ -85,9 +85,12 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 	}
 	var intake *IntakeBridge
 	if cfg.IntakeProgram != "" {
+		// The event socket authenticates as this node's own account: the
+		// relay's mirror fan-out notifies the machine name registered in
+		// the catalog, and the account's signing key IS this identity key.
 		intake, err = NewIntakeBridge(cfg.IntakeProgram, cfg.CatalogURL,
-			cfg.IntakeOwner, cfg.IntakeRepository, cfg.IntakePollInterval.Duration,
-			cfg.IntakeIdleGrace.Duration)
+			cfg.IntakeOwner, cfg.IntakeRepository, gateway.Node.Name,
+			identity, cfg.IntakeIdleGrace.Duration)
 		if err != nil {
 			return nil, err
 		}
