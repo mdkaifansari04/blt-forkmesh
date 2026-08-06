@@ -3698,6 +3698,8 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
             QStringLiteral("gpt-5.6-sol"),
             QStringLiteral("gpt-5.6-luna"),
             QStringLiteral("gpt-5.6-terra"),
+            QStringLiteral("gpt-5.3-codex-spark"),
+            QStringLiteral("gpt-5.3-spark"),
         };
         const QJsonObject security =
             job.value(QStringLiteral("securityCheck")).toObject();
@@ -10376,6 +10378,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                             .value(codex ? kCodexModelSetting : kClaudeCodeModelSetting)
                             .toString()
                             .trimmed();
+    if (codex)
+        selectedModel = codexChatGptModelId(selectedModel);
     const QString launchProvider = codex ? kCodexProvider : QStringLiteral("claude-code");
     if (!agentModelMatchesProvider(launchProvider, selectedModel))
         selectedModel.clear();
