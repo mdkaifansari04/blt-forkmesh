@@ -289,6 +289,7 @@ SystemStats::descendantProcesses(qint64 rootPid)
     struct Entry {
         qint64 parentPid = 0;
         QString command;
+        bool zombie = false;
     };
     QHash<qint64, Entry> entries;
     QHash<qint64, QList<qint64>> children;
@@ -309,14 +310,18 @@ SystemStats::descendantProcesses(qint64 rootPid)
         if (lp < 0 || rp <= lp)
             continue;
         const QList<QByteArray> fields = data.mid(rp + 2).split(' ');
-        if (fields.size() < 2)
+        if (fields.size() < 2 || fields.at(0).isEmpty())
             continue;
         bool parentOk = false;
         const qint64 parentPid = fields.at(1).toLongLong(&parentOk);
         if (!parentOk)
             continue;
+        // A zombie has already exited; it only remains in /proc until its
+        // parent reaps it. It must not keep a completed agent turn marked
+        // Working while the transport is waiting for live descendants.
+        const bool zombie = fields.at(0).at(0) == 'Z';
         entries.insert(pid, {parentPid, QString::fromLocal8Bit(
-                                           data.mid(lp + 1, rp - lp - 1))});
+                                           data.mid(lp + 1, rp - lp - 1)), zombie});
         children[parentPid].append(pid);
     }
     QList<qint64> queue{rootPid};
@@ -324,7 +329,7 @@ SystemStats::descendantProcesses(qint64 rootPid)
     while (!queue.isEmpty()) {
         const qint64 pid = queue.takeLast();
         const auto entry = entries.constFind(pid);
-        if (entry != entries.constEnd() && pid != rootPid)
+        if (entry != entries.constEnd() && pid != rootPid && !entry->zombie)
             result.append({pid, entry->parentPid, entry->command});
         for (qint64 child : children.value(pid)) {
             if (!seen.contains(child)) {
