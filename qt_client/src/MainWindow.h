@@ -3,6 +3,9 @@
 
 #include "ChatBackend.h"
 #include "ClientErrorReports.h"
+// FORKMESH_LOG_SOURCE_FILE/LINE: logSystem()'s default arguments, which expand
+// at each call site so every entry records where it was logged from.
+#include "LogSource.h"
 #include "DiscussionInboxBackoff.h"
 #include "NetworkBackoff.h"
 #include "DiscussionStore.h"
@@ -354,7 +357,12 @@ public:
     // captured as a Log entry, so the app's own progress lines and Qt's own
     // warnings land where the user can read them instead of in the terminal.
     // GUI thread only — main.cpp's sink marshals worker-thread messages here.
-    void logCapturedMessage(QtMsgType type, const QString &text);
+    // `sourceFile`/`sourceLine` are the QMessageLogContext the message carried
+    // (only populated in builds compiled with QT_MESSAGELOGCONTEXT); without
+    // them the entry falls back to naming this relay.
+    void logCapturedMessage(QtMsgType type, const QString &text,
+                            const QString &sourceFile = QString(),
+                            int sourceLine = 0);
 
     // Apply the saved theme (system/dark/light) to the whole application.
     static void applyTheme();
@@ -565,6 +573,12 @@ public:
         previewFileExplorerFile(path);
     }
     QString testFileExplorerPreview() const;
+    void testRevealFileInExplorer(const QString &path, int line)
+    {
+        revealFileInExplorer(path, line);
+    }
+    // The file line the preview is parked on and highlighting, 0 for none.
+    int testFileExplorerPreviewLine() const;
     QStringList testUsersColumns() const;
     QString testUsersCellText(int row, const QString &header) const;
     QStringList testSortUsersBy(const QString &header, Qt::SortOrder order);
@@ -2435,7 +2449,17 @@ private:
     // Entries of `dir` honouring the "Show hidden" toggle, folders first.
     QFileInfoList fileExplorerEntries(const QString &dir) const;
     void showFileExplorerMenu(const QPoint &pos);
-    void previewFileExplorerFile(const QString &path);
+    // `line` > 0 also scrolls the preview to that line and highlights it.
+    void previewFileExplorerFile(const QString &path, int line = 0);
+    // Open the Files section on `path`, selected in the tree and previewed at
+    // `line`. Says so and does nothing else if the file isn't there.
+    void revealFileInExplorer(const QString &path, int line = 0);
+    // Same, for the "qt_client/src/Foo.cpp" a log entry carries: resolves it
+    // against this machine's checkout (or the open repository) first.
+    void revealLogSourceInExplorer(const QString &relativePath, int line);
+    // Scroll the preview to `line` (1-based, in the previewed file's own
+    // numbering) and tint it.
+    void highlightFileExplorerPreviewLine(int line);
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
     void ensureRepoDetailSectionBuilt();
@@ -5166,7 +5190,19 @@ private:
     void onAvatar(const QString &peerId, const QByteArray &pngData);
     void onTypingChanged(const QString &conversation, const QString &peerId,
                          const QString &peerName, bool active);
-    void logSystem(const QString &text);
+    // Records one line in the app log. The two trailing arguments are filled in
+    // by the compiler at the *call site* (adhoc #1587), so an entry says which
+    // file and line logged it — shown at the end of the entry and clickable,
+    // and written to network_log.txt as "  [qt_client/src/Foo.cpp:42]".
+    // Callers never pass them; a relay that logs on someone else's behalf uses
+    // logSystemFrom() to name the real origin instead of itself.
+    void logSystem(const QString &text,
+                   const char *sourceFile = FORKMESH_LOG_SOURCE_FILE,
+                   int sourceLine = FORKMESH_LOG_SOURCE_LINE);
+    // As above with the origin given explicitly, already relative to the
+    // checkout (see forkmesh::logSourceRelativePath).
+    void logSystemFrom(const QString &text, const QString &sourcePath,
+                       int sourceLine);
     // Render one stored "yyyy-MM-dd HH:mm:ss  message" log line into the network
     // log view as colored HTML (dim timestamp, category badge, message), emitting
     // a date-divider row first whenever the day changes. Shared by the live
@@ -5223,10 +5259,16 @@ private:
     // `clickHref` makes the whole toast a clickable link routed by the
     // m_topMessage linkActivated handler (e.g. "fm:agent:<id>" to jump to a
     // waiting agent). Empty = a plain, non-clickable toast.
+    // The last two are the caller's own file and line, filled in by the
+    // compiler (adhoc #1587). Every toast is also a log entry, and hundreds of
+    // call sites funnel through here — without this they would all be recorded
+    // as having come from flashMessage's own logSystem() call.
     void flashMessage(const QString &text, bool error = false,
                       const QString &clickHref = QString(),
                       int durationSeconds = 0,
-                      const QString &kind = QString(), int actionRunId = -1);
+                      const QString &kind = QString(), int actionRunId = -1,
+                      const char *sourceFile = FORKMESH_LOG_SOURCE_FILE,
+                      int sourceLine = FORKMESH_LOG_SOURCE_LINE);
     // Ping the mesh about the failures this app used to only ever show to itself
     // (adhoc #1538). Every warning/critical modal (caught by eventFilter's
     // QEvent::Show branch, so no call site has to remember) and every error toast

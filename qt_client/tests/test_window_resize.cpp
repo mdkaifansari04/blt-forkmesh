@@ -2651,6 +2651,147 @@ int main(int argc, char *argv[])
                   QStringLiteral("only-file")),
           QStringLiteral("a vanished root falls back instead of showing phantoms"));
 
+    // adhoc #1587: every log entry records the file and line that logged it,
+    // and that origin is a link into the Files explorer.
+    {
+        window.testResetNetworkLog();
+        window.testLogSystem(QStringLiteral("Source attribution check"));
+        const QStringList attributed = window.testNetworkLog();
+        // testLogSystem() forwards from MainWindow.h, so that is the honest
+        // origin of this entry — what matters is that there is one, in the
+        // "  [<path>:<line>]" form the Log view and the on-disk log share.
+        static const QRegularExpression originRe(
+            QStringLiteral("  \\[qt_client/src/[A-Za-z0-9._/-]+:[0-9]+\\]$"));
+        check(!attributed.isEmpty() &&
+                  originRe.match(attributed.last()).hasMatch(),
+              QStringLiteral("a log entry records the file and line it came from"));
+        check(!attributed.isEmpty() &&
+                  attributed.last().contains(
+                      QStringLiteral("Source attribution check  [")),
+              QStringLiteral("the origin is appended after the message, leaving "
+                             "the message itself untouched"));
+
+        // The origin must not reach the classifier: the badge comes from what
+        // the caller wrote, not from the name of the file it was written in.
+        check(window.testLogBadgeFor(QStringLiteral(
+                  "2026-01-01 00:00:00  Settings saved.  "
+                  "[qt_client/src/MainWindowIssues.cpp:12]")) ==
+                  QStringLiteral("SAVE"),
+              QStringLiteral("a line logged from MainWindowIssues.cpp is not "
+                             "badged ISSUE by its origin"));
+
+        if (QTextBrowser *logView = window.testNetworkLogView()) {
+            check(logView->toPlainText().contains(QStringLiteral("MainWindow.h:")),
+                  QStringLiteral("the Log view shows each entry's origin"));
+            check(logView->toHtml().contains(QStringLiteral("fmlogsrc:")),
+                  QStringLiteral("the origin is rendered as a link, not as text"));
+            check(!logView->toPlainText().contains(
+                      QStringLiteral("Source attribution check  [")),
+                  QStringLiteral("the raw \"[path:line]\" tail is not left in the "
+                                 "rendered message"));
+        }
+        window.testResetNetworkLog();
+
+        // Clicking that link opens the file in the Files explorer, at the line.
+        const QString revealTarget =
+            QDir(explorerDir.path()).absoluteFilePath(QStringLiteral("many-lines.txt"));
+        {
+            QFile fixture(revealTarget);
+            fixture.open(QIODevice::WriteOnly);
+            for (int i = 1; i <= 40; ++i)
+                fixture.write(QStringLiteral("line %1\n").arg(i).toUtf8());
+            fixture.close();
+        }
+        window.testRevealFileInExplorer(revealTarget, 12);
+        check(window.testFileExplorerRoot() == QDir(explorerDir.path()).absolutePath(),
+              QStringLiteral("revealing a file roots the explorer at its directory"));
+        check(window.testFileExplorerPreview().contains(QStringLiteral("line 12")),
+              QStringLiteral("revealing a file opens it in the preview"));
+        check(window.testFileExplorerPreviewLine() == 12,
+              QStringLiteral("the preview is parked on the line the log entry "
+                             "named"));
+
+        // A line number past the end of the file is a stale reference, not a
+        // reason to refuse the file or to point somewhere arbitrary.
+        window.testRevealFileInExplorer(revealTarget, 9999);
+        check(window.testFileExplorerPreview().contains(QStringLiteral("line 40")) &&
+                  window.testFileExplorerPreviewLine() == 0,
+              QStringLiteral("a line past the end still opens the file, "
+                             "unhighlighted"));
+
+        // Resolution: the stored path is relative to the checkout that built
+        // the binary, and falls back to any root handed to it.
+        check(forkmesh::resolveLogSourcePath(
+                  QStringLiteral("many-lines.txt"), {explorerDir.path()}) ==
+                  QDir::cleanPath(revealTarget),
+              QStringLiteral("a logged path resolves against the roots offered"));
+        check(forkmesh::resolveLogSourcePath(
+                  QStringLiteral("src/NotHere.cpp"), {explorerDir.path()})
+                  .isEmpty(),
+              QStringLiteral("a path from another machine's checkout resolves to "
+                             "nothing rather than to the wrong file"));
+
+        // End to end: click the origin link where it actually paints in the Log
+        // view and the Files explorer opens that source file. This is the whole
+        // point of the feature, and it exercises the event-filter wiring rather
+        // than calling the reveal directly.
+        window.testResetNetworkLog();
+        window.testLogSystem(QStringLiteral("Origin click check"));
+        window.testShowLogSection();
+        window.testRebuildNetworkLogView();
+        QApplication::processEvents();
+        if (QTextBrowser *logView = window.testNetworkLogView()) {
+            QString href;
+            int anchorPos = -1;
+            for (QTextBlock b = logView->document()->firstBlock(); b.isValid();
+                 b = b.next()) {
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
+                    const QTextFragment fragment = it.fragment();
+                    if (!fragment.charFormat().anchorHref().startsWith(
+                            QStringLiteral("fmlogsrc:")))
+                        continue;
+                    href = fragment.charFormat().anchorHref();
+                    anchorPos = fragment.position();
+                }
+            }
+            QString clickedPath;
+            int clickedLine = 0;
+            check(forkmesh::ui::logSourceAnchorTarget(href, &clickedPath,
+                                                      &clickedLine) &&
+                      clickedLine > 0 &&
+                      clickedPath.endsWith(QStringLiteral(".h")),
+                  QStringLiteral("the rendered origin link carries the file and "
+                                 "line that logged the entry"));
+            const QString expected =
+                forkmesh::resolveLogSourcePath(clickedPath);
+            if (anchorPos >= 0 && !expected.isEmpty()) {
+                QTextCursor cursor(logView->document());
+                cursor.setPosition(anchorPos + 1);
+                const QPoint pos = logView->cursorRect(cursor).center();
+                check(logView->anchorAt(pos) == href,
+                      QStringLiteral("the origin link is hit-testable where it "
+                                     "paints"));
+                const QPointF global = logView->viewport()->mapToGlobal(pos);
+                QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos), global,
+                                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QMouseEvent release(QEvent::MouseButtonRelease, QPointF(pos),
+                                    global, Qt::LeftButton, Qt::NoButton,
+                                    Qt::NoModifier);
+                QApplication::sendEvent(logView->viewport(), &press);
+                QApplication::sendEvent(logView->viewport(), &release);
+                QApplication::processEvents();
+                check(window.testFileExplorerRoot() ==
+                          QFileInfo(expected).absolutePath(),
+                      QStringLiteral("clicking a log entry's origin opens that "
+                                     "file in the Files explorer"));
+                check(window.testFileExplorerPreview().contains(
+                          QFileInfo(expected).fileName()),
+                      QStringLiteral("the opened file is the one the entry named"));
+            }
+        }
+        window.testResetNetworkLog();
+    }
+
     // adhoc #129: a public room (#general) is open to every registered account,
     // so its users popup lists the whole database directory — not just the
     // handful of accounts that happen to be online right now.
@@ -6672,12 +6813,16 @@ int main(int argc, char *argv[])
             // Keep scrolling to the top until the very first logged line
             // surfaces (or give up after a generous number of loads) — proves
             // history keeps loading further back, not just once.
+            // "line 0" has to be followed by the end of its entry rather than
+            // by more digits — and since adhoc #1587 an entry ends with the
+            // origin that logged it, not with the message.
+            static const QRegularExpression oldestRe(
+                QStringLiteral("Segment test line 0(\\s|$)"));
             bool reachedOldest = false;
             for (int i = 0; i < 10 && !reachedOldest; ++i) {
                 window.testScrollNetworkLogToTop();
                 reachedOldest =
-                    logView->toPlainText().contains(QStringLiteral("Segment test line 0\n")) ||
-                    logView->toPlainText().endsWith(QStringLiteral("Segment test line 0"));
+                    oldestRe.match(logView->toPlainText()).hasMatch();
             }
             check(reachedOldest,
                   QStringLiteral("repeated scroll-to-top eventually reaches the "
@@ -6935,8 +7080,11 @@ int main(int argc, char *argv[])
         check(!firstPromptHref(window.testFooterLogView()).isEmpty(),
               QStringLiteral("the footer live-log strip leads every entry with "
                              "one too"));
+        // The whole stored line, which since adhoc #1587 ends with the origin
+        // that logged it — a prompt built from a log entry gets the code
+        // location along with the message.
         check(QUrl::fromPercentEncoding(logHref.mid(prefix.size()).toLatin1())
-                  .endsWith(entry),
+                  .contains(entry),
               QStringLiteral("the icon's anchor carries the log entry itself"));
 
         // Click it where it actually paints (the leftmost strip of a row), not
@@ -6954,7 +7102,7 @@ int main(int argc, char *argv[])
                     if (!href.startsWith(prefix) ||
                         !QUrl::fromPercentEncoding(
                              href.mid(prefix.size()).toLatin1())
-                             .endsWith(entry))
+                             .contains(entry))
                         continue;
                     const QPointF global = view->viewport()->mapToGlobal(pos);
                     QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos),
@@ -6974,7 +7122,10 @@ int main(int argc, char *argv[])
         const QString beforeClick = window.testQuickAddText();
         if (clickPromptIcon(window.testNetworkLogView())) {
             const QString afterClick = window.testQuickAddText();
-            check(afterClick.endsWith(entry) && afterClick != beforeClick,
+            // contains, not endsWith: the appended line ends with the origin
+            // that logged it (adhoc #1587), which is part of what the prompt
+            // gets.
+            check(afterClick.contains(entry) && afterClick != beforeClick,
                   QStringLiteral("clicking a Log entry's icon appends that entry "
                                  "to the footer prompt"));
         } else {
@@ -6983,7 +7134,7 @@ int main(int argc, char *argv[])
         }
         if (clickPromptIcon(window.testFooterLogView())) {
             const QString afterFooter = window.testQuickAddText();
-            check(afterFooter.endsWith(entry) &&
+            check(afterFooter.contains(entry) &&
                       afterFooter.count(entry) == 2,
                   QStringLiteral("the footer strip's icon appends to the prompt "
                                  "instead of opening the full Log"));
