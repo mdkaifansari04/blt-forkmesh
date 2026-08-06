@@ -67,6 +67,7 @@ LAZY_MODULES = {
     "world_infrastructure.py",
     "world_link_kiosk.py",
     "world_office_tasks.py",
+    "world_qa.py",
     "world_satellites.py",
     "world_social_feeds.py",
     "world_visitors.py",
