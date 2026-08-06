@@ -7459,6 +7459,10 @@ public:
         QString status;
         QString reason;
         qint64 minuteTs = 0;
+        // Measured by this desktop (the Cloudflare edge probes) rather than
+        // graded by the relay, which changes what the timestamp means: a
+        // local check time, not the relay's newest completed sample minute.
+        bool local = false;
     };
 
     explicit LogActivityLights(Presentation presentation = Compact,
@@ -7714,8 +7718,11 @@ protected:
                 QString tip = QStringLiteral("%1 — %2")
                                   .arg(status.label, status.status);
                 if (status.minuteTs > 0) {
-                    tip += QStringLiteral("\nLast completed minute: %1")
-                               .arg(QDateTime::fromMSecsSinceEpoch(status.minuteTs)
+                    tip += QStringLiteral("\n%1: %2")
+                               .arg(status.local
+                                        ? QStringLiteral("Checked from this desktop")
+                                        : QStringLiteral("Last completed minute"),
+                                    QDateTime::fromMSecsSinceEpoch(status.minuteTs)
                                         .toLocalTime()
                                         .toString(QStringLiteral("yyyy-MM-dd HH:mm")));
                 }
@@ -8017,6 +8024,9 @@ private:
             {QStringLiteral("git_hosting"), QStringLiteral("Git host")},
             {QStringLiteral("realtime"), QStringLiteral("Realtime")},
             {QStringLiteral("durable_objects"), QStringLiteral("Durables")},
+            // Measured from this desktop, not reported by the relay.
+            {QStringLiteral("desktop_website"), QStringLiteral("Web here")},
+            {QStringLiteral("desktop_status_page"), QStringLiteral("Status here")},
         };
         const auto known = labels.constFind(status.id);
         if (known != labels.cend())

@@ -510,6 +510,12 @@ public:
     {
         return applyFooterWebsiteStatusPayload(payload);
     }
+    // Hands one desktop-side edge probe the answer it would have received and
+    // returns the graded state, so Cloudflare-error grading is exercised
+    // without a live network.
+    QString testApplyDesktopWebsiteProbe(const QString &id, int httpStatus,
+                                         const QByteArray &body,
+                                         const QString &transportError = QString());
     // Streams one line through the live-log fan-out (footer strip, category
     // lights and the debug bar's five-line tail) without a real event.
     void testSetFooterUpdateLine(const QString &line)
@@ -1464,6 +1470,19 @@ private:
     // projection once a minute and retain the newest completed minute per row.
     void refreshFooterWebsiteStatus();
     bool applyFooterWebsiteStatusPayload(const QJsonObject &payload);
+    // Two dots the relay cannot honestly produce for itself (adhoc #1564): its
+    // own /status samplers run inside the Worker and deliberately avoid a
+    // hairpin through the public hostname, so a Cloudflare edge failure (520-527,
+    // a 1020 block, a branded 5xx interstitial) never reaches /api/status. These
+    // rows load the site and the /status document from this desktop instead, so
+    // an edge outage is visible here even while every relay-graded row is green.
+    void refreshDesktopWebsiteProbes();
+    void probeDesktopWebsite(const QString &id);
+    void applyDesktopWebsiteProbe(const QString &id, int httpStatus,
+                                  const QByteArray &body,
+                                  const QString &transportError);
+    // Relay-graded rows first, desktop-measured ones after, onto both dot rows.
+    void publishFooterWebsiteStatuses();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
@@ -1867,6 +1886,16 @@ private:
     void provisionDirectMirrorEndpoint(bool dryRun);
     bool rebuildDirectMirrorGatewayConfiguration(
         QString *error = nullptr, bool restartRunningGateway = false);
+    // True when this node has a direct HTTPS mirror endpoint to keep in step.
+    // Serving through the relay alone is a supported setup, so background
+    // refreshes check this first instead of reporting a failure every time a
+    // repository is synced, pushed to, or deleted on a relay-only node.
+    bool directMirrorGatewayConfigured() const;
+    // The node name, mirror hostname, and Worker router public key the direct
+    // gateway would be built from, returning whether all three are usable.
+    bool resolveDirectMirrorGatewayIdentity(
+        QString *nodeName, QString *hostname,
+        QString *routerPublicKey) const;
     void startDirectMirrorServices();
     void stopDirectMirrorServices();
     // Desktop companion for the small Go mirror-node supervisor. The daemon
@@ -4861,6 +4890,11 @@ private:
     // reviewable list with per-submission and sync-all actions. Counts stay on
     // the three toolbar buttons via the public, content-free /pending endpoint.
     void showPendingInbox(const RepositoryRecord &repo, const QString &kind);
+    // One line for "the relay refused this because it is rate-limited", naming
+    // how long its host-wide cooldown still has to run when that is known. Used
+    // where a request the reader asked for was answered by the backoff instead
+    // of the network, so an alarming modal would only mislead.
+    QString relayCooldownMessage(const QString &host) const;
     void showPendingInboxDialog(const RepositoryRecord &repo,
                                 const QString &kind,
                                 const QJsonArray &pending);
@@ -4888,6 +4922,15 @@ private:
     // taken by value so the async reply can't dangle.
     void drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
                              bool forceMirrorIntake = false);
+    // Backoff bookkeeping shared by the issue/pull/discussion inbox drains. A
+    // rejected drain (HTTP 401/403) is not transient backpressure: the relay
+    // decides authorization from this node's identity and its membership in
+    // the repo's signed mirror group, so a node outside that group is rejected
+    // identically on every retry. See MainWindowIssues.cpp for why the first
+    // few rejections still retry on the normal cadence.
+    void noteInboxDrainFailure(const QString &backoffKey, int status,
+                               bool mirrorIntake);
+    void noteInboxDrainSuccess(const QString &backoffKey);
     void pollMirrorIssueInboxes();
     void drainPullsInboxFor(RepositoryRecord repo, bool interactive,
                             bool forceMirrorIntake = false);
@@ -5774,6 +5817,19 @@ private:
     QPoint m_promptPlacementGrab;
     QRect m_promptPlacementStartRect;
     bool m_footerWebsiteStatusInFlight = false;
+    // The footer dot row is two sources merged: the relay's own compact
+    // /status projection, and the edge probes this desktop runs itself.
+    struct FooterStatusRow {
+        QString id;
+        QString label;
+        QString status;
+        QString reason;
+        qint64 minuteTs = 0;
+        bool local = false; // measured here rather than reported by the relay
+    };
+    QList<FooterStatusRow> m_footerRelayStatuses;
+    QList<FooterStatusRow> m_footerDesktopStatuses;
+    QSet<QString> m_desktopProbesInFlight;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
     // live log and the prompt). One chip per open *kind* of work, not per ticket:
@@ -7247,6 +7303,10 @@ private:
     // that is offline or rate-limiting (HTTP 429) stops getting hammered on
     // every timer tick. Keyed per endpoint/channel; see NetworkBackoff.h.
     NetworkBackoff m_pollBackoff;
+    // Consecutive HTTP 401/403 rejections per inbox-drain channel, so a node
+    // the relay will never authorize stops re-asking every poll cap. Cleared
+    // by the first accepted drain on that channel.
+    QHash<QString, int> m_inboxAuthRejections;
     // Issue #346: a refill notification waiting to ride the next signed
     // heartbeat (kept as flags, not fired directly, so it retries on the
     // periodic heartbeat timer if the immediate send fails).

@@ -45,6 +45,35 @@ def test_critical_suites_have_isolated_workflow_steps():
     assert "heartbeat()" not in source
 
 
+def test_qt_step_builds_every_binary_the_critical_label_selects():
+    """ctest reports an unbuilt suite as "***Not Run", so a suite promoted to
+    the "critical" label without a matching build target fails CI silently.
+    The workflow builds one aggregate target that CMake derives from the same
+    place it applies the label, so the two lists cannot drift apart."""
+    source = WORKFLOW.read_text(encoding="utf-8")
+    cmake = (ROOT / "qt_client" / "CMakeLists.txt").read_text(encoding="utf-8")
+
+    assert "--target critical-tests" in source
+    # No enumerating suites in the workflow: that is what drifted before.
+    assert "--target forkmesh-" not in source
+    assert "add_custom_target(critical-tests" in cmake
+
+    labelled = _cmake_list(cmake, "FORKMESH_CRITICAL_TESTS")
+    built = _cmake_list(cmake, "FORKMESH_CRITICAL_TEST_TARGETS")
+    assert labelled and built
+    for test in labelled:
+        # forkmesh-mirror-fleet-window-tests is a flag-selected second run of
+        # the forkmesh-window-tests binary; every other name is its own target.
+        target = test.replace("mirror-fleet-window", "window")
+        assert target in built, f"{test} has no binary in critical-tests"
+
+
+def _cmake_list(cmake: str, name: str) -> list[str]:
+    _, _, rest = cmake.partition(f"set({name}\n")
+    body, _, _ = rest.partition(")")
+    return body.split()
+
+
 def test_critical_suites_enforce_sub_minute_deadlines():
     runner = CRITICAL_RUNNER.read_text(encoding="utf-8")
     package = BROWSER_PACKAGE.read_text(encoding="utf-8")

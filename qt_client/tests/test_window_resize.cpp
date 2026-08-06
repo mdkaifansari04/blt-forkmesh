@@ -205,6 +205,62 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("the debug row appends labeled green/red website "
                              "minute states"));
 
+        // adhoc #1564: the relay grades itself from inside Cloudflare, so the
+        // last two dots are checked here instead — the site and the /status
+        // page loaded over the real public hostname. A Cloudflare edge failure
+        // (520-527, a branded interstitial, a challenge) must land red/amber on
+        // these rows even though every relay-reported row above is green.
+        const QByteArray homepage =
+            "<!doctype html><html><head><title>ForkMesh</title></head>";
+        const QByteArray statusPage =
+            "<!doctype html><html><head><title>Status \xc2\xb7 ForkMesh</title>"
+            "</head><body><h1 id=\"status-title\">Is ForkMesh working?</h1>";
+        const QByteArray cloudflareError =
+            "<!doctype html><html><head><title>forkmesh.com | 521: Web server "
+            "is down</title></head><body>Cloudflare Ray ID: abc123</body>";
+        check(window.testApplyDesktopWebsiteProbe(
+                  QStringLiteral("desktop_website"), 200, homepage) ==
+                      QStringLiteral("operational") &&
+                  window.testApplyDesktopWebsiteProbe(
+                      QStringLiteral("desktop_status_page"), 206, statusPage) ==
+                      QStringLiteral("operational") &&
+                  lights->websiteStatusCount() == 4 &&
+                  lights->websiteStatusFor(QStringLiteral("desktop_website")) ==
+                      QStringLiteral("operational"),
+              QStringLiteral("the desktop-side site and /status checks append "
+                             "two more dots to the relay's own rows"));
+
+        check(window.testApplyDesktopWebsiteProbe(
+                  QStringLiteral("desktop_website"), 521, cloudflareError) ==
+                      QStringLiteral("down") &&
+                  window.testApplyDesktopWebsiteProbe(
+                      QStringLiteral("desktop_website"), 200, cloudflareError) ==
+                      QStringLiteral("down") &&
+                  window.testApplyDesktopWebsiteProbe(
+                      QStringLiteral("desktop_website"), 429, homepage) ==
+                      QStringLiteral("degraded") &&
+                  lights->websiteStatusCount() == 4,
+              QStringLiteral("a Cloudflare edge status, a branded error document "
+                             "served as HTTP 200, and a rate-limit each fail the "
+                             "website check without adding a row"));
+
+        // A host with no link of its own reports grey rather than a false
+        // outage, so an offline test machine is allowed that verdict here.
+        const QString unreachable = window.testApplyDesktopWebsiteProbe(
+            QStringLiteral("desktop_status_page"), 0, QByteArray(),
+            QStringLiteral("Host not found"));
+        check(window.testApplyDesktopWebsiteProbe(
+                  QStringLiteral("desktop_status_page"), 500, QByteArray()) ==
+                      QStringLiteral("down") &&
+                  window.testApplyDesktopWebsiteProbe(
+                      QStringLiteral("desktop_status_page"), 200, homepage) ==
+                      QStringLiteral("degraded") &&
+                  (unreachable == QStringLiteral("down") ||
+                   unreachable == QStringLiteral("unknown")),
+              QStringLiteral("the /status check fails on a server error, on a "
+                             "document that isn't the status page, and when the "
+                             "page cannot be fetched at all"));
+
         // Rebuild+restart came down from the window-chrome line and Resize came
         // out of the navigation rail: both now sit in the debug bar's own tool
         // cluster at the right edge, outside the scrolling category row, each
@@ -2370,6 +2426,8 @@ int main(int argc, char *argv[])
                     {QStringLiteral("kind"), QStringLiteral("user")},
                     {QStringLiteral("status"), QStringLiteral("active")},
                     {QStringLiteral("emailVerified"), true},
+                    {QStringLiteral("solana"),
+                     QStringLiteral("So11111111111111111111111111111111111111112")},
                     {QStringLiteral("createdAt"), 1600000000000.0},
                     {QStringLiteral("totalActiveMs"), 7380000.0},
                     {QStringLiteral("activityBucket"), QStringLiteral("hour")},
@@ -2385,7 +2443,8 @@ int main(int argc, char *argv[])
     });
     const QStringList userColumns = window.testUsersColumns();
     const QStringList expectedUserColumns{
-        QStringLiteral("User"),          QStringLiteral("Email verified"),
+        QStringLiteral("User"),          QStringLiteral("Solana"),
+        QStringLiteral("Email verified"),
         QStringLiteral("Status"),        QStringLiteral("Joined"),
         QStringLiteral("World activity"),
         QStringLiteral("Activity recency"),
@@ -2400,6 +2459,10 @@ int main(int argc, char *argv[])
                                        QStringLiteral("zora")} &&
               window.testUsersCellText(0, QStringLiteral("World activity")) ==
                   QStringLiteral("2h 03m") &&
+              window.testUsersCellText(0, QStringLiteral("Solana")) ==
+                  QStringLiteral("So11111111111111111111111111111111111111112") &&
+              window.testUsersCellText(1, QStringLiteral("Solana")) ==
+                  QStringLiteral("Not set") &&
               window.testUsersCellText(0, QStringLiteral("Nodes")) ==
                   QStringLiteral("2 - node-a, node-b"),
           QStringLiteral("Users sorts formatted statistics by their numeric values"));

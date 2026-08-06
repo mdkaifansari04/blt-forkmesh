@@ -59,7 +59,10 @@ jobs:
           rm -rf "$ci_tmp"
           mkdir -p "$CCACHE_DIR"
           cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON
+          # `critical-tests` is defined next to the "critical" CTest label, so
+          # it always covers exactly the binaries the runner is about to
+          # execute. Naming the suites here instead let the two lists drift,
+          # and an unbuilt suite only surfaces as a ctest "***Not Run".
           cmake --build qt_client/build-ci -j "${FORKMESH_ACTIONS_CPUS:-2}" \
-            --target forkmesh-control-tests forkmesh-private-mirror-tests \
-                     forkmesh-public-mirror-tests forkmesh-codex-tests
+            --target critical-tests
           python3 tools/run_critical_tests.py qt --build-dir qt_client/build-ci
