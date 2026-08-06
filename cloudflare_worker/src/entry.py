@@ -3580,6 +3580,11 @@ async def _cron_runner_kick(env):
 # alarm and the projection only serves the /status page, so compiling them
 # here spent scarce Pyodide startup memory on every isolate (see
 # admin_console for the same pattern).
+# /api traffic diagnostics: the api.forkmesh.com landing page and its
+# summary endpoint (src/api_metrics.py). Lazy for the same startup-memory
+# reason as the sampler below; bound on the first served /api response.
+_api_metrics = _LazyModule("api_metrics")
+
 _status_monitoring = _LazyModule("status_monitoring")
 _record_status_monitor_transitions = _status_monitoring.export(
     "_record_status_monitor_transitions")
@@ -43778,6 +43783,7 @@ class Default(WorkerEntrypoint):
 
     async def fetch(self, request):
         url = None
+        request_started_ms = int(Date.now())
         try:
             url = urlparse(request.url)
 
@@ -43827,6 +43833,15 @@ class Default(WorkerEntrypoint):
             status = int(getattr(response, "status", 200) or 200)
         except Exception:
             status = 200
+        # Every served /api response feeds the api.forkmesh.com diagnostics
+        # buckets (minute × masked route group × status class). The module is
+        # lazy and the fold is in-memory; D1 sees one batched upsert per few
+        # dozen requests, and record_api_request never raises.
+        if url is not None and str(getattr(url, "path", "")).startswith(
+                "/api/"):
+            await _api_metrics.record_api_request(
+                self.env, url.path, status,
+                int(Date.now()) - request_started_ms)
         # Credit the website that sent this visitor. Gated to served page
         # navigations carrying an external Referer, so the extra D1 write only
         # happens on the rare request that is actually an inbound referral.
@@ -44366,6 +44381,11 @@ class Default(WorkerEntrypoint):
             return await self._git_push(request, git_recv.group(1), git_recv.group(2))
 
         if url.path == "/" and method_name(request) in ("GET", "HEAD"):
+            # On the api role (api.forkmesh.com), the root is the traffic
+            # diagnostics landing page; the marketing homepage stays a relay
+            # concern (it also records site_referrers there).
+            if str(getattr(self.env, "WORKER_ROLE", "") or "") == "api":
+                return _api_metrics.landing_page_response(self.env)
             # Everyone enters the same world immediately. The app may use the
             # locally held session to render an authorized avatar and portals,
             # but the route itself never changes based on login state.
@@ -44433,6 +44453,10 @@ class Default(WorkerEntrypoint):
                     "now": Date.now(),
                 }
             )
+
+        if url.path in ("/api/metrics/summary", "/api/metrics/summary/"):
+            return await _api_metrics.metrics_summary_handler(
+                self.env, request)
 
         if url.path in ("/api/world/context", "/api/world/context/"):
             return world_context_handler(request)
