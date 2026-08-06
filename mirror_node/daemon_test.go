@@ -163,3 +163,47 @@ func TestNewDaemonRejectsIdentityMismatchAndUnsupportedRepo(t *testing.T) {
 		t.Fatal("private repository accepted")
 	}
 }
+
+// Relay pushes drive the repository sync: "commits" and the per-connect
+// catch-up queue one, while inbox topics stay with the intake bridge.
+func TestDaemonNodeEventsTriggerSync(t *testing.T) {
+	daemon := &Daemon{syncRequests: make(chan struct{}, 1)}
+	daemon.handleNodeEvent(Event{Topic: "commits", Repo: "forkmesh/forkmesh"})
+	select {
+	case <-daemon.syncRequests:
+	default:
+		t.Fatal("commits event did not queue a sync")
+	}
+	daemon.handleNodeEvent(Event{Topic: "issues", Repo: "forkmesh/forkmesh"})
+	select {
+	case <-daemon.syncRequests:
+		t.Fatal("inbox event must not queue a repo sync")
+	default:
+	}
+	daemon.handleNodeEvent(Event{CatchUp: true})
+	select {
+	case <-daemon.syncRequests:
+	default:
+		t.Fatal("catch-up event did not queue a sync")
+	}
+}
+
+// Only upstreams the relay cannot push for justify keeping the fetch ticker.
+func TestHasExternalUpstreams(t *testing.T) {
+	daemon := &Daemon{config: Config{
+		CatalogURL: "https://forkmesh.com/api/repositories",
+		Upstreams: map[string][]string{
+			"mirror9/forkmesh": {"https://forkmesh.com/forkmesh/forkmesh"},
+		},
+	}}
+	if daemon.hasExternalUpstreams() {
+		t.Fatal("relay-hosted upstreams classified as external")
+	}
+	daemon.config.Upstreams["c/d"] = []string{"https://github.com/c/d.git"}
+	if !daemon.hasExternalUpstreams() {
+		t.Fatal("third-party upstream not classified as external")
+	}
+	if !(&Daemon{config: Config{}}).hasExternalUpstreams() {
+		t.Fatal("a node without a catalog must keep the fetch ticker")
+	}
+}

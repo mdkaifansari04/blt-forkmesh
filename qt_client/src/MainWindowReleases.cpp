@@ -3473,15 +3473,16 @@ void MainWindow::fetchMirrorPendingCounts(const QString &owner,
     if (!m_networkAccess || owner.isEmpty() || repo.isEmpty() || source.isEmpty() ||
         m_mirrorPendingInFlight.contains(source))
         return;
-    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     const QJsonObject cached = m_mirrorPendingCache.value(source);
     const qint64 fetchedAt =
         qint64(cached.value(QStringLiteral("clientFetchedAt")).toDouble());
-    // One badge refresh per ten minutes per repo: the relay answers this
-    // from a ten-minute edge cache, so anything faster only re-reads the
-    // same cached counts while making /pending the busiest endpoint on the
-    // API traffic chart.
-    if (fetchedAt > 0 && nowMs - fetchedAt < 10 * 60 * 1000)
+    // Fetch-once, not TTL: one fetch per repo populates the badges and every
+    // later roster/refresh tick reuses the cache with no HTTP (the no-polling
+    // policy, docs/operations/polling-elimination.md). The entry is
+    // invalidated — clientFetchedAt zeroed — when the node event socket
+    // pushes new inbox work or a local drain changes the counts, and the next
+    // badge refresh refetches then.
+    if (fetchedAt > 0)
         return;
 
     QUrl url = catalogApiUrl();

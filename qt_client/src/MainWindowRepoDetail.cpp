@@ -1418,6 +1418,22 @@ void MainWindow::openRepoDetail(int repoIndex)
     if (repoIndex != m_repoDetailIndex)
         clearBranchDiffCache();
     m_repoDetailIndex = repoIndex;
+    {
+        // Opening a repo is the one user action that refetches the cached
+        // /pending badge tallies (fetchMirrorPendingCounts is otherwise
+        // fetch-once and only invalidated by node event pushes — which a
+        // pure viewer of someone else's repo never receives).
+        const RepositoryRecord &opened = m_repositories.at(repoIndex);
+        const QString source =
+            repoSegment(opened.owner, QStringLiteral("owner")) +
+            QLatin1Char('/') +
+            repoSegment(opened.name, QStringLiteral("repository"));
+        QJsonObject cached = m_mirrorPendingCache.value(source);
+        if (!cached.isEmpty()) {
+            cached.insert(QStringLiteral("clientFetchedAt"), 0);
+            m_mirrorPendingCache.insert(source, cached);
+        }
+    }
     // Copy by value: the keep-alive pump services queued slots between git reads,
     // and a roster/network callback could mutate (and reallocate) m_repositories
     // mid-load — a reference into it would dangle.
