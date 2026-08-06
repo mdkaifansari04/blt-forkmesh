@@ -1417,15 +1417,19 @@ private:
     void installAndRelaunch(const QString &built, const QString &appPath);
     // When onFailure is set it is invoked instead of the default "Update failed"
     // handling if the step exits non-zero, letting callers recover (e.g. re-clone
-    // a checkout that has diverged from the mirror).
+    // a checkout that has diverged from the mirror). extraEnv is merged over the
+    // inherited environment (used to point the compiler's TMPDIR at the build
+    // tree) and is echoed into the update log alongside the command.
     void runUpdateStep(const QString &program, const QStringList &arguments,
                        const QString &workingDir, std::function<void()> onSuccess,
-                       std::function<void()> onFailure = {});
+                       std::function<void()> onFailure = {},
+                       const QMap<QString, QString> &extraEnv = {});
     // Like runUpdateStep, but runs the command as m_updateAsUser (via sudo -u)
     // when that is set, so root-launched updates write files owned by the user.
     void runUpdateStepUser(const QString &program, const QStringList &arguments,
                            const QString &workingDir, std::function<void()> onSuccess,
-                           std::function<void()> onFailure = {});
+                           std::function<void()> onFailure = {},
+                           const QMap<QString, QString> &extraEnv = {});
     void setUpdateStatus(const QString &status, bool isError = false);
     // Open (or reset) the live update/rebuild log window and append to it.
     void showUpdateLog();
