@@ -812,14 +812,25 @@ void MainWindow::selectAgentAccount(const QString &provider,
         return;
 
     const bool codex = agentIsCodexProvider(provider);
+    // The "ran out" flags travel with the account too (issue #346 tracks them per
+    // provider). Leaving them behind made the account just switched to inherit
+    // the exhausted one's "usage limit reached" — on the very screen the user is
+    // looking at while switching away from a limit, and on a login with usage to
+    // spare. An account with no flag of its own reads as not exhausted, which is
+    // the truth until its own run reports otherwise.
     const QStringList globals = codex
         ? QStringList{kCodexUsage5hPctSetting, kCodexUsageWeekPctSetting,
                       kCodexUsage5hResetSetting, kCodexUsageWeekResetSetting,
-                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting}
+                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting,
+                      kCodexUsage5hExhaustedSetting,
+                      kCodexUsageWeekExhaustedSetting}
         : QStringList{kClaudeUsage5hPctSetting, kClaudeUsageWeekPctSetting,
                       kClaudeUsageFablePctSetting, kClaudeUsage5hResetSetting,
                       kClaudeUsageWeekResetSetting, kClaudeUsageFableResetSetting,
-                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting};
+                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting,
+                      kClaudeUsage5hExhaustedSetting,
+                      kClaudeUsageWeekExhaustedSetting,
+                      kClaudeUsageFableExhaustedSetting};
     QSettings settings;
     const QString oldId = activeAgentAccount(provider).id;
     // Preserve the current account's last provider reading before replacing the
@@ -840,6 +851,10 @@ void MainWindow::selectAgentAccount(const QString &provider,
         else
             settings.remove(global);
     }
+    // Re-arm the "your limit has refilled" reminders against the account now
+    // selected: the ones standing were armed from the previous account's
+    // exhausted windows, which this login neither shares nor waits on.
+    restoreUsageLimitReminders();
 
     if (codex) {
         refreshCodexUsageRemaining();
@@ -1738,6 +1753,21 @@ QWidget *MainWindow::buildStatusBar()
     toolsSeparator->setFixedHeight(32);
     debugToolsRow->addWidget(toolsSeparator, 0, Qt::AlignVCenter);
 
+    // The relay's live tail is a section of this strip now (adhoc #1559) rather
+    // than a button on the Log page: it sits beside the Worker status dots it
+    // explains, and one click opens the full viewer.
+    auto *cloudflareButton = new ActivityRailButton(QStringLiteral("cloud"),
+                                                    QStringLiteral("Cloud"));
+    cloudflareButton->setObjectName(
+        QStringLiteral("cloudflareWorkerLogsButton"));
+    cloudflareButton->setCheckable(false);
+    cloudflareButton->setCursor(Qt::PointingHandCursor);
+    cloudflareButton->setIconSize(QSize(kRailIconPx, kRailIconPx));
+    cloudflareButton->setToolTip(
+        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
+    connect(cloudflareButton, &QPushButton::clicked, this,
+            &MainWindow::showCloudflareWorkerLogs);
+
     // Third tool: grow the window by a five-line live tail of the log, so the
     // newest lines are readable without opening the footer overlay or the full
     // Log page. Checkable — it is a state, not a one-shot action.
@@ -1752,7 +1782,8 @@ QWidget *MainWindow::buildStatusBar()
     connect(logTailButton, &QPushButton::toggled, this,
             [this](bool on) { setDebugLogTailVisible(on); });
 
-    for (QPushButton *tool : {m_navRebuildButton, m_navResizeButton,
+    for (QPushButton *tool : {static_cast<QPushButton *>(cloudflareButton),
+                              m_navRebuildButton, m_navResizeButton,
                               static_cast<QPushButton *>(logTailButton)})
         if (tool)
             debugToolsRow->addWidget(tool, 0, Qt::AlignVCenter);
@@ -2758,6 +2789,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_logActivityLights->onCategoryClicked = [this](const QString &category) {
         openFullLogForCategory(category);
     };
+    // The status dots to the right of the categories are the deployed Worker's
+    // own health, so clicking them opens its live logs (adhoc #1559) — the
+    // viewer that used to be a button on the Log page.
+    m_logActivityLights->onWebsiteClicked = [this] { showCloudflareWorkerLogs(); };
     const QString stallTip = QStringLiteral(
         "Click to draft a fix-it prompt for recorded UI stalls; right-click "
         "for the captured backtraces.");
@@ -2973,28 +3008,30 @@ void MainWindow::savePromptOverlayPlacement()
                       m_promptDetachGeometry);
 }
 
+// Every launch starts on the footer's lower-right anchor (adhoc #1565). Moving
+// the composer — dragging it over the workspace or popping it out into its own
+// window — is a gesture for the task at hand, and restoring it a day later meant
+// the app opened with its prompt parked mid-page or on a window the compositor
+// had put behind everything else, which reads as the prompt having gone missing.
+// The drag, the resize and the pop-out all still work and still hold for the rest
+// of the session; they simply do not decide where the next launch opens. Only the
+// popped-out window's own geometry is kept, so re-popping it lands where it was.
 void MainWindow::loadPromptOverlayPlacement()
 {
     if (!m_promptOverlayHost)
         return;
     QSettings settings;
-    m_promptOverlaySize =
-        settings.value(QLatin1String(kPromptFloatSizeSetting)).toSize();
-    m_promptOverlayPos =
-        settings.value(QLatin1String(kPromptFloatPosSetting)).toPoint();
     m_promptDetachGeometry =
         settings.value(QLatin1String(kPromptDetachGeometrySetting)).toRect();
-    if (settings.value(QLatin1String(kPromptFloatingSetting), false).toBool()) {
-        m_promptOverlayFloating = true;
-        if (auto *dockRow = m_footerDock
-                                ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
-                                : nullptr)
-            dockRow->removeWidget(m_promptOverlayHost);
-        m_promptOverlayHost->setParent(m_globalOverlayHost);
-        m_promptOverlayHost->show();
-    }
-    if (settings.value(QLatin1String(kPromptDetachedSetting), false).toBool())
-        setPromptOverlayDetached(true);
+    m_promptOverlayFloating = false;
+    m_promptOverlayDetached = false;
+    m_promptOverlaySize = QSize();
+    m_promptOverlayPos = QPoint();
+    // The composer was added to the footer row when it was built and has not
+    // moved since, so anchoring it is a matter of leaving it there — but the
+    // stored placement has to go with it, or a session that never touches the
+    // prompt would write yesterday's float back out on the next save.
+    savePromptOverlayPlacement();
 }
 
 // Drag/resize gestures on the composer's top strip. Everything is done in
@@ -4297,6 +4334,9 @@ void MainWindow::refreshCloudflareAiModels()
                                  : picked);
         }
         refreshQuickAddAgentModelSelector();
+        // Settings lists the same line-up with a checkbox each, so newly
+        // announced models have to reach it too.
+        refreshComposerModelVisibilityList();
     });
 }
 
@@ -4454,18 +4494,96 @@ void MainWindow::refreshQuickAddSpeedSelector()
         QStringLiteral(". Higher levels are slower and more thorough."));
 }
 
+// Every agent/model the composer could offer, in provider order and before any
+// ranking or filtering. Shared by the composer's dropdown (which ranks these by
+// merged success) and Settings → Agents → "Composer models" (which lists them
+// with a checkbox each), so the setting can never drift out of step with the
+// menu it governs.
+//
+// "Manual · create issue" is deliberately absent: it starts no agent, and it is
+// the row the dropdown falls back to, so it is always offered.
+QList<ComposerModelChoice> MainWindow::composerModelCatalog() const
+{
+    QList<ComposerModelChoice> choices;
+
+    QComboBox claudeModels;
+    populateClaudeModelCombo(&claudeModels);
+    if (!m_liveClaudeModels.isEmpty())
+        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
+    for (int i = 0; i < claudeModels.count(); ++i) {
+        const QString id = claudeModels.itemData(i).toString();
+        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
+        // borrowing one model's portrait.
+        const int icon =
+            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
+                ? 7
+                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
+        choices.append(ComposerModelChoice{
+            QStringLiteral("claude-code"), id,
+            compactModelName(claudeModels.itemText(i)),
+            QStringLiteral("Claude Code"), QString(), icon, true});
+    }
+
+    QComboBox codexModels;
+    populateCodexModelCombo(&codexModels);
+    for (int i = 0; i < codexModels.count(); ++i) {
+        const QString id = codexModels.itemData(i).toString();
+        choices.append(ComposerModelChoice{
+            kCodexProvider, id, codexModels.itemText(i),
+            QStringLiteral("Codex"), QString(),
+            agentModelFaceIconIndex(kCodexProvider, id), true});
+    }
+
+    // These API agents do not expose a per-run model chooser in this composer,
+    // but remain first-class choices in the combined menu.
+    choices.append(ComposerModelChoice{
+        QStringLiteral("openai"), QString(), QStringLiteral("OpenAI API"),
+        QStringLiteral("OpenAI API"), QStringLiteral("Headless OpenAI API agent"),
+        agentModelFaceIconIndex(QStringLiteral("openai"), QString()), false});
+    choices.append(ComposerModelChoice{
+        QStringLiteral("claude-api"), QString(), QStringLiteral("Claude API"),
+        QStringLiteral("Claude API"), QStringLiteral("Headless Claude API agent"),
+        agentModelFaceIconIndex(QStringLiteral("claude-api"), QString()), false});
+
+    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
+    // rather than starting an agent, so they are their own group instead of
+    // being ranked among the coding models above — a 70B chat model is not
+    // "stronger" or "weaker" than an agent that can edit the repository.
+    QComboBox cloudflareModels;
+    populateCloudflareAiModelCombo(&cloudflareModels);
+    for (int i = 0; i < cloudflareModels.count(); ++i) {
+        const QString label = cloudflareModels.itemText(i);
+        // One mark for the whole group: these are relay chat models, not one of
+        // the top lines the World drew a portrait for.
+        choices.append(ComposerModelChoice{
+            kCloudflareAiProvider, cloudflareModels.itemData(i).toString(), label,
+            QStringLiteral("Cloudflare AI"),
+            QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
+                           "starts no agent").arg(label),
+            agentModelFaceIconIndex(kCloudflareAiProvider, QString()), false});
+    }
+    return choices;
+}
+
 // Build the one visible agent/model menu from the canonical hidden provider and
 // model controls. Each row stores provider in UserRole and model in UserRole+1,
 // allowing a single click to update both without changing the launch contract.
 //
-// Rows read as the model name plus its merged-work count: "Opus 5 · 3 merged",
+// Rows read as the model name plus its merged-work count — "Opus 5   3 merged",
 // not "Opus 5 · Claude Code". Which CLI runs a model follows from the model, so
 // the provider suffix was the same handful of words repeated down the whole
-// menu; the tooltip still carries it. A merge is the durable success signal for
+// menu; the tooltip still carries it. The count is a popup-only second column
+// (kAgentChoiceDescriptionRole): the closed control shows the bare model name,
+// since the badge on the prompt should say what is about to run rather than
+// carry a standing scoreboard. A merge is the durable success signal for
 // an agent run, so models with the most merged work lead the list; power is a
 // stable tie-breaker for equal success counts. Scores count every run this
 // desktop has made, including the ones whose branch and session were cleaned up
 // afterwards (see AgentStore::retiredModelOutcomes).
+//
+// Rows switched off in Settings → Agents (adhoc #1557) are left out, except the
+// one currently selected: the menu has to be able to show what the composer is
+// actually about to run, even if that model was hidden after it was picked.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -4492,6 +4610,16 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         int runCount = 0;
         int powerRank = 0; // stable tie-breaker for equally-used models
     };
+    // A row the user switched off in Settings stays out of the menu unless it is
+    // the current selection (see the note above this function).
+    const QSet<QString> hidden = hiddenComposerModels();
+    const auto rowIsVisible = [&](const QString &provider,
+                                  const QString &model) {
+        if (!hidden.contains(composerModelKey(provider, model)))
+            return true;
+        return provider == selectedProvider &&
+               (selectedModel.isEmpty() || model == selectedModel);
+    };
     QHash<QString, int> modelMergedCounts;
     QHash<QString, int> modelRunCounts;
     // A model's track record has to outlive the work that earned it. Sweeping up
@@ -4516,43 +4644,25 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         if (session.merged)
             ++modelMergedCounts[key];
     }
+    // The catalog is the single source of what the picker can offer; this
+    // function only scores, orders and filters it.
+    const QList<ComposerModelChoice> catalog = composerModelCatalog();
     QList<Choice> models;
-    auto addModel = [&models, &modelMergedCounts, &modelRunCounts](
-                        const QIcon &icon, const QString &label,
-                        const QString &provider, const QString &model,
-                        const QString &agentName) {
-        const QString key = AgentStore::modelOutcomeKey(provider, model);
-        models.append(Choice{icon, label, provider, model, agentName,
+    QList<ComposerModelChoice> unranked;
+    for (const ComposerModelChoice &entry : catalog) {
+        if (!rowIsVisible(entry.provider, entry.model))
+            continue;
+        if (!entry.ranked) {
+            unranked.append(entry);
+            continue;
+        }
+        const QString key =
+            AgentStore::modelOutcomeKey(entry.provider, entry.model);
+        models.append(Choice{agentControlIcon(entry.iconIndex), entry.label,
+                             entry.provider, entry.model, entry.agentName,
                              modelMergedCounts.value(key),
                              modelRunCounts.value(key),
-                             agentModelPowerRank(model, label)});
-    };
-
-    QComboBox claudeModels;
-    populateClaudeModelCombo(&claudeModels);
-    if (!m_liveClaudeModels.isEmpty())
-        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
-    for (int i = 0; i < claudeModels.count(); ++i) {
-        const QString id = claudeModels.itemData(i).toString();
-        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
-        // borrowing one model's portrait.
-        const int icon =
-            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
-                ? 7
-                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
-        addModel(agentControlIcon(icon),
-                 compactModelName(claudeModels.itemText(i)),
-                 QStringLiteral("claude-code"), id,
-                 QStringLiteral("Claude Code"));
-    }
-
-    QComboBox codexModels;
-    populateCodexModelCombo(&codexModels);
-    for (int i = 0; i < codexModels.count(); ++i) {
-        const QString id = codexModels.itemData(i).toString();
-        addModel(agentControlIcon(agentModelFaceIconIndex(kCodexProvider, id)),
-                 codexModels.itemText(i), kCodexProvider, id,
-                 QStringLiteral("Codex"));
+                             agentModelPowerRank(entry.model, entry.label)});
     }
 
     // Most merged work first. Power ties (Opus 4.8 and Sonnet 5 score the
@@ -4567,13 +4677,20 @@ void MainWindow::refreshQuickAddAgentModelSelector()
 
     auto addChoice = [this](const QIcon &icon, const QString &label,
                             const QString &provider, const QString &model,
-                            const QString &tooltip) {
+                            const QString &tooltip,
+                            const QString &description = QString()) {
         const int row = m_quickAddAgentModelSelector->count();
         m_quickAddAgentModelSelector->addItem(icon, label, provider);
         m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
         if (!tooltip.isEmpty())
             m_quickAddAgentModelSelector->setItemData(row, tooltip,
                                                       Qt::ToolTipRole);
+        // Painted beside the label by AgentChoiceDescriptionDelegate, which only
+        // draws the popup rows — so this half of the row exists in the open menu
+        // and nowhere else.
+        if (!description.isEmpty())
+            m_quickAddAgentModelSelector->setItemData(
+                row, description, kAgentChoiceDescriptionRole);
     };
     addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
               QStringLiteral("manual"), QString(),
@@ -4589,13 +4706,17 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
     QHash<QString, QString> providerIdentities;
     for (const Choice &choice : models) {
-        // Keep the success count in the row so the best model can be spotted
-        // without opening a tooltip. The run total remains in the tooltip: a
-        // session that is still under review must not be mistaken for a failed
-        // merge simply because it has not landed yet.
-        const QString label = QStringLiteral("%1 · %2 merged")
-                                  .arg(choice.label)
-                                  .arg(choice.mergedCount);
+        // Keep the success count in the open menu so the best model can be
+        // spotted without opening a tooltip — but only there (adhoc #1565). The
+        // closed control is a one-line badge on the prompt and its job is to say
+        // which model is about to run; "Opus 5 · 11 merged" sitting there all day
+        // is a scoreboard for a comparison the user is not making until they open
+        // the picker. The run total remains in the tooltip: a session that is
+        // still under review must not be mistaken for a failed merge simply
+        // because it has not landed yet.
+        const QString label = choice.label;
+        const QString mergedNote =
+            QStringLiteral("%1 merged").arg(choice.mergedCount);
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
         toolTip += QStringLiteral("\nMerged success: %1 of %2 runs")
@@ -4613,40 +4734,18 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(chosenIdentity, toolTip);
-        addChoice(choice.icon, label, choice.provider, choice.model, toolTip);
+        addChoice(choice.icon, label, choice.provider, choice.model, toolTip,
+                  mergedNote);
     }
 
-    // These API agents do not expose a per-run model chooser in this composer,
-    // but remain first-class choices in the combined menu.
-    addChoice(agentControlIcon(
-                  agentModelFaceIconIndex(QStringLiteral("openai"), QString())),
-              QStringLiteral("OpenAI API"), QStringLiteral("openai"), QString(),
-              QStringLiteral("Headless OpenAI API agent"));
-    addChoice(agentControlIcon(agentModelFaceIconIndex(
-                  QStringLiteral("claude-api"), QString())),
-              QStringLiteral("Claude API"), QStringLiteral("claude-api"),
-              QString(), QStringLiteral("Headless Claude API agent"));
-
-    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
-    // rather than starting an agent, so they are appended as their own group
-    // instead of being ranked among the coding models above — a 70B chat model
-    // is not "stronger" or "weaker" than an agent that can edit the repository.
-    QComboBox cloudflareModels;
-    populateCloudflareAiModelCombo(&cloudflareModels);
-    for (int i = 0; i < cloudflareModels.count(); ++i) {
-        const QString label = cloudflareModels.itemText(i);
-        // Cloudflare AI only answers a prompt and never creates a branch, so it
-        // has no merge outcome to count. Keep its label distinct rather than
-        // presenting a misleading permanent "0 merged" score.
-        // One mark for the whole group: these are relay chat models, not one of
-        // the top lines the World drew a portrait for.
-        addChoice(agentControlIcon(agentModelFaceIconIndex(kCloudflareAiProvider,
-                                                          QString())),
-                  label, kCloudflareAiProvider,
-                  cloudflareModels.itemData(i).toString(),
-                  QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
-                                 "starts no agent").arg(label));
-    }
+    // The headless API agents and the Cloudflare Workers AI chat models, in
+    // catalog order below the ranked coding models. None of them has a merge
+    // outcome to count — a Workers AI model only answers a prompt and never
+    // creates a branch — so they carry no "0 merged" score that would read as a
+    // failure rather than as "not applicable".
+    for (const ComposerModelChoice &entry : unranked)
+        addChoice(agentControlIcon(entry.iconIndex), entry.label, entry.provider,
+                  entry.model, entry.tooltip);
 
     int selected = -1;
     for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
@@ -4700,6 +4799,28 @@ QString MainWindow::testQuickAddAgentModelLabel(const QString &model) const
             return m_quickAddAgentModelSelector->itemText(row);
     }
     return QString();
+}
+
+QString MainWindow::testQuickAddAgentModelMergedNote(const QString &model) const
+{
+    if (!m_quickAddAgentModelSelector)
+        return QString();
+    for (int row = 0; row < m_quickAddAgentModelSelector->count(); ++row) {
+        if (m_quickAddAgentModelSelector->itemData(row, Qt::UserRole + 1)
+                .toString() == model)
+            return m_quickAddAgentModelSelector
+                ->itemData(row, kAgentChoiceDescriptionRole)
+                .toString();
+    }
+    return QString();
+}
+
+QString MainWindow::testPromptOverlayPlacement() const
+{
+    if (m_promptOverlayDetached)
+        return QStringLiteral("detached");
+    return m_promptOverlayFloating ? QStringLiteral("floating")
+                                   : QStringLiteral("anchored");
 }
 #endif // FORKMESH_WINDOW_TESTS
 
@@ -7425,15 +7546,18 @@ QWidget *MainWindow::buildLogSection()
     clearButton->setCursor(Qt::PointingHandCursor);
     clearButton->setToolTip("Clear all saved logs");
     setOcticon(clearButton, "trash", 14);
-    auto *cloudflareButton = new QPushButton("Cloudflare logs");
-    cloudflareButton->setObjectName(
-        QStringLiteral("cloudflareWorkerLogsButton"));
-    cloudflareButton->setCursor(Qt::PointingHandCursor);
-    cloudflareButton->setToolTip(
-        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
-    setOcticon(cloudflareButton, "cloud", 14);
-    connect(cloudflareButton, &QPushButton::clicked, this,
-            &MainWindow::showCloudflareWorkerLogs);
+    // The Cloudflare viewer moved down to the debug strip beside the Worker's
+    // own status dots (adhoc #1559). What sits here instead is the whole log in
+    // its own window: every retained line, unfiltered, in one scrollback.
+    auto *popoutButton = new QPushButton("Pop out");
+    popoutButton->setObjectName(QStringLiteral("logPopoutButton"));
+    popoutButton->setCursor(Qt::PointingHandCursor);
+    popoutButton->setToolTip(
+        QStringLiteral("Open the complete log — every category, every retained "
+                       "line — in its own window"));
+    setOcticon(popoutButton, "screen-full", 14);
+    connect(popoutButton, &QPushButton::clicked, this,
+            &MainWindow::showNetworkLogPopout);
 
     // The timeline is only a compact overview. Keep the paged rich log visible
     // below it so opening Logs stays useful immediately instead of spending the
@@ -7515,7 +7639,9 @@ QWidget *MainWindow::buildLogSection()
     filterScroll->setFrameShape(QFrame::NoFrame);
     filterScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     filterScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    filterScroll->setFixedHeight(34);
+    // Tall enough for the bigger, icon-bearing chips (adhoc #1559) plus the
+    // horizontal scrollbar the full taxonomy needs on a laptop-width window.
+    filterScroll->setFixedHeight(44);
 
     // Discover which categories the buffered history contains and build the
     // chips now, but leave rendering the history itself (the newest
@@ -7539,6 +7665,12 @@ QWidget *MainWindow::buildLogSection()
         m_logFilterEmptyNotice = false;
         if (m_settingsLog)
             m_settingsLog->clear();
+        // The pop-out shows the same buffer, so it empties with it.
+        if (m_logPopoutView)
+            m_logPopoutView->clear();
+        m_logPopoutDate.clear();
+        m_logPopoutPending.clear();
+        updateNetworkLogPopoutStatus();
         if (m_logActivityLights)
             m_logActivityLights->reset();
         if (m_logActivityHeader)
@@ -7553,7 +7685,7 @@ QWidget *MainWindow::buildLogSection()
     headerRow->addWidget(label);
     headerRow->addWidget(m_logTimelineSummary);
     headerRow->addStretch();
-    headerRow->addWidget(cloudflareButton);
+    headerRow->addWidget(popoutButton);
     headerRow->addWidget(clearButton);
 
     auto *layout = new QVBoxLayout(page);
