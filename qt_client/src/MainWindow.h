@@ -510,6 +510,13 @@ public:
     {
         return applyFooterWebsiteStatusPayload(payload);
     }
+    // Exercises the "the relay answered but not with a status payload" path
+    // (an HTTP error/Cloudflare error page/malformed JSON), same as a live
+    // fetch would after a bad reply.
+    void testApplyFooterWebsiteStatusFailure(int httpStatus)
+    {
+        applyFooterWebsiteStatusFailure(httpStatus);
+    }
     // Hands one desktop-side edge probe the answer it would have received and
     // returns the graded state, so Cloudflare-error grading is exercised
     // without a live network.
@@ -1480,6 +1487,10 @@ private:
     // projection once a minute and retain the newest completed minute per row.
     void refreshFooterWebsiteStatus();
     bool applyFooterWebsiteStatusPayload(const QJsonObject &payload);
+    // The relay answered but not with a usable payload (HTTP error, Cloudflare
+    // error document, malformed JSON): mark the relay-reported rows unknown
+    // instead of silently repainting a stale cached minute as still current.
+    void applyFooterWebsiteStatusFailure(int httpStatus);
     // Two dots the relay cannot honestly produce for itself (adhoc #1564): its
     // own /status samplers run inside the Worker and deliberately avoid a
     // hairpin through the public hostname, so a Cloudflare edge failure (520-527,
