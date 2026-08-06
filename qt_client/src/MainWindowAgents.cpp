@@ -9302,16 +9302,10 @@ QStringList MainWindow::runningAgentBlockers() const
     // session silent well past the threshold is stuck, not busy. A freshly
     // launched one is covered by startedAtMs, and anything yanked here is
     // re-queued and resumed by initAgents, so no real work is abandoned.
-    constexpr qint64 kBlockerStaleMs = 90'000;
     auto recentlyLive = [this](int id) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        qint64 liveAt = m_scannerStates.value(id).lastActivityMs;
-        for (const AgentSession &session : m_agentSessions)
-            if (session.id == id) {
-                liveAt = qMax(liveAt, session.startedAtMs);
-                break;
-            }
-        return liveAt > 0 && (now - liveAt) < kBlockerStaleMs;
+        const qint64 liveAt = agentSessionLastLiveMs(id);
+        return liveAt > 0 && (now - liveAt) < kAgentSilentStaleMs;
     };
     QStringList blockers;
     for (AgentRunner *runner : m_agentRunners)
@@ -10981,6 +10975,83 @@ bool MainWindow::isStoppableAgentSession(int sessionId) const
     return session->status == AgentStatus::Running ||
            session->status == AgentStatus::Waiting ||
            session->status == AgentStatus::Queued;
+}
+
+// The last sign of life from a session: the wall-clock of the last raw output it
+// streamed, falling back to its launch while nothing has streamed yet. 0 when
+// neither is known. Shared by every "is this really still working" check, so they
+// read the same signal (the fleet lights' live-output meter).
+qint64 MainWindow::agentSessionLastLiveMs(int sessionId) const
+{
+    qint64 liveAt = m_scannerStates.value(sessionId).lastActivityMs;
+    for (const AgentSession &session : std::as_const(m_agentSessions))
+        if (session.id == sessionId) {
+            liveAt = qMax(liveAt, session.startedAtMs);
+            break;
+        }
+    return liveAt;
+}
+
+// Is this session *actually* executing work right now? The stored status can't
+// answer that on its own — the family of adhoc #143/#157: a terminal `result`
+// event that never landed, a run killed along with the app, a resume that
+// produced no turn, or a completion poll still waiting on a background process
+// the agent left running all park a finished session on "Running". Gates that
+// trusted the status alone therefore told the user an agent was still working on
+// a task it had finished (adhoc #1537).
+//
+// Same rules as runningAgentBlockers(), scoped to one session: ForkMesh owns
+// something that is executing it, and it has produced output recently — a working
+// agent streams continuously, so a long silence means stuck or done, not busy.
+bool MainWindow::agentSessionWorkInFlight(int sessionId) const
+{
+    if (sessionId <= 0)
+        return false;
+    const AgentSession *session = nullptr;
+    for (const AgentSession &candidate : std::as_const(m_agentSessions))
+        if (candidate.id == sessionId) {
+            session = &candidate;
+            break;
+        }
+    // Landed work is finished by definition, whatever the status still reads.
+    if (session && session->merged)
+        return false;
+    // A session launched moments ago isn't in m_agentSessions until the next
+    // reloadAgents(); runningAgentBlockers() falls back to the same creation-time
+    // snapshot so it isn't invisible here either.
+    const QString status = session ? session->status
+                                   : m_streamSessionInfo.value(sessionId).status;
+    // Waiting is deliberately not in flight: the turn ended and the agent is
+    // parked on the user's reply or approval, so nothing is executing and it can
+    // sit that way indefinitely — the same distinction adhoc #91 drew for the
+    // rebuild gate. Everything else has finished, failed or been stopped.
+    if (status != AgentStatus::Running && status != AgentStatus::Queued)
+        return false;
+    // A watch-only row is somebody else's CLI — there is no process of ours to
+    // inspect, and the transcript scan that produced the row already resolved its
+    // liveness (externalIsLive) before calling it Running.
+    if (isExternalSession(sessionId))
+        return true;
+    // Queued: nothing is executing yet, but the queue is about to start it.
+    if (m_agentQueue.contains(sessionId))
+        return true;
+    if (runnerForSession(sessionId)) // headless AgentRunner mid-run
+        return true;
+    ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
+    CodexAppServerSession *codex = m_codexStreams.value(sessionId);
+    // No live process at all: whatever the status says, nothing can be working
+    // and nothing more can be committed.
+    const bool claudeLive = claude && claude->running();
+    // Codex tracks turn boundaries precisely, so an app-server idling between
+    // turns can't be mistaken for in-flight work.
+    const bool codexLive = codex && codex->running() && codex->turnActive();
+    if (!claudeLive && !codexLive)
+        return false;
+    // The Claude Code CLI stays alive across turns, so back the status up with the
+    // same liveness window runningAgentBlockers() uses.
+    const qint64 liveAt = agentSessionLastLiveMs(sessionId);
+    return liveAt > 0 &&
+           (QDateTime::currentMSecsSinceEpoch() - liveAt) < kAgentSilentStaleMs;
 }
 
 bool MainWindow::stopAgentSessionById(int sessionId)

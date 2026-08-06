@@ -6285,6 +6285,20 @@ int main(int argc, char *argv[])
         other.associationOnly = false;
         other.prNumber = 0;
         window.testAddAgentSession(other);
+        // adhoc #1537: a session whose stored status never came off "Running" —
+        // a terminal `result` event that never landed, a run killed with the app,
+        // a completion poll still waiting on a background process (adhoc
+        // #143/#157) — must not make the merge insist the user stop an agent that
+        // finished long ago ("Agent #N is still working" over completed work).
+        // Nothing owns a runner, stream or queue slot for this id, so no work can
+        // be in flight; if the gate believed the status anyway its modal would
+        // block this test instead of letting the merge land below.
+        AgentSession staleRunning = ran;
+        staleRunning.id = 13043;
+        staleRunning.status = AgentStatus::Running;
+        staleRunning.startedAtMs =
+            QDateTime::currentMSecsSinceEpoch() - 3600 * 1000;
+        window.testAddAgentSession(staleRunning);
 
         // A prior crashed ref publication must not poison every later branch
         // merge. Model the orphaned lock from the reported failure; a lock this
@@ -6300,7 +6314,9 @@ int main(int argc, char *argv[])
 
         check(window.testMergeBranchAndCleanUp(cleanBranch),
               QStringLiteral("\"Merge & clean up\" lands the agent branch in the "
-                             "default branch"));
+                             "default branch, and a session left stuck on "
+                             "\"Running\" with nothing executing it doesn't hold "
+                             "the merge back (adhoc #1537)"));
         check(!QFileInfo::exists(staleHeadLock),
               QStringLiteral("merge recovers an orphaned HEAD.lock instead of "
                              "misreporting a content conflict"));
@@ -6313,6 +6329,9 @@ int main(int argc, char *argv[])
         check(!window.testHasAgentSession(13041),
               QStringLiteral("\"Merge & clean up\" deletes the branch's "
                              "provenance-only Agent record too"));
+        check(!window.testHasAgentSession(13043),
+              QStringLiteral("\"Merge & clean up\" also clears the session that was "
+                             "stuck on \"Running\" for the merged branch"));
         check(window.testHasAgentSession(13042),
               QStringLiteral("\"Merge & clean up\" keeps agent entries for other "
                              "branches"));

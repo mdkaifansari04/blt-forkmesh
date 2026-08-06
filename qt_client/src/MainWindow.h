@@ -3094,6 +3094,19 @@ private:
     // True while sessionId is one "Stop" would act on (running, waiting or
     // queued, and not already merged).
     bool isStoppableAgentSession(int sessionId) const;
+    // True only while sessionId is *actually* executing work: ForkMesh owns a
+    // runner/CLI process for it (or the queue is about to start one) and it has
+    // streamed output recently. The stored Running/Queued status is not proof on
+    // its own — it sticks when a terminal event never lands (adhoc #143/#157) —
+    // so anything that would interrupt the user over a live agent asks this
+    // instead of the status (adhoc #1537).
+    bool agentSessionWorkInFlight(int sessionId) const;
+    // Wall-clock of the last sign of life from a session: the last raw output it
+    // streamed, or its launch while nothing has streamed yet. 0 when unknown.
+    qint64 agentSessionLastLiveMs(int sessionId) const;
+    // How long a session may stay completely silent before a stored "Running" is
+    // treated as stale rather than busy: a working agent streams continuously.
+    static constexpr qint64 kAgentSilentStaleMs = 90'000;
     // "Stop all" read backwards (adhoc #136): the idle sessions — stopped or
     // failed, ours, not merged — that can be resumed, across all repos.
     QList<int> startableAgentSessionIds() const;
