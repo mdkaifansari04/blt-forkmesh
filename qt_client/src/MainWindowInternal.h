@@ -3066,6 +3066,10 @@ const QString kMachineNodeNameSetting = QStringLiteral("node/machineName");
 // Persisted Hosts list (adhoc #263): non-sensitive JSON metadata only
 // ({name, ip, user, status}). Legacy password fields are removed on load.
 const QString kHostsSetting = QStringLiteral("hosts/list");
+const QString kMirrorFleetEnabledSetting =
+    QStringLiteral("hosts/healthyMirrorFleet/enabled");
+const QString kMirrorFleetDesiredSetting =
+    QStringLiteral("hosts/healthyMirrorFleet/desired");
 const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
 const QString kServerUrlSetting = QStringLiteral("server/url");
