@@ -710,6 +710,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ActionStore.cpp
         src/ActionRunner.h
         src/ActionRunner.cpp
+        src/SystemStats.h
+        src/SystemStats.cpp
     )
     target_include_directories(forkmesh-action-security-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
