@@ -163,19 +163,26 @@ async def _flush(env, now):
 
 
 async def metrics_summary_handler(env, request):
-    """GET /api/metrics/summary?minutes=N — buckets for the landing page.
+    """GET /api/metrics/summary?minutes=N&limit=M — buckets for the landing
+    page and the Qt client's Web Requests tab.
 
     Public and content-free by construction: route groups are masked labels,
     counts and latencies only (the /status page already exposes coarser
-    health publicly).
+    health publicly). `limit` caps the groups list; the default keeps the
+    landing page's historical top-40 shape, while the ceiling comfortably
+    covers every group route_group() can mint (GROUP_LIMIT plus "other").
     """
+    query = parse_qs(urlparse(request.url).query)
     try:
-        minutes = int(
-            parse_qs(urlparse(request.url).query)
-            .get("minutes", ["60"])[0])
+        minutes = int(query.get("minutes", ["60"])[0])
     except Exception:
         minutes = 60
     minutes = max(10, min(minutes, 1440))
+    try:
+        limit = int(query.get("limit", ["40"])[0])
+    except Exception:
+        limit = 40
+    limit = max(1, min(limit, 500))
     now = int(Date.now())
     since = ((now // MINUTE_MS) * MINUTE_MS) - minutes * MINUTE_MS
     rows = await d1_all(
@@ -228,7 +235,7 @@ async def metrics_summary_handler(env, request):
         "rev": str(getattr(env, "BUILD_REV", "") or ""),
         "minutes": sorted(per_minute.values(), key=lambda m: m["t"]),
         "classes": classes,
-        "groups": groups[:40],
+        "groups": groups[:limit],
     }, cache_control="no-store, max-age=0, must-revalidate")
 
 
