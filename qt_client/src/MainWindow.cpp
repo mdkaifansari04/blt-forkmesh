@@ -44,6 +44,7 @@ QString networkRequestEventFor(const QUrl &url)
         {"/api/security", "security report"},
         {"/api/forkbot", "forkbot chat"},
         {"/api/chat", "chat"},
+        {"/api/notifications", "ping inbox"},
         {"/api/accounts", "account"},
         {"/api/oauth", "account"},
     };

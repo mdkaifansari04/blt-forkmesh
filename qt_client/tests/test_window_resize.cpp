@@ -6014,6 +6014,48 @@ int main(int argc, char *argv[])
               QStringLiteral("an empty category's chip shows no count at all"));
     }
 
+    // adhoc #1546: red means "this request failed". The verbose net line quotes
+    // the peeked response body, and the ping inbox's recovery notices name the
+    // outage they close ("Last failure: …") — a healthy 200 whose payload says
+    // {"ok":true,…} must not be painted red by words from that body. A reply
+    // that really failed still is, including a 200 carrying {"ok":false,…}.
+    {
+        window.testResetNetworkLog();
+        window.testLogSystem(QStringLiteral(
+            "net GET 200 [body: {\"ok\":true,\"notifications\":[{\"kind\":"
+            "\"operational_alert\",\"title\":\"Mirror node - mirror10 "
+            "recovered\",\"body\":\"Down for under a minute. Last failure: "
+            "mirror10 has not supplied a fresh signed ForkMesh repository "
+            "proof\"}]}] https://forkmesh.com/api/notifications?node=jett "
+            "\xC2\xB7 ping inbox"));
+        QStringList stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) != QStringLiteral("ERROR"),
+              QStringLiteral("a 200 whose ok:true body quotes a recovered "
+                             "outage is not badged ERROR"));
+
+        window.testResetNetworkLog();
+        window.testLogSystem(QStringLiteral(
+            "net POST 200 [body: {\"ok\":false,\"error\":\"forbidden\"}] "
+            "https://forkmesh.com/api/notifications \xC2\xB7 ping inbox"));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("ERROR"),
+              QStringLiteral("a 200 whose body reports ok:false is still ERROR"));
+
+        window.testResetNetworkLog();
+        window.testLogSystem(QStringLiteral(
+            "net GET ERR 503 Service Unavailable [body: {\"ok\":false,"
+            "\"error\":\"mirror_unavailable\"}] "
+            "https://forkmesh.com/api/repo/jett/forkmesh \xC2\xB7 repo fetch"));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("ERROR"),
+              QStringLiteral("a failed reply is still classified from the body "
+                             "that explains it"));
+        window.testResetNetworkLog();
+    }
+
     // adhoc #73: clicking the footer stall badge drafts a "fix these stalls"
     // prompt (with the log locations) into the quick-add composer, and every
     // stall also lands in the main app log rather than only the dialog.

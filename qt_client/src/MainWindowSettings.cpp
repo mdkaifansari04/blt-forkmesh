@@ -4130,6 +4130,29 @@ const Rule kNetworkLogRules[] = {
 const char *const kStallBadge = "STALL";
 const char *const kStallAccent = "#d29922";
 
+// Did this line report a request the server answered successfully with a
+// payload that says so? A verbose request line reads
+// "net GET 200 [body: …] <url> · <event>"; a failed one reads "net GET ERR 429
+// …", and a 2xx carrying {"ok":false,…} is a failure the status code alone does
+// not show. `withoutBody` is the line with the peeked snippet removed and
+// `body` is that snippet, both lower-cased.
+bool networkLogRequestSucceeded(const QString &withoutBody, const QString &body)
+{
+    if (!withoutBody.startsWith(QLatin1String("net ")))
+        return false;
+    const QStringList parts =
+        withoutBody.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (parts.size() < 3)
+        return false;
+    bool numeric = false;
+    const int code = parts.at(2).toInt(&numeric);
+    if (!numeric || code < 200 || code >= 400)
+        return false;
+    QString compact = body;
+    compact.remove(QLatin1Char(' '));
+    return compact.contains(QLatin1String("\"ok\":true"));
+}
+
 NetworkLogStyle networkLogStyleFor(const QString &message)
 {
     const QString lower = message.toLower();
@@ -4139,32 +4162,40 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
     // "failed"/"unable" and would otherwise mis-badge the stall as ERROR.
     if (lower.contains(QLatin1String("ui stalled")))
         return {QString::fromLatin1(kStallAccent), QString::fromLatin1(kStallBadge)};
-    // Errors / failures take precedence over any category — red is reserved
-    // for these so it always means "something failed."
-    if (lower.contains("fail") || lower.contains("error") ||
-        lower.contains("could not") || lower.contains("couldn't") ||
-        lower.contains("no live") || lower.contains("denied") ||
-        lower.contains("blocks ") || lower.contains("unable")) {
-        return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
-    }
     // Category should reflect *what drove the request*, not the payload the
     // server happened to return. The verbose "net" log line embeds a peeked
     // response snippet as "[body: …]", and a repository object always carries
     // fields like "solana" and "lastSync" — so matching the rules against the
     // body mis-badged a catalog publish as WALLET (from the "solana" JSON key)
     // or SYNC (from "lastSync"). Drop the bracketed body before classifying so
-    // the badge comes from the verb/URL/event instead (adhoc #182). The error
-    // precedence check above still runs on the full message, because a failure
-    // reply's explanation is often only in that server-sent body.
+    // the badge comes from the verb/URL/event instead (adhoc #182).
     QString forRules = lower;
+    QString body;
     const int bodyStart = forRules.indexOf(QLatin1String("[body:"));
     if (bodyStart >= 0) {
         // The body snippet can itself contain ']' (JSON arrays), so cut to the
         // last ']' — the closing bracket we appended, since the trailing URL
         // and event text don't contain one.
         const int bodyEnd = forRules.lastIndexOf(QLatin1Char(']'));
-        if (bodyEnd > bodyStart)
+        if (bodyEnd > bodyStart) {
+            body = forRules.mid(bodyStart, bodyEnd - bodyStart + 1);
             forRules.remove(bodyStart, bodyEnd - bodyStart + 1);
+        }
+    }
+    // Errors / failures take precedence over any category — red is reserved
+    // for these so it always means "something failed." The test reads the
+    // server's own words too, because a failed reply's explanation is often
+    // only in that peeked body — but not when the request succeeded and the
+    // body itself reports ok: a recovered ping quotes the outage it closes
+    // ("Last failure: mirror10 has not supplied…"), which painted a healthy
+    // "net GET 200 [body: {"ok":true,…}]" line red (adhoc #1546).
+    const QString &forErrors =
+        networkLogRequestSucceeded(forRules, body) ? forRules : lower;
+    if (forErrors.contains("fail") || forErrors.contains("error") ||
+        forErrors.contains("could not") || forErrors.contains("couldn't") ||
+        forErrors.contains("no live") || forErrors.contains("denied") ||
+        forErrors.contains("blocks ") || forErrors.contains("unable")) {
+        return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
     }
     for (const Rule &r : kNetworkLogRules) {
         if (forRules.contains(QLatin1String(r.needle)))
