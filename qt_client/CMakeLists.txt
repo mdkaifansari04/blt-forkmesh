@@ -969,8 +969,8 @@ if(FORKMESH_BUILD_TESTS)
     # perf-tests each recompile every app source, so building them implicitly
     # tripled the cost of a plain `cmake --build build` (what run.sh and the
     # in-app quick-update do). They still build on demand — `--target check`
-    # below depends on all of them, run.sh test and ci.yml name their targets
-    # explicitly, and the release/deploy builds configure with
+    # below depends on all of them, run.sh test and ci.yml build the
+    # `critical-tests` aggregate, and the release/deploy builds configure with
     # FORKMESH_BUILD_TESTS=OFF anyway.
     set_target_properties(
         forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
@@ -1030,11 +1030,23 @@ if(FORKMESH_BUILD_TESTS)
     # The default developer/CI suite stays intentionally small: deployment
     # trust boundaries, private/public mirror encryption, and the agent
     # transport. The remaining targets are available for focused changes.
-    set_tests_properties(
+    set(FORKMESH_CRITICAL_TESTS
         forkmesh-control-tests forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests forkmesh-codex-tests
-        forkmesh-vm-runtime-tests forkmesh-mirror-fleet-window-tests
+        forkmesh-vm-runtime-tests forkmesh-mirror-fleet-window-tests)
+    set_tests_properties(${FORKMESH_CRITICAL_TESTS}
         PROPERTIES LABELS "critical" TIMEOUT 20)
+    # The binaries those test names execute. Not the same list: the mirror
+    # fleet suite is a second, flag-selected run of forkmesh-window-tests.
+    # Every critical test target is EXCLUDE_FROM_ALL, so ctest reports a bare
+    # "***Not Run" when one was never built -- promoting a suite to critical
+    # without teaching ci.yml to build it is silent until the run fails. This
+    # aggregate is what ci.yml builds, so the two can no longer drift apart.
+    set(FORKMESH_CRITICAL_TEST_TARGETS
+        forkmesh-control-tests forkmesh-private-mirror-tests
+        forkmesh-public-mirror-tests forkmesh-codex-tests
+        forkmesh-vm-runtime-tests forkmesh-window-tests)
+    add_custom_target(critical-tests DEPENDS ${FORKMESH_CRITICAL_TEST_TARGETS})
     # The e2e loop drives real git subprocesses and needs the stub agent's path.
     set_tests_properties(forkmesh-e2e PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;FORKMESH_E2E_STUB_AGENT=$<TARGET_FILE:forkmesh-e2e-stub-agent>")
