@@ -115,10 +115,27 @@ def test_trigger_samples_status_directly_then_kicks_the_alarm_runner():
     assert "_cron_runner_kick(self.env)" in scheduled
     assert scheduled.index("record_status_sample(self.env)") < \
         scheduled.index("_cron_runner_kick(self.env)")
-    # The maintenance batch keeps its own sample call: with the claim row in
-    # record_status_sample exactly one caller records each minute, and the
-    # runner covers minutes where the trigger's Python wrapper was killed.
-    assert "record_status_sample" in jobs
+    # ... but the direct probe run holds the scheduled wrapper open for ~25s
+    # of awaited I/O in a serving isolate, which re-triggered the Pyodide
+    # "Cannot enter into task" isolate wedge on the clone path (2026-08-06).
+    # The trigger therefore gates the direct sample behind one cheap D1
+    # staleness read: it probes only while the runner is provably not
+    # landing runner-tagged claims, and the gate FAILS OPEN into sampling.
+    assert "_runner_status_sample_is_stale(self.env" in scheduled
+    assert scheduled.index("_runner_status_sample_is_stale(self.env") < \
+        scheduled.index("record_status_sample(self.env)")
+    stale_gate = ast.unparse(next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_runner_status_sample_is_stale"))
+    assert "claim LIKE 'runner-%'" in stale_gate
+    assert "return True" in stale_gate
+    # The maintenance batch keeps its own sample call — tagged as the runner,
+    # which is exactly what the trigger's staleness gate looks for: with the
+    # claim row in record_status_sample exactly one caller records each
+    # minute, and the runner covers minutes where the trigger's Python
+    # wrapper was killed.
+    assert "record_status_sample(self.env, source='runner')" in jobs
     assert "https_mirror_health_cron" in jobs
     assert "_cron_watchdog_completion" in jobs
 
