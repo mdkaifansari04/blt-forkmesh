@@ -4013,11 +4013,12 @@ LEADERBOARD_LIMIT = 10  # rows returned per board
 
 async def _record_contributor(env, author, kind):
     # Bump a contributor's running activity tally. kind is one of
-    # "issues"/"pulls"/"commits". Called as signed issue/PR/commit events are
+    # "issues"/"pulls"/"commits"/"discussions". Called as signed issue/PR/commit
+    # (and discussion) events are
     # accepted into the inbox; best-effort so a tally failure never blocks the
     # submission. author is the public contributor name.
     name = clean_string(author or "", MAX_NODE_NAME)
-    if not name or kind not in ("issues", "pulls", "commits"):
+    if not name or kind not in ("issues", "pulls", "commits", "discussions"):
         return
     try:
         author_bi = await blind_index(env, name.lower())
@@ -10480,6 +10481,7 @@ SCHEMA_ALTER_STATEMENTS = [
     # Operator-settable flag granting a user access to the /outreach console
     # without a roster row (migration 0040). Mirrors is_admin.
     "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE contributor_activity ADD COLUMN discussions INTEGER NOT NULL DEFAULT 0",
     # Early local builds created membership rows before their encrypted display
     # payload was added. Existing blind-index grants remain valid; new writes
     # always provide this ciphertext column.
@@ -15589,7 +15591,8 @@ def _account_public_last_email(rec):
     }
 
 
-def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
+def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket="",
+                              issues=0, pulls=0, commits=0, discussions=0):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     solana = (rec.get("solana") or "").strip()
     return {
@@ -15603,6 +15606,10 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
+        "issues": int(issues),
+        "pulls": int(pulls),
+        "commits": int(commits),
+        "discussions": int(discussions),
         # Payout addresses are public profile data, but never pass through a
         # malformed value from a stored record.
         "solana": solana if SOLANA_RE.match(solana) else "",
@@ -15666,8 +15673,10 @@ async def _account_users_directory(env, request):
     seen = set()
     rows = await d1_all(
         env,
-        "SELECT u.data,u.user_bi,a.total_active_ms FROM users u "
+        "SELECT u.data,u.user_bi,a.total_active_ms,c.issues,c.pulls,"
+        "c.commits,c.discussions FROM users u "
         "LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "
+        "LEFT JOIN contributor_activity c ON c.author_bi=u.user_bi "
         "ORDER BY u.username COLLATE NOCASE LIMIT ?",
         1000,
     )
@@ -15686,7 +15695,12 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(
             rec, row.get("total_active_ms", 0),
-            activity_buckets.get(row.get("user_bi"), "")))
+            activity_buckets.get(row.get("user_bi"), ""),
+            issues=int(row.get("issues", 0)),
+            pulls=int(row.get("pulls", 0)),
+            commits=int(row.get("commits", 0)),
+            discussions=int(row.get("discussions", 0)),
+        ))
 
     # The campfire seats members in this same array order, one bench per
     # account for the session — so this is sorted by join date (oldest
@@ -31550,6 +31564,7 @@ async def discussions_handler(env, request, owner, repo):
                 env, request, owner, repo, "discussion", event.get("type"),
                 number, item.get("titleIfNew", ""), event.get("body", ""),
                 event.get("authorName", "")))
+        await _record_contributor(env, event.get("author", ""), "discussions")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
