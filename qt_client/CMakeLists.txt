@@ -158,6 +158,7 @@ set(FORKMESH_MAIN_WINDOW_SOURCES
     src/MainWindowChat.cpp
     src/MainWindowTasks.cpp
     src/MainWindowNotes.cpp
+    src/MainWindowFiles.cpp
     src/MainWindowIssues.cpp
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp
