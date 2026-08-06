@@ -16,7 +16,10 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+ENTRY_TEXT = (
+    ENTRY.read_text(encoding="utf-8") + "\n"
+    + ENTRY.with_name("status_monitoring.py").read_text(encoding="utf-8")
+)
 
 SYSTEMS = [("edge_api", "Edge API"), ("flagship_repository", "Flagship repo")]
 
