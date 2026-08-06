@@ -12,12 +12,21 @@ Since 2026-08, the public site is served by four Cloudflare Workers on the
 
 ## Design invariants
 
-- **The relay is a complete fallback.** `public/` remains the single source of
-  truth; `tools/build_split_assets.py` *copies* subsets into `public_www/` and
-  `public_world/` (gitignored) at deploy time. Deleting a split Worker deletes
-  its routes, and the relay's custom domain resumes serving those paths
-  byte-identically. That is the entire rollback procedure:
-  `npx wrangler delete --name forkmesh-www` / `--name forkmesh-world`.
+- **Each Worker carries only the files it needs.** `public/` remains the
+  single source of truth; `tools/build_split_assets.py` *copies* per-Worker
+  subsets into `public_www/`, `public_world/`, `public_api/`, and
+  `public_relay/` (all gitignored) at deploy time. The relay's copy drops
+  exactly what the split Workers own (`world/`, `docs/`, and the marketing
+  documents behind forkmesh-www's routes) but keeps `blog.html` + `blog/`
+  (its `/rss.xml` and cron blog-board refresh read them via ASSETS),
+  `index.html` (homepage), the auth/chat documents, `dashboard/`, `notes/`,
+  `assets/`, `favicon/`, and every root-level script. The api Worker's copy
+  is the audited set its `/api/*` Python reads through ASSETS.
+- **Rollback**: deleting `forkmesh-api` rolls `/api/*` straight back to the
+  relay (same application). Deleting `forkmesh-www`/`forkmesh-world` frees
+  their routes, but the slimmed relay no longer carries those files — so a
+  full rollback of the assets split is `git revert` + `./deploy.sh` (the
+  relay's staging then re-includes everything), not just a worker delete.
 - **`/` stays on the relay** because `_serve_homepage` records
   `site_referrers` (feeding `/referrals` and `/api/referrals/sites`) and
   serves `index.html` with `cache-control: no-cache`.
