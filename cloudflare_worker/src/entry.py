@@ -38122,6 +38122,7 @@ ORG_AGENT_MODEL_ALIASES = {
         "fable": "claude-fable-5",
     },
     "codex": {
+        "spark": "gpt-5.3-codex-spark",
         "sol": "gpt-5.6-sol",
         "luna": "gpt-5.6-luna",
         "terra": "gpt-5.6-terra",
