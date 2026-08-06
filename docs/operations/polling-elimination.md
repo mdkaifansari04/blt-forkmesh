@@ -26,6 +26,8 @@ for the rest:
 | --- | --- | --- |
 | Go mirror node intake bridge (`mirror_node/intake.go`) | `GET /api/repo/*/pending` every 5s per node — the busiest endpoint on the relay | Push-only: one `EventSocket` (`mirror_node/nodeevents.go`) to `wss://…/api/nodes/events`; worker starts on push, stops `intakeIdleGrace` after the last one. `intakePollInterval` is parsed but ignored. No fallback poll. |
 | Qt headless mirror-bridge worker badges | fleet-wide `/pending` probes through every refresh tick | already skipped when headless (`MainWindowReleases.cpp` `fetchMirrorPendingCounts`) |
+| Qt desktop fallback inbox sync (`m_inboxPollTimer`) | `GET /api/sync` every 5m (15m while the event socket was up) | Timer deleted. The `NodeEventSocket` is the only sync trigger: push → debounced sync, plus one catch-up sync per (re)connect and one 20s post-launch pass. |
+| Qt desktop `/pending` badge fetch (`fetchMirrorPendingCounts`) | refetched on a 10m TTL through every roster/refresh tick | Fetch-once per repo; the cache entry is invalidated only by a node event push, a local drain, or an explicit repo open (user action). Steady-state ticks reuse the cache with no HTTP. Folding the tallies into the event frame itself (dropping the GET) remains open. |
 
 ## Inventory: still polling (relay-facing)
 
@@ -33,8 +35,6 @@ for the rest:
 
 | # | Poller | Interval | Endpoint(s) |
 | --- | --- | --- | --- |
-| 1 | `m_inboxPollTimer` fallback sync (`MainWindow.cpp:610`, `MainWindowRepos.cpp:3764`) | 5m (15m while `NodeEventSocket` is up) | `GET /api/sync` |
-| 2 | `fetchMirrorPendingCounts` badge refresh (`MainWindowReleases.cpp:3469`) | 10m per open repo | `GET /api/repo/*/pending` |
 | 3 | `m_adminPollTimer` pending-user verification (`MainWindowSetup.cpp:1894`) | 5m (admins only) | pending-users API |
 | 4 | `m_chatDirectoryTimer` (`MainWindowMessages.cpp:1018`) | 60s | `GET /api/accounts/users` (edge-cached) |
 | 5 | `m_directMirrorRegistrationTimer` (`MainWindowControlNode.cpp:743`) | 5m | mirror registration renewal |
@@ -85,17 +85,15 @@ Already event-driven: the SSH post-receive refresh path
 ## Elimination plan
 
 **Phase 1 — desktop client goes push-only (mirrors of the intake pattern).**
-Delete the `m_inboxPollTimer` fallback: `NodeEventSocket` already exists, so
-port the mirror-node rules to it — catch-up sync on every (re)connect (already
-present as `scheduleRelaySync()` in `connectedChanged`), then remove the timer
-instead of relaxing it. Replace `fetchMirrorPendingCounts` (#2) with a
-badge-count push: the relay already knows the counts at write time
-(`notify_repo_host` fires on every submission), so include the per-topic tally
-in the event frame — the frame stays tiny and content-free — and drop the
-`/pending` GET from the desktop entirely. #3–#7 each become a topic on the
-same socket (`admin-pending`, `directory`, `notes`, `agent-limits`); the
-relay's write paths already call `notify_repo_host` hooks where most of these
-change.
+Done for the two big ones (see the eliminated table): the `m_inboxPollTimer`
+fallback is deleted and `fetchMirrorPendingCounts` is fetch-once with
+push/drain/open invalidation. Remaining: include the per-topic tally in the
+event frame itself — the relay already knows the counts at write time
+(`notify_repo_host` fires on every submission) and the frame stays tiny and
+content-free — so the desktop's `/pending` GET disappears entirely. #3–#7
+each become a topic on the same socket (`admin-pending`, `directory`,
+`notes`, `agent-limits`); the relay's write paths already call
+`notify_repo_host` hooks where most of these change.
 
 **Phase 2 — mirror node git sync.** Add a `commits` push from the relay's
 post-receive/refresh paths to `ForkMeshNodes`, subscribe the Go daemon's
