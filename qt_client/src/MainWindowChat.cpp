@@ -28,6 +28,7 @@
 #include <QDialogButtonBox>
 #include <QDateTimeEdit>
 #include <QElapsedTimer>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
@@ -1537,9 +1538,11 @@ QWidget *MainWindow::buildChatPage()
     // destination is reached through the third state of the bottom-left log
     // overlay, so it no longer consumes a second navigation entry.
     // directly above Pings (adhoc #97).
+    // Resize left the rail for the debug bar's right-hand tool cluster, beside
+    // the rebuild+restart button it belongs with (see buildStatusBar).
     for (QPushButton *button :
          {m_settingsNavButton, m_navScreenshotButton,
-          m_navResizeButton, m_notesNavButton, m_tasksNavButton,
+          m_notesNavButton, m_tasksNavButton,
           m_notificationButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
 
@@ -1717,19 +1720,124 @@ QWidget *MainWindow::buildStatusBar()
         debugRow->addWidget(m_logActivityLights, 0, Qt::AlignVCenter);
     debugRow->addStretch(1);
     debugScroll->setWidget(debugContent);
-    debugBarLayout->addWidget(debugScroll);
+    debugBarLayout->addWidget(debugScroll, 1);
+
+    // Window/dev tools live at the debug bar's right edge, outside the scroll
+    // area so they stay pinned to the window edge instead of scrolling away with
+    // the category lights. Rebuild+restart came down from the window-chrome line
+    // and Resize came out of the navigation rail; both are the rail's own
+    // icon-over-caption item, so each keeps its small word under its icon.
+    auto *debugTools = new QWidget;
+    debugTools->setObjectName(QStringLiteral("debugBarTools"));
+    auto *debugToolsRow = new QHBoxLayout(debugTools);
+    debugToolsRow->setContentsMargins(4, 2, 8, 2);
+    debugToolsRow->setSpacing(2);
+    auto *toolsSeparator = new QFrame;
+    toolsSeparator->setObjectName(QStringLiteral("debugBarSeparator"));
+    toolsSeparator->setFrameShape(QFrame::VLine);
+    toolsSeparator->setFixedHeight(32);
+    debugToolsRow->addWidget(toolsSeparator, 0, Qt::AlignVCenter);
+
+    // Third tool: grow the window by a five-line live tail of the log, so the
+    // newest lines are readable without opening the footer overlay or the full
+    // Log page. Checkable — it is a state, not a one-shot action.
+    auto *logTailButton = new ActivityRailButton(QStringLiteral("list-unordered"),
+                                                 QStringLiteral("Log"));
+    m_debugLogTailButton = logTailButton;
+    logTailButton->setObjectName("topNavButton");
+    logTailButton->setCursor(Qt::PointingHandCursor);
+    logTailButton->setToolTip(
+        QStringLiteral("Expand the window with the last %1 log lines, live")
+            .arg(kDebugLogTailLines));
+    connect(logTailButton, &QPushButton::toggled, this,
+            [this](bool on) { setDebugLogTailVisible(on); });
+
+    for (QPushButton *tool : {m_navRebuildButton, m_navResizeButton,
+                              static_cast<QPushButton *>(logTailButton)})
+        if (tool)
+            debugToolsRow->addWidget(tool, 0, Qt::AlignVCenter);
+    debugBarLayout->addWidget(debugTools, 0);
     debugBar->hide();
     statusAreaLayout->addWidget(debugBar);
+
+    // The tail itself sits under the debug bar, spanning the window: five lines
+    // of the same stream setFooterUpdateLine() writes, oldest at top. It is
+    // written to even while hidden (five blocks cost nothing), so revealing it
+    // shows real history rather than waiting for the next event.
+    m_debugLogTail = new QPlainTextEdit;
+    m_debugLogTail->setObjectName(QStringLiteral("debugLogTail"));
+    m_debugLogTail->setReadOnly(true);
+    m_debugLogTail->setFrameShape(QFrame::NoFrame);
+    m_debugLogTail->setMaximumBlockCount(kDebugLogTailLines);
+    m_debugLogTail->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_debugLogTail->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_debugLogTail->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_debugLogTail->document()->setDocumentMargin(0);
+    m_debugLogTail->setToolTip(
+        QStringLiteral("Live log tail \xE2\x80\x94 the newest %1 lines")
+            .arg(kDebugLogTailLines));
+    // Theme.h's global QWidget{font-size:14px} beats setFont(), so the tail's
+    // size has to be declared on the widget itself or the five lines would be
+    // drawn taller than the strip measured for them and the oldest would clip.
+    // Colour and background stay in the theme's #debugLogTail rule.
+    QFont tailFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    tailFont.setPixelSize(11);
+    m_debugLogTail->setFont(tailFont);
+    m_debugLogTail->setStyleSheet(
+        QStringLiteral("QPlainTextEdit#debugLogTail{font-family:'%1';"
+                       "font-size:11px;}")
+            .arg(tailFont.family()));
+    m_debugLogTailHeight =
+        kDebugLogTailLines * QFontMetrics(tailFont).lineSpacing() + 8;
+    m_debugLogTail->setFixedHeight(m_debugLogTailHeight);
+    if (!m_networkLog.isEmpty()) {
+        QStringList seed;
+        for (int i = qMax(0, m_networkLog.size() - kDebugLogTailLines);
+             i < m_networkLog.size(); ++i) {
+            const QString clean = m_networkLog.at(i).trimmed();
+            if (!clean.isEmpty())
+                seed << clean;
+        }
+        m_debugLogTail->setPlainText(seed.join(QLatin1Char('\n')));
+    }
+    m_debugLogTail->hide();
+    statusAreaLayout->addWidget(m_debugLogTail);
 
     connect(versionButton, &QPushButton::toggled, this,
             [this, versionButton](bool expanded) {
                 if (m_debugBar)
                     m_debugBar->setVisible(expanded);
+                // Collapsing the debug bar takes its tail with it: the toggle
+                // that owns the tail lives inside the bar, so leaving the five
+                // lines behind would strand them with no way to dismiss them.
+                if (!expanded && m_debugLogTailButton)
+                    m_debugLogTailButton->setChecked(false);
                 versionButton->setToolTip(
                     expanded ? QStringLiteral("Hide debug activity and resource use")
                              : QStringLiteral("Show debug activity and resource use"));
             });
     return statusArea;
+}
+
+// Five lines of live log below the debug bar. The window grows by exactly that
+// strip rather than the workspace losing five lines to it — the tail is an
+// expansion of the window, not a new claim on the page area. A maximized or
+// full-screen window has no room to grow into, so it just shows the strip.
+void MainWindow::setDebugLogTailVisible(bool visible)
+{
+    if (!m_debugLogTail || m_debugLogTailShown == visible)
+        return;
+    m_debugLogTailShown = visible;
+    const int strip = m_debugLogTailHeight;
+    m_debugLogTail->setVisible(visible);
+    if (m_debugLogTailButton && m_debugLogTailButton->isChecked() != visible)
+        m_debugLogTailButton->setChecked(visible);
+    if (visible)
+        if (QScrollBar *bar = m_debugLogTail->verticalScrollBar())
+            bar->setValue(bar->maximum());
+    if (!isMaximized() && !isFullScreen())
+        resize(width(), qMax(minimumHeight(),
+                             height() + (visible ? strip : -strip)));
 }
 
 // kFooterLogSeedLines (MainWindowInternal.h) bounds both the startup seed and
@@ -8283,18 +8391,25 @@ QWidget *MainWindow::buildBreadcrumb()
             [this] { showSection(kUsersSectionIndex); });
     m_usersNavButton->setVisible(m_isAdmin);
 
-    // Small, icon-only rebuild+restart button, right-aligned under the avatar on
-    // the section-nav row. Hidden unless opted in via Settings (off by default);
-    // it's a dev-iteration shortcut for the same fast rebuild as the profile panel.
-    m_navRebuildButton = new QPushButton;
-    m_navRebuildButton->setObjectName("topNavButton");
-    m_navRebuildButton->setCursor(Qt::PointingHandCursor);
-    m_navRebuildButton->setToolTip(
+    // Rebuild+restart. It used to be an icon-only button on the window-chrome
+    // line; it now sits in the debug bar's right-hand tool cluster as a captioned
+    // rail item (see buildStatusBar), so the icon carries its word like every
+    // other labelled control. Hidden unless opted in via Settings (off by
+    // default); it's a dev-iteration shortcut for the same fast rebuild as the
+    // profile panel. iconSize is pinned because startButtonSpin renders its
+    // rotating frames at the button's icon size, and ActivityRailButton paints
+    // that icon in place of the octicon while the restart spin runs.
+    auto *rebuildButton = new ActivityRailButton(QStringLiteral("sync"),
+                                                 QStringLiteral("Restart"));
+    m_navRebuildButton = rebuildButton;
+    rebuildButton->setCheckable(false);
+    rebuildButton->setObjectName("topNavButton");
+    rebuildButton->setCursor(Qt::PointingHandCursor);
+    rebuildButton->setIconSize(QSize(kRailIconPx, kRailIconPx));
+    rebuildButton->setToolTip(
         QString::fromUtf8("Rebuild & restart \xE2\x80\x94 fast local rebuild, "
                           "then relaunch"));
-    m_navRebuildButton->setFixedSize(30, 30);
-    setOcticon(m_navRebuildButton, "sync", 14);
-    connect(m_navRebuildButton, &QPushButton::clicked, this,
+    connect(rebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_navRebuildButton); quickRebuildRestart(); });
 
     // "Log in / Sign up" pill (adhoc #115). The old first-run screen that asked
@@ -8420,9 +8535,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // #124) — its colour moved to the dot above the instance logo and its
     // node blips to the node dots beside the agent fleet.
     // Resource traces and the version moved to the opt-in debug/status rows at
-    // the bottom, leaving this chrome cluster for window-level actions only.
-    chromeRow->addWidget(m_navRebuildButton, 0, Qt::AlignVCenter);
-    chromeRow->addSpacing(8);
+    // the bottom, leaving this chrome cluster for the window buttons only —
+    // rebuild+restart went down to the debug bar's tool cluster with Resize.
 
     auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
         auto *button = new QPushButton;
@@ -16946,6 +17060,7 @@ QWidget *networkTabPage()
 
 enum UsersColumn {
     kUsersColName = 0,
+    kUsersColSolana,
     kUsersColVerified,
     kUsersColStatus,
     kUsersColJoined,
@@ -16962,7 +17077,8 @@ enum UsersColumn {
 
 QStringList usersTableHeaders()
 {
-    return {QStringLiteral("User"), QStringLiteral("Email verified"),
+    return {QStringLiteral("User"), QStringLiteral("Solana"),
+            QStringLiteral("Email verified"),
             QStringLiteral("Status"), QStringLiteral("Joined"),
             QStringLiteral("World activity"),
             QStringLiteral("Activity recency"), QStringLiteral("Last email"),
@@ -17117,6 +17233,14 @@ void MainWindow::renderUsersPage(const QJsonArray &users)
         if (avatar != m_avatars.constEnd())
             nameItem->setIcon(QIcon(*avatar));
         m_usersTable->setItem(row, kUsersColName, nameItem);
+
+        const QString solana =
+            user.value(QStringLiteral("solana")).toString().trimmed();
+        m_usersTable->setItem(
+            row, kUsersColSolana,
+            usersTableItem(solana.isEmpty() ? QStringLiteral("Not set")
+                                             : solana,
+                           solana.toLower()));
 
         const bool verified =
             user.value(QStringLiteral("emailVerified")).toBool();

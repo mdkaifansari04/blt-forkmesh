@@ -494,6 +494,12 @@ public:
     {
         return applyFooterWebsiteStatusPayload(payload);
     }
+    // Streams one line through the live-log fan-out (footer strip, category
+    // lights and the debug bar's five-line tail) without a real event.
+    void testSetFooterUpdateLine(const QString &line)
+    {
+        setFooterUpdateLine(line);
+    }
     void testShowHostsSection() { showSection(7); }
     void testSetDirectoryUserNodes(const QString &user,
                                    const QStringList &nodes);
@@ -3461,6 +3467,9 @@ private:
     bool handlePromptPlacementEvent(QObject *object, QEvent *event);
     void clampPromptOverlayIntoHost();
     void setLogOverlayExpanded(bool expanded);
+    // Debug bar's Log tool: show/hide the five-line live tail, growing or
+    // shrinking the window by exactly that strip.
+    void setDebugLogTailVisible(bool visible);
     void loadRepoFileTree();
     void loadCoveExplorer();
     void refreshCoveExplorerTree();
@@ -4829,6 +4838,11 @@ private:
     // reviewable list with per-submission and sync-all actions. Counts stay on
     // the three toolbar buttons via the public, content-free /pending endpoint.
     void showPendingInbox(const RepositoryRecord &repo, const QString &kind);
+    // One line for "the relay refused this because it is rate-limited", naming
+    // how long its host-wide cooldown still has to run when that is known. Used
+    // where a request the reader asked for was answered by the backoff instead
+    // of the network, so an alarming modal would only mislead.
+    QString relayCooldownMessage(const QString &host) const;
     void showPendingInboxDialog(const RepositoryRecord &repo,
                                 const QString &kind,
                                 const QJsonArray &pending);
@@ -4856,6 +4870,15 @@ private:
     // taken by value so the async reply can't dangle.
     void drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
                              bool forceMirrorIntake = false);
+    // Backoff bookkeeping shared by the issue/pull/discussion inbox drains. A
+    // rejected drain (HTTP 401/403) is not transient backpressure: the relay
+    // decides authorization from this node's identity and its membership in
+    // the repo's signed mirror group, so a node outside that group is rejected
+    // identically on every retry. See MainWindowIssues.cpp for why the first
+    // few rejections still retry on the normal cadence.
+    void noteInboxDrainFailure(const QString &backoffKey, int status,
+                               bool mirrorIntake);
+    void noteInboxDrainSuccess(const QString &backoffKey);
     void pollMirrorIssueInboxes();
     void drainPullsInboxFor(RepositoryRecord repo, bool interactive,
                             bool forceMirrorIntake = false);
@@ -5708,6 +5731,13 @@ private:
     // Version-controlled strip below the one-line status bar. It owns the live
     // resource chart, labeled log counters and newest website minute states.
     QWidget *m_debugBar = nullptr;
+    // Optional five-line live log tail below the debug bar, and the bar's tool
+    // that reveals it. Showing it grows the window by the strip's height rather
+    // than taking those lines out of the workspace.
+    QPlainTextEdit *m_debugLogTail = nullptr;
+    QPushButton *m_debugLogTailButton = nullptr;
+    int m_debugLogTailHeight = 0; // the strip the window grows by, in pixels
+    bool m_debugLogTailShown = false;
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
@@ -7205,6 +7235,10 @@ private:
     // that is offline or rate-limiting (HTTP 429) stops getting hammered on
     // every timer tick. Keyed per endpoint/channel; see NetworkBackoff.h.
     NetworkBackoff m_pollBackoff;
+    // Consecutive HTTP 401/403 rejections per inbox-drain channel, so a node
+    // the relay will never authorize stops re-asking every poll cap. Cleared
+    // by the first accepted drain on that channel.
+    QHash<QString, int> m_inboxAuthRejections;
     // Issue #346: a refill notification waiting to ride the next signed
     // heartbeat (kept as flags, not fired directly, so it retries on the
     // periodic heartbeat timer if the immediate send fails).

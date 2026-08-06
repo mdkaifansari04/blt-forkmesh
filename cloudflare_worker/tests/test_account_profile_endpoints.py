@@ -345,6 +345,8 @@ def test_worker_exposes_public_user_directory_for_chat_without_private_fields():
     assert 'rec.get("status") != "active"' in body
     assert '"avatarPng": rec.get("avatar_png", "")' in body
     assert '"nodes": _owned_nodes(rec)' in body
+    assert 'solana = (rec.get("solana") or "").strip()' in body
+    assert '"solana": solana if SOLANA_RE.match(solana) else ""' in body
     assert '"email"' not in body
     assert '"pubkey"' not in body
     assert '"isAdmin"' not in body

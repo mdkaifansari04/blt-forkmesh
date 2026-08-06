@@ -204,6 +204,59 @@ void checkFooterOverlayGeometry(MainWindow &window)
                       QStringLiteral("down"),
               QStringLiteral("the debug row appends labeled green/red website "
                              "minute states"));
+
+        // Rebuild+restart came down from the window-chrome line and Resize came
+        // out of the navigation rail: both now sit in the debug bar's own tool
+        // cluster at the right edge, outside the scrolling category row, each
+        // still carrying its small caption under its icon.
+        auto *tools = window.findChild<QWidget *>(QStringLiteral("debugBarTools"));
+        QPushButton *restartTool = nullptr;
+        QPushButton *resizeTool = nullptr;
+        QPushButton *logTool = nullptr;
+        if (tools) {
+            for (QPushButton *tool : tools->findChildren<QPushButton *>()) {
+                if (tool->accessibleName() == QLatin1String("Restart"))
+                    restartTool = tool;
+                else if (tool->accessibleName() == QLatin1String("Resize"))
+                    resizeTool = tool;
+                else if (tool->accessibleName() == QLatin1String("Log"))
+                    logTool = tool;
+            }
+        }
+        check(tools && restartTool && resizeTool && logTool &&
+                  tools->parentWidget() == debugBar &&
+                  tools->mapTo(&window, QPoint(0, 0)).x() >
+                      lights->mapTo(&window, QPoint(0, 0)).x(),
+              QStringLiteral("restart, resize and the log tail are captioned "
+                             "tools at the debug bar's right edge"));
+
+        // The third tool grows the window by a five-line live tail rather than
+        // taking those five lines out of the workspace.
+        auto *tail = window.findChild<QPlainTextEdit *>(
+            QStringLiteral("debugLogTail"));
+        if (logTool && tail) {
+            const int heightBefore = window.height();
+            logTool->setChecked(true);
+            QApplication::processEvents();
+            const bool grew = window.isMaximized() || window.isFullScreen() ||
+                              window.height() >= heightBefore + tail->height();
+            check(tail->isVisible() && grew &&
+                      tail->document()->maximumBlockCount() == 5,
+                  QStringLiteral("the log tool expands the window with a live "
+                                 "five-line log tail"));
+            window.testSetFooterUpdateLine(QStringLiteral("2026-01-01 00:00:00 "
+                                                          "tail line"));
+            QApplication::processEvents();
+            check(tail->toPlainText().endsWith(QStringLiteral("tail line")) &&
+                      tail->document()->blockCount() <= 5,
+                  QStringLiteral("new log lines stream into the tail, capped at "
+                                 "five"));
+            logTool->setChecked(false);
+            QApplication::processEvents();
+            check(!tail->isVisible() && window.height() <= heightBefore,
+                  QStringLiteral("switching the log tool off gives the window "
+                                 "its height back"));
+        }
     }
 
     // The prompt avatar is the lower-right launcher: clicking it collapses the
@@ -2317,6 +2370,8 @@ int main(int argc, char *argv[])
                     {QStringLiteral("kind"), QStringLiteral("user")},
                     {QStringLiteral("status"), QStringLiteral("active")},
                     {QStringLiteral("emailVerified"), true},
+                    {QStringLiteral("solana"),
+                     QStringLiteral("So11111111111111111111111111111111111111112")},
                     {QStringLiteral("createdAt"), 1600000000000.0},
                     {QStringLiteral("totalActiveMs"), 7380000.0},
                     {QStringLiteral("activityBucket"), QStringLiteral("hour")},
@@ -2332,7 +2387,8 @@ int main(int argc, char *argv[])
     });
     const QStringList userColumns = window.testUsersColumns();
     const QStringList expectedUserColumns{
-        QStringLiteral("User"),          QStringLiteral("Email verified"),
+        QStringLiteral("User"),          QStringLiteral("Solana"),
+        QStringLiteral("Email verified"),
         QStringLiteral("Status"),        QStringLiteral("Joined"),
         QStringLiteral("World activity"),
         QStringLiteral("Activity recency"),
@@ -2347,6 +2403,10 @@ int main(int argc, char *argv[])
                                        QStringLiteral("zora")} &&
               window.testUsersCellText(0, QStringLiteral("World activity")) ==
                   QStringLiteral("2h 03m") &&
+              window.testUsersCellText(0, QStringLiteral("Solana")) ==
+                  QStringLiteral("So11111111111111111111111111111111111111112") &&
+              window.testUsersCellText(1, QStringLiteral("Solana")) ==
+                  QStringLiteral("Not set") &&
               window.testUsersCellText(0, QStringLiteral("Nodes")) ==
                   QStringLiteral("2 - node-a, node-b"),
           QStringLiteral("Users sorts formatted statistics by their numeric values"));
