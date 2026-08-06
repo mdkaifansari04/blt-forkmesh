@@ -506,7 +506,7 @@ QPushButton#agentsMagicButton:checked {
 #topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
-#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptStatus { font-weight: 500; font-size: 11px; }
 #topMessagePromptImage {
     background: rgba(48,54,61,0.35); border: 1px solid #30363d;
     border-radius: 5px; padding: 3px;
@@ -1949,7 +1949,7 @@ QPushButton#agentsMagicButton:checked {
 #topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
-#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptStatus { font-weight: 500; font-size: 11px; }
 #topMessagePromptImage {
     background: #f6f8fa; border: 1px solid #d0d7de;
     border-radius: 5px; padding: 3px;

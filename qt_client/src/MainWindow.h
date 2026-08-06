@@ -5127,6 +5127,9 @@ private:
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
+    // Refresh just the prompt bubble's status line, e.g. as the agent streams
+    // (adhoc #1570) — cheaper than a full renderTopMessage() per event.
+    void updateTopMessagePromptLiveStatus(const QString &line);
     void renderTopMessagePromptImages(); // rebuild thumbnails for a sent prompt
     // Size + anchor the bubble above the prompt. animate=true glides the stack
     // to its new anchor (a card arrived or left) instead of snapping it there.

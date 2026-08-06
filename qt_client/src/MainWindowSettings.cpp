@@ -5252,15 +5252,7 @@ void MainWindow::renderTopMessage()
                     .arg(fg));
             m_topMessagePromptHeader->show();
         }
-        if (m_topMessagePromptStatusLabel) {
-            m_topMessagePromptStatusLabel->setText(
-                m_topMessagePromptStatus.isEmpty()
-                    ? QString()
-                    : QStringLiteral("<span style='color:%1'>%2</span>")
-                          .arg(fg, m_topMessagePromptStatus.toHtmlEscaped()));
-            m_topMessagePromptStatusLabel->setVisible(
-                !m_topMessagePromptStatus.isEmpty());
-        }
+        updateTopMessagePromptLiveStatus(m_topMessagePromptStatus);
         m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2</span>")
                                    .arg(fg, body);
     } else {
@@ -5279,6 +5271,29 @@ void MainWindow::renderTopMessage()
                                        : topMessageKindLabel(m_topMessageKind));
         m_topMessageTypeBadge->show();
     }
+}
+
+// Refresh just the prompt bubble's status line without touching the header,
+// message body, or image thumbnails — called both from renderTopMessage() and,
+// as the agent streams, live from applyTranscriptEvent() (adhoc #1570). Elided
+// to a single short line so a long tool command or file path never wraps the
+// bubble onto a second line.
+void MainWindow::updateTopMessagePromptLiveStatus(const QString &line)
+{
+    if (!m_topMessagePromptStatusLabel)
+        return;
+    m_topMessagePromptStatus = line;
+    const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
+    const int maxWidth = m_topMessagePromptStatusLabel->width() > 0
+                             ? m_topMessagePromptStatusLabel->width()
+                             : 480;
+    const QString elided = m_topMessagePromptStatusLabel->fontMetrics().elidedText(
+        line, Qt::ElideRight, maxWidth);
+    m_topMessagePromptStatusLabel->setText(
+        elided.isEmpty() ? QString()
+                          : QStringLiteral("<span style='color:%1'>%2</span>")
+                                .arg(fg, elided.toHtmlEscaped()));
+    m_topMessagePromptStatusLabel->setVisible(!line.isEmpty());
 }
 
 void MainWindow::renderTopMessagePromptImages()
