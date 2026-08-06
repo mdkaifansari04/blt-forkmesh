@@ -4865,6 +4865,15 @@ private:
     // taken by value so the async reply can't dangle.
     void drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
                              bool forceMirrorIntake = false);
+    // Backoff bookkeeping shared by the issue/pull/discussion inbox drains. A
+    // rejected drain (HTTP 401/403) is not transient backpressure: the relay
+    // decides authorization from this node's identity and its membership in
+    // the repo's signed mirror group, so a node outside that group is rejected
+    // identically on every retry. See MainWindowIssues.cpp for why the first
+    // few rejections still retry on the normal cadence.
+    void noteInboxDrainFailure(const QString &backoffKey, int status,
+                               bool mirrorIntake);
+    void noteInboxDrainSuccess(const QString &backoffKey);
     void pollMirrorIssueInboxes();
     void drainPullsInboxFor(RepositoryRecord repo, bool interactive,
                             bool forceMirrorIntake = false);
@@ -7221,6 +7230,10 @@ private:
     // that is offline or rate-limiting (HTTP 429) stops getting hammered on
     // every timer tick. Keyed per endpoint/channel; see NetworkBackoff.h.
     NetworkBackoff m_pollBackoff;
+    // Consecutive HTTP 401/403 rejections per inbox-drain channel, so a node
+    // the relay will never authorize stops re-asking every poll cap. Cleared
+    // by the first accepted drain on that channel.
+    QHash<QString, int> m_inboxAuthRejections;
     // Issue #346: a refill notification waiting to ride the next signed
     // heartbeat (kept as flags, not fired directly, so it retries on the
     // periodic heartbeat timer if the immediate send fails).
