@@ -309,6 +309,22 @@ struct NotificationLink {
 };
 Q_DECLARE_METATYPE(NotificationLink)
 
+// One agent/model the composer's prompt dropdown can offer, before ranking and
+// before the Settings visibility filter (adhoc #1557). Produced by
+// MainWindow::composerModelCatalog() and consumed both by the dropdown and by
+// the Settings list that chooses which of these rows appear in it.
+struct ComposerModelChoice {
+    QString provider;  // "claude-code", "codex", "openai", "cloudflare-ai", …
+    QString model;     // empty for the provider-only API agents
+    QString label;     // bare model name shown in the row, e.g. "Opus 5"
+    QString agentName; // which CLI/API runs it, for the tooltip
+    QString tooltip;   // fixed tooltip; ranked rows build theirs from counts
+    int iconIndex = 0; // agentControlIcon() slot
+    // Does this row take part in the merged-success ranking? False for agents
+    // that never land a branch (the headless APIs, Workers AI chat models).
+    bool ranked = false;
+};
+
 // One row of the Ctrl+K search overlay. Filled on a worker thread (nothing
 // GUI-owned is touched there) and rendered/activated on the GUI thread.
 struct GlobalSearchHit {
@@ -494,6 +510,12 @@ public:
     {
         return applyFooterWebsiteStatusPayload(payload);
     }
+    // Hands one desktop-side edge probe the answer it would have received and
+    // returns the graded state, so Cloudflare-error grading is exercised
+    // without a live network.
+    QString testApplyDesktopWebsiteProbe(const QString &id, int httpStatus,
+                                         const QByteArray &body,
+                                         const QString &transportError = QString());
     // Streams one line through the live-log fan-out (footer strip, category
     // lights and the debug bar's five-line tail) without a real event.
     void testSetFooterUpdateLine(const QString &line)
@@ -1401,15 +1423,19 @@ private:
     void installAndRelaunch(const QString &built, const QString &appPath);
     // When onFailure is set it is invoked instead of the default "Update failed"
     // handling if the step exits non-zero, letting callers recover (e.g. re-clone
-    // a checkout that has diverged from the mirror).
+    // a checkout that has diverged from the mirror). extraEnv is merged over the
+    // inherited environment (used to point the compiler's TMPDIR at the build
+    // tree) and is echoed into the update log alongside the command.
     void runUpdateStep(const QString &program, const QStringList &arguments,
                        const QString &workingDir, std::function<void()> onSuccess,
-                       std::function<void()> onFailure = {});
+                       std::function<void()> onFailure = {},
+                       const QMap<QString, QString> &extraEnv = {});
     // Like runUpdateStep, but runs the command as m_updateAsUser (via sudo -u)
     // when that is set, so root-launched updates write files owned by the user.
     void runUpdateStepUser(const QString &program, const QStringList &arguments,
                            const QString &workingDir, std::function<void()> onSuccess,
-                           std::function<void()> onFailure = {});
+                           std::function<void()> onFailure = {},
+                           const QMap<QString, QString> &extraEnv = {});
     void setUpdateStatus(const QString &status, bool isError = false);
     // Open (or reset) the live update/rebuild log window and append to it.
     void showUpdateLog();
@@ -1454,6 +1480,19 @@ private:
     // projection once a minute and retain the newest completed minute per row.
     void refreshFooterWebsiteStatus();
     bool applyFooterWebsiteStatusPayload(const QJsonObject &payload);
+    // Two dots the relay cannot honestly produce for itself (adhoc #1564): its
+    // own /status samplers run inside the Worker and deliberately avoid a
+    // hairpin through the public hostname, so a Cloudflare edge failure (520-527,
+    // a 1020 block, a branded 5xx interstitial) never reaches /api/status. These
+    // rows load the site and the /status document from this desktop instead, so
+    // an edge outage is visible here even while every relay-graded row is green.
+    void refreshDesktopWebsiteProbes();
+    void probeDesktopWebsite(const QString &id);
+    void applyDesktopWebsiteProbe(const QString &id, int httpStatus,
+                                  const QByteArray &body,
+                                  const QString &transportError);
+    // Relay-graded rows first, desktop-measured ones after, onto both dot rows.
+    void publishFooterWebsiteStatuses();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
@@ -1857,6 +1896,16 @@ private:
     void provisionDirectMirrorEndpoint(bool dryRun);
     bool rebuildDirectMirrorGatewayConfiguration(
         QString *error = nullptr, bool restartRunningGateway = false);
+    // True when this node has a direct HTTPS mirror endpoint to keep in step.
+    // Serving through the relay alone is a supported setup, so background
+    // refreshes check this first instead of reporting a failure every time a
+    // repository is synced, pushed to, or deleted on a relay-only node.
+    bool directMirrorGatewayConfigured() const;
+    // The node name, mirror hostname, and Worker router public key the direct
+    // gateway would be built from, returning whether all three are usable.
+    bool resolveDirectMirrorGatewayIdentity(
+        QString *nodeName, QString *hostname,
+        QString *routerPublicKey) const;
     void startDirectMirrorServices();
     void stopDirectMirrorServices();
     // Desktop companion for the small Go mirror-node supervisor. The daemon
@@ -4628,6 +4677,13 @@ private:
     QStringList agentEffortLevels() const;
     void refreshQuickAddSpeedSelector();
     void refreshQuickAddAgentModelSelector();
+    // Every agent/model the composer's dropdown could list, before ranking and
+    // before the Settings visibility filter. Shared with the Settings list that
+    // picks which of them the dropdown shows (adhoc #1557).
+    QList<ComposerModelChoice> composerModelCatalog() const;
+    // Rebuild that Settings list from the catalog, preserving each row's
+    // checkbox state. Safe to call before the settings page is built.
+    void refreshComposerModelVisibilityList();
     // Cloudflare Workers AI in the composer (adhoc #1407). The relay owns which
     // models are allowed, so the picker asks it (GET /api/forkbot/models) and
     // caches the answer; sendPromptToCloudflareAi posts one prompt to the picked
@@ -5771,6 +5827,19 @@ private:
     QPoint m_promptPlacementGrab;
     QRect m_promptPlacementStartRect;
     bool m_footerWebsiteStatusInFlight = false;
+    // The footer dot row is two sources merged: the relay's own compact
+    // /status projection, and the edge probes this desktop runs itself.
+    struct FooterStatusRow {
+        QString id;
+        QString label;
+        QString status;
+        QString reason;
+        qint64 minuteTs = 0;
+        bool local = false; // measured here rather than reported by the relay
+    };
+    QList<FooterStatusRow> m_footerRelayStatuses;
+    QList<FooterStatusRow> m_footerDesktopStatuses;
+    QSet<QString> m_desktopProbesInFlight;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
     // live log and the prompt). One chip per open *kind* of work, not per ticket:
@@ -6284,6 +6353,9 @@ private:
     // Default coding-agent provider for new assignments; seeds the quick-add and
     // issue-detail provider pickers. Codex | OpenAI API | Claude API | Claude Code.
     QComboBox *m_defaultAgentProviderCombo = nullptr;
+    // Checkbox-per-model list choosing which of composerModelCatalog()'s rows
+    // the composer's prompt dropdown offers (adhoc #1557).
+    QListWidget *m_composerModelVisibilityList = nullptr;
     QLineEdit *m_maxRunningAgentsEdit = nullptr;
     QLineEdit *m_codexApiKeyEdit = nullptr;
     QLineEdit *m_openAiAdminKeyEdit = nullptr;
@@ -7990,6 +8062,13 @@ private:
     // events can be persisted to disk without depending on m_agentSessions
     // (which doesn't yet hold a freshly created ad-hoc session). Issue #41.
     QHash<int, AgentSession> m_streamSessionInfo;
+    // Which provider-account profile each live stream session was launched
+    // under, captured at launch rather than read live: switching account while a
+    // run is still draining its last events must not relabel that run's
+    // conversation as belonging to the account picked afterwards. Stamped onto
+    // every event carrying a conversation id so a later resume can tell whether
+    // the account now selected can actually reach it (AgentResumeIdentity.h).
+    QHash<int, QString> m_streamAccountId;
     // customPrompt, when non-empty, is used as the agent's task verbatim (the
     // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
     // derived from `issue`.

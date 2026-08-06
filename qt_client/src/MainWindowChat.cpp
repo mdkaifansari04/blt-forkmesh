@@ -812,14 +812,25 @@ void MainWindow::selectAgentAccount(const QString &provider,
         return;
 
     const bool codex = agentIsCodexProvider(provider);
+    // The "ran out" flags travel with the account too (issue #346 tracks them per
+    // provider). Leaving them behind made the account just switched to inherit
+    // the exhausted one's "usage limit reached" — on the very screen the user is
+    // looking at while switching away from a limit, and on a login with usage to
+    // spare. An account with no flag of its own reads as not exhausted, which is
+    // the truth until its own run reports otherwise.
     const QStringList globals = codex
         ? QStringList{kCodexUsage5hPctSetting, kCodexUsageWeekPctSetting,
                       kCodexUsage5hResetSetting, kCodexUsageWeekResetSetting,
-                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting}
+                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting,
+                      kCodexUsage5hExhaustedSetting,
+                      kCodexUsageWeekExhaustedSetting}
         : QStringList{kClaudeUsage5hPctSetting, kClaudeUsageWeekPctSetting,
                       kClaudeUsageFablePctSetting, kClaudeUsage5hResetSetting,
                       kClaudeUsageWeekResetSetting, kClaudeUsageFableResetSetting,
-                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting};
+                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting,
+                      kClaudeUsage5hExhaustedSetting,
+                      kClaudeUsageWeekExhaustedSetting,
+                      kClaudeUsageFableExhaustedSetting};
     QSettings settings;
     const QString oldId = activeAgentAccount(provider).id;
     // Preserve the current account's last provider reading before replacing the
@@ -840,6 +851,10 @@ void MainWindow::selectAgentAccount(const QString &provider,
         else
             settings.remove(global);
     }
+    // Re-arm the "your limit has refilled" reminders against the account now
+    // selected: the ones standing were armed from the previous account's
+    // exhausted windows, which this login neither shares nor waits on.
+    restoreUsageLimitReminders();
 
     if (codex) {
         refreshCodexUsageRemaining();
@@ -2793,6 +2808,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     // samples. Fetch once after the overlay exists; MainWindow's existing minute
     // timer keeps it fresh after that.
     QTimer::singleShot(1500, this, &MainWindow::refreshFooterWebsiteStatus);
+    // The desktop-side edge checks are staggered a little behind that read so
+    // the first paint of the row isn't three requests in the same instant.
+    // They are the one part of this row that leaves the machine on its own
+    // schedule, so the window tests — which feed the probes their responses
+    // directly — never let a real one race their assertions.
+#ifndef FORKMESH_WINDOW_TESTS
+    QTimer::singleShot(3000, this, &MainWindow::refreshDesktopWebsiteProbes);
+#endif
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
@@ -3204,6 +3227,179 @@ void MainWindow::positionGlobalFooterOverlays()
         m_promptOverlayHost->raise();
 }
 
+namespace {
+
+// The two edge checks this desktop runs itself (adhoc #1564). Each names the
+// document it loads over the real public hostname and the lowercase markers
+// that document must carry, so a Cloudflare interstitial served with HTTP 200
+// still fails instead of counting as a healthy page.
+struct DesktopEdgeProbe {
+    const char *id;
+    const char *path;
+    const char *label;
+    const char *marker;     // identity of the expected document
+    const char *what;       // how the row names itself in a reason line
+};
+
+const QVector<DesktopEdgeProbe> &desktopEdgeProbes()
+{
+    static const QVector<DesktopEdgeProbe> probes = {
+        {"desktop_website", "/", "Website loaded from this desktop", "forkmesh",
+         "The site"},
+        // status.html carries this id on its heading; the homepage does not, so
+        // a /status route quietly serving some other document still fails.
+        {"desktop_status_page", "/status", "Status page loaded from this desktop",
+         "status-title", "The /status page"},
+    };
+    return probes;
+}
+
+// Position of a probe in the declared order; unknown ids sort last.
+int desktopEdgeProbeRank(const QString &id)
+{
+    const QVector<DesktopEdgeProbe> &probes = desktopEdgeProbes();
+    for (int i = 0; i < probes.size(); ++i) {
+        if (id == QLatin1String(probes.at(i).id))
+            return i;
+    }
+    return int(probes.size());
+}
+
+const DesktopEdgeProbe *desktopEdgeProbe(const QString &id)
+{
+    for (const DesktopEdgeProbe &probe : desktopEdgeProbes()) {
+        if (id == QLatin1String(probe.id))
+            return &probe;
+    }
+    return nullptr;
+}
+
+// Cloudflare's own edge failures are the ones the Worker can never report: it
+// is not running when the edge answers 520-527 or blocks the caller, and the
+// response is a branded error document rather than the site. Name the code so
+// the tooltip says which failure this is.
+QString cloudflareEdgeErrorName(int httpStatus)
+{
+    switch (httpStatus) {
+    case 520: return QStringLiteral("web server returned an unknown error");
+    case 521: return QStringLiteral("web server is down");
+    case 522: return QStringLiteral("connection timed out");
+    case 523: return QStringLiteral("origin is unreachable");
+    case 524: return QStringLiteral("a timeout occurred");
+    case 525: return QStringLiteral("SSL handshake failed");
+    case 526: return QStringLiteral("invalid SSL certificate");
+    case 527: return QStringLiteral("Railgun listener to origin error");
+    case 530: return QStringLiteral("origin DNS error");
+    default: return QString();
+    }
+}
+
+// Does this body look like a Cloudflare error/challenge document rather than
+// the page that was asked for? The branded pages all pair the Cloudflare name
+// with a Ray ID or a numeric error code, which no ForkMesh page carries.
+bool looksLikeCloudflareErrorDocument(const QString &lowered)
+{
+    if (!lowered.contains(QLatin1String("cloudflare")))
+        return false;
+    return lowered.contains(QLatin1String("cf-error")) ||
+           lowered.contains(QLatin1String("ray id")) ||
+           lowered.contains(QLatin1String("error code")) ||
+           lowered.contains(QLatin1String("attention required")) ||
+           lowered.contains(QLatin1String("just a moment"));
+}
+
+struct DesktopEdgeVerdict {
+    QString status;
+    QString reason;
+};
+
+// Grade one desktop-side probe. Everything here is decided from the response
+// alone so the same rules can be replayed in tests without a network.
+DesktopEdgeVerdict gradeDesktopEdgeProbe(const DesktopEdgeProbe &probe,
+                                         const QString &host, int httpStatus,
+                                         const QByteArray &body,
+                                         const QString &transportError,
+                                         bool osOffline)
+{
+    const QString what = QString::fromLatin1(probe.what);
+    if (!transportError.isEmpty()) {
+        // A request this desktop refused to send never saw the edge at all.
+        if (transportError.contains(QLatin1String("firewall blocked"),
+                                    Qt::CaseInsensitive)) {
+            return {QStringLiteral("unknown"),
+                    QStringLiteral("This desktop's own firewall blocked the "
+                                   "check, so %1 was not loaded from here.")
+                        .arg(what.toLower())};
+        }
+        // A desktop with no link at all says nothing about the site, so that
+        // case stays grey rather than painting a false outage.
+        if (osOffline) {
+            return {QStringLiteral("unknown"),
+                    QStringLiteral("This desktop is offline, so %1 could not be "
+                                   "checked from here.")
+                        .arg(host)};
+        }
+        return {QStringLiteral("down"),
+                QStringLiteral("%1 could not be reached from this desktop: %2")
+                    .arg(what, transportError)};
+    }
+
+    const QString lowered = QString::fromUtf8(body.left(64 * 1024)).toLower();
+    const bool branded = looksLikeCloudflareErrorDocument(lowered);
+    const QString edgeError = cloudflareEdgeErrorName(httpStatus);
+    if (!edgeError.isEmpty()) {
+        return {QStringLiteral("down"),
+                QStringLiteral("Cloudflare answered %1 with HTTP %2 — %3.")
+                    .arg(what)
+                    .arg(httpStatus)
+                    .arg(edgeError)};
+    }
+    if (httpStatus == 429 || lowered.contains(QLatin1String("error 1015"))) {
+        return {QStringLiteral("degraded"),
+                QStringLiteral("Cloudflare rate-limited this desktop (HTTP %1) "
+                               "instead of serving %2.")
+                    .arg(httpStatus)
+                    .arg(what.toLower())};
+    }
+    if ((httpStatus == 403 || httpStatus == 503) && branded) {
+        return {QStringLiteral("degraded"),
+                QStringLiteral("Cloudflare challenged or blocked this desktop "
+                               "(HTTP %1) instead of serving %2.")
+                    .arg(httpStatus)
+                    .arg(what.toLower())};
+    }
+    if (httpStatus >= 500) {
+        return {QStringLiteral("down"),
+                QStringLiteral("%1 returned HTTP %2 to this desktop.")
+                    .arg(what)
+                    .arg(httpStatus)};
+    }
+    // A ranged request answers 206; a server that ignores Range answers 200.
+    if (httpStatus != 200 && httpStatus != 206) {
+        return {QStringLiteral("down"),
+                QStringLiteral("%1 returned HTTP %2 to this desktop.")
+                    .arg(what)
+                    .arg(httpStatus)};
+    }
+    if (branded) {
+        return {QStringLiteral("down"),
+                QStringLiteral("Cloudflare served an error document for %1 "
+                               "instead of the page.")
+                    .arg(what.toLower())};
+    }
+    if (!lowered.contains(QLatin1String("<!doctype html")) ||
+        !lowered.contains(QLatin1String(probe.marker))) {
+        return {QStringLiteral("degraded"),
+                QStringLiteral("%1 answered HTTP %2 from this desktop, but the "
+                               "document was not the expected page.")
+                    .arg(what)
+                    .arg(httpStatus)};
+    }
+    return {QStringLiteral("operational"), QString()};
+}
+
+} // namespace
+
 // Apply the compact public /status projection to both footer icon surfaces.
 // The last array cell is commonly the still-in-progress current minute, marked
 // "future", so each system deliberately selects its newest completed sample.
@@ -3218,11 +3414,11 @@ bool MainWindow::applyFooterWebsiteStatusPayload(const QJsonObject &payload)
     const qint64 payloadNow = static_cast<qint64>(
         payload.value(QStringLiteral("now")).toDouble(
             QDateTime::currentMSecsSinceEpoch()));
-    QList<LogActivityLights::WebsiteStatus> statuses;
+    QList<FooterStatusRow> statuses;
     statuses.reserve(systems.size());
     for (const QJsonValue &value : systems) {
         const QJsonObject system = value.toObject();
-        LogActivityLights::WebsiteStatus result;
+        FooterStatusRow result;
         result.id = system.value(QStringLiteral("id")).toString().trimmed();
         result.label = system.value(QStringLiteral("label")).toString().trimmed();
         if (result.id.isEmpty())
@@ -3257,12 +3453,36 @@ bool MainWindow::applyFooterWebsiteStatusPayload(const QJsonObject &payload)
     }
     if (statuses.isEmpty())
         return false;
-    if (m_logActivityLights)
-        m_logActivityLights->setWebsiteStatuses(statuses);
-    if (m_logActivityHeader)
-        m_logActivityHeader->setWebsiteStatuses(statuses);
-    positionGlobalFooterOverlays();
+    m_footerRelayStatuses = statuses;
+    publishFooterWebsiteStatuses();
     return true;
+}
+
+// One dot row out of the two sources. The relay's own systems keep their
+// published order, and the desktop-measured edge rows are appended in their
+// declared order, so the locally-checked dots are always the last two.
+void MainWindow::publishFooterWebsiteStatuses()
+{
+    QList<LogActivityLights::WebsiteStatus> rows;
+    rows.reserve(m_footerRelayStatuses.size() + m_footerDesktopStatuses.size());
+    for (const FooterStatusRow &source :
+         m_footerRelayStatuses + m_footerDesktopStatuses) {
+        LogActivityLights::WebsiteStatus row;
+        row.id = source.id;
+        row.label = source.label;
+        row.status = source.status;
+        row.reason = source.reason;
+        row.minuteTs = source.minuteTs;
+        row.local = source.local;
+        rows.append(row);
+    }
+    if (rows.isEmpty())
+        return;
+    if (m_logActivityLights)
+        m_logActivityLights->setWebsiteStatuses(rows);
+    if (m_logActivityHeader)
+        m_logActivityHeader->setWebsiteStatuses(rows);
+    positionGlobalFooterOverlays();
 }
 
 void MainWindow::refreshFooterWebsiteStatus()
@@ -3301,6 +3521,126 @@ void MainWindow::refreshFooterWebsiteStatus()
         applyFooterWebsiteStatusPayload(document.object());
     });
 }
+
+// Run both desktop-side edge checks for the active relay's public hostname.
+void MainWindow::refreshDesktopWebsiteProbes()
+{
+    for (const DesktopEdgeProbe &probe : desktopEdgeProbes())
+        probeDesktopWebsite(QString::fromLatin1(probe.id));
+}
+
+// Load one public document the way a browser on this machine would. Only the
+// first few kilobytes are asked for: the marker and any Cloudflare branding sit
+// in the head, and a full homepage every minute would be megabytes an hour for
+// a two-pixel dot. A Cloudflare error is served whole regardless of Range, so
+// nothing that this row exists to catch is truncated away.
+void MainWindow::probeDesktopWebsite(const QString &id)
+{
+    const DesktopEdgeProbe *probe = desktopEdgeProbe(id);
+    if (!probe || !m_networkAccess || !m_logActivityLights ||
+        m_desktopProbesInFlight.contains(id))
+        return;
+
+    QUrl url = catalogApiUrl();
+    if (!url.isValid() || url.host().isEmpty())
+        return;
+    url.setPath(QString::fromLatin1(probe->path));
+    url.setQuery(QString());
+    url.setFragment(QString());
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    // Follow the edge's own canonical redirects; the check is "does this
+    // hostname serve the page", not "does it serve it without a hop".
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QVariant::fromValue(
+                             QNetworkRequest::NoLessSafeRedirectPolicy));
+    request.setMaximumRedirectsAllowed(3);
+    request.setRawHeader("accept", "text/html");
+    request.setRawHeader("cache-control", "no-cache");
+    request.setRawHeader("range", "bytes=0-8191");
+    request.setTransferTimeout(8000);
+    m_desktopProbesInFlight.insert(id);
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, id] {
+        m_desktopProbesInFlight.remove(id);
+        const QByteArray body = reply->readAll();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // An HTTP answer is the verdict even when Qt flags the reply as an
+        // error: a Cloudflare 5xx interstitial is exactly what this row is
+        // looking for. Only a reply that never produced a status counts as a
+        // transport failure.
+        const QString transportError =
+            (httpStatus <= 0 && reply->error() != QNetworkReply::NoError)
+                ? reply->errorString()
+                : QString();
+        reply->deleteLater();
+        applyDesktopWebsiteProbe(id, httpStatus, body, transportError);
+    });
+}
+
+// Grade one probe response and repaint the merged dot row.
+void MainWindow::applyDesktopWebsiteProbe(const QString &id, int httpStatus,
+                                          const QByteArray &body,
+                                          const QString &transportError)
+{
+    const DesktopEdgeProbe *probe = desktopEdgeProbe(id);
+    if (!probe)
+        return;
+    const auto *netInfo = QNetworkInformation::instance();
+    const bool osOffline = netInfo &&
+                           netInfo->reachability() ==
+                               QNetworkInformation::Reachability::Disconnected;
+    const QString host = catalogApiUrl().host();
+    const DesktopEdgeVerdict verdict = gradeDesktopEdgeProbe(
+        *probe, host, httpStatus, body, transportError, osOffline);
+
+    FooterStatusRow row;
+    row.id = id;
+    row.label = QString::fromLatin1(probe->label);
+    row.status = verdict.status;
+    row.reason = verdict.reason;
+    row.minuteTs = QDateTime::currentMSecsSinceEpoch();
+    row.local = true;
+
+    bool replaced = false;
+    for (FooterStatusRow &existing : m_footerDesktopStatuses) {
+        if (existing.id == id) {
+            existing = row;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) {
+        m_footerDesktopStatuses.append(row);
+        // Keep the two rows in their declared order however the replies land.
+        std::stable_sort(m_footerDesktopStatuses.begin(),
+                         m_footerDesktopStatuses.end(),
+                         [](const FooterStatusRow &left,
+                            const FooterStatusRow &right) {
+                             return desktopEdgeProbeRank(left.id) <
+                                    desktopEdgeProbeRank(right.id);
+                         });
+    }
+    publishFooterWebsiteStatuses();
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testApplyDesktopWebsiteProbe(const QString &id,
+                                                 int httpStatus,
+                                                 const QByteArray &body,
+                                                 const QString &transportError)
+{
+    applyDesktopWebsiteProbe(id, httpStatus, body, transportError);
+    for (const FooterStatusRow &row : m_footerDesktopStatuses) {
+        if (row.id == id)
+            return row.status;
+    }
+    return QString();
+}
+#endif
 
 // One-word tag for the strip: callers may hand over a phrase, the icon maps the
 // first word ("git", "net", "fork" …) to a glyph and keeps the detail in its
@@ -3974,6 +4314,9 @@ void MainWindow::refreshCloudflareAiModels()
                                  : picked);
         }
         refreshQuickAddAgentModelSelector();
+        // Settings lists the same line-up with a checkbox each, so newly
+        // announced models have to reach it too.
+        refreshComposerModelVisibilityList();
     });
 }
 
@@ -4131,6 +4474,77 @@ void MainWindow::refreshQuickAddSpeedSelector()
         QStringLiteral(". Higher levels are slower and more thorough."));
 }
 
+// Every agent/model the composer could offer, in provider order and before any
+// ranking or filtering. Shared by the composer's dropdown (which ranks these by
+// merged success) and Settings → Agents → "Composer models" (which lists them
+// with a checkbox each), so the setting can never drift out of step with the
+// menu it governs.
+//
+// "Manual · create issue" is deliberately absent: it starts no agent, and it is
+// the row the dropdown falls back to, so it is always offered.
+QList<ComposerModelChoice> MainWindow::composerModelCatalog() const
+{
+    QList<ComposerModelChoice> choices;
+
+    QComboBox claudeModels;
+    populateClaudeModelCombo(&claudeModels);
+    if (!m_liveClaudeModels.isEmpty())
+        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
+    for (int i = 0; i < claudeModels.count(); ++i) {
+        const QString id = claudeModels.itemData(i).toString();
+        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
+        // borrowing one model's portrait.
+        const int icon =
+            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
+                ? 7
+                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
+        choices.append(ComposerModelChoice{
+            QStringLiteral("claude-code"), id,
+            compactModelName(claudeModels.itemText(i)),
+            QStringLiteral("Claude Code"), QString(), icon, true});
+    }
+
+    QComboBox codexModels;
+    populateCodexModelCombo(&codexModels);
+    for (int i = 0; i < codexModels.count(); ++i) {
+        const QString id = codexModels.itemData(i).toString();
+        choices.append(ComposerModelChoice{
+            kCodexProvider, id, codexModels.itemText(i),
+            QStringLiteral("Codex"), QString(),
+            agentModelFaceIconIndex(kCodexProvider, id), true});
+    }
+
+    // These API agents do not expose a per-run model chooser in this composer,
+    // but remain first-class choices in the combined menu.
+    choices.append(ComposerModelChoice{
+        QStringLiteral("openai"), QString(), QStringLiteral("OpenAI API"),
+        QStringLiteral("OpenAI API"), QStringLiteral("Headless OpenAI API agent"),
+        agentModelFaceIconIndex(QStringLiteral("openai"), QString()), false});
+    choices.append(ComposerModelChoice{
+        QStringLiteral("claude-api"), QString(), QStringLiteral("Claude API"),
+        QStringLiteral("Claude API"), QStringLiteral("Headless Claude API agent"),
+        agentModelFaceIconIndex(QStringLiteral("claude-api"), QString()), false});
+
+    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
+    // rather than starting an agent, so they are their own group instead of
+    // being ranked among the coding models above — a 70B chat model is not
+    // "stronger" or "weaker" than an agent that can edit the repository.
+    QComboBox cloudflareModels;
+    populateCloudflareAiModelCombo(&cloudflareModels);
+    for (int i = 0; i < cloudflareModels.count(); ++i) {
+        const QString label = cloudflareModels.itemText(i);
+        // One mark for the whole group: these are relay chat models, not one of
+        // the top lines the World drew a portrait for.
+        choices.append(ComposerModelChoice{
+            kCloudflareAiProvider, cloudflareModels.itemData(i).toString(), label,
+            QStringLiteral("Cloudflare AI"),
+            QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
+                           "starts no agent").arg(label),
+            agentModelFaceIconIndex(kCloudflareAiProvider, QString()), false});
+    }
+    return choices;
+}
+
 // Build the one visible agent/model menu from the canonical hidden provider and
 // model controls. Each row stores provider in UserRole and model in UserRole+1,
 // allowing a single click to update both without changing the launch contract.
@@ -4146,6 +4560,10 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // stable tie-breaker for equal success counts. Scores count every run this
 // desktop has made, including the ones whose branch and session were cleaned up
 // afterwards (see AgentStore::retiredModelOutcomes).
+//
+// Rows switched off in Settings → Agents (adhoc #1557) are left out, except the
+// one currently selected: the menu has to be able to show what the composer is
+// actually about to run, even if that model was hidden after it was picked.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -4172,6 +4590,16 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         int runCount = 0;
         int powerRank = 0; // stable tie-breaker for equally-used models
     };
+    // A row the user switched off in Settings stays out of the menu unless it is
+    // the current selection (see the note above this function).
+    const QSet<QString> hidden = hiddenComposerModels();
+    const auto rowIsVisible = [&](const QString &provider,
+                                  const QString &model) {
+        if (!hidden.contains(composerModelKey(provider, model)))
+            return true;
+        return provider == selectedProvider &&
+               (selectedModel.isEmpty() || model == selectedModel);
+    };
     QHash<QString, int> modelMergedCounts;
     QHash<QString, int> modelRunCounts;
     // A model's track record has to outlive the work that earned it. Sweeping up
@@ -4196,43 +4624,25 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         if (session.merged)
             ++modelMergedCounts[key];
     }
+    // The catalog is the single source of what the picker can offer; this
+    // function only scores, orders and filters it.
+    const QList<ComposerModelChoice> catalog = composerModelCatalog();
     QList<Choice> models;
-    auto addModel = [&models, &modelMergedCounts, &modelRunCounts](
-                        const QIcon &icon, const QString &label,
-                        const QString &provider, const QString &model,
-                        const QString &agentName) {
-        const QString key = AgentStore::modelOutcomeKey(provider, model);
-        models.append(Choice{icon, label, provider, model, agentName,
+    QList<ComposerModelChoice> unranked;
+    for (const ComposerModelChoice &entry : catalog) {
+        if (!rowIsVisible(entry.provider, entry.model))
+            continue;
+        if (!entry.ranked) {
+            unranked.append(entry);
+            continue;
+        }
+        const QString key =
+            AgentStore::modelOutcomeKey(entry.provider, entry.model);
+        models.append(Choice{agentControlIcon(entry.iconIndex), entry.label,
+                             entry.provider, entry.model, entry.agentName,
                              modelMergedCounts.value(key),
                              modelRunCounts.value(key),
-                             agentModelPowerRank(model, label)});
-    };
-
-    QComboBox claudeModels;
-    populateClaudeModelCombo(&claudeModels);
-    if (!m_liveClaudeModels.isEmpty())
-        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
-    for (int i = 0; i < claudeModels.count(); ++i) {
-        const QString id = claudeModels.itemData(i).toString();
-        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
-        // borrowing one model's portrait.
-        const int icon =
-            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
-                ? 7
-                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
-        addModel(agentControlIcon(icon),
-                 compactModelName(claudeModels.itemText(i)),
-                 QStringLiteral("claude-code"), id,
-                 QStringLiteral("Claude Code"));
-    }
-
-    QComboBox codexModels;
-    populateCodexModelCombo(&codexModels);
-    for (int i = 0; i < codexModels.count(); ++i) {
-        const QString id = codexModels.itemData(i).toString();
-        addModel(agentControlIcon(agentModelFaceIconIndex(kCodexProvider, id)),
-                 codexModels.itemText(i), kCodexProvider, id,
-                 QStringLiteral("Codex"));
+                             agentModelPowerRank(entry.model, entry.label)});
     }
 
     // Most merged work first. Power ties (Opus 4.8 and Sonnet 5 score the
@@ -4308,37 +4718,14 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                   mergedNote);
     }
 
-    // These API agents do not expose a per-run model chooser in this composer,
-    // but remain first-class choices in the combined menu.
-    addChoice(agentControlIcon(
-                  agentModelFaceIconIndex(QStringLiteral("openai"), QString())),
-              QStringLiteral("OpenAI API"), QStringLiteral("openai"), QString(),
-              QStringLiteral("Headless OpenAI API agent"));
-    addChoice(agentControlIcon(agentModelFaceIconIndex(
-                  QStringLiteral("claude-api"), QString())),
-              QStringLiteral("Claude API"), QStringLiteral("claude-api"),
-              QString(), QStringLiteral("Headless Claude API agent"));
-
-    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
-    // rather than starting an agent, so they are appended as their own group
-    // instead of being ranked among the coding models above — a 70B chat model
-    // is not "stronger" or "weaker" than an agent that can edit the repository.
-    QComboBox cloudflareModels;
-    populateCloudflareAiModelCombo(&cloudflareModels);
-    for (int i = 0; i < cloudflareModels.count(); ++i) {
-        const QString label = cloudflareModels.itemText(i);
-        // Cloudflare AI only answers a prompt and never creates a branch, so it
-        // has no merge outcome to count. Keep its label distinct rather than
-        // presenting a misleading permanent "0 merged" score.
-        // One mark for the whole group: these are relay chat models, not one of
-        // the top lines the World drew a portrait for.
-        addChoice(agentControlIcon(agentModelFaceIconIndex(kCloudflareAiProvider,
-                                                          QString())),
-                  label, kCloudflareAiProvider,
-                  cloudflareModels.itemData(i).toString(),
-                  QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
-                                 "starts no agent").arg(label));
-    }
+    // The headless API agents and the Cloudflare Workers AI chat models, in
+    // catalog order below the ranked coding models. None of them has a merge
+    // outcome to count — a Workers AI model only answers a prompt and never
+    // creates a branch — so they carry no "0 merged" score that would read as a
+    // failure rather than as "not applicable".
+    for (const ComposerModelChoice &entry : unranked)
+        addChoice(agentControlIcon(entry.iconIndex), entry.label, entry.provider,
+                  entry.model, entry.tooltip);
 
     int selected = -1;
     for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
