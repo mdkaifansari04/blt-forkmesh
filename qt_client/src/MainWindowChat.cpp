@@ -9173,7 +9173,12 @@ void MainWindow::updateSignInButton()
 {
     if (!m_navSignInButton)
         return;
-    const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
+    // Signed-in state is now tracked explicitly on the auth path (`hasActive`
+    // includes a successful in-app login or matching desktop key binding). Use
+    // that primary signal and fall back to owner-name inference for any older
+    // state where the cached relay profile has already resolved the owner.
+    const bool signedIn = hasActiveAccountSession() ||
+                         !nodeOwnerDisplayName().trimmed().isEmpty();
     m_navSignInButton->setVisible(!m_headless && m_startupAuthResolved && !signedIn);
 }
 
