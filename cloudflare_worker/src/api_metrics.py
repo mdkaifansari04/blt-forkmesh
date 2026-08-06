@@ -7,10 +7,18 @@ buckets are minute × normalized route group × status class, which is enough
 for the diagnostics the landing page charts: request frequency, error mix,
 and per-endpoint latency.
 
+The module also serves the developer surface of that page: an endpoint
+catalog reflected from urls.py's route regexes (plus a curated list for the
+literal routes entry.py matches inline) and a generated OpenAPI 3 document,
+so the landing page can offer a try-it request tester without a separately
+maintained API description.
+
 entry.py loads this module lazily on the first /api response (see the 10021
 startup-memory budget notes there); it must stay small and import nothing
 heavy at module scope.
 """
+
+import re
 
 
 def _bind_runtime(runtime):
@@ -50,8 +58,8 @@ _groups_seen = set()
 _last_prune_minute = 0
 
 
-def route_group(path):
-    """A bounded, identifier-free label for an /api path."""
+def _masked_group(path):
+    """The identifier-free label for a path, without registry effects."""
     segments = [s for s in str(path or "").split("/") if s]
     if segments[:1] == ["api"]:
         segments = segments[1:]
@@ -73,7 +81,12 @@ def route_group(path):
         masked.append(lowered if safe else "*")
         if index == 0 and lowered in _MASKED_SEGMENTS:
             mask_next = _MASKED_SEGMENTS[lowered]
-    group = "/".join(masked)
+    return "/".join(masked)
+
+
+def route_group(path):
+    """A bounded, identifier-free label for an /api path."""
+    group = _masked_group(path)
     if group in _groups_seen:
         return group
     if len(_groups_seen) >= GROUP_LIMIT:
@@ -219,6 +232,136 @@ async def metrics_summary_handler(env, request):
     }, cache_control="no-store, max-age=0, must-revalidate")
 
 
+# Literal routes entry.py matches inline (they have no urls.py regex to
+# reflect). Kept deliberately short: the reflected table below carries the
+# bulk, and anything unlisted still shows up in the observed traffic groups.
+_CURATED_ENDPOINTS = [
+    ("GET", "/api/version", "Build stamp + which Worker answered"),
+    ("GET", "/api/status", "Public systems status and minute history"),
+    ("GET", "/api/metrics/summary", "Traffic buckets behind these charts"),
+    ("GET", "/api/metrics/endpoints", "This endpoint catalog"),
+    ("GET", "/api/openapi.json", "Generated OpenAPI 3 description"),
+    ("GET", "/api/repositories", "Public repository catalog"),
+    ("GET", "/api/mirrors/https", "Mirror gateway protocol identity"),
+    ("GET", "/api/world/online", "World presence count"),
+    ("GET", "/api/world/deploy-status", "World deploy semaphore"),
+    ("GET", "/api/accounts/users", "Public account directory"),
+    ("GET", "/api/leaderboards", "Node leaderboards"),
+    ("GET", "/api/sync", "Signed owner-node drain (owner+ts+sig auth)"),
+]
+
+
+def _template_from_pattern(pattern):
+    """A human-usable path template for one urls.py route regex."""
+    text = str(pattern or "")
+    text = text[1:] if text.startswith("^") else text
+    text = text[:-1] if text.endswith("$") else text
+    text = text.replace("/?", "")
+    # Keep the first alternative of non-capturing (?:a|b) groups.
+    text = re.sub(r"\(\?:([^)|]+)(?:\|[^()]*)?\)", r"\1", text)
+    counter = {"n": 0}
+
+    def _placeholder(_match):
+        counter["n"] += 1
+        return "{p%d}" % counter["n"]
+
+    text = re.sub(r"\((?:[^()]|\([^()]*\))*\)", _placeholder, text)
+    text = text.replace("\\.", ".").replace("\\-", "-")
+    if text.startswith("/api/repo/{p1}/{p2}"):
+        text = text.replace("{p1}", "{owner}", 1).replace("{p2}", "{repo}", 1)
+    elif text.startswith("/api/orgs/{p1}"):
+        text = text.replace("{p1}", "{org}", 1)
+    return text
+
+
+def endpoint_catalog():
+    """Every route template: reflected from urls.py plus the curated list."""
+    import urls
+    items = {}
+    for method, template, summary in _CURATED_ENDPOINTS:
+        items[template] = {
+            "method": method, "template": template, "summary": summary,
+            "source": "curated",
+        }
+    for name in sorted(dir(urls)):
+        if not name.endswith("_RE"):
+            continue
+        pattern = str(getattr(getattr(urls, name), "pattern", "") or "")
+        if not pattern.startswith("^/"):
+            continue
+        template = _template_from_pattern(pattern)
+        if template in items:
+            continue
+        method = "POST" if (
+            "upload-pack" in template or "receive-pack" in template
+        ) else "GET"
+        items[template] = {
+            "method": method,
+            "template": template,
+            "summary": name[:-3].replace("_", " ").lower(),
+            "source": "urls.py",
+        }
+    catalog = []
+    for item in items.values():
+        path_only = item["template"].split("?")[0]
+        item["group"] = (
+            _masked_group(path_only)
+            if path_only.startswith("/api/") else None)
+        item["params"] = re.findall(r"\{([a-z0-9]+)\}", item["template"])
+        catalog.append(item)
+    catalog.sort(key=lambda i: i["template"])
+    return catalog
+
+
+async def endpoint_catalog_handler(env, request):
+    """GET /api/metrics/endpoints — the catalog the landing page renders."""
+    return json_response({
+        "ok": True,
+        "endpoints": endpoint_catalog(),
+    }, cache_control="public, max-age=300")
+
+
+async def openapi_handler(env, request):
+    """GET /api/openapi.json — a generated, best-effort OpenAPI 3 document.
+
+    Paths and parameters are exact (reflected from the route table); methods
+    beyond the known POST routes default to GET, and auth/response schemas
+    are deliberately not asserted — this exists so standard tooling can
+    import the surface, not as a hand-maintained contract.
+    """
+    paths = {}
+    for item in endpoint_catalog():
+        template = item["template"].split("?")[0]
+        operation = {
+            "summary": item["summary"],
+            "responses": {"200": {"description": "OK"}},
+        }
+        if item["params"]:
+            operation["parameters"] = [
+                {
+                    "name": param,
+                    "in": "path",
+                    "required": True,
+                    "schema": {"type": "string"},
+                }
+                for param in item["params"]
+            ]
+        paths.setdefault(template, {})[item["method"].lower()] = operation
+    return json_response({
+        "openapi": "3.0.3",
+        "info": {
+            "title": "ForkMesh API",
+            "version": str(getattr(env, "APP_VERSION", "") or "0"),
+            "description": (
+                "Generated from the Worker's route table. Methods beyond "
+                "the known POST routes default to GET; many routes require "
+                "signed or session auth that this document does not model."),
+        },
+        "servers": [{"url": "https://api.forkmesh.com"}],
+        "paths": paths,
+    }, cache_control="public, max-age=300")
+
+
 def landing_page_response(env):
     """The api.forkmesh.com landing page: live diagnostics for /api traffic.
 
@@ -337,6 +480,56 @@ _LANDING_PAGE_HTML = """<!doctype html>
 
 <h2 class="hidden" id="tableHead">Endpoint table</h2>
 <div class="panel hidden" id="tablePanel"></div>
+
+<h2 id="catalogHead">API endpoints
+  <span class="meta" style="text-transform:none;letter-spacing:0">
+    — reflected from the route table ·
+    <a href="/api/openapi.json">openapi.json</a></span></h2>
+<div class="panel">
+  <input id="epFilter" placeholder="filter endpoints…" aria-label="filter
+    endpoints" style="width:100%;margin-bottom:10px;background:var(--surface);
+    border:1px solid var(--line);border-radius:6px;color:var(--text);
+    font:inherit;padding:6px 10px">
+  <div style="max-height:340px;overflow-y:auto">
+    <table id="catalogTable"><thead><tr><th>method</th><th>endpoint</th>
+      <th>req/1h</th><th>avg ms</th><th></th></tr></thead>
+      <tbody></tbody></table>
+  </div>
+</div>
+
+<h2 id="testerHead">Request tester</h2>
+<div class="panel" id="tester">
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+    <select id="tMethod" aria-label="method" style="background:var(--surface);
+      color:var(--text);border:1px solid var(--line);border-radius:6px;
+      font:inherit;padding:6px">
+      <option>GET</option><option>POST</option><option>PUT</option>
+      <option>DELETE</option><option>HEAD</option>
+    </select>
+    <input id="tPath" value="/api/version" aria-label="request path"
+      style="flex:1;min-width:280px;background:var(--surface);
+      border:1px solid var(--line);border-radius:6px;color:var(--text);
+      font:inherit;padding:6px 10px">
+    <button id="tSend" style="border-color:var(--series-req);
+      color:var(--text)">send</button>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+    <input id="tAuth" placeholder="bearer token (optional)"
+      aria-label="bearer token" style="flex:1;min-width:280px;
+      background:var(--surface);border:1px solid var(--line);
+      border-radius:6px;color:var(--text);font:inherit;padding:6px 10px">
+  </div>
+  <textarea id="tBody" rows="3" placeholder="request body (non-GET, JSON)"
+    class="hidden" style="width:100%;background:var(--surface);
+    border:1px solid var(--line);border-radius:6px;color:var(--text);
+    font:inherit;padding:6px 10px;margin-bottom:8px"></textarea>
+  <div class="meta" id="tStatus">Pick an endpoint above or type a path, then
+    send. Requests run same-origin against this Worker with your token only
+    in this tab.</div>
+  <pre id="tOut" class="hidden" style="background:var(--surface);
+    border-radius:6px;padding:10px;max-height:360px;overflow:auto;
+    white-space:pre-wrap;font-size:12px;margin-top:8px"></pre>
+</div>
 
 <p class="meta" style="margin-top:18px">Auto-refreshes every 60s. Buckets are
 one minute × masked route group × status class; identifiers are never
@@ -504,7 +697,84 @@ $("tableToggle").onclick = () => {
   $("tablePanel").classList.toggle("hidden", !on);
   $("tableHead").classList.toggle("hidden", !on);
 };
+
+// --- Endpoint catalog + request tester ---------------------------------
+let catalog = [];
+async function loadCatalog() {
+  try {
+    const r = await fetch("/api/metrics/endpoints");
+    catalog = (await r.json()).endpoints || [];
+    renderCatalog();
+  } catch (e) { /* transient */ }
+}
+function renderCatalog() {
+  const needle = $("epFilter").value.trim().toLowerCase();
+  const byGroup = Object.fromEntries(
+    (data && data.groups || []).map((g) => [g.group, g]));
+  const rows = catalog
+    .filter((e) => !needle || e.template.toLowerCase().includes(needle) ||
+      (e.summary || "").toLowerCase().includes(needle))
+    .map((e) => {
+      const seen = e.group && byGroup[e.group];
+      return `<tr><td style="text-align:left">${esc(e.method)}</td>` +
+        `<td style="text-align:left" title="${esc(e.summary || "")}">` +
+        `${esc(e.template)}</td>` +
+        `<td>${seen ? seen.requests.toLocaleString() : "—"}</td>` +
+        `<td>${seen ? seen.avg_ms : "—"}</td>` +
+        `<td><button data-try="${esc(e.template)}" ` +
+        `data-method="${esc(e.method)}">try</button></td></tr>`;
+    }).join("");
+  $("catalogTable").querySelector("tbody").innerHTML =
+    rows || `<tr><td colspan="5">no matches</td></tr>`;
+  $("catalogTable").querySelectorAll("button[data-try]").forEach((b) => {
+    b.onclick = () => {
+      $("tMethod").value = b.dataset.method;
+      $("tPath").value = b.dataset.try.split("?")[0];
+      $("tBody").classList.toggle("hidden", b.dataset.method === "GET");
+      $("tester").scrollIntoView({ behavior: "smooth", block: "center" });
+      $("tPath").focus();
+    };
+  });
+}
+$("epFilter").oninput = renderCatalog;
+$("tMethod").onchange = () =>
+  $("tBody").classList.toggle("hidden", $("tMethod").value === "GET");
+$("tSend").onclick = async () => {
+  const method = $("tMethod").value;
+  let path = $("tPath").value.trim();
+  if (!path.startsWith("/")) path = "/" + path;
+  const headers = { accept: "application/json" };
+  if ($("tAuth").value.trim())
+    headers.authorization = "Bearer " + $("tAuth").value.trim();
+  const init = { method, headers, cache: "no-store" };
+  if (method !== "GET" && method !== "HEAD" && $("tBody").value.trim()) {
+    init.body = $("tBody").value;
+    headers["content-type"] = "application/json";
+  }
+  $("tStatus").textContent = "…";
+  const started = performance.now();
+  try {
+    const r = await fetch(path, init);
+    const ms = Math.round(performance.now() - started);
+    const text = await r.text();
+    let body = text;
+    try { body = JSON.stringify(JSON.parse(text), null, 2); } catch (e) {}
+    const shown = body.length > 20000
+      ? body.slice(0, 20000) + "\\n… (" + body.length + " chars)" : body;
+    const hdrs = [...r.headers.entries()].map(([k, v]) => k + ": " + v)
+      .join("\\n");
+    $("tStatus").textContent =
+      `HTTP ${r.status} · ${ms} ms · ${text.length} bytes — ` +
+      `curl -X ${method} '${location.origin}${path}'`;
+    $("tOut").classList.remove("hidden");
+    $("tOut").textContent = hdrs + "\\n\\n" + shown;
+  } catch (e) {
+    $("tStatus").textContent = "request failed: " + e;
+  }
+};
+
 load();
+loadCatalog();
 timer = setInterval(load, 60000);
 </script>
 </body>
