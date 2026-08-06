@@ -2301,6 +2301,11 @@ void MainWindow::resetIssueFilters()
 
 void MainWindow::refreshIssueList()
 {
+    // Deferred inside a batch so it renders AFTER reloadAgents(): this list
+    // shows agent assignment, and running it against stale sessions was one
+    // of the flashes during "Merge & clean up".
+    if (deferUiRefresh(UiRefreshIssues))
+        return;
     if (!m_issueTable)
         return;
     const QString statusFilter = m_issueStatusFilter->currentText();
@@ -5359,6 +5364,30 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                     applyLiveClaudeModelsToCombos();
             }
         }
+        // Any warning/critical modal, wherever it was raised: report it to the
+        // relay so a failure that only ever appeared on one screen still becomes
+        // an operational record and an administrator ping (adhoc #1538). This
+        // filter is already installed application-wide, so none of the ~150
+        // QMessageBox::warning/critical call sites has to remember to report.
+        if (auto *box = qobject_cast<QMessageBox *>(obj)) {
+            const QMessageBox::Icon icon = box->icon();
+            // A warning that asks something ("Discard changes?" with
+            // Discard/Cancel) is a confirmation prompt, not a failure. Only the
+            // boxes that merely inform are reports of something going wrong.
+            const bool informational =
+                (box->standardButtons()
+                 & ~(QMessageBox::Ok | QMessageBox::Close))
+                == QMessageBox::NoButton;
+            if (informational
+                && (icon == QMessageBox::Warning
+                    || icon == QMessageBox::Critical)) {
+                QString text = box->text();
+                if (!box->informativeText().isEmpty())
+                    text += QLatin1Char(' ') + box->informativeText();
+                reportUserVisibleError(QStringLiteral("dialog"),
+                                       box->windowTitle(), text);
+            }
+        }
     }
     // The collapsed prompt leaves only the account avatar at the footer's
     // lower-right corner. Hovering that launcher should restore the composer
@@ -5366,6 +5395,21 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (obj == m_userAvatarNavButton && event->type() == QEvent::Enter &&
         m_promptOverlayCollapsed) {
         setPromptOverlayCollapsed(false);
+    }
+    // Dragging the composer's top strip moves it, its corner grip resizes it,
+    // and double-clicking the strip snaps it back to the footer (adhoc #1536).
+    if (handlePromptPlacementEvent(obj, event))
+        return true;
+    // Closing the popped-out prompt window docks the composer rather than
+    // destroying it — the widget inside is the app's one and only composer.
+    if (obj == m_promptDetachWindow && m_promptDetachWindow) {
+        if (event->type() == QEvent::Close) {
+            event->ignore();
+            setPromptOverlayDetached(false);
+            return true;
+        }
+        if (event->type() == QEvent::Move || event->type() == QEvent::Resize)
+            m_promptDetachGeometry = m_promptDetachWindow->geometry();
     }
     // Ctrl + mouse wheel over any registered diff viewer zooms its text size,
     // mirroring the +/- buttons (issue #254). Consume so the view doesn't scroll.

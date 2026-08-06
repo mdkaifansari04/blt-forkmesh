@@ -95,6 +95,22 @@ struct PullRequest {
     bool independentReviewGateSatisfied() const;
 };
 
+// A local, review-only checkout of a pull request that has not been accepted
+// into the repository (see PullStore::checkoutForReview): where it lives on
+// disk, what it was built from, and the diff to show the reviewer.
+struct PullReviewCheckout {
+    QString path;             // detached linked worktree holding the change
+    QString baseOid;          // commit the submission was replayed onto
+    QString headOid;          // tip of the review copy
+    int commitCount = 0;      // commits the submission adds over the base
+    QString patch;            // base..head diff, for the in-app review view
+    // The submission would not replay as commits, so its flat patch was applied
+    // as *uncommitted* working-tree changes instead — still reviewable, but the
+    // per-commit authorship is not reproduced.
+    bool uncommitted = false;
+    QStringList conflicts;    // paths that did not apply cleanly (if any)
+};
+
 // Repo-scoped pull-request store backed by the on-disk pulls/ folder. Mirrors
 // IssueStore: read/write/commit for repos with a working tree, read-only via the
 // bare mirror otherwise.
@@ -223,6 +239,18 @@ public:
 
     // Merge a signed PR received from the relay inbox into pulls/.
     bool applyRemotePull(const PullRequest &pr, QString *error = nullptr);
+
+    // Pull an inbox submission onto this computer *for review only*: check its
+    // base out in a detached linked worktree and replay the submitted commits
+    // there. Nothing is written to pulls/, no branch or ref moves and no merge
+    // happens, so the reviewer can read, build and run a submission before
+    // deciding whether to accept it (adhoc #1541). Re-reviewing the same
+    // submission replaces the previous copy, so this is idempotent.
+    bool checkoutForReview(const PullRequest &pr, const QString &dir,
+                           PullReviewCheckout *out, QString *error = nullptr) const;
+    // Drop a review checkout created above: worktree registration, directory and
+    // any interrupted `am` state.
+    void discardReviewCheckout(const QString &dir) const;
     // Remove the PR folder entirely and commit the deletion. This is fast and
     // leaves history intact. Pass rewriteHistory=true to purge the entire PR
     // record from every commit on forkmesh/pulls via a filter-branch rewrite —

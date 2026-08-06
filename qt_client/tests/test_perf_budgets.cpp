@@ -202,9 +202,12 @@ int main(int argc, char *argv[])
         ++failures;
     }
 
-    // The black end cap supplies a viewport of trailing scroll range, so the
-    // final line of the final file can reach the top edge of the diff viewport.
+    // The end cap supplies a viewport of trailing scroll range, so the final
+    // line of the final file can reach the top edge of the diff viewport.
     QTextEdit endCapDiff;
+    // The app-wide #diffView rule is what actually paints the page, so wear its
+    // name: the cap colour is read back off the styled viewport.
+    endCapDiff.setObjectName(QStringLiteral("diffView"));
     endCapDiff.resize(640, 320);
     endCapDiff.show();
     forkmesh::ui::renderDiffStreamed(
@@ -220,6 +223,48 @@ int main(int argc, char *argv[])
     if (endCapBar->maximum() <= 0 || lastSource.isNull() ||
         endCapDiff.cursorRect(lastSource).top() > endCapDiff.fontMetrics().height()) {
         qCritical("FAIL: diff end cap did not let the final source line reach the top");
+        ++failures;
+    }
+
+    // …and it is the page colour with one line-tall black bar marking where the
+    // diff ends (adhoc #1536). It used to be a whole viewport of solid black,
+    // which on the light theme read as the page failing to render below the last
+    // line. Read it from the top of the document, where the bar sits directly
+    // under the final source line: pure black only, so the dark theme's #0d1117
+    // page is never mistaken for the bar.
+    endCapBar->setValue(0);
+    QApplication::processEvents();
+    const QImage endCapShot = endCapDiff.viewport()->grab().toImage();
+    const int probeX = endCapShot.width() / 2; // clear of both short lines
+    const auto isBar = [&endCapShot, probeX](int y) {
+        const QColor pixel = endCapShot.pixelColor(probeX, y);
+        return pixel.red() < 8 && pixel.green() < 8 && pixel.blue() < 8;
+    };
+    int barRows = 0;
+    int barTop = -1;
+    int barBottom = -1;
+    for (int y = 0; y < endCapShot.height(); ++y) {
+        if (!isBar(y))
+            continue;
+        ++barRows;
+        if (barTop < 0)
+            barTop = y;
+        barBottom = y;
+    }
+    // One line tall and unbroken, page colour on both sides of it.
+    const int lineHeight = endCapDiff.fontMetrics().lineSpacing();
+    const QColor pageColour = endCapShot.pixelColor(endCapShot.width() - 6, 2);
+    const QColor belowBar =
+        barBottom >= 0 && barBottom + 4 < endCapShot.height()
+            ? endCapShot.pixelColor(probeX, barBottom + 4)
+            : QColor();
+    if (barRows == 0 || barTop < 0 || barBottom - barTop + 1 != barRows ||
+        barRows > 2 * lineHeight || belowBar != pageColour ||
+        endCapShot.pixelColor(probeX, endCapShot.height() - 4) != pageColour) {
+        qCritical("FAIL: the diff end cap is not one line-tall black bar over a "
+                  "page-coloured run (%d black rows %d..%d, under it %s vs page %s)",
+                  barRows, barTop, barBottom, qPrintable(belowBar.name()),
+                  qPrintable(pageColour.name()));
         ++failures;
     }
 

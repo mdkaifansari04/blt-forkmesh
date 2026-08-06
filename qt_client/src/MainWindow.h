@@ -2,6 +2,7 @@
 #define FORKMESH_MAIN_WINDOW_H
 
 #include "ChatBackend.h"
+#include "ClientErrorReports.h"
 #include "DiscussionInboxBackoff.h"
 #include "NetworkBackoff.h"
 #include "DiscussionStore.h"
@@ -662,6 +663,8 @@ public:
     void testSetPendingInboxCounts(int issues, int pulls, int discussions);
     int testIssueInboxBadgeCount() const;
     int testPullInboxBadgeCount() const;
+    // Red "waiting on the nodes" count riding the repo's Pulls tab icon.
+    int testPullsTabAlertBadgeCount() const;
     QString testDiscussionInboxButtonText() const;
     Q_INVOKABLE bool testSaveRepoAboutMetadata(const QString &about,
                                                const QString &website)
@@ -3445,6 +3448,18 @@ private:
     void positionGitPromptOverlay();
     void positionGlobalFooterOverlays();
     void setPromptOverlayCollapsed(bool collapsed);
+    // The composer is a free-floating panel (adhoc #1536): drag its handle to
+    // move it anywhere over the workspace, drag the corner grip to resize it,
+    // and pop it out into a window of its own that can be moved off the app
+    // entirely (a second monitor, beside an editor). All three are persisted.
+    void setPromptOverlayDetached(bool detached);
+    void resetPromptOverlayPlacement();
+    void loadPromptOverlayPlacement();
+    void savePromptOverlayPlacement();
+    // Mouse handling for the drag handle and the resize grip. Positions are
+    // global so they survive the reparenting the two modes do.
+    bool handlePromptPlacementEvent(QObject *object, QEvent *event);
+    void clampPromptOverlayIntoHost();
     void setLogOverlayExpanded(bool expanded);
     void loadRepoFileTree();
     void loadCoveExplorer();
@@ -3596,6 +3611,57 @@ private:
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
+
+    // Coalesced panel refreshes.
+    //
+    // A multi-step operation ("Merge & clean up" is the worst case) walks
+    // through merge, worktree removal, branch deletion and agent cleanup,
+    // and each step used to reload every panel it could have touched —
+    // loadWorktreesPanel() alone ran three times per removal. Because those
+    // reloads shell out to git and pump the GUI event loop, every one of
+    // them repainted a half-updated view, which is what made the screen
+    // flash and the selection jump around.
+    //
+    // Inside a batch, a reload records itself instead of running; the batch
+    // then runs each distinct one ONCE at the end. The refreshes themselves
+    // are unchanged, so behaviour is identical — only the redundant
+    // intermediate repaints go away.
+    enum UiRefreshKind : unsigned {
+        UiRefreshSourceControl = 1u << 0,
+        UiRefreshSourceControlForce = 1u << 1,
+        UiRefreshWorktrees = 1u << 2,
+        UiRefreshBranches = 1u << 3,
+        UiRefreshAgents = 1u << 4,
+        UiRefreshIssues = 1u << 5,
+    };
+    int m_uiRefreshBatchDepth = 0;
+    unsigned m_uiRefreshPending = 0;
+    // True when the caller should skip its own work because a batch is open
+    // and has recorded this refresh for later.
+    bool deferUiRefresh(unsigned kind);
+    void runPendingUiRefreshes();
+    // RAII: opens a batch for the enclosing scope and flushes on the way out
+    // (including on an early return, which these merge paths take often).
+    class UiRefreshBatch {
+    public:
+        explicit UiRefreshBatch(MainWindow *window) : m_window(window)
+        {
+            if (m_window)
+                ++m_window->m_uiRefreshBatchDepth;
+        }
+        ~UiRefreshBatch()
+        {
+            if (!m_window)
+                return;
+            if (--m_window->m_uiRefreshBatchDepth == 0)
+                m_window->runPendingUiRefreshes();
+        }
+        UiRefreshBatch(const UiRefreshBatch &) = delete;
+        UiRefreshBatch &operator=(const UiRefreshBatch &) = delete;
+
+    private:
+        MainWindow *m_window = nullptr;
+    };
     // Give the just-opened repo-detail tab's primary list table keyboard focus so
     // the user can arrow up/down through its rows immediately, without clicking a
     // row first. `id` is the m_repoDetailStack index switched to; tabs without a
@@ -4769,7 +4835,19 @@ private:
     void applyPendingInboxSelection(const RepositoryRecord &repo,
                                     const QString &kind,
                                     const QJsonArray &pending);
+    // Pull one waiting submission onto this computer and open it for reading
+    // (adhoc #1541). Nothing is merged, nothing is written into the repository's
+    // pull ledger and the inbox is not acknowledged, so it stays pending until
+    // the owner syncs it. Both arguments are by value: the git work pumps the
+    // event loop, so a reference into m_repositories could dangle.
+    void reviewPendingPull(RepositoryRecord repo, QJsonObject item);
+    void showPullReviewDialog(RepositoryRecord repo, PullRequest pr,
+                              PullReviewCheckout checkout);
+    QString pullReviewCheckoutPath(const RepositoryRecord &repo,
+                                   const QString &slug) const;
     void refreshPendingInboxBadges();
+    // The pending-pull count as a red badge on the repo's Pulls tab.
+    void setPendingPullsTabBadge(int pending);
     void setPendingInboxCount(const RepositoryRecord &repo,
                               const QString &kind, int count);
     // Drain one repo's issue inbox. Owners consume their queue; eligible public
@@ -4963,6 +5041,24 @@ private:
                       const QString &clickHref = QString(),
                       int durationSeconds = 0,
                       const QString &kind = QString(), int actionRunId = -1);
+    // Ping the mesh about the failures this app used to only ever show to itself
+    // (adhoc #1538). Every warning/critical modal (caught by eventFilter's
+    // QEvent::Show branch, so no call site has to remember) and every error toast
+    // is reported to the relay, which records it in the shared operational error
+    // log and pings the administrators the first time a distinct failure appears
+    // — the only way an error on a headless node, or on a machine nobody is
+    // watching, is ever seen. Signed by this node's account; QSettings
+    // kReportUserVisibleErrorsSetting = false turns it off. See
+    // ClientErrorReports.h for the redaction, dedupe and deferral bounds.
+    void reportUserVisibleError(const QString &kind, const QString &title,
+                                const QString &message,
+                                const QString &surface = QString());
+    void sendUserVisibleErrorReport(
+        const forkmesh::ClientErrorReports::Report &report);
+    void flushDeferredErrorReports();
+    void scheduleDeferredErrorReportFlush();
+    forkmesh::ClientErrorReports m_errorReports;
+    QTimer *m_errorReportFlushTimer = nullptr;
     // The presentation half of flashMessage: puts the bubble on screen without
     // recording anything. Split out so an error that reaches the log by some
     // other route (logSystem's alert hook) can raise the same toast without
@@ -5618,6 +5714,26 @@ private:
     forkmesh::ui::LogActivityLights *m_logActivityHeader = nullptr;
     bool m_logOverlayExpanded = false;
     bool m_promptOverlayCollapsed = false;
+    // Free placement of the composer (adhoc #1536). "Floating" means it was
+    // dragged off the footer's lower-right anchor and now sits at
+    // m_promptOverlayPos inside m_globalOverlayHost; "detached" means it was
+    // popped out of the app into m_promptDetachWindow, which the window manager
+    // then moves and resizes like any other window.
+    QWidget *m_promptDragHandle = nullptr;
+    QWidget *m_promptResizeGrip = nullptr;
+    QPushButton *m_promptDetachButton = nullptr;
+    QWidget *m_promptDetachWindow = nullptr;
+    bool m_promptOverlayFloating = false;
+    bool m_promptOverlayDetached = false;
+    QPoint m_promptOverlayPos;  // top-left within m_globalOverlayHost
+    QSize m_promptOverlaySize;  // user-chosen size; invalid means "auto"
+    QRect m_promptDetachGeometry;
+    // Live drag/resize state. The grab point is global so it stays meaningful
+    // while the panel is reparented mid-gesture.
+    bool m_promptPlacementDragging = false;
+    bool m_promptPlacementResizing = false;
+    QPoint m_promptPlacementGrab;
+    QRect m_promptPlacementStartRect;
     bool m_footerWebsiteStatusInFlight = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the

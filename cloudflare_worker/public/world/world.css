@@ -12660,6 +12660,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   color: #d2a8ff;
 }
 
+.world-error-source--desktop {
+  border-color: rgb(63 185 80 / 0.6);
+  color: #56d364;
+}
+
 .world-error-sparkline {
   display: grid !important;
   width: 180px;

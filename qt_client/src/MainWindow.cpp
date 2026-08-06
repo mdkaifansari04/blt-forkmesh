@@ -1150,6 +1150,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // user has already chosen to close it (adhoc #1530).
     m_closingDown = true;
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
+    // Where the composer was left — free position, dragged size, or the geometry
+    // of its popped-out window (adhoc #1536).
+    savePromptOverlayPlacement();
     // Bank the still-running uptime clock exactly: the periodic persist in
     // updateHomeStats() is throttled, so quitting mid-session would otherwise
     // drop the minutes since its last write.

@@ -8862,6 +8862,8 @@ QString MainWindow::repoDefaultBranchFast() const
 
 void MainWindow::loadBranchesAndTags()
 {
+    if (deferUiRefresh(UiRefreshBranches))
+        return;
     // The browsed ref — and with it the status strip's bottom-left branch button
     // — is pinned to the repo's stable default branch, never HEAD: every merge
     // path transiently checks some other branch out here ("Update from main",

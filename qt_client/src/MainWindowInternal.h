@@ -4274,7 +4274,11 @@ protected:
 // Slots 0-6 are the seven robot portraits an agent bot already wears in the
 // World (cloudflare_worker/public/assets/bot-avatars), in that table's own
 // order, so one model reads the same in the composer picker, the Agents list
-// and the World. Use agentModelFaceIconIndex() rather than these numbers.
+// and the World. Slots 16-22 are the abstract marks every model used to wear,
+// in the matching order (starburst/feather/mountain-blossom/book-quill for
+// Opus/Sonnet/Haiku/Fable, sun/crescent-moon/globe-leaf for Sol/Luna/Terra):
+// only a model the World actually drew a portrait for gets one, so everything
+// else keeps its mark. Use agentModelFaceIconIndex() rather than these numbers.
 inline QIcon agentControlIcon(int index)
 {
     static const char *const paths[] = {
@@ -4294,8 +4298,15 @@ inline QIcon agentControlIcon(int index)
         ":/agent-ui/icons/effort-high.png",
         ":/agent-ui/icons/effort-ultra.png",
         ":/agent-ui/icons/effort-max.png",
+        ":/agent-ui/icons/model-starburst.png",
+        ":/agent-ui/icons/model-feather.png",
+        ":/agent-ui/icons/model-mountain-blossom.png",
+        ":/agent-ui/icons/model-book-quill.png",
+        ":/agent-ui/icons/model-sun.png",
+        ":/agent-ui/icons/model-crescent-moon.png",
+        ":/agent-ui/icons/model-globe-leaf.png",
     };
-    if (index < 0 || index >= 16)
+    if (index < 0 || index >= 23)
         return QIcon();
     static QHash<int, QIcon> cache;
     if (const auto cached = cache.constFind(index); cached != cache.cend())
@@ -4371,35 +4382,51 @@ inline bool agentModelMatchesProvider(const QString &provider, const QString &mo
     return !agentModelIsClaudeStyle(model);
 }
 
-// agentControlIcon() slot holding the portrait a model wears. A session names
-// its model freely ("opus", "claude-sonnet-5", "gpt-5.5-codex"), so match the
-// face names by substring first and only then fall back per provider, exactly
-// as the World does: Claude reads as Sonnet, Codex as Sol, the OpenAI API as
-// Luna, anything else as Terra. Codex and OpenAI ids carry no face name of
-// their own, so the small models take Luna and the Codex line takes Sol. The
-// lookup never fails — every model gets a face.
-inline int agentModelFaceIconIndex(const QString &provider, const QString &model)
+// Which of the World's seven bot portraits a model is named after, or -1 when
+// none is. A session names its model freely ("opus", "claude-sonnet-5",
+// "gpt-5.6-sol"), so match the portrait names by substring — the portrait
+// belongs to the model line, not to one version of it, exactly as in the World.
+inline int agentModelPortraitIconIndex(const QString &model)
 {
     static const char *const kFaces[] = {"opus", "sonnet", "haiku", "fable",
                                          "sol",  "luna",   "terra"};
-    constexpr int kSonnetFace = 1;
-    constexpr int kSolFace = 4;
-    constexpr int kLunaFace = 5;
-    constexpr int kTerraFace = 6;
     const QString m = model.trimmed().toLower();
     for (int i = 0; i < 7; ++i)
         if (m.contains(QLatin1String(kFaces[i])))
             return i;
+    return -1;
+}
+
+// agentControlIcon() slot holding the icon a model wears. Only the top models —
+// the lines the World drew a portrait for — wear a portrait; everything below
+// them (the smaller Codex tiers, the raw API agents, the Cloudflare chat models)
+// keeps the abstract mark it always had, so the menu does not read as one
+// undifferentiated wall of robot faces. The marks a row falls back to are the
+// ones it already showed before the portraits landed: the Claude API keeps the
+// feather, the Codex line and the OpenAI API the sun, the small models the
+// crescent moon, and the Cloudflare chat models the globe. The lookup never
+// fails — every model gets an icon.
+inline int agentModelFaceIconIndex(const QString &provider, const QString &model)
+{
+    if (const int portrait = agentModelPortraitIconIndex(model); portrait >= 0)
+        return portrait;
+    // Each mark sits a fixed table apart from the portrait it pairs with, so a
+    // fallback names the line it stands in for rather than a raw slot number.
+    constexpr int kMarkOffset = 16;
+    constexpr int kSonnetMark = kMarkOffset + 1;
+    constexpr int kSolMark = kMarkOffset + 4;
+    constexpr int kLunaMark = kMarkOffset + 5;
+    constexpr int kTerraMark = kMarkOffset + 6;
+    const QString m = model.trimmed().toLower();
     const QString p = provider.trimmed().toLower();
     if (agentIsClaudeProvider(p) || agentModelIsClaudeStyle(m))
-        return kSonnetFace;
+        return kSonnetMark;
     if (m.contains(QLatin1String("mini")) || m.contains(QLatin1String("nano")))
-        return kLunaFace;
-    if (agentIsCodexProvider(p) || m.contains(QLatin1String("codex")))
-        return kSolFace;
-    if (agentUsesOpenAiKey(p))
-        return kLunaFace;
-    return kTerraFace;
+        return kLunaMark;
+    if (agentIsCodexProvider(p) || m.contains(QLatin1String("codex")) ||
+        agentUsesOpenAiKey(p))
+        return kSolMark;
+    return kTerraMark;
 }
 
 // Pre-model router for auto mode: a self-hosted, zero-cost heuristic pass over
@@ -9425,7 +9452,12 @@ public:
         f.setPixelSize(10);
         f.setWeight(QFont::DemiBold);
         const int textW = QFontMetrics(f).horizontalAdvance(text());
-        return QSize(qMax(44, qMax(kIconPx, textW) + 16), kHeight);
+        // Two long counts side by side ("147" open beside "99" waiting) are wider
+        // than both the icon and the caption; without this the pair would be
+        // clamped at the tile's left edge and paint over each other. Half the
+        // icon is the overhang the badges are allowed past its corner.
+        const int badgesW = badgeStripWidth() + kIconPx / 2;
+        return QSize(qMax(44, qMax(qMax(kIconPx, textW), badgesW) + 16), kHeight);
     }
     QSize minimumSizeHint() const override { return sizeHint(); }
 
@@ -9437,9 +9469,26 @@ public:
         if (m_badge == count)
             return;
         m_badge = count;
+        updateGeometry(); // a longer count can need a wider tile
         update();
     }
     qint64 badgeCount() const { return m_badge; }
+
+    // A second, red badge for a "waiting on you" count that must not be confused
+    // with the tile's own blue total: pull requests other nodes have filed but
+    // this node has not taken in yet ride the Pulls tab this way (adhoc #1541).
+    // It sits immediately left of the blue badge, so the ordinary count keeps its
+    // corner and both numbers stay legible at once.
+    void setAlertBadgeCount(qint64 count)
+    {
+        count = qMax<qint64>(0, count);
+        if (m_alertBadge == count)
+            return;
+        m_alertBadge = count;
+        updateGeometry();
+        update();
+    }
+    qint64 alertBadgeCount() const { return m_alertBadge; }
 
     // Name the octicon instead of handing over a finished QIcon, and the glyph
     // is re-tinted to the live caption colour on every repaint — exactly how
@@ -9505,33 +9554,62 @@ protected:
                    QFontMetrics(f).elidedText(text(), Qt::ElideRight,
                                               width() - 4));
 
-        // Count badge on the icon's upper-right corner, the same geometry and
+        // Count badges on the icon's upper-right corner, the same geometry and
         // blue as ActivityRailButton's, but never capped at 99+ — a repo can
-        // legitimately advertise hundreds of branches.
-        if (m_badge > 0) {
-            const QString badgeText = formatCount(m_badge);
+        // legitimately advertise hundreds of branches. The red alert count is
+        // laid out right-to-left from the same corner, so it lands just left of
+        // the blue one instead of on top of it.
+        double rightEdge = iconRect.right() + kBadgeH / 2.0 + 2;
+        const auto paintBadge = [&](qint64 count, const QColor &fill) {
+            if (count <= 0)
+                return;
+            const QString badgeText = formatCount(count);
             QFont bf = font();
             bf.setPixelSize(9);
             bf.setBold(true);
             p.setFont(bf);
-            const int h = 14;
-            const int w =
-                qMax(h, QFontMetrics(bf).horizontalAdvance(badgeText) + 8);
-            const QRectF badge(iconRect.right() - w + h / 2.0 + 2,
+            const int h = kBadgeH;
+            const int w = badgeWidth(count);
+            const QRectF badge(qMax(0.0, rightEdge - w),
                                qMax(0.0, double(iconRect.top() - 5)), w, h);
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#1f6feb"));
+            p.setBrush(fill);
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
             p.setPen(QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, badgeText);
-        }
+            rightEdge = badge.left() - 2;
+        };
+        paintBadge(m_badge, QColor("#1f6feb"));
+        paintBadge(m_alertBadge, QColor(dark ? "#da3633" : "#cf222e"));
     }
 
 private:
+    // Pixel width of one count badge (0 when it is hidden), and of the pair as
+    // laid out on the icon's corner. sizeHint and paintEvent must agree on this
+    // or a wide pair paints outside the tile it was measured for.
+    int badgeWidth(qint64 count) const
+    {
+        if (count <= 0)
+            return 0;
+        QFont bf = font();
+        bf.setPixelSize(9);
+        bf.setBold(true);
+        return qMax(kBadgeH,
+                    QFontMetrics(bf).horizontalAdvance(formatCount(count)) + 8);
+    }
+    int badgeStripWidth() const
+    {
+        const int blue = badgeWidth(m_badge);
+        const int red = badgeWidth(m_alertBadge);
+        return blue + red + (blue > 0 && red > 0 ? 2 : 0);
+    }
+
     static constexpr int kIconPx = 16;
     static constexpr int kHeight = 44;
+    static constexpr int kBadgeH = 14; // badge height and rounded-end radius
     Form m_form;
     qint64 m_badge = 0;
+    qint64 m_alertBadge = 0;
     QString m_iconName; // empty: paint the QIcon set by setOcticon instead
 };
 

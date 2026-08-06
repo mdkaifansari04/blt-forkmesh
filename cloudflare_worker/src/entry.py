@@ -253,6 +253,28 @@ CLIENT_ERROR_SURFACES = frozenset({
 # without pagehide (GPU/OOM kill, tab discard) or a lost WebGL context, with
 # the last heartbeat's diagnostics in the message.
 CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection", "crash"})
+# Desktop-app failures the Qt client used to only ever show to itself: a warning
+# modal on a machine nobody is sitting in front of, a red toast on a headless
+# node. They join the same operational error_log as browser and Worker errors, so
+# the first sighting of a distinct failure raises the existing administrator
+# "new error group" ping (adhoc #1538) instead of dying on one screen.
+#
+# Admission differs from the browser collector: a Qt client has no Origin header
+# and no session cookie, so a report is stored only when it carries the same
+# signed owner token as GET /api/sync. Anonymous desktop reports are refused
+# rather than opening a second unauthenticated write path into D1.
+DESKTOP_ERROR_MAX_BODY = 8 * 1024
+DESKTOP_ERROR_RATE_WINDOW_MS = 60 * 1000
+DESKTOP_ERROR_RATE_PER_OWNER = 6
+DESKTOP_ERROR_RATE_GLOBAL = 60
+# Which kind of install hit it, never a free-text label: it becomes the
+# error_log path, which the admin view and the ping dedupe both group on. The
+# split is the one that changes what the report means — a modal on a headless
+# mirror is a node parked until somebody clicks OK, while the same modal on a
+# desktop is a person reading it.
+DESKTOP_ERROR_SURFACES = frozenset({"app", "headless"})
+# How the failure reached the operator: a modal dialog or the in-app error toast.
+DESKTOP_ERROR_KINDS = frozenset({"dialog", "toast"})
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
@@ -13579,7 +13601,7 @@ async def _repo_about_public(env, request, owner, repo):
             "followersList": followers_list,
             "settings": ap_settings,
         },
-    }, cache_control="public, max-age=30")
+    }, cache_control="public, max-age=600")
 
 
 async def repo_about_handler(env, request, owner, repo):
@@ -27944,25 +27966,74 @@ AP_BANNER_PATH = "/assets/fediverse-banner.png"
 _AP_RSA_ALG = {"name": "RSASSA-PKCS1-v1_5", "hash": "SHA-256"}
 
 
-def _ap_origin(env, request=None):
-    # Absolute https origin for actor/object ids. PUBLIC_BASE_URL wins (set on
-    # self-hosted relays); otherwise the request's own host; cron falls back to
-    # the canonical production domain.
-    base = (getattr(env, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
-    if base.startswith("https://") or base.startswith("http://"):
-        return base
-    if request is not None:
-        try:
-            host = urlparse(request.url).netloc
-            if host:
-                return "https://" + host
-        except Exception:
-            pass
-    return "https://forkmesh.com"
+_fediverse_routes = _LazyModule("fediverse_routes")
+_ap_origin = _fediverse_routes.export("_ap_origin")
+_ap_domain_of = _fediverse_routes.export("_ap_domain_of")
+_ap_settings = _fediverse_routes.export("_ap_settings")
+_ap_enabled = _fediverse_routes.export("_ap_enabled")
+_ap_domain_blocked = _fediverse_routes.export("_ap_domain_blocked")
+_ap_disabled_response = _fediverse_routes.export("_ap_disabled_response")
+_ap_actor_url = _fediverse_routes.export("_ap_actor_url")
+_ap_uuid = _fediverse_routes.export("_ap_uuid")
+_ap_generate_keypair = _fediverse_routes.export("_ap_generate_keypair")
+_ap_rsa_sign_b64 = _fediverse_routes.export("_ap_rsa_sign_b64")
+_ap_rsa_verify = _fediverse_routes.export("_ap_rsa_verify")
+_ap_actor_bi = _fediverse_routes.export("_ap_actor_bi")
+_ap_local_actor = _fediverse_routes.export("_ap_local_actor")
+_ap_instance_actor = _fediverse_routes.export("_ap_instance_actor")
+_ap_user_federates = _fediverse_routes.export("_ap_user_federates")
+_ap_org_alias_owner = _fediverse_routes.export("_ap_org_alias_owner")
+_ap_repo_is_official_actor = _fediverse_routes.export("_ap_repo_is_official_actor")
+_ap_prune_actor_inventory = _fediverse_routes.export("_ap_prune_actor_inventory")
+_ap_repo_federates = _fediverse_routes.export("_ap_repo_federates")
+_ap_repo_settings_bi = _fediverse_routes.export("_ap_repo_settings_bi")
+_ap_repo_settings_get = _fediverse_routes.export("_ap_repo_settings_get")
+_ap_org_digest_settings_get = _fediverse_routes.export("_ap_org_digest_settings_get")
+_ap_digest_scope_bi = _fediverse_routes.export("_ap_digest_scope_bi")
+_ap_digest_queue_record = _fediverse_routes.export("_ap_digest_queue_record")
+_ap_enqueue_digest_scope = _fediverse_routes.export("_ap_enqueue_digest_scope")
+_ap_enqueue_repo_digest = _fediverse_routes.export("_ap_enqueue_repo_digest")
+_ap_purge_repo_digest_queues = _fediverse_routes.export("_ap_purge_repo_digest_queues")
+_ap_digest_preview = _fediverse_routes.export("_ap_digest_preview")
+_ap_digest_scope_allowed = _fediverse_routes.export("_ap_digest_scope_allowed")
+_ap_publish_digest_row = _fediverse_routes.export("_ap_publish_digest_row")
+_ap_negative_response = _fediverse_routes.export("_ap_negative_response")
+ap_hostmeta_handler = _fediverse_routes.export("ap_hostmeta_handler")
+ap_webfinger_handler = _fediverse_routes.export("ap_webfinger_handler")
+ap_nodeinfo_handler = _fediverse_routes.export("ap_nodeinfo_handler")
+_ap_build_actor_doc = _fediverse_routes.export("_ap_build_actor_doc")
+_ap_actor_doc_response = _fediverse_routes.export("_ap_actor_doc_response")
+_ap_broadcast_actor_update = _fediverse_routes.export("_ap_broadcast_actor_update")
+ap_collection_handler = _fediverse_routes.export("ap_collection_handler")
+ap_object_handler = _fediverse_routes.export("ap_object_handler")
+ap_object_media_handler = _fediverse_routes.export("ap_object_media_handler")
+_ap_signed_request = _fediverse_routes.export("_ap_signed_request")
+_ap_instance_key = _fediverse_routes.export("_ap_instance_key")
+_ap_remote_actor = _fediverse_routes.export("_ap_remote_actor")
+_ap_refresh_follower_profiles = _fediverse_routes.export("_ap_refresh_follower_profiles")
+_ap_deliver_body = _fediverse_routes.export("_ap_deliver_body")
+_ap_drain_outbox = _fediverse_routes.export("_ap_drain_outbox")
+_ap_publish_repo_event = _fediverse_routes.export("_ap_publish_repo_event")
+_ap_forget_remote = _fediverse_routes.export("_ap_forget_remote")
+_ap_resolve_local_target = _fediverse_routes.export("_ap_resolve_local_target")
+_ap_handle_follow = _fediverse_routes.export("_ap_handle_follow")
+_ap_handle_undo = _fediverse_routes.export("_ap_handle_undo")
+_ap_comment_by_remote_id = _fediverse_routes.export("_ap_comment_by_remote_id")
+_ap_reply_parent = _fediverse_routes.export("_ap_reply_parent")
+_ap_activity_is_public = _fediverse_routes.export("_ap_activity_is_public")
+_ap_handle_create = _fediverse_routes.export("_ap_handle_create")
+_ap_handle_update = _fediverse_routes.export("_ap_handle_update")
+_ap_handle_remove = _fediverse_routes.export("_ap_handle_remove")
+_ap_note_repo_mention = _fediverse_routes.export("_ap_note_repo_mention")
+_ap_send_mention_reply = _fediverse_routes.export("_ap_send_mention_reply")
+_ap_handle_repo_mention = _fediverse_routes.export("_ap_handle_repo_mention")
+_ap_handle_delete = _fediverse_routes.export("_ap_handle_delete")
+ap_inbox_handler = _fediverse_routes.export("ap_inbox_handler")
+ap_publish_handler = _fediverse_routes.export("ap_publish_handler")
+ap_digest_handler = _fediverse_routes.export("ap_digest_handler")
+ap_posts_handler = _fediverse_routes.export("ap_posts_handler")
 
 
-def _ap_domain_of(origin):
-    return origin.split("://", 1)[-1]
 
 
 # Operator configuration (admin-managed via /api/accounts/admin-ap*): a global
@@ -27972,252 +28043,38 @@ _AP_SETTINGS_CACHE = {"ts": 0, "enabled": True, "blocked": set()}
 AP_SETTINGS_TTL_MS = 60 * 1000
 
 
-async def _ap_settings(env, fresh=False):
-    now = int(Date.now())
-    if not fresh and now - _AP_SETTINGS_CACHE["ts"] < AP_SETTINGS_TTL_MS:
-        return _AP_SETTINGS_CACHE
-    row = await d1_first(env, "SELECT v FROM ap_settings WHERE k='enabled'")
-    enabled = (row or {}).get("v", "1") != "0"
-    rows = await d1_all(env, "SELECT domain FROM ap_blocked_domains")
-    blocked = {r.get("domain", "") for r in (rows or []) if r.get("domain")}
-    _AP_SETTINGS_CACHE.update({"ts": now, "enabled": enabled,
-                               "blocked": blocked})
-    return _AP_SETTINGS_CACHE
 
 
-async def _ap_enabled(env):
-    return (await _ap_settings(env))["enabled"]
 
 
-async def _ap_domain_blocked(env, host):
-    return ap.domain_blocked_by(host, (await _ap_settings(env))["blocked"])
 
 
-def _ap_disabled_response():
-    return json_response({"error": "not_found"}, status=404)
 
 
-def _ap_actor_url(origin, kind, handle):
-    if kind == AP_ACTOR_INSTANCE:
-        return origin + ap.INSTANCE_ACTOR_PATH
-    if kind == AP_ACTOR_USER:
-        return origin + ap.user_actor_path(handle)
-    owner, _, repo = handle.partition(".")
-    return origin + ap.repo_actor_path(owner, repo)
 
 
-def _ap_uuid():
-    raw = js_crypto.getRandomValues(Uint8Array.new(16))
-    return bytes(raw.to_py()).hex()
 
 
-async def _ap_generate_keypair():
-    params = to_js({"name": "RSASSA-PKCS1-v1_5", "modulusLength": 2048,
-                    "hash": "SHA-256"})
-    params.publicExponent = _to_js(bytes([1, 0, 1]))  # 65537
-    pair = await js_crypto.subtle.generateKey(
-        params, True, _to_js(["sign", "verify"]))
-    spki = await js_crypto.subtle.exportKey("spki", pair.publicKey)
-    pkcs8 = await js_crypto.subtle.exportKey("pkcs8", pair.privateKey)
-    pub_pem = ap.pem_wrap(
-        "PUBLIC KEY",
-        base64.b64encode(bytes(Uint8Array.new(spki).to_py())).decode())
-    priv_b64 = base64.b64encode(bytes(Uint8Array.new(pkcs8).to_py())).decode()
-    return pub_pem, priv_b64
 
 
-async def _ap_rsa_sign_b64(priv_b64, text):
-    key = await js_crypto.subtle.importKey(
-        "pkcs8", _to_js(base64.b64decode(priv_b64)), to_js(_AP_RSA_ALG),
-        False, _to_js(["sign"]))
-    sig = await js_crypto.subtle.sign(
-        to_js({"name": "RSASSA-PKCS1-v1_5"}), key, _to_js(text.encode()))
-    return base64.b64encode(bytes(Uint8Array.new(sig).to_py())).decode()
 
 
-async def _ap_rsa_verify(pub_pem, sig_b64, text):
-    try:
-        der = base64.b64decode(ap.pem_body(pub_pem))
-        signature = base64.b64decode(sig_b64)
-    except Exception:
-        return False
-    try:
-        key = await js_crypto.subtle.importKey(
-            "spki", _to_js(der), to_js(_AP_RSA_ALG), False, _to_js(["verify"]))
-        ok = await js_crypto.subtle.verify(
-            to_js({"name": "RSASSA-PKCS1-v1_5"}), key, _to_js(signature),
-            _to_js(text.encode()))
-        return bool(ok)
-    except Exception:
-        return False
 
 
-async def _ap_actor_bi(env, kind, handle):
-    return await blind_index(env, "ap-actor:%s:%s" % (kind, handle))
 
 
-async def _ap_local_actor(env, kind, handle, create=False):
-    # A local actor's keypair, minted lazily on the first fediverse lookup so
-    # users/repos nobody follows never get a row.
-    actor_bi = await _ap_actor_bi(env, kind, handle)
-    row = await d1_first(
-        env, "SELECT data FROM ap_actors WHERE actor_bi=?", actor_bi)
-    if row:
-        rec = await decrypt_row(env, row.get("data"))
-        if rec and rec.get("privkey") and rec.get("pubkeyPem"):
-            rec["actorBi"] = actor_bi
-            return rec
-    if not create:
-        return None
-    pub_pem, priv_b64 = await _ap_generate_keypair()
-    rec = {"kind": kind, "handle": handle, "pubkeyPem": pub_pem,
-           "privkey": priv_b64, "createdAt": int(Date.now())}
-    await d1_run(
-        env,
-        "INSERT INTO ap_actors (actor_bi, kind, pubkey_pem, data, created_at)"
-        " VALUES (?,?,?,?,?) ON CONFLICT(actor_bi) DO NOTHING",
-        actor_bi, kind, pub_pem, await encrypt_row(env, rec),
-        rec["createdAt"])
-    # Re-read: a concurrent first-lookup may have won the insert race with a
-    # different keypair, and the stored row is the canonical one (the pubkey
-    # is already being served to the remote server that triggered it).
-    row = await d1_first(
-        env, "SELECT data FROM ap_actors WHERE actor_bi=?", actor_bi)
-    stored = await decrypt_row(env, row.get("data")) if row else None
-    rec = stored or rec
-    rec["actorBi"] = actor_bi
-    return rec
 
 
-async def _ap_instance_actor(env, create=False):
-    row = await d1_first(
-        env, "SELECT data FROM ap_service_keys WHERE key_name='instance'")
-    if row:
-        rec = await decrypt_row(env, row.get("data"))
-        if rec and rec.get("privkey") and rec.get("pubkeyPem"):
-            return rec
-    if not create:
-        return None
-    pub_pem, priv_b64 = await _ap_generate_keypair()
-    rec = {
-        "kind": "service",
-        "handle": AP_INSTANCE_HANDLE,
-        "pubkeyPem": pub_pem,
-        "privkey": priv_b64,
-        "createdAt": int(Date.now()),
-    }
-    await d1_run(
-        env,
-        "INSERT INTO ap_service_keys (key_name, pubkey_pem, data, created_at) "
-        "VALUES ('instance',?,?,?) ON CONFLICT(key_name) DO NOTHING",
-        pub_pem, await encrypt_row(env, rec), rec["createdAt"])
-    row = await d1_first(
-        env, "SELECT data FROM ap_service_keys WHERE key_name='instance'")
-    return await decrypt_row(env, row.get("data")) if row else rec
 
 
-async def _ap_user_federates(env, name):
-    # Any active, non-private account federates as a Person — node-owner
-    # accounts included, not just login ("user"-kind) accounts: the node name
-    # is the public authoring identity on issues/PRs, so it is what fediverse
-    # followers expect to find at @name@<domain>. The web follow API
-    # (_account_follow) accepts the same targets.
-    name = (name or "").strip().lower()
-    if not valid_node_name(name):
-        return False
-    _, rec = await _account_row(env, name)
-    return bool(rec and rec.get("status") == "active"
-                and not rec.get("profile_private"))
 
 
-async def _ap_org_alias_owner(env, owner, repo):
-    # Organization repo aliases (issue #388): a fediverse actor is addressed by
-    # the org handle (@org.repo@host), but the backing repo — its repositories
-    # row, media, per-repo AP settings and issue inbox — lives under the linked
-    # node, never under the org name. Resolve org->node for those data reads so
-    # federation keeps working after a repo is fronted by an org, while the
-    # public actor identity (handle, reply author, web URLs) stays the org. A
-    # plain node URL (no alias) resolves to itself, so this is a safe no-op on
-    # every non-org path.
-    node = await _org_repo_node(env, owner, repo)
-    return node or owner
 
 
-async def _ap_repo_is_official_actor(env, owner, repo):
-    # Mirror catalog rows are routing replicas, never their own public social
-    # identities. Official repositories are locally published records or an
-    # organization alias backed by one; remote/external clone records are not.
-    # Do not call _ap_org_alias_owner/_org_repo_node here. Actor inventory
-    # reconciliation runs from ensure_schema(), while _org_repo_node itself
-    # calls ensure_schema(); that recursion makes alias resolution fail closed
-    # during a cold start and used to delete valid org actors plus every
-    # follower row. Read the already-created durable link directly instead.
-    owner_l = str(owner or "").strip().lower()
-    repo_l = str(repo or "").strip().lower()
-    org_bi = await blind_index(env, "org:" + owner_l)
-    alias_row = await d1_first(
-        env,
-        "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
-        org_bi, repo_l)
-    alias_owner = str(
-        (alias_row or {}).get("node_owner") or "").strip().lower()
-    data_owner = (
-        alias_owner
-        if valid_node_name(alias_owner) and alias_owner != owner_l
-        else owner_l
-    )
-    is_org_alias = (
-        data_owner != owner_l
-    )
-    key_bi = await blind_index(env, data_owner + "/" + repo_l)
-    row = await d1_first(
-        env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
-    if not row:
-        return False
-    rec = await decrypt_row(env, row.get("data"))
-    # A durable org link promotes its backing repository to the org's one
-    # official public identity even when the backing catalog row is tagged as
-    # a remote clone. That tag describes the hosting node's copy; it must not
-    # cause startup reconciliation to delete the org actor and its followers.
-    if is_org_alias:
-        return _catalog_record_matches_identity(rec, data_owner, repo_l)
-    source = str((rec or {}).get("source") or "").strip().lower()
-    return source not in ("remote-clone", "external")
 
 
-async def _ap_prune_actor_inventory(env):
-    # Actor visibility is enforced by the public resolution/federation gates,
-    # not by erasing the durable social graph during schema startup. Catalog
-    # records and org aliases can be temporarily unavailable or misclassified;
-    # deleting here previously turned that transient state into permanent loss
-    # of followers, actors, signing identities, and posts. Keep this hook for
-    # callers from older deployments, but make reconciliation non-destructive.
-    return
 
 
-async def _ap_repo_federates(env, owner, repo):
-    # Only published, public repos federate. A missing catalog row means the
-    # repo was never published — unlike the git-clone path (which stays open
-    # for ad-hoc hosts), an unpublished repo has no fediverse presence. The
-    # owner can also switch federation off per repo (web/Qt repo settings).
-    data_owner = await _ap_org_alias_owner(env, owner, repo)
-    official_reader = globals().get("_ap_repo_is_official_actor")
-    if callable(official_reader) and not await official_reader(
-            env, owner, repo):
-        return False
-    privacy_reader = globals().get("_repo_is_private")
-    if callable(privacy_reader):
-        if await privacy_reader(env, data_owner, repo):
-            return False
-    else:
-        # Isolated compatibility harnesses may omit _repo_is_private.
-        # Production always uses its signed-record, fail-closed decision.
-        key_bi = await blind_index(env, data_owner + "/" + repo)
-        row = await d1_first(
-            env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
-        if not row or int(row.get("is_private") or 0):
-            return False
-    return (await _ap_repo_settings_get(env, data_owner, repo))["federate"]
 
 
 # Per-repo fediverse switches the owner manages from the web and Qt repo
@@ -28230,317 +28087,26 @@ AP_REPO_SETTING_DEFAULTS = {
 }
 
 
-async def _ap_repo_settings_bi(env, owner, repo):
-    # Distinct namespace + full lowercasing on both halves: callers reach this
-    # with URL-cased (About handler) and handle-cased (AP gates) names, and
-    # they must all land on the same row. Org-alias handles resolve to the
-    # backing node so a mention gate keys on the same row the owner's repo
-    # settings wrote under the node name (issue #388).
-    owner = await _ap_org_alias_owner(env, owner, repo)
-    return await blind_index(
-        env, "ap-repo-settings:%s/%s" % (str(owner or "").strip().lower(),
-                                         str(repo or "").strip().lower()))
 
 
-async def _ap_repo_settings_get(env, owner, repo):
-    row = await d1_first(
-        env, "SELECT data FROM ap_repo_settings WHERE repo_bi=?",
-        await _ap_repo_settings_bi(env, owner, repo))
-    settings = dict(AP_REPO_SETTING_DEFAULTS)
-    if row:
-        try:
-            stored = json.loads(row.get("data") or "{}")
-        except Exception:
-            stored = {}
-        if isinstance(stored, dict):
-            for key in AP_REPO_SETTING_DEFAULTS:
-                if key in stored:
-                    settings[key] = bool(stored[key])
-    return settings
 
 
-async def _ap_org_digest_settings_get(env, org_bi):
-    """Return the org-alias digest gate.
-
-    Organization controls are deliberately a second, suppress-only gate. The
-    linked repository owner's `federate` and `broadcastEvents` settings must
-    also be enabled before any org-alias event can enter a queue.
-    """
-    row = await d1_first(
-        env, "SELECT data FROM ap_org_digest_settings WHERE org_bi=?", org_bi)
-    controls = fedi_digest.normalize_controls({})
-    if row:
-        try:
-            stored = json.loads(row.get("data") or "{}")
-        except Exception:
-            stored = {}
-        if isinstance(stored, dict):
-            controls = fedi_digest.normalize_controls(stored)
-    return controls
 
 
-async def _ap_digest_scope_bi(env, scope):
-    return await blind_index(
-        env, "ap-digest:" + str(scope or "").strip().lower())
 
 
-async def _ap_digest_queue_record(env, scope):
-    scope_bi = await _ap_digest_scope_bi(env, scope)
-    row = await d1_first(
-        env,
-        "SELECT scope_bi, next_ts, last_published_at, data "
-        "FROM ap_digest_queues WHERE scope_bi=?",
-        scope_bi)
-    if not row:
-        return scope_bi, None, None
-    rec = await decrypt_row(env, row.get("data")) or {}
-    if not isinstance(rec, dict) or rec.get("scope") != scope:
-        # Fail closed if the encrypted payload does not match its blind key.
-        return scope_bi, row, None
-    return scope_bi, row, rec
 
 
-async def _ap_enqueue_digest_scope(
-        env, scope_owner, repo, source_owner, event):
-    """Insert one already-reduced public event into an encrypted scope queue."""
-    scope_owner = clean_string(scope_owner, MAX_NODE_NAME).strip().lower()
-    source_owner = clean_string(source_owner, MAX_NODE_NAME).strip().lower()
-    repo = clean_string(repo, MAX_REPO_SEGMENT).strip()
-    scope = scope_owner + "/" + repo.lower()
-    if (not valid_node_name(scope_owner) or not valid_node_name(source_owner)
-            or not repo or not event):
-        return False
-    scope_bi, row, rec = await _ap_digest_queue_record(env, scope)
-    now = int(Date.now())
-    last_published = int((row or {}).get("last_published_at") or 0)
-    events = fedi_digest.add_event(
-        (rec or {}).get("events") if rec else [], event)
-    if not events:
-        return False
-    # A new queue waits a full cadence so several meaningful events can be
-    # combined. After a prior post, the next due time remains anchored to that
-    # post rather than sliding forward with every incoming event.
-    if row:
-        next_ts = int(row.get("next_ts") or 0)
-        if next_ts <= 0:
-            next_ts = max(now, last_published + fedi_digest.DAY_MS)
-    else:
-        next_ts = now + fedi_digest.DAY_MS
-    payload = {
-        "scope": scope,
-        "scopeOwner": scope_owner,
-        "repo": repo,
-        "sourceOwner": source_owner,
-        "events": events,
-        "lastPublishedAt": last_published,
-    }
-    await d1_run(
-        env,
-        "INSERT INTO ap_digest_queues "
-        "(scope_bi, next_ts, last_published_at, data, updated_at) "
-        "VALUES (?,?,?,?,?) ON CONFLICT(scope_bi) DO UPDATE SET "
-        "next_ts=excluded.next_ts, data=excluded.data, "
-        "updated_at=excluded.updated_at",
-        scope_bi, next_ts, last_published,
-        await encrypt_row(env, payload), now)
-    return True
 
 
-async def _ap_enqueue_repo_digest(
-        env, request, owner, repo, kind, event_type, ref, title, body):
-    """Queue a safe repository event for its repo and enabled org aliases."""
-    if await _repo_is_private(env, owner, repo):
-        return False
-    settings = await _ap_repo_settings_get(env, owner, repo)
-    if not (settings["federate"] and settings["broadcastEvents"]):
-        return False
-    origin = _ap_origin(env, request)
-    timestamp = int(Date.now())
-    canonical = fedi_digest.repository_event(
-        origin, owner, repo, kind, event_type, ref, title, body, timestamp)
-    queued = await _ap_enqueue_digest_scope(
-        env, owner, repo, owner, canonical)
-
-    # An organization alias has its own repo actor/followers and therefore its
-    # own daily cadence. Org admins may suppress that alias, but cannot enable
-    # it when the backing repository owner disabled federation.
-    rows = await d1_all(
-        env,
-        "SELECT r.org_bi AS org_bi, o.name AS name, s.data AS settings "
-        "FROM org_repos r JOIN orgs o ON o.org_bi=r.org_bi "
-        "LEFT JOIN ap_org_digest_settings s ON s.org_bi=r.org_bi "
-        "WHERE r.node_owner=? AND r.repo=? ORDER BY o.name LIMIT ?",
-        str(owner).lower(), str(repo).lower(), MAX_ORGS_PER_ACCOUNT)
-    for linked in rows or []:
-        try:
-            raw_controls = json.loads(linked.get("settings") or "{}")
-        except Exception:
-            raw_controls = {}
-        controls = fedi_digest.normalize_controls(raw_controls)
-        org = clean_string(linked.get("name"), MAX_NODE_NAME).strip().lower()
-        if not controls["enabled"] or not valid_node_name(org):
-            continue
-        org_event = fedi_digest.repository_event(
-            origin, org, repo, kind, event_type, ref, title, body, timestamp)
-        queued = (await _ap_enqueue_digest_scope(
-            env, org, repo, owner, org_event)) or queued
-    return queued
 
 
-async def _ap_purge_repo_digest_queues(env, owner, repo):
-    """Drop queued automatic posts when the repository owner disables them."""
-    scopes = [str(owner).lower() + "/" + str(repo).lower()]
-    rows = await d1_all(
-        env,
-        "SELECT o.name AS name FROM org_repos r "
-        "JOIN orgs o ON o.org_bi=r.org_bi "
-        "WHERE r.node_owner=? AND r.repo=? LIMIT ?",
-        str(owner).lower(), str(repo).lower(), MAX_ORGS_PER_ACCOUNT)
-    scopes.extend(
-        str(row.get("name") or "").lower() + "/" + str(repo).lower()
-        for row in (rows or []) if row.get("name"))
-    for scope in scopes:
-        await d1_run(
-            env, "DELETE FROM ap_digest_queues WHERE scope_bi=?",
-            await _ap_digest_scope_bi(env, scope))
 
 
-async def _ap_digest_preview(env, scope):
-    _, row, rec = await _ap_digest_queue_record(env, scope)
-    events = (rec or {}).get("events") if rec else []
-    digest = fedi_digest.build_digest(events, scope)
-    return {
-        "scope": scope,
-        "pending": len(events or []),
-        "preview": digest,
-        "lastPublishedAt": int((row or {}).get("last_published_at") or 0),
-        "nextPublishAt": int((row or {}).get("next_ts") or 0),
-    }
 
 
-async def _ap_digest_scope_allowed(env, rec):
-    """Revalidate privacy/ownership controls immediately before publishing."""
-    scope_owner = clean_string(
-        (rec or {}).get("scopeOwner"), MAX_NODE_NAME).strip().lower()
-    source_owner = clean_string(
-        (rec or {}).get("sourceOwner"), MAX_NODE_NAME).strip().lower()
-    repo = clean_string((rec or {}).get("repo"), MAX_REPO_SEGMENT).strip()
-    if not scope_owner or not source_owner or not repo:
-        return False
-    if await _repo_is_private(env, source_owner, repo):
-        return False
-    settings = await _ap_repo_settings_get(env, source_owner, repo)
-    if not (settings["federate"] and settings["broadcastEvents"]):
-        return False
-    if scope_owner == source_owner:
-        return True
-    org_bi, org_row = await _org_row(env, scope_owner)
-    if not org_row:
-        return False
-    linked = await d1_first(
-        env,
-        "SELECT 1 AS one FROM org_repos "
-        "WHERE org_bi=? AND repo=? AND node_owner=?",
-        org_bi, repo.lower(), source_owner)
-    if not linked:
-        return False
-    return (await _ap_org_digest_settings_get(env, org_bi))["enabled"]
 
 
-async def _ap_publish_digest_row(env, row):
-    """Durably create one digest Note/outbox fan-out, then consume its events."""
-    scope_bi = str((row or {}).get("scope_bi") or "")
-    rec = await decrypt_row(env, (row or {}).get("data")) or {}
-    scope = str(rec.get("scope") or "")
-    if not scope_bi or not scope or not await _ap_digest_scope_allowed(env, rec):
-        # A repo made private, an owner opt-out, or an unlinked/disabled org
-        # must revoke queued metadata rather than leave it probeable.
-        if scope_bi:
-            await d1_run(
-                env, "DELETE FROM ap_digest_queues WHERE scope_bi=?", scope_bi)
-        return False
-    now = int(Date.now())
-    events = rec.get("events") if isinstance(rec.get("events"), list) else []
-    last_published = int(row.get("last_published_at") or 0)
-    if not fedi_digest.digest_due(events, last_published, now):
-        return False
-    digest = fedi_digest.build_digest(events, scope)
-    if not digest:
-        await d1_run(
-            env, "DELETE FROM ap_digest_queues WHERE scope_bi=?", scope_bi)
-        return False
-
-    origin = _ap_origin(env)
-    scope_owner = str(rec.get("scopeOwner") or "").lower()
-    repo = str(rec.get("repo") or "")
-    handle = ap.repo_handle(scope_owner, repo.lower())
-    local = await _ap_local_actor(env, AP_ACTOR_REPO, handle)
-    if not local:
-        # Preserve lazy actor creation: a repo nobody follows does not mint an
-        # RSA key merely because it had local activity.
-        return False
-    followers = await d1_all(
-        env,
-        "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
-        local["actorBi"])
-    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
-    object_uuid = hashlib.sha256(
-        ("forkmesh-ap-digest-v1\n" + scope + "\n"
-         + "\n".join(digest["eventIds"])).encode()).hexdigest()[:32]
-    object_url = origin + "/ap/o/" + object_uuid
-    web_url = origin + repo_web_href(scope_owner, repo)
-    note = ap.note_doc(
-        object_url, actor_url, actor_url + "/followers",
-        ap.note_html_from_text(digest["text"]), now, web_url=web_url)
-    stored = {
-        "note": note,
-        "context": {
-            "owner": scope_owner, "repo": repo, "kind": "daily_digest",
-            "ref": object_uuid, "key": "digest:" + scope,
-        },
-        "media": [],
-        "automated": True,
-        "eventIds": digest["eventIds"],
-    }
-    body_str = json.dumps(ap.create_activity(note))
-    out_data = await encrypt_row(env, {
-        "body": body_str, "actorKind": AP_ACTOR_REPO,
-        "actorHandle": handle, "actorUrl": actor_url})
-
-    remaining = fedi_digest.remove_published(events, digest["eventIds"])
-    rec["events"] = remaining
-    rec["lastPublishedAt"] = now
-    next_ts = now + fedi_digest.DAY_MS
-    statements = [(
-        "INSERT OR IGNORE INTO ap_objects "
-        "(object_uuid, actor_bi, context_bi, data, published) "
-        "VALUES (?,?,NULL,?,?)",
-        (object_uuid, local["actorBi"], await encrypt_row(env, stored), now),
-    )]
-    seen = set()
-    for follower in followers or []:
-        inbox = ((follower.get("shared_inbox") or "").strip()
-                 or (follower.get("inbox") or "").strip())
-        if not inbox or inbox in seen:
-            continue
-        seen.add(inbox)
-        delivery_bi = await blind_index(
-            env, "ap-digest-delivery:" + object_uuid + ":" + inbox)
-        statements.append((
-            "INSERT OR IGNORE INTO ap_outbox "
-            "(inbox, data, attempts, next_ts, created_at, dedupe_bi) "
-            "VALUES (?,?,0,?,?,?)",
-            (inbox, out_data, now, now, delivery_bi),
-        ))
-    statements.append((
-        "UPDATE ap_digest_queues SET next_ts=?, last_published_at=?, "
-        "data=?, updated_at=? WHERE scope_bi=?",
-        (next_ts, now, await encrypt_row(env, rec), now, scope_bi),
-    ))
-    # D1 batch is transactional: event ids are removed only in the same durable
-    # commit that creates the deterministic Note and retryable outbox rows.
-    await _contribution_run_batch(env, statements)
-    return True
 
 
 async def _ap_process_digest_queues(env, limit=AP_DIGEST_CRON_BATCH):
@@ -28572,96 +28138,10 @@ async def _ap_process_digest_queues(env, limit=AP_DIGEST_CRON_BATCH):
 # to one origin computation per colo per TTL. Keyed by the canonical public
 # URL; only successful (200) documents are stored.
 
-async def _ap_negative_response(cache_key, error="not_found"):
-    # Park a 404 at the edge briefly. Probes for handles that don't federate
-    # (deleted accounts, crawlers, Mastodon re-resolving after a failed
-    # follow) otherwise re-run the full D1 federation gate on every hit, and
-    # they arrive in the same bursts the 200s do.
-    resp = json_response({"error": error}, status=404, cache_seconds=120)
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
-async def ap_hostmeta_handler(env, request):
-    # Mastodon's resolver falls back to GET /.well-known/host-meta whenever a
-    # webfinger lookup fails, so during any failure window each missed
-    # resolution used to cost a SECOND request that walked the entire route
-    # chain into the terminal JSON 404 — a self-amplifying loop. The document
-    # is a constant pointer at our webfinger template: no schema, no D1, and
-    # a day at the edge.
-    if method_name(request) not in ("GET", "HEAD"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    origin = _ap_origin(env, request)
-    cache_key = origin + "/.well-known/host-meta"
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        return cached
-    xrd = ('<?xml version="1.0" encoding="UTF-8"?>\n'
-           '<XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0">'
-           '<Link rel="lrdd" '
-           'template="%s/.well-known/webfinger?resource={uri}"/>'
-           '</XRD>' % origin)
-    resp = Response(xrd, status=200, headers={
-        "content-type": "application/xrd+xml; charset=utf-8",
-        "cache-control": "public, max-age=86400",
-    })
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
-async def ap_webfinger_handler(env, request):
-    if method_name(request) != "GET":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    params = parse_qs(urlparse(request.url).query)
-    handle, domain = ap.parse_acct_resource(params.get("resource", [""])[0])
-    if not handle:
-        return json_response({"error": "invalid_resource"}, status=400)
-    origin = _ap_origin(env, request)
-    our_domain = _ap_domain_of(origin)
-    if domain != our_domain:
-        return json_response({"error": "not_found"}, status=404)
-    # Key on the parsed acct (already lowercase-normalized), so the many
-    # spellings of the same resource share one cache entry.
-    cache_key = ("%s/.well-known/webfinger?resource=acct:%s@%s"
-                 % (origin, handle, domain))
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        try:
-            if int(cached.status) >= 400:
-                return cached
-        except Exception:
-            pass
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    if handle == our_domain:
-        kind, actor_handle, acct_name = (
-            AP_ACTOR_INSTANCE, AP_INSTANCE_HANDLE, our_domain)
-    else:
-        parsed = ap.split_handle(handle)
-        if not parsed:
-            return await _ap_negative_response(cache_key)
-        if parsed[0] == "user":
-            return await _ap_negative_response(cache_key)
-        else:
-            if not await _ap_repo_federates(env, parsed[1], parsed[2]):
-                return await _ap_negative_response(cache_key)
-            kind = AP_ACTOR_REPO
-            actor_handle = ap.repo_handle(parsed[1], parsed[2])
-            acct_name = actor_handle
-    # Resolve visibility before reading edge cache. Otherwise a public actor
-    # document could remain discoverable after its account/repository is made
-    # private, for the remainder of the old cache entry's TTL.
-    if cached is not None:
-        return cached
-    actor_url = _ap_actor_url(origin, kind, actor_handle)
-    doc = ap.webfinger_doc(acct_name + "@" + our_domain, actor_url)
-    resp = json_response(doc, cache_seconds=3600, extra_headers={
-        "content-type": ap.JRD_CONTENT_TYPE,
-        "access-control-allow-origin": "*",
-    })
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
 # NodeInfo usage counts, cached per isolate. Every fediverse server that hears
@@ -28672,727 +28152,36 @@ _NODEINFO_CACHE = {"ts": 0, "users": 0, "posts": 0}
 NODEINFO_CACHE_TTL_MS = 10 * 60 * 1000
 
 
-async def ap_nodeinfo_handler(env, request, index):
-    origin = _ap_origin(env, request)
-    cache_key = origin + ("/.well-known/nodeinfo" if index else "/nodeinfo/2.1")
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        return cached
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    if index:
-        resp = json_response(ap.nodeinfo_index(origin), cache_seconds=3600)
-        await edge_cache_put(cache_key, resp)
-        return resp
-    now = int(Date.now())
-    if now - _NODEINFO_CACHE["ts"] >= NODEINFO_CACHE_TTL_MS:
-        users = await d1_first(env, "SELECT COUNT(*) AS c FROM users")
-        posts = await d1_first(env, "SELECT COUNT(*) AS c FROM ap_objects")
-        _NODEINFO_CACHE.update({
-            "ts": now,
-            "users": (users or {}).get("c", 0) or 0,
-            "posts": (posts or {}).get("c", 0) or 0,
-        })
-    doc = ap.nodeinfo_doc(
-        _build_rev(env)[:12], _NODEINFO_CACHE["users"],
-        _NODEINFO_CACHE["posts"])
-    resp = json_response(doc, cache_seconds=3600)
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
-async def _ap_build_actor_doc(env, origin, kind, handle, rec):
-    """The actor document, shared by the GET endpoint and the Update
-    broadcast (profile/branding changes). Returns None when the actor does
-    not federate (missing/private/blocked account or repo)."""
-    # Brand defaults; repos with uploaded branding override below.
-    icon_url = origin + AP_AVATAR_PATH
-    image_url = origin + AP_BANNER_PATH
-    if kind == AP_ACTOR_INSTANCE:
-        return ap.instance_actor_doc(
-            origin, _ap_domain_of(origin), rec["pubkeyPem"],
-            icon_url=icon_url, image_url=image_url)
-    if kind == AP_ACTOR_USER:
-        if not await _ap_user_federates(env, handle):
-            return None
-        actor_type, display = "Person", handle
-        profile_url = origin + "/@" + handle
-        # Surface the account's own bio as the fediverse summary so the
-        # Mastodon profile card mirrors the /@name page.
-        _, account_rec = await _account_row(env, handle)
-        bio = clean_string(
-            (account_rec or {}).get("profile_bio", "") or "", 500).strip()
-        summary = (ap.note_html_from_text(bio) if bio
-                   else "ForkMesh profile of @%s." % handle)
-    else:
-        owner, _, repo = handle.partition(".")
-        # Org handles read their repo data from the linked node (issue #388),
-        # but display, profile URL and web links stay under the org name below.
-        data_owner = await _ap_org_alias_owner(env, owner, repo)
-        key_bi = await blind_index(env, data_owner + "/" + repo)
-        repo_row = await d1_first(
-            env, "SELECT is_private, data FROM repositories WHERE key_bi=?",
-            key_bi)
-        privacy_reader = globals().get("_repo_is_private")
-        hidden = (
-            await privacy_reader(env, data_owner, repo)
-            if callable(privacy_reader)
-            else bool(int((repo_row or {}).get("is_private") or 0))
-        )
-        if not repo_row or hidden:
-            return None
-        actor_type, display = "Group", owner + "/" + repo
-        repo_web_url = origin + repo_web_href(owner, repo)
-        # The actor's canonical `url` is the repo's fediverse profile page (a
-        # feed of its federated posts), not the raw git-forge page: Mastodon
-        # sends a user who clicks the repo handle — in a mention, or via the
-        # profile's external-link — to this `url`, and dropping them onto a
-        # code page straight from a social timeline is jarring (adhoc #50).
-        # The git page stays one row away ("Repository", below) and is linked
-        # prominently on the profile page itself.
-        profile_url = origin + "/@" + handle
-        # Owner-set About description becomes the fediverse bio.
-        catalog_rec = await decrypt_row(env, repo_row.get("data"))
-        description = clean_string(
-            (catalog_rec or {}).get("description", "") or "", 240).strip()
-        summary = (ap.note_html_from_text(description) if description
-                   else ("ForkMesh repository %s/%s. Follow for new issues, "
-                         "pull requests, discussions and releases.")
-                   % (owner, repo))
-        # Owner-uploaded branding (repo About tab): logo = avatar, banner =
-        # header. updated_at rides along as a cache-buster so Mastodon
-        # refetches when the image changes.
-        media_rows = await d1_all(
-            env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?",
-            key_bi)
-        for media in media_rows or []:
-            media_url = "%s/api/repo/%s/%s/media/%s.png?v=%d" % (
-                origin, quote(owner), quote(repo), media.get("kind", ""),
-                int(media.get("updated_at") or 0))
-            if media.get("kind") == "logo":
-                icon_url = media_url
-            elif media.get("kind") == "banner":
-                image_url = media_url
-        # The native repository logo API always has an original,
-        # locally-generated fallback. Use its real image projection when no
-        # owner-uploaded fediverse logo exists, rather than giving every
-        # repository the instance avatar.
-        if icon_url == origin + AP_AVATAR_PATH:
-            versioner = globals().get("_repository_social_version")
-            logo_version = (
-                versioner(catalog_rec) if callable(versioner) else "")
-            icon_url = "%s/api/repo/%s/%s/logo?image=1" % (
-                origin, quote(owner), quote(repo))
-            if logo_version:
-                icon_url += "&v=" + quote(logo_version, safe="")
-    # Profile metadata rows: the canonical page link (VERIFIABLE — the served
-    # page carries a reciprocal rel="me" back to this same URL, which is also
-    # the actor's `url`, so Mastodon's link verification turns it green) and
-    # the relay this actor lives on (origin-derived, so self-hosted relays
-    # advertise their own domain).
-    # The verified profile row links the human page ("Repository" = a repo's
-    # git page, "Profile" = a user's /@name page). For repos that page is no
-    # longer the actor's `url`, so the reciprocal rel="me" that earns the green
-    # check lives on the git page (see _serve_repo_page), pointing at this actor.
-    web_link = repo_web_url if kind == AP_ACTOR_REPO else profile_url
-    attachments = [
-        ap.property_value(
-            "Repository" if kind == AP_ACTOR_REPO else "Profile", web_link),
-        # Plain text, deliberately: an anchor here made every follower
-        # server's link verifier fetch the worker-served homepage on each
-        # verification round, for a row that can never earn the green check.
-        ap.property_text("Relay", _ap_domain_of(origin)),
-    ]
-    return ap.actor_doc(
-        _ap_actor_url(origin, kind, handle), actor_type, handle, display,
-        summary, profile_url, rec["pubkeyPem"],
-        shared_inbox=origin + "/ap/inbox",
-        published_ms=rec.get("createdAt"),
-        icon_url=icon_url, image_url=image_url,
-        attachments=attachments)
 
 
-async def _ap_actor_doc_response(env, request, kind, handle):
-    if method_name(request) not in ("GET", "HEAD"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    origin = _ap_origin(env, request)
-    # Keyed on the canonical actor URL so every route shape that serves this
-    # document (/ap/users/x, /@x with an ActivityPub Accept header, /ap/actor)
-    # shares one edge entry.
-    cache_key = _ap_actor_url(origin, kind, handle)
-    # Only official repositories are followable local actors. The relay still
-    # has an internal signing identity for secure ActivityPub fetches, but it
-    # does not occupy ap_actors or expose a user/instance actor inventory.
-    if kind == AP_ACTOR_USER:
-        return await _ap_negative_response(cache_key)
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        try:
-            if int(cached.status) >= 400:
-                return cached
-        except Exception:
-            pass
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    if kind != AP_ACTOR_INSTANCE:
-        # Cheap federation gate before minting keys for a 404.
-        parsed = await _ap_resolve_local_target(
-            env, origin, _ap_actor_url(origin, kind, handle))
-        if not parsed:
-            return await _ap_negative_response(cache_key)
-    if cached is not None:
-        return cached
-    rec = (
-        await _ap_instance_actor(env, create=True)
-        if kind == AP_ACTOR_INSTANCE
-        else await _ap_local_actor(env, kind, handle, create=True)
-    )
-    if not rec:
-        return json_response({"error": "unavailable"}, status=503)
-    doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
-    if not doc:
-        return await _ap_negative_response(cache_key)
-    resp = json_response(doc, cache_seconds=300, extra_headers={
-        "content-type": ap.ACTIVITY_CONTENT_TYPE})
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
-async def _ap_broadcast_actor_update(env, request, kind, handle):
-    """Push an Update(actor) to every follower so remote servers refetch the
-    profile (avatar/banner/bio) immediately instead of waiting out their
-    cache — this is how a repo's uploaded logo actually appears on Mastodon
-    next to existing followers' timelines."""
-    if not await _ap_enabled(env):
-        return
-    actor_bi = await _ap_actor_bi(env, kind, handle)
-    rec = await _ap_local_actor(env, kind, handle)
-    if not rec:
-        return  # never followed / fetched — nothing to update
-    origin = _ap_origin(env, request)
-    actor_url = _ap_actor_url(origin, kind, handle)
-    # Drop the edge-cached actor doc so refetches see the new profile — even
-    # with no followers to notify, a remote server may hold the URL and poll
-    # it (best-effort: other colos age out within the TTL). The rel=me page
-    # the actor points at is edge-cached too (_serve_profile_page /
-    # _serve_repo_page), so drop the canonical page keys alongside it.
-    await edge_cache_delete(actor_url)
-    if kind == AP_ACTOR_USER:
-        await edge_cache_delete(origin + "/@" + quote(handle))
-        await edge_cache_delete(origin + "/@" + quote(handle) + "/repositories")
-        await edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(handle))
-        # Toggling "make my followers/following public" (Settings) changes
-        # what ap_collection_handler returns for the same cached URL, so drop
-        # it too — otherwise the old bare-collection response (or stale
-        # items) lingers for the rest of its 300s TTL.
-        await edge_cache_delete(actor_url + "/followers")
-        await edge_cache_delete(actor_url + "/following")
-    elif kind == AP_ACTOR_REPO:
-        page_owner, _, page_repo = handle.partition(".")
-        # The git page carries the rel="me" the green check verifies; the
-        # /@owner.repo profile page is the actor's `url` and its post feed.
-        await edge_cache_delete(origin + repo_web_href(page_owner, page_repo))
-        await edge_cache_delete(origin + "/@" + handle)
-    followers = await d1_all(
-        env, "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
-        actor_bi)
-    if not followers:
-        return
-    doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
-    if not doc:
-        return
-    now = int(Date.now())
-    body_str = json.dumps(ap.update_activity(actor_url, doc, now))
-    out_data = await encrypt_row(env, {
-        "body": body_str, "actorKind": kind, "actorHandle": handle,
-        "actorUrl": actor_url})
-    seen = set()
-    for follower in followers:
-        inbox = ((follower.get("shared_inbox") or "").strip()
-                 or (follower.get("inbox") or "").strip())
-        if not inbox or inbox in seen:
-            continue
-        seen.add(inbox)
-        await d1_run(
-            env,
-            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
-            " created_at) VALUES (?,?,0,?,?)",
-            inbox, out_data, now, now)
-    await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
 
 
-async def ap_collection_handler(env, request, kind, handle, which):
-    if method_name(request) != "GET":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    origin = _ap_origin(env, request)
-    collection_url = _ap_actor_url(origin, kind, handle) + "/" + which
-    cached = await edge_cache_match(collection_url)
-    if cached is not None:
-        try:
-            if int(cached.status) >= 400:
-                return cached
-        except Exception:
-            pass
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    if kind == AP_ACTOR_USER and not await _ap_user_federates(env, handle):
-        return await _ap_negative_response(collection_url)
-    if kind == AP_ACTOR_REPO:
-        owner, _, repo = handle.partition(".")
-        if not await _ap_repo_federates(env, owner, repo):
-            return await _ap_negative_response(collection_url)
-    if cached is not None:
-        return cached
-    actor_bi = await _ap_actor_bi(env, kind, handle)
-    total = 0
-    items = None
-    if which == "followers":
-        row = await d1_first(
-            env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
-            actor_bi)
-        total = (row or {}).get("c", 0) or 0
-        # Repo watchers are already public (the About/Watch popover lists
-        # them), so repo actors always enumerate. User actors only enumerate
-        # when the account owner opted in via Settings — otherwise remote
-        # servers correctly read the bare collection as "not made visible".
-        show_items = True
-        if kind == AP_ACTOR_USER:
-            _, account_rec = await _account_row(env, handle)
-            show_items = bool((account_rec or {}).get(
-                "profile_followers_public"))
-        if show_items and total:
-            rows = await d1_all(
-                env,
-                "SELECT follower_id FROM ap_followers WHERE actor_bi=?"
-                " ORDER BY created_at DESC LIMIT ?",
-                actor_bi, AP_COLLECTION_PAGE_SIZE)
-            items = [r.get("follower_id", "") for r in (rows or [])
-                     if r.get("follower_id")]
-        elif show_items:
-            items = []
-    elif which == "outbox":
-        row = await d1_first(
-            env, "SELECT COUNT(*) AS c FROM ap_objects WHERE actor_bi=?",
-            actor_bi)
-        total = (row or {}).get("c", 0) or 0
-    resp = json_response(
-        ap.collection_doc(collection_url, total, items=items),
-        cache_seconds=300,
-        extra_headers={"content-type": ap.ACTIVITY_CONTENT_TYPE})
-    await edge_cache_put(collection_url, resp)
-    return resp
 
 
-async def ap_object_handler(env, request, object_uuid):
-    if method_name(request) not in ("GET", "HEAD"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    cache_key = _ap_origin(env, request) + "/ap/o/" + object_uuid
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    row = await d1_first(
-        env, "SELECT data FROM ap_objects WHERE object_uuid=?", object_uuid)
-    rec = await decrypt_row(env, row.get("data")) if row else None
-    if not rec or not isinstance(rec.get("note"), dict):
-        return json_response({"error": "not_found"}, status=404)
-    context = rec.get("context") if isinstance(rec.get("context"), dict) else {}
-    segmenter = globals().get("safe_segment")
-    context_owner = (
-        segmenter(context.get("owner", ""))
-        if callable(segmenter) else str(context.get("owner", "") or ""))
-    context_repo = (
-        segmenter(context.get("repo", ""))
-        if callable(segmenter) else str(context.get("repo", "") or ""))
-    privacy_reader = globals().get("_repo_is_private")
-    if (context_owner and context_repo and callable(privacy_reader)
-            and await privacy_reader(env, context_owner, context_repo)):
-        return json_response(
-            {"error": "not_found"}, status=404, cache_control="no-store")
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        return cached
-    doc = dict(rec["note"])
-    doc["@context"] = ap.AS_CONTEXT
-    resp = json_response(doc, cache_seconds=300, extra_headers={
-        "content-type": ap.ACTIVITY_CONTENT_TYPE})
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
-async def ap_object_media_handler(env, request, object_uuid, index):
-    # Re-serves one image that was embedded as a "data:" URL in the source
-    # issue/comment body, at a real URL — remote servers fetch a Note's
-    # attachment URLs directly and can't resolve a data: URI.
-    if method_name(request) not in ("GET", "HEAD"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    # Every remote server that receives the Note fetches its attachment URLs,
-    # and the bytes are immutable — serve the burst from the colo cache.
-    idx = int(index)
-    cache_key = "%s/ap/o/%s/media/%d" % (
-        _ap_origin(env, request), object_uuid, idx)
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    row = await d1_first(
-        env, "SELECT data FROM ap_objects WHERE object_uuid=?", object_uuid)
-    rec = await decrypt_row(env, row.get("data")) if row else None
-    context = rec.get("context") if isinstance((rec or {}).get("context"), dict) \
-        else {}
-    segmenter = globals().get("safe_segment")
-    context_owner = (
-        segmenter(context.get("owner", ""))
-        if callable(segmenter) else str(context.get("owner", "") or ""))
-    context_repo = (
-        segmenter(context.get("repo", ""))
-        if callable(segmenter) else str(context.get("repo", "") or ""))
-    privacy_reader = globals().get("_repo_is_private")
-    if (context_owner and context_repo and callable(privacy_reader)
-            and await privacy_reader(env, context_owner, context_repo)):
-        return json_response(
-            {"error": "not_found"}, status=404, cache_control="no-store")
-    media = (rec or {}).get("media") or []
-    if idx < 0 or idx >= len(media):
-        return json_response({"error": "not_found"}, status=404)
-    cached = await edge_cache_match_media(cache_key, "image/png")
-    if cached is not None:
-        return cached
-    item = media[idx]
-    try:
-        raw = base64.b64decode(item.get("data", ""), validate=True)
-    except Exception:
-        return json_response({"error": "not_found"}, status=404)
-    # Uint8Array.new copies into a JS-owned buffer; a bare _to_js(bytes) view
-    # into WASM memory would be read off the GIL (edge-cache put / client
-    # stream, after this handler returns) and crash the isolate.
-    resp = JsResponse.new(Uint8Array.new(_to_js(bytes(raw))), to_js({
-        "status": 200,
-        "headers": {
-            "content-type": item.get("mediaType", "image/png"),
-            "cache-control": "public, max-age=31536000, immutable",
-        },
-    }))
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
 # --- Outbound HTTP: signed fetch, remote actors, delivery ---------------------
 
-async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
-                             accept="application/activity+json"):
-    # One signed outbound HTTP request (draft-cavage). GETs sign
-    # (request-target) host date accept; POSTs add digest + content-type.
-    parts = urlparse(url)
-    if parts.scheme != "https" or not parts.netloc:
-        return None
-    path = (parts.path or "/") + (("?" + parts.query) if parts.query else "")
-    headers = {"host": parts.netloc, "date": ap.http_date(int(Date.now())),
-               "accept": accept}
-    names = list(ap.SIGNED_HEADERS_GET)
-    if body_str is not None:
-        headers["digest"] = ap.digest_header_value(body_str.encode())
-        headers["content-type"] = "application/activity+json"
-        names = list(ap.SIGNED_HEADERS_POST)
-    base = ap.signing_string(method, path, headers, names)
-    if base is None:
-        return None
-    signature = await _ap_rsa_sign_b64(priv_b64, base)
-    send_headers = {
-        "date": headers["date"],
-        "accept": accept,
-        "user-agent": "forkmesh-relay/1.0 (+https://forkmesh.com)",
-        "signature": ap.build_signature_header(key_id, names, signature),
-    }
-    init = {"method": method, "headers": send_headers}
-    if body_str is not None:
-        send_headers["digest"] = headers["digest"]
-        send_headers["content-type"] = headers["content-type"]
-        init["body"] = body_str
-    try:
-        return await js_fetch_with_timeout(
-            url, init, CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS)
-    except Exception:
-        return None
 
 
-async def _ap_instance_key(env):
-    origin = _ap_origin(env)
-    rec = await _ap_instance_actor(env, create=True)
-    if not rec:
-        return None, None
-    key_id = _ap_actor_url(origin, AP_ACTOR_INSTANCE,
-                           AP_INSTANCE_HANDLE) + "#main-key"
-    return key_id, rec.get("privkey")
 
 
-async def _ap_remote_actor(env, actor_id, force_refresh=False):
-    # Cached remote actor document (inbox + public key). Fetches are signed
-    # with the instance actor so "secure mode" servers answer.
-    actor_id = (actor_id or "").split("#")[0].rstrip("/")
-    if not actor_id.startswith("https://"):
-        return None
-    if await _ap_domain_blocked(env, urlparse(actor_id).netloc):
-        return None
-    row = await d1_first(
-        env, "SELECT * FROM ap_remote_actors WHERE actor_id=?", actor_id)
-    now = int(Date.now())
-    if (row and not force_refresh and row.get("pubkey_pem")
-            and now - int(row.get("updated_at") or 0) < AP_REMOTE_ACTOR_TTL_MS):
-        return row
-    key_id, priv = await _ap_instance_key(env)
-    if not priv:
-        return row or None
-    resp = await _ap_signed_request(key_id, priv, "GET", actor_id)
-    if resp is None or int(getattr(resp, "status", 0)) >= 400:
-        return row or None
-    try:
-        doc = json.loads(await resp.text())
-    except Exception:
-        return row or None
-    ess = ap.actor_essentials(doc)
-    # The document must describe the URL we fetched (same host at minimum) so
-    # a malicious document can't impersonate another server's actor.
-    if not ess or urlparse(ess["id"]).netloc != urlparse(actor_id).netloc:
-        return row or None
-    handle = ess["preferredUsername"]
-    if handle:
-        handle = handle + "@" + urlparse(ess["id"]).netloc
-    # Public presentation, cached alongside the routing fields: the avatar URL
-    # must be an https media URL (never a data: payload or a private host), and
-    # the bio is untrusted remote HTML flattened to bounded plain text.
-    avatar_url = ap.public_media_url(ess.get("icon"))
-    summary = ap_threads.sanitize_remote_content(ess.get("summary"), 500)
-    await d1_run(
-        env,
-        "INSERT INTO ap_remote_actors (actor_id, inbox, shared_inbox,"
-        " pubkey_pem, handle, display_name, url, updated_at, avatar_url,"
-        " summary) VALUES (?,?,?,?,?,?,?,?,?,?)"
-        " ON CONFLICT(actor_id) DO UPDATE SET inbox=excluded.inbox,"
-        " shared_inbox=excluded.shared_inbox, pubkey_pem=excluded.pubkey_pem,"
-        " handle=excluded.handle, display_name=excluded.display_name,"
-        " url=excluded.url, updated_at=excluded.updated_at,"
-        " avatar_url=excluded.avatar_url, summary=excluded.summary",
-        actor_id, ess["inbox"], ess["sharedInbox"], ess["pubkeyPem"],
-        handle, clean_string(ess["name"], 200), ess["url"], now,
-        avatar_url, summary)
-    return {
-        "actor_id": actor_id, "inbox": ess["inbox"],
-        "shared_inbox": ess["sharedInbox"], "pubkey_pem": ess["pubkeyPem"],
-        "handle": handle, "display_name": clean_string(ess["name"], 200),
-        "url": ess["url"], "updated_at": now, "avatar_url": avatar_url,
-        "summary": summary,
-    }
 
 
-async def _ap_refresh_follower_profiles(env, limit, window=0):
-    """Backfill the cached avatar/bio of accounts that follow a local actor.
-
-    A follower row only carries routing fields; the presentation a "who follows
-    this repository" surface shows comes from the cached actor document, which
-    is otherwise only refreshed when that actor next delivers something (or
-    never, for a quiet follower — and never for any row written before
-    migration 0078). This sweeps the oldest cache entries that are still missing
-    those columns, bounded to one signed GET each.
-
-    The window rotates the selection so a permanently unreachable server — whose
-    row keeps its old updated_at and therefore keeps sorting first — cannot
-    starve every other follower out of the batch."""
-    limit = max(1, int(limit))
-    candidates = (
-        "SELECT actor_id FROM ap_remote_actors"
-        " WHERE actor_id IN (SELECT follower_id FROM ap_followers)"
-        "   AND (avatar_url IS NULL OR summary IS NULL)"
-        " ORDER BY updated_at LIMIT ? OFFSET ?")
-    offset = max(0, int(window)) * limit
-    rows = await d1_all(env, candidates, limit, offset)
-    if not rows and offset:
-        # Backlog smaller than this window: sweep from the front instead of
-        # idling the tick.
-        rows = await d1_all(env, candidates, limit, 0)
-    refreshed = 0
-    for row in rows or []:
-        actor_id = str(row.get("actor_id") or "")
-        if not actor_id:
-            continue
-        if await _ap_remote_actor(env, actor_id, force_refresh=True):
-            refreshed += 1
-    return refreshed
 
 
-async def _ap_deliver_body(env, actor_url, priv_b64, inbox_url, body_str):
-    """Returns (status, retry_after_ms). retry_after_ms is 0 unless the
-    remote answered 429/503 with a parseable Retry-After — the drain uses it
-    as a floor under the normal backoff so a throttling server isn't re-hit
-    sooner than it asked."""
-    resp = await _ap_signed_request(
-        actor_url + "#main-key", priv_b64, "POST", inbox_url,
-        body_str=body_str)
-    if resp is None:
-        return 0, 0
-    status = int(getattr(resp, "status", 0))
-    retry_after_ms = 0
-    if status in (429, 503):
-        try:
-            raw = (resp.headers.get("retry-after") or "").strip()
-        except Exception:
-            raw = ""
-        if raw.isdigit():
-            retry_after_ms = int(raw) * 1000
-        elif raw:
-            when = ap.parse_http_date_ms(raw)
-            if when:
-                retry_after_ms = when - int(Date.now())
-        retry_after_ms = max(0, min(retry_after_ms, 24 * 60 * 60 * 1000))
-    return status, retry_after_ms
 
 
-async def _ap_drain_outbox(env, limit):
-    # Deliver due ap_outbox rows. Success (or a permanently-gone inbox, or the
-    # attempt cap) deletes the row; anything else reschedules with backoff.
-    if not await _ap_enabled(env):
-        return
-    now = int(Date.now())
-    rows = await d1_all(
-        env,
-        "SELECT id, inbox, data, attempts FROM ap_outbox WHERE next_ts<=?"
-        " ORDER BY next_ts ASC LIMIT ?",
-        now, int(limit))
-    for row in rows or []:
-        if await _ap_domain_blocked(
-                env, urlparse(row.get("inbox", "")).netloc):
-            await d1_run(env, "DELETE FROM ap_outbox WHERE id=?", row.get("id"))
-            continue
-        rec = await decrypt_row(env, row.get("data"))
-        attempts = int(row.get("attempts") or 0) + 1
-        status, retry_after_ms = 0, 0
-        if rec and rec.get("body") and rec.get("actorKind"):
-            local = await _ap_local_actor(
-                env, rec["actorKind"], rec["actorHandle"])
-            if local:
-                status, retry_after_ms = await _ap_deliver_body(
-                    env, rec.get("actorUrl", ""), local["privkey"],
-                    row.get("inbox", ""), rec["body"])
-        done = (200 <= status < 400) or status in (404, 410)
-        if done or not rec or attempts >= ap.MAX_DELIVERY_ATTEMPTS:
-            await d1_run(env, "DELETE FROM ap_outbox WHERE id=?", row.get("id"))
-        else:
-            await d1_run(
-                env, "UPDATE ap_outbox SET attempts=?, next_ts=? WHERE id=?",
-                attempts,
-                now + max(ap.retry_backoff_ms(attempts), retry_after_ms),
-                row.get("id"))
 
 
 # --- Outbound publishing -------------------------------------------------------
 
-async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
-                                 ref, title, body, author_name,
-                                 extra_images=None, manual=False):
-    """Queue an automatic repo event, or immediately publish an explicit one.
-
-    Normal issue/PR/discussion/commit/release hooks use the encrypted,
-    deterministic, at-most-daily digest queue. Only an owner-authenticated
-    caller that explicitly passes ``manual=True`` retains the immediate Note
-    path (including its historical repo/user actor fan-out).
-
-    Actor rows remain lazy. Queued digests are published only after a
-    fediverse lookup has created the corresponding repository actor."""
-    owner = (owner or "").strip().lower()
-    repo = (repo or "").strip()
-    if not owner or not repo or kind not in AP_FEDI_KINDS:
-        return
-    if not await _ap_enabled(env):
-        return
-    privacy_reader = globals().get("_repo_is_private")
-    if callable(privacy_reader) and await privacy_reader(env, owner, repo):
-        return
-    if not manual:
-        await _ap_enqueue_repo_digest(
-            env, request, owner, repo, kind, event_type, ref, title, body)
-        return
-    origin = _ap_origin(env, request)
-    web_url = origin + repo_web_href(owner, repo)
-    author = clean_string(author_name or "", MAX_NODE_NAME).lower()
-    # Handles (and thus actor ids) are lowercase-normalized so the same repo
-    # always federates as one stable actor URL regardless of link casing.
-    # The explicit/manual compatibility path preserves its historical actor
-    # fan-out: the repo actor obeys both per-repo switches, while the author's
-    # own actor is governed by that user's federation presence.
-    settings = await _ap_repo_settings_get(env, owner, repo)
-    candidates = []
-    if settings["federate"] and settings["broadcastEvents"]:
-        candidates.append((AP_ACTOR_REPO, ap.repo_handle(owner, repo.lower())))
-    if author and valid_node_name(author):
-        candidates.append((AP_ACTOR_USER, author))
-    # Attached issue/comment images travel as inline "![name](data:...)"
-    # markdown (there's no separate upload channel); pull them out so they
-    # federate as real Image attachments instead of unrenderable base64 text.
-    clean_body, images = ap.extract_body_images(body or "")
-    # Caller-supplied media (the generated pull-request badge PNG, adhoc #44)
-    # leads the attachment list so it becomes the visible preview.
-    images = [img for img in (extra_images or []) if img] + images
-    text = ap.event_note_text(
-        kind, event_type, owner, repo, ref, clean_string(title, 240),
-        clean_body, author, web_url)
-    content_html = ap.note_html_from_text(text)
-    ckey = ap.context_key(owner, repo, kind, ref)
-    context_bi = await blind_index(env, "ap-context:" + ckey)
-    now = int(Date.now())
-    queued = False
-    for actor_kind, handle in candidates:
-        actor_bi = await _ap_actor_bi(env, actor_kind, handle)
-        exists = await d1_first(
-            env, "SELECT kind FROM ap_actors WHERE actor_bi=?", actor_bi)
-        if not exists:
-            continue
-        followers = await d1_all(
-            env,
-            "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
-            actor_bi)
-        if not followers:
-            continue
-        actor_url = _ap_actor_url(origin, actor_kind, handle)
-        object_uuid = _ap_uuid()
-        attachments = [
-            ap.image_object(
-                "%s/ap/o/%s/media/%d" % (origin, object_uuid, i),
-                media_type=img["mediaType"])
-            for i, img in enumerate(images)]
-        note = ap.note_doc(
-            origin + "/ap/o/" + object_uuid, actor_url,
-            actor_url + "/followers", content_html, now, web_url=web_url,
-            attachments=attachments)
-        rec = {"note": note,
-               "context": {"owner": owner, "repo": repo, "kind": kind,
-                           "ref": str(ref), "key": ckey},
-               "media": images}
-        await d1_run(
-            env,
-            "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
-            " published) VALUES (?,?,?,?,?)",
-            object_uuid, actor_bi, context_bi,
-            await encrypt_row(env, rec), now)
-        body_str = json.dumps(ap.create_activity(note))
-        out_data = await encrypt_row(env, {
-            "body": body_str, "actorKind": actor_kind, "actorHandle": handle,
-            "actorUrl": actor_url})
-        seen = set()
-        for follower in followers:
-            inbox = ((follower.get("shared_inbox") or "").strip()
-                     or (follower.get("inbox") or "").strip())
-            if not inbox or inbox in seen:
-                continue
-            seen.add(inbox)
-            await d1_run(
-                env,
-                "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
-                " created_at) VALUES (?,?,0,?,?)",
-                inbox, out_data, now, now)
-            queued = True
-    if queued:
-        await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
 
 
 async def world_profile_social_handler(env, request):
@@ -29618,634 +28407,34 @@ async def world_profile_social_handler(env, request):
 
 # --- Inbound: the shared/actor inbox --------------------------------------------
 
-async def _ap_forget_remote(env, actor_id):
-    await d1_run(env, "DELETE FROM ap_followers WHERE follower_id=?", actor_id)
-    await d1_run(env, "DELETE FROM ap_remote_actors WHERE actor_id=?", actor_id)
 
 
-async def _ap_resolve_local_target(env, origin, url):
-    """Map an activity's object URL to a local actor: returns (kind, handle,
-    notify_recipient, display) or None."""
-    target = ap.parse_local_actor_url(origin, url)
-    if not target or target[0] == "instance":
-        return None
-    if target[0] == "user":
-        if not await _ap_user_federates(env, target[1]):
-            return None
-        return (AP_ACTOR_USER, target[1], target[1], "@" + target[1])
-    owner, repo = target[1], target[2]
-    if not await _ap_repo_federates(env, owner, repo):
-        return None
-    return (AP_ACTOR_REPO, ap.repo_handle(owner, repo), owner,
-            owner + "/" + repo)
 
 
-async def _ap_handle_follow(env, request, activity, remote):
-    origin = _ap_origin(env, request)
-    resolved = await _ap_resolve_local_target(
-        env, origin, ap.activity_object_id(activity.get("object")))
-    if not resolved:
-        return json_response({"error": "not_found"}, status=404)
-    kind, handle, recipient, display = resolved
-    local = await _ap_local_actor(env, kind, handle, create=True)
-    if not local:
-        return json_response({"error": "unavailable"}, status=503)
-    count = await d1_first(
-        env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
-        local["actorBi"])
-    if ((count or {}).get("c", 0) or 0) >= AP_MAX_FOLLOWERS_PER_ACTOR:
-        return json_response({"error": "followers_limit"}, status=429)
-    now = int(Date.now())
-    await d1_run(
-        env,
-        "INSERT INTO ap_followers (actor_bi, follower_id, inbox, shared_inbox,"
-        " follower_handle, created_at) VALUES (?,?,?,?,?,?)"
-        " ON CONFLICT(actor_bi, follower_id) DO UPDATE SET"
-        " inbox=excluded.inbox, shared_inbox=excluded.shared_inbox,"
-        " follower_handle=excluded.follower_handle",
-        local["actorBi"], remote["actor_id"], remote.get("inbox", ""),
-        remote.get("shared_inbox", "") or "", remote.get("handle", "") or "",
-        now)
-    # Auto-accept (no manual follow approval), delivered synchronously — one
-    # subrequest, and Mastodon marks the follow pending until it arrives.
-    actor_url = _ap_actor_url(origin, kind, handle)
-    follow_ref = {
-        "id": str(activity.get("id", "") or ""),
-        "type": "Follow",
-        "actor": remote["actor_id"],
-        "object": actor_url,
-    }
-    accept_body = json.dumps(ap.accept_activity(actor_url, follow_ref))
-    inbox_url = (remote.get("inbox") or "").strip()
-    status, _ = await _ap_deliver_body(
-        env, actor_url, local["privkey"], inbox_url, accept_body)
-    if inbox_url and not (200 <= status < 400) and status not in (404, 410):
-        # The remote server keeps the follow "pending" (spinner) until the
-        # Accept lands, and it does NOT retry a Follow we already 202'd — so
-        # a lost Accept used to leave the follow stuck forever. Queue it for
-        # the cron drain, which retries with the normal backoff.
-        out_data = await encrypt_row(env, {
-            "body": accept_body, "actorKind": kind, "actorHandle": handle,
-            "actorUrl": actor_url})
-        await d1_run(
-            env,
-            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
-            " created_at) VALUES (?,?,1,?,?)",
-            inbox_url, out_data, now, now)
-    follower_label = remote.get("handle") or remote.get("actor_id", "")
-    await _best_effort_inbox_side_effect(enqueue_notification(
-        env, recipient, "subscribed", "New fediverse follower",
-        body="%s is now following %s on the fediverse." % (follower_label,
-                                                           display),
-        source="fediverse",
-        dedupe="ap-follow:%s:%s" % (remote["actor_id"], handle)))
-    return json_response({"ok": True}, status=202)
 
 
-async def _ap_handle_undo(env, request, activity):
-    inner = activity.get("object")
-    if isinstance(inner, dict) and str(inner.get("type", "")) == "Follow":
-        origin = _ap_origin(env, request)
-        target = ap.parse_local_actor_url(
-            origin, ap.activity_object_id(inner.get("object")))
-        if target and target[0] != "instance":
-            if target[0] == "user":
-                kind, handle = AP_ACTOR_USER, target[1]
-            else:
-                kind, handle = AP_ACTOR_REPO, ap.repo_handle(
-                    target[1], target[2])
-            actor_bi = await _ap_actor_bi(env, kind, handle)
-            await d1_run(
-                env,
-                "DELETE FROM ap_followers WHERE actor_bi=? AND follower_id=?",
-                actor_bi, ap.activity_object_id(activity.get("actor")))
-    return json_response({"ok": True}, status=202)
 
 
-async def _ap_comment_by_remote_id(env, remote_id):
-    """Return (row, decrypted record, blind index) for a remote reply."""
-    if not str(remote_id or "").startswith("https://"):
-        return None, None, ""
-    remote_id_bi = await blind_index(env, "ap-comment:" + str(remote_id))
-    row = await d1_first(
-        env,
-        "SELECT context_bi, remote_id_bi, parent_remote_id_bi, lifecycle,"
-        " data, ts FROM ap_comments WHERE remote_id_bi=?",
-        remote_id_bi)
-    rec = await decrypt_row(env, row.get("data")) if row else None
-    return row, rec, remote_id_bi
 
 
-async def _ap_reply_parent(env, origin, parent_url):
-    """Resolve a direct local-object or nested remote-reply parent.
-
-    Remote activities cannot choose a ForkMesh context themselves. Nested
-    Lemmy comments inherit the verified parent's encrypted local context.
-    """
-    parent_uuid = ap.parse_local_object_url(origin, parent_url)
-    if parent_uuid:
-        row = await d1_first(
-            env, "SELECT data, context_bi FROM ap_objects WHERE object_uuid=?",
-            parent_uuid)
-        parent = await decrypt_row(env, row.get("data")) if row else None
-        if parent and isinstance(parent.get("context"), dict):
-            return row.get("context_bi"), parent["context"], ""
-        return None, None, ""
-    row, rec, parent_bi = await _ap_comment_by_remote_id(env, parent_url)
-    if row and rec and isinstance(rec.get("context"), dict):
-        return row.get("context_bi"), rec["context"], parent_bi
-    return None, None, ""
 
 
-def _ap_activity_is_public(activity):
-    """True only when Create/Note addressing explicitly names AS Public."""
-    if not isinstance(activity, dict):
-        return False
-    candidates = [activity]
-    embedded = activity.get("object")
-    if isinstance(embedded, dict):
-        candidates.append(embedded)
-    for candidate in candidates:
-        for key in ("to", "cc", "audience"):
-            values = candidate.get(key, [])
-            if not isinstance(values, list):
-                values = [values]
-            for value in values:
-                target = ap.activity_object_id(value)
-                if target == ap.AS_PUBLIC:
-                    return True
-    return False
 
 
-async def _ap_handle_create(env, request, activity, remote):
-    # A remote reply to one of our published Notes becomes a federated comment
-    # on the underlying thread; a post that @-mentions one of our repo actors
-    # becomes verified public activity awaiting optional, explicit owner
-    # review. Nothing in this inbound path files an issue automatically.
-    # Anything else is acknowledged and dropped (we host repos, not timelines).
-    note = ap.note_essentials(activity.get("object"))
-    if not note:
-        return json_response({"ok": True}, status=202)
-    # HTTP signatures authenticate the sender, not the intended audience.
-    # Direct/private Notes must never enter a public thread or World feed.
-    if not _ap_activity_is_public(activity):
-        return json_response({"ok": True}, status=202)
-    # The note's author must be the signing actor (same host is not enough:
-    # one compromised account must not be able to speak for a whole server).
-    if note["attributedTo"].split("#")[0].rstrip("/") != remote["actor_id"]:
-        return json_response({"error": "author_mismatch"}, status=401)
-    origin = _ap_origin(env, request)
-    context_bi, context, parent_remote_id_bi = await _ap_reply_parent(
-        env, origin, note["inReplyTo"])
-    if not context:
-        mention = _ap_note_repo_mention(origin, note)
-        if mention:
-            return await _ap_handle_repo_mention(
-                env, request, note, remote, mention[0], mention[1])
-        return json_response({"ok": True}, status=202)
-    # Owner switched federated comments (or the whole actor) off: acknowledge
-    # and drop, same as any non-reply — redelivery storms must not 4xx.
-    reply_settings = await _ap_repo_settings_get(
-        env, context.get("owner", ""), context.get("repo", ""))
-    if not reply_settings["federate"] or not reply_settings["acceptComments"]:
-        return json_response({"ok": True}, status=202)
-    existing_row, existing_rec, remote_id_bi = \
-        await _ap_comment_by_remote_id(env, note["id"])
-    if existing_row and existing_rec:
-        return json_response({"ok": True, "duplicate": True}, status=202)
-    count = await d1_first(
-        env, "SELECT COUNT(*) AS c FROM ap_comments WHERE context_bi=?",
-        context_bi)
-    if ((count or {}).get("c", 0) or 0) >= AP_MAX_COMMENTS_PER_THREAD:
-        return json_response({"error": "thread_full"}, status=429)
-    now = int(Date.now())
-    normalized = ap_threads.apply_activity(
-        {}, activity, remote_actor=remote, context=context, received_ms=now)
-    if not normalized.get("ok"):
-        return json_response({"ok": True}, status=202)
-    rec = normalized["record"]
-    # The HTTP delivery signature was verified above, but that is explicitly
-    # not a ForkMesh Ed25519 native-event signature.
-    rec["provenance"]["deliverySignatureVerified"] = True
-    rec["provenance"]["nativeSignatureVerified"] = False
-    await d1_run(
-        env,
-        "INSERT OR IGNORE INTO ap_comments (context_bi, remote_id_bi,"
-        " parent_remote_id_bi, lifecycle, data, ts) VALUES (?,?,?,?,?,?)",
-        context_bi, remote_id_bi, parent_remote_id_bi or None,
-        rec["lifecycle"], await encrypt_row(env, rec), now)
-    if context.get("kind") == "issue":
-        reply_owner = context.get("owner", "")
-        reply_repo = context.get("repo", "")
-        data_owner = await _ap_org_alias_owner(
-            env, reply_owner, reply_repo)
-        if not await _repo_is_private(env, data_owner, reply_repo):
-            public_note = dict(note)
-            public_note["content"] = rec.get("body", "")
-            await fediverse_mentions_api.record_verified(
-                _WorldCommunityRuntime(env, request),
-                note=public_note,
-                remote=remote,
-                actor_owner=reply_owner,
-                data_owner=data_owner,
-                repo=reply_repo,
-                kind="reply",
-                context={
-                    "ref": context.get("ref", ""),
-                    "issueUrl": (
-                        origin
-                        + repo_web_href(reply_owner, reply_repo)
-                        + "/issues/"
-                        + str(context.get("ref", ""))
-                    ),
-                },
-                signature_verified=True,
-                public_activity=True,
-                public_repository=True,
-            )
-    title = "Fediverse reply on %s/%s %s %s" % (
-        context.get("owner", ""), context.get("repo", ""),
-        context.get("kind", ""), context.get("ref", ""))
-    await _best_effort_inbox_side_effect(enqueue_notification(
-        env, context.get("owner", ""), "subscribed", title,
-        body="%s: %s" % (rec["author"], rec["body"][:280]),
-        repo="%s/%s" % (context.get("owner", ""), context.get("repo", "")),
-        href=repo_web_href(context.get("owner", ""), context.get("repo", "")),
-        source="fediverse", dedupe="ap-comment:" + note["id"]))
-    return json_response({"ok": True}, status=202)
 
 
-async def _ap_handle_update(env, activity, remote):
-    note = ap.note_essentials(activity.get("object"))
-    if not note:
-        return json_response({"ok": True}, status=202)
-    row, existing, _ = await _ap_comment_by_remote_id(env, note["id"])
-    if not row or not existing:
-        return json_response({"ok": True}, status=202)
-    result = ap_threads.apply_activity(
-        {note["id"]: existing}, activity, remote_actor=remote,
-        context=existing.get("context"), received_ms=int(Date.now()))
-    if not result.get("ok"):
-        status = 401 if result.get("reason") == "author_mismatch" else 202
-        return json_response({"error": result.get("reason")}, status=status)
-    if result.get("changed"):
-        rec = result["record"]
-        rec["provenance"]["deliverySignatureVerified"] = True
-        rec["provenance"]["nativeSignatureVerified"] = False
-        await d1_run(
-            env,
-            "UPDATE ap_comments SET lifecycle=?, data=?"
-            " WHERE remote_id_bi=?",
-            rec["lifecycle"], await encrypt_row(env, rec),
-            row.get("remote_id_bi"))
-    return json_response(
-        {"ok": True, "duplicate": not result.get("changed")}, status=202)
 
 
-async def _ap_handle_remove(env, activity, remote):
-    target_id = ap.activity_object_id(activity.get("object"))
-    row, existing, _ = await _ap_comment_by_remote_id(env, target_id)
-    if not row or not existing:
-        return json_response({"ok": True}, status=202)
-    # Lemmy community moderators use a different actor from the comment
-    # author. Accept moderation only from the same already-verified instance.
-    actor_host = urlparse(remote.get("actor_id", "")).hostname or ""
-    if actor_host.lower() != existing.get("sourceInstance", "").lower():
-        return json_response({"error": "moderator_instance_mismatch"},
-                             status=401)
-    result = ap_threads.apply_activity(
-        {target_id: existing}, activity, remote_actor=remote,
-        context=existing.get("context"), received_ms=int(Date.now()))
-    if result.get("changed"):
-        rec = result["record"]
-        rec["provenance"]["deliverySignatureVerified"] = True
-        rec["provenance"]["nativeSignatureVerified"] = False
-        await d1_run(
-            env,
-            "UPDATE ap_comments SET lifecycle=?, data=?"
-            " WHERE remote_id_bi=?",
-            rec["lifecycle"], await encrypt_row(env, rec),
-            row.get("remote_id_bi"))
-    return json_response({"ok": True}, status=202)
 
 
-def _ap_note_repo_mention(origin, note):
-    """First Mention tag pointing at one of our repo actors -> (owner, repo)
-    (lowercased), else None. Pure string parsing so the inbox can gate on it
-    before the signature dance."""
-    for href in note.get("mentions", []):
-        target = ap.parse_local_actor_url(origin, href)
-        if target and target[0] == "repo":
-            return target[1], target[2]
-    return None
 
 
-async def _ap_send_mention_reply(env, request, owner, repo, remote, note,
-                                 text, issue_number, dedupe_id="",
-                                 object_uuid=""):
-    """Reply to the mentioning post as the repo actor: a public Note in the
-    author's thread with a Mention tag so their server notifies them. Queued
-    through ap_outbox so a lost delivery retries on the cron drain. The stored
-    object carries the new issue's context, so fediverse replies to OUR reply
-    land as federated comments on that issue."""
-    origin = _ap_origin(env, request)
-    handle = ap.repo_handle(owner, repo)
-    local = await _ap_local_actor(env, AP_ACTOR_REPO, handle, create=True)
-    if not local:
-        return False
-    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
-    now = int(Date.now())
-    if not re.fullmatch(r"[a-f0-9]{32}", str(object_uuid or "")):
-        object_uuid = _ap_uuid()
-    reply = ap.note_doc(
-        origin + "/ap/o/" + object_uuid, actor_url, actor_url + "/followers",
-        ap.note_html_from_text(text), now,
-        web_url=origin + repo_web_href(owner, repo) + "/issues",
-        in_reply_to=note["id"])
-    # Address the author directly (still public, so the exchange is visible
-    # in the thread); the Mention tag is what triggers their notification.
-    reply["to"] = [remote["actor_id"]]
-    reply["cc"] = [ap.AS_PUBLIC, actor_url + "/followers"]
-    tag = {"type": "Mention", "href": remote["actor_id"]}
-    if remote.get("handle"):
-        tag["name"] = "@" + remote["handle"]
-    reply["tag"] = [tag]
-    ckey = ap.context_key(owner, repo, "issue", issue_number)
-    rec = {"note": reply,
-           "context": {"owner": owner, "repo": repo, "kind": "issue",
-                       "ref": str(issue_number), "key": ckey},
-           "media": []}
-    await d1_run(
-        env,
-        "INSERT OR IGNORE INTO ap_objects "
-        "(object_uuid, actor_bi, context_bi, data,"
-        " published) VALUES (?,?,?,?,?)",
-        object_uuid, await _ap_actor_bi(env, AP_ACTOR_REPO, handle),
-        await blind_index(env, "ap-context:" + ckey),
-        await encrypt_row(env, rec), now)
-    inbox = ((remote.get("inbox") or "").strip()
-             or (remote.get("shared_inbox") or "").strip())
-    if not inbox:
-        return False
-    out_data = await encrypt_row(env, {
-        "body": json.dumps(ap.create_activity(reply)),
-        "actorKind": AP_ACTOR_REPO, "actorHandle": handle,
-        "actorUrl": actor_url})
-    if dedupe_id:
-        dedupe_bi = await blind_index(
-            env,
-            "ap-mention-followup:" + str(dedupe_id) + ":" + inbox,
-        )
-        await d1_run(
-            env,
-            "INSERT OR IGNORE INTO ap_outbox "
-            "(inbox, data, attempts, next_ts, created_at, dedupe_bi)"
-            " VALUES (?,?,0,?,?,?)",
-            inbox, out_data, now, now, dedupe_bi)
-    else:
-        await d1_run(
-            env,
-            "INSERT INTO ap_outbox "
-            "(inbox, data, attempts, next_ts, created_at)"
-            " VALUES (?,?,0,?,?)",
-            inbox, out_data, now, now)
-    await _ap_drain_outbox(env, 1)
-    return True
 
 
-async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
-    """A verified fediverse post that @-mentions one of our repo actors
-    ("@owner.repo@host this button is broken ..."). It becomes sanitized
-    public activity in World's manual review feed. It never runs AI, enters an
-    issue inbox, or publishes a reply here. Only a later owner-authorized
-    preview + explicit create action may queue it, and even then it stays
-    pending until the owner node confirms the materialized issue number."""
-    dropped = json_response({"ok": True}, status=202)
-    data_owner = await _ap_org_alias_owner(env, owner, repo)
-    if await _repo_is_private(env, data_owner, repo):
-        return dropped
-    settings = await _ap_repo_settings_get(env, data_owner, repo)
-    if not settings["federate"] or not settings["acceptComments"]:
-        return dropped
-    # A legacy deployment may already have auto-filed this note. Preserve that
-    # historical dedupe marker so a redelivery cannot reintroduce it as a new
-    # manual-review candidate.
-    mention_bi = await blind_index(env, "ap-mention:" + note["id"])
-    seen = await d1_first(
-        env, "SELECT ts FROM ap_mentions WHERE remote_id_bi=?", mention_bi)
-    if seen:
-        return dropped
-    text = ap.sanitize_remote_html(note["content"])
-    text = re.sub(
-        r"(?i)@" + re.escape(ap.repo_handle(owner, repo))
-        + r"(?:@[A-Za-z0-9.-]+)?", " ", text)
-    text = "\n".join(
-        re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n"))
-    text = text.strip()
-    if not text:
-        return dropped
-    public_note = dict(note)
-    public_note["content"] = text
-    await fediverse_mentions_api.record_verified(
-        _WorldCommunityRuntime(env, request),
-        note=public_note,
-        remote=remote,
-        actor_owner=owner,
-        data_owner=data_owner,
-        repo=repo,
-        kind="mention",
-        signature_verified=True,
-        public_activity=True,
-        public_repository=True,
-    )
-    return dropped
 
 
-async def _ap_handle_delete(env, activity, remote=None):
-    object_id = ap.activity_object_id(activity.get("object"))
-    if object_id:
-        row, existing, _ = await _ap_comment_by_remote_id(env, object_id)
-        if not row or not existing:
-            return json_response({"ok": True}, status=202)
-        remote_actor_id = (remote or {}).get("actor_id", "")
-        if remote_actor_id.rstrip("/") != \
-                str(existing.get("authorId", "")).rstrip("/"):
-            return json_response({"error": "author_mismatch"}, status=401)
-        result = ap_threads.apply_activity(
-            {object_id: existing}, activity, remote_actor=remote,
-            context=existing.get("context"), received_ms=int(Date.now()))
-        if not result.get("ok"):
-            return json_response({"error": result.get("reason")},
-                                 status=401)
-        rec = result["record"]
-        rec["provenance"]["deliverySignatureVerified"] = True
-        rec["provenance"]["nativeSignatureVerified"] = False
-        await d1_run(
-            env,
-            "UPDATE ap_comments SET lifecycle=?, data=?"
-            " WHERE remote_id_bi=?",
-            rec["lifecycle"], await encrypt_row(env, rec),
-            row.get("remote_id_bi"))
-    return json_response({"ok": True}, status=202)
 
 
-async def ap_inbox_handler(env, request):
-    # Shared + per-actor ActivityPub inbox: verify the draft-cavage HTTP
-    # signature (keyId fetched from the remote server) and the body digest,
-    # then dispatch on activity type. Processing is synchronous — no queues on
-    # the free plan — and every path is a handful of D1 statements.
-    if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    body = await request.text()
-    body_bytes = body.encode()
-    if len(body_bytes) > AP_MAX_INBOX_BYTES:
-        return json_response({"error": "too_large"}, status=413)
-    try:
-        activity = json.loads(body)
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    if not isinstance(activity, dict):
-        return json_response({"error": "invalid_activity"}, status=400)
-    activity_type = str(activity.get("type", "") or "")
-    actor_id = ap.activity_object_id(activity.get("actor")).rstrip("/")
-    origin = _ap_origin(env, request)
-    if not actor_id.startswith("https://") or actor_id.startswith(origin + "/"):
-        return json_response({"error": "invalid_actor"}, status=401)
-    if await _ap_domain_blocked(env, urlparse(actor_id).netloc):
-        return json_response({"error": "domain_blocked"}, status=403)
-    object_id = ap.activity_object_id(activity.get("object")).rstrip("/")
-
-    # Actor self-delete: the remote document is already gone, so the key can
-    # no longer be fetched. Clean up local edges without a wasted subrequest —
-    # a spoofed self-delete can at worst drop a follower edge that re-follows.
-    # Mastodon broadcasts every account deletion to every instance it has ever
-    # seen, so nearly all of these are for actors we don't know: check first
-    # (two indexed reads) instead of always issuing two D1 writes.
-    if activity_type == "Delete" and object_id == actor_id:
-        known = await d1_first(
-            env, "SELECT actor_id FROM ap_remote_actors WHERE actor_id=?",
-            actor_id)
-        if not known:
-            known = await d1_first(
-                env, "SELECT follower_id FROM ap_followers WHERE follower_id=?",
-                actor_id)
-        if known:
-            await _ap_forget_remote(env, actor_id)
-        return json_response({"ok": True}, status=202)
-
-    # Anything we'd acknowledge-and-drop after verifying (Like/Announce/
-    # Accept/...) is dropped before the signature dance instead: the
-    # verify path costs a signed GET back to the sender's server (plus D1
-    # reads/writes to cache its actor), so fediverse-wide Like/boost floods
-    # both melted our origin AND hammered Mastodon with actor refetches —
-    # the "too many requests" loop of issue #416.
-    if activity_type not in (
-            "Follow", "Undo", "Create", "Update", "Delete", "Remove"):
-        return json_response({"ok": True}, status=202)
-    if activity_type == "Create":
-        # Two Note shapes matter: replies to our own /ap/o/<uuid> objects
-        # (federated comments) and posts whose Mention tags point at one of
-        # our repo actors (candidate issue requests). Everything else is
-        # dropped here, before the remote-actor fetch (the handler re-checks
-        # after verification). A nested Lemmy reply also qualifies when its
-        # parent is an already-stored remote reply; that costs one indexed D1
-        # read but avoids verifying unrelated fediverse traffic.
-        note = ap.note_essentials(activity.get("object"))
-        qualifies = bool(note and (
-            ap.parse_local_object_url(origin, note["inReplyTo"])
-            or _ap_note_repo_mention(origin, note)))
-        if note and not qualifies and note["inReplyTo"].startswith("https://"):
-            parent_row, _, _ = await _ap_comment_by_remote_id(
-                env, note["inReplyTo"])
-            qualifies = bool(parent_row)
-        if not qualifies:
-            return json_response({"ok": True}, status=202)
-    elif activity_type == "Update":
-        note = ap.note_essentials(activity.get("object"))
-        if not note:
-            return json_response({"ok": True}, status=202)
-        target_row, _, _ = await _ap_comment_by_remote_id(env, note["id"])
-        if not target_row:
-            return json_response({"ok": True}, status=202)
-    elif activity_type == "Remove":
-        target_id = ap.activity_object_id(activity.get("object"))
-        target_row, _, _ = await _ap_comment_by_remote_id(env, target_id)
-        if not target_row:
-            return json_response({"ok": True}, status=202)
-
-    parsed_sig = ap.parse_signature_header(
-        request.headers.get("signature") or "")
-    if not parsed_sig:
-        return json_response({"error": "signature_required"}, status=401)
-    # The signature must cover the request target and the body digest, or it
-    # proves nothing about this delivery.
-    if ("(request-target)" not in parsed_sig["headers"]
-            or "digest" not in parsed_sig["headers"]):
-        return json_response({"error": "weak_signature"}, status=401)
-    key_url = parsed_sig["keyId"].split("#")[0].rstrip("/")
-    if urlparse(key_url).netloc != urlparse(actor_id).netloc:
-        return json_response({"error": "key_actor_mismatch"}, status=401)
-    if not ap.digest_matches(request.headers.get("digest") or "", body_bytes):
-        return json_response({"error": "digest_mismatch"}, status=401)
-    now = int(Date.now())
-    date_header = (request.headers.get("date")
-                   or request.headers.get("x-date") or "")
-    if date_header:
-        sent = ap.parse_http_date_ms(date_header)
-        if sent and abs(now - sent) > AP_DATE_SKEW_MS:
-            return json_response({"error": "date_skew"}, status=401)
-    elif parsed_sig.get("created") is None:
-        return json_response({"error": "date_required"}, status=401)
-    if (parsed_sig.get("created") is not None
-            and abs(now - parsed_sig["created"] * 1000) > AP_DATE_SKEW_MS):
-        return json_response({"error": "created_skew"}, status=401)
-
-    url = urlparse(request.url)
-    path = url.path + (("?" + url.query) if url.query else "")
-    headers_map = {}
-    for name in parsed_sig["headers"]:
-        if name.startswith("("):
-            continue
-        value = request.headers.get(name)
-        if value is None:
-            return json_response({"error": "missing_header"}, status=401)
-        headers_map[name] = value
-    base = ap.signing_string(
-        "POST", path, headers_map, parsed_sig["headers"],
-        created=parsed_sig.get("created"), expires=parsed_sig.get("expires"))
-    if base is None:
-        return json_response({"error": "bad_signature_params"}, status=401)
-    remote = await _ap_remote_actor(env, key_url)
-    verified = bool(remote and remote.get("pubkey_pem")
-                    and await _ap_rsa_verify(
-                        remote["pubkey_pem"], parsed_sig["signature"], base))
-    if not verified:
-        # The remote key may have rotated since we cached it — refresh once.
-        remote = await _ap_remote_actor(env, key_url, force_refresh=True)
-        verified = bool(remote and remote.get("pubkey_pem")
-                        and await _ap_rsa_verify(
-                            remote["pubkey_pem"], parsed_sig["signature"],
-                            base))
-    if not verified:
-        return json_response({"error": "bad_signature"}, status=401)
-
-    if activity_type == "Follow":
-        return await _ap_handle_follow(env, request, activity, remote)
-    if activity_type == "Undo":
-        return await _ap_handle_undo(env, request, activity)
-    if activity_type == "Create":
-        return await _ap_handle_create(env, request, activity, remote)
-    if activity_type == "Update":
-        return await _ap_handle_update(env, activity, remote)
-    if activity_type == "Delete":
-        return await _ap_handle_delete(env, activity, remote)
-    if activity_type == "Remove":
-        return await _ap_handle_remove(env, activity, remote)
-    # Like/Announce/Accept/... are acknowledged and dropped above.
-    return json_response({"ok": True}, status=202)
 
 
 # --- Client-facing endpoints ----------------------------------------------------
@@ -30508,6 +28697,23 @@ async def repo_star_handler(env, request, owner, repo):
     })
 
 
+# Ciphertext -> decrypted reply, memoized per isolate exactly like
+# _CATALOG_ROW_DECRYPT_MEMO (see its comment for the reasoning). A thread read
+# decrypts up to FEDI_COMMENT_ROW_LIMIT rows, and every one is Pyodide CPU
+# (base64 + a JS-boundary AES-GCM crossing per row) charged to a single
+# request. Every open issue/pull view polls this endpoint, so a busy thread
+# replayed that whole pass per poll and tipped the request over the Workers CPU
+# limit — a 503 "Error 1102: Worker exceeded resource limits" on GET
+# .../fedi-comments, the same family as the info/refs overloads. A reply row's
+# blob is rewritten with a fresh IV on every lifecycle update, so an unchanged
+# blob is byte-identical and its previous plaintext is still valid. Records are
+# shared read-only by the projection below and must not be mutated.
+_FEDI_COMMENT_DECRYPT_MEMO = {}
+FEDI_COMMENT_DECRYPT_MEMO_MAX = 2048
+FEDI_COMMENT_ROW_LIMIT = 200
+FEDI_COMMENTS_CACHE_TTL = 30
+
+
 async def fedi_comments_handler(env, request, owner, repo):
     # Remote fediverse replies for one thread, shown alongside (never inside)
     # the Ed25519-signed event log. Public data — same visibility as the
@@ -30523,17 +28729,41 @@ async def fedi_comments_handler(env, request, owner, repo):
         params.get("number", [""])[0] or params.get("ref", [""])[0], 80)
     if kind not in AP_FEDI_KINDS or not ref:
         return json_response({"error": "kind_and_ref_required"}, status=400)
+    # Collapse the poll burst to one origin computation per colo per TTL: the
+    # privacy gate above already ran (a 404 is never cached), and the body
+    # below is public data keyed entirely by the thread it belongs to.
+    cache_key = (
+        "https://forkmesh.internal/api/repo/%s/%s/fedi-comments?kind=%s&ref=%s"
+        % (quote(owner), quote(repo), kind, quote(ref, safe="")))
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
     context_bi = await blind_index(
         env, "ap-context:" + ap.context_key(owner, repo, kind, ref))
     rows = await d1_all(
         env,
         "SELECT data, ts, lifecycle FROM ap_comments WHERE context_bi=?"
-        " ORDER BY ts ASC LIMIT 200",
+        " ORDER BY ts ASC LIMIT %d" % FEDI_COMMENT_ROW_LIMIT,
         context_bi)
     normalized_records = {}
     legacy_comments = []
+    fresh = {}
+    # Resolve the AES key once for the whole pass instead of per row. Empty
+    # threads (the common poll) skip it, and a placeholder/missing DATA_KEY
+    # stays a per-row decrypt failure rather than becoming a 500 here.
+    data_key = None
+    if rows:
+        try:
+            data_key = await _data_key(env)
+        except Exception:
+            data_key = None
     for row in rows or []:
-        rec = await decrypt_row(env, row.get("data"))
+        blob = str(row.get("data") or "")
+        rec = _FEDI_COMMENT_DECRYPT_MEMO.get(blob)
+        if rec is None:
+            rec = await decrypt_row(env, blob, key=data_key)
+            if rec:
+                fresh[blob] = rec
         if not rec:
             continue
         source_instance = (
@@ -30574,52 +28804,29 @@ async def fedi_comments_handler(env, request, owner, repo):
                     "native event log."),
             },
         })
+    # Threads share one isolate-wide memo, so a read merges its newly decrypted
+    # rows rather than rebuilding from the rows just seen — rebuilding would
+    # evict every other thread's plaintext on each read. Only fresh decrypts
+    # count toward the cap, so a fully memoized thread never triggers a clear;
+    # clearing wholesale keeps the memo bounded without a per-entry eviction
+    # scan (the next read of a live thread simply refills it).
+    if fresh:
+        if len(_FEDI_COMMENT_DECRYPT_MEMO) + len(fresh) > \
+                FEDI_COMMENT_DECRYPT_MEMO_MAX:
+            _FEDI_COMMENT_DECRYPT_MEMO.clear()
+        _FEDI_COMMENT_DECRYPT_MEMO.update(fresh)
     comments = legacy_comments + ap_threads.thread_projection(
         normalized_records)
     comments.sort(key=lambda item: (
         int(item.get("ts", 0) or 0),
         str(item.get("published", "")),
         str(item.get("remoteId", ""))))
-    return json_response({"ok": True, "comments": comments},
-                         cache_control="public, max-age=30")
+    resp = json_response({"ok": True, "comments": comments},
+                         cache_seconds=FEDI_COMMENTS_CACHE_TTL)
+    await edge_cache_put(cache_key, resp)
+    return resp
 
 
-async def ap_publish_handler(env, request, owner, repo):
-    # Owner-node push of canonical announcements the relay never sees through
-    # the signed inboxes (published releases, merged PRs). Same signed-token
-    # gate as the inbox drain, so only the owner's key can speak for the repo.
-    if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    await ensure_schema(env)
-    if not await _authorize_owner(env, request, owner):
-        return json_response({"error": "unauthorized"}, status=401)
-    privacy_reader = globals().get("_repo_is_private")
-    if callable(privacy_reader) and await privacy_reader(env, owner, repo):
-        return json_response({"error": "not_found"}, status=404)
-    try:
-        data = await bounded_json_request(request)
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    kind = clean_string(data.get("kind", ""), 20).lower()
-    if kind not in AP_FEDI_KINDS:
-        return json_response({"error": "invalid_kind"}, status=400)
-    default_type = "publish" if kind == "release" else "open"
-    event_type = clean_string(
-        data.get("eventType", "") or default_type, 20).lower()
-    ref = clean_string(
-        str(data.get("ref", "") or data.get("number", "")
-            or data.get("tag", "")), 80)
-    manual = data.get("manual") is True
-    await _ap_publish_repo_event(
-        env, request, owner, repo, kind, event_type, ref,
-        clean_string(data.get("title", ""), 240),
-        clean_string(data.get("body", ""), 4000),
-        clean_string(data.get("author", "") or owner, MAX_NODE_NAME),
-        manual=manual)
-    return json_response({
-        "ok": True,
-        "mode": "manual_immediate" if manual else "daily_digest",
-    }, status=202)
 
 
 async def _authorize_repo_owner_web(env, request, owner, repo, data):
@@ -30642,122 +28849,8 @@ async def _authorize_repo_owner_web(env, request, owner, repo, data):
     return False
 
 
-async def ap_digest_handler(env, request, owner, repo):
-    """Owner-only preview of the encrypted automatic-update queue."""
-    await ensure_schema(env)
-    method = method_name(request)
-    if method not in ("GET", "POST"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    if await _repo_is_private(env, owner, repo):
-        return json_response({"error": "not_found"}, status=404)
-    data = {}
-    if method == "POST":
-        try:
-            data = await bounded_json_request(request)
-        except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
-    if not await _authorize_repo_owner_web(env, request, owner, repo, data):
-        return json_response({"error": "not_authorized"}, status=403)
-    settings = await _ap_repo_settings_get(env, owner, repo)
-    preview = await _ap_digest_preview(
-        env, str(owner).lower() + "/" + str(repo).lower())
-    preview.update({
-        "ok": True,
-        "enabled": bool(
-            settings["federate"] and settings["broadcastEvents"]),
-        "cadence": "daily",
-        "minimumIntervalMs": fedi_digest.DAY_MS,
-        "automatedLabel": True,
-    })
-    return json_response(preview, cache_control="no-store")
 
 
-async def ap_posts_handler(env, request, owner, repo):
-    # Repo-owner fediverse-post management (dashboard "manage posts" dropdown,
-    # issue #426): list the repo actor's federated posts, or delete one. A
-    # delete broadcasts a Delete(Tombstone) to every follower inbox so the post
-    # disappears from Mastodon timelines, then drops the local object. POST-only
-    # so the session token rides in the body, never a query string / access log.
-    if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    await ensure_schema(env)
-    try:
-        data = await bounded_json_request(request)
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    if not await _authorize_repo_owner_web(env, request, owner, repo, data):
-        return json_response({"error": "not_authorized"}, status=403)
-    action = clean_string(data.get("action", "list"), 12).lower()
-    handle = ap.repo_handle(owner.lower(), repo.lower())
-    actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
-    if action == "list":
-        rows = await d1_all(
-            env,
-            "SELECT object_uuid, data, published FROM ap_objects"
-            " WHERE actor_bi=? ORDER BY published DESC LIMIT 50", actor_bi)
-        posts = []
-        for row in rows or []:
-            rec = await decrypt_row(env, row.get("data"))
-            note = (rec or {}).get("note") or {}
-            posts.append({
-                "id": row.get("object_uuid"),
-                "content": note.get("content") or "",  # our own safe HTML
-                "url": note.get("url") or "",
-                "published": int(row.get("published") or 0),
-            })
-        return json_response({"ok": True, "posts": posts})
-    if action != "delete":
-        return json_response({"error": "bad_action"}, status=400)
-    object_uuid = clean_string(data.get("id", ""), 64).strip()
-    if not object_uuid:
-        return json_response({"error": "missing_id"}, status=400)
-    # Only delete a post the repo actor actually authored: the actor_bi filter
-    # stops one owner's token from reaching another actor's objects.
-    row = await d1_first(
-        env,
-        "SELECT object_uuid FROM ap_objects WHERE object_uuid=? AND actor_bi=?",
-        object_uuid, actor_bi)
-    if not row:
-        return json_response({"error": "not_found"}, status=404)
-    # Drop the local object first: even with federation disabled or zero
-    # followers the owner's intent (remove the post) is honored — /ap/o/<uuid>
-    # starts 404ing and it vanishes from the repo's fediverse profile feed.
-    await d1_run(env, "DELETE FROM ap_objects WHERE object_uuid=?", object_uuid)
-    origin = _ap_origin(env, request)
-    object_url = origin + "/ap/o/" + object_uuid
-    # Drop the edge-parked Note (max-age 300) so the object 404s immediately
-    # rather than lingering a cache TTL after the owner deleted it.
-    await edge_cache_delete(object_url)
-    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
-    now = int(Date.now())
-    queued = False
-    if await _ap_enabled(env):
-        followers = await d1_all(
-            env,
-            "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
-            actor_bi)
-        body_str = json.dumps(ap.delete_activity(
-            actor_url, object_url, actor_url + "/followers", now))
-        out_data = await encrypt_row(env, {
-            "body": body_str, "actorKind": AP_ACTOR_REPO,
-            "actorHandle": handle, "actorUrl": actor_url})
-        seen = set()
-        for follower in followers or []:
-            inbox = ((follower.get("shared_inbox") or "").strip()
-                     or (follower.get("inbox") or "").strip())
-            if not inbox or inbox in seen:
-                continue
-            seen.add(inbox)
-            await d1_run(
-                env,
-                "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
-                " created_at) VALUES (?,?,0,?,?)",
-                inbox, out_data, now, now)
-            queued = True
-        if queued:
-            await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
-    return json_response({"ok": True, "deleted": object_uuid,
-                          "federated": queued})
 
 
 # --- Admin: fediverse configuration ------------------------------------------
@@ -32179,369 +30272,96 @@ async def poll_handler(env, request):
     return json_response(out)
 
 
-def _forkbot_extract_mention_command(message):
-    text = clean_string(message, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return ""
-    match = re.search(
-        r"(?is)(?:^|[^A-Za-z0-9_-])@?forkbot\b[:,]?\s*(.*)$", text)
-    return match.group(1).strip() if match else ""
+_forkbot = _LazyModule("forkbot")
+_forkbot_extract_mention_command = _forkbot.export("_forkbot_extract_mention_command")
+_forkbot_parse_issue_command = _forkbot.export("_forkbot_parse_issue_command")
+_forkbot_command_hints_issue = _forkbot.export("_forkbot_command_hints_issue")
+_forkbot_polite_prefix = _forkbot.export("_forkbot_polite_prefix")
+_forkbot_parse_list_command = _forkbot.export("_forkbot_parse_list_command")
+_forkbot_parse_count_command = _forkbot.export("_forkbot_parse_count_command")
+_forkbot_parse_search_command = _forkbot.export("_forkbot_parse_search_command")
+_forkbot_parse_agent_command = _forkbot.export("_forkbot_parse_agent_command")
+_forkbot_parse_show_command = _forkbot.export("_forkbot_parse_show_command")
+_forkbot_parse_help_command = _forkbot.export("_forkbot_parse_help_command")
+_forkbot_help_message = _forkbot.export("_forkbot_help_message")
+_forkbot_context_text = _forkbot.export("_forkbot_context_text")
+_forkbot_issue_title = _forkbot.export("_forkbot_issue_title")
+_forkbot_fallback_issue_fields = _forkbot.export("_forkbot_fallback_issue_fields")
+_forkbot_json_object_from_text = _forkbot.export("_forkbot_json_object_from_text")
+_forkbot_clean_ai_issue_fields = _forkbot.export("_forkbot_clean_ai_issue_fields")
+_forkbot_ai_default_model = _forkbot.export("_forkbot_ai_default_model")
+_forkbot_ai_model_options = _forkbot.export("_forkbot_ai_model_options")
+_forkbot_resolve_ai_model = _forkbot.export("_forkbot_resolve_ai_model")
+_forkbot_ai_model_not_found_error = _forkbot.export("_forkbot_ai_model_not_found_error")
+_forkbot_ai_fallback_models = _forkbot.export("_forkbot_ai_fallback_models")
+forkbot_models_handler = _forkbot.export("forkbot_models_handler")
+_forkbot_run_ai = _forkbot.export("_forkbot_run_ai")
+_forkbot_ai_issue_fields = _forkbot.export("_forkbot_ai_issue_fields")
+_forkbot_ai_interpret = _forkbot.export("_forkbot_ai_interpret")
+_forkbot_repo_gateway_json = _forkbot.export("_forkbot_repo_gateway_json")
+_forkbot_missing_tree = _forkbot.export("_forkbot_missing_tree")
+_forkbot_issue_json_path = _forkbot.export("_forkbot_issue_json_path")
+_forkbot_issue_json_candidates = _forkbot.export("_forkbot_issue_json_candidates")
+_forkbot_blob_text = _forkbot.export("_forkbot_blob_text")
+_forkbot_parse_issue_record = _forkbot.export("_forkbot_parse_issue_record")
+_forkbot_recent_issue_numbers = _forkbot.export("_forkbot_recent_issue_numbers")
+_forkbot_load_issue_records = _forkbot.export("_forkbot_load_issue_records")
+_forkbot_search_issues = _forkbot.export("_forkbot_search_issues")
+_forkbot_issue_lines = _forkbot.export("_forkbot_issue_lines")
+_forkbot_next_issue_number = _forkbot.export("_forkbot_next_issue_number")
+_forkbot_attributed_body = _forkbot.export("_forkbot_attributed_body")
+_forkbot_rekey_alias_inbox = _forkbot.export("_forkbot_rekey_alias_inbox")
+_forkbot_enqueue_issue = _forkbot.export("_forkbot_enqueue_issue")
+_forkbot_enqueue_agent_request = _forkbot.export("_forkbot_enqueue_agent_request")
+_forkbot_gateway_offline_reply = _forkbot.export("_forkbot_gateway_offline_reply")
+_forkbot_action_count = _forkbot.export("_forkbot_action_count")
+_forkbot_action_list = _forkbot.export("_forkbot_action_list")
+_forkbot_action_search = _forkbot.export("_forkbot_action_search")
+_forkbot_action_show = _forkbot.export("_forkbot_action_show")
+_forkbot_action_start_agent = _forkbot.export("_forkbot_action_start_agent")
+forkbot_chat_handler = _forkbot.export("forkbot_chat_handler")
 
 
-def _forkbot_parse_issue_command(command):
-    # Fast, offline path for an explicitly phrased request ("create an issue
-    # to ..."). A miss here is NOT a rejection: the handler falls back to the
-    # AI intent classifier (_forkbot_ai_interpret), which recognises the same
-    # intent from natural phrasing ("forkbot can you track the flaky login
-    # test?") and from the surrounding conversation. This regex just spares an
-    # AI round trip for the obvious wording and still works when AI is off.
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    # Verb-first ("create an issue to ...") or noun-first ("issue to ...",
-    # "bug: ...") — both common phrasings, both answerable offline.
-    match = re.match(
-        r"(?is)^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
-        r"pls\s+|plz\s+)*"
-        r"(?:(?:create|open|file|make|report|log|raise|add|track|submit)\s+)?"
-        r"(?:an?\s+|a\s+new\s+)?"
-        r"(?:issue|bug|ticket|task|feature\s+request)\b"
-        r"\s*(?:(?:to|for|about|that|saying|called|titled|re|regarding)\s+|"
-        r"[:\-]\s*)?"
-        r"(.+)$",
-        text,
-    )
-    if not match:
-        return None
-    description = re.sub(r"\s+", " ", match.group(1)).strip(" .:-")
-    if len(description) < 3:
-        return None
-    return {"description": description}
 
 
-def _forkbot_command_hints_issue(command):
-    """Cheap offline signal that a ForkBot mention is about recording work —
-    used ONLY when the AI classifier is unreachable, so an unreachable model
-    degrades to filing the raw request instead of refusing with the help hint
-    (that refusal is exactly what users saw while the AI binding was silently
-    failing)."""
-    return bool(re.search(
-        r"(?i)\b(issues?|bugs?|tickets?|tasks?|todo|feature\s+request|"
-        r"create|open|file|track|log|report)\b",
-        clean_string(command, FORKBOT_MAX_COMMAND)))
 
 
-def _forkbot_polite_prefix():
-    # Shared lead-in the offline parsers strip: "please can you ..." etc.
-    return (r"(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
-            r"pls\s+|plz\s+)*")
 
 
-def _forkbot_parse_list_command(command):
-    """Offline fast path for "list the last N issues" phrasings. Mirrors the
-    create-issue fast path: a miss is NOT a rejection (the AI classifier still
-    gets a shot at natural wording), a hit spares the AI round trip and keeps
-    the feature working when AI is off. Returns {"count": n} or None."""
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    match = re.match(
-        r"(?is)^" + _forkbot_polite_prefix() +
-        r"(?:list|show(?:\s+me)?|display|give\s+me|what\s+are)\s+"
-        r"(?:the\s+)?(?:last|latest|most\s+recent|recent|newest)?\s*"
-        r"(\d{1,3})?\s*(?:few\s+)?issues\b",
-        text,
-    )
-    if not match:
-        return None
-    try:
-        count = int(match.group(1) or FORKBOT_LIST_DEFAULT)
-    except (TypeError, ValueError):
-        count = FORKBOT_LIST_DEFAULT
-    return {"count": max(1, min(count, FORKBOT_LIST_MAX))}
 
 
-def _forkbot_parse_count_command(command):
-    """Offline fast path for "how many issues are there" phrasings. These ask
-    for a total, not a listing, so they must not fall through to the list
-    parser above (which would hand back a few issues and never say how many
-    exist in total). Returns True or None."""
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    match = re.match(
-        r"(?is)^" + _forkbot_polite_prefix() +
-        r"(?:how\s+many\s+issues\b(?:\s+are\s+there|\s+exist|"
-        r"\s+do\s+we\s+have)?|"
-        r"(?:what(?:'s|\s+is)\s+the\s+)?(?:number|count)\s+of\s+issues|"
-        r"issue\s+count)\s*[?.!]*$",
-        text,
-    )
-    return {} if match else None
 
 
-def _forkbot_parse_search_command(command):
-    """Offline fast path for "search issues for X" phrasings. Requires the
-    word issue(s) so a bare "find the bug" still flows to the create/AI paths.
-    Returns {"query": text} or None."""
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    match = re.match(
-        r"(?is)^" + _forkbot_polite_prefix() +
-        r"(?:search|find|look\s+(?:for|up)|grep)\s+"
-        r"(?:the\s+|any\s+|all\s+)?(?:open\s+|closed\s+)?issues?\b\s*"
-        r"(?:(?:for|about|regarding|matching|mentioning|containing|on|with)"
-        r"\s+)?[:\-]?\s*(.+)$",
-        text,
-    )
-    if not match:
-        return None
-    query = re.sub(r"\s+", " ", match.group(1)).strip(" .:-\"'")
-    if len(query) < 2:
-        return None
-    return {"query": query[:100]}
 
 
-def _forkbot_parse_agent_command(command):
-    """Offline fast path for "start an agent on the latest issue / issue #N".
-    Returns {"issueNumber": n} (0 = the most recent issue) or None."""
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    match = re.match(
-        r"(?is)^" + _forkbot_polite_prefix() +
-        r"(?:start|run|launch|kick\s+off|spin\s+up|put|assign|set|sic)\s+"
-        r"(?:an?\s+)?(?:coding\s+|code\s+)?agent\s+"
-        r"(?:on|to|at|for|onto|against)?\s*(?:the\s+)?"
-        r"(?:most\s+recent|latest|newest|last|recent)?\s*"
-        r"issue\s*(?:#\s*)?(\d+)?",
-        text,
-    )
-    if not match:
-        return None
-    try:
-        number = int(match.group(1) or 0)
-    except (TypeError, ValueError):
-        number = 0
-    return {"issueNumber": number}
 
 
-def _forkbot_parse_show_command(command):
-    """Offline fast path for "show issue #N" / "show the latest issue".
-    "open issue ..." intentionally stays with the create-issue parser (there
-    "open" is the filing verb). Returns {"issueNumber": n} (0 = latest) or
-    None."""
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    match = re.match(
-        r"(?is)^" + _forkbot_polite_prefix() +
-        r"(?:show(?:\s+me)?|view|describe|summarize|"
-        r"what(?:'s|\s+is)\s+(?:in|the\s+status\s+of))\s+"
-        r"(?:the\s+)?(?:most\s+recent\s+|latest\s+|newest\s+|last\s+)?"
-        r"issue\s*(?:#\s*)?(\d+)?\s*$",
-        text,
-    )
-    if not match:
-        return None
-    try:
-        number = int(match.group(1) or 0)
-    except (TypeError, ValueError):
-        number = 0
-    return {"issueNumber": number}
 
 
-def _forkbot_parse_help_command(command):
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip().lower()
-    if not text:
-        return False
-    return bool(re.match(
-        r"^(?:help|\?+|what\s+can\s+you\s+do|what\s+do\s+you\s+do|"
-        r"commands|usage)\s*[!.?]*$", text))
 
 
-def _forkbot_help_message():
-    # Also the fallback reply for anything ForkBot could not map to an action,
-    # so it doubles as discoverable usage text.
-    return (
-        "I can open an issue from the conversation (\"forkbot open an issue "
-        "for the flaky login test\"), list recent issues (\"forkbot list the "
-        "last 5 issues\" - up to %d), say how many issues there are "
-        "(\"forkbot how many issues are there?\"), search issues (\"forkbot "
-        "search issues for relay retries\"), show one issue (\"forkbot show "
-        "issue #12\"), and - for the repo owner - start a coding agent "
-        "(\"forkbot start an agent on the latest issue\")." % FORKBOT_LIST_MAX
-    )
 
 
-def _forkbot_context_text(context):
-    """Flatten the recent conversation the client forwarded into a short,
-    plain-text transcript for the AI. Each entry is {sender, text}; the client
-    already excludes ForkBot's own lines and caps the count, but we bound it
-    again here so a hostile client can't blow the prompt budget."""
-    if not isinstance(context, list):
-        return ""
-    lines = []
-    for entry in context[-FORKBOT_CONTEXT_MAX_MESSAGES:]:
-        if not isinstance(entry, dict):
-            continue
-        sender = clean_string(entry.get("sender", ""), MAX_NODE_NAME).strip() or "user"
-        text = clean_string(entry.get("text", ""), FORKBOT_CONTEXT_MAX_CHARS).strip()
-        if not text:
-            continue
-        lines.append("%s: %s" % (sender, text))
-    return "\n".join(lines)
 
 
-def _forkbot_issue_title(description):
-    text = re.sub(r"\s+", " ", clean_string(description, 240)).strip(" .:-")
-    if not text:
-        return "Issue from #general"
-    for sep in (". ", "! ", "? "):
-        idx = text.find(sep)
-        if 12 <= idx <= 120:
-            text = text[:idx]
-            break
-    if len(text) > 120:
-        text = text[:117].rstrip() + "..."
-    return text or "Issue from #general"
 
 
-def _forkbot_fallback_issue_fields(description):
-    body = clean_string(description, MAX_ISSUE_BYTES).strip()
-    title = _forkbot_issue_title(body)
-    return {"title": title, "body": body}
 
 
-def _forkbot_json_object_from_text(text):
-    if not isinstance(text, str):
-        return None
-    raw = text.strip()
-    if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            parsed = json.loads(raw[start:end + 1])
-            return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            return None
-    return None
 
 
-def _forkbot_clean_ai_issue_fields(parsed):
-    if not isinstance(parsed, dict):
-        return None
-    title = clean_string(parsed.get("title", ""), 240).strip()
-    body = clean_string(parsed.get("body", ""), MAX_ISSUE_BYTES).strip()
-    if not title or not body:
-        return None
-    return {"title": _forkbot_issue_title(title), "body": body}
 
 
-def _forkbot_ai_default_model(env):
-    """The model used when the caller picks nothing: the deployment's
-    FORKBOT_AI_MODEL var, else the code default."""
-    return clean_string(getattr(env, "FORKBOT_AI_MODEL", ""), 120) or \
-        FORKBOT_AI_DEFAULT_MODEL
 
 
-def _forkbot_ai_model_options(env):
-    """The pickable Workers AI models, default first, for the picker UI.
-
-    The deployment default is always offered even when FORKBOT_AI_MODEL names a
-    model missing from FORKBOT_AI_MODEL_CHOICES — otherwise a self-hosted relay
-    that points the var at its own model would show a picker that cannot select
-    what it is actually running."""
-    default_model = _forkbot_ai_default_model(env)
-    options = []
-    for model_id, label, description in FORKBOT_AI_MODEL_CHOICES:
-        options.append({
-            "id": model_id,
-            "label": label,
-            "description": description,
-            "default": model_id == default_model,
-        })
-    if not any(option["default"] for option in options):
-        options.insert(0, {
-            "id": default_model,
-            "label": default_model.rsplit("/", 1)[-1],
-            "description": "This relay's configured model.",
-            "default": True,
-        })
-    options.sort(key=lambda option: 0 if option["default"] else 1)
-    return options
 
 
-def _forkbot_resolve_ai_model(env, requested=""):
-    """Map a caller-supplied model pick onto an allowed Workers AI model id.
-
-    Unknown, empty, or malformed picks fall back to the deployment default
-    rather than erroring: a stale picker value in someone's browser must not
-    turn ForkBot off for them."""
-    wanted = clean_string(requested or "", 120).strip()
-    if not wanted:
-        return _forkbot_ai_default_model(env)
-    for option in _forkbot_ai_model_options(env):
-        if option["id"] == wanted:
-            return option["id"]
-    return _forkbot_ai_default_model(env)
 
 
-def _forkbot_ai_model_not_found_error(error):
-    text = _safe_error_text(error).lower()
-    if not text:
-        return False
-    return any(marker in text for marker in (
-        "not found",
-        "not_found",
-        "model not found",
-        "unknown model",
-        "does not exist",
-        # What Workers AI actually says for a retired/mistyped id
-        # ("5007: No such model @cf/... or task"); the wordings above never
-        # matched it, so the fallback chain sat unused in production.
-        "no such model",
-        "no such task",
-        "invalid model",
-        "unsupported model",
-    ))
 
 
-def _forkbot_ai_fallback_models(env, requested=""):
-    """Models we can try for one call, in the order they should be billed."""
-    default = _forkbot_ai_default_model(env)
-    fallback = []
-    wanted = clean_string(requested or "", 120).strip()
-    if wanted and wanted not in fallback:
-        fallback.append(wanted)
-    if default and default not in fallback:
-        fallback.append(default)
-    for model_id, _, _ in FORKBOT_AI_MODEL_CHOICES:
-        if model_id not in fallback:
-            fallback.append(model_id)
-    return fallback
 
 
-async def forkbot_models_handler(env, request):
-    """List the Workers AI models a chat client may send its prompt to."""
-    if method_name(request) not in ("GET", "HEAD"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    options = _forkbot_ai_model_options(env)
-    default_model = _forkbot_ai_default_model(env)
-    return json_response({
-        "ok": True,
-        "provider": "cloudflare-workers-ai",
-        "default": default_model,
-        "models": options,
-    })
 
 
 async def _ai_ask_rate_check(env, account_bi):
@@ -32671,145 +30491,6 @@ async def ai_ask_handler(env, request):
     })
 
 
-async def _forkbot_run_ai(
-    env, system_prompt, user_prompt, schema=None, model="", max_tokens=512,
-    outcome=None,
-):
-    """Run the Workers AI chat model and return the raw response text/object
-    (or None). Shared by the issue-drafting and intent-classification helpers.
-
-    Pass a dict as `outcome` to learn what happened beyond None/not-None:
-    "model" is the id that actually answered (a fallback when the pick was
-    rejected) and "failure" is one of missing_binding / model_not_found /
-    provider_error / unusable_response. POST /api/ai/ask needs
-    model_not_found separated out because that is the one failure the person
-    at the composer can fix by picking another model.
-
-    When `schema` is given, the first attempt requests Workers AI JSON mode
-    (response_format json_schema) so a supporting model MUST return valid
-    JSON; models/plans without JSON mode fall back to a plain prompt-only
-    attempt.
-
-    `model` is an optional caller pick (see _forkbot_resolve_ai_model); an
-    unknown one silently uses the deployment default. Every failure path logs
-    the reason — the original implementation
-    swallowed all exceptions, which left ForkBot silently degraded (raw-echo
-    issue titles, natural requests answered with the help hint) with nothing
-    in the logs to say why."""
-    if outcome is None:
-        outcome = {}
-    ai = getattr(env, "AI", None)
-    if ai is None or js_nullish(ai) or not hasattr(ai, "run"):
-        outcome["failure"] = "missing_binding"
-        await log_error(
-            env, 500, "AI", "forkbot/ai",
-            "ForkBot AI unavailable: env.AI binding is missing")
-        return None
-    model = _forkbot_resolve_ai_model(env, model)
-    candidates = _forkbot_ai_fallback_models(env, model)
-    base_payload = {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "max_tokens": max_tokens,
-    }
-    attempts = []
-    if schema:
-        with_format = dict(base_payload)
-        with_format["response_format"] = {
-            "type": "json_schema", "json_schema": schema,
-        }
-        attempts.append(with_format)
-    attempts.append(base_payload)
-    result = None
-    ran = False
-    last_error = None
-    # Every candidate rejected as "no such model" means the deployment's model
-    # ids are stale, not that inference is broken — worth saying so distinctly
-    # both in the log and to the caller.
-    all_missing = True
-    for candidate in candidates:
-        for payload in attempts:
-            try:
-                result = await ai.run(candidate, to_js(payload))
-                model = candidate
-                ran = True
-                break
-            except Exception as error:
-                last_error = error
-                if _forkbot_ai_model_not_found_error(error):
-                    break
-                all_missing = False
-        if ran:
-            break
-    if not ran:
-        outcome["failure"] = ("model_not_found" if all_missing
-                              else "provider_error")
-        await log_error(
-            env, 500, "AI", "forkbot/ai",
-            "ForkBot AI call failed (%s%s): %s"
-            % (model,
-               ", no listed model exists on this account" if all_missing
-               else "",
-               _safe_error_text(last_error)[:300]))
-        return None
-    outcome["model"] = model
-    try:
-        if hasattr(result, "to_py"):
-            result = result.to_py()
-    except Exception:
-        pass
-    if isinstance(result, dict):
-        for key in ("response", "text", "output"):
-            value = result.get(key)
-            if isinstance(value, str):
-                return value
-            # JSON mode returns the parsed object under "response".
-            if isinstance(value, dict):
-                return value
-        # Current Workers AI chat models such as Llama 4 Scout and Gemma 4
-        # return the OpenAI Chat Completions shape instead of the older
-        # top-level {"response": "..."} shape. Accept the first usable choice
-        # and both content encodings Cloudflare documents: a string or an array
-        # of typed text parts.
-        choices = result.get("choices")
-        if isinstance(choices, list):
-            for choice in choices:
-                if not isinstance(choice, dict):
-                    continue
-                value = choice.get("text")
-                if isinstance(value, str) and value.strip():
-                    return value
-                message = choice.get("message")
-                if not isinstance(message, dict):
-                    continue
-                content = message.get("content")
-                if isinstance(content, str) and content.strip():
-                    return content
-                if isinstance(content, list):
-                    parts = []
-                    for part in content:
-                        if isinstance(part, str):
-                            parts.append(part)
-                        elif isinstance(part, dict):
-                            text = part.get("text")
-                            if isinstance(text, str):
-                                parts.append(text)
-                    joined = "".join(parts)
-                    if joined.strip():
-                        return joined
-        # Some bindings return the parsed object directly rather than a text
-        # field; hand the dict back so the caller can read fields off it.
-        return result
-    if isinstance(result, str):
-        return result
-    outcome["failure"] = "unusable_response"
-    await log_error(
-        env, 500, "AI", "forkbot/ai",
-        "ForkBot AI returned an unusable %s response (%s)"
-        % (type(result).__name__, model))
-    return None
 
 
 # JSON schemas for Workers AI JSON mode: a supporting model is FORCED to emit
@@ -32839,912 +30520,52 @@ FORKBOT_INTENT_SCHEMA = {
 }
 
 
-async def _forkbot_ai_issue_fields(env, description, context_text="", model=""):
-    system_prompt = (
-        "You turn a chat request into a ForkMesh issue. Use the conversation "
-        "context to resolve what the user is referring to. Respond with ONLY "
-        'one JSON object, no other text: {"title":"short summary",'
-        '"body":"what is wrong or what needs doing, with detail from the '
-        'conversation"}.'
-    )
-    user_prompt = clean_string(description, FORKBOT_MAX_COMMAND)
-    if context_text:
-        user_prompt = (
-            "Recent conversation:\n" + context_text +
-            "\n\nRequest: " + user_prompt)
-    result = await _forkbot_run_ai(
-        env, system_prompt, user_prompt, schema=FORKBOT_ISSUE_FIELDS_SCHEMA,
-        model=model)
-    if result is None:
-        return None
-    if isinstance(result, dict):
-        return _forkbot_clean_ai_issue_fields(result)
-    return _forkbot_clean_ai_issue_fields(_forkbot_json_object_from_text(result))
 
 
-async def _forkbot_ai_interpret(env, command, context_text="", model=""):
-    """Decide from meaning (not fixed phrasing) which ForkBot action the user
-    wants — pulling the subject from the recent conversation when the mention
-    itself is only a pointer ("forkbot log that").
-
-    Returns one of:
-      {"intent": "create_issue", "title", "body"}
-      {"intent": "list_issues", "count"}
-      {"intent": "count_issues"}
-      {"intent": "search_issues", "query"}
-      {"intent": "show_issue", "issueNumber"}   (0 = the most recent issue)
-      {"intent": "start_agent", "issueNumber"}  (0 = the most recent issue)
-      {"intent": "help"} / {"intent": "none"}
-    or None when the model is unavailable/unparseable — callers treat None as
-    "AI could not decide" and fall back to a heuristic, NOT as a refusal."""
-    system_prompt = (
-        "You are ForkBot, an assistant in a ForkMesh chat room. Classify what "
-        "the user wants and respond with ONLY one JSON object, no other text. "
-        "Actions: record a bug/task/feature as an issue -> "
-        '{"intent":"create_issue","title":"short summary","body":"the problem '
-        'or task, with detail from the conversation"}; list recent issues -> '
-        '{"intent":"list_issues","count":N} (how many they asked for, 5 if '
-        "unspecified); asking for a TOTAL count of issues rather than a list "
-        '-> {"intent":"count_issues"}; search existing issues for a topic -> '
-        '{"intent":"search_issues","query":"the search words"}; show one '
-        'existing issue -> {"intent":"show_issue","issueNumber":N} (0 for the '
-        "most recent); start a coding agent working on an issue -> "
-        '{"intent":"start_agent","issueNumber":N} (0 for the most recent); '
-        'asking what ForkBot can do -> {"intent":"help"}. When in doubt and '
-        "the message describes a problem, task, or request, treat it as "
-        "create_issue; a greeting or small talk is "
-        '{"intent":"none"}. Examples: "issue to add dark mode" -> '
-        '{"intent":"create_issue","title":"Add dark mode","body":"Add dark '
-        'mode."}; "what came in this week?" -> '
-        '{"intent":"list_issues","count":5}; "how many issues are there?" -> '
-        '{"intent":"count_issues"}; "anything about relay retries?" '
-        '-> {"intent":"search_issues","query":"relay retries"}; "get an '
-        'agent going on that new issue" -> '
-        '{"intent":"start_agent","issueNumber":0}; "hello!" -> '
-        '{"intent":"none"}.'
-    )
-    user_prompt = command
-    if context_text:
-        user_prompt = (
-            "Recent conversation:\n" + context_text +
-            "\n\nMessage to ForkBot: " + command)
-    result = await _forkbot_run_ai(
-        env, system_prompt, user_prompt, schema=FORKBOT_INTENT_SCHEMA,
-        model=model)
-    if result is None:
-        return None
-    parsed = result if isinstance(result, dict) else \
-        _forkbot_json_object_from_text(result)
-    if not isinstance(parsed, dict):
-        return None
-    intent = clean_string(parsed.get("intent", ""), 40).strip().lower()
-    if intent == "list_issues":
-        try:
-            count = int(parsed.get("count", FORKBOT_LIST_DEFAULT)
-                        or FORKBOT_LIST_DEFAULT)
-        except (TypeError, ValueError):
-            count = FORKBOT_LIST_DEFAULT
-        return {"intent": "list_issues",
-                "count": max(1, min(count, FORKBOT_LIST_MAX))}
-    if intent == "count_issues":
-        return {"intent": "count_issues"}
-    if intent == "search_issues":
-        query = clean_string(parsed.get("query", ""), 100).strip()
-        if not query:
-            return None
-        return {"intent": "search_issues", "query": query}
-    if intent in ("show_issue", "start_agent"):
-        try:
-            number = int(parsed.get("issueNumber", 0) or 0)
-        except (TypeError, ValueError):
-            number = 0
-        return {"intent": intent, "issueNumber": max(0, number)}
-    if intent == "help":
-        return {"intent": "help"}
-    if intent not in ("create_issue", "none"):
-        # Some models omit the field but still return title/body when they
-        # decided to draft an issue; treat a usable draft as create_issue.
-        intent = "create_issue" if (parsed.get("title") or parsed.get("body")) \
-            else "none"
-    if intent != "create_issue":
-        return {"intent": "none"}
-    fields = _forkbot_clean_ai_issue_fields(parsed)
-    if not fields:
-        # The model wanted an issue but produced no usable draft — let the
-        # caller's heuristic take over instead of refusing.
-        return None
-    return {"intent": "create_issue", "title": fields["title"],
-            "body": fields["body"]}
 
 
-async def _forkbot_repo_gateway_json(env, owner, repo, action_query):
-    """Read public repository data through the normal HTTPS mirror gateway."""
-    owner = safe_segment(owner)
-    repo = safe_segment(repo)
-    action = clean_string(action_query, 400).lstrip("/")
-    if (
-        not owner or not repo
-        or not re.match(
-            r"^(tree|blobs|blob|raw|history|commit|branches|search|stats|sizes)"
-            r"(?:\?|$)",
-            action,
-        )
-    ):
-        return None
-    try:
-        origin = _public_base_url(env).rstrip("/")
-        response = await asyncio.wait_for(
-            js_fetch(
-                "%s/api/repo/%s/%s/%s"
-                % (origin, quote(owner), quote(repo), action)
-            ),
-            timeout=FORKBOT_GATEWAY_TIMEOUT_MS / 1000,
-        )
-        if int(getattr(response, "status", 0) or 0) != 200:
-            return None
-        data = await response.json()
-        if hasattr(data, "to_py"):
-            data = data.to_py()
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
 
 
-def _forkbot_missing_tree(data):
-    # The host answers "that folder isn't in git yet" in a few git-flavored
-    # ways (same set the dashboard's isMissingMirrorFolder knows); all of them
-    # mean "no issues filed", not "host unreachable".
-    error = str((data or {}).get("error", "")).lower()
-    return any(marker in error for marker in (
-        "not_found", "not a valid object name", "pathspec",
-        "does not exist", "unknown revision"))
 
 
-def _forkbot_issue_json_path(number, subdir=""):
-    # Issues are split by status into .forkmesh/issues/open/<N>/ and
-    # .forkmesh/issues/closed/<N>/ (adhoc #14); pre-split mirrors keep the
-    # numbered folder directly under the root (subdir "").
-    base = ".forkmesh/issues"
-    if subdir:
-        base += "/" + subdir
-    return "%s/%d/issue-%d.json" % (base, int(number), int(number))
 
 
-def _forkbot_issue_json_candidates(number):
-    """Every path issue <number>'s record may live at, most likely first."""
-    return [_forkbot_issue_json_path(number, subdir)
-            for subdir in ("open", "closed", "")]
 
 
-def _forkbot_blob_text(blob):
-    if not isinstance(blob, dict) or not blob.get("ok"):
-        return ""
-    content = blob.get("content", "")
-    if not isinstance(content, str):
-        return ""
-    if blob.get("encoding") == "base64":
-        try:
-            return base64.b64decode(content).decode("utf-8", "replace")
-        except Exception:
-            return ""
-    return content
 
 
-def _forkbot_parse_issue_record(text, number):
-    """Reduce one .forkmesh/issues/<N>/issue-<N>.json blob to the fields a chat
-    line needs. Tolerant of junk: a malformed record still yields a usable
-    "#N" stub rather than dropping the issue from the list."""
-    try:
-        parsed = json.loads(text or "{}")
-    except Exception:
-        parsed = None
-    if not isinstance(parsed, dict):
-        parsed = {}
-    events = parsed.get("events")
-    open_event = {}
-    if isinstance(events, list):
-        for event in events:
-            if isinstance(event, dict) and event.get("type") == "open":
-                open_event = event
-                break
-    title = clean_string(
-        parsed.get("title") or open_event.get("title") or "", 240).strip()
-    return {
-        "number": int(parsed.get("number") or number or 0),
-        "title": title or ("issue #%d" % int(number or 0)),
-        "status": clean_string(
-            parsed.get("status") or parsed.get("state") or "open", 40),
-        "author": clean_string(
-            parsed.get("authorName") or open_event.get("authorName") or
-            parsed.get("author") or open_event.get("author") or "unknown",
-            MAX_NODE_NAME),
-        "body": clean_string(
-            open_event.get("body") or parsed.get("body") or "", 600).strip(),
-    }
 
 
-async def _forkbot_recent_issue_numbers(env, owner, repo):
-    """Issue numbers committed to the live mirror, newest first. Returns None
-    when no host could serve the tree (offline), [] when the repo simply has
-    no issues folder yet. Issues are split into open/ and closed/ status
-    folders (adhoc #14); numbered folders directly under the root are the
-    pre-split legacy layout."""
-    root = await _forkbot_repo_gateway_json(
-        env, owner, repo, "tree?path=" + quote(".forkmesh/issues", safe=""))
-    if root is None:
-        return None
-    entries = root.get("entries")
-    if not isinstance(entries, list):
-        return [] if _forkbot_missing_tree(root) else None
-    numbers = set()
-    subdirs = []
-    for entry in entries:
-        if not isinstance(entry, dict) or entry.get("type") != "tree":
-            continue
-        name = str(entry.get("name", ""))
-        if name.isdigit():
-            numbers.add(int(name))
-        elif name in ("open", "closed"):
-            subdirs.append(name)
-    for subdir in subdirs:
-        tree = await _forkbot_repo_gateway_json(
-            env, owner, repo,
-            "tree?path=" + quote(".forkmesh/issues/" + subdir, safe=""))
-        sub_entries = tree.get("entries") if isinstance(tree, dict) else None
-        if not isinstance(sub_entries, list):
-            continue
-        for entry in sub_entries:
-            if not isinstance(entry, dict) or entry.get("type") != "tree":
-                continue
-            name = str(entry.get("name", ""))
-            if name.isdigit():
-                numbers.add(int(name))
-    return sorted(numbers, reverse=True)
 
 
-async def _forkbot_load_issue_records(env, owner, repo, numbers):
-    """Batched read of the given issues' JSON records over the live tunnel
-    (one /blobs round trip, like the website's issue list). Unreadable issues
-    are skipped; returns records in the order requested."""
-    numbers = [int(n) for n in numbers][:FORKBOT_LIST_MAX]
-    if not numbers:
-        return []
-    # A record lives at open/<N>/, closed/<N>/, or the pre-split legacy <N>/
-    # depending on its status; ask for every candidate in the one batch (3 ×
-    # FORKBOT_LIST_MAX stays within MAX_BLOB_BATCH) and keep whichever answered.
-    query = "&".join(
-        "path=" + quote(path, safe="")
-        for n in numbers for path in _forkbot_issue_json_candidates(n))
-    data = await _forkbot_repo_gateway_json(env, owner, repo, "blobs?" + query)
-    blobs = data.get("blobs") if isinstance(data, dict) else None
-    if not isinstance(blobs, dict):
-        return []
-    records = []
-    for number in numbers:
-        text = ""
-        for path in _forkbot_issue_json_candidates(number):
-            text = _forkbot_blob_text(blobs.get(path))
-            if text:
-                break
-        if not text:
-            continue
-        records.append(_forkbot_parse_issue_record(text, number))
-    return records
 
 
-async def _forkbot_search_issues(env, owner, repo, query):
-    """One host-side git grep over the mirror (the /search tunnel op, issue
-    #360); ForkBot only reads the issues bucket. Returns the matches, or None
-    when no host answered."""
-    data = await _forkbot_repo_gateway_json(
-        env, owner, repo, "search?q=" + quote(query, safe=""))
-    if not isinstance(data, dict) or not data.get("ok"):
-        return None
-    issues = data.get("issues")
-    if not isinstance(issues, list):
-        return []
-    matches = []
-    for hit in issues:
-        if not isinstance(hit, dict):
-            continue
-        try:
-            number = int(hit.get("number", 0) or 0)
-        except (TypeError, ValueError):
-            continue
-        if number <= 0:
-            continue
-        matches.append({
-            "number": number,
-            "title": clean_string(hit.get("title", ""), 240).strip()
-            or ("issue #%d" % number),
-            "snippet": clean_string(hit.get("snippet", ""), 200).strip(),
-        })
-    return matches
 
 
-def _forkbot_issue_lines(records):
-    lines = []
-    for record in records:
-        line = "#%d %s (%s" % (
-            record["number"], record["title"], record["status"])
-        if record.get("author") and record["author"] != "unknown":
-            line += ", by " + record["author"]
-        lines.append(line + ")")
-    return "\n".join(lines)
 
 
-async def _forkbot_next_issue_number(env, repo_bi, owner, repo):
-    """Allocate a proposed issue number for a ForkBot-created issue.
-
-    Desktop nodes assign the authoritative number when they merge the inbox
-    (nextNumber() = highest issue dir + 1) and keep a proposed number when its
-    slot is free, so the goal here is to propose the same number the desktop
-    would — and never propose one twice. We seed/re-anchor a persisted per-repo
-    counter from the catalog's published issueMaxNumber (the desktop's real max
-    at its last publish), then hand out the next value and advance. Best-effort:
-    on any storage hiccup we fall back to 0 (the desktop assigns and the reply
-    just omits a number) rather than failing the issue creation."""
-    seed_next = 1
-    try:
-        row = await d1_first(
-            env, "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
-        rec = await decrypt_row(env, row.get("data")) if row else None
-        if rec:
-            for key in ("issueMaxNumber", "issueCount"):
-                value = rec.get(key)
-                if value in (None, ""):
-                    continue
-                try:
-                    seed_next = max(seed_next, int(value) + 1)
-                    break
-                except (TypeError, ValueError):
-                    continue
-    except Exception:
-        pass
-    try:
-        # Seed on first use / re-anchor upward to the catalog max, never
-        # backward (MAX keeps already-handed-out numbers monotonic).
-        await d1_run(
-            env,
-            "INSERT INTO issue_seq (repo_bi, next_number) VALUES (?, ?) "
-            "ON CONFLICT(repo_bi) DO UPDATE SET "
-            "next_number = MAX(issue_seq.next_number, ?)",
-            repo_bi, seed_next, seed_next,
-        )
-        seq_row = await d1_first(
-            env, "SELECT next_number FROM issue_seq WHERE repo_bi=?", repo_bi)
-        number = int((seq_row or {}).get("next_number", seed_next) or seed_next)
-        await d1_run(
-            env, "UPDATE issue_seq SET next_number=? WHERE repo_bi=?",
-            number + 1, repo_bi)
-        return number
-    except Exception:
-        return 0
 
 
-def _forkbot_attributed_body(body, source, actor):
-    """Append a footer crediting ForkBot and the human who asked for the issue,
-    so a reader of the merged issue can see it came from a chat request rather
-    than assuming a person typed it up. The fediverse path builds its own
-    "Filed from a fediverse mention by ..." attribution before calling in, so
-    only the default chat source gets the footer here (avoids double-crediting).
-    """
-    if source != "forkbot":
-        return body
-    if actor and actor != FORKBOT_AUTHOR:
-        footer = "Filed by ForkBot at @%s's request via chat." % actor
-    else:
-        footer = "Filed by ForkBot via chat."
-    body = (body or "").rstrip()
-    if not body:
-        return "_%s_" % footer
-    return "%s\n\n---\n_%s_" % (body, footer)
 
 
-async def _forkbot_rekey_alias_inbox(env, alias_owner, host_owner, repo,
-                                     repo_bi):
-    """Recover issue-inbox rows an earlier release filed under an organization
-    alias's blind index. No drain ever looked there (see _forkbot_enqueue_issue),
-    so those submissions are stranded; move them onto the backing node's key so
-    the next sync delivers them. Idempotent (the alias key ends up empty) and
-    best-effort — a hiccup here must never fail the new submission. The stored
-    item carries no owner binding, so re-keying it is a pure routing fix."""
-    if not host_owner or host_owner == alias_owner:
-        return
-    try:
-        alias_bi = await blind_index(env, alias_owner + "/" + repo)
-        if alias_bi and alias_bi != repo_bi:
-            await d1_run(
-                env, "UPDATE issue_inbox SET repo_bi=? WHERE repo_bi=?",
-                repo_bi, alias_bi)
-    except Exception:
-        pass
 
 
-async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
-                                 source="forkbot", labels=None,
-                                 attachments=None,
-                                 federated_mention_id="",
-                                 federated_remote_url=""):
-    """Queue a relay-authored issue for the owner's desktop node. ForkBot chat
-    requests use the defaults. A manually reviewed fediverse item can reuse
-    this path with its random review id so the owner node can later confirm
-    the exact issue it materialized; inbound posts never call this directly."""
-    await ensure_schema(env)
-    # ForkBot names the repo by its PUBLIC url (forkmesh/forkmesh), which is an
-    # organization alias. Every drain path — the node's per-repo GET and the
-    # consolidated GET /api/sync — reads the inbox under the backing node's
-    # blind index, because /api/repo/... is org_alias_rewrite'd before routing
-    # and /api/sync selects the repositories rows the account actually owns.
-    # Keying the insert on the alias therefore dead-letters the row: it sits in
-    # issue_inbox forever and never reaches the repository. Resolve org->node
-    # for the storage key and the owner-directed notifications (a no-op for a
-    # plain node name); public strings/URLs stay on the alias in the caller.
-    host_owner = await _ap_org_alias_owner(env, owner, repo)
-    repo_bi = await blind_index(env, host_owner + "/" + repo)
-    await _forkbot_rekey_alias_inbox(env, owner, host_owner, repo, repo_bi)
-    count = await d1_first(
-        env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi)
-    if count and int(count.get("c", 0) or 0) >= MAX_PENDING_ISSUES:
-        return False, "inbox_full"
-    submitter_bi = await blind_index(env, FORKBOT_AUTHOR)
-    if await _inbox_author_over_quota(env, "issue_inbox", repo_bi, submitter_bi):
-        return False, "author_quota"
-
-    now = int(Date.now())
-    actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
-    body = _forkbot_attributed_body(body, source, actor)
-    # Proposed number the desktop honors when the slot is free (0 = let the
-    # desktop assign). Allocated before the insert so it lands in the stored
-    # item and can be echoed straight back to the chat.
-    number = await _forkbot_next_issue_number(env, repo_bi, owner, repo)
-    tracked_mention_id = clean_string(federated_mention_id, 32).lower()
-    if not re.fullmatch(r"[a-f0-9]{32}", tracked_mention_id):
-        tracked_mention_id = ""
-    event = {
-        "type": "open",
-        "id": (
-            "fediverse-review-" + tracked_mention_id
-            if tracked_mention_id else "forkbot-%d" % now
-        ),
-        "author": FORKBOT_AUTHOR,
-        "authorName": FORKBOT_NAME,
-        "ts": now,
-        "title": clean_string(title, 240),
-        "body": clean_string(body, MAX_ISSUE_BYTES),
-        "attachments": [entry["name"] for entry in (attachments or [])],
-        "sig": "",
-    }
-    item = {
-        "number": number,
-        "titleIfNew": event["title"],
-        "event": event,
-        "meta": {
-            "labels": list(labels) if labels else ["forkbot"],
-            "milestone": "",
-            "priority": 0,
-            "assignees": [],
-            "wantsAgent": False,
-            "model": "",
-            "provider": "",
-        },
-        "submitter": FORKBOT_AUTHOR,
-        "submittedAt": now,
-        "source": source,
-        "requestedBy": actor,
-        "issueNumber": number,
-    }
-    if tracked_mention_id:
-        item["fediverseMentionId"] = tracked_mention_id
-        item["fediverseRemoteUrl"] = clean_string(
-            federated_remote_url, 1600)
-    if attachments:
-        item["attachmentData"] = [
-            {"name": entry["name"], "data": entry["data"]}
-            for entry in attachments]
-    await d1_run(
-        env,
-        "INSERT INTO issue_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
-        repo_bi, await encrypt_row(env, item), submitter_bi,
-    )
-    await _record_contributor(env, FORKBOT_AUTHOR, "issues")
-    await _best_effort_inbox_side_effect(
-        notify_pending_inbox(
-            env, host_owner, repo, "issue", FORKBOT_AUTHOR,
-            item.get("titleIfNew", ""), number))
-    await _best_effort_inbox_side_effect(
-        notify_mentions(
-            env, host_owner, repo, FORKBOT_AUTHOR, item.get("titleIfNew", ""),
-            event.get("body", ""), repo_web_href(owner, repo), "issue",
-            number=number))
-    # Same push every other inbox write does: the owner's node syncs on the
-    # event frame instead of waiting out the 5-15 minute fallback poll.
-    await notify_repo_host(env, host_owner, repo, "issues")
-    return True, item
 
 
-async def _forkbot_enqueue_agent_request(env, owner, repo, number, requester):
-    """Queue a "start a coding agent on issue #number" request through the
-    same signed-inbox channel as everything else: a ForkBot comment event on
-    the existing issue whose meta carries wantsAgent. The owner's desktop node
-    starts the agent when it merges the inbox — the relay never runs anything
-    itself. Caller has already verified the requester is the repo owner/admin
-    (the same privilege gate issues_handler applies to wantsAgent)."""
-    await ensure_schema(env)
-    # Key the row the way every drain reads it — see _forkbot_enqueue_issue.
-    host_owner = await _ap_org_alias_owner(env, owner, repo)
-    repo_bi = await blind_index(env, host_owner + "/" + repo)
-    await _forkbot_rekey_alias_inbox(env, owner, host_owner, repo, repo_bi)
-    count = await d1_first(
-        env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi)
-    if count and int(count.get("c", 0) or 0) >= MAX_PENDING_ISSUES:
-        return False, "inbox_full"
-    submitter_bi = await blind_index(env, FORKBOT_AUTHOR)
-    if await _inbox_author_over_quota(env, "issue_inbox", repo_bi, submitter_bi):
-        return False, "author_quota"
-
-    now = int(Date.now())
-    actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
-    event = {
-        "type": "comment",
-        "id": "forkbot-agent-%d" % now,
-        "author": FORKBOT_AUTHOR,
-        "authorName": FORKBOT_NAME,
-        "ts": now,
-        "body": "@%s asked ForkBot to start a coding agent on this issue."
-                % actor,
-        "attachments": [],
-        "sig": "",
-    }
-    item = {
-        "number": int(number),
-        "titleIfNew": "",
-        "event": event,
-        "meta": {
-            "labels": [],
-            "milestone": "",
-            "priority": 0,
-            "assignees": [],
-            "wantsAgent": True,
-            "model": "",
-            "provider": "",
-        },
-        "submitter": FORKBOT_AUTHOR,
-        "submittedAt": now,
-        "source": "forkbot",
-        "requestedBy": actor,
-    }
-    await d1_run(
-        env,
-        "INSERT INTO issue_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
-        repo_bi, await encrypt_row(env, item), submitter_bi,
-    )
-    await _best_effort_inbox_side_effect(
-        notify_pending_inbox(
-            env, host_owner, repo, "issue", FORKBOT_AUTHOR,
-            "agent request for issue #%d" % int(number), int(number)))
-    await notify_repo_host(env, host_owner, repo, "issues")
-    return True, item
 
 
-def _forkbot_gateway_offline_reply(owner, repo):
-    return json_response({
-        "ok": True,
-        "action": "issues_unavailable",
-        "botMessage": (
-            "I couldn't reach a live host for %s/%s — issues are served from "
-            "the owner's desktop node. Try again once it's back online."
-        ) % (owner, repo),
-    })
 
 
-async def _forkbot_action_count(env, owner, repo):
-    # A "how many" question wants a total, not a capped listing — reusing
-    # _forkbot_action_list here would silently truncate at FORKBOT_LIST_MAX
-    # and never actually answer the question asked.
-    numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
-    if numbers is None:
-        return _forkbot_gateway_offline_reply(owner, repo)
-    total = len(numbers)
-    if not total:
-        message = "No issues have been filed in %s/%s yet." % (owner, repo)
-    else:
-        message = "There %s %d issue%s in %s/%s." % (
-            "is" if total == 1 else "are", total,
-            "" if total == 1 else "s", owner, repo)
-    return json_response({
-        "ok": True, "action": "issues_counted", "count": total,
-        "botMessage": message,
-    })
 
 
-async def _forkbot_action_list(env, owner, repo, count):
-    numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
-    if numbers is None:
-        return _forkbot_gateway_offline_reply(owner, repo)
-    issue_url = repo_web_href(owner, repo) + "/issues"
-    if not numbers:
-        return json_response({
-            "ok": True, "action": "issues_listed", "issues": [],
-            "botMessage": "No issues have been filed in %s/%s yet."
-                          % (owner, repo),
-        })
-    records = await _forkbot_load_issue_records(env, owner, repo,
-                                                numbers[:count])
-    if not records:
-        return _forkbot_gateway_offline_reply(owner, repo)
-    lines = _forkbot_issue_lines(records)
-    header = "Last %d issue%s in %s/%s:" % (
-        len(records), "" if len(records) == 1 else "s", owner, repo)
-    footer = "Full list: " + issue_url
-    if len(numbers) > len(records):
-        footer = ("Say \"list the last N issues\" for more (up to %d). "
-                  % FORKBOT_LIST_MAX) + footer
-    return json_response({
-        "ok": True,
-        "action": "issues_listed",
-        "owner": owner,
-        "repo": repo,
-        "issues": records,
-        "botMessage": header + "\n" + lines + "\n" + footer,
-    })
 
 
-async def _forkbot_action_search(env, owner, repo, query):
-    matches = await _forkbot_search_issues(env, owner, repo, query)
-    if matches is None:
-        return _forkbot_gateway_offline_reply(owner, repo)
-    if not matches:
-        return json_response({
-            "ok": True, "action": "issues_searched", "query": query,
-            "issues": [],
-            "botMessage": "No issues matching \"%s\" in %s/%s."
-                          % (query, owner, repo),
-        })
-    top = matches[:FORKBOT_SEARCH_MAX]
-    lines = []
-    for hit in top:
-        line = "#%d %s" % (hit["number"], hit["title"])
-        if hit.get("snippet"):
-            line += " — " + hit["snippet"]
-        lines.append(line)
-    header = "Issues matching \"%s\" in %s/%s:" % (query, owner, repo)
-    if len(matches) > len(top):
-        header = "Top %d of %d issues matching \"%s\" in %s/%s:" % (
-            len(top), len(matches), query, owner, repo)
-    return json_response({
-        "ok": True,
-        "action": "issues_searched",
-        "owner": owner,
-        "repo": repo,
-        "query": query,
-        "issues": top,
-        "botMessage": header + "\n" + "\n".join(lines),
-    })
 
 
-async def _forkbot_action_show(env, owner, repo, number):
-    if number <= 0:
-        numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
-        if numbers is None:
-            return _forkbot_gateway_offline_reply(owner, repo)
-        if not numbers:
-            return json_response({
-                "ok": True, "action": "issue_shown", "issue": None,
-                "botMessage": "No issues have been filed in %s/%s yet."
-                              % (owner, repo),
-            })
-        number = numbers[0]
-    records = await _forkbot_load_issue_records(env, owner, repo, [number])
-    if not records:
-        return json_response({
-            "ok": True, "action": "issue_shown", "issue": None,
-            "botMessage": (
-                "I couldn't read issue #%d from a live %s/%s host — it may "
-                "not exist, or the owner's node is offline."
-            ) % (number, owner, repo),
-        })
-    record = records[0]
-    bot_message = "#%d %s (%s, opened by %s)." % (
-        record["number"], record["title"], record["status"], record["author"])
-    if record.get("body"):
-        bot_message += " " + record["body"]
-    return json_response({
-        "ok": True,
-        "action": "issue_shown",
-        "owner": owner,
-        "repo": repo,
-        "issue": record,
-        "botMessage": bot_message,
-    })
 
 
-async def _forkbot_action_start_agent(env, owner, repo, number, sender):
-    # Starting a coding agent on the owner's machine is an immediate,
-    # unreviewed side effect, so it keeps the same privilege gate the web
-    # issue form's wantsAgent has (adhoc #225): the repo owner's account or a
-    # network admin. Chat sender names are client-claimed, matching the trust
-    # model of the web form's ownerAccount field.
-    requester = clean_string(sender, MAX_NODE_NAME).strip().lower()
-    # When the repo is fronted by an organization alias, the account that owns
-    # it (and whose node would run the agent) is the backing node, not the org
-    # name in the URL — check against both so the real owner isn't refused.
-    host_owner = (await _ap_org_alias_owner(env, owner, repo)).lower()
-    authorized = bool(requester) and (
-        requester == owner.lower() or requester == host_owner
-        or await _is_admin(env, requester))
-    if not authorized:
-        return json_response({
-            "ok": True,
-            "action": "agent_denied",
-            "botMessage": (
-                "Starting a coding agent is limited to the repo owner (or a "
-                "network admin) — ask %s to kick it off."
-            ) % owner,
-        })
-    numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
-    if numbers is None:
-        return _forkbot_gateway_offline_reply(owner, repo)
-    if not numbers:
-        return json_response({
-            "ok": True, "action": "agent_denied",
-            "botMessage": "There are no issues in %s/%s to start an agent on."
-                          % (owner, repo),
-        })
-    if number <= 0:
-        number = numbers[0]
-    elif number not in numbers:
-        return json_response({
-            "ok": True, "action": "agent_denied",
-            "botMessage": "Issue #%d isn't in the %s/%s mirror."
-                          % (number, owner, repo),
-        })
-    records = await _forkbot_load_issue_records(env, owner, repo, [number])
-    title = records[0]["title"] if records else ""
-    ok, result = await _forkbot_enqueue_agent_request(
-        env, owner, repo, number, requester)
-    if not ok:
-        return json_response({"error": result}, status=429)
-    bot_message = (
-        "Queued a coding agent for issue #%d%s in %s/%s. The owner's node "
-        "will start it when it next syncs the inbox."
-    ) % (number, (": " + title) if title else "", owner, repo)
-    return json_response({
-        "ok": True,
-        "action": "agent_requested",
-        "owner": owner,
-        "repo": repo,
-        "issueNumber": number,
-        "title": title,
-        "botMessage": bot_message,
-    }, status=201)
 
 
-async def forkbot_chat_handler(env, request):
-    if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    try:
-        data = await bounded_json_request(request)
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    if not isinstance(data, dict):
-        return json_response({"error": "invalid_json"}, status=400)
-
-    message = clean_string(data.get("message", ""), FORKBOT_MAX_COMMAND)
-    command = _forkbot_extract_mention_command(message)
-    if not command:
-        return json_response({"ok": True, "ignored": True})
-
-    # Recent (client-decrypted) conversation the mention sits in, so ForkBot can
-    # resolve "that bug" / "the issue we discussed" instead of only the one line.
-    context_text = _forkbot_context_text(data.get("context"))
-    sender = clean_string(data.get("sender", ""), MAX_NODE_NAME)
-    # Optional Cloudflare Workers AI model pick from the chat composer's model
-    # picker. Only an allowlisted id is honored; anything else (including a
-    # stale picker value) resolves back to the deployment default so ForkBot
-    # keeps working rather than erroring on the caller's behalf.
-    ai_model = _forkbot_resolve_ai_model(env, data.get("model", ""))
-    owner = FORKBOT_DEFAULT_OWNER
-    repo = FORKBOT_DEFAULT_REPO
-
-    # Decide the action. Prefer meaning over fixed wording:
-    #  1. Cheap regexes catch explicitly phrased commands offline (list /
-    #     search / start-agent / show / help / create), sparing an AI round
-    #     trip and keeping every command working when AI is off.
-    #  2. Otherwise the AI classifier reads the command + conversation and
-    #     picks the intent (drafting the issue when one is wanted).
-    #  3. AI unreachable (None — distinct from a confident "none") but the
-    #     message plainly talks about issues/bugs/tracking: file the raw text
-    #     rather than refusing. Only a confident "none" or a message with no
-    #     work-recording signal at all gets the help hint.
-    action = None
-    for intent_name, parser in (
-            ("count_issues", _forkbot_parse_count_command),
-            ("list_issues", _forkbot_parse_list_command),
-            ("search_issues", _forkbot_parse_search_command),
-            ("start_agent", _forkbot_parse_agent_command),
-            ("show_issue", _forkbot_parse_show_command)):
-        parsed_intent = parser(command)
-        if parsed_intent is not None:
-            action = {"intent": intent_name, **parsed_intent}
-            break
-    if action is None and _forkbot_parse_help_command(command):
-        action = {"intent": "help"}
-
-    fields = None
-    if action is None:
-        parsed = _forkbot_parse_issue_command(command)
-        if parsed:
-            action = {"intent": "create_issue"}
-            fields = await _forkbot_ai_issue_fields(
-                env, parsed["description"], context_text, model=ai_model)
-            if not fields:
-                fields = _forkbot_fallback_issue_fields(parsed["description"])
-        else:
-            interpreted = await _forkbot_ai_interpret(
-                env, command, context_text, model=ai_model)
-            if interpreted and interpreted.get("intent") == "create_issue":
-                action = {"intent": "create_issue"}
-                fields = {"title": interpreted["title"],
-                          "body": interpreted["body"]}
-            elif interpreted and interpreted.get("intent") != "none":
-                action = interpreted
-            elif interpreted is None and _forkbot_command_hints_issue(command):
-                action = {"intent": "create_issue"}
-                fields = _forkbot_fallback_issue_fields(command)
-
-    intent = (action or {}).get("intent", "")
-    if intent == "count_issues":
-        return await _forkbot_action_count(env, owner, repo)
-    if intent == "list_issues":
-        return await _forkbot_action_list(env, owner, repo, action["count"])
-    if intent == "search_issues":
-        return await _forkbot_action_search(env, owner, repo, action["query"])
-    if intent == "show_issue":
-        return await _forkbot_action_show(
-            env, owner, repo, int(action.get("issueNumber", 0) or 0))
-    if intent == "start_agent":
-        return await _forkbot_action_start_agent(
-            env, owner, repo, int(action.get("issueNumber", 0) or 0), sender)
-
-    if intent != "create_issue" or not fields or not fields.get("body"):
-        return json_response({
-            "ok": True,
-            "action": "help",
-            "model": ai_model,
-            "botMessage": _forkbot_help_message(),
-        })
-
-    ok, result = await _forkbot_enqueue_issue(
-        env, owner, repo, fields["title"], fields["body"], sender)
-    if not ok:
-        return json_response({"error": result}, status=429)
-    title = result.get("titleIfNew", fields["title"])
-    number = int(result.get("issueNumber", 0) or 0)
-    # /owner/repo/issues is the web route for the repo's issue list; the number
-    # is the proposed one the desktop honors when it merges the inbox.
-    issue_url = repo_web_href(owner, repo) + "/issues"
-    if number > 0:
-        bot_message = (
-            "Opened issue #%d in %s/%s: %s. It'll show at %s once the owner "
-            "node syncs the inbox."
-        ) % (number, owner, repo, title, issue_url)
-    else:
-        bot_message = (
-            "Opened an issue in %s/%s: %s. It'll show at %s once the owner "
-            "node syncs the inbox."
-        ) % (owner, repo, title, issue_url)
-    return json_response({
-        "ok": True,
-        "action": "issue_created",
-        "owner": owner,
-        "repo": repo,
-        "title": title,
-        "issueNumber": number,
-        "issueUrl": issue_url,
-        "model": ai_model,
-        "botMessage": bot_message,
-    }, status=201)
 
 
 def _clean_issue_attachment_data(value):
@@ -34805,8 +31626,11 @@ async def repo_pending_counts_handler(env, request, owner, repo):
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     # The whole fleet polls these badges (plus every open repo page), so a
-    # colo answers from its edge cache for 30s and a polling burst collapses
-    # to one D1 UNION per colo per TTL. Only the public 200 is cached — the
+    # colo answers from its edge cache for ten minutes and a polling burst
+    # collapses to one D1 UNION per colo per TTL. Ten minutes (not 30s)
+    # because this was still the largest request group on the API traffic
+    # chart at ~900/hour; a badge that lags a drain by minutes is fine,
+    # since the drain itself is not instantaneous. Only the public 200 is cached — the
     # private/unpublished 404 above stays uncached and instant to reverse.
     pending_cache_key = (
         "https://edge-cache.forkmesh.internal/repo-pending/"
@@ -34838,7 +31662,7 @@ async def repo_pending_counts_handler(env, request, owner, repo):
             "pulls": counts.get("pulls", 0),
             "discussions": counts.get("discussions", 0),
         },
-    }, cache_control="public, max-age=30")
+    }, cache_control="public, max-age=600")
     await edge_cache_put(pending_cache_key, resp)
     return resp
 
@@ -38140,6 +34964,127 @@ async def client_error_handler(env, request):
             detail,
             source_key,
             actor,
+        )
+    except Exception:
+        # Error reporting must never become a new user-visible error.
+        return json_response(
+            {"ok": True, "stored": False},
+            status=202,
+            cache_control="no-store",
+        )
+    return json_response(
+        {"ok": True, "stored": True},
+        status=202,
+        cache_control="no-store",
+    )
+
+
+def _desktop_error_fields(payload):
+    """Validate one desktop report and fold it into a single error_log line."""
+    if not isinstance(payload, dict):
+        return None
+    surface = str(payload.get("surface") or "").strip().lower()
+    kind = str(payload.get("kind") or "").strip().lower()
+    if surface not in DESKTOP_ERROR_SURFACES or kind not in DESKTOP_ERROR_KINDS:
+        return None
+    # The dialog title is the operator's own name for the failing operation
+    # ("Sync inbox"), which is most of the triage value in one short string.
+    title = _sanitize_client_error_text(payload.get("title"), 120)
+    message = _sanitize_client_error_text(payload.get("message"), 700)
+    if not message:
+        return None
+    detail = "desktop %s [%s] %s" % (kind, surface, message)
+    if title:
+        detail = "desktop %s [%s] %s — %s" % (kind, surface, title, message)
+    return surface, detail[:1000]
+
+
+async def desktop_error_handler(env, request):
+    """Record a signed desktop client's user-visible failure in error_log.
+
+    The client already deduplicates and rate-limits its own reports, and it
+    holds a report back entirely while the relay is in a 429 cooldown; the
+    bounds here exist because a client is a client — one broken or hostile node
+    must not be able to displace Worker errors or grow D1.
+    """
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            extra_headers={"allow": "POST"},
+        )
+    try:
+        payload = await bounded_json_request(request, DESKTOP_ERROR_MAX_BODY)
+    except RequestBodyTooLarge:
+        return json_response({"error": "payload_too_large"}, status=413)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    fields = _desktop_error_fields(payload)
+    if not fields:
+        return json_response({"error": "invalid_desktop_error"}, status=400)
+    # Same signed owner/ts/sig proof as GET /api/sync, checked before any
+    # bounded-row read: an unsigned report is refused, never stored anonymously.
+    params = parse_qs(urlparse(request.url).query)
+    owner = safe_segment(params.get("owner", [""])[0])
+    if not owner or not await _authorize_owner(env, request, owner):
+        return json_response({"error": "unauthorized"}, status=401)
+    surface, detail = fields
+    now = int(Date.now())
+    try:
+        owner_hash = await blind_index(env, "desktop-error:" + owner)
+    except Exception:
+        owner_hash = "unknown"
+    source_key = "app:" + str(owner_hash)[:32]
+    path = "/desktop-error/" + surface
+    try:
+        await ensure_schema(env)
+        per_owner = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts>=? AND method='APP' AND ray=?",
+            now - DESKTOP_ERROR_RATE_WINDOW_MS,
+            source_key,
+        )
+        global_rate = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts>=? AND method='APP'",
+            now - DESKTOP_ERROR_RATE_WINDOW_MS,
+        )
+        duplicate = await d1_first(
+            env,
+            "SELECT 1 AS one FROM error_log "
+            "WHERE ts>=? AND method='APP' AND path=? AND message=? AND ray=? "
+            "LIMIT 1",
+            now - DESKTOP_ERROR_RATE_WINDOW_MS,
+            path,
+            detail,
+            source_key,
+        )
+        if (
+            duplicate
+            or int((per_owner or {}).get("n") or 0)
+            >= DESKTOP_ERROR_RATE_PER_OWNER
+            or int((global_rate or {}).get("n") or 0)
+            >= DESKTOP_ERROR_RATE_GLOBAL
+        ):
+            return json_response(
+                {"ok": True, "stored": False},
+                status=202,
+                cache_control="no-store",
+            )
+        # 521 rather than the browser collector's 520: the status is part of the
+        # group key and of the ping title, so a desktop failure reads apart from
+        # a browser one without any per-row lookup. The account is the proven
+        # signer, so the admin "related users" column names the node's owner.
+        await _write_error_log(
+            env,
+            521,
+            "APP",
+            path,
+            detail,
+            source_key,
+            owner,
         )
     except Exception:
         # Error reporting must never become a new user-visible error.
@@ -44768,6 +41713,11 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/client-errors", "/api/client-errors/"):
             return await client_error_handler(self.env, request)
+
+        # Desktop-app failures (warning dialogs, error toasts) from a signed
+        # node, so an error nobody was watching still pings the administrators.
+        if url.path in ("/api/desktop-errors", "/api/desktop-errors/"):
+            return await desktop_error_handler(self.env, request)
 
         # Private vulnerability reports — stored encrypted, emailed to security@.
         if url.path in ("/api/security/report", "/api/security/report/"):

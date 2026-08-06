@@ -225,6 +225,82 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("hovering the minimized avatar restores the prompt"));
     }
 
+    // The composer is a movable panel (adhoc #1536): dragging its top strip
+    // takes it off the footer anchor and onto the workspace, the corner grip
+    // resizes it, the button pops it out into a window of its own, and
+    // double-clicking the strip snaps everything back.
+    auto *promptHandle =
+        window.findChild<QWidget *>(QStringLiteral("promptDragHandle"));
+    auto *promptGrip =
+        window.findChild<QWidget *>(QStringLiteral("promptResizeGrip"));
+    auto *promptDetach =
+        window.findChild<QPushButton *>(QStringLiteral("promptDetachButton"));
+    if (promptHandle && promptGrip && promptDetach && prompt && dock) {
+        const auto sendMouse = [](QWidget *target, QEvent::Type type,
+                                  const QPoint &global) {
+            QMouseEvent event(type, target->mapFromGlobal(global),
+                              QPointF(global), Qt::LeftButton,
+                              type == QEvent::MouseButtonRelease ? Qt::NoButton
+                                                                 : Qt::LeftButton,
+                              Qt::NoModifier);
+            QApplication::sendEvent(target, &event);
+        };
+        // Global, not parent-relative: the drag reparents the panel out of the
+        // dock, so the two geometries are not in the same coordinate space.
+        const QPoint anchoredTopLeft = prompt->mapToGlobal(QPoint());
+        const QPoint grabAt = promptHandle->mapToGlobal(
+            QPoint(promptHandle->width() / 2, promptHandle->height() / 2));
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-120, -160));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease,
+                  grabAt + QPoint(-120, -160));
+        QApplication::processEvents();
+        check(prompt->parentWidget() != dock &&
+                  prompt->mapToGlobal(QPoint()).y() < anchoredTopLeft.y(),
+              QStringLiteral("dragging the prompt's handle lifts it off the "
+                             "footer anchor and onto the workspace"));
+
+        const QSize dragged = prompt->size();
+        const QPoint gripAt = promptGrip->mapToGlobal(
+            QPoint(promptGrip->width() / 2, promptGrip->height() / 2));
+        sendMouse(promptGrip, QEvent::MouseButtonPress, gripAt);
+        sendMouse(promptGrip, QEvent::MouseMove, gripAt + QPoint(-60, -40));
+        sendMouse(promptGrip, QEvent::MouseButtonRelease, gripAt + QPoint(-60, -40));
+        QApplication::processEvents();
+        check(prompt->width() > dragged.width() &&
+                  prompt->height() > dragged.height(),
+              QStringLiteral("the corner grip resizes the floating prompt"));
+
+        promptDetach->click();
+        QApplication::processEvents();
+        auto *detachWindow =
+            window.findChild<QWidget *>(QStringLiteral("promptDetachWindow"));
+        check(detachWindow && detachWindow->isWindow() &&
+                  prompt->window() == detachWindow &&
+                  promptWrapper && promptWrapper->isVisible(),
+              QStringLiteral("the detach button moves the prompt into a window "
+                             "of its own, outside the app's own window"));
+
+        promptDetach->click();
+        QApplication::processEvents();
+        check(prompt->window() == &window &&
+                  (!detachWindow || !detachWindow->isVisible()),
+              QStringLiteral("pressing detach again brings the prompt back "
+                             "inside the app"));
+
+        QMouseEvent snapBack(QEvent::MouseButtonDblClick,
+                             QPointF(promptHandle->width() / 2.0,
+                                     promptHandle->height() / 2.0),
+                             QPointF(promptHandle->mapToGlobal(QPoint(0, 0))),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(promptHandle, &snapBack);
+        QApplication::processEvents();
+        check(prompt->parentWidget() == dock &&
+                  prompt->geometry().bottom() == dock->rect().bottom(),
+              QStringLiteral("double-clicking the handle snaps the prompt back "
+                             "to the footer anchor"));
+    }
+
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
     check(log && lights && header && log->isVisible() && lights->isVisible() &&
@@ -3072,6 +3148,18 @@ int main(int argc, char *argv[])
           QStringLiteral("issue, PR, and discussion inbox actions show their "
                          "pending submission counts"));
 
+    // adhoc #1541: the Inbox tile only exists while the Pulls toolbar is on
+    // screen, so a pull request waiting on the nodes also rides the Pulls tab as
+    // a red count next to its blue open-PR total.
+    check(window.testPullsTabAlertBadgeCount() == 2,
+          QStringLiteral("pull requests waiting in the inbox show as a red count "
+                         "on the Pulls tab"));
+    window.testSetPendingInboxCounts(0, 0, 0);
+    check(window.testPullsTabAlertBadgeCount() == 0,
+          QStringLiteral("the Pulls tab drops its red count once the inbox is "
+                         "drained"));
+    window.testSetPendingInboxCounts(3, 2, 4);
+
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
     check(window.findChild<QLabel *>(
@@ -4721,6 +4809,58 @@ int main(int argc, char *argv[])
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
               QString("one icon-rich composer dropdown combines agents and models (%1)")
                   .arg(agentModelLabels.join(QStringLiteral(", "))));
+        // Only the top model lines wear the World's robot portraits. Everything
+        // below them — the raw API agents, the Cloudflare chat models — keeps the
+        // abstract mark it always had, so the menu does not read as one wall of
+        // faces (adhoc #1545).
+        const auto rowWearsPortrait = [&](int row) {
+            if (!quickAgentModel || row < 0)
+                return false;
+            const QImage worn =
+                quickAgentModel->itemIcon(row).pixmap(QSize(32, 32)).toImage();
+            for (int slot = 0; slot < 7; ++slot)
+                if (worn ==
+                    forkmesh::ui::agentControlIcon(slot).pixmap(QSize(32, 32))
+                        .toImage())
+                    return true;
+            return false;
+        };
+        int cloudflareRow = -1;
+        for (int i = 0; quickAgentModel && i < quickAgentModel->count(); ++i) {
+            if (quickAgentModel->itemData(i).toString() ==
+                forkmesh::ui::kCloudflareAiProvider) {
+                cloudflareRow = i;
+                break;
+            }
+        }
+        const int fable5Row =
+            quickAgentModel ? quickAgentModel->findText(QStringLiteral("Fable 5"),
+                                                       Qt::MatchStartsWith)
+                            : -1;
+        const int haiku45Row =
+            quickAgentModel ? quickAgentModel->findText(QStringLiteral("Haiku 4.5"),
+                                                       Qt::MatchStartsWith)
+                            : -1;
+        check(fable5Row >= 0 && haiku45Row >= 0 && cloudflareRow >= 0 &&
+                  rowWearsPortrait(fable5Row) && rowWearsPortrait(haiku45Row) &&
+                  !rowWearsPortrait(
+                      quickAgentModel->findText(QStringLiteral("Claude API"))) &&
+                  !rowWearsPortrait(
+                      quickAgentModel->findText(QStringLiteral("OpenAI API"))) &&
+                  !rowWearsPortrait(cloudflareRow) &&
+                  forkmesh::ui::agentModelPortraitIconIndex(
+                      QStringLiteral("claude-opus-5")) == 0 &&
+                  forkmesh::ui::agentModelPortraitIconIndex(
+                      QStringLiteral("gpt-5.6-sol")) == 4 &&
+                  forkmesh::ui::agentModelPortraitIconIndex(
+                      QStringLiteral("gpt-5.5")) < 0,
+              QString("only the top models wear portraits (Fable 5 row %1, "
+                      "Claude API row %2, Cloudflare row %3)")
+                  .arg(fable5Row)
+                  .arg(quickAgentModel
+                           ? quickAgentModel->findText(QStringLiteral("Claude API"))
+                           : -1)
+                  .arg(cloudflareRow));
         // The menu is ordered by merged-agent success, then model power. With
         // no merged history the static fallback line-up is strongest first.
         QStringList rankedLabels;
