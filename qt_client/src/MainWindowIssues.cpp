@@ -8201,6 +8201,46 @@ void MainWindow::syncIssuesInbox()
     showPendingInbox(m_repositories.at(idx), QStringLiteral("issues"));
 }
 
+void MainWindow::noteInboxDrainFailure(const QString &backoffKey, int status,
+                                       bool mirrorIntake)
+{
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!mirrorIntake || (status != 401 && status != 403)) {
+        m_pollBackoff.noteFailure(backoffKey, nowMs);
+        return;
+    }
+    // Mirror intake authorization is not backpressure. The relay grants it from
+    // this node's identity plus fresh health/integrity and membership in the
+    // repo's signed mirror group, so a node outside that group is rejected
+    // identically forever — and NetworkBackoff's ordinary ten-minute cap turns
+    // that into a permanent 401 every ten minutes, for every mirrored repo and
+    // each of its three queues. That is the stream of Qt "Host requires
+    // authentication" HTTP/2 warnings a headless mirror logs all day.
+    //
+    // Rejections still retry on the normal cadence for a couple of rounds: a
+    // group member whose endpoint health check has merely lapsed recovers on
+    // its own, and delaying its queue by hours would strand real submissions.
+    // Only a node that keeps being refused drops to the long cooldown. An
+    // OWNER drain keeps the ordinary curve above: that 401 means the node is
+    // unlinked, and the user fixes it by re-linking and expects their own
+    // queue back within a poll cycle, not hours.
+    static constexpr int kAuthRejectionGrace = 2;
+    static constexpr qint64 kAuthBaseMs = 30LL * 60 * 1000;
+    static constexpr qint64 kAuthCapMs = 6LL * 60 * 60 * 1000;
+    const int rejections = ++m_inboxAuthRejections[backoffKey];
+    if (rejections <= kAuthRejectionGrace) {
+        m_pollBackoff.noteFailure(backoffKey, nowMs);
+        return;
+    }
+    m_pollBackoff.noteFailure(backoffKey, nowMs, kAuthBaseMs, kAuthCapMs);
+}
+
+void MainWindow::noteInboxDrainSuccess(const QString &backoffKey)
+{
+    m_inboxAuthRejections.remove(backoffKey);
+    m_pollBackoff.noteSuccess(backoffKey);
+}
+
 void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
                                      bool forceMirrorIntake)
 {
@@ -8287,11 +8327,10 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
         if (mirrorIntake)
             m_mirrorIssueIntakeInFlight.remove(intakeKey);
         if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(backoffKey,
-                                      QDateTime::currentMSecsSinceEpoch());
             const int status =
                 reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
                     .toInt();
+            noteInboxDrainFailure(backoffKey, status, mirrorIntake);
             // A rejected drain is the difference between "nothing is queued"
             // and "everything is queued and unreachable". Say so once per repo
             // instead of only backing off: this failure mode is invisible on an
@@ -8301,7 +8340,24 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
                 static QSet<QString> s_inboxAuthWarned;
                 if (!s_inboxAuthWarned.contains(backoffKey)) {
                     s_inboxAuthWarned.insert(backoffKey);
-                    logSystem(QStringLiteral(
+                    // Mirror intake and owner intake fail for different
+                    // reasons, and the remedy differs with them: an owner drain
+                    // needs the node re-linked, while a mirror drain needs this
+                    // node inside the repo's approved mirror group with a fresh
+                    // healthy endpoint. Naming the wrong one sends whoever
+                    // reads the log after the wrong setting.
+                    logSystem(
+                        mirrorIntake
+                            ? QStringLiteral(
+                                  "The relay rejected this node's signed mirror "
+                                  "issue intake for %1/%2 as \"%3\" (HTTP %4), "
+                                  "so web-filed issues are materialized "
+                                  "elsewhere. This node needs a healthy direct "
+                                  "HTTPS endpoint inside that repo's approved "
+                                  "mirror group; retries now slow to hours.")
+                                  .arg(repo.owner, repo.name, signer)
+                                  .arg(status)
+                            : QStringLiteral(
                                   "The relay rejected this node's signed issue "
                                   "drain for %1/%2 as \"%3\" (HTTP %4), so "
                                   "web-filed issues can't sync down. Re-link "
@@ -8316,7 +8372,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
                                      true);
             return;
         }
-        m_pollBackoff.noteSuccess(backoffKey);
+        noteInboxDrainSuccess(backoffKey);
         const QJsonArray pending =
             QJsonDocument::fromJson(reply->readAll())
                 .object()
