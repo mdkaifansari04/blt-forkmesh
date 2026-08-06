@@ -826,6 +826,7 @@ if(FORKMESH_BUILD_TESTS)
     # Focused Codex app-server JSONL transport and normalization tests.
     qt_add_executable(forkmesh-codex-tests
         tests/test_codex_app_server.cpp
+        src/AgentResumeIdentity.h
         src/CodexAppServerSession.h
         src/CodexAppServerSession.cpp
         src/CodexTranscriptStyle.h
