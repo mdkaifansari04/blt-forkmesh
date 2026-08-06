@@ -5629,6 +5629,20 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                                    m_footerUpdateLog->viewport());
                 return true;
             }
+            // The trailing origin is likewise its own affordance (adhoc #1587):
+            // the tooltip carries the full path the link abbreviates.
+            QString sourcePath;
+            int sourceLine = 0;
+            if (logSourceAnchorTarget(m_footerUpdateLog->anchorAt(he->pos()),
+                                      &sourcePath, &sourceLine)) {
+                QToolTip::showText(
+                    he->globalPos(),
+                    QStringLiteral("Logged from %1:%2 — click to open it in Files")
+                        .arg(sourcePath)
+                        .arg(sourceLine),
+                    m_footerUpdateLog->viewport());
+                return true;
+            }
             const QString line = lineAt(he->pos());
             if (!line.isEmpty()) {
                 QToolTip::showText(he->globalPos(), line,
@@ -5645,6 +5659,15 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                     logPromptAnchorLine(m_footerUpdateLog->anchorAt(pos));
                 if (!promptLine.isEmpty()) {
                     appendTextToActivePrompt(promptLine);
+                    return true;
+                }
+                // ...and the origin at the far right opens the code that wrote
+                // the entry, rather than the Log view showing it.
+                QString sourcePath;
+                int sourceLine = 0;
+                if (logSourceAnchorTarget(m_footerUpdateLog->anchorAt(pos),
+                                          &sourcePath, &sourceLine)) {
+                    revealLogSourceInExplorer(sourcePath, sourceLine);
                     return true;
                 }
                 const QString line = lineAt(pos);
@@ -5671,14 +5694,37 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                                    m_settingsLog->viewport());
                 return true;
             }
+            QString sourcePath;
+            int sourceLine = 0;
+            if (logSourceAnchorTarget(m_settingsLog->anchorAt(he->pos()),
+                                      &sourcePath, &sourceLine)) {
+                QToolTip::showText(
+                    he->globalPos(),
+                    QStringLiteral("Logged from %1:%2 — click to open it in Files")
+                        .arg(sourcePath)
+                        .arg(sourceLine),
+                    m_settingsLog->viewport());
+                return true;
+            }
         } else {
             auto *me = static_cast<QMouseEvent *>(event);
             if (me->button() == Qt::LeftButton) {
-                const QString promptLine = logPromptAnchorLine(
-                    m_settingsLog->anchorAt(me->position().toPoint()));
+                const QString anchor =
+                    m_settingsLog->anchorAt(me->position().toPoint());
+                const QString promptLine = logPromptAnchorLine(anchor);
                 if (!promptLine.isEmpty()) {
                     if (event->type() == QEvent::MouseButtonRelease)
                         appendTextToActivePrompt(promptLine);
+                    return true;
+                }
+                // The origin link closing the entry (adhoc #1587), swallowed
+                // here for the same reason: QTextBrowser would otherwise try to
+                // navigate to "fmlogsrc:…" on the release.
+                QString sourcePath;
+                int sourceLine = 0;
+                if (logSourceAnchorTarget(anchor, &sourcePath, &sourceLine)) {
+                    if (event->type() == QEvent::MouseButtonRelease)
+                        revealLogSourceInExplorer(sourcePath, sourceLine);
                     return true;
                 }
             }
