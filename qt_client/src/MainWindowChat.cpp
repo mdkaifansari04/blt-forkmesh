@@ -1042,17 +1042,36 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
     }
 
     const QString cwd = repoGitDir().isEmpty() ? QDir::homePath() : repoGitDir();
+    QMap<QString, QString> accountEnv;
+    const AgentAccountProfile account = activeAgentAccount(provider);
+    if (!account.builtIn)
+        accountEnv.insert(codex ? QStringLiteral("CODEX_HOME")
+                                : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                          account.configDir);
+    launchSystemTerminal(program, commandArgs, cwd, accountEnv);
+}
+
+// Open the host's own terminal emulator on `program args` in `cwd`, with the
+// caller's environment overrides (a provider account's CLAUDE_CONFIG_DIR /
+// CODEX_HOME) applied on top of a copy of ForkMesh's environment that has every
+// provider API key stripped: a hand-off terminal must authenticate as the
+// account the user picked, not as whatever key happened to be exported into the
+// app. Split out of launchAgentSystemTerminal so the agent detail's "Pop out"
+// hand-off (adhoc #1584) reaches the same emulator lookup rather than repeating
+// the per-platform table. Reports its own failures and returns false.
+bool MainWindow::launchSystemTerminal(const QString &program,
+                                      const QStringList &commandArgs,
+                                      const QString &cwd,
+                                      const QMap<QString, QString> &extraEnv)
+{
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     environment.remove(QStringLiteral("ANTHROPIC_API_KEY"));
     environment.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
     environment.remove(QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN"));
     environment.remove(QStringLiteral("OPENAI_API_KEY"));
     environment.remove(QStringLiteral("CODEX_API_KEY"));
-    const AgentAccountProfile account = activeAgentAccount(provider);
-    if (!account.builtIn)
-        environment.insert(codex ? QStringLiteral("CODEX_HOME")
-                                 : QStringLiteral("CLAUDE_CONFIG_DIR"),
-                           account.configDir);
+    for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+        environment.insert(it.key(), it.value());
 
     QString terminalProgram;
     QStringList terminalArgs;
@@ -1071,11 +1090,12 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
         return QLatin1Char('\'') + value + QLatin1Char('\'');
     };
     QString command = QStringLiteral("cd %1 && ").arg(shellQuote(cwd));
-    if (!account.builtIn) {
-        command += QStringLiteral("env %1=%2 ")
-                       .arg(codex ? QStringLiteral("CODEX_HOME")
-                                  : QStringLiteral("CLAUDE_CONFIG_DIR"),
-                            shellQuote(account.configDir));
+    // osascript hands the command to a fresh login shell, so the environment
+    // built above cannot reach it — the overrides ride along as an `env` prefix.
+    if (!extraEnv.isEmpty()) {
+        command += QStringLiteral("env ");
+        for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+            command += QStringLiteral("%1=%2 ").arg(it.key(), shellQuote(it.value()));
     }
     command += shellQuote(program);
     for (const QString &argument : commandArgs)
@@ -1104,7 +1124,7 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
 #endif
     if (terminalProgram.isEmpty()) {
         flashMessage(QStringLiteral("No supported system terminal was found."), true);
-        return;
+        return false;
     }
     QProcess launcher;
     launcher.setProgram(terminalProgram);
@@ -1113,8 +1133,9 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
     launcher.setProcessEnvironment(environment);
     if (!launcher.startDetached()) {
         flashMessage(QStringLiteral("Could not launch the system terminal."), true);
-        return;
+        return false;
     }
+    return true;
 }
 
 // -------------------------------------------------------------- server rail
@@ -18230,6 +18251,11 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
     m_networkWebRequestsStatus = new QLabel(
         QStringLiteral("Open this tab to load the worker's web requests."));
     m_networkWebRequestsStatus->setObjectName("mutedLabel");
+    // A failure line quotes the worker's own error, so it can run long: wrap
+    // it instead of widening the page, and let it be selected for a report.
+    m_networkWebRequestsStatus->setWordWrap(true);
+    m_networkWebRequestsStatus->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
     webRequestsRow->addWidget(m_networkWebRequestsStatus, 1);
     m_networkWebRequestsRange = new QComboBox;
     m_networkWebRequestsRange->setCursor(Qt::PointingHandCursor);
@@ -18648,7 +18674,131 @@ void MainWindow::refreshNetworkDiagnostics()
     m_networkDiagnosticsTable->resizeRowsToContents();
 }
 
-void MainWindow::refreshNetworkWebRequests()
+namespace {
+
+// How many times one open of the tab asks the Worker before giving up. The
+// relay answers a slice of every request with a Cloudflare 1101 error page
+// (adhoc #1585), so a single attempt fails often enough to look broken.
+constexpr int kWebRequestsMaxAttempts = 3;
+
+// A short, single-line quote of whatever the Worker actually sent back. HTML
+// error pages and JSON blobs both collapse to something a user can read (and
+// paste into a bug report) instead of flooding the status line.
+QString webRequestsBodySnippet(const QByteArray &body)
+{
+    QString text = QString::fromUtf8(body).simplified();
+    if (text.startsWith(QLatin1Char('<'))) {
+        // Cloudflare's 1101/1102 pages are HTML; keep their words, drop tags.
+        static const QRegularExpression tags(QStringLiteral("<[^>]*>"));
+        text = text.remove(tags).simplified();
+    }
+    if (text.size() > 160)
+        text = text.left(157) + QStringLiteral("...");
+    return text;
+}
+
+QString webRequestsSeconds(qint64 ms)
+{
+    const qint64 seconds = (qMax<qint64>(0, ms) + 999) / 1000;
+    return seconds >= 60 ? QStringLiteral("%1m %2s").arg(seconds / 60).arg(seconds % 60)
+                         : QStringLiteral("%1s").arg(seconds);
+}
+
+// Names what actually failed. Everything arrives as plain values rather than a
+// QNetworkReply so the tests can drive every branch without a socket. A
+// positive cooldownMs means this client suppressed the request itself; a
+// negative one means it did with no window left to quote.
+QString webRequestsFailureDetail(const QString &host, qint64 cooldownMs,
+                                 int httpStatus, const QString &transportError,
+                                 const QString &parseError,
+                                 const QString &payloadError,
+                                 const QByteArray &body)
+{
+    const QString where =
+        host.isEmpty() ? QStringLiteral("the worker") : host;
+    // The client's own host-wide cooldown, not the network: say so, because
+    // this request never left the machine and waiting is the only cure.
+    if (cooldownMs > 0)
+        return QStringLiteral(
+                   "%1 is in this client's rate-limit cooldown after repeated "
+                   "relay errors (%2 left); the request never left this machine")
+            .arg(where, webRequestsSeconds(cooldownMs));
+    if (cooldownMs < 0)
+        return QStringLiteral(
+                   "%1 is in this client's rate-limit cooldown after repeated "
+                   "relay errors; the request never left this machine")
+            .arg(where);
+    const QString snippet = webRequestsBodySnippet(body);
+    if (httpStatus >= 400)
+        return snippet.isEmpty()
+                   ? QStringLiteral("%1 answered HTTP %2").arg(where).arg(httpStatus)
+                   : QStringLiteral("%1 answered HTTP %2 - %3")
+                         .arg(where, QString::number(httpStatus), snippet);
+    if (!transportError.isEmpty())
+        return QStringLiteral("%1 could not be reached - %2")
+            .arg(where, transportError);
+    if (!parseError.isEmpty())
+        return QStringLiteral("%1 answered unreadable JSON - %2%3")
+            .arg(where, parseError,
+                 snippet.isEmpty() ? QString()
+                                   : QStringLiteral(" (%1)").arg(snippet));
+    if (!payloadError.isEmpty())
+        return QStringLiteral("%1 refused the metrics query - %2")
+            .arg(where, payloadError);
+    return QStringLiteral("%1 answered a payload without ok=true%2")
+        .arg(where, snippet.isEmpty() ? QString()
+                                      : QStringLiteral(" (%1)").arg(snippet));
+}
+
+} // namespace
+
+void MainWindow::showNetworkWebRequestsFailure(const QString &detail,
+                                               bool willRetry, qint64 retryInMs)
+{
+    // Every failed attempt is logged, not just the last: a tab that recovers
+    // on attempt three still leaves the relay's 500s visible in the Log tab.
+    logSystem(QStringLiteral("Web Requests: %1.").arg(detail));
+    if (!m_networkWebRequestsStatus)
+        return;
+    if (willRetry) {
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral("Could not load web requests: %1. Retrying "
+                           "(attempt %2 of %3) in %4...")
+                .arg(detail)
+                .arg(m_networkWebRequestsAttempt + 1)
+                .arg(kWebRequestsMaxAttempts)
+                .arg(webRequestsSeconds(retryInMs)));
+    } else if (m_networkWebRequestsAttempt > 0) {
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral("Could not load web requests: %1. Gave up after %2 "
+                           "attempt(s) - reopen the tab or pick a range to try "
+                           "again.")
+                .arg(detail)
+                .arg(m_networkWebRequestsAttempt));
+    } else {
+        // Nothing was ever sent (no relay configured), so there is no attempt
+        // count to report and nothing a retry could improve.
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral("Could not load web requests: %1.").arg(detail));
+    }
+}
+
+QString MainWindow::testNetworkWebRequestsFailureText(
+    int httpStatus, const QString &transportError, const QString &parseError,
+    const QString &payloadError, const QByteArray &body, qint64 cooldownMs,
+    qint64 retryInMs)
+{
+    m_networkWebRequestsAttempt = 1;
+    showNetworkWebRequestsFailure(
+        webRequestsFailureDetail(QStringLiteral("forkmesh.com"), cooldownMs,
+                                 httpStatus, transportError, parseError,
+                                 payloadError, body),
+        retryInMs >= 0, retryInMs);
+    m_networkWebRequestsAttempt = 0;
+    return testNetworkWebRequestsStatusText();
+}
+
+void MainWindow::refreshNetworkWebRequests(bool isRetry)
 {
     if (!m_networkWebRequestsTable || !m_networkAccess ||
         m_networkWebRequestsInFlight)
@@ -18663,9 +18813,20 @@ void MainWindow::refreshNetworkWebRequests()
         m_networkTabs->currentIndex() != m_networkWebRequestsTabIndex)
         return;
 
+    // A user-driven open, or a range change, is a fresh load: forget the
+    // attempts a previous one spent and drop any retry it still had pending.
+    if (!isRetry) {
+        m_networkWebRequestsAttempt = 0;
+        if (m_networkWebRequestsRetryTimer)
+            m_networkWebRequestsRetryTimer->stop();
+    }
+
     QUrl url = catalogApiUrl();
-    if (!url.isValid() || url.host().isEmpty())
+    if (!url.isValid() || url.host().isEmpty()) {
+        showNetworkWebRequestsFailure(
+            QStringLiteral("no relay host is configured in Settings"), false, 0);
         return;
+    }
     url.setPath(QStringLiteral("/api/metrics/summary"));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("minutes"),
@@ -18682,27 +18843,72 @@ void MainWindow::refreshNetworkWebRequests()
     request.setRawHeader("accept", "application/json");
     request.setTransferTimeout(8000);
     m_networkWebRequestsInFlight = true;
+    ++m_networkWebRequestsAttempt;
     if (m_networkWebRequestsStatus)
         m_networkWebRequestsStatus->setText(
-            QStringLiteral("Loading web requests..."));
+            m_networkWebRequestsAttempt > 1
+                ? QStringLiteral("Loading web requests (attempt %1 of %2)...")
+                      .arg(m_networkWebRequestsAttempt)
+                      .arg(kWebRequestsMaxAttempts)
+                : QStringLiteral("Loading web requests..."));
+    const QString host = url.host();
     QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, host] {
         m_networkWebRequestsInFlight = false;
         const QByteArray body = reply->readAll();
         const bool transportOk = reply->error() == QNetworkReply::NoError;
+        const QString transportError =
+            transportOk ? QString() : reply->errorString();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // A reply the firewall manager answered locally never reached the
+        // network; its "rate-limited" error string would otherwise be pinned
+        // on the Worker.
+        const bool suppressed =
+            BackoffNetworkAccessManager::isBackoffSuppressed(reply);
         reply->deleteLater();
         QJsonParseError parseError;
         const QJsonDocument document =
             QJsonDocument::fromJson(body, &parseError);
-        if (!transportOk || parseError.error != QJsonParseError::NoError ||
-            !document.isObject() ||
-            !document.object().value(QStringLiteral("ok")).toBool()) {
-            if (m_networkWebRequestsStatus)
-                m_networkWebRequestsStatus->setText(QStringLiteral(
-                    "Could not load web requests from the worker."));
+        const QJsonObject payload = document.object();
+        if (transportOk && parseError.error == QJsonParseError::NoError &&
+            document.isObject() &&
+            payload.value(QStringLiteral("ok")).toBool()) {
+            m_networkWebRequestsAttempt = 0;
+            renderNetworkWebRequests(payload);
             return;
         }
-        renderNetworkWebRequests(document.object());
+
+        // The relay's 5xx also trips this client's host-wide cooldown, so the
+        // next attempt has to wait for that window to close or it is answered
+        // locally without ever being sent.
+        qint64 cooldownMs = 0;
+        if (auto *manager = requestFirewallManager(m_networkAccess))
+            cooldownMs = manager->hostCooldownRemainingMs(host);
+        const QString detail = webRequestsFailureDetail(
+            host, suppressed ? (cooldownMs > 0 ? cooldownMs : -1) : 0, httpStatus,
+            transportError, parseError.error == QJsonParseError::NoError
+                                ? QString()
+                                : parseError.errorString(),
+            payload.value(QStringLiteral("error")).toString(), body);
+
+        const qint64 retryInMs =
+            qMax<qint64>(cooldownMs + 400, 1200LL * m_networkWebRequestsAttempt);
+        // Past the cap the wait is long enough that the reader is better served
+        // by a message than by a spinner they cannot see progress on.
+        const bool willRetry =
+            m_networkWebRequestsAttempt < kWebRequestsMaxAttempts &&
+            retryInMs <= 30000;
+        showNetworkWebRequestsFailure(detail, willRetry, retryInMs);
+        if (!willRetry)
+            return;
+        if (!m_networkWebRequestsRetryTimer) {
+            m_networkWebRequestsRetryTimer = new QTimer(this);
+            m_networkWebRequestsRetryTimer->setSingleShot(true);
+            connect(m_networkWebRequestsRetryTimer, &QTimer::timeout, this,
+                    [this] { refreshNetworkWebRequests(true); });
+        }
+        m_networkWebRequestsRetryTimer->start(int(retryInMs));
     });
 }
 
