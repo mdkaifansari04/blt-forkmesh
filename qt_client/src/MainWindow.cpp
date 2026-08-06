@@ -40,6 +40,7 @@ QString networkRequestEventFor(const QUrl &url)
         {"/mirrors", "mirror sync"},
         {"/api/repo/", "repo fetch"},
         {"/api/version", "version check"},
+        {"/api/metrics", "traffic metrics"},
         {"/api/network", "network stats"},
         {"/api/security", "security report"},
         {"/api/forkbot", "forkbot chat"},

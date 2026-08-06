@@ -14,7 +14,14 @@ class QProcess;
 class QTimer;
 
 struct ActionSandboxLimits {
+    // Address space a *single* process in the step may map (RLIMIT_AS).
     qint64 maxMemoryBytes = 4LL * 1024 * 1024 * 1024;
+    // Memory the step's whole cgroup may use (systemd MemoryMax). 0 derives it
+    // from the CPU quota the same step is granted — see
+    // actionScopeMemoryBytes(). Steps size their parallelism from that quota,
+    // so a ceiling that does not grow with it is a ceiling that turns extra
+    // cores into an OOM kill (adhoc #1582).
+    qint64 maxScopeMemoryBytes = 0;
     qint64 maxFileBytes = 1024LL * 1024 * 1024;
     qint64 maxWorkspaceBytes = 2LL * 1024 * 1024 * 1024;
     int maxProcesses = 128;
@@ -26,6 +33,15 @@ struct ActionSandboxLimits {
     int stepTimeoutMs = 90 * 60 * 1000;
     int jobTimeoutMs = 4 * 60 * 60 * 1000;
 };
+
+// Memory a sandboxed step's cgroup may use under `limits`, with the
+// derive-from-CPU-quota default (maxScopeMemoryBytes == 0) resolved. Never
+// below the per-process address-space cap, and never more than half the host's
+// RAM so a second run and the node itself still fit beside it.
+qint64 actionScopeMemoryBytes(const ActionSandboxLimits &limits);
+
+// CPU share a sandboxed step may use, as a systemd CPUQuota percentage.
+int actionCpuQuotaPercent();
 
 // Executes a single approved workflow run. On Linux, every step runs fail-closed
 // inside a bubblewrap user/PID/mount/IPC/UTS namespace as uid 65534, with the
@@ -88,7 +104,7 @@ private:
     bool verifyWorkspaceSnapshot(QString *reason = nullptr) const;
     bool workspaceWithinQuota(QString *reason = nullptr) const;
     void terminateCurrentProcess(bool timedOut);
-    void onProcessFinished(int exitCode);
+    void onProcessFinished(int exitCode, bool crashed);
     void runNextStep();
     void emitLog(const QString &text);
     void emitProcessOutput(const QByteArray &bytes);
