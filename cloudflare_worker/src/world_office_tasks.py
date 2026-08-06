@@ -48,6 +48,9 @@ CHECKIN_MIN_MS = 4 * 60 * 1000
 CHECKIN_MAX_MS = 9 * 60 * 1000
 
 TASK_STATES = frozenset({"idle", "active", "done"})
+AGENT_RUN_STATES = frozenset({
+    "queued", "running", "waiting", "success", "failed", "stopped",
+})
 TASK_KINDS = frozenset({"task", "bid"})
 CHECKIN_STATES = frozenset({"going_well", "blocked", "needs_help"})
 DESTINATIONS = frozenset({
@@ -255,6 +258,11 @@ def _agent_run(value):
         "mode": _text(record.get("mode"), 40),
         "strength": _text(record.get("strength"), 32).lower(),
         "sessionId": _agent_ref(record.get("sessionId")),
+        "status": (
+            _text(record.get("status"), 16).lower()
+            if _text(record.get("status"), 16).lower() in AGENT_RUN_STATES
+            else ""
+        ),
     }
     return run if any(run.values()) else None
 
@@ -313,7 +321,8 @@ def _route(path):
     ):
         return ("attachment", task_id, parts[2].lower())
     if len(parts) == 2 and parts[1] in (
-            "start", "stop", "checkin", "complete", "qa", "return"):
+            "start", "stop", "checkin", "complete", "qa", "return",
+            "agent-status"):
         return ("action", task_id, parts[1])
     return None
 
@@ -1476,6 +1485,52 @@ async def _start(
     return await _task_response(runtime, changed, now)
 
 
+async def _update_agent_status(
+        runtime, org_bi, account_bi, actor, task_id, row, data, can_manage,
+        now):
+    """Update only the live state of the desktop run attached to one task.
+
+    A desktop may report the task it created without receiving broad task-edit
+    authority.  The opaque task-bound signature is checked by the entrypoint;
+    this second gate still verifies ownership and that the row is agent work.
+    """
+
+    status = _text(data.get("status"), 16).lower()
+    if status not in AGENT_RUN_STATES:
+        return _response(runtime, {"error": "invalid_agent_status"}, status=400)
+    if (
+        str(row.get("assignee_kind") or "") not in AGENT_ASSIGNEE_KINDS
+        or (
+            not can_manage
+            and str(row.get("created_by_bi") or "") != account_bi
+        )
+    ):
+        return _response(runtime, {"error": "forbidden"}, status=403)
+    try:
+        current = await runtime.open(row.get("data"))
+    except Exception:
+        current = None
+    if not isinstance(current, dict) or not isinstance(current.get("agent"), dict):
+        return _response(runtime, {"error": "agent_run_unavailable"}, status=409)
+    agent = dict(current["agent"])
+    agent["status"] = status
+    current["agent"] = _agent_run(agent)
+    await runtime.d1_run(
+        "UPDATE organization_tasks SET data=?,updated_at=? "
+        "WHERE org_bi=? AND task_id=?",
+        await runtime.seal(current), now, org_bi, task_id,
+    )
+    await runtime.audit(
+        actor,
+        "organization.task_agent_status",
+        "organization_task",
+        task_id,
+        details={"status": status},
+    )
+    return await _task_response(
+        runtime, await _task(runtime, org_bi, task_id), now)
+
+
 async def _stop(
         runtime, org_bi, account_bi, actor, task_id, row, now):
     if str(row.get("assignee_bi") or "") != account_bi:
@@ -2100,6 +2155,11 @@ async def handle(runtime, path):
         return await _update(
             runtime, org_bi, account_bi, actor, task_id, data, can_manage, now,
             marketing_only=marketing_only,
+        )
+    if action == "agent-status":
+        return await _update_agent_status(
+            runtime, org_bi, account_bi, actor, task_id, row, data,
+            can_manage, now,
         )
     if action == "start":
         return await _start(

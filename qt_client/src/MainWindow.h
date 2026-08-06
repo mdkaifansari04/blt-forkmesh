@@ -7685,6 +7685,10 @@ private:
     // status through the same authenticated lease after the run finishes.  The
     // same object is persisted on AgentSession for restart recovery.
     QHash<int, QJsonObject> m_orgAgentBindings;
+    // Last live state mirrored into the World task for each local session.
+    // reloadAgents() is intentionally chatty; this cache turns unchanged rows
+    // into no-ops while still republishing once after an app restart.
+    QHash<int, QString> m_orgTaskAgentStatusSent;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
@@ -7936,6 +7940,7 @@ private:
     // POST /api/tasks for a freshly created session and record the id it gets
     // back on the session. No-op unless session.orgTask is set.
     void openOrgTaskForSession(const AgentSession &session);
+    void syncOrgTaskAgentStatus(int sessionId);
     // POST /api/tasks/<id>/complete once the run reaches a terminal status,
     // stamping the finishing bot. No-op without an org task, while the run is
     // still going, or once finishedByBot is already set.

@@ -4,7 +4,7 @@
 A desktop that authenticated silently owns its account's Ed25519 key and holds
 no account session token, so the Agents composer's Task toggle and the Tasks
 tab's board can only reach /api/tasks by signing a proof onto the URL. These
-checks pin how narrow that credential is: four operations, each with its own
+checks pin how narrow that credential is: five operations, each with its own
 proof, the completion and deletion proofs bound to the one task they name, and
 no authority for an account that is not an active user.
 
@@ -34,9 +34,11 @@ FUNCS = {
 CONSTANTS = {
     "ORG_TASK_OPEN_PROOF",
     "ORG_TASK_COMPLETE_PROOF",
+    "ORG_TASK_AGENT_STATUS_PROOF",
     "ORG_TASK_LIST_PROOF",
     "ORG_TASK_DELETE_PROOF",
     "ORG_TASK_COMPLETE_RE",
+    "ORG_TASK_AGENT_STATUS_RE",
     "ORG_TASK_COLLECTION_RE",
     "ORG_TASK_ITEM_RE",
 }
@@ -170,6 +172,13 @@ def test_open_and_complete_proofs_authorize_their_own_operation():
 
     account_bi, record = asyncio.run(resolve(env, _Request(
         url=_signed_url(namespace, "/api/tasks", "ORG_TASK_OPEN_PROOF"))))
+    assert account_bi == "bi:alice"
+    assert record["name"] == "alice"
+
+    account_bi, record = asyncio.run(resolve(env, _Request(
+        url=_signed_url(
+            namespace, "/api/tasks/%s/agent-status" % TASK_ID,
+            "ORG_TASK_AGENT_STATUS_PROOF", resource=TASK_ID))))
     assert account_bi == "bi:alice"
     assert record["name"] == "alice"
 
@@ -325,7 +334,7 @@ def test_delete_proof_authorizes_the_one_task_it_names():
                 resource=TASK_ID)))) == ("", None), target
 
 
-def test_signature_authorizes_only_the_four_named_operations():
+def test_signature_authorizes_only_the_five_named_operations():
     namespace, env = _harness({"alice": _user()})
     resolve = namespace["_org_task_signed_session"]
 
@@ -345,6 +354,19 @@ def test_signature_authorizes_only_the_four_named_operations():
             account_bi, record = asyncio.run(resolve(env, _Request(
                 url=_signed_url(namespace, path, proof, resource=TASK_ID))))
             assert (account_bi, record) == ("", None), (action, proof)
+
+    # The live-status proof is bound to its exact task and exact sub-action.
+    status_path = "/api/tasks/%s/agent-status" % TASK_ID
+    crossed = _signed_url(
+        namespace, status_path, "ORG_TASK_COMPLETE_PROOF", resource=TASK_ID)
+    assert asyncio.run(resolve(env, _Request(url=crossed))) == ("", None)
+    replayed = _signed_url(
+        namespace,
+        "/api/tasks/%s/agent-status" % OTHER_TASK_ID,
+        "ORG_TASK_AGENT_STATUS_PROOF",
+        resource=TASK_ID,
+    )
+    assert asyncio.run(resolve(env, _Request(url=replayed))) == ("", None)
 
 
 def test_bad_signature_stale_stamp_and_ineligible_accounts_are_refused():
