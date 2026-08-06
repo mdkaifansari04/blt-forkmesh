@@ -10827,6 +10827,57 @@ inline QString logPromptAnchorLine(const QString &href)
         href.mid(kLogPromptAnchorPrefix.size()).toLatin1());
 }
 
+// "Where did this line come from?" (adhoc #1587): the trailing
+// "qt_client/src/Foo.cpp:42" every entry carries is an anchor, and clicking it
+// opens that file in the Files explorer at that line. Line first, so the path
+// runs to the end of the href and needs no delimiter of its own; it is left
+// unencoded because forkmesh::logSourceSuffix() only ever stores paths made of
+// characters that are safe both here and in the href attribute.
+const QString kLogSourceAnchorPrefix = QStringLiteral("fmlogsrc:");
+
+inline QString logSourceAnchorHref(const QString &relativePath, int line)
+{
+    return kLogSourceAnchorPrefix + QString::number(line) + QLatin1Char(':') +
+           relativePath;
+}
+
+// Decodes such an href. False (leaving the outputs untouched) for any other
+// link, including the http(s) ones inside a message body.
+inline bool logSourceAnchorTarget(const QString &href, QString *relativePath,
+                                  int *line)
+{
+    if (!href.startsWith(kLogSourceAnchorPrefix))
+        return false;
+    const QString rest = href.mid(kLogSourceAnchorPrefix.size());
+    const int colon = rest.indexOf(QLatin1Char(':'));
+    if (colon <= 0)
+        return false;
+    bool numeric = false;
+    const int parsed = rest.left(colon).toInt(&numeric);
+    if (!numeric)
+        return false;
+    if (line)
+        *line = parsed;
+    if (relativePath)
+        *relativePath = rest.mid(colon + 1);
+    return true;
+}
+
+// The dim "Foo.cpp:42" link closing a rendered log entry. Empty when the line
+// carries no location (history written before entries recorded one).
+inline QString logSourceAnchorHtml(const QString &relativePath, int line,
+                                   bool dark)
+{
+    if (relativePath.isEmpty() || line <= 0)
+        return QString();
+    return QStringLiteral(
+               "&nbsp;&nbsp;<a href='%1' style='color:%2; "
+               "text-decoration:none'>%3</a>")
+        .arg(logSourceAnchorHref(relativePath, line),
+             dark ? QStringLiteral("#6e7681") : QStringLiteral("#8c959f"),
+             forkmesh::logSourceLabel(relativePath, line).toHtmlEscaped());
+}
+
 inline QString octiconForBackgroundTaskWord(const QString &word)
 {
     static const QHash<QString, QString> icons{

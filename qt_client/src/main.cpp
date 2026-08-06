@@ -968,14 +968,16 @@ int main(int argc, char *argv[])
     // logRestart()'s terminal echo to narrate a rebuild nobody can watch on
     // screen.
     forkmesh::setAppLogSink(
-        [window](QtMsgType type, const QString &message) {
+        [window](QtMsgType type, const QString &message,
+                 const QString &sourceFile, int sourceLine) {
             // Emitted from worker threads too (public-mirror sync, git helpers),
             // so hop to the GUI thread. A queued call whose receiver is deleted
             // first is discarded by ~QObject, and clearAppLogSink() below runs
             // before that delete.
             QMetaObject::invokeMethod(
-                window, [window, type, message] {
-                    window->logCapturedMessage(type, message);
+                window, [window, type, message, sourceFile, sourceLine] {
+                    window->logCapturedMessage(type, message, sourceFile,
+                                               sourceLine);
                 },
                 Qt::QueuedConnection);
         },
