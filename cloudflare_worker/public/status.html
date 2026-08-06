@@ -114,6 +114,8 @@
         const bannerText = document.getElementById("status-banner-text");
         const bannerSub = document.getElementById("status-banner-sub");
         const list = document.getElementById("status-list");
+        const STATUS_POLL_MS = 60_000;
+        let isRendering = false;
         if (!banner || !list) return;
 
         if (location.protocol === "file:") {
@@ -251,6 +253,8 @@
         }
 
         async function render() {
+          if (isRendering) return;
+          isRendering = true;
           let data;
           let rateLimited = false;
           let failedResponse = null;
@@ -699,8 +703,14 @@
 
             list.appendChild(row);
           });
+          } finally {
+            isRendering = false;
+          }
         }
 
+        window.setInterval(() => {
+          void render();
+        }, STATUS_POLL_MS);
         render();
       })();
     </script>
