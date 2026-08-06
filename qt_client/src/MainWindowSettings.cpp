@@ -5645,6 +5645,14 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_topMessageOwnsLoggedError = true;
     logSystem(text);
     m_topMessageOwnsLoggedError = false;
+    // An error toast is the whole record of the failure on this machine; report
+    // it so it also becomes an operational record and a ping (adhoc #1538).
+    // Here rather than in showTopMessage: a headless node has no toast widget at
+    // all — its failures are the ones nobody can see — and the logged-error hook
+    // that paints its own cards through showTopMessage must not report a line
+    // that was already reported from wherever it originally failed.
+    if (error)
+        reportUserVisibleError(QStringLiteral("toast"), QString(), text);
     showTopMessage(text, error, clickHref, durationSeconds, kind, actionRunId);
 }
 
