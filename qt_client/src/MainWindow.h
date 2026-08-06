@@ -560,6 +560,11 @@ public:
     QStringList testExpandFileExplorerEntry(const QString &name);
     // Paths of the folders currently open, sorted.
     QStringList testExpandedFileExplorerPaths() const;
+    void testPreviewFileExplorerFile(const QString &path)
+    {
+        previewFileExplorerFile(path);
+    }
+    QString testFileExplorerPreview() const;
     QStringList testUsersColumns() const;
     QString testUsersCellText(int row, const QString &header) const;
     QStringList testSortUsersBy(const QString &header, Qt::SortOrder order);

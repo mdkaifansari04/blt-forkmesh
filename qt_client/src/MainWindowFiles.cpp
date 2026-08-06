@@ -250,12 +250,21 @@ void MainWindow::refreshFilesPage()
 {
     if (!m_fileExplorerTree)
         return;
-    // Navigating back to the page keeps whatever was expanded; only a root that
-    // has since disappeared (an unmounted volume, a deleted worktree) forces a
-    // rebuild. The Refresh button is there for an explicit re-read.
-    if (m_fileExplorerTree->topLevelItemCount() == 0 ||
-        !QDir(m_fileExplorerRoot).exists())
-        setFileExplorerRoot(m_fileExplorerRoot);
+    // Navigating back to the page keeps whatever was expanded; the Refresh
+    // button is there for an explicit re-read.
+    if (QDir(m_fileExplorerRoot).exists()) {
+        if (m_fileExplorerTree->topLevelItemCount() == 0)
+            setFileExplorerRoot(m_fileExplorerRoot);
+        return;
+    }
+    // The root has since disappeared (an unmounted volume, a deleted worktree).
+    // Re-listing it would only hit setFileExplorerRoot's own exists() guard and
+    // leave the vanished directory's rows on screen, so fall back to somewhere
+    // that does exist rather than showing phantom entries.
+    QString fallback = repoGitDir();
+    if (fallback.isEmpty() || !QDir(fallback).exists())
+        fallback = QDir::homePath();
+    setFileExplorerRoot(fallback);
 }
 
 QFileInfoList MainWindow::fileExplorerEntries(const QString &dir) const
@@ -327,14 +336,18 @@ void MainWindow::setFileExplorerRoot(const QString &path)
     }
 
     if (m_fileExplorerStatus) {
+        // "12 entries · 3 hidden", or "12 entries · hidden not shown" when the
+        // toggle is off — the count and the word have to move together.
+        const QString hiddenText =
+            m_fileExplorerHidden && !m_fileExplorerHidden->isChecked()
+                ? QStringLiteral("hidden not shown")
+                : QStringLiteral("%1 hidden").arg(hidden);
         m_fileExplorerStatus->setText(
-            QStringLiteral("%1 %2 · %3 hidden")
+            QStringLiteral("%1 %2 · %3")
                 .arg(entries.size())
                 .arg(entries.size() == 1 ? QStringLiteral("entry")
-                                         : QStringLiteral("entries"))
-                .arg(m_fileExplorerHidden && !m_fileExplorerHidden->isChecked()
-                         ? QStringLiteral("not shown")
-                         : QString::number(hidden)));
+                                         : QStringLiteral("entries"),
+                     hiddenText));
     }
     previewFileExplorerFile(QString());
     // Children load on expand, so re-opening a folder has to re-read it.
@@ -416,9 +429,22 @@ void MainWindow::previewFileExplorerFile(const QString &path)
                  info.isDir() ? QStringLiteral("directory")
                               : formatByteSize(info.size()),
                  modifiedLabel(info));
+    // Selection follows the arrow keys, so this runs on the GUI thread for
+    // every row the cursor passes over. Counting a directory's entries here
+    // would mean a readdir + stat per keypress, which stalls on a large one —
+    // expanding the folder is the way to see what is in it.
     if (info.isDir()) {
+        m_fileExplorerPreview->setPlainText(header +
+                                            QStringLiteral("Expand to browse."));
+        return;
+    }
+    // Only regular files are opened. The listing includes QDir::System, so a
+    // selection can land on a FIFO or a socket — and opening one of those
+    // blocks in the kernel until a writer appears, freezing the whole window.
+    // Qt reports them as neither file nor directory.
+    if (!info.isFile()) {
         m_fileExplorerPreview->setPlainText(
-            header + QStringLiteral("%1 entries").arg(fileExplorerEntries(path).size()));
+            header + QStringLiteral("Not a regular file — no preview."));
         return;
     }
     QFile file(path);
@@ -463,6 +489,11 @@ QStringList MainWindow::testFileExplorerNames() const
     for (int i = 0; i < m_fileExplorerTree->topLevelItemCount(); ++i)
         names.append(m_fileExplorerTree->topLevelItem(i)->text(0));
     return names;
+}
+
+QString MainWindow::testFileExplorerPreview() const
+{
+    return m_fileExplorerPreview ? m_fileExplorerPreview->toPlainText() : QString();
 }
 
 QStringList MainWindow::testExpandedFileExplorerPaths() const

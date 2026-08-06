@@ -5218,6 +5218,7 @@ void MainWindow::rebuildGlobalSearchResults()
         {"Relays", "broadcast", 8},
         {"Network", "workflow", kNetworkDiagnosticsSectionIndex},
         {"Users", "people", kUsersSectionIndex},
+        {"Files", "file-directory", kFilesSectionIndex},
         {"Settings", "gear", 1},
     };
     bool header = false;
@@ -6005,6 +6006,9 @@ QString MainWindow::navPlaceLabel(const NavPlace &place) const
             break;
         case kUsersSectionIndex:
             destination = QStringLiteral("Users");
+            break;
+        case kFilesSectionIndex:
+            destination = QStringLiteral("Files");
             break;
         default:
             destination = QStringLiteral("Home");

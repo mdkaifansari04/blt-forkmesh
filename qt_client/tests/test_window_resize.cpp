@@ -2613,6 +2613,43 @@ int main(int argc, char *argv[])
     check(window.testFileExplorerRoot() ==
               QDir(explorerDir.path()).absolutePath(),
           QStringLiteral("a missing directory never empties the explorer"));
+    // A named pipe is listed (QDir::System) but must never be opened: read()
+    // on one blocks until a writer appears, which would freeze the window.
+    if (QFile::exists(QStringLiteral("/usr/bin/mkfifo"))) {
+        const QString fifo =
+            explorerDir.path() + QStringLiteral("/a-pipe");
+        QProcess::execute(QStringLiteral("mkfifo"), {fifo});
+        if (QFileInfo::exists(fifo)) {
+            window.testSetFileExplorerRoot(explorerDir.path());
+            check(window.testFileExplorerNames().contains(
+                      QStringLiteral("a-pipe")),
+                  QStringLiteral("the explorer lists a named pipe"));
+            window.testPreviewFileExplorerFile(fifo);
+            check(window.testFileExplorerPreview().contains(
+                      QStringLiteral("Not a regular file")),
+                  QStringLiteral("selecting a named pipe never opens it"));
+        }
+    }
+    // A root that vanishes under the page falls back somewhere real instead of
+    // leaving the deleted directory's rows on screen.
+    QTemporaryDir doomedDir;
+    check(doomedDir.isValid(),
+          QStringLiteral("the vanishing-root fixture was created"));
+    {
+        QFile fixture(doomedDir.path() + QStringLiteral("/only-file"));
+        fixture.open(QIODevice::WriteOnly);
+        fixture.close();
+    }
+    window.testSetFileExplorerRoot(doomedDir.path());
+    check(window.testFileExplorerNames() ==
+              QStringList{QStringLiteral("only-file")},
+          QStringLiteral("the explorer lists the doomed directory"));
+    QDir(doomedDir.path()).removeRecursively();
+    window.testShowFilesSection();
+    check(window.testFileExplorerRoot() != QDir(doomedDir.path()).absolutePath() &&
+              !window.testFileExplorerNames().contains(
+                  QStringLiteral("only-file")),
+          QStringLiteral("a vanished root falls back instead of showing phantoms"));
 
     // adhoc #129: a public room (#general) is open to every registered account,
     // so its users popup lists the whole database directory — not just the
