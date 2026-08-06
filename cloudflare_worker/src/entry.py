@@ -31179,7 +31179,10 @@ async def _promote_hosted_repository_import(env, catalog_record):
         catalog_record.get("owner"), MAX_NODE_NAME).lower()
     repository_name = safe_segment(clean_string(
         catalog_record.get("name"), MAX_REPO_SEGMENT))
-    if mirror_owner not in ("mirror2", "mirror3") or not repository_name:
+    # mirror2 and mirror3 ran the original Codeberg import burst and have both
+    # been retired; any node may carry an imported catalog now, so gate on the
+    # record itself rather than a hard-coded pair of node names.
+    if not mirror_owner or not repository_name:
         return False
     rows = await d1_all(
         env,
