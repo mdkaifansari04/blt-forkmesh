@@ -2514,6 +2514,128 @@ bool MainWindow::trySendClipboardImage()
     return true;
 }
 
+// ------------------------------------------------- user-visible error reports
+
+namespace {
+
+// How long to wait before retrying a report the relay refused (or could not be
+// asked, because its host-wide 429 cooldown was still counting down). The
+// cooldown caps at five minutes, so a couple of ticks covers a quota outage.
+constexpr int kDeferredErrorReportFlushMs = 2 * 60 * 1000;
+
+} // namespace
+
+void MainWindow::reportUserVisibleError(const QString &kind,
+                                        const QString &title,
+                                        const QString &message,
+                                        const QString &surface)
+{
+    if (!QSettings()
+             .value(forkmesh::kReportUserVisibleErrorsSetting, true)
+             .toBool())
+        return;
+    // A modal on a headless mirror is a node parked until somebody clicks OK;
+    // the same modal on a desktop is a person reading it. The relay keeps the
+    // two apart, so the ping says which one just happened.
+    const QString area =
+        !surface.isEmpty() ? surface
+                           : (m_headless ? QStringLiteral("headless")
+                                         : QStringLiteral("app"));
+    const forkmesh::ClientErrorReports::Report report =
+        forkmesh::ClientErrorReports::build(
+            kind, area, title, message,
+            QDateTime::currentMSecsSinceEpoch());
+    if (!m_errorReports.accept(report))
+        return;
+    // Send on the next turn of the event loop, never from where the failure was
+    // announced: the dialog path reports from inside QMessageBox's own show
+    // event, and issuing a request there can open the firewall prompt's nested
+    // modal (and pump the event loop) underneath a dialog that is still opening.
+    QTimer::singleShot(0, this,
+                       [this, report] { sendUserVisibleErrorReport(report); });
+}
+
+void MainWindow::sendUserVisibleErrorReport(
+    const forkmesh::ClientErrorReports::Report &report)
+{
+    // Nothing to sign with means the relay would refuse the report anyway: it
+    // only stores reports carrying a signed owner token, never anonymous ones.
+    const QString owner = accountOwner();
+    if (!m_networkAccess || owner.isEmpty() || !m_profileIdentity.isValid()
+        || !hasOwnerSigningCapability(owner))
+        return;
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/desktop-errors"));
+    const QUrlQuery query = signedInboxQuery(owner);
+    if (query.isEmpty())
+        return;
+    url.setQuery(query);
+
+    // The relay being rate-limited is exactly the failure most worth reporting,
+    // and exactly when this POST would be swallowed by the host-wide backoff
+    // instead of reaching anyone. Park it and send it when the cooldown lifts.
+    const auto *network =
+        qobject_cast<BackoffNetworkAccessManager *>(m_networkAccess);
+    if (network && !url.host().isEmpty() && network->hostInCooldown(url.host())) {
+        m_errorReports.defer(report);
+        scheduleDeferredErrorReportFlush();
+        return;
+    }
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request,
+        QJsonDocument(forkmesh::ClientErrorReports::payload(report))
+            .toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, report] {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError)
+            return;
+        // Deliberately silent: a failed error report must never raise a toast or
+        // a dialog of its own, or one relay outage becomes a feedback loop.
+        m_errorReports.defer(report);
+        scheduleDeferredErrorReportFlush();
+    });
+}
+
+void MainWindow::scheduleDeferredErrorReportFlush()
+{
+    if (m_errorReports.deferredCount() <= 0)
+        return;
+    if (!m_errorReportFlushTimer) {
+        m_errorReportFlushTimer = new QTimer(this);
+        m_errorReportFlushTimer->setInterval(kDeferredErrorReportFlushMs);
+        connect(m_errorReportFlushTimer, &QTimer::timeout, this,
+                &MainWindow::flushDeferredErrorReports);
+    }
+    if (!m_errorReportFlushTimer->isActive())
+        m_errorReportFlushTimer->start();
+}
+
+void MainWindow::flushDeferredErrorReports()
+{
+    if (m_errorReports.deferredCount() <= 0) {
+        if (m_errorReportFlushTimer)
+            m_errorReportFlushTimer->stop();
+        return;
+    }
+    const auto *network =
+        qobject_cast<BackoffNetworkAccessManager *>(m_networkAccess);
+    const QString host = catalogApiUrl().host();
+    if (network && !host.isEmpty() && network->hostInCooldown(host))
+        return; // still refusing; the next tick tries again
+    if (m_errorReportFlushTimer)
+        m_errorReportFlushTimer->stop();
+    const QList<forkmesh::ClientErrorReports::Report> ready =
+        m_errorReports.takeDeferred(QDateTime::currentMSecsSinceEpoch());
+    for (const forkmesh::ClientErrorReports::Report &report : ready)
+        sendUserVisibleErrorReport(report);
+    // A send that failed again re-parked itself; keep the timer running for it.
+    scheduleDeferredErrorReportFlush();
+}
+
 void MainWindow::saveIncomingFile(const QString &fileName, const QByteArray &data)
 {
     const QString safeName = QFileInfo(fileName).fileName().left(180);
