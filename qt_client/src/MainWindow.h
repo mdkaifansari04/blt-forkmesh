@@ -663,6 +663,8 @@ public:
     void testSetPendingInboxCounts(int issues, int pulls, int discussions);
     int testIssueInboxBadgeCount() const;
     int testPullInboxBadgeCount() const;
+    // Red "waiting on the nodes" count riding the repo's Pulls tab icon.
+    int testPullsTabAlertBadgeCount() const;
     QString testDiscussionInboxButtonText() const;
     Q_INVOKABLE bool testSaveRepoAboutMetadata(const QString &about,
                                                const QString &website)
@@ -4782,7 +4784,19 @@ private:
     void applyPendingInboxSelection(const RepositoryRecord &repo,
                                     const QString &kind,
                                     const QJsonArray &pending);
+    // Pull one waiting submission onto this computer and open it for reading
+    // (adhoc #1541). Nothing is merged, nothing is written into the repository's
+    // pull ledger and the inbox is not acknowledged, so it stays pending until
+    // the owner syncs it. Both arguments are by value: the git work pumps the
+    // event loop, so a reference into m_repositories could dangle.
+    void reviewPendingPull(RepositoryRecord repo, QJsonObject item);
+    void showPullReviewDialog(RepositoryRecord repo, PullRequest pr,
+                              PullReviewCheckout checkout);
+    QString pullReviewCheckoutPath(const RepositoryRecord &repo,
+                                   const QString &slug) const;
     void refreshPendingInboxBadges();
+    // The pending-pull count as a red badge on the repo's Pulls tab.
+    void setPendingPullsTabBadge(int pending);
     void setPendingInboxCount(const RepositoryRecord &repo,
                               const QString &kind, int count);
     // Drain one repo's issue inbox. Owners consume their queue; eligible public
