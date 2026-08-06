@@ -2546,6 +2546,63 @@ int main(int argc, char *argv[])
     check(!window.testUsersNavButtonVisible(),
           QStringLiteral("losing admin status immediately hides Users"));
 
+    // Files: the rail destination under Network / Users browses the real
+    // filesystem, and it lists hidden entries by default — the repo Explorer
+    // only ever shows git-tracked paths, so dotfiles were unreachable before.
+    check(window.testFilesNavButtonVisible(),
+          QStringLiteral("the Files rail destination is always available"));
+    QTemporaryDir explorerDir;
+    check(explorerDir.isValid(),
+          QStringLiteral("the file explorer fixture directory was created"));
+    QDir(explorerDir.path()).mkpath(QStringLiteral(".hidden-dir/nested"));
+    QDir(explorerDir.path()).mkpath(QStringLiteral("plain-dir"));
+    for (const QString &name : {QStringLiteral(".hidden-file"),
+                                QStringLiteral("plain-file.txt"),
+                                QStringLiteral(".hidden-dir/nested/deep.txt")}) {
+        QFile fixture(explorerDir.path() + QLatin1Char('/') + name);
+        check(fixture.open(QIODevice::WriteOnly),
+              QStringLiteral("the file explorer fixture %1 was written").arg(name));
+        fixture.write("forkmesh\n");
+        fixture.close();
+    }
+    window.testShowFilesSection();
+    window.testSetFileExplorerShowHidden(true);
+    window.testSetFileExplorerRoot(explorerDir.path());
+    const QStringList explorerNames = window.testFileExplorerNames();
+    check(explorerNames.contains(QStringLiteral(".hidden-file")) &&
+              explorerNames.contains(QStringLiteral(".hidden-dir")) &&
+              explorerNames.contains(QStringLiteral("plain-file.txt")) &&
+              explorerNames.contains(QStringLiteral("plain-dir")),
+          QStringLiteral("the file explorer shows hidden files by default"));
+    check(explorerNames.indexOf(QStringLiteral(".hidden-dir")) <
+              explorerNames.indexOf(QStringLiteral("plain-file.txt")),
+          QStringLiteral("the file explorer lists directories before files"));
+    // Directories fill in on first expand, so a deep tree costs one readdir per
+    // folder the user actually opens.
+    check(window.testExpandFileExplorerEntry(QStringLiteral(".hidden-dir")) ==
+              QStringList{QStringLiteral("nested")},
+          QStringLiteral("expanding a directory loads its children from disk"));
+    // The toggle is the only thing that hides them; it re-lists in place.
+    window.testSetFileExplorerShowHidden(false);
+    const QStringList visibleOnly = window.testFileExplorerNames();
+    check(!visibleOnly.contains(QStringLiteral(".hidden-file")) &&
+              !visibleOnly.contains(QStringLiteral(".hidden-dir")) &&
+              visibleOnly.contains(QStringLiteral("plain-file.txt")),
+          QStringLiteral("turning the toggle off drops hidden entries"));
+    window.testSetFileExplorerShowHidden(true);
+    // Pointing the path bar at a file browses its directory instead of failing.
+    window.testSetFileExplorerRoot(explorerDir.path() +
+                                   QStringLiteral("/plain-file.txt"));
+    check(window.testFileExplorerRoot() ==
+              QDir(explorerDir.path()).absolutePath(),
+          QStringLiteral("a file path re-roots the explorer at its directory"));
+    // A path that no longer exists leaves the current listing alone.
+    window.testSetFileExplorerRoot(explorerDir.path() +
+                                   QStringLiteral("/does-not-exist"));
+    check(window.testFileExplorerRoot() ==
+              QDir(explorerDir.path()).absolutePath(),
+          QStringLiteral("a missing directory never empties the explorer"));
+
     // adhoc #129: a public room (#general) is open to every registered account,
     // so its users popup lists the whole database directory — not just the
     // handful of accounts that happen to be online right now.

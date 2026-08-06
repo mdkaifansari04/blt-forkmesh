@@ -80,6 +80,7 @@ struct MirrorSelfSnapshot {
 };
 
 #include <QElapsedTimer>
+#include <QFileInfo>
 #include <QFutureWatcher>
 #include <QHash>
 #include <QIcon>
@@ -545,6 +546,18 @@ public:
     {
         mergeChatUserDirectory(users);
     }
+    bool testFilesNavButtonVisible() const;
+    void testShowFilesSection() { showSection(kFilesSectionIndex); }
+    void testSetFileExplorerShowHidden(bool on);
+    void testSetFileExplorerRoot(const QString &path)
+    {
+        setFileExplorerRoot(path);
+    }
+    QString testFileExplorerRoot() const { return m_fileExplorerRoot; }
+    // Top-level names the explorer is listing, in display order.
+    QStringList testFileExplorerNames() const;
+    // Names of `name`'s children, expanding it first (lazy load).
+    QStringList testExpandFileExplorerEntry(const QString &name);
     QStringList testUsersColumns() const;
     QString testUsersCellText(int row, const QString &header) const;
     QStringList testSortUsersBy(const QString &header, Qt::SortOrder order);
@@ -1240,6 +1253,8 @@ private:
     static constexpr int kOrganizationTasksSectionIndex = 15;
     static constexpr int kNotesSectionIndex = 16;
     static constexpr int kUsersSectionIndex = 17;
+    // Local file explorer, sitting under Network / Users in the rail.
+    static constexpr int kFilesSectionIndex = 18;
 
     // Setup page
     QWidget *buildSetupPage();
@@ -2361,6 +2376,22 @@ private:
     QWidget *buildUsersSection();
     void refreshUsersPage(bool force = false);
     void renderUsersPage(const QJsonArray &users);
+
+    // Files: a plain local file explorer on its own rail destination, so any
+    // directory on this machine is one click away instead of only the tracked
+    // paths of the open repository. Hidden entries are shown by default —
+    // .git, .forkmesh and dotfiles are exactly what this is usually opened for.
+    QWidget *buildFilesSection();
+    void refreshFilesPage();
+    // Re-root the explorer at `path` (a directory) and list it.
+    void setFileExplorerRoot(const QString &path);
+    // Fill `item`'s children from disk. Directories are inserted with a dummy
+    // child so they show an expand arrow before they have been read.
+    void populateFileExplorerItem(QTreeWidgetItem *item);
+    // Entries of `dir` honouring the "Show hidden" toggle, folders first.
+    QFileInfoList fileExplorerEntries(const QString &dir) const;
+    void showFileExplorerMenu(const QPoint &pos);
+    void previewFileExplorerFile(const QString &path);
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
     void ensureRepoDetailSectionBuilt();
@@ -5940,6 +5971,7 @@ private:
     // Network button's badge.
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_usersNavButton = nullptr; // admin-only World user statistics
+    QPushButton *m_filesNavButton = nullptr; // local file explorer, under Users
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     // Top-bar "Log in / Sign up" pill. The first-run setup screen is gone (adhoc
     // #115) — the app opens straight into the shell — so this is the only entry
@@ -7301,6 +7333,17 @@ private:
     QPushButton *m_repoFileHistoryButton = nullptr;
     QPushButton *m_repoFilePreviewButton = nullptr; // toggle markdown source/render
     QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
+    // Files section (kFilesSectionIndex): a lazily-expanded tree of the real
+    // filesystem plus a read-only preview of whatever is selected. The root is
+    // remembered across launches, as is the hidden-entry toggle — which starts
+    // on, so dotfiles are visible without anyone having to find the switch.
+    QTreeWidget *m_fileExplorerTree = nullptr;
+    QPlainTextEdit *m_fileExplorerPreview = nullptr;
+    QLineEdit *m_fileExplorerPath = nullptr;
+    QLabel *m_fileExplorerStatus = nullptr;
+    QCheckBox *m_fileExplorerHidden = nullptr;
+    QString m_fileExplorerRoot;
+
     QComboBox *m_coveExplorerSelector = nullptr;
     QLabel *m_coveExplorerStatus = nullptr;
     QTreeWidget *m_coveExplorerTree = nullptr;
