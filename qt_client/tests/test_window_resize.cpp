@@ -4809,6 +4809,58 @@ int main(int argc, char *argv[])
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
               QString("one icon-rich composer dropdown combines agents and models (%1)")
                   .arg(agentModelLabels.join(QStringLiteral(", "))));
+        // Only the top model lines wear the World's robot portraits. Everything
+        // below them — the raw API agents, the Cloudflare chat models — keeps the
+        // abstract mark it always had, so the menu does not read as one wall of
+        // faces (adhoc #1545).
+        const auto rowWearsPortrait = [&](int row) {
+            if (!quickAgentModel || row < 0)
+                return false;
+            const QImage worn =
+                quickAgentModel->itemIcon(row).pixmap(QSize(32, 32)).toImage();
+            for (int slot = 0; slot < 7; ++slot)
+                if (worn ==
+                    forkmesh::ui::agentControlIcon(slot).pixmap(QSize(32, 32))
+                        .toImage())
+                    return true;
+            return false;
+        };
+        int cloudflareRow = -1;
+        for (int i = 0; quickAgentModel && i < quickAgentModel->count(); ++i) {
+            if (quickAgentModel->itemData(i).toString() ==
+                forkmesh::ui::kCloudflareAiProvider) {
+                cloudflareRow = i;
+                break;
+            }
+        }
+        const int fable5Row =
+            quickAgentModel ? quickAgentModel->findText(QStringLiteral("Fable 5"),
+                                                       Qt::MatchStartsWith)
+                            : -1;
+        const int haiku45Row =
+            quickAgentModel ? quickAgentModel->findText(QStringLiteral("Haiku 4.5"),
+                                                       Qt::MatchStartsWith)
+                            : -1;
+        check(fable5Row >= 0 && haiku45Row >= 0 && cloudflareRow >= 0 &&
+                  rowWearsPortrait(fable5Row) && rowWearsPortrait(haiku45Row) &&
+                  !rowWearsPortrait(
+                      quickAgentModel->findText(QStringLiteral("Claude API"))) &&
+                  !rowWearsPortrait(
+                      quickAgentModel->findText(QStringLiteral("OpenAI API"))) &&
+                  !rowWearsPortrait(cloudflareRow) &&
+                  forkmesh::ui::agentModelPortraitIconIndex(
+                      QStringLiteral("claude-opus-5")) == 0 &&
+                  forkmesh::ui::agentModelPortraitIconIndex(
+                      QStringLiteral("gpt-5.6-sol")) == 4 &&
+                  forkmesh::ui::agentModelPortraitIconIndex(
+                      QStringLiteral("gpt-5.5")) < 0,
+              QString("only the top models wear portraits (Fable 5 row %1, "
+                      "Claude API row %2, Cloudflare row %3)")
+                  .arg(fable5Row)
+                  .arg(quickAgentModel
+                           ? quickAgentModel->findText(QStringLiteral("Claude API"))
+                           : -1)
+                  .arg(cloudflareRow));
         // The menu is ordered by merged-agent success, then model power. With
         // no merged history the static fallback line-up is strongest first.
         QStringList rankedLabels;
