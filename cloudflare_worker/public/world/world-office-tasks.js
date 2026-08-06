@@ -1,3 +1,8 @@
+import {
+  createWorldBackoff,
+  markWorldHTTPFailure,
+} from "./world-backoff.js";
+
 const OFFICE_TASKS_PATH = "/api/tasks";
 const MARKETING_TASKS_PATH = "/api/world/office/marketing-tasks";
 // Mutations refresh immediately and opening the board refreshes after five
@@ -8,6 +13,9 @@ const MARKETING_TASKS_PATH = "/api/world/office/marketing-tasks";
 // The whole organization catalog the relay is willing to return (MAX_TASKS in
 // world_office_tasks.py). Rows are rendered a page at a time, TASK_PAGE_SIZE
 // per page, so the board is not capped at its first page.
+// The board's reads go through the World root's fetchJSON, which already backs
+// off. This gate covers the one raw keepalive POST below, which cannot.
+const departureBackoff = createWorldBackoff();
 const MAX_TASKS = 2000;
 const TASK_PAGE_SIZE = 100;
 const OFFICE_TASKS_POLL_MS = 60_000;
@@ -2362,6 +2370,10 @@ export function createWorldOfficeTasksController({
     if (!ownActiveTasks().length) return false;
     const sessionToken = String(getSession()?.sessionToken || "");
     if (!sessionToken) return false;
+    // Leaving and re-entering the Office fires this again each time, so a
+    // failing stop is backed off rather than re-posted on every departure.
+    const key = "POST:/api/tasks/stop-active";
+    if (departureBackoff.waitMs(key) > 0) return false;
     try {
       // `keepalive` lets this bounded, same-origin server-time stop finish
       // while pagehide tears the World down. The token stays in the request
@@ -2377,7 +2389,21 @@ export function createWorldOfficeTasksController({
           "content-type": "application/json",
         },
         body: "{}",
-      }).catch(() => {});
+      })
+        .then((response) => {
+          if (response.ok) {
+            departureBackoff.succeed(key);
+            return;
+          }
+          departureBackoff.fail(
+            key,
+            markWorldHTTPFailure(
+              new Error(`stop-active returned ${response.status}`),
+              response,
+            ),
+          );
+        })
+        .catch(() => departureBackoff.fail(key, {}));
       return true;
     } catch (_) {
       return false;
