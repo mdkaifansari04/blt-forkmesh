@@ -7,6 +7,7 @@ import re
 
 PUBLIC_DIR = Path(__file__).resolve().parents[1] / "public"
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+ADMIN_CONSOLE = ENTRY.with_name("admin_console.py")
 POSTHOG_TAG = '<script src="/posthog.js"></script>'
 
 
@@ -65,11 +66,14 @@ def test_worker_generated_pages_load_posthog():
     # entry.py builds two HTML documents itself (everything else is served
     # from public/): the email-verification confirmation page and the admin
     # table browser. Both must carry the snippet like the static pages do.
-    source = ENTRY.read_text(encoding="utf-8")
-    for func in ("_verify_email_page", "render_admin_html"):
+    for func, path in (
+        ("_verify_email_page", ENTRY),
+        ("render_admin_html", ADMIN_CONSOLE),
+    ):
+        source = path.read_text(encoding="utf-8")
         match = re.search(
             r"^(?:async )?def %s\(.*?(?=^(?:async )?def |\Z)" % func,
             source, re.M | re.S)
-        assert match, "missing function %s in entry.py" % func
+        assert match, "missing function %s in %s" % (func, path.name)
         assert '/posthog.js' in match.group(0), (
             "%s does not load /posthog.js" % func)

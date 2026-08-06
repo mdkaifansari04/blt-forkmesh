@@ -20,6 +20,7 @@ OUTPUT = PUBLIC / "world" / "worker-footprint.js"
 # through a _LazyModule proxy, a request-local import, or another deferred
 # module only after the route which needs them runs.
 LAZY_MODULES = {
+    "admin_console.py",
     "activitypub.py",
     "activitypub_threads.py",
     "badges.py",
@@ -95,9 +96,10 @@ WORKER_LIMITS = {
     "compressedBundlePaidBytes": 10_000_000,
     "uncompressedBundleBytes": 64_000_000,
     "startupTimeMs": 1000,
-    # Source bytes are not a heap measurement, but this reproducible ceiling
-    # catches regressions that would make Python's startup validation unsafe.
-    "startupSourceBytesSoft": 2_300_000,
+    # Source bytes are not a heap measurement. Cloudflare rejected the Worker
+    # at ~2.20 MB with Python startup memory error 10021, so keep a measured
+    # guard below that observed failure boundary.
+    "startupSourceBytesSoft": 2_150_000,
     "dynamicRequestsFreeDaily": 100_000,
 }
 STATIC_LIMITS = {
