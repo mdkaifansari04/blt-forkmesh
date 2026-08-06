@@ -612,6 +612,17 @@ QWidget *MainWindow::buildSettingsSection()
                 QSettings().setValue(kInAppNotificationDurationSetting,
                                      inAppPingDuration->currentData().toInt());
             });
+    auto *errorLogAlertCheck =
+        new QCheckBox("Flash the window when an error is logged");
+    errorLogAlertCheck->setChecked(
+        QSettings().value(kErrorLogAlertSetting, true).toBool());
+    errorLogAlertCheck->setToolTip(
+        "Pulse the red window border and show the failure as a card whenever an "
+        "error reaches the log, so a background failure isn't missed while the "
+        "Log section is closed. The Log keeps every error either way.");
+    connect(errorLogAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kErrorLogAlertSetting, enabled);
+    });
     auto *pushAlertCheck =
         new QCheckBox("Show a system ping when a push reaches a mirror");
     pushAlertCheck->setChecked(
@@ -2057,6 +2068,7 @@ QWidget *MainWindow::buildSettingsSection()
     notifyCol->addWidget(notifyLabel);
     notifyCol->addWidget(inAppPingsCheck);
     notifyCol->addWidget(inAppPingDuration, 0, Qt::AlignLeft);
+    notifyCol->addWidget(errorLogAlertCheck);
     notifyCol->addWidget(pushAlertCheck);
     notifyCol->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
     notifyCol->addWidget(nodeConnectAlertCheck);
@@ -4774,6 +4786,79 @@ void MainWindow::logSystem(const QString &text)
         if (++m_networkLogDiskLines > kNetworkLogLimit * 2)
             saveNetworkLog();
     }
+
+    // Last, once the line is safely recorded: a failure that only reached the
+    // log used to be invisible unless the Log section happened to be open.
+    // Announce every ERROR-badged line from this one choke point, so it doesn't
+    // matter which subsystem recorded it.
+    if (badge == QLatin1String("ERROR"))
+        alertOnLoggedError(plain);
+}
+
+// Identical error text repeating inside this window alerts once. A retry loop
+// hammering the same failure should flash the window once, not once per
+// attempt; the log itself still records every occurrence.
+static constexpr qint64 kLoggedErrorAlertRepeatMs = 15000;
+// A failing subsystem can emit distinct error lines (different URLs, different
+// repos) faster than anyone can read them, and each card holds the screen for
+// kToastErrorSeconds. Past this many in a window, the window keeps flashing but
+// the cards give way to a single "open the Log" notice.
+static constexpr qint64 kLoggedErrorBurstWindowMs = 30000;
+static constexpr int kLoggedErrorBurstCards = 5;
+
+// Runs for every ERROR-badged line reaching logSystem. Two halves: the window
+// flash always fires, while the toast is skipped when the caller came through
+// flashMessage and is already putting this exact text on screen.
+void MainWindow::alertOnLoggedError(const QString &message)
+{
+    // A headless node has no window to flash and nobody to read a card; the
+    // line is in the log and in the node's self-check tally either way.
+    if (m_headless)
+        return;
+    // Nothing is on screen yet — early startup logs before the UI is built.
+    if (!m_topMessage)
+        return;
+    // A repaint or animation on the alert path logging its own failure must not
+    // re-enter this and alert about the alert.
+    if (m_inLoggedErrorAlert)
+        return;
+    if (!QSettings().value(kErrorLogAlertSetting, true).toBool())
+        return;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (message == m_lastLoggedErrorText &&
+        now - m_lastLoggedErrorAtMs < kLoggedErrorAlertRepeatMs)
+        return;
+    m_lastLoggedErrorText = message;
+    m_lastLoggedErrorAtMs = now;
+
+    if (now - m_loggedErrorBurstStartMs > kLoggedErrorBurstWindowMs) {
+        m_loggedErrorBurstStartMs = now;
+        m_loggedErrorBurstCount = 0;
+        m_loggedErrorBurstNoticeShown = false;
+    }
+    const bool burst = ++m_loggedErrorBurstCount > kLoggedErrorBurstCards;
+
+    m_inLoggedErrorAlert = true;
+    // The red edge pulse (adhoc #77), plus the platform's own window/taskbar
+    // attention flash for when ForkMesh isn't the focused window.
+    flashErrorBorder();
+    QApplication::alert(this, 0);
+    if (!m_topMessageOwnsLoggedError && (!burst || !m_loggedErrorBurstNoticeShown)) {
+        // A failure supersedes any in-flight progress pill, exactly as it would
+        // had the caller reported it through flashMessage. The card links into
+        // the Log's ERROR filter, where the full text and everything around it is.
+        m_loadStatusShowing = false;
+        if (burst)
+            m_loggedErrorBurstNoticeShown = true;
+        const QString text =
+            burst ? QStringLiteral("Errors are arriving faster than they can be "
+                                   "shown. Open the Log for the full list.")
+                  : message;
+        showTopMessage(text, true, QStringLiteral("fm:log:errors"), 0,
+                       QStringLiteral("error"));
+    }
+    m_inLoggedErrorAlert = false;
 }
 
 // Auto-dismiss windows for the top toast. Every toast counts down visibly so the
@@ -4836,6 +4921,7 @@ QString topMessageKindLabel(const QString &kind)
         {QStringLiteral("comment"), QStringLiteral("Comment")},
         {QStringLiteral("desktop"), QStringLiteral("System")},
         {QStringLiteral("discussion"), QStringLiteral("Discussion")},
+        {QStringLiteral("error"), QStringLiteral("Error")},
         {QStringLiteral("issue"), QStringLiteral("Issue")},
         {QStringLiteral("mention"), QStringLiteral("Mention")},
         {QStringLiteral("mirror"), QStringLiteral("Mirror")},
@@ -5491,8 +5577,20 @@ void MainWindow::flashMessage(const QString &text, bool error,
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
-    // Always keep a copy in the network log for history.
+    // Always keep a copy in the network log for history. An error-classified
+    // line still flashes the window from there (alertOnLoggedError), but this
+    // toast is the one that shows it — say so, so the hook doesn't queue a
+    // second card with the same text.
+    m_topMessageOwnsLoggedError = true;
     logSystem(text);
+    m_topMessageOwnsLoggedError = false;
+    showTopMessage(text, error, clickHref, durationSeconds, kind, actionRunId);
+}
+
+void MainWindow::showTopMessage(const QString &text, bool error,
+                                const QString &clickHref, int durationSeconds,
+                                const QString &kind, int actionRunId)
+{
     if (!m_topMessage)
         return;
 
@@ -5666,14 +5764,16 @@ void MainWindow::advanceTopMessageQueue()
     }
     const TopMessageQueueEntry next = m_topMessageQueue.takeFirst();
     renderTopMessageQueue();
-    // Hide first: flashMessage would otherwise see a toast that is still
+    // Hide first: showTopMessage would otherwise see a toast that is still
     // visible and queue this one straight back behind itself.
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
-    flashMessage(next.text, next.error, next.clickHref, next.durationSeconds,
-                 next.kind, next.actionRunId);
+    // Present only — this card was already logged (and, if it was an error,
+    // already flashed the window) when it first arrived.
+    showTopMessage(next.text, next.error, next.clickHref, next.durationSeconds,
+                   next.kind, next.actionRunId);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)
