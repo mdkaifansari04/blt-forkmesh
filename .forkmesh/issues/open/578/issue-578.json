@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1786059531310,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-578",
+            "sig": "wiLLOyj0Q8ZfVcHtXd8x3-aAWrP78bCR8b8FxHQuDG-etxRPi3xcaf3OXcBfR1mu65kr-8xBAqZ3IhbuRgpjAQ",
+            "title": "have agents go into a recycle bin when you delete them, have that set to 24 hours and able to adjust the settings in the settings page - for the qt app",
+            "ts": 1786059531310,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 578,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "have agents go into a recycle bin when you delete them, have that set to 24 hours and able to adjust the settings in the settings page - for the qt app",
+    "updatedAt": 1786059531310,
+    "votes": 0
+}
