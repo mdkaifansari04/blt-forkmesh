@@ -4072,6 +4072,13 @@ const Rule kNetworkLogRules[] = {
         // summarise ("git", "net", "sync" …), so they must be classified before
         // the per-kind rules below claim them — and their own chip makes them
         // filterable as a group (adhoc #419).
+        //
+        // The ✕ half gets its own badge (and an orange accent — red stays
+        // reserved for outright failures): work that ran on the GUI thread is
+        // what freezes the window, so "how much of this session was *not*
+        // backgrounded" has to be countable on its own rather than buried in the
+        // same tally as the healthy ✓ runs.
+        {" not backgrounded", "#f0883e", "BGBLOCK"},
         {"background ", "#8b949e", "BGTASK"},
         {"pull request", "#3fb950", "PULL"},
         {"pull #", "#3fb950", "PULL"},
@@ -4562,14 +4569,25 @@ void MainWindow::rebuildLogFilterButtons()
     static const char *order[] = {
         "SESSION", "STATUS", "PEER",  "NODE",   "FORK",  "FORKED", "MIRROR",
         "SYNC",    "ACCOUNT", "HOST", "ACTIONS", "PIN", "GIT", "BGTASK",
+        "BGBLOCK",
         "PUBLISH", "PULL",   "MERGE", "ISSUE", "PROMPT",    "BOUNTY", "WALLET",
         "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "NETWORK", "ERROR",
         "INFO",
     };
+    // The two background halves read as jargon on their own, so spell out which
+    // side of the ✓ / ✕ split each one counts.
+    static const QHash<QString, QString> tips = {
+        {QStringLiteral("BGTASK"),
+         QStringLiteral("Show only work that was backgrounded — finished off the "
+                        "GUI thread, so the window stayed responsive")},
+        {QStringLiteral("BGBLOCK"),
+         QStringLiteral("Show only work that was not backgrounded — it ran on the "
+                        "GUI thread and blocked the window while it did")},
+    };
     for (const char *b : order) {
         const QString badge = QString::fromLatin1(b);
         if (m_logFilterCounts.value(badge) > 0)
-            addChip(badge, badge);
+            addChip(badge, badge, tips.value(badge));
     }
     m_logFilterRow->addStretch();
 }
