@@ -46,7 +46,6 @@ enum MirrorNodeColumn {
     MirrorNodeColWebsite,
     MirrorNodeColArtifacts,
     MirrorNodeColReachability,
-    MirrorNodeColCard,
     MirrorNodeColumnCount,
 };
 
@@ -1104,6 +1103,32 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorResetPinButton->hide();
     connect(m_mirrorResetPinButton, &QPushButton::clicked, this,
             &MainWindow::resetRepoPin);
+    // The local Go mirror-node companion (stats/account window and the managed
+    // server's start/stop toggle) lives up here beside the other operator
+    // controls; like the pin button it only concerns the source of truth, so
+    // both stay hidden until loadMirrorNodesPanel() finds we are that node.
+    m_mirrorNodeServerButton = new QPushButton(QStringLiteral("Server"));
+    m_mirrorNodeServerButton->setObjectName("ghostButton");
+    m_mirrorNodeServerButton->setCursor(Qt::PointingHandCursor);
+    m_mirrorNodeServerButton->setToolTip(QStringLiteral(
+        "Open the local Go mirror-node stats, account, and settings window"));
+    setOcticon(m_mirrorNodeServerButton, "server", 16);
+    m_mirrorNodeServerButton->hide();
+    connect(m_mirrorNodeServerButton, &QPushButton::clicked, this,
+            &MainWindow::showMirrorNodeCompanion);
+    m_mirrorNodeServerPowerButton = new QPushButton(QStringLiteral("Start"));
+    m_mirrorNodeServerPowerButton->setObjectName("ghostButton");
+    m_mirrorNodeServerPowerButton->setCursor(Qt::PointingHandCursor);
+    m_mirrorNodeServerPowerButton->hide();
+    connect(m_mirrorNodeServerPowerButton, &QPushButton::clicked, this, [this] {
+        const bool running = m_mirrorNodeProcess &&
+                             m_mirrorNodeProcess->state() != QProcess::NotRunning;
+        if (running)
+            stopManagedMirrorNodeServer();
+        else
+            startManagedMirrorNodeServer();
+        updateMirrorNodeServerButtons(true);
+    });
     m_mirrorNodesOnlineOnlyCheck = new QCheckBox(QStringLiteral("Online only"));
     m_mirrorNodesOnlineOnlyCheck->setChecked(true);
     m_mirrorNodesOnlineOnlyCheck->setToolTip(
@@ -1138,6 +1163,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     headerRow->addStretch();
     headerRow->addWidget(m_mirrorNodesOnlineOnlyCheck);
     headerRow->addWidget(m_mirrorResetPinButton);
+    headerRow->addWidget(m_mirrorNodeServerButton);
+    headerRow->addWidget(m_mirrorNodeServerPowerButton);
     headerRow->addWidget(refreshNodesButton);
     headerRow->addWidget(refreshButton);
     layout->addLayout(headerRow);
@@ -1159,33 +1186,77 @@ QWidget *MainWindow::buildMirrorNodesTab()
     // status lights carry each node's online/behind/integrity state.
 
     m_mirrorNodesTable = new QTableWidget(0, MirrorNodeColumnCount);
-    m_mirrorNodesTable->setObjectName("mirrorNodeCards");
+    installColumnHeaderMenu(m_mirrorNodesTable); // 3-dots per-column menu (issue #318)
+    m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
-    // One label per MirrorNodeColumn, including the button-only Sync column
-    // (adhoc #103). Leaving that one out shifted every following label one
-    // column to the left — "Owner" sat over the Sync now buttons and the last
-    // column fell back to Qt's numeric "26" placeholder.
-    m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Sync", "Owner", "Latest commit", "Message", "Author", "Synced", "Sync delay", "Size",
-         "Issues", "Commits", "Branches", "Pulls", "Discussions",
-         "Pending issues", "Pending pulls", "Pending discussions", "Health",
-         "CPU", "RAM",
-         "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
-         "Artifacts", "Reachability", "Mirror node"});
+    // Icon-only headers (adhoc #1586): a text caption forces each of these ~29
+    // columns wide enough for its label, which is what pushed the panel toward
+    // multi-line rows. A 14px octicon keeps every column as narrow as its data;
+    // the full column name stays on the header tooltip. One entry per
+    // MirrorNodeColumn, including the button-only Sync column (adhoc #103) —
+    // leaving one out shifted every following header one column to the left.
+    struct MirrorHeaderIcon {
+        int column;
+        const char *icon;
+        const char *label;
+    };
+    static constexpr MirrorHeaderIcon kMirrorHeaderIcons[] = {
+        {MirrorNodeColNode, "device-desktop", "Node"},
+        {MirrorNodeColSync, "sync", "Sync"},
+        {MirrorNodeColOwner, "person", "Owner"},
+        {MirrorNodeColCommit, "git-commit", "Latest commit"},
+        {MirrorNodeColMessage, "note", "Message"},
+        {MirrorNodeColAuthor, "pencil", "Author"},
+        {MirrorNodeColSynced, "history", "Synced"},
+        {MirrorNodeColSyncDelay, "workflow", "Sync delay"},
+        {MirrorNodeColSize, "pie-chart", "Size"},
+        {MirrorNodeColIssues, "issue-opened", "Issues"},
+        {MirrorNodeColCommits, "list-unordered", "Commits"},
+        {MirrorNodeColBranches, "git-branch", "Branches"},
+        {MirrorNodeColPulls, "git-pull-request", "Pulls"},
+        {MirrorNodeColDiscussions, "comment", "Discussions"},
+        {MirrorNodeColPendingIssues, "issue-reopened", "Pending issues"},
+        {MirrorNodeColPendingPulls, "git-compare", "Pending pulls"},
+        {MirrorNodeColPendingDiscussions, "bell", "Pending discussions"},
+        {MirrorNodeColHealth, "shield-check", "Health"},
+        {MirrorNodeColCpu, "graph", "CPU"},
+        {MirrorNodeColRam, "server", "RAM"},
+        {MirrorNodeColDisk, "file-directory", "Disk"},
+        {MirrorNodeColPlatform, "terminal", "Platform"},
+        {MirrorNodeColVersion, "tag", "Version"},
+        {MirrorNodeColId, "key", "Node id"},
+        {MirrorNodeColTunnel, "cloud", "Tunnel"},
+        {MirrorNodeColClones, "download", "Clones"},
+        {MirrorNodeColWebsite, "eye", "Website"},
+        {MirrorNodeColArtifacts, "package", "Artifacts"},
+        {MirrorNodeColReachability, "link", "Reachability"},
+    };
+    static_assert(sizeof(kMirrorHeaderIcons) / sizeof(kMirrorHeaderIcons[0]) ==
+                      MirrorNodeColumnCount,
+                  "every mirror-node column needs a header icon");
+    for (const MirrorHeaderIcon &h : kMirrorHeaderIcons) {
+        auto *headerItem = new QTableWidgetItem;
+        headerItem->setIcon(
+            themedOcticon(QLatin1String(h.icon), QColor("#8b949e"), 14));
+        headerItem->setToolTip(QLatin1String(h.label));
+        m_mirrorNodesTable->setHorizontalHeaderItem(h.column, headerItem);
+    }
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
+    // Single line per node (adhoc #1586): every cell is one line of text or a
+    // usage bar, so pin the row height rather than letting size hints creep.
+    m_mirrorNodesTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_mirrorNodesTable->verticalHeader()->setDefaultSectionSize(28);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_mirrorNodesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_mirrorNodesTable->setShowGrid(false);
     m_mirrorNodesTable->setWordWrap(false);
-    m_mirrorNodesTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_mirrorNodesTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_mirrorNodesTable->setSortingEnabled(true);
     m_mirrorNodesTable->sortByColumn(MirrorNodeColNode,
                                      Qt::AscendingOrder); // source of truth first
     QHeaderView *mh = m_mirrorNodesTable->horizontalHeader();
     mh->setHighlightSections(false);
-    mh->hide();
     mh->setSectionResizeMode(MirrorNodeColNode, QHeaderView::Stretch);
     mh->setSectionResizeMode(MirrorNodeColSync, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColOwner, QHeaderView::ResizeToContents);
@@ -1217,9 +1288,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColArtifacts, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColReachability,
                              QHeaderView::ResizeToContents);
-    mh->setSectionResizeMode(MirrorNodeColCard, QHeaderView::Stretch);
-    for (int col = MirrorNodeColNode; col <= MirrorNodeColReachability; ++col)
-        m_mirrorNodesTable->setColumnHidden(col, true);
+    makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
     m_mirrorNodesTable->setItemDelegateForColumn(
@@ -1405,360 +1474,23 @@ void MainWindow::syncMirrorNodeNow(int row)
     loadMirrorNodesPanel();
 }
 
-QWidget *MainWindow::buildMirrorNodeCard(int row)
+// Start/stop label + visibility for the managed Go mirror-node server controls
+// in the Mirror nodes header. Visibility follows the same rule as the reset-pin
+// button (source of truth only); the label follows the supervisor's live state.
+void MainWindow::updateMirrorNodeServerButtons(bool visible)
 {
-    auto *card = new QFrame;
-    card->setObjectName(QStringLiteral("mirrorNodeCard"));
-    card->setProperty("mirrorCardRows", 3);
-    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    card->setMinimumHeight(116);
-    card->setStyleSheet(QStringLiteral(
-        "QFrame#mirrorNodeCard { background: palette(base); border: 1px solid "
-        "palette(mid); border-radius: 7px; }"
-        "QFrame#mirrorNodeResources { background: palette(alternate-base); "
-        "border: 0; border-radius: 5px; }"
-        "QPushButton#mirrorNodeNameButton { border: 0; padding: 2px 4px; "
-        "font-weight: 600; text-align: left; }"
-        "QPushButton#mirrorNodeNameButton:hover { color: #58a6ff; }"
-        "QPushButton#mirrorNodeSyncButton { padding: 3px 8px; }"
-        "QLabel#mirrorNodeReachability { padding: 2px 7px; border: 1px solid "
-        "palette(mid); border-radius: 9px; }"));
-
-    auto *grid = new QGridLayout(card);
-    grid->setContentsMargins(7, 6, 8, 6);
-    grid->setHorizontalSpacing(8);
-    grid->setVerticalSpacing(2);
-    grid->setColumnStretch(1, 1);
-
-    auto itemAt = [this, row](int column) -> QTableWidgetItem * {
-        return m_mirrorNodesTable ? m_mirrorNodesTable->item(row, column) : nullptr;
-    };
-    auto textAt = [&itemAt](int column) {
-        QTableWidgetItem *item = itemAt(column);
-        return item ? item->text() : QString::fromUtf8("\xE2\x80\x94");
-    };
-    auto tooltipAt = [&itemAt](int column) {
-        QTableWidgetItem *item = itemAt(column);
-        return item ? item->toolTip() : QString();
-    };
-    auto metric = [](const QString &icon, const QString &caption,
-                     const QString &value, const QString &tooltip = QString(),
-                     const QColor &tint = QColor("#8b949e")) {
-        auto *label = new QLabel;
-        label->setTextFormat(Qt::RichText);
-        label->setText(QStringLiteral(
-                           "%1 <span style='color:#6e7781'>%2</span> <b>%3</b>")
-                           .arg(octiconMarkup(icon, 12, tint),
-                                caption.toHtmlEscaped(), value.toHtmlEscaped()));
-        label->setToolTip(tooltip);
-        label->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
-        label->setTextInteractionFlags(Qt::NoTextInteraction);
-        return label;
-    };
-
-    // The resource block deliberately owns the card's far-left edge. Its three
-    // compact rows make CPU/RAM/disk comparable at a glance without consuming
-    // the horizontal space that the old table devoted to three whole columns.
-    auto *resources = new QFrame(card);
-    resources->setObjectName(QStringLiteral("mirrorNodeResources"));
-    resources->setFixedWidth(126);
-    auto *resourceLayout = new QGridLayout(resources);
-    resourceLayout->setContentsMargins(7, 5, 7, 5);
-    resourceLayout->setHorizontalSpacing(5);
-    resourceLayout->setVerticalSpacing(2);
-    int resourceRow = 0;
-    for (const auto &resource : {
-             std::tuple<int, QString, QString>{MirrorNodeColCpu, "graph", "CPU"},
-             std::tuple<int, QString, QString>{MirrorNodeColRam, "server", "RAM"},
-             std::tuple<int, QString, QString>{MirrorNodeColDisk, "file-directory", "Disk"}}) {
-        const int column = std::get<0>(resource);
-        QTableWidgetItem *resourceItem = itemAt(column);
-        const int percent = resourceItem
-                                ? resourceItem->data(kProgressBarRole).toInt()
-                                : -1;
-        const QColor color = percent < 0
-                                 ? QColor("#8b949e")
-                                 : (percent >= 90 ? QColor("#f85149")
-                                                  : (percent >= 70 ? QColor("#d29922")
-                                                                   : QColor("#3fb950")));
-        auto *icon = new QLabel(resources);
-        icon->setPixmap(tintedOcticonPixmap(std::get<1>(resource),
-                                            QColor("#8b949e"), 12));
-        auto *name = new QLabel(std::get<2>(resource), resources);
-        name->setStyleSheet(QStringLiteral("color:#6e7781; font-size:10px;"));
-        auto *bar = new QProgressBar(resources);
-        bar->setRange(0, 100);
-        bar->setValue(qMax(0, percent));
-        bar->setTextVisible(false);
-        bar->setFixedSize(42, 6);
-        bar->setStyleSheet(
-            QStringLiteral("QProgressBar { border:0; border-radius:3px; "
-                           "background:#30363d; } QProgressBar::chunk { "
-                           "border-radius:3px; background:%1; }")
-                .arg(color.name()));
-        auto *number = new QLabel(percent >= 0 ? QString::number(percent) + "%"
-                                               : QString::fromUtf8("\xE2\x80\x94"),
-                                  resources);
-        number->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        number->setFixedWidth(28);
-        const QString resourceTip = tooltipAt(column);
-        for (QWidget *widget : QList<QWidget *>{icon, name, bar, number})
-            widget->setToolTip(resourceTip);
-        resourceLayout->addWidget(icon, resourceRow, 0);
-        resourceLayout->addWidget(name, resourceRow, 1);
-        resourceLayout->addWidget(bar, resourceRow, 2);
-        resourceLayout->addWidget(number, resourceRow, 3);
-        ++resourceRow;
-    }
-    grid->addWidget(resources, 0, 0, 3, 1);
-
-    auto *top = new QHBoxLayout;
-    top->setContentsMargins(0, 0, 0, 0);
-    top->setSpacing(8);
-    QTableWidgetItem *nodeItem = itemAt(MirrorNodeColNode);
-    auto *nameButton = new QPushButton(nodeItem ? nodeItem->text() : QString(), card);
-    nameButton->setObjectName(QStringLiteral("mirrorNodeNameButton"));
-    nameButton->setFlat(true);
-    nameButton->setCursor(Qt::PointingHandCursor);
-    nameButton->setIconSize(QSize(14, 14));
-    if (nodeItem) {
-        nameButton->setIcon(nodeItem->icon());
-        nameButton->setToolTip(nodeItem->toolTip());
-    }
-    const QString stableNodeId = nodeItem ? nodeItem->data(Qt::UserRole).toString()
-                                          : QString();
-    const QString stableNodeName = nodeItem ? nodeItem->text() : QString();
-    nameButton->setEnabled(!stableNodeId.isEmpty());
-    connect(nameButton, &QPushButton::clicked, this,
-            [this, stableNodeId, stableNodeName] {
-                if (!stableNodeId.isEmpty())
-                    showNodeProfile(stableNodeId, stableNodeName);
-            });
-    top->addWidget(nameButton);
-    top->addWidget(metric("person", "Owner", textAt(MirrorNodeColOwner),
-                          tooltipAt(MirrorNodeColOwner)));
-
-    QTableWidgetItem *syncItem = itemAt(MirrorNodeColSync);
-    auto *syncButton = new QPushButton(QStringLiteral("Sync now"), card);
-    syncButton->setObjectName(QStringLiteral("mirrorNodeSyncButton"));
-    syncButton->setCursor(Qt::PointingHandCursor);
-    syncButton->setToolTip(syncItem ? syncItem->toolTip()
-                                   : QStringLiteral("Sync this mirror now"));
-    setOcticon(syncButton, "sync", 13);
-    const QString stableSyncId = syncItem
-                                     ? syncItem->data(kMirrorSyncNodeIdRole).toString()
-                                     : QString();
-    connect(syncButton, &QPushButton::clicked, this,
-            [this, stableSyncId, stableNodeName] {
-                if (!m_mirrorNodesTable)
-                    return;
-                for (int candidate = 0; candidate < m_mirrorNodesTable->rowCount();
-                     ++candidate) {
-                    QTableWidgetItem *candidateName =
-                        m_mirrorNodesTable->item(candidate, MirrorNodeColNode);
-                    QTableWidgetItem *candidateSync =
-                        m_mirrorNodesTable->item(candidate, MirrorNodeColSync);
-                    if (!candidateName || !candidateSync)
-                        continue;
-                    const QString candidateId =
-                        candidateSync->data(kMirrorSyncNodeIdRole).toString();
-                    if ((!stableSyncId.isEmpty() && candidateId == stableSyncId) ||
-                        (stableSyncId.isEmpty() &&
-                         candidateName->text() == stableNodeName)) {
-                        syncMirrorNodeNow(candidate);
-                        return;
-                    }
-                }
-            });
-    syncButton->setEnabled(syncItem != nullptr);
-    top->addWidget(syncButton);
-    const bool sourceOfTruth =
-        stableNodeName.contains(QLatin1String("source of truth"),
-                                Qt::CaseInsensitive);
-    if (sourceOfTruth) {
-        auto *server = new QPushButton(QStringLiteral("Server"), card);
-        server->setObjectName(QStringLiteral("mirrorNodeServerButton"));
-        server->setCursor(Qt::PointingHandCursor);
-        server->setToolTip(QStringLiteral(
-            "Open the local Go mirror-node stats, account, and settings window"));
-        setOcticon(server, "server", 13);
-        connect(server, &QPushButton::clicked, this,
-                &MainWindow::showMirrorNodeCompanion);
-        top->addWidget(server);
-        const bool running = m_mirrorNodeProcess &&
-                             m_mirrorNodeProcess->state() != QProcess::NotRunning;
-        auto *power = new QPushButton(running ? QStringLiteral("Stop")
-                                              : QStringLiteral("Start"),
-                                      card);
-        power->setObjectName(QStringLiteral("mirrorNodeServerPowerButton"));
-        power->setCursor(Qt::PointingHandCursor);
-        setOcticon(power, running ? "stop" : "rocket", 13);
-        connect(power, &QPushButton::clicked, this, [this, running] {
-            if (running)
-                stopManagedMirrorNodeServer();
-            else
-                startManagedMirrorNodeServer();
-        });
-        top->addWidget(power);
-    }
-    top->addStretch(1);
-
-    const QString reachability = textAt(MirrorNodeColReachability);
-    const bool readmeVisible = reachability.startsWith(QLatin1String("README"));
-    const bool checking = reachability.startsWith(QLatin1String("Checking")) ||
-                          reachability.startsWith(QLatin1String("Relay"));
-    const QColor reachColor = readmeVisible
-                                  ? QColor("#3fb950")
-                                  : (checking ? QColor("#d29922")
-                                              : QColor("#f85149"));
-    auto *reachLabel = new QLabel(card);
-    reachLabel->setObjectName(QStringLiteral("mirrorNodeReachability"));
-    reachLabel->setTextFormat(Qt::RichText);
-    reachLabel->setText(QStringLiteral("<span style='color:%1'>\xE2\x97\x8F</span> %2")
-                            .arg(reachColor.name(), reachability.toHtmlEscaped()));
-    reachLabel->setToolTip(tooltipAt(MirrorNodeColReachability));
-    top->addWidget(metric("download", "Clones", textAt(MirrorNodeColClones),
-                          tooltipAt(MirrorNodeColClones)));
-    top->addWidget(metric("eye", "Website", textAt(MirrorNodeColWebsite),
-                          tooltipAt(MirrorNodeColWebsite)));
-    top->addWidget(reachLabel);
-    grid->addLayout(top, 0, 1);
-
-    auto *commit = new QHBoxLayout;
-    commit->setContentsMargins(0, 0, 0, 0);
-    commit->setSpacing(8);
-    QString hash = textAt(MirrorNodeColCommit);
-    QString branch = QString::fromUtf8("\xE2\x80\x94");
-    QString commitAge = QString::fromUtf8("\xE2\x80\x94");
-    static const QRegularExpression commitParts(
-        QStringLiteral("^([^\\s]+)(?:\\s+\\(([^)]+)\\))?(?:\\s+\\x{00b7}\\s+(.+))?$"));
-    const QRegularExpressionMatch commitMatch = commitParts.match(hash);
-    if (commitMatch.hasMatch()) {
-        hash = commitMatch.captured(1);
-        if (!commitMatch.captured(2).isEmpty())
-            branch = commitMatch.captured(2);
-        if (!commitMatch.captured(3).isEmpty())
-            commitAge = commitMatch.captured(3);
-    }
-    const QString commitTip = tooltipAt(MirrorNodeColCommit);
-    commit->addWidget(metric("git-commit", "Hash", hash, commitTip,
-                             QColor("#58a6ff")));
-    commit->addWidget(metric("git-branch", "Branch", branch, commitTip));
-    commit->addWidget(metric("history", "Commit", commitAge, commitTip));
-    auto *messageIcon = new QLabel(card);
-    messageIcon->setPixmap(tintedOcticonPixmap("comment", QColor("#8b949e"), 12));
-    commit->addWidget(messageIcon);
-    auto *message = new ElidingStatusLabel(card);
-    message->setObjectName(QStringLiteral("mirrorNodeCommitMessage"));
-    message->setFullText(textAt(MirrorNodeColMessage));
-    if (!tooltipAt(MirrorNodeColMessage).isEmpty())
-        message->setToolTip(tooltipAt(MirrorNodeColMessage));
-    commit->addWidget(message, 1);
-    commit->addWidget(metric("person", "Author", textAt(MirrorNodeColAuthor),
-                             tooltipAt(MirrorNodeColAuthor)));
-    grid->addLayout(commit, 1, 1);
-
-    auto *details = new QHBoxLayout;
-    details->setContentsMargins(0, 0, 0, 0);
-    details->setSpacing(8);
-    details->addWidget(metric("sync", "Synced", textAt(MirrorNodeColSynced),
-                              tooltipAt(MirrorNodeColSynced)));
-    details->addWidget(metric("history", "Delay", textAt(MirrorNodeColSyncDelay),
-                              tooltipAt(MirrorNodeColSyncDelay)));
-    details->addWidget(metric("server", "Size", textAt(MirrorNodeColSize),
-                              tooltipAt(MirrorNodeColSize)));
-
-    QTableWidgetItem *healthItem = itemAt(MirrorNodeColHealth);
-    QString healthText = healthItem ? healthItem->text() : QString::fromUtf8("\xE2\x80\x94");
-    const QString healthDetail = healthItem ? healthItem->toolTip().simplified()
-                                            : QString();
-    if (!healthDetail.isEmpty() && healthDetail != healthText)
-        healthText += QStringLiteral(": ") + healthDetail;
-    auto *healthIcon = new QLabel(card);
-    healthIcon->setPixmap(tintedOcticonPixmap(
-        healthText.contains(QLatin1String("warning"), Qt::CaseInsensitive) ||
-                healthText.contains(QLatin1String("error"), Qt::CaseInsensitive)
-            ? QStringLiteral("alert")
-            : QStringLiteral("shield-check"),
-        healthText.contains(QLatin1String("error"), Qt::CaseInsensitive)
-            ? QColor("#f85149")
-            : (healthText.contains(QLatin1String("warning"), Qt::CaseInsensitive)
-                   ? QColor("#d29922")
-                   : QColor("#3fb950")),
-        12));
-    details->addWidget(healthIcon);
-    auto *health = new ElidingStatusLabel(card);
-    health->setObjectName(QStringLiteral("mirrorNodeHealthDetail"));
-    health->setFullText(healthText);
-    if (healthItem)
-        health->setToolTip(healthItem->toolTip());
-    details->addWidget(health, 1);
-
-    const QString counts =
-        QStringLiteral("%1 %2  %3 %4  %5 %6  %7 %8  %9 %10")
-            .arg(octiconMarkup("issue-opened", 11), textAt(MirrorNodeColIssues),
-                 octiconMarkup("git-commit", 11), textAt(MirrorNodeColCommits),
-                 octiconMarkup("git-branch", 11), textAt(MirrorNodeColBranches),
-                 octiconMarkup("git-pull-request", 11), textAt(MirrorNodeColPulls),
-                 octiconMarkup("comment", 11),
-                 textAt(MirrorNodeColDiscussions));
-    auto *countLabel = new QLabel(card);
-    countLabel->setTextFormat(Qt::RichText);
-    countLabel->setText(counts);
-    countLabel->setToolTip(QStringLiteral(
-                              "Issues %1 \xC2\xB7 commits %2 \xC2\xB7 branches %3 "
-                              "\xC2\xB7 pulls %4 \xC2\xB7 discussions %5")
-                              .arg(textAt(MirrorNodeColIssues),
-                                   textAt(MirrorNodeColCommits),
-                                   textAt(MirrorNodeColBranches),
-                                   textAt(MirrorNodeColPulls),
-                                   textAt(MirrorNodeColDiscussions)));
-    details->addWidget(countLabel);
-
-    QStringList hostFacts;
-    hostFacts << textAt(MirrorNodeColPlatform) << textAt(MirrorNodeColVersion);
-    const QString tunnel = textAt(MirrorNodeColTunnel);
-    if (tunnel != QString::fromUtf8("\xE2\x80\x94"))
-        hostFacts << tunnel;
-    const QString artifacts = textAt(MirrorNodeColArtifacts);
-    if (artifacts != QString::fromUtf8("\xE2\x80\x94") && artifacts != QLatin1String("0"))
-        hostFacts << QStringLiteral("%1 artifacts").arg(artifacts);
-    auto *host = metric("device-desktop", QString(), hostFacts.join(" \xC2\xB7 "));
-    host->setToolTip(QStringLiteral("Node %1\n%2")
-                         .arg(textAt(MirrorNodeColId), tooltipAt(MirrorNodeColTunnel)));
-    details->addWidget(host);
-    grid->addLayout(details, 2, 1);
-
-    return card;
-}
-
-void MainWindow::rebuildMirrorNodeCards()
-{
-    if (!m_mirrorNodesTable)
+    if (!m_mirrorNodeServerButton || !m_mirrorNodeServerPowerButton)
         return;
-    for (int row = 0; row < m_mirrorNodesTable->rowCount(); ++row) {
-        QTableWidgetItem *sync = m_mirrorNodesTable->item(row, MirrorNodeColSync);
-        if (!m_mirrorNodesTable->item(row, MirrorNodeColCard)) {
-            auto *cardItem = new QTableWidgetItem;
-            cardItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-            m_mirrorNodesTable->setItem(row, MirrorNodeColCard, cardItem);
-        }
-        if (sync) {
-            QWidget *card = buildMirrorNodeCard(row);
-            m_mirrorNodesTable->setCellWidget(row, MirrorNodeColCard, card);
-            m_mirrorNodesTable->setRowHeight(row, qMax(122, card->sizeHint().height() + 4));
-        } else {
-            auto *empty = new QLabel(
-                m_mirrorNodesTable->item(row, MirrorNodeColNode)
-                    ? m_mirrorNodesTable->item(row, MirrorNodeColNode)->text()
-                    : QString(),
-                m_mirrorNodesTable);
-            empty->setAlignment(Qt::AlignCenter);
-            empty->setStyleSheet(QStringLiteral("color:#8b949e;"));
-            m_mirrorNodesTable->setCellWidget(row, MirrorNodeColCard, empty);
-            m_mirrorNodesTable->setRowHeight(row, 70);
-        }
-    }
+    m_mirrorNodeServerButton->setVisible(visible);
+    m_mirrorNodeServerPowerButton->setVisible(visible);
+    const bool running = m_mirrorNodeProcess &&
+                         m_mirrorNodeProcess->state() != QProcess::NotRunning;
+    m_mirrorNodeServerPowerButton->setText(running ? QStringLiteral("Stop")
+                                                   : QStringLiteral("Start"));
+    setOcticon(m_mirrorNodeServerPowerButton, running ? "stop" : "rocket", 16);
+    m_mirrorNodeServerPowerButton->setToolTip(
+        running ? QStringLiteral("Stop the managed Go mirror-node server")
+                : QStringLiteral("Start the managed Go mirror-node server"));
 }
 
 void MainWindow::onMirrorRefreshRequested(const QString &source,
@@ -1937,6 +1669,7 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
+        updateMirrorNodeServerButtons(false);
         // No repo to scope the tint to: the chrome line's node dots go back to
         // plain network status (adhoc #79 / #124).
         setNodeDotRepoStates({});
@@ -3339,6 +3072,7 @@ void MainWindow::loadMirrorNodesPanel()
     // is the source of truth's problem to fix (see refreshRepoPinBanner).
     if (m_mirrorResetPinButton)
         m_mirrorResetPinButton->setVisible(weAreSource && repoHasWorkingTree());
+    updateMirrorNodeServerButtons(weAreSource && repoHasWorkingTree());
 
     if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoMirrorsTab))
         b->setBadgeCount(count);
@@ -3350,12 +3084,7 @@ void MainWindow::loadMirrorNodesPanel()
                 : "No other nodes are advertising a mirror of this repository yet.");
         empty->setForeground(QColor("#8b949e"));
         m_mirrorNodesTable->setItem(0, MirrorNodeColNode, empty);
-    } else {
-        // Build card widgets only after the hidden data rows have reached their
-        // final order; each card reads all of its display values from that row.
-        m_mirrorNodesTable->sortItems(MirrorNodeColNode, Qt::AscendingOrder);
     }
-    rebuildMirrorNodeCards();
     updateMirrorNodeLightTimer();
 }
 
@@ -3381,11 +3110,6 @@ void MainWindow::animateMirrorNodeLights()
             item->setIcon(caution);
         else if (light == 2)
             item->setIcon(error);
-        if (auto *card = m_mirrorNodesTable->cellWidget(r, MirrorNodeColCard)) {
-            if (auto *name = card->findChild<QPushButton *>(
-                    QStringLiteral("mirrorNodeNameButton")))
-                name->setIcon(item->icon());
-        }
     }
 }
 
@@ -4666,39 +4390,35 @@ void MainWindow::testSetMirrorNodesOnlineOnly(bool checked)
         m_mirrorNodesOnlineOnlyCheck->setChecked(checked);
 }
 
-bool MainWindow::testMirrorNodeCardsAreCompact() const
+bool MainWindow::testMirrorNodesAreSingleLineRows() const
 {
     if (!m_mirrorNodesTable)
         return false;
+    // The header is the icon strip: visible, and every column carries an icon
+    // plus its full name on the tooltip instead of a widening text caption.
+    if (m_mirrorNodesTable->horizontalHeader()->isHidden())
+        return false;
+    for (int col = 0; col < MirrorNodeColumnCount; ++col) {
+        const QTableWidgetItem *header =
+            m_mirrorNodesTable->horizontalHeaderItem(col);
+        if (!header || header->icon().isNull() || header->toolTip().isEmpty() ||
+            !header->text().isEmpty())
+            return false;
+        if (m_mirrorNodesTable->isColumnHidden(col))
+            return false;
+    }
     bool foundNode = false;
     for (int row = 0; row < m_mirrorNodesTable->rowCount(); ++row) {
         if (!m_mirrorNodesTable->item(row, MirrorNodeColSync))
             continue;
         foundNode = true;
-        QWidget *card =
-            m_mirrorNodesTable->cellWidget(row, MirrorNodeColCard);
-        if (!card || card->property("mirrorCardRows").toInt() != 3 ||
-            !card->findChild<QFrame *>(QStringLiteral("mirrorNodeResources")) ||
-            card->findChildren<QProgressBar *>().size() != 3 ||
-            !card->findChild<QPushButton *>(
-                QStringLiteral("mirrorNodeNameButton")) ||
-            !card->findChild<QPushButton *>(
-                QStringLiteral("mirrorNodeSyncButton")) ||
-            !card->findChild<QLabel *>(
-                QStringLiteral("mirrorNodeReachability")) ||
-            !card->findChild<QLabel *>(
-                QStringLiteral("mirrorNodeCommitMessage")) ||
-            !card->findChild<QLabel *>(
-                QStringLiteral("mirrorNodeHealthDetail")))
-            return false;
-        const QTableWidgetItem *name =
-            m_mirrorNodesTable->item(row, MirrorNodeColNode);
-        if (name && name->text().contains(QLatin1String("source of truth"),
-                                          Qt::CaseInsensitive) &&
-            (!card->findChild<QPushButton *>(
-                 QStringLiteral("mirrorNodeServerButton")) ||
-             !card->findChild<QPushButton *>(
-                 QStringLiteral("mirrorNodeServerPowerButton"))))
+        // Plain single-line item rows: no per-row card widget (cell widgets do
+        // not survive this table's sorts — nodes vanished from view), and the
+        // pinned compact row height.
+        for (int col = 0; col < MirrorNodeColumnCount; ++col)
+            if (m_mirrorNodesTable->cellWidget(row, col))
+                return false;
+        if (m_mirrorNodesTable->rowHeight(row) > 30)
             return false;
     }
     return foundNode;
