@@ -281,8 +281,10 @@ QString agentStatusBadgeText(const AgentSession &session)
         return QStringLiteral("Failed");
     if (session.status == AgentStatus::Stopped)
         return QStringLiteral("Stopped");
-    if (session.status == AgentStatus::Running)
-        return QStringLiteral("Working");
+    if (session.status == AgentStatus::Running) {
+        const QString modelWord = agentModelShortLabel(session.model);
+        return modelWord.isEmpty() ? QStringLiteral("Working") : modelWord;
+    }
     if (session.status == AgentStatus::Waiting)
         return QStringLiteral("Waiting");
     if (session.status == AgentStatus::Queued)
