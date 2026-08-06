@@ -13086,6 +13086,19 @@ async def catalog_handler(env, request):
                     record.get("changedFiles", []))
             except Exception:
                 pass
+            # The same moved head is what the mirror fleet waits on: push a
+            # payload-free "commits" event over the node event channel so
+            # mirrors fetch now instead of on a sync poll (the no-polling
+            # policy, docs/operations/polling-elimination.md). Only the
+            # source's own publish notifies — a mirror's "remote-clone"
+            # record echoes the same head after ITS fetch, and notifying on
+            # that would re-wake the fleet in a loop.
+            if record.get("source") == "local-node":
+                try:
+                    await notify_repo_mirrors(
+                        env, owner, record["name"], "commits")
+                except Exception:
+                    pass
         payload = {
             "ok": True,
             "repository": record,

@@ -11915,6 +11915,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
             const bool userStopped = as->status == AgentStatus::Stopped;
             if (!userStopped && ClaudeTranscriptView::resultIsError(ev)) {
                 m_agentCompletionChecks.remove(sessionId);
+                m_agentCompletionPollCounts.remove(sessionId);
                 as->status = AgentStatus::Failed;
                 as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 // Same wording the transcript's "✗ Failed" row shows, so the
@@ -11932,6 +11933,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
                 awaitSubprocesses = true;
             } else if (userStopped) {
                 m_agentCompletionChecks.remove(sessionId);
+                m_agentCompletionPollCounts.remove(sessionId);
             }
             if (m_agentStore && !isExternalSession(sessionId))
                 m_agentStore->saveSession(*as);
@@ -12047,6 +12049,7 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     // A fresh turn supersedes any delayed completion poll from the previous
     // result; that old poll must never turn this new turn into Done.
     m_agentCompletionChecks.remove(sessionId);
+    m_agentCompletionPollCounts.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status == AgentStatus::Running)
         return;
@@ -12063,6 +12066,16 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     updateAgentStatusCell(sessionId);
 }
 
+// A build/test child usually exits within a poll or two of the CLI's `result`
+// event. An orphaned helper the CLI never reaped (e.g. a screenshot-capture
+// python3 process) can linger indefinitely, and without a cap this poll would
+// have left the session stuck showing "Running" forever (adhoc #1583). Escalate
+// to a kill after a 10s grace period, and give up waiting on the tree entirely
+// after 20s so the session always reaches Success once the CLI's own turn
+// finished, even if a straggler proves unkillable.
+static constexpr int kAgentCompletionKillAfterPolls = 40;   // 40 * 250ms = 10s
+static constexpr int kAgentCompletionGiveUpAfterPolls = 80; // 80 * 250ms = 20s
+
 void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
 {
     if (!m_agentCompletionChecks.contains(sessionId))
@@ -12070,12 +12083,21 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
     AgentSession *session = findAgentSession(sessionId);
     if (!session || session->status != AgentStatus::Running) {
         m_agentCompletionChecks.remove(sessionId);
+        m_agentCompletionPollCounts.remove(sessionId);
         return;
     }
 
     const QList<SystemStats::DescendantProcess> subprocesses =
         SystemStats::descendantProcesses(agentSessionProcessId(sessionId));
-    if (!subprocesses.isEmpty()) {
+    const int pollCount = subprocesses.isEmpty() ? 0 : ++m_agentCompletionPollCounts[sessionId];
+    if (!subprocesses.isEmpty() && pollCount < kAgentCompletionGiveUpAfterPolls) {
+        if (pollCount == kAgentCompletionKillAfterPolls) {
+            QList<qint64> pids;
+            pids.reserve(subprocesses.size());
+            for (const SystemStats::DescendantProcess &p : subprocesses)
+                pids.append(p.pid);
+            killExternalSessionPids(pids);
+        }
         // Keep the session visibly Working and let the detail popup expose the
         // snapshot above. A short, single-shot poll avoids a permanent timer
         // for idle sessions and lets a just-exited child disappear promptly.
@@ -12088,6 +12110,7 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
     }
 
     m_agentCompletionChecks.remove(sessionId);
+    m_agentCompletionPollCounts.remove(sessionId);
     session->status = AgentStatus::Success;
     session->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
     session->lastError.clear();
@@ -12101,6 +12124,7 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
 void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
 {
     m_agentCompletionChecks.remove(sessionId);
+    m_agentCompletionPollCounts.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status != AgentStatus::Running)
         return; // only meaningful for a session that was actively running

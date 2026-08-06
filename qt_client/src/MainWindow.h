@@ -5474,8 +5474,9 @@ private:
     void startRepoHosts();
     void stopRepoHosts();
     // Live relay event channel (ForkMeshNodes DO): pushed event frames run
-    // scheduleRelaySync() the moment the relay records a change, so the
-    // m_inboxPollTimer HTTPS poll is only the reconnect-gap safety net.
+    // scheduleRelaySync() the moment the relay records a change. The channel
+    // is the only sync trigger — no fallback poll; reconnect gaps are covered
+    // by one catch-up sync per (re)connect.
     void startNodeEventSocket();
     void stopNodeEventSocket();
     void onRequestServed(const QString &owner, const QString &name, bool clone);
@@ -6424,7 +6425,6 @@ private:
     QPlainTextEdit *m_agentPromptPreambleEdit = nullptr;
     QPlainTextEdit *m_prioritizePromptEdit = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
-    QTimer *m_inboxPollTimer = nullptr; // slow fallback tick for performRelaySync()
     // Coalesces control-channel "event" frames into one /api/sync.
     QTimer *m_relaySyncDebounce = nullptr;
     // False after the relay 404s /api/sync (older worker): fall back to the
@@ -8090,6 +8090,10 @@ private:
     // Sessions that delivered a clean result but still have agent-owned child
     // processes. Their status stays Running until the tree is empty.
     QSet<int> m_agentCompletionChecks;
+    // How many completeAgentSessionWhenSubprocessesExit() polls a session has
+    // spent waiting on a non-empty process tree — used to escalate a stuck
+    // wait to a kill, then to giving up on the tree entirely (adhoc #1583).
+    QHash<int, int> m_agentCompletionPollCounts;
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
