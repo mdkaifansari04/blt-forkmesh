@@ -724,10 +724,18 @@ QNetworkReply *BackoffNetworkAccessManager::createRequest(
         // full cadence because only 429 was treated as backpressure.
         const bool overloaded =
             code == 429 || (code >= 500 && code <= 599 && !tunnelContent);
-        if (overloaded)
+        if (overloaded) {
+            // A 429 often names its own cooldown via Retry-After; floor the
+            // exponential delay at that so this host's next request doesn't
+            // fire before the server said it would even consider it.
+            const QByteArray retryAfter = reply->rawHeader("Retry-After");
+            bool retryAfterOk = false;
+            const qint64 retryAfterMs =
+                QString::fromLatin1(retryAfter).trimmed().toLongLong(&retryAfterOk) * 1000;
             m_backoff.noteFailure(channel, QDateTime::currentMSecsSinceEpoch(),
-                                  kBaseMs, kCapMs);
-        else if (reply->error() == QNetworkReply::NoError)
+                                  kBaseMs, kCapMs,
+                                  retryAfterOk && retryAfterMs > 0 ? retryAfterMs : 0);
+        } else if (reply->error() == QNetworkReply::NoError)
             m_backoff.noteSuccess(channel);
     });
     return reply;
