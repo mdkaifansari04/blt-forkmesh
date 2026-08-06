@@ -2568,6 +2568,161 @@ void PullStore::discardPullEditWorkTree()
     runGit(m_workTree, {"worktree", "prune"}, nullptr, nullptr);
 }
 
+// Materialize an inbox submission locally without accepting it (adhoc #1541).
+// Unlike every other path in this file this one writes nothing into pulls/, moves
+// no ref and creates no branch: the submission is replayed in a detached linked
+// worktree the reviewer owns and can throw away. The host repository is the
+// user's checkout when there is one, otherwise the bare mirror — `git worktree
+// add` works on both.
+bool PullStore::checkoutForReview(const PullRequest &pr, const QString &dir,
+                                  PullReviewCheckout *out, QString *error) const
+{
+    if (out)
+        *out = PullReviewCheckout{};
+    const QString host = canWrite() ? m_workTree : m_mirror;
+    if (host.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Reviewing a submission needs a local copy of "
+                                    "this repository on this computer.");
+        return false;
+    }
+    if (dir.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("No review folder was given.");
+        return false;
+    }
+
+    // Re-reviewing the same submission replaces the previous copy rather than
+    // failing on a directory git still has registered as a worktree.
+    discardReviewCheckout(dir);
+    QDir().mkpath(QFileInfo(dir).absolutePath());
+
+    // The exact base the author signed against is the most faithful thing to
+    // replay onto; fall back to the named base branch, then to HEAD.
+    QString baseSha = resolvedCommitOid(host, pr.creationBaseOid);
+    if (baseSha.isEmpty())
+        baseSha = resolvedCommitOid(host, pr.base.trimmed());
+    if (baseSha.isEmpty())
+        baseSha = resolvedCommitOid(host, QStringLiteral("HEAD"));
+    if (baseSha.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Could not resolve the base this pull request "
+                                    "applies to (%1).")
+                         .arg(pr.base.trimmed().isEmpty()
+                                  ? QStringLiteral("unnamed")
+                                  : pr.base.trimmed());
+        return false;
+    }
+
+    // A branch-backed submission whose head branch already synced here needs no
+    // replay at all: its commits *are* the pull request.
+    const QString headSha =
+        pr.branchBacked ? reachableHeadCommit(m_workTree, m_mirror, pr.head)
+                        : QString();
+
+    QString err;
+    if (!runGit(host,
+                {"worktree", "add", "--detach", dir,
+                 headSha.isEmpty() ? baseSha : headSha},
+                nullptr, &err)) {
+        runGit(host, {"worktree", "prune"}, nullptr, nullptr);
+        QDir(dir).removeRecursively();
+        if (error)
+            *error = QStringLiteral("Could not create the review checkout: %1")
+                         .arg(err);
+        return false;
+    }
+
+    PullReviewCheckout result;
+    result.path = dir;
+    result.baseOid = baseSha;
+
+    if (headSha.isEmpty()) {
+        const QString stem =
+            QStringLiteral("forkmesh-pr-review-%1-%2")
+                .arg(pr.number)
+                .arg(QDateTime::currentMSecsSinceEpoch());
+        const QString mboxPath = QDir::temp().filePath(stem + ".mbox");
+        const bool replayed =
+            writeTextFile(mboxPath,
+                          pr.commits.isEmpty() ? syntheticMbox(pr) : pr.commits,
+                          nullptr) &&
+            runGit(dir, {"am", "--3way", mboxPath});
+        QFile::remove(mboxPath);
+        if (!replayed) {
+            // Never hand back a checkout sitting mid-`am`: it would read as a
+            // rebase in progress in every git tool the reviewer opens.
+            if (!amStateDir(dir).isEmpty())
+                runGit(dir, {"am", "--abort"}, nullptr, nullptr);
+            // Fall back to the flat patch as uncommitted working-tree changes so
+            // a submission that cannot replay as commits is still reviewable,
+            // conflict markers and all.
+            const QString patchPath = QDir::temp().filePath(stem + ".patch");
+            const bool wrote = !pr.patch.isEmpty() &&
+                               writeTextFile(patchPath, pr.patch, nullptr);
+            const bool applied =
+                wrote && runGit(dir, {"apply", "--3way", "--whitespace=nowarn",
+                                      patchPath},
+                                nullptr, &err);
+            const QStringList conflicts = wrote ? unmergedFiles(dir) : QStringList();
+            QFile::remove(patchPath);
+            if (!applied && conflicts.isEmpty()) {
+                discardReviewCheckout(dir);
+                if (error)
+                    *error = QStringLiteral(
+                                 "The pull request could not be applied to %1: %2")
+                                 .arg(pr.base.trimmed().isEmpty()
+                                          ? baseSha.left(8)
+                                          : pr.base.trimmed(),
+                                      err.isEmpty()
+                                          ? QStringLiteral("no reviewable change "
+                                                           "was submitted")
+                                          : err);
+                return false;
+            }
+            result.uncommitted = true;
+            result.conflicts = conflicts;
+        }
+    }
+
+    QByteArray tip;
+    if (runGit(dir, {"rev-parse", "HEAD"}, &tip))
+        result.headOid = QString::fromUtf8(tip).trimmed();
+    QByteArray count;
+    if (!result.uncommitted &&
+        runGit(dir, {"rev-list", "--count", baseSha + "..HEAD"}, &count))
+        result.commitCount = QString::fromUtf8(count).trimmed().toInt();
+
+    // What the reviewer reads: the replayed range, or the dirty worktree when the
+    // patch had to be applied without committing.
+    QByteArray diff;
+    runGit(dir,
+           result.uncommitted
+               ? QStringList{"diff", "--binary", "HEAD"}
+               : QStringList{"diff", "--binary", baseSha + "..HEAD"},
+           &diff);
+    result.patch = QString::fromUtf8(diff);
+    if (result.patch.trimmed().isEmpty())
+        result.patch = pr.patch; // signed payload as submitted
+    if (out)
+        *out = result;
+    return true;
+}
+
+void PullStore::discardReviewCheckout(const QString &dir) const
+{
+    if (dir.trimmed().isEmpty())
+        return;
+    const QString host = canWrite() ? m_workTree : m_mirror;
+    if (QFileInfo::exists(dir) && !amStateDir(dir).isEmpty())
+        runGit(dir, {"am", "--abort"}, nullptr, nullptr);
+    if (!host.trimmed().isEmpty())
+        runGit(host, {"worktree", "remove", "--force", dir}, nullptr, nullptr);
+    QDir(dir).removeRecursively();
+    if (!host.trimmed().isEmpty())
+        runGit(host, {"worktree", "prune"}, nullptr, nullptr);
+}
+
 bool PullStore::startPullAgentEdit(int number, QString *error)
 {
     // Preferred path: edit in a scratch worktree on the PR's own branch, which

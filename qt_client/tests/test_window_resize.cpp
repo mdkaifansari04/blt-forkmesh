@@ -3072,6 +3072,18 @@ int main(int argc, char *argv[])
           QStringLiteral("issue, PR, and discussion inbox actions show their "
                          "pending submission counts"));
 
+    // adhoc #1541: the Inbox tile only exists while the Pulls toolbar is on
+    // screen, so a pull request waiting on the nodes also rides the Pulls tab as
+    // a red count next to its blue open-PR total.
+    check(window.testPullsTabAlertBadgeCount() == 2,
+          QStringLiteral("pull requests waiting in the inbox show as a red count "
+                         "on the Pulls tab"));
+    window.testSetPendingInboxCounts(0, 0, 0);
+    check(window.testPullsTabAlertBadgeCount() == 0,
+          QStringLiteral("the Pulls tab drops its red count once the inbox is "
+                         "drained"));
+    window.testSetPendingInboxCounts(3, 2, 4);
+
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
     check(window.findChild<QLabel *>(

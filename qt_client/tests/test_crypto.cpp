@@ -3912,6 +3912,100 @@ int main(int argc, char *argv[])
                   "writable strict pull reads validate the current ref");
         }
 
+        // adhoc #1541: a submission waiting in the relay inbox can be pulled onto
+        // this computer and read *before* it is accepted. The review copy must be
+        // a real checkout of the change, and the repository it came from must be
+        // left completely untouched — no pulls/ metadata, no pr/<n> branch, no
+        // ref move — because nothing has been merged yet.
+        QTemporaryDir reviewHostRepo;
+        bool reviewHostSetup =
+            reviewHostRepo.isValid() &&
+            runTestGit(reviewHostRepo.path(),
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(reviewHostRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Owner Name")}) &&
+            runTestGit(reviewHostRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("owner@example.test")}) &&
+            writeTestFile(reviewHostRepo.path() + QStringLiteral("/source.cpp"),
+                          QByteArrayLiteral("base\n")) &&
+            commitTestTree(reviewHostRepo.path(), QStringLiteral("base"),
+                           QStringLiteral("2026-08-06T08:00:00Z"),
+                           QStringLiteral("Owner Name"),
+                           QStringLiteral("owner@example.test"));
+        check(reviewHostSetup, "pull-review host repository is created");
+        if (reviewHostSetup) {
+            PullRequest submitted;
+            submitted.number = 7;
+            submitted.title = QStringLiteral("Contributed change");
+            submitted.base = QStringLiteral("main");
+            submitted.head = QStringLiteral("contributor:feature");
+            submitted.authorName = QStringLiteral("Contributor");
+            submitted.author = QStringLiteral("contributorkey");
+            submitted.patch = QStringLiteral(
+                "diff --git a/source.cpp b/source.cpp\n"
+                "--- a/source.cpp\n"
+                "+++ b/source.cpp\n"
+                "@@ -1 +1 @@\n"
+                "-base\n"
+                "+reviewed change\n");
+            const PullStore reviewStore(reviewHostRepo.path(), QString(),
+                                        &identity, QStringLiteral("owner"));
+            const QString hostHeadBefore = testGitHead(reviewHostRepo.path());
+            QTemporaryDir reviewRoot;
+            const QString reviewDir =
+                reviewRoot.path() + QStringLiteral("/pr-7");
+            PullReviewCheckout checkout;
+            QString reviewError;
+            const bool pulled = reviewRoot.isValid() &&
+                                reviewStore.checkoutForReview(
+                                    submitted, reviewDir, &checkout, &reviewError);
+            QByteArray reviewedContents;
+            QFile reviewedFile(reviewDir + QStringLiteral("/source.cpp"));
+            if (reviewedFile.open(QIODevice::ReadOnly))
+                reviewedContents = reviewedFile.readAll();
+            check(pulled && reviewError.isEmpty() &&
+                      reviewedContents.trimmed() ==
+                          QByteArrayLiteral("reviewed change") &&
+                      checkout.path == reviewDir && checkout.commitCount == 1 &&
+                      !checkout.uncommitted && checkout.conflicts.isEmpty() &&
+                      checkout.patch.contains(QStringLiteral("reviewed change")),
+                  "a pending pull request is pulled into a local review checkout");
+            check(pulled &&
+                      !QFileInfo::exists(reviewHostRepo.path() +
+                                         QStringLiteral("/pulls")) &&
+                      testGitHead(reviewHostRepo.path()) == hostHeadBefore &&
+                      !runTestGit(reviewHostRepo.path(),
+                                  {QStringLiteral("rev-parse"),
+                                   QStringLiteral("--verify"),
+                                   QStringLiteral("--quiet"),
+                                   QStringLiteral("refs/heads/pr/7")}) &&
+                      !runTestGit(reviewHostRepo.path(),
+                                  {QStringLiteral("rev-parse"),
+                                   QStringLiteral("--verify"),
+                                   QStringLiteral("--quiet"),
+                                   QStringLiteral("refs/pr/7/head")}),
+                  "reviewing a submission merges nothing and writes no pull "
+                  "metadata, branch or ref");
+
+            // Repeating the review replaces the copy rather than failing on a
+            // directory git still holds as a registered worktree.
+            PullReviewCheckout second;
+            const bool again = pulled && reviewStore.checkoutForReview(
+                                             submitted, reviewDir, &second, nullptr);
+            reviewStore.discardReviewCheckout(reviewDir);
+            QByteArray worktreeList;
+            runTestGit(reviewHostRepo.path(),
+                       {QStringLiteral("worktree"), QStringLiteral("list")},
+                       &worktreeList);
+            check(again && second.commitCount == 1 &&
+                      !QFileInfo::exists(reviewDir) &&
+                      !QString::fromUtf8(worktreeList).contains(reviewDir),
+                  "a review checkout is repeatable and can be discarded again");
+        }
+
         QTemporaryDir strictDeriveRepo;
         bool strictDeriveSetup =
             strictDeriveRepo.isValid() &&
