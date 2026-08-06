@@ -1,5 +1,9 @@
 .wrangler/
 .pywrangler/
+# Staged asset subsets for the split site Workers (built from public/ by
+# tools/build_split_assets.py at deploy time; public/ is the source of truth).
+public_www/
+public_world/
 .venv/
 __pycache__/
 .mypy_cache/

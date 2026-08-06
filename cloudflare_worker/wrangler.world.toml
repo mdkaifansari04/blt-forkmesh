@@ -1,0 +1,47 @@
+# forkmesh-world — assets-only Worker for the /world three.js application.
+#
+# One of the three split site Workers (see docs/worker-split.md). It owns the
+# World's module graph (/world and /world/*) through the zone routes below;
+# everything else the World needs at runtime — /api/world/* (including the
+# realtime WebSocket into the Durable Objects), /assets/world/*,
+# /assets/songs/*, /assets/video/*, chat — are separate requests on un-routed
+# paths and keep resolving on forkmesh-relay.
+#
+# public_world/ is staged from public/ by the [build] command; _headers is
+# copied verbatim so the World keeps its deployment-freshness contract: the
+# shell and every module serve Cache-Control: no-store (a browser refresh
+# must never reuse an older module graph) and are frameable same-origin only
+# (the World is embedded at the bottom of every site page). deploy.sh's
+# verify_public_assets still hash-compares the live /world/*.js byte-for-byte
+# with public/world/ after every deploy — the staged copies are the same
+# bytes.
+#
+# Rollback: deleting this Worker (wrangler delete --name forkmesh-world)
+# removes its routes and the relay's custom-domain catch-all resumes serving
+# /world byte-identically.
+name = "forkmesh-world"
+compatibility_date = "2026-07-23"
+
+[build]
+command = "python3 tools/build_split_assets.py world"
+
+[assets]
+directory = "./public_world"
+html_handling = "none"
+not_found_handling = "404-page"
+
+[[routes]]
+pattern = "forkmesh.com/world"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "forkmesh.com/world/*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/world"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "www.forkmesh.com/world/*"
+zone_name = "forkmesh.com"
