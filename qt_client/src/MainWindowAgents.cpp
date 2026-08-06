@@ -10,6 +10,7 @@
 #include "RepoStatsStore.h"
 #include "AgentJail.h"
 #include "AgentPromptImages.h"
+#include "AgentResumeIdentity.h"
 #include "KebabHeaderView.h"
 #include "CodexAppServerSession.h"
 #include "UsageLimitCalendar.h"
@@ -2348,11 +2349,19 @@ QWidget *MainWindow::buildAgentsTab()
     // recovery path is immediately available where the outcome is shown.
     m_agentStartButton = railActionButton(
         QStringLiteral("play"), QStringLiteral("Continue"),
-        "Resume this session from where it left off");
+        "Resume this session with the agent, model and mode currently chosen in "
+        "the composer");
     m_agentStartButton->setObjectName("agentContinueButton");
     m_agentStartButton->hide();
-    connect(m_agentStartButton, &QPushButton::clicked, this,
-            &MainWindow::continueSelectedAgentSession);
+    connect(m_agentStartButton, &QPushButton::clicked, this, [this] {
+        // Same contract as the composer's "add" button on an empty prompt
+        // (adhoc #372): honour the agent/model/mode dropdowns before resuming,
+        // so a session whose agent hit its usage limit continues under the one
+        // the user just picked instead of silently re-running the exhausted
+        // one. The two buttons do the same job and must not disagree.
+        applyComposerSelectionToAgentSession(m_selectedAgentSessionId);
+        continueSelectedAgentSession();
+    });
 
     // Delete the agent together with its worktree folder and branch in one action.
     // adhoc #51 folded the session-only "Delete" that sat beside it into this one
@@ -10156,6 +10165,22 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     const QString resumeId =
         resuming ? (codex ? lastCodexThreadId(sid) : lastClaudeSessionId(sid))
                  : QString();
+    // Continuing under the *other* CLI (the composer's agent dropdown picks who
+    // takes the next turn, adhoc #76 — typically because the one that was
+    // running hit its usage limit) leaves history this provider cannot resume:
+    // the counterpart's conversation id belongs to a different program. Handing
+    // it over anyway is what failed the turn outright; a bare "Continue where
+    // you left off." would be no better, since the new agent has never seen the
+    // task. Replay the original task instead, and say the work is already under
+    // way so it reads the branch rather than starting over.
+    const QString handoffFrom =
+        resuming && resumeId.isEmpty()
+            ? (codex ? (lastClaudeSessionId(sid).isEmpty()
+                            ? QString()
+                            : QStringLiteral("Claude Code"))
+                     : (lastCodexThreadId(sid).isEmpty() ? QString()
+                                                         : QStringLiteral("Codex")))
+            : QString();
     if (!resumeId.isEmpty()) {
         if (steer.isEmpty()) {
             prompt = QStringLiteral("Continue where you left off.");
@@ -10165,10 +10190,35 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         } else {
             prompt = steer; // already shown in the transcript by the composer
         }
-    } else if (!steer.isEmpty()) {
-        // No context to resume — fold the steer into the replayed prompt as before
-        // (this is the original always-on-composer restart behaviour, adhoc #177).
-        prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
+    } else {
+        if (!handoffFrom.isEmpty()) {
+            prompt = QStringLiteral(
+                         "You are taking over this session from %1, whose "
+                         "conversation cannot be handed to a different agent. "
+                         "Work is already in progress on the current branch — "
+                         "read what is there before changing anything, then "
+                         "carry on from that point.\n\nOriginal task:\n%2")
+                         .arg(handoffFrom, originalTaskPrompt);
+            applyTranscriptEvent(
+                sid,
+                QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("_local_notice")},
+                    {QStringLiteral("text"),
+                     QStringLiteral(
+                         "Continuing with %1. A %2 conversation can't be resumed "
+                         "by another agent, so the original task was re-sent with "
+                         "the branch as its context.")
+                         .arg(codex ? QStringLiteral("Codex")
+                                    : QStringLiteral("Claude Code"),
+                              handoffFrom)}});
+        }
+        if (!steer.isEmpty()) {
+            // No context to resume — fold the steer into the replayed prompt as
+            // before (the original always-on-composer restart behaviour, adhoc
+            // #177).
+            prompt +=
+                QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
+        }
     }
     QString codexResumeFallbackPrompt;
     if (codex && !resumeId.isEmpty()) {
@@ -11721,16 +11771,12 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
 // agent is picked up with its full context (adhoc #182). Events are held in
 // memory while a session is live and reloaded from disk on resume
 // (ensureStreamEventsLoaded), so this is the authoritative source after a
-// restart too. Synthetic `_local_user` turns carry no id and are skipped.
+// restart too. Synthetic `_local_user` turns carry no id and are skipped, as are
+// any turns the *other* CLI produced — see AgentResumeIdentity.h for why
+// handing Claude Code a Codex thread id fails the whole run.
 QString MainWindow::lastClaudeSessionId(int sessionId) const
 {
-    const QList<QJsonObject> &events = m_streamEvents.value(sessionId);
-    for (auto it = events.crbegin(); it != events.crend(); ++it) {
-        const QString id = it->value(QStringLiteral("session_id")).toString();
-        if (!id.isEmpty())
-            return id;
-    }
-    return QString();
+    return forkmesh::agents::claudeResumeSessionId(m_streamEvents.value(sessionId));
 }
 
 // Codex app-server threads are the native conversation identity used by the
@@ -11739,18 +11785,7 @@ QString MainWindow::lastClaudeSessionId(int sessionId) const
 // a clipped plain-text transcript into a new process.
 QString MainWindow::lastCodexThreadId(int sessionId) const
 {
-    const QList<QJsonObject> &events = m_streamEvents.value(sessionId);
-    for (auto it = events.crbegin(); it != events.crend(); ++it) {
-        QString id = it->value(QStringLiteral("thread_id")).toString();
-        if (id.isEmpty()
-            && it->value(QStringLiteral("provider")).toString()
-                   == QLatin1String("codex")) {
-            id = it->value(QStringLiteral("session_id")).toString();
-        }
-        if (!id.isEmpty())
-            return id;
-    }
-    return QString();
+    return forkmesh::agents::codexResumeThreadId(m_streamEvents.value(sessionId));
 }
 
 // The session started working again — a resumed CLI announced itself, or a new
