@@ -100,7 +100,12 @@ if [ ! -d "$source_path" ]; then
     exit 1
 fi
 install -d -m 0755 -o root -g root "$REPO_ROOT"
-install -d -m 0755 -o root -g root "$repo_path"
+# Only create the mount point when it is not already the read-only bind
+# mount: `install -d` on a mounted read-only path fails, which made a
+# re-run (the supported way to update a host) abort partway.
+if ! mountpoint -q "$repo_path"; then
+    install -d -m 0755 -o root -g root "$repo_path"
+fi
 fstab_line="$source_path $repo_path none bind,ro 0 0"
 grep -qxF "$fstab_line" /etc/fstab || printf '%s\n' "$fstab_line" >> /etc/fstab
 mountpoint -q "$repo_path" || mount --bind -o ro "$source_path" "$repo_path"
@@ -118,6 +123,20 @@ install -m 0755 -o root -g root "$staging/entrypoint" /opt/forkmesh-mirror/ssh-g
 # Required by the gateway config schema. Read-only hosts never run
 # receive-pack, so this notifier is validated but never invoked.
 install -m 0755 -o root -g root "$staging/notifier" /opt/forkmesh-mirror/ssh-refresh-notify
+
+# AuthorizedKeysCommand runs with whatever descriptors sshd hands it; the
+# gateway exited 1 under sshd on hosts where a manual run succeeded, and
+# giving it a guaranteed stderr fixed it. This wrapper also keeps the
+# lookup's diagnostics somewhere readable instead of losing them.
+cat > /opt/forkmesh-mirror/ssh-gateway-authorized-key <<'WRAP'
+#!/bin/sh
+exec 2>>/var/log/forkmesh-ssh-gateway.log
+exec /opt/forkmesh-mirror/ssh-gateway-entrypoint "$@"
+WRAP
+chown root:root /opt/forkmesh-mirror/ssh-gateway-authorized-key
+chmod 0755 /opt/forkmesh-mirror/ssh-gateway-authorized-key
+install -m 0640 -o root -g adm /dev/null /var/log/forkmesh-ssh-gateway.log 2>/dev/null || true
+chmod 0622 /var/log/forkmesh-ssh-gateway.log
 
 # --- configuration ------------------------------------------------------
 install -d -m 0755 -o root -g root /etc/forkmesh
@@ -212,7 +231,7 @@ conf_dir=/etc/ssh/sshd_config.d
 install -d -m 0755 "$conf_dir"
 cat > "$conf_dir/60-forkmesh-git.conf" <<'SSHD'
 Match User git
-    AuthorizedKeysCommand /opt/forkmesh-mirror/ssh-gateway-entrypoint authorized-key --key-type %t --key-blob %k
+    AuthorizedKeysCommand /opt/forkmesh-mirror/ssh-gateway-authorized-key authorized-key --key-type %t --key-blob %k
     AuthorizedKeysCommandUser forkmesh-ssh-lookup
     AuthorizedKeysFile none
     PermitTTY no
