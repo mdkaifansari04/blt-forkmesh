@@ -25,7 +25,15 @@ PUBLIC = ROOT / "public"
 # and the AST loader below read both files as one program.
 FORKBOT = ENTRY.parent / "forkbot.py"
 ENTRY_TEXT = (
-    ENTRY.read_text(encoding="utf-8")
+    (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+)
     + "\n"
     + FORKBOT.read_text(encoding="utf-8")
 )
