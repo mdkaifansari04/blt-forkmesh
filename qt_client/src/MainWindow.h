@@ -309,6 +309,22 @@ struct NotificationLink {
 };
 Q_DECLARE_METATYPE(NotificationLink)
 
+// One agent/model the composer's prompt dropdown can offer, before ranking and
+// before the Settings visibility filter (adhoc #1557). Produced by
+// MainWindow::composerModelCatalog() and consumed both by the dropdown and by
+// the Settings list that chooses which of these rows appear in it.
+struct ComposerModelChoice {
+    QString provider;  // "claude-code", "codex", "openai", "cloudflare-ai", …
+    QString model;     // empty for the provider-only API agents
+    QString label;     // bare model name shown in the row, e.g. "Opus 5"
+    QString agentName; // which CLI/API runs it, for the tooltip
+    QString tooltip;   // fixed tooltip; ranked rows build theirs from counts
+    int iconIndex = 0; // agentControlIcon() slot
+    // Does this row take part in the merged-success ranking? False for agents
+    // that never land a branch (the headless APIs, Workers AI chat models).
+    bool ranked = false;
+};
+
 // One row of the Ctrl+K search overlay. Filled on a worker thread (nothing
 // GUI-owned is touched there) and rendered/activated on the GUI thread.
 struct GlobalSearchHit {
@@ -4622,6 +4638,13 @@ private:
     QStringList agentEffortLevels() const;
     void refreshQuickAddSpeedSelector();
     void refreshQuickAddAgentModelSelector();
+    // Every agent/model the composer's dropdown could list, before ranking and
+    // before the Settings visibility filter. Shared with the Settings list that
+    // picks which of them the dropdown shows (adhoc #1557).
+    QList<ComposerModelChoice> composerModelCatalog() const;
+    // Rebuild that Settings list from the catalog, preserving each row's
+    // checkbox state. Safe to call before the settings page is built.
+    void refreshComposerModelVisibilityList();
     // Cloudflare Workers AI in the composer (adhoc #1407). The relay owns which
     // models are allowed, so the picker asks it (GET /api/forkbot/models) and
     // caches the answer; sendPromptToCloudflareAi posts one prompt to the picked
@@ -6264,6 +6287,9 @@ private:
     // Default coding-agent provider for new assignments; seeds the quick-add and
     // issue-detail provider pickers. Codex | OpenAI API | Claude API | Claude Code.
     QComboBox *m_defaultAgentProviderCombo = nullptr;
+    // Checkbox-per-model list choosing which of composerModelCatalog()'s rows
+    // the composer's prompt dropdown offers (adhoc #1557).
+    QListWidget *m_composerModelVisibilityList = nullptr;
     QLineEdit *m_maxRunningAgentsEdit = nullptr;
     QLineEdit *m_codexApiKeyEdit = nullptr;
     QLineEdit *m_openAiAdminKeyEdit = nullptr;

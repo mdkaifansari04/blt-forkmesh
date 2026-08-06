@@ -5203,9 +5203,104 @@ int main(int argc, char *argv[])
               QStringLiteral("combined picker stays visible for API-only providers"));
 
         // The default-agent control belongs to the independently deferred
-        // Settings page. Visit it before driving the combo like a user.
+        // Settings page. Visit it before driving the combo like a user. Start
+        // the composer-model visibility check below from a clean sheet: the
+        // list is filled as the page is built, so the setting has to be cleared
+        // before that happens, not after.
+        QSettings().remove(QStringLiteral("agents/composerHiddenModels"));
         seeded.testShowSettingsSection();
         QApplication::processEvents();
+
+        // adhoc #1557: Settings → Agents chooses which of the catalog's models
+        // the composer's prompt dropdown lists. Unticking one drops it from the
+        // menu and persists that choice; the model the composer is currently set
+        // to stays listed even when unticked, so the picker can always show what
+        // the next run would launch; re-ticking brings it back.
+        {
+            QListWidget *modelVisibility = seeded.findChild<QListWidget *>(
+                QStringLiteral("composerModelVisibilityList"));
+            const auto menuRow = [quickAgentModel](const QString &provider,
+                                                   const QString &model) {
+                for (int i = 0; quickAgentModel && i < quickAgentModel->count();
+                     ++i) {
+                    if (quickAgentModel->itemData(i).toString() == provider &&
+                        quickAgentModel->itemData(i, Qt::UserRole + 1)
+                                .toString() == model)
+                        return i;
+                }
+                return -1;
+            };
+            // Put the composer back on a concrete Claude model so the rule that
+            // the *selected* row survives being unticked has something to hold.
+            const int claudeRow =
+                menuRow(QStringLiteral("claude-code"), concreteClaudeModel);
+            if (claudeRow >= 0)
+                quickAgentModel->setCurrentIndex(claudeRow);
+            QApplication::processEvents();
+
+            const QString codexKey = forkmesh::ui::composerModelKey(
+                QStringLiteral("codex"), QStringLiteral("gpt-5.4-mini"));
+            const QString selectedKey = forkmesh::ui::composerModelKey(
+                QStringLiteral("claude-code"), concreteClaudeModel);
+            const auto rowFor = [modelVisibility](const QString &key) {
+                for (int i = 0; modelVisibility && i < modelVisibility->count();
+                     ++i) {
+                    if (modelVisibility->item(i)->data(Qt::UserRole).toString() ==
+                        key)
+                        return modelVisibility->item(i);
+                }
+                return static_cast<QListWidgetItem *>(nullptr);
+            };
+            QListWidgetItem *codexRow = rowFor(codexKey);
+            QListWidgetItem *selectedRow = rowFor(selectedKey);
+            const bool startsTicked =
+                codexRow && codexRow->checkState() == Qt::Checked &&
+                selectedRow && selectedRow->checkState() == Qt::Checked &&
+                menuRow(QStringLiteral("codex"),
+                        QStringLiteral("gpt-5.4-mini")) >= 0;
+            if (codexRow)
+                codexRow->setCheckState(Qt::Unchecked);
+            QApplication::processEvents();
+            const bool hiddenAfterUntick =
+                menuRow(QStringLiteral("codex"),
+                        QStringLiteral("gpt-5.4-mini")) < 0 &&
+                QSettings()
+                    .value(QStringLiteral("agents/composerHiddenModels"))
+                    .toStringList()
+                    .contains(codexKey);
+            // The composer is sitting on this Claude model; hiding it must not
+            // take the row that shows what is selected out of the menu.
+            if (selectedRow)
+                selectedRow->setCheckState(Qt::Unchecked);
+            QApplication::processEvents();
+            const bool selectedStaysListed =
+                menuRow(QStringLiteral("claude-code"), concreteClaudeModel) >= 0 &&
+                seeded.testQuickAddAgentProvider() ==
+                    QStringLiteral("claude-code");
+            if (codexRow)
+                codexRow->setCheckState(Qt::Checked);
+            if (selectedRow)
+                selectedRow->setCheckState(Qt::Checked);
+            QApplication::processEvents();
+            const bool restored =
+                menuRow(QStringLiteral("codex"),
+                        QStringLiteral("gpt-5.4-mini")) >= 0 &&
+                QSettings()
+                    .value(QStringLiteral("agents/composerHiddenModels"))
+                    .toStringList()
+                    .isEmpty();
+            check(modelVisibility && codexRow && selectedRow && startsTicked &&
+                      hiddenAfterUntick && selectedStaysListed && restored,
+                  QString("Settings picks which models the composer dropdown "
+                          "lists (ticked %1, hidden %2, selection kept %3, "
+                          "restored %4)")
+                      .arg(startsTicked)
+                      .arg(hiddenAfterUntick)
+                      .arg(selectedStaysListed)
+                      .arg(restored));
+            QSettings().remove(QStringLiteral("agents/composerHiddenModels"));
+        }
+
         seeded.testSetDefaultAgentProvider(QStringLiteral("claude-api"));
         check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-api") &&
                   seeded.testIssueAgentProvider() == QStringLiteral("claude-api"),

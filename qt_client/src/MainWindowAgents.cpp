@@ -5608,6 +5608,9 @@ void MainWindow::applyLiveClaudeModelsToCombos()
         m_issueAgentProvider->currentData().toString() == claudeCode)
         mergeLiveClaudeModels(m_issueAgentModel, models);
     refreshQuickAddAgentModelSelector();
+    // The Settings list of which models the composer offers is built from the
+    // same catalog, so a live fetch has to reach it as well (adhoc #1557).
+    refreshComposerModelVisibilityList();
 }
 
 // Re-fetch the live claude-code model list from the provider (GET /v1/models)

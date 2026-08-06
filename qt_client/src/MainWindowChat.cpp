@@ -3972,6 +3972,9 @@ void MainWindow::refreshCloudflareAiModels()
                                  : picked);
         }
         refreshQuickAddAgentModelSelector();
+        // Settings lists the same line-up with a checkbox each, so newly
+        // announced models have to reach it too.
+        refreshComposerModelVisibilityList();
     });
 }
 
@@ -4129,6 +4132,77 @@ void MainWindow::refreshQuickAddSpeedSelector()
         QStringLiteral(". Higher levels are slower and more thorough."));
 }
 
+// Every agent/model the composer could offer, in provider order and before any
+// ranking or filtering. Shared by the composer's dropdown (which ranks these by
+// merged success) and Settings → Agents → "Composer models" (which lists them
+// with a checkbox each), so the setting can never drift out of step with the
+// menu it governs.
+//
+// "Manual · create issue" is deliberately absent: it starts no agent, and it is
+// the row the dropdown falls back to, so it is always offered.
+QList<ComposerModelChoice> MainWindow::composerModelCatalog() const
+{
+    QList<ComposerModelChoice> choices;
+
+    QComboBox claudeModels;
+    populateClaudeModelCombo(&claudeModels);
+    if (!m_liveClaudeModels.isEmpty())
+        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
+    for (int i = 0; i < claudeModels.count(); ++i) {
+        const QString id = claudeModels.itemData(i).toString();
+        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
+        // borrowing one model's portrait.
+        const int icon =
+            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
+                ? 7
+                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
+        choices.append(ComposerModelChoice{
+            QStringLiteral("claude-code"), id,
+            compactModelName(claudeModels.itemText(i)),
+            QStringLiteral("Claude Code"), QString(), icon, true});
+    }
+
+    QComboBox codexModels;
+    populateCodexModelCombo(&codexModels);
+    for (int i = 0; i < codexModels.count(); ++i) {
+        const QString id = codexModels.itemData(i).toString();
+        choices.append(ComposerModelChoice{
+            kCodexProvider, id, codexModels.itemText(i),
+            QStringLiteral("Codex"), QString(),
+            agentModelFaceIconIndex(kCodexProvider, id), true});
+    }
+
+    // These API agents do not expose a per-run model chooser in this composer,
+    // but remain first-class choices in the combined menu.
+    choices.append(ComposerModelChoice{
+        QStringLiteral("openai"), QString(), QStringLiteral("OpenAI API"),
+        QStringLiteral("OpenAI API"), QStringLiteral("Headless OpenAI API agent"),
+        agentModelFaceIconIndex(QStringLiteral("openai"), QString()), false});
+    choices.append(ComposerModelChoice{
+        QStringLiteral("claude-api"), QString(), QStringLiteral("Claude API"),
+        QStringLiteral("Claude API"), QStringLiteral("Headless Claude API agent"),
+        agentModelFaceIconIndex(QStringLiteral("claude-api"), QString()), false});
+
+    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
+    // rather than starting an agent, so they are their own group instead of
+    // being ranked among the coding models above — a 70B chat model is not
+    // "stronger" or "weaker" than an agent that can edit the repository.
+    QComboBox cloudflareModels;
+    populateCloudflareAiModelCombo(&cloudflareModels);
+    for (int i = 0; i < cloudflareModels.count(); ++i) {
+        const QString label = cloudflareModels.itemText(i);
+        // One mark for the whole group: these are relay chat models, not one of
+        // the top lines the World drew a portrait for.
+        choices.append(ComposerModelChoice{
+            kCloudflareAiProvider, cloudflareModels.itemData(i).toString(), label,
+            QStringLiteral("Cloudflare AI"),
+            QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
+                           "starts no agent").arg(label),
+            agentModelFaceIconIndex(kCloudflareAiProvider, QString()), false});
+    }
+    return choices;
+}
+
 // Build the one visible agent/model menu from the canonical hidden provider and
 // model controls. Each row stores provider in UserRole and model in UserRole+1,
 // allowing a single click to update both without changing the launch contract.
@@ -4141,6 +4215,10 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // stable tie-breaker for equal success counts. Scores count every run this
 // desktop has made, including the ones whose branch and session were cleaned up
 // afterwards (see AgentStore::retiredModelOutcomes).
+//
+// Rows switched off in Settings → Agents (adhoc #1557) are left out, except the
+// one currently selected: the menu has to be able to show what the composer is
+// actually about to run, even if that model was hidden after it was picked.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -4167,6 +4245,16 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         int runCount = 0;
         int powerRank = 0; // stable tie-breaker for equally-used models
     };
+    // A row the user switched off in Settings stays out of the menu unless it is
+    // the current selection (see the note above this function).
+    const QSet<QString> hidden = hiddenComposerModels();
+    const auto rowIsVisible = [&](const QString &provider,
+                                  const QString &model) {
+        if (!hidden.contains(composerModelKey(provider, model)))
+            return true;
+        return provider == selectedProvider &&
+               (selectedModel.isEmpty() || model == selectedModel);
+    };
     QHash<QString, int> modelMergedCounts;
     QHash<QString, int> modelRunCounts;
     // A model's track record has to outlive the work that earned it. Sweeping up
@@ -4191,43 +4279,25 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         if (session.merged)
             ++modelMergedCounts[key];
     }
+    // The catalog is the single source of what the picker can offer; this
+    // function only scores, orders and filters it.
+    const QList<ComposerModelChoice> catalog = composerModelCatalog();
     QList<Choice> models;
-    auto addModel = [&models, &modelMergedCounts, &modelRunCounts](
-                        const QIcon &icon, const QString &label,
-                        const QString &provider, const QString &model,
-                        const QString &agentName) {
-        const QString key = AgentStore::modelOutcomeKey(provider, model);
-        models.append(Choice{icon, label, provider, model, agentName,
+    QList<ComposerModelChoice> unranked;
+    for (const ComposerModelChoice &entry : catalog) {
+        if (!rowIsVisible(entry.provider, entry.model))
+            continue;
+        if (!entry.ranked) {
+            unranked.append(entry);
+            continue;
+        }
+        const QString key =
+            AgentStore::modelOutcomeKey(entry.provider, entry.model);
+        models.append(Choice{agentControlIcon(entry.iconIndex), entry.label,
+                             entry.provider, entry.model, entry.agentName,
                              modelMergedCounts.value(key),
                              modelRunCounts.value(key),
-                             agentModelPowerRank(model, label)});
-    };
-
-    QComboBox claudeModels;
-    populateClaudeModelCombo(&claudeModels);
-    if (!m_liveClaudeModels.isEmpty())
-        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
-    for (int i = 0; i < claudeModels.count(); ++i) {
-        const QString id = claudeModels.itemData(i).toString();
-        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
-        // borrowing one model's portrait.
-        const int icon =
-            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
-                ? 7
-                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
-        addModel(agentControlIcon(icon),
-                 compactModelName(claudeModels.itemText(i)),
-                 QStringLiteral("claude-code"), id,
-                 QStringLiteral("Claude Code"));
-    }
-
-    QComboBox codexModels;
-    populateCodexModelCombo(&codexModels);
-    for (int i = 0; i < codexModels.count(); ++i) {
-        const QString id = codexModels.itemData(i).toString();
-        addModel(agentControlIcon(agentModelFaceIconIndex(kCodexProvider, id)),
-                 codexModels.itemText(i), kCodexProvider, id,
-                 QStringLiteral("Codex"));
+                             agentModelPowerRank(entry.model, entry.label)});
     }
 
     // Most merged work first. Power ties (Opus 4.8 and Sonnet 5 score the
@@ -4291,37 +4361,14 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         addChoice(choice.icon, label, choice.provider, choice.model, toolTip);
     }
 
-    // These API agents do not expose a per-run model chooser in this composer,
-    // but remain first-class choices in the combined menu.
-    addChoice(agentControlIcon(
-                  agentModelFaceIconIndex(QStringLiteral("openai"), QString())),
-              QStringLiteral("OpenAI API"), QStringLiteral("openai"), QString(),
-              QStringLiteral("Headless OpenAI API agent"));
-    addChoice(agentControlIcon(agentModelFaceIconIndex(
-                  QStringLiteral("claude-api"), QString())),
-              QStringLiteral("Claude API"), QStringLiteral("claude-api"),
-              QString(), QStringLiteral("Headless Claude API agent"));
-
-    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
-    // rather than starting an agent, so they are appended as their own group
-    // instead of being ranked among the coding models above — a 70B chat model
-    // is not "stronger" or "weaker" than an agent that can edit the repository.
-    QComboBox cloudflareModels;
-    populateCloudflareAiModelCombo(&cloudflareModels);
-    for (int i = 0; i < cloudflareModels.count(); ++i) {
-        const QString label = cloudflareModels.itemText(i);
-        // Cloudflare AI only answers a prompt and never creates a branch, so it
-        // has no merge outcome to count. Keep its label distinct rather than
-        // presenting a misleading permanent "0 merged" score.
-        // One mark for the whole group: these are relay chat models, not one of
-        // the top lines the World drew a portrait for.
-        addChoice(agentControlIcon(agentModelFaceIconIndex(kCloudflareAiProvider,
-                                                          QString())),
-                  label, kCloudflareAiProvider,
-                  cloudflareModels.itemData(i).toString(),
-                  QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
-                                 "starts no agent").arg(label));
-    }
+    // The headless API agents and the Cloudflare Workers AI chat models, in
+    // catalog order below the ranked coding models. None of them has a merge
+    // outcome to count — a Workers AI model only answers a prompt and never
+    // creates a branch — so they carry no "0 merged" score that would read as a
+    // failure rather than as "not applicable".
+    for (const ComposerModelChoice &entry : unranked)
+        addChoice(agentControlIcon(entry.iconIndex), entry.label, entry.provider,
+                  entry.model, entry.tooltip);
 
     int selected = -1;
     for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
