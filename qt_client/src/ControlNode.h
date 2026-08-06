@@ -524,6 +524,38 @@ QString vultrInstanceIdForAddress(const QJsonArray &instances,
 QString validateVultrDestroyRequest(const QString &apiKey,
                                     const QString &instanceId);
 
+// --- Desired healthy Vultr mirror fleet -----------------------------------
+// A saved host participates in automatic fleet sizing only when it is a Vultr
+// instance provisioned by this app (provider + stable instance id). Manually
+// added hosts and other providers are deliberately never creation/destruction
+// candidates.
+enum class MirrorFleetAction {
+    None,
+    Create,
+    Destroy,
+};
+
+struct MirrorFleetReconcilePlan {
+    MirrorFleetAction action = MirrorFleetAction::None;
+    QString nodeName; // populated only for Destroy
+    int managedCount = 0;
+    int healthyCount = 0;
+};
+
+// The same public-health contract used by the final provisioning stage: the
+// node must be online, integrity-approved, freshly synced, clone eligible and
+// serving a fresh healthy endpoint.
+bool mirrorCatalogEntryIsHealthy(const QJsonObject &mirror);
+
+// Plan at most one fleet mutation. Scale-down has priority and removes the
+// newest unhealthy managed node first (then the newest healthy excess node).
+// Once total managed capacity is at or below the target, a health deficit asks
+// for one replacement/create operation. The caller serializes and executes the
+// returned action.
+MirrorFleetReconcilePlan planMirrorFleetReconciliation(
+    int desiredHealthy, const QJsonArray &savedHosts,
+    const QJsonArray &catalogMirrors);
+
 // --- Agent CLIs on a fresh mirror (adhoc #418) -----------------------------
 // A brand-new mirror can install the Claude Code and Codex CLIs, but until it
 // is signed in they cannot run a single session — and there is no browser on a
