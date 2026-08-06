@@ -12681,12 +12681,13 @@ async def _chat_channel_signed_session(env, request):
     return account_bi, record
 
 
-# Canonical prefixes a desktop signs with its account's Ed25519 key to open and
-# close an organization task for a prompt it just launched. A desktop that
+# Canonical prefixes a desktop signs with its account's Ed25519 key to open,
+# live-update, and close an organization task for a prompt it just launched. A desktop that
 # authenticated silently holds keys and no session token, so without these the
 # Agents composer's Task toggle could never reach the board (adhoc #18).
 ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
 ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
+ORG_TASK_AGENT_STATUS_PROOF = "forkmesh-org-task-agent-status-v1"
 # The same key, reading the board it can already write to. Without this the
 # desktop Tasks tab was empty for every operator who launched normally instead
 # of typing a password, because it had no session token to present (adhoc #52).
@@ -12705,6 +12706,8 @@ ORG_TASK_DELETE_PROOF = "forkmesh-org-task-delete-v1"
 GENIE_CREDENTIAL_PROOF = "forkmesh-genie-credential-v1"
 ORG_TASK_COMPLETE_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/complete/?$")
+ORG_TASK_AGENT_STATUS_RE = re.compile(
+    r"^/api/tasks/([a-f0-9]{32})/agent-status/?$")
 ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
 ORG_TASK_ITEM_RE = re.compile(r"^/api/tasks/([a-f0-9]{32})/?$")
 
@@ -12712,9 +12715,9 @@ ORG_TASK_ITEM_RE = re.compile(r"^/api/tasks/([a-f0-9]{32})/?$")
 async def _org_task_signed_session(env, request):
     """Resolve the account behind a key-signed organization-task request.
 
-    Deliberately narrow: listing the board, opening a task, reporting one
-    finished, and deleting one — the reads and writes a desktop performs for its
-    own agent run, plus the row removal its Tasks tab offers. Editing,
+    Deliberately narrow: listing the board, opening a task, reporting its live
+    agent state or finish, and deleting one — the reads and writes a desktop
+    performs for its own agent run, plus the row removal its Tasks tab offers. Editing,
     starting/stopping another member's timer, and QA verdicts all still require a
     real session. Membership and every other authorization check inside the task
     API applies to a signed caller exactly as to a session-token one, so a signed
@@ -12737,6 +12740,7 @@ async def _org_task_signed_session(env, request):
     if not node or not sig or not _ts_ok(ts):
         return "", None
     complete = ORG_TASK_COMPLETE_RE.match(url.path)
+    agent_status = ORG_TASK_AGENT_STATUS_RE.match(url.path)
     collection = ORG_TASK_COLLECTION_RE.match(url.path)
     if method == "GET":
         # Reads have no write proof to reuse: a GET signed with the open proof
@@ -12760,6 +12764,11 @@ async def _org_task_signed_session(env, request):
         canonical = (
             ORG_TASK_COMPLETE_PROOF + "\n" + node + "\n"
             + complete.group(1) + "\n" + str(ts)
+        ).encode()
+    elif agent_status:
+        canonical = (
+            ORG_TASK_AGENT_STATUS_PROOF + "\n" + node + "\n"
+            + agent_status.group(1) + "\n" + str(ts)
         ).encode()
     elif collection:
         canonical = (

@@ -3760,13 +3760,15 @@ const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit")
 // staying blank until someone opens the Tasks page (adhoc #79).
 const QString kOrganizationTaskOpenCountSetting =
     QStringLiteral("tasks/openCount");
-// Canonical prefixes this desktop signs with its account key to open and close
-// an organization task when it has no account session token to present (the
+// Canonical prefixes this desktop signs with its account key to open, update,
+// and close an organization task when it has no account session token to present (the
 // authenticateSilently path holds keys, not sessions). Must stay byte-identical
 // to ORG_TASK_OPEN_PROOF / ORG_TASK_COMPLETE_PROOF in the worker's entry.py.
 const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
 const QString kOrgTaskCompleteProof =
     QStringLiteral("forkmesh-org-task-complete-v1");
+const QString kOrgTaskAgentStatusProof =
+    QStringLiteral("forkmesh-org-task-agent-status-v1");
 // Same key, reading the board. Without it the Tasks tab was empty for every
 // operator who launched normally instead of typing a password (adhoc #52).
 // Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
