@@ -47,7 +47,7 @@ def test_deploy_stamps_an_epoch_and_grace_is_bounded_to_five_minutes():
     assert not active(SimpleNamespace(), 1_000_000)
 
 
-def test_flagship_probe_and_mail_transition_both_apply_the_grace():
+def test_flagship_probe_applies_deploy_grace_without_delaying_real_outage_pings():
     sample = ENTRY[
         ENTRY.index("async def record_status_sample"):
         ENTRY.index("\n\nasync def status_history")
@@ -57,9 +57,10 @@ def test_flagship_probe_and_mail_transition_both_apply_the_grace():
         ENTRY.index("async def _record_status_monitor_transitions"):
         ENTRY.index("\ndef _status_expected_checks_for_hour")
     ]
-    assert 'system_id == "flagship_repository"' in transition
-    assert "int(now) - int(outage_started_at)" in transition
-    assert "< STATUS_DEPLOY_GRACE_MS" in transition
+    # Deployment handoff is suppressed while sampling, not by holding every
+    # real repository failure for five minutes in the alert path.
+    assert "STATUS_DEPLOY_GRACE_MS" not in transition
+    assert 'system_id == "flagship_repository" and is_up' in transition
     assert 'prior_notified != "down"' in transition
     assert 'notified = "up"' in transition
 
