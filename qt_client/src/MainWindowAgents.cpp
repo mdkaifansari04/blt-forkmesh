@@ -5874,6 +5874,8 @@ void MainWindow::initAgents()
 
 void MainWindow::reloadAgents()
 {
+    if (deferUiRefresh(UiRefreshAgents))
+        return;
     if (!m_agentStore)
         return;
     m_agentSessions = m_agentStore->loadAllSessions();
