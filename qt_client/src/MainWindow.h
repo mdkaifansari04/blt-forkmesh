@@ -7979,6 +7979,13 @@ private:
     // events can be persisted to disk without depending on m_agentSessions
     // (which doesn't yet hold a freshly created ad-hoc session). Issue #41.
     QHash<int, AgentSession> m_streamSessionInfo;
+    // Which provider-account profile each live stream session was launched
+    // under, captured at launch rather than read live: switching account while a
+    // run is still draining its last events must not relabel that run's
+    // conversation as belonging to the account picked afterwards. Stamped onto
+    // every event carrying a conversation id so a later resume can tell whether
+    // the account now selected can actually reach it (AgentResumeIdentity.h).
+    QHash<int, QString> m_streamAccountId;
     // customPrompt, when non-empty, is used as the agent's task verbatim (the
     // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
     // derived from `issue`.

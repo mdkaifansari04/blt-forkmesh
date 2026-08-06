@@ -1522,6 +1522,70 @@ void runResumeIdentityTest()
           "an empty transcript resumes nothing");
 }
 
+// One CLI, two logins. Each provider account is its own config root, so the
+// account that hit its usage limit owns the conversation, and the account picked
+// to carry on cannot open it — resuming it anyway fails the turn exactly like
+// handing Claude Code a Codex thread id.
+void runResumeAccountTest()
+{
+    using namespace forkmesh::agents;
+    auto claudeEvent = [](const QString &id, const QString &account) {
+        QJsonObject ev{{QStringLiteral("type"), QStringLiteral("assistant")},
+                       {QStringLiteral("session_id"), id}};
+        if (!account.isEmpty())
+            ev.insert(resumeAccountKey(), account);
+        return ev;
+    };
+    auto codexEvent = [](const QString &id, const QString &account) {
+        QJsonObject ev{{QStringLiteral("type"), QStringLiteral("assistant")},
+                       {QStringLiteral("session_id"), id},
+                       {QStringLiteral("thread_id"), id}};
+        if (!account.isEmpty())
+            ev.insert(resumeAccountKey(), account);
+        return ev;
+    };
+
+    const QList<QJsonObject> ranOutOnA{claudeEvent("claude-1", "acct-a")};
+    check(claudeResumeSessionId(ranOutOnA, QStringLiteral("acct-a")) ==
+              QStringLiteral("claude-1"),
+          "the account that ran the turn resumes its own conversation");
+    check(claudeResumeSessionId(ranOutOnA, QStringLiteral("acct-b")).isEmpty(),
+          "a second account is never handed the first account's conversation");
+    check(resumeConversationAccountId(ranOutOnA, /*codexTransport=*/false) ==
+              QStringLiteral("acct-a"),
+          "the hand-off notice can name the account that owns the work");
+
+    // Switched away and back: the account picked up its earlier conversation
+    // rather than starting over, exactly as a hand-back between CLIs does.
+    const QList<QJsonObject> bounced{claudeEvent("claude-1", "acct-a"),
+                                     claudeEvent("claude-2", "acct-b"),
+                                     claudeEvent("claude-3", "acct-a")};
+    check(claudeResumeSessionId(bounced, QStringLiteral("acct-b")) ==
+              QStringLiteral("claude-2"),
+          "each account resumes the newest conversation it owns");
+    check(claudeResumeSessionId(bounced, QStringLiteral("acct-a")) ==
+              QStringLiteral("claude-3"),
+          "a hand-back resumes that account's latest own conversation");
+
+    // Codex accounts are isolated by CODEX_HOME the same way.
+    const QList<QJsonObject> codexOnA{codexEvent("codex-1", "acct-a")};
+    check(codexResumeThreadId(codexOnA, QStringLiteral("acct-a")) ==
+              QStringLiteral("codex-1"),
+          "a Codex account resumes its own thread");
+    check(codexResumeThreadId(codexOnA, QStringLiteral("acct-b")).isEmpty(),
+          "a second Codex account is never handed the first's thread");
+
+    // Sessions recorded before conversations carried an account stamp must keep
+    // resuming: an unstamped turn is the selected account's until proven
+    // otherwise, so a long-lived single-account session is untouched.
+    const QList<QJsonObject> legacy{claudeEvent("claude-1", QString())};
+    check(claudeResumeSessionId(legacy, QStringLiteral("acct-a")) ==
+              QStringLiteral("claude-1"),
+          "an unstamped conversation still resumes under any account");
+    check(resumeConversationAccountId(legacy, /*codexTransport=*/false).isEmpty(),
+          "an unstamped conversation names no account to hand over from");
+}
+
 // How the transcript retells what a turn did (adhoc #34): Codex explores by
 // running shell commands, so the difference between a line under "Explored" and
 // a spelled-out "Ran <command>" is a reading of the command line itself.
@@ -1609,6 +1673,7 @@ int main(int argc, char *argv[])
     runTurnOptionsTest(executable);
     runFatalErrorTest(executable);
     runResumeIdentityTest();
+    runResumeAccountTest();
     runTranscriptStyleTest();
 
     if (failures == 0)
