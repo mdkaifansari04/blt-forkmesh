@@ -1,5 +1,15 @@
 // A compact cloud-notes desk for the World. It deliberately lives beside the
 // renderer so opening an editor never reallocates the Three.js scene.
+import {
+  createWorldBackoff,
+  markWorldHTTPFailure,
+  withWorldBackoff,
+} from "./world-backoff.js";
+
+// Reads (the list, a note, the socket-driven reload) back off on any failure;
+// writes only on transport and overload answers, so a rejected save stays
+// retryable the moment the editor content changes.
+const backoff = createWorldBackoff();
 const session = () => {
   try { const value = JSON.parse(localStorage.getItem("forkmesh.session") || "null"); return value && typeof value === "object" ? value : null; }
   catch (_) { return null; }
@@ -30,11 +40,13 @@ class ForkMeshWorldNotes extends HTMLElement {
     $("[data-list]").onclick = (event) => { const row = event.target.closest("[data-id]"); if (row) void this.select(row.dataset.id); };
   }
   async request(path, method = "GET", body) {
-    const active = session(), headers = { accept: "application/json" };
-    if (active?.sessionToken && active.sessionToken !== "cookie") headers.authorization = `Bearer ${active.sessionToken}`;
-    if (body !== undefined) headers["content-type"] = "application/json";
-    const response = await fetch(path, { method, headers, credentials: "same-origin", cache: "no-store", body: body === undefined ? undefined : JSON.stringify(body) });
-    const payload = await response.json().catch(() => ({})); if (!response.ok) throw Object.assign(new Error(payload.error || `HTTP ${response.status}`), { payload, status: response.status }); return payload;
+    return withWorldBackoff(backoff, `${method}:${path}`, async () => {
+      const active = session(), headers = { accept: "application/json" };
+      if (active?.sessionToken && active.sessionToken !== "cookie") headers.authorization = `Bearer ${active.sessionToken}`;
+      if (body !== undefined) headers["content-type"] = "application/json";
+      const response = await fetch(path, { method, headers, credentials: "same-origin", cache: "no-store", body: body === undefined ? undefined : JSON.stringify(body) });
+      const payload = await response.json().catch(() => ({})); if (!response.ok) throw markWorldHTTPFailure(Object.assign(new Error(payload.error || `HTTP ${response.status}`), { payload, status: response.status }), response); return payload;
+    }, { retryableOnly: method !== "GET" });
   }
   status(value) { this.shadowRoot.querySelector("[data-status]").textContent = value; }
   renderList() { this.shadowRoot.querySelector("[data-list]").innerHTML = this.notes.map((note) => `<button class="item ${note.id === this.note?.id ? "sel" : ""}" data-id="${note.id}"><strong>${escapeHTML(note.title)}</strong><br><small>v${note.version} · ${escapeHTML(note.role)}</small></button>`).join("") || '<div class="status">No cloud notes</div>'; }

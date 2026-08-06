@@ -3,6 +3,11 @@ import {
   normalizeElementParams,
 } from "./elements/index.js";
 import {
+  createWorldBackoff,
+  markWorldHTTPFailure,
+  withWorldBackoff,
+} from "./world-backoff.js";
+import {
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
   OUTFIT_STYLE_OPTIONS,
@@ -16756,6 +16761,7 @@ export function createWorldScene({
   // Elements toggle, the diagnostics cost breakdown and disable-on-load for
   // free.
   const storeElementInstances = new Map();
+  const storeElementBackoff = createWorldBackoff();
 
   // An element may only read the endpoints its manifest declared, which the
   // store disclosed before purchase. Anything else is refused here rather than
@@ -16767,12 +16773,25 @@ export function createWorldScene({
       if (!allowed.has(target)) {
         throw new Error(`${manifest.id} may not read ${target}`);
       }
-      const response = await fetch(target, {
-        credentials: "same-origin",
-        headers: { accept: "application/json" },
-      });
-      if (!response.ok) throw new Error(`${target} failed`);
-      return response.json();
+      // An element owns its own refresh loop, so a purchased plugin polling a
+      // failing endpoint is exactly the case the shared cooldown exists for.
+      return withWorldBackoff(
+        storeElementBackoff,
+        `GET:${target}`,
+        async () => {
+          const response = await fetch(target, {
+            credentials: "same-origin",
+            headers: { accept: "application/json" },
+          });
+          if (!response.ok) {
+            throw markWorldHTTPFailure(
+              new Error(`${target} failed`),
+              response,
+            );
+          }
+          return response.json();
+        },
+      );
     };
   }
 
