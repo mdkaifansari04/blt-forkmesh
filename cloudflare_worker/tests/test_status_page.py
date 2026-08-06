@@ -702,7 +702,7 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
 
 # --- status_history ----------------------------------------------------------
 
-def _history_env(rows, hour_rows=(), minute_rows=()):
+def _history_env(rows, hour_rows=(), minute_rows=(), mirror_rows=()):
     async def noop(*_a, **_k):
         return None
 
@@ -711,6 +711,8 @@ def _history_env(rows, hour_rows=(), minute_rows=()):
             return list(minute_rows)
         if "system_status_hourly" in sql:
             return list(hour_rows)
+        if "mirror_https_endpoints" in sql:
+            return list(mirror_rows)
         return rows
 
     captured = {}
@@ -728,8 +730,8 @@ def _history_env(rows, hour_rows=(), minute_rows=()):
     return extra, captured
 
 
-def _run_history(rows, hour_rows=(), minute_rows=()):
-    extra, captured = _history_env(rows, hour_rows, minute_rows)
+def _run_history(rows, hour_rows=(), minute_rows=(), mirror_rows=()):
+    extra, captured = _history_env(rows, hour_rows, minute_rows, mirror_rows)
     g = _load("status_history", extra_globals=extra)
     asyncio.run(g["status_history"](object()))
     return captured
@@ -1199,6 +1201,23 @@ def test_recorded_signed_mirror_appears_as_a_full_status_system():
     assert len(system["minutes"]) == 60
     assert "account-bound direct HTTPS endpoint" in system["checkDescription"]
     assert all(s["id"] != "mirror:jett" for s in out["systems"])
+
+
+def test_mirror_without_recent_online_signal_is_omitted_from_status():
+    stale_mirror_last_seen = 25 * 60 * 60 * 1000
+    stale_hour = (_Clock.value // HOUR_MS) * HOUR_MS - stale_mirror_last_seen
+    hour_rows = [
+        {
+            "hour_ts": stale_hour,
+            "system": "mirror:mirror10",
+            "checks": 60,
+            "failures": 60,
+            "reason": "node down",
+        },
+    ]
+    mirror_rows = [{"node_name": "mirror10", "checked_at": stale_hour}]
+    out = _run_history([], hour_rows=hour_rows, mirror_rows=mirror_rows)
+    assert all(s["id"] != "mirror:mirror10" for s in out["systems"])
 
 
 def test_retired_mirror_history_does_not_resurrect_status_rows():
