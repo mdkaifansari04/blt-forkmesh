@@ -4510,8 +4510,8 @@ inline QString codexChatGptModelId(const QString &model)
     const QString trimmed = model.trimmed();
     if (trimmed.isEmpty())
         return QStringLiteral("gpt-5.5");
-    if (trimmed == QLatin1String("gpt-5.3-codex-spark"))
-        return QStringLiteral("gpt-5.3-spark");
+    if (trimmed == QLatin1String("gpt-5.3-spark"))
+        return QStringLiteral("gpt-5.3-codex-spark");
     if (trimmed == QLatin1String("gpt-5.5-codex"))
         return QStringLiteral("gpt-5.5");
     if (trimmed == QLatin1String("gpt-5.4"))
@@ -4532,6 +4532,7 @@ inline void populateCodexModelCombo(QComboBox *combo)
     combo->setEditable(false);
     combo->setInsertPolicy(QComboBox::NoInsert);
     combo->setProperty("allowAutoModel", false);
+    QSet<QString> seen;
     const QJsonArray live = QJsonDocument::fromJson(
                                 QSettings().value(kCodexModelsCacheSetting).toByteArray())
                                 .array();
@@ -4542,8 +4543,11 @@ inline void populateCodexModelCombo(QComboBox *combo)
         QString id = model.value(QStringLiteral("model")).toString().trimmed();
         if (id.isEmpty())
             id = model.value(QStringLiteral("id")).toString().trimmed();
-        if (!id.isEmpty())
+        id = codexChatGptModelId(id);
+        if (!id.isEmpty() && !seen.contains(id)) {
             combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
+            seen.insert(id);
+        }
     }
     if (combo->count() == 0) {
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
@@ -4642,9 +4646,10 @@ inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
     if (!combo || models.isEmpty())
         return;
     QSignalBlocker blocker(combo);
-    const QVariant selected = combo->currentData();
+    const QString selected = codexChatGptModelId(combo->currentData().toString());
     combo->clear();
     QString defaultId;
+    QSet<QString> seen;
     for (const QJsonValue &value : models) {
         const QJsonObject model = value.toObject();
         if (model.value(QStringLiteral("hidden")).toBool())
@@ -4652,10 +4657,12 @@ inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
         QString id = model.value(QStringLiteral("model")).toString().trimmed();
         if (id.isEmpty())
             id = model.value(QStringLiteral("id")).toString().trimmed();
-        if (!id.isEmpty()) {
+        id = codexChatGptModelId(id);
+        if (!id.isEmpty() && !seen.contains(id)) {
             combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
             if (model.value(QStringLiteral("isDefault")).toBool())
                 defaultId = id;
+            seen.insert(id);
         }
     }
     const int restored = combo->findData(selected);
@@ -7693,7 +7700,7 @@ public:
     bool isDebug() const { return m_presentation == Debug; }
 
     std::function<void(const QString &category)> onCategoryClicked;
-    std::function<void()> onWebsiteClicked;
+    std::function<void(const QString &statusId)> onWebsiteClicked;
     std::function<void()> onStallClicked;
     std::function<void()> onStallContextMenu;
     std::function<void()> onClicked;
@@ -7827,8 +7834,8 @@ protected:
                 if (!status.reason.isEmpty())
                     tip += QLatin1Char('\n') + status.reason;
                 if (onWebsiteClicked)
-                    tip += QStringLiteral("\nClick for the Cloudflare Worker's "
-                                          "live logs");
+                    tip += QStringLiteral(
+                        "\nClick to open the related website page.");
                 QToolTip::showText(help->globalPos(), tip, this);
                 return true;
             }
@@ -7844,12 +7851,13 @@ protected:
                 onStallClicked();
             } else if (lane < 0) {
                 // Outside the category glyphs. The website dots are the relay's
-                // own health, so they open its live logs (adhoc #1559); nothing
-                // else in the strip claims that area. Reading categories()[-1]
-                // is what this branch used to do.
-                if (websiteStatusAt(event->pos()) >= 0 && onWebsiteClicked)
-                    onWebsiteClicked();
-                else if (onClicked)
+                // own health, so they open related pages in the website (adhoc
+                // #1559); nothing else in the strip claims this area. Reading
+                // categories()[-1] is what this branch used to do.
+                const int website = websiteStatusAt(event->pos());
+                if (website >= 0 && onWebsiteClicked) {
+                    onWebsiteClicked(m_websiteStatuses.at(website).id);
+                } else if (onClicked)
                     onClicked();
             } else if (m_presentation != Header) {
                 if (onCategoryClicked)
