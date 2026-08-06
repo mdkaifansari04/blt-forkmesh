@@ -3477,10 +3477,11 @@ void MainWindow::fetchMirrorPendingCounts(const QString &owner,
     const QJsonObject cached = m_mirrorPendingCache.value(source);
     const qint64 fetchedAt =
         qint64(cached.value(QStringLiteral("clientFetchedAt")).toDouble());
-    // One badge refresh per minute per repo is plenty: the relay now also
-    // answers from a 30s edge cache, so faster client polling only re-reads
-    // the same cached counts anyway.
-    if (fetchedAt > 0 && nowMs - fetchedAt < 60 * 1000)
+    // One badge refresh per ten minutes per repo: the relay answers this
+    // from a ten-minute edge cache, so anything faster only re-reads the
+    // same cached counts while making /pending the busiest endpoint on the
+    // API traffic chart.
+    if (fetchedAt > 0 && nowMs - fetchedAt < 10 * 60 * 1000)
         return;
 
     QUrl url = catalogApiUrl();
