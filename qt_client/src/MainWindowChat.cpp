@@ -2790,9 +2790,21 @@ QWidget *MainWindow::buildNetworkLogDock()
         openFullLogForCategory(category);
     };
     // The status dots to the right of the categories are the deployed Worker's
-    // own health, so clicking them opens its live logs (adhoc #1559) — the
-    // viewer that used to be a button on the Log page.
-    m_logActivityLights->onWebsiteClicked = [this] { showCloudflareWorkerLogs(); };
+    // own health checks, so clicking them opens the matching website page (adhoc
+    // #1559); the viewer that used to be a button on the Log page stays
+    // available on the dedicated Cloudflare tool button.
+    m_logActivityLights->onWebsiteClicked = [this](const QString &statusId) {
+        QUrl url = catalogApiUrl();
+        if (!url.isValid() || url.host().isEmpty())
+            return;
+        if (statusId == QStringLiteral("desktop_status_page"))
+            url.setPath(QStringLiteral("/status"));
+        else
+            url.setPath(QStringLiteral("/"));
+        url.setQuery(QString());
+        url.setFragment(QString());
+        QDesktopServices::openUrl(url);
+    };
     const QString stallTip = QStringLiteral(
         "Click to draft a fix-it prompt for recorded UI stalls; right-click "
         "for the captured backtraces.");
