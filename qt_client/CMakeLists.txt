@@ -196,6 +196,8 @@ set(FORKMESH_APP_SOURCES
     src/ForkMeshIdentity.h
     src/ForkMeshIdentity.cpp
     src/ChatBackend.h
+    src/ClientErrorReports.h
+    src/ClientErrorReports.cpp
     src/MainnodeRoom.h
     src/RoomCrypto.h
     src/RoomCrypto.cpp
@@ -635,6 +637,8 @@ if(FORKMESH_BUILD_TESTS)
         src/SystemStats.cpp
         src/NodeDiagnostics.h
         src/NodeDiagnostics.cpp
+        src/ClientErrorReports.h
+        src/ClientErrorReports.cpp
     )
     # Qt6::Concurrent: DirectorySizeScan scans top-level trees in parallel.
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent OpenSSL::Crypto)
