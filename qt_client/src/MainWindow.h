@@ -871,7 +871,7 @@ public:
     Q_INVOKABLE QStringList testMirrorNodeRows() const;
     bool testMirrorNodesOnlineOnlyChecked() const;
     void testSetMirrorNodesOnlineOnly(bool checked);
-    bool testMirrorNodeCardsAreCompact() const;
+    bool testMirrorNodesAreSingleLineRows() const;
     QString testMirrorNodeCellText(const QString &nodeName, int column) const;
     QString testMirrorNodeCellToolTip(const QString &nodeName, int column) const;
     bool testDraftMirrorNodeDiagnostics(const QString &nodeName);
@@ -4200,8 +4200,9 @@ private:
     // local sync, a live peer via a targeted relay frame, an SSH-fed/offline
     // catalog mirror via the source of truth's push.
     void syncMirrorNodeNow(int row);
-    QWidget *buildMirrorNodeCard(int row);
-    void rebuildMirrorNodeCards();
+    // Visibility + Start/Stop label for the managed Go mirror-node server
+    // controls in the Mirror nodes header (source of truth only).
+    void updateMirrorNodeServerButtons(bool visible);
     // Fetch the worker's catalog mirror list for a repo group so the owner sees
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
@@ -6989,6 +6990,10 @@ private:
     // "Reset integrity pin" action, shown in the Mirror nodes header only when
     // this node is the source of truth (the owner holding the working copy).
     QPushButton *m_mirrorResetPinButton = nullptr;
+    // Go mirror-node companion window + managed-server start/stop toggle, in
+    // the same header and under the same source-of-truth-only visibility.
+    QPushButton *m_mirrorNodeServerButton = nullptr;
+    QPushButton *m_mirrorNodeServerPowerButton = nullptr;
     // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.
     QString m_repoBranch;
     RepoInfo m_repoInfo;
