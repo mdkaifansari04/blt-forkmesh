@@ -2207,6 +2207,65 @@ int main(int argc, char *argv[])
         check(!executable.startsWith(workingRoot),
               QStringLiteral("updated executable is separate from the working copy"));
     }
+    // adhoc #1563: a rebuild used to run the compiler with the default TMPDIR,
+    // so a full RAM-backed /tmp killed it mid-compile ("No space left on
+    // device") even with room on the build disk, and the status label showed a
+    // fixed 300-character slice of the error tail that landed mid-word
+    // ("Update failed: vice"). The scratch now lives inside the build tree and
+    // the summary picks the real diagnostic.
+    {
+        check(forkmesh::ui::buildScratchDir(QStringLiteral("/opt/forkmesh/qt_client/build")) ==
+                  QStringLiteral("/opt/forkmesh/qt_client/build/.forkmesh-tmp"),
+              QStringLiteral("compiler scratch stays inside the build tree (#1563)"));
+
+        // Free space is read from the nearest existing ancestor, so a build
+        // directory CMake has not created yet still reports its future volume
+        // instead of the "unknown" sentinel (which would skip the pre-flight).
+        QTemporaryDir spaceProbe;
+        if (spaceProbe.isValid()) {
+            const QString buildDir = spaceProbe.filePath(QStringLiteral("build"));
+            check(forkmesh::ui::freeBytesForPath(
+                      buildDir + QStringLiteral("/nested/not-yet")) > 0,
+                  QStringLiteral("free space walks up to an existing ancestor (#1563)"));
+
+            // An unbuilt tree has to fit the whole ~2 GB of objects; one that
+            // already has them overwrites in place, so demanding the full
+            // figure again would block a viable incremental update.
+            const qint64 fresh = forkmesh::ui::rebuildFreeBytesRequired(buildDir);
+            check(QDir().mkpath(buildDir + QStringLiteral("/CMakeFiles/forkmesh.dir")),
+                  QStringLiteral("test can stage an existing build tree (#1563)"));
+            check(forkmesh::ui::rebuildFreeBytesRequired(buildDir) < fresh,
+                  QStringLiteral("an existing build tree needs less free space (#1563)"));
+        }
+
+        const QString diskFull =
+            QStringLiteral("[ 24%] Building CXX object MainWindowNotes.cpp.o\n"
+                           "src/MainWindowNotes.cpp:894:1: fatal error: error "
+                           "writing to /tmp/ccIQExpV.s: No space left on device\n"
+                           "gmake: *** [Makefile:136: all] Error 2");
+        check(forkmesh::ui::updateFailureSummary(diskFull).contains(QStringLiteral("disk filled up")),
+              QStringLiteral("a full disk is reported as a full disk (#1563)"));
+        check(!forkmesh::ui::updateFailureSummary(diskFull).contains(QStringLiteral("gmake")),
+              QStringLiteral("a full disk is not reported as the make exit code (#1563)"));
+
+        const QString compileError =
+            QStringLiteral("[ 12%] Building CXX object MainWindow.cpp.o\n"
+                           "src/MainWindow.cpp:12:3: error: no member named 'nope'\n"
+                           "gmake[1]: *** [CMakeFiles/Makefile2:126] Error 2\n"
+                           "gmake: *** [Makefile:136: all] Error 2");
+        check(forkmesh::ui::updateFailureSummary(compileError) ==
+                  QStringLiteral("src/MainWindow.cpp:12:3: error: no member named 'nope'"),
+              QStringLiteral("the first diagnostic beats the make tail (#1563)"));
+
+        // No recognisable diagnostic: the tail is cut on a line boundary rather
+        // than mid-word, which is what produced "Update failed: vice".
+        const QString noisy = QStringLiteral("%1\nthe last whole line")
+                                  .arg(QString(400, QLatin1Char('x')));
+        const QString summary = forkmesh::ui::updateFailureSummary(noisy);
+        check(summary == QStringLiteral("the last whole line"),
+              QStringLiteral("an unrecognised tail is cut on a line boundary (#1563)"));
+    }
+
     if (updateIsolationOnly) {
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
