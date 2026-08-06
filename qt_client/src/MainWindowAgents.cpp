@@ -273,29 +273,38 @@ int agentStatusModelIconIndex(const AgentSession &session)
 
 QString agentStatusBadgeText(const AgentSession &session)
 {
+    QString state;
     if (session.merged)
-        return QStringLiteral("Merged");
-    if (session.status == AgentStatus::Success)
-        return QStringLiteral("Done");
-    if (session.status == AgentStatus::Failed)
-        return QStringLiteral("Failed");
-    if (session.status == AgentStatus::Stopped)
-        return QStringLiteral("Stopped");
-    if (session.status == AgentStatus::Running) {
-        const QString modelWord = agentModelShortLabel(session.model);
-        return modelWord.isEmpty() ? QStringLiteral("Working") : modelWord;
+        state = QStringLiteral("merged");
+    else if (session.status == AgentStatus::Success)
+        state = QStringLiteral("done");
+    else if (session.status == AgentStatus::Failed)
+        state = QStringLiteral("failed");
+    else if (session.status == AgentStatus::Stopped)
+        state = QStringLiteral("stopped");
+    else if (session.status == AgentStatus::Running)
+        state = QStringLiteral("running");
+    else if (session.status == AgentStatus::Waiting)
+        state = QStringLiteral("waiting");
+    else if (session.status == AgentStatus::Queued)
+        state = QStringLiteral("queued");
+    else
+        state = QStringLiteral("idle");
+    // "Opus is: running" — the model wears the state, so the pill answers who
+    // is doing what in one read. Sessions with no model recorded fall back to
+    // the bare state word.
+    const QString modelWord = agentModelShortLabel(session.model);
+    if (modelWord.isEmpty()) {
+        state[0] = state.at(0).toUpper();
+        return state;
     }
-    if (session.status == AgentStatus::Waiting)
-        return QStringLiteral("Waiting");
-    if (session.status == AgentStatus::Queued)
-        return QStringLiteral("Queued");
-    return QStringLiteral("Idle");
+    return QStringLiteral("%1 is: %2").arg(modelWord, state);
 }
 
 QIcon agentStatusPillIcon(const AgentSession &session)
 {
     if (session.merged || session.status == AgentStatus::Success)
-        return themedOcticon("check-circle", QColor("#3fb950"), 14);
+        return themedOcticon("check-circle", QColor("#3fb950"), 22);
     return agentControlIcon(agentStatusModelIconIndex(session));
 }
 
@@ -2517,12 +2526,14 @@ QWidget *MainWindow::buildAgentsTab()
             &MainWindow::createLinkedIssueForSelectedSession);
 
     // The model icon doubles as the compact outcome control. Its outline is
-    // outcome-coloured and the one-word label keeps the header scannable; hover
-    // or click reveals the fuller session detail without restoring a long pill.
+    // outcome-coloured and the "<Model> is: <state>" label reads who is doing
+    // what at a glance; hover or click reveals the fuller session detail
+    // without restoring a long pill. The icon size pairs with the pill's zero
+    // vertical padding in Theme.h so the portrait fills the pill top to bottom.
     m_agentStatusPill = new QToolButton;
     m_agentStatusPill->setObjectName("agentStatusPill");
     m_agentStatusPill->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_agentStatusPill->setIconSize(QSize(18, 18));
+    m_agentStatusPill->setIconSize(QSize(22, 22));
     m_agentStatusPill->setCursor(Qt::PointingHandCursor);
     m_agentStatusPill->installEventFilter(this);
     connect(m_agentStatusPill, &QToolButton::clicked, this,

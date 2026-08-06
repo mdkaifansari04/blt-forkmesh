@@ -1492,7 +1492,7 @@ QWidget *MainWindow::buildChatPage()
     for (int index = 3; index <= 8; ++index)
         addDeferredSection();
     m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
-    for (int index = 10; index <= 17; ++index)
+    for (int index = 10; index <= 18; ++index)
         addDeferredSection();
     logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
@@ -1563,7 +1563,8 @@ QWidget *MainWindow::buildChatPage()
     // the bottom utility group, Tasks directly above Pings (adhoc #97).
     for (QPushButton *button :
          {m_agentsNavButton, m_reposNavButton, m_chatButton,
-          m_controlNodeNavButton, m_networkNavButton, m_usersNavButton})
+          m_controlNodeNavButton, m_networkNavButton, m_usersNavButton,
+          m_filesNavButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
     // Repo is redundant with the contextual Code entry. Keep the hidden button
     // as section 0's QButtonGroup state carrier for programmatic navigation.
@@ -8941,6 +8942,24 @@ QWidget *MainWindow::buildBreadcrumb()
             [this] { showSection(kUsersSectionIndex); });
     m_usersNavButton->setVisible(m_isAdmin);
 
+    // Files sits directly under Users, closing out the Network group: the same
+    // file-directory glyph the repo Explorer tab uses, so the rail reads as
+    // "the mesh, then the machine it runs on". Unlike the repo Explorer this
+    // browses the real filesystem — hidden entries included — so .git,
+    // .forkmesh and dotfiles are reachable without leaving the app.
+    m_filesNavButton = new ActivityRailButton(QStringLiteral("file-directory"),
+                                              QStringLiteral("Files"));
+    m_filesNavButton->setObjectName(QStringLiteral("topNavButton"));
+    m_filesNavButton->setCheckable(true);
+    m_filesNavButton->setCursor(Qt::PointingHandCursor);
+    m_filesNavButton->setToolTip(
+        QStringLiteral("Files - browse this machine's filesystem, hidden files "
+                       "included"));
+    setOcticon(m_filesNavButton, "file-directory", 16);
+    m_navGroup->addButton(m_filesNavButton, kFilesSectionIndex);
+    connect(m_filesNavButton, &QPushButton::clicked, this,
+            [this] { showSection(kFilesSectionIndex); });
+
     // Rebuild+restart. It used to be an icon-only button on the window-chrome
     // line; it now sits in the debug bar's right-hand tool cluster as a captioned
     // rail item (see buildStatusBar), so the icon carries its word like every
@@ -9194,7 +9213,12 @@ void MainWindow::updateSignInButton()
 {
     if (!m_navSignInButton)
         return;
-    const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
+    // Signed-in state is now tracked explicitly on the auth path (`hasActive`
+    // includes a successful in-app login or matching desktop key binding). Use
+    // that primary signal and fall back to owner-name inference for any older
+    // state where the cached relay profile has already resolved the owner.
+    const bool signedIn = hasActiveAccountSession() ||
+                         !nodeOwnerDisplayName().trimmed().isEmpty();
     m_navSignInButton->setVisible(!m_headless && m_startupAuthResolved && !signedIn);
 }
 
@@ -11842,6 +11866,7 @@ void MainWindow::ensureSectionBuilt(int index)
     case 15: section = buildOrganizationTasksSection(); break;
     case 16: section = buildNotesSection(); break;
     case 17: section = buildUsersSection(); break;
+    case 18: section = buildFilesSection(); break;
     default: break;
     }
     if (!section)
@@ -11937,6 +11962,8 @@ void MainWindow::showSection(int index)
         refreshNotes();
     } else if (index == kUsersSectionIndex) {
         refreshUsersPage();
+    } else if (index == kFilesSectionIndex) {
+        refreshFilesPage();
     }
 }
 

@@ -1655,16 +1655,19 @@ def request_bypasses_repository_metadata_cache(request):
 
 
 async def purge_catalog_related_caches():
-    # One concurrent sweep instead of four sequential awaits — this runs on
-    # every catalog write, inside the request's critical path.
-    await asyncio.gather(*(
-        edge_cache_delete(key)
-        for key in (
+    # Sequential on purpose. This runs on every catalog publish (each mirror
+    # node, every 30s), and gathering the deletes was the wedge site of the
+    # 2026-08-05/06 outage: the Pyodide runtime re-entered a concurrently
+    # scheduled task mid-`caches.delete` ("Cannot enter into task ...",
+    # issue #555), permanently poisoning the isolate. Four sequential cache
+    # deletes cost single-digit ms; a wedged isolate 500s until recycled.
+    for key in (
             CATALOG_CACHE_KEY,
             NETWORK_STATS_CACHE_KEY,
             NETWORK_LEADERBOARDS_CACHE_KEY,
             NETWORK_OVERVIEW_CACHE_KEY,
-        )), return_exceptions=True)
+    ):
+        await edge_cache_delete(key)
 
 
 # Versioned so neither the fail-closed visibility contract nor signed-endpoint
