@@ -1842,6 +1842,7 @@ public:
     {
         setWordWrap(false);
         setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setTextInteractionFlags(Qt::TextSelectableByMouse);
         setFullText(text);
     }
 
