@@ -12,6 +12,7 @@
 #include "NodeEventSocket.h"
 #include "PrivateMirrorRuntime.h"
 #include "PublicMirrorRuntime.h"
+#include "SshMirrorPushOutcome.h"
 #include "UpstreamCheckoutSync.h"
 
 #include <QCryptographicHash>
@@ -6921,11 +6922,17 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
     m_sshMirrorPushing.insert(repoKey);
     auto remaining = std::make_shared<int>(urls.size());
     auto failures = std::make_shared<int>(0);
+    // Remotes that took every ref they safely could but kept one ahead of this
+    // checkout. Not a failure, yet not silent either: an operator watching a
+    // release go out deserves to know a branch was left behind.
+    auto divergent = std::make_shared<int>(0);
     const auto finishPush =
-        [this, repoKey, remaining, failures, userInitiated, releaseTag,
-         remoteCount = urls.size()](bool ok) {
+        [this, repoKey, remaining, failures, divergent, userInitiated,
+         releaseTag, remoteCount = urls.size()](bool ok, bool diverged) {
         if (!ok)
             ++*failures;
+        else if (diverged)
+            ++*divergent;
         if (--*remaining > 0)
             return;
         m_sshMirrorPushing.remove(repoKey);
@@ -6933,12 +6940,22 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
             const QString subject =
                 releaseTag.trimmed().isEmpty() ? repoKey : releaseTag;
             if (*failures == 0) {
-                flashMessage(
+                QString message =
                     QStringLiteral("Pushed %1 to %2 SSH mirror%3.")
                         .arg(subject)
                         .arg(remoteCount)
                         .arg(remoteCount == 1 ? QString()
-                                              : QStringLiteral("s")));
+                                              : QStringLiteral("s"));
+                if (*divergent > 0)
+                    message += QStringLiteral(
+                                   " %1 mirror%2 kept a branch that is ahead "
+                                   "of this checkout; it syncs once the "
+                                   "source catches up.")
+                                   .arg(*divergent)
+                                   .arg(*divergent == 1
+                                            ? QString()
+                                            : QStringLiteral("s"));
+                flashMessage(message);
             } else {
                 flashMessage(
                     QStringLiteral(
@@ -6991,31 +7008,50 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
                         QString::fromUtf8(process->readAllStandardError())
                             .trimmed();
                     process->deleteLater();
-                    if (exitCode != 0) {
+                    // git exits non-zero when *any* ref is rejected, so the
+                    // exit code alone cannot tell "the gateway is unreachable"
+                    // from "main advanced and one divergent branch was left
+                    // alone, exactly as this non-atomic non-forcing push
+                    // intends". Judge by the per-ref --porcelain status lines,
+                    // which git still writes to stdout on a partial rejection.
+                    const SshMirrorPushOutcome outcome =
+                        SshMirrorPush::parsePorcelain(output, exitCode);
+                    if (outcome.failed()) {
+                        // Name the refs the gateway refused; git's stderr
+                        // carries the reason (a hook's "remote: …" message).
+                        const QString detail =
+                            outcome.rejectedRefs.isEmpty()
+                                ? errors.right(300)
+                                : QStringLiteral("rejected %1: %2")
+                                      .arg(SshMirrorPush::summariseRefs(
+                                               outcome.rejectedRefs),
+                                           errors.right(200));
                         logSystem(QStringLiteral(
                                       "Mirror: SSH mirror push of %1 to %2 "
                                       "failed: %3")
-                                      .arg(repoKey, gatewayHost,
-                                           errors.right(300)));
-                        finishPush(false);
+                                      .arg(repoKey, gatewayHost, detail));
+                        finishPush(false, false);
                         return;
                     }
-                    // --porcelain: one status line per ref; '=' means already
-                    // up to date. Only speak up when something actually moved,
-                    // so the quiet auto-sync cadence doesn't spam the log.
-                    bool updated = false;
-                    for (const QString &line :
-                         output.split(QLatin1Char('\n'))) {
-                        if (!line.isEmpty() && !line.startsWith('=') &&
-                            !line.startsWith(QLatin1String("To ")) &&
-                            !line.startsWith(QLatin1String("Done")))
-                            updated = true;
-                    }
-                    if (updated)
+                    // Only speak up when something actually moved, so the quiet
+                    // auto-sync cadence doesn't spam the log.
+                    if (outcome.updated())
                         logSystem(QStringLiteral(
                                       "Mirror: pushed %1 to SSH mirror %2.")
                                       .arg(repoKey, gatewayHost));
-                    finishPush(true);
+                    // Divergence is expected and self-healing, but log it once
+                    // per push so a branch that stays stuck behind the fleet
+                    // is visible instead of being swallowed as success.
+                    if (!outcome.divergedRefs.isEmpty())
+                        logSystem(
+                            QStringLiteral(
+                                "Mirror: SSH mirror %1 is ahead of %2 on %3; "
+                                "left it alone, retrying after the source "
+                                "catches up.")
+                                .arg(gatewayHost, repoKey,
+                                     SshMirrorPush::summariseRefs(
+                                         outcome.divergedRefs)));
+                    finishPush(true, !outcome.divergedRefs.isEmpty());
                 });
         connect(process, &QProcess::errorOccurred, this,
                 [this, process, repoKey, finishPush,
@@ -7029,7 +7065,7 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
                     logSystem(QStringLiteral("Mirror: could not run git to "
                                              "push %1 to SSH mirror %2.")
                                   .arg(repoKey, gatewayHost));
-                    finishPush(false);
+                    finishPush(false, false);
                 });
         // Push from the served bare mirror (or the working copy when this is the
         // source of truth), but never let an unattended desktop rewind or delete
