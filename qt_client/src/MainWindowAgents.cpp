@@ -7775,6 +7775,7 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
+    updateQuickAddTargetAgentLabel();
     // The session on screen is the Agents tab's place, so Back walks between
     // sessions the same way it walks between issues (adhoc #50).
     scheduleNavRecord();
@@ -7810,6 +7811,7 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLogSession = -1; // log emptied out-of-band; force the next set to render
         m_agentDetailTabSession = -1; // next opened session re-starts on the Agent tab
         updateAgentActionState();
+        updateQuickAddTargetAgentLabel();
         return;
     }
     // Several detail helpers resolve git/worktree state through keep-alive
@@ -7834,6 +7836,8 @@ void MainWindow::showAgentSession(int sessionId)
     // sessions; the live re-fetch only happens on the top-bar chart's hover.
     applyLiveClaudeModelsToCombos();
     if (m_agentTitle) {
+        const QString sessionLabel =
+            QStringLiteral("Agent #%1").arg(sessionId);
         if (isExternalSession(sessionId)) {
             const QString label = !session->issueTitle.isEmpty()
                                       ? session->issueTitle
@@ -7842,7 +7846,8 @@ void MainWindow::showAgentSession(int sessionId)
                                              : session->branchName);
             setAgentTitleText(
                 m_agentTitle,
-                QStringLiteral("External Claude Code · %1").arg(label));
+                QStringLiteral("%1 · External Claude Code · %2")
+                    .arg(sessionLabel, label));
         } else {
             // Older ad-hoc sessions may still carry a historically shortened
             // issueTitle, so prefer the prompt's complete first line when it is
@@ -7854,7 +7859,8 @@ void MainWindow::showAgentSession(int sessionId)
             setAgentTitleText(
                 m_agentTitle,
                 session->issueNumber > 0
-                    ? QStringLiteral("#%1 · %2")
+                    ? QStringLiteral("%1 · #%2 · %3")
+                          .arg(sessionLabel)
                           .arg(session->issueNumber)
                           .arg(session->issueTitle.isEmpty()
                                    ? agentProviderName(session->provider)
@@ -7862,7 +7868,8 @@ void MainWindow::showAgentSession(int sessionId)
                     // Ad-hoc sessions (no issue) lead with the prompt-derived
                     // title rather than "pull #0" — before a PR exists prNumber
                     // is 0, and the prompt is what identifies the run anyway.
-                    : QStringLiteral("%1 · %2")
+                    : QStringLiteral("%1 · %2 · %3")
+                          .arg(sessionLabel)
                           .arg(agentProviderName(session->provider))
                           .arg(adHocTitle.isEmpty()
                                    ? QStringLiteral("pull #%1").arg(session->prNumber)
@@ -11366,6 +11373,7 @@ void MainWindow::unsurfaceExternalSession(int sessionId)
     m_externalSig.clear();
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
+    updateQuickAddTargetAgentLabel();
     reloadAgents();
 }
 
@@ -11462,6 +11470,7 @@ void MainWindow::onExternalClaudeTick()
             m_externalSig.clear();
             if (isExternalSession(m_selectedAgentSessionId))
                 m_selectedAgentSessionId = -1;
+            updateQuickAddTargetAgentLabel();
             injectExternalSessions();
             refreshAgentTable();
             updateAgentsTabIndicator();
@@ -13978,4 +13987,19 @@ void MainWindow::updateQuickAddEnterTarget()
     apply(m_quickAddSendToAgentButton, toAgent,
           QStringLiteral("Send to the agent open above, as a follow-up message"));
     apply(m_quickAddSendButton, !toAgent, QStringLiteral("Send to a new agent"));
+    updateQuickAddTargetAgentLabel();
+}
+
+void MainWindow::updateQuickAddTargetAgentLabel()
+{
+    if (!m_quickAddTargetAgentLabel)
+        return;
+    if (!quickAddShouldFollowUpAgent()) {
+        m_quickAddTargetAgentLabel->clear();
+        m_quickAddTargetAgentLabel->hide();
+        return;
+    }
+    m_quickAddTargetAgentLabel->setText(
+        QStringLiteral("Agent #%1").arg(m_selectedAgentSessionId));
+    m_quickAddTargetAgentLabel->show();
 }
