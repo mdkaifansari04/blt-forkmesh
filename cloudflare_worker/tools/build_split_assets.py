@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Stage the asset subsets served by the split site Workers.
+
+The production site is served by three Workers on the same zone:
+
+- forkmesh-relay (wrangler.toml) — the Python application Worker. It keeps
+  the COMPLETE public/ asset tree and its custom-domain catch-all, so it can
+  serve every path by itself; deleting the split Workers below is always a
+  safe rollback.
+- forkmesh-www (wrangler.www.toml) — assets-only Worker that owns the
+  marketing documents via more-specific zone routes.
+- forkmesh-world (wrangler.world.toml) — assets-only Worker that owns the
+  /world three.js application via zone routes.
+
+This script materializes public_www/ and public_world/ from public/ — it
+COPIES, never moves: public/ stays the single source of truth so the relay
+remains a complete fallback and every existing test/tooling path
+(build_worker_footprint.py, _redirects/_headers contracts) is untouched.
+
+_redirects and _headers are copied verbatim into each staged tree so the
+split Workers keep byte-identical routing/header behavior with the relay
+(rules for paths a Worker is never routed to are inert). One marker block is
+appended to each staged _headers so live verification can prove which Worker
+answered: x-forkmesh-worker: www|world.
+
+Invoked by the [build] command of wrangler.www.toml / wrangler.world.toml.
+"""
+
+from __future__ import annotations
+
+import shutil
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+PUBLIC = ROOT / "public"
+
+# The marketing documents forkmesh-www owns. Clean URLs resolve to these via
+# the verbatim-copied _redirects. The homepage (index.html) is deliberately
+# NOT staged: / stays on the relay because _serve_homepage records
+# site_referrers and streams index.html with no-cache. The auth pages
+# (login/signup/forgot/reset) and /chat also deliberately stay on the relay.
+WWW_DOCUMENTS = [
+    "404.html",
+    "about.html",
+    "blog.html",
+    "careers.html",
+    "changelog.html",
+    "desktop.html",
+    "docs.html",
+    "features.html",
+    "homev2.html",
+    "leaderboards.html",
+    "mirror-payouts.html",
+    "network.html",
+    "new-home.html",
+    "outreach.html",
+    "press.html",
+    "pricing.html",
+    "privacy.html",
+    "referrals.html",
+    "security-report.html",
+    "status.html",
+    "terms.html",
+]
+
+# Directory trees under www-owned route prefixes (/blog/*, /docs/*).
+WWW_TREES = ["blog", "docs"]
+
+# The world Worker serves only the /world/* module graph. Its /assets/* and
+# /api/world/* subresource requests are separate HTTP fetches that still
+# route to the relay, so nothing else needs to be staged.
+WORLD_TREES = ["world"]
+
+
+def _reset(directory: Path) -> None:
+    if directory.exists():
+        shutil.rmtree(directory)
+    directory.mkdir(parents=True)
+
+
+def _copy_control_files(destination: Path, marker: str) -> None:
+    shutil.copy2(PUBLIC / "_redirects", destination / "_redirects")
+    headers = (PUBLIC / "_headers").read_text(encoding="utf-8")
+    headers += (
+        "\n# Appended by tools/build_split_assets.py: names the Worker that\n"
+        "# served the response so deploy verification can prove the zone\n"
+        "# routes actually carved this traffic off the relay.\n"
+        f"/*\n  x-forkmesh-worker: {marker}\n"
+    )
+    (destination / "_headers").write_text(headers, encoding="utf-8")
+
+
+def stage_www() -> Path:
+    staged = ROOT / "public_www"
+    _reset(staged)
+    for name in WWW_DOCUMENTS:
+        shutil.copy2(PUBLIC / name, staged / name)
+    for tree in WWW_TREES:
+        shutil.copytree(PUBLIC / tree, staged / tree)
+    _copy_control_files(staged, "www")
+    return staged
+
+
+def stage_world() -> Path:
+    staged = ROOT / "public_world"
+    _reset(staged)
+    for tree in WORLD_TREES:
+        shutil.copytree(PUBLIC / tree, staged / tree)
+    # not_found_handling="404-page" needs the shared 404 document at the
+    # asset root, exactly like the relay serves it.
+    shutil.copy2(PUBLIC / "404.html", staged / "404.html")
+    _copy_control_files(staged, "world")
+    return staged
+
+
+def main(argv: list[str]) -> int:
+    targets = argv[1:] or ["www", "world"]
+    stagers = {"www": stage_www, "world": stage_world}
+    for target in targets:
+        if target not in stagers:
+            print(f"unknown split target: {target}", file=sys.stderr)
+            return 2
+        staged = stagers[target]()
+        files = sum(1 for p in staged.rglob("*") if p.is_file())
+        print(f"staged {target}: {files} files in {staged.relative_to(ROOT)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
