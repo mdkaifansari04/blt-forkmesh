@@ -233,6 +233,7 @@ set(FORKMESH_APP_SOURCES
     src/ActionTelemetry.h
     src/ActionTelemetry.cpp
     src/NetworkBackoff.h
+    src/NetworkReplyError.h
     src/BackoffNetworkAccessManager.h
     src/BackoffNetworkAccessManager.cpp
     src/ControlNode.h

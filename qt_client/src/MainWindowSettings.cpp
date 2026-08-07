@@ -4265,6 +4265,24 @@ bool networkLogRequestSucceeded(const QString &withoutBody, const QString &body)
     return compact.contains(QLatin1String("\"ok\":true"));
 }
 
+// The inverse: did this line report a reply that failed? The finished() logger
+// writes a literal "ERR" marker in the status slot ("net GET ERR 503 …"), which
+// is the authoritative signal and the only one left for a status code the
+// server sent no reason phrase and no body with. Before adhoc #1613 these lines
+// were caught by the word-match below purely because Qt's boilerplate error
+// string happened to start with "Error transferring"; dropping that boilerplate
+// would otherwise have painted a bare "net GET ERR 503 <url> · release fetch"
+// as a plain REPO line. `withoutBody` is lower-cased, with the peeked snippet
+// removed so a body of its own can't fake the marker.
+bool networkLogRequestFailed(const QString &withoutBody)
+{
+    if (!withoutBody.startsWith(QLatin1String("net ")))
+        return false;
+    const QStringList parts =
+        withoutBody.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    return parts.size() >= 3 && parts.at(2) == QLatin1String("err");
+}
+
 NetworkLogStyle networkLogStyleFor(const QString &message)
 {
     const QString lower = message.toLower();
@@ -4301,6 +4319,8 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
     // body itself reports ok: a recovered ping quotes the outage it closes
     // ("Last failure: mirror10 has not supplied…"), which painted a healthy
     // "net GET 200 [body: {"ok":true,…}]" line red (adhoc #1546).
+    if (networkLogRequestFailed(forRules))
+        return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
     const QString &forErrors =
         networkLogRequestSucceeded(forRules, body) ? forRules : lower;
     if (forErrors.contains("fail") || forErrors.contains("error") ||
