@@ -14,21 +14,18 @@ SCENE = (ROOT / "public/world/world-scene.js").read_text(encoding="utf-8")
 BUILD_BOARD = (ROOT / "src/world_build_board.py").read_text(encoding="utf-8")
 
 
+DIAGNOSTIC_DOTS = (
+    "fps", "frame", "draw", "input", "network", "traffic", "queue",
+    "build", "world",
+)
+
+
 def test_debug_bar_is_a_live_metric_pill_with_graded_health_dots():
     assert 'class="world-diagnostics-orb"' in WORLD
-    for metric in (
-        "fps", "frame", "draw", "input", "network", "traffic", "queue",
-        "build", "world",
-    ):
+    for metric in DIAGNOSTIC_DOTS:
         assert f'data-diagnostic-dot="{metric}"' in WORLD
     assert "width: min(310px, calc(100vw - 24px));" in CSS
     assert "width: min(310px, calc(100vw - 92px));" in CSS
-    assert 'data-world-diagnostics-chart-metric="fps"' in WORLD
-    assert 'data-world-diagnostics-chart-metric="triangles"' in WORLD
-    assert 'data-world-diagnostics-chart-metric="memory"' in WORLD
-    assert 'data-world-diagnostics-chart-line="fps"' in WORLD
-    assert 'data-world-diagnostics-chart-line="triangles"' in WORLD
-    assert 'data-world-diagnostics-chart-line="memory"' in WORLD
     assert "function diagnosticsChartPoints(" in WORLD
     assert 'this.renderDiagnosticsChart(snapshot)' in WORLD
     assert 'diagnosticsChartPoints(history, "triangles", {\n          zeroBased: false,' in WORLD
@@ -42,7 +39,77 @@ def test_debug_bar_is_a_live_metric_pill_with_graded_health_dots():
     assert '.world-diagnostics-orb > span[data-level="high"]' in CSS
     assert "border: 1px solid rgb(139 148 158 / 0.18);" in CSS
     assert "background:\n    linear-gradient(to bottom" in CSS
-    assert "const dotLevels = {" in WORLD
+    assert "function diagnosticDotLevels(snapshot) {" in WORLD
+
+
+def test_every_health_dot_has_its_own_chart_in_the_same_order():
+    # Each of the nine dots is backed by a visible trace, laid out in the dots'
+    # own order, plus the memory trace no dot owns.
+    charts = [*DIAGNOSTIC_DOTS, "memory"]
+    for metric in charts:
+        assert f'data-world-diagnostics-chart-metric="{metric}"' in WORLD
+        assert f'data-world-diagnostics-chart-line="{metric}"' in WORLD
+        assert f'data-world-diagnostics-chart-value="{metric}"' in WORLD
+    strip = WORLD[
+        WORLD.index('class="world-diagnostics-chart"'):
+        WORLD.index("<strong>WORLD DEBUG</strong>")
+    ]
+    positions = [
+        strip.index(f'data-world-diagnostics-chart-metric="{metric}"')
+        for metric in charts
+    ]
+    assert positions == sorted(positions)
+    dots = WORLD[
+        WORLD.index("data-world-diagnostics-dots"):
+        WORLD.index('class="world-diagnostics-chart"')
+    ]
+    assert [
+        dots.index(f'data-diagnostic-dot="{metric}"')
+        for metric in DIAGNOSTIC_DOTS
+    ] == sorted(
+        dots.index(f'data-diagnostic-dot="{metric}"')
+        for metric in DIAGNOSTIC_DOTS
+    )
+    # Three across mirrors the 3x3 orb; memory runs the full width underneath.
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr));" in CSS
+    assert (
+        '.world-diagnostics-chart-metric[data-world-diagnostics-chart-metric="memory"] {\n'
+        "  grid-column: 1 / -1;\n"
+    ) in CSS
+    # The collapsed pill grows for the grid; the chat orb keeps its circle.
+    assert ".world-diagnostics:not(.world-chat-terminal) > summary {\n  height: auto;\n}" in CSS
+
+
+def test_state_dots_chart_their_own_verdict_on_a_fixed_scale():
+    # network, build and world grade a state rather than a measurement, so
+    # their traces plot the dot's own verdict and never auto-scale a steady
+    # "watch" back up to a healthy-looking top line.
+    assert "const WORLD_DIAGNOSTIC_HEALTH_SCORES = { good: 1, caution: 0.5, high: 0 };" in WORLD
+    assert "function diagnosticHealthScore(level) {" in WORLD
+    assert "if (Number.isFinite(ceiling)) high = Math.max(high, ceiling);" in WORLD
+    assert "diagnosticsChartPoints(history, key, { ceiling: 1 })" in WORLD
+    for key in ("networkHealth", "buildHealth", "worldHealth"):
+        assert f"{key}: diagnosticHealthScore(dotLevels." in WORLD
+        assert f'healthChart("{key}")' in WORLD
+
+
+def test_history_keeps_sampling_while_the_scene_is_paused():
+    # The socket, queue and build traces stay continuous across a paused scene;
+    # renderer readings go in as NaN so their traces gap instead of dipping.
+    assert "this.diagnosticsFrameHistory.push({" in WORLD
+    assert "snapshot.renderer && !snapshot.renderer.paused ? snapshot.renderer : null" in WORLD
+    assert "fps: liveRenderer ? liveRenderer.fps : NaN," in WORLD
+    assert "longestFrameMs: liveRenderer ? liveRenderer.longestFrameMs : NaN," in WORLD
+    assert "inputResponseMs: liveRenderer ? liveRenderer.inputResponseMs : NaN," in WORLD
+    # Frame health only speaks for seconds that were actually rendered.
+    assert (
+        "const samples = (Array.isArray(history) ? history : []).filter((sample) =>\n"
+        "      Number.isFinite(sample?.frameTimeMs),\n"
+        "    );"
+    ) in WORLD
+    # Cumulative queue counters are charted as the per-second rise, not the sum.
+    assert "queueEvents: Math.max(0, queueTotal - previousQueueTotal)," in WORLD
+    assert "this.diagnosticsQueueTotal = NaN;" in WORLD
 
 
 def test_chat_orb_becomes_an_idle_prompt_and_opens_accessibly():

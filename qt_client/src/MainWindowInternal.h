@@ -7593,6 +7593,15 @@ public:
         // graded by the relay, which changes what the timestamp means: a
         // local check time, not the relay's newest completed sample minute.
         bool local = false;
+        // The same system as seen from this desktop, folded into the relay's
+        // own row (adhoc #1602): the site and the /status page are checked from
+        // both sides, and one dot carries both verdicts. Empty when the relay
+        // is the only source for this row.
+        QString localStatus;
+        QString localReason;
+        qint64 localCheckedTs = 0;
+        // A check for this row is in flight right now, so the dot blinks.
+        bool checking = false;
     };
 
     explicit LogActivityLights(Presentation presentation = Compact,
@@ -7688,11 +7697,13 @@ public:
     void setWebsiteStatuses(const QList<WebsiteStatus> &statuses)
     {
         m_websiteStatuses = statuses;
+        noteWebsiteCheckCycles();
         if (m_presentation == Compact)
             updateCompactSize();
         else if (m_presentation == Debug)
             updateDebugSize();
         updateSummaryToolTip();
+        updateWebsiteAnimation();
         update();
     }
 
@@ -7741,6 +7752,16 @@ public:
         for (const WebsiteStatus &status : m_websiteStatuses) {
             if (status.id == id)
                 return status.status;
+        }
+        return QString();
+    }
+    // The desktop-measured half of a merged row, empty when this row is the
+    // relay's own report alone.
+    QString websiteLocalStatusFor(const QString &id) const
+    {
+        for (const WebsiteStatus &status : m_websiteStatuses) {
+            if (status.id == id)
+                return status.localStatus;
         }
         return QString();
     }
@@ -7827,11 +7848,20 @@ protected:
             painter.setPen(Qt::NoPen);
             for (int i = 0; i < m_websiteStatuses.size(); ++i) {
                 const QRect dotRect = websiteStatusRect(i);
-                const QColor color = websiteStatusColor(
+                const QColor verdict = websiteStatusColor(
                     m_websiteStatuses.at(i).status, dark);
+                // A dot being re-checked right now blinks between its verdict
+                // and the empty colour, so a row that is working is visibly
+                // working rather than looking identical to a stalled one.
+                const bool checking = websiteChecking(i);
+                const QColor color =
+                    checking && !m_websiteBlinkOn ? blinkOff : verdict;
                 painter.setBrush(color);
                 painter.drawEllipse(dotRect);
                 if (m_presentation == Debug) {
+                    // The ring around the dot empties over the minute between
+                    // checks, so the row also says how fresh the verdict is.
+                    paintWebsiteCountdown(painter, i, verdict, dark);
                     QFont labelFont = painter.font();
                     labelFont.setPixelSize(7);
                     labelFont.setBold(false);
@@ -7881,6 +7911,24 @@ protected:
                 }
                 if (!status.reason.isEmpty())
                     tip += QLatin1Char('\n') + status.reason;
+                // A merged row was graded twice — once by the relay from inside
+                // Cloudflare and once here over the real public hostname — so
+                // the tooltip keeps both verdicts apart instead of hiding the
+                // one that lost the worst-wins merge.
+                if (!status.localStatus.isEmpty()) {
+                    tip += QStringLiteral("\nFrom this desktop: %1")
+                               .arg(status.localStatus);
+                    if (status.localCheckedTs > 0)
+                        tip += QStringLiteral(" (checked %1)")
+                                   .arg(QDateTime::fromMSecsSinceEpoch(
+                                            status.localCheckedTs)
+                                            .toLocalTime()
+                                            .toString(QStringLiteral("HH:mm")));
+                    if (!status.localReason.isEmpty())
+                        tip += QLatin1Char('\n') + status.localReason;
+                }
+                if (websiteChecking(website))
+                    tip += QStringLiteral("\nChecking now…");
                 if (onWebsiteClicked)
                     tip += QStringLiteral(
                         "\nClick to open the related website page.");
@@ -7926,6 +7974,22 @@ protected:
             return;
         }
         QWidget::contextMenuEvent(event);
+    }
+
+    // The countdown rings and the checking blink are the only things in this
+    // strip that move on their own, so their timer runs only while the strip is
+    // on screen with dots to animate.
+    void showEvent(QShowEvent *event) override
+    {
+        QWidget::showEvent(event);
+        updateWebsiteAnimation();
+    }
+
+    void hideEvent(QHideEvent *event) override
+    {
+        if (m_websiteAnimation)
+            m_websiteAnimation->stop();
+        QWidget::hideEvent(event);
     }
 
 private:
@@ -7994,6 +8058,18 @@ private:
     static constexpr int kDebugPadding = 4;
     static constexpr int kDebugCategorySlot = 25;
     static constexpr int kDebugWebsiteSlot = 36;
+    // The debug row's website dots and the countdown ring drawn around each of
+    // them (adhoc #1602). The ring's outer edge must clear the labels below.
+    static constexpr int kDebugWebsiteDot = 14;
+    static constexpr int kDebugWebsiteRing = 21;
+    static constexpr int kDebugWebsiteTop = 4;
+    // Checks run on the one-minute cadence of MainWindow's relay-latency timer,
+    // which is what the ring counts down.
+    static constexpr int kWebsiteCheckIntervalMs = 60000;
+    // A check usually answers in well under a blink, so a row that starts one
+    // keeps blinking briefly after it lands — otherwise the only feedback for a
+    // healthy fast check would be a frame nobody sees.
+    static constexpr int kWebsiteCheckBlinkTailMs = 900;
 
     static int categoryIndex(const QString &badge)
     {
@@ -8177,8 +8253,9 @@ private:
         if (m_presentation == Debug) {
             const int x = websiteSeparatorX() +
                           index * kDebugWebsiteSlot +
-                          (kDebugWebsiteSlot - 11) / 2;
-            return QRect(x, 7, 11, 11);
+                          (kDebugWebsiteSlot - kDebugWebsiteDot) / 2;
+            return QRect(x, kDebugWebsiteTop, kDebugWebsiteDot,
+                         kDebugWebsiteDot);
         }
         const int col = index / 2;
         const int row = index % 2;
@@ -8190,7 +8267,137 @@ private:
     QRect websiteStatusLabelRect(int index) const
     {
         const int x = websiteSeparatorX() + index * kDebugWebsiteSlot;
-        return QRect(x, 24, kDebugWebsiteSlot, 13);
+        return QRect(x, 27, kDebugWebsiteSlot, 12);
+    }
+
+    // The countdown ring's track, concentric with the dot.
+    QRect websiteCountdownRect(int index) const
+    {
+        const QRect dot = websiteStatusRect(index);
+        const int grow = (kDebugWebsiteRing - dot.width()) / 2;
+        return dot.adjusted(-grow, -grow, grow, grow);
+    }
+
+    // How much of this row's minute is left before the next check, 0 when the
+    // row has never been checked here or the check is already overdue.
+    qreal websiteCountdownFraction(int index) const
+    {
+        const qint64 checked =
+            m_websiteCheckedAt.value(m_websiteStatuses.at(index).id, 0);
+        if (checked <= 0)
+            return 0.0;
+        const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - checked;
+        if (elapsed < 0 || elapsed >= kWebsiteCheckIntervalMs)
+            return 0.0;
+        return 1.0 - qreal(elapsed) / qreal(kWebsiteCheckIntervalMs);
+    }
+
+    void paintWebsiteCountdown(QPainter &painter, int index,
+                               const QColor &verdict, bool dark) const
+    {
+        const QRectF ring(websiteCountdownRect(index));
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 2));
+        painter.drawEllipse(ring);
+        const qreal remaining = websiteCountdownFraction(index);
+        if (remaining > 0.0) {
+            painter.setPen(QPen(verdict, 2, Qt::SolidLine, Qt::FlatCap));
+            // Starts full at twelve o'clock and unwinds clockwise as the
+            // minute runs out, so an empty ring means "a check is due now".
+            painter.drawArc(ring, 90 * 16,
+                            -qRound(remaining * 360.0) * 16);
+        }
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::NoBrush);
+    }
+
+    // Is this row mid-check? The tail keeps a blink visible even when the
+    // answer arrives between two paints.
+    bool websiteChecking(int index) const
+    {
+        if (index < 0 || index >= m_websiteStatuses.size())
+            return false;
+        const WebsiteStatus &status = m_websiteStatuses.at(index);
+        if (status.checking)
+            return true;
+        return m_websiteBlinkUntil.value(status.id, 0) >
+               QDateTime::currentMSecsSinceEpoch();
+    }
+
+    bool anyWebsiteChecking() const
+    {
+        for (int i = 0; i < m_websiteStatuses.size(); ++i) {
+            if (websiteChecking(i))
+                return true;
+        }
+        return false;
+    }
+
+    // Track when each row's check cycle last completed — the ring counts down
+    // from there — and arm the blink tail for the ones checking right now.
+    void noteWebsiteCheckCycles()
+    {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        QSet<QString> present;
+        QSet<QString> checking;
+        for (const WebsiteStatus &status : m_websiteStatuses) {
+            present.insert(status.id);
+            if (status.checking) {
+                checking.insert(status.id);
+                m_websiteBlinkUntil[status.id] = now + kWebsiteCheckBlinkTailMs;
+            } else if (m_websiteChecking.contains(status.id) ||
+                       !m_websiteCheckedAt.contains(status.id)) {
+                // A check just landed, or this row was never seen before and
+                // its first verdict is as fresh as one.
+                m_websiteCheckedAt[status.id] = now;
+            }
+        }
+        m_websiteChecking = checking;
+        // Rows come and go with the relay's system list (mirror nodes join and
+        // leave), so the bookkeeping follows the rows rather than growing.
+        for (auto it = m_websiteCheckedAt.begin();
+             it != m_websiteCheckedAt.end();) {
+            if (present.contains(it.key()))
+                ++it;
+            else
+                it = m_websiteCheckedAt.erase(it);
+        }
+        for (auto it = m_websiteBlinkUntil.begin();
+             it != m_websiteBlinkUntil.end();) {
+            if (present.contains(it.key()))
+                ++it;
+            else
+                it = m_websiteBlinkUntil.erase(it);
+        }
+    }
+
+    void updateWebsiteAnimation()
+    {
+        // Only the debug row draws the rings, so the other two presentations
+        // animate solely while a check is actually running rather than
+        // repainting themselves once a second forever.
+        const bool blinking = anyWebsiteChecking();
+        if (m_websiteStatuses.isEmpty() || !isVisible() ||
+            (m_presentation != Debug && !blinking)) {
+            if (m_websiteAnimation)
+                m_websiteAnimation->stop();
+            return;
+        }
+        if (!m_websiteAnimation) {
+            m_websiteAnimation = new QTimer(this);
+            connect(m_websiteAnimation, &QTimer::timeout, this, [this] {
+                m_websiteBlinkOn = !m_websiteBlinkOn;
+                // The interval follows the state: fast while something is being
+                // checked, once a second otherwise for the rings alone.
+                updateWebsiteAnimation();
+                update();
+            });
+        }
+        const int interval = blinking ? 200 : 1000;
+        if (m_websiteAnimation->interval() != interval)
+            m_websiteAnimation->setInterval(interval);
+        if (!m_websiteAnimation->isActive())
+            m_websiteAnimation->start();
     }
 
     static QString debugWebsiteLabel(const WebsiteStatus &status)
@@ -8199,6 +8406,7 @@ private:
         // bar only has room for the one- or two-word identity requested here.
         static const QHash<QString, QString> labels = {
             {QStringLiteral("website"), QStringLiteral("Web")},
+            {QStringLiteral("status_page"), QStringLiteral("Status page")},
             {QStringLiteral("api"), QStringLiteral("API")},
             {QStringLiteral("errors"), QStringLiteral("Errors")},
             {QStringLiteral("database"), QStringLiteral("DB")},
@@ -8208,7 +8416,9 @@ private:
             {QStringLiteral("git_hosting"), QStringLiteral("Git host")},
             {QStringLiteral("realtime"), QStringLiteral("Realtime")},
             {QStringLiteral("durable_objects"), QStringLiteral("Durables")},
-            // Measured from this desktop, not reported by the relay.
+            // Only seen while the relay's own list is still missing: a desktop
+            // check normally merges into the "Web"/"Status page" row it shares
+            // a subject with (adhoc #1602).
             {QStringLiteral("desktop_website"), QStringLiteral("Web here")},
             {QStringLiteral("desktop_status_page"), QStringLiteral("Status here")},
         };
@@ -8221,7 +8431,12 @@ private:
     int websiteStatusAt(const QPoint &point) const
     {
         for (int i = 0; i < m_websiteStatuses.size(); ++i) {
-            if (websiteStatusRect(i).adjusted(-2, -2, 2, 2).contains(point))
+            // The debug row's countdown ring belongs to its dot, so clicking
+            // the ring opens the same page the dot does.
+            const QRect hit = m_presentation == Debug
+                                  ? websiteCountdownRect(i)
+                                  : websiteStatusRect(i);
+            if (hit.adjusted(-2, -2, 2, 2).contains(point))
                 return i;
         }
         return -1;
@@ -8264,6 +8479,15 @@ private:
     bool m_expanded = false;
     QList<WebsiteStatus> m_websiteStatuses;
     QString m_stallToolTip;
+    // Website-dot animation state (adhoc #1602): when each row's check cycle
+    // last completed, how long a mid-check row keeps blinking, and the shared
+    // blink phase. Keyed by row id so the relay reordering its systems, or a
+    // mirror node joining, never hands one row another's ring.
+    QHash<QString, qint64> m_websiteCheckedAt;
+    QHash<QString, qint64> m_websiteBlinkUntil;
+    QSet<QString> m_websiteChecking;
+    QTimer *m_websiteAnimation = nullptr;
+    bool m_websiteBlinkOn = true;
 };
 
 // One conflict region in a file carrying git merge markers. Line indices are

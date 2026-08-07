@@ -528,6 +528,11 @@ public:
     {
         applyFooterWebsiteStatusFailure(httpStatus);
     }
+    // Where a footer status dot leads when it is clicked (adhoc #1602).
+    QUrl testWebsiteStatusTargetUrl(const QString &statusId) const
+    {
+        return websiteStatusTargetUrl(statusId);
+    }
     // Hands one desktop-side edge probe the answer it would have received and
     // returns the graded state, so Cloudflare-error grading is exercised
     // without a live network.
@@ -1496,10 +1501,30 @@ private:
                                const QString &tagCommit);
     void installPrebuiltAndRelaunch(const QString &artifactPath,
                                     const QString &tag);
+    // Host deploys upload this desktop's local forkmesh-mirror-node, so a
+    // prebuilt client update must also refresh (or first produce) the Go
+    // companion the release publishes beside the client asset — otherwise a
+    // node missing it can never self-heal and every Vultr install fails with
+    // "forkmesh-mirror-node is missing". Verifies by SHA-256 from the release
+    // manifest (local mirror CAS first, else the relay blob route), installs
+    // beside the running client, then hands off to installPrebuiltAndRelaunch.
+    // Best-effort: a companion failure never blocks the client update.
+    void installMirrorCompanionThenRelaunch(const QString &artifactPath,
+                                            const QString &tag,
+                                            const QString &owner,
+                                            const QString &name,
+                                            const QString &companionHash);
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
                           const QString &relaunchPath = QString(),
                           const QString &buildType = QStringLiteral("Release"));
+    // Source-rebuild counterpart of the companion refresh: build
+    // mirror_node/cmd/forkmesh-mirror-node with the local Go toolchain into the
+    // client build directory so installAndRelaunch can place it beside the
+    // installed client. Skips (with a log line) when Go or the module source is
+    // unavailable; a build failure is logged and never blocks the client update.
+    void buildMirrorNodeCompanion(const QString &clientDir, const QString &buildDir,
+                                  std::function<void()> onDone);
     void installAndRelaunch(const QString &built, const QString &appPath);
     // When onFailure is set it is invoked instead of the default "Update failed"
     // handling if the step exits non-zero, letting callers recover (e.g. re-clone
@@ -1581,8 +1606,16 @@ private:
     // check for as long as it keeps failing (adhoc #1596).
     struct FooterStatusRow; // defined with the rest of the footer state below
     void alertOnDesktopEdgeOutage(const FooterStatusRow &row);
-    // Relay-graded rows first, desktop-measured ones after, onto both dot rows.
+    // Relay-graded rows, each with the desktop-measured check for the same
+    // subject folded into it, onto both dot rows (adhoc #1602).
     void publishFooterWebsiteStatuses();
+    // Clicking a dot opens the surface that dot is about: the site, /status,
+    // the API host, the flagship repository page, or the admin error console
+    // (adhoc #1602). An invalid URL means only the admin console, which is
+    // resolved separately because its path is a deployment secret.
+    QUrl websiteStatusTargetUrl(const QString &statusId) const;
+    void openWebsiteStatusTarget(const QString &statusId);
+    void openAdminErrorConsole();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
@@ -6046,6 +6079,9 @@ private:
     QList<FooterStatusRow> m_footerRelayStatuses;
     QList<FooterStatusRow> m_footerDesktopStatuses;
     QSet<QString> m_desktopProbesInFlight;
+    // One outstanding "where is my admin console" lookup at a time, so a
+    // double-click on the errors dot does not ask the relay twice.
+    bool m_adminConsoleUrlInFlight = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
     // live log and the prompt). One chip per open *kind* of work, not per ticket:
