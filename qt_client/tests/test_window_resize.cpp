@@ -232,17 +232,24 @@ void checkFooterOverlayGeometry(MainWindow &window)
         const QByteArray cloudflareError =
             "<!doctype html><html><head><title>forkmesh.com | 521: Web server "
             "is down</title></head><body>Cloudflare Ray ID: abc123</body>";
+        // adhoc #1602: "Web here" and "Status here" were the site and the
+        // /status page all over again, so each desktop check now folds into the
+        // relay row for the same subject instead of adding a dot of its own.
+        // The relay's payload above has no status_page system, so only that
+        // check has nowhere to merge and stays a dot in its own right.
         check(window.testApplyDesktopWebsiteProbe(
                   QStringLiteral("desktop_website"), 200, homepage) ==
                       QStringLiteral("operational") &&
                   window.testApplyDesktopWebsiteProbe(
                       QStringLiteral("desktop_status_page"), 206, statusPage) ==
                       QStringLiteral("operational") &&
-                  lights->websiteStatusCount() == 4 &&
-                  lights->websiteStatusFor(QStringLiteral("desktop_website")) ==
+                  lights->websiteStatusCount() == 3 &&
+                  lights->websiteStatusFor(QStringLiteral("desktop_website"))
+                      .isEmpty() &&
+                  lights->websiteLocalStatusFor(QStringLiteral("website")) ==
                       QStringLiteral("operational"),
-              QStringLiteral("the desktop-side site and /status checks append "
-                             "two more dots to the relay's own rows"));
+              QStringLiteral("the desktop-side site check merges into the "
+                             "relay's own website row instead of repeating it"));
 
         check(window.testApplyDesktopWebsiteProbe(
                   QStringLiteral("desktop_website"), 521, cloudflareError) ==
@@ -250,13 +257,43 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   window.testApplyDesktopWebsiteProbe(
                       QStringLiteral("desktop_website"), 200, cloudflareError) ==
                       QStringLiteral("down") &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("down") &&
                   window.testApplyDesktopWebsiteProbe(
                       QStringLiteral("desktop_website"), 429, homepage) ==
                       QStringLiteral("degraded") &&
-                  lights->websiteStatusCount() == 4,
+                  lights->websiteStatusCount() == 3,
               QStringLiteral("a Cloudflare edge status, a branded error document "
                              "served as HTTP 200, and a rate-limit each fail the "
                              "website check without adding a row"));
+
+        // Every dot is about a specific surface, so clicking one opens that
+        // surface (adhoc #1602). The errors dot is the exception: its admin
+        // console sits at a deployment-secret path, so no URL is built here
+        // unless this desktop was told the path outright.
+        const QUrl statusTarget =
+            window.testWebsiteStatusTargetUrl(QStringLiteral("status_page"));
+        const QUrl apiTarget =
+            window.testWebsiteStatusTargetUrl(QStringLiteral("api"));
+        const QUrl repoTarget = window.testWebsiteStatusTargetUrl(
+            QStringLiteral("flagship_repository"));
+        const QUrl siteTarget =
+            window.testWebsiteStatusTargetUrl(QStringLiteral("website"));
+        // …unless the operator running the suite has one configured.
+        const bool adminPathConfigured =
+            !qEnvironmentVariable("FORKMESH_ADMIN_PATH").trimmed().isEmpty() ||
+            !qEnvironmentVariable("ADMIN_PATH").trimmed().isEmpty();
+        check(statusTarget.path() == QStringLiteral("/status") &&
+                  statusTarget.host() == siteTarget.host() &&
+                  apiTarget.host() ==
+                      QStringLiteral("api.") + siteTarget.host() &&
+                  repoTarget.path() == QStringLiteral("/forkmesh/forkmesh") &&
+                  siteTarget.path() == QStringLiteral("/") &&
+                  (adminPathConfigured ||
+                   !window.testWebsiteStatusTargetUrl(QStringLiteral("errors"))
+                        .isValid()),
+              QStringLiteral("each status dot opens its own page: /status, the "
+                             "API host, the flagship repository, the site"));
 
         // A host with no link of its own reports grey rather than a false
         // outage, so an offline test machine is allowed that verdict here.
