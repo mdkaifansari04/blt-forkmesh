@@ -5301,6 +5301,28 @@ void MainWindow::logSystemFrom(const QString &text, const QString &sourcePath,
         alertOnLoggedError(plain);
 }
 
+// A toast is one blob of text; the Pings page has a Title column and a Detail
+// column beside it (adhoc #1629). Split the blob at its first line break — a
+// git failure's first line is its summary and the rest is the transcript — and,
+// failing that, at the last word before the title stops reading as a heading.
+static constexpr int kPingTitleChars = 90;
+
+static QPair<QString, QString> splitAlertForPing(const QString &text)
+{
+    const int newline = text.indexOf(QLatin1Char('\n'));
+    QString head = (newline >= 0 ? text.left(newline) : text).simplified();
+    QString rest = (newline >= 0 ? text.mid(newline + 1) : QString()).simplified();
+    if (head.size() > kPingTitleChars) {
+        const int space = head.lastIndexOf(QLatin1Char(' '), kPingTitleChars);
+        const int cut = space > kPingTitleChars / 2 ? space : kPingTitleChars;
+        const QString tail = head.mid(cut).simplified();
+        rest = rest.isEmpty() ? tail
+                              : tail + QLatin1Char(' ') + rest;
+        head = head.left(cut).trimmed() + QString::fromUtf8("\xE2\x80\xA6");
+    }
+    return {head, rest};
+}
+
 // Identical error text repeating inside this window alerts once. A retry loop
 // hammering the same failure should flash the window once, not once per
 // attempt; the log itself still records every occurrence.
@@ -5361,6 +5383,25 @@ void MainWindow::alertOnLoggedError(const QString &message)
             burst ? QStringLiteral("Errors are arriving faster than they can be "
                                    "shown. Open the Log for the full list.")
                   : message;
+        // This card bypasses flashMessage (the line is already in the log), so
+        // file its ping here — an error the operator was shown belongs on the
+        // Pings page like any other (adhoc #1629). Its cloud state is decided
+        // rather than computed: a logged failure is not reported from here, so
+        // it would otherwise sit at "Syncing…" waiting for a report that is
+        // never sent.
+        const QPair<QString, QString> split = splitAlertForPing(text);
+        AppNotification item;
+        item.title = split.first;
+        item.body = split.second;
+        item.warning = true;
+        item.kind = QStringLiteral("error");
+        item.quiet = true; // the card below is the toast for it
+        item.syncDecided = true;
+        item.sync = forkmesh::PingSync::LocalOnly;
+        item.syncReason =
+            QStringLiteral("a logged failure — the record is this page and the "
+                           "Log, not the cloud");
+        recordNotification(item);
         showTopMessage(text, true, QStringLiteral("fm:log:errors"), 0,
                        QStringLiteral("error"));
     }
@@ -6107,6 +6148,26 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // The toast's caller, not this line: see the declaration.
     logSystem(text, sourceFile, sourceLine);
     m_topMessageOwnsLoggedError = false;
+    // Every toast is an alert this app raised, so every toast is filed on the
+    // Pings page — a card that slid off screen after five seconds used to be the
+    // whole record of it (adhoc #1629). m_pingToastId is set when this toast is
+    // the one a ping already filed asked for (recordNotification →
+    // flashNotification → here), so the same event is never filed twice.
+    qint64 pingId = m_pingToastId;
+    // An empty text is a dismissal (flashMessage("") clears the bubble), not an
+    // event: there is nothing to file.
+    if (pingId == 0 && !text.simplified().isEmpty()) {
+        const QPair<QString, QString> split = splitAlertForPing(text);
+        AppNotification item;
+        item.title = split.first;
+        item.body = split.second;
+        item.warning = error;
+        item.kind = kind.isEmpty() ? QStringLiteral("desktop") : kind;
+        item.runId = actionRunId;
+        // The toast is already on screen; filing it must not raise a second one.
+        item.quiet = true;
+        pingId = recordNotification(item);
+    }
     // An error toast is the whole record of the failure on this machine; report
     // it so it also becomes an operational record and a ping (adhoc #1538).
     // Here rather than in showTopMessage: a headless node has no toast widget at
@@ -6114,7 +6175,8 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // that paints its own cards through showTopMessage must not report a line
     // that was already reported from wherever it originally failed.
     if (error)
-        reportUserVisibleError(QStringLiteral("toast"), QString(), text);
+        reportUserVisibleError(QStringLiteral("toast"), QString(), text,
+                               QString(), pingId);
     showTopMessage(text, error, clickHref, durationSeconds, kind, actionRunId);
 }
 

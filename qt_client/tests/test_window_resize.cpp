@@ -661,6 +661,57 @@ void checkLoggedErrorAlert(MainWindow &window)
     QApplication::processEvents();
 }
 
+// adhoc #1629: a card that slides off screen after five seconds used to be the
+// whole record of an alert. Every popup this app raises — toast, modal, OS
+// notification — is now filed on the Pings page, and each row says where it
+// stands with the cloud: an alert raised with nothing to reach the relay with
+// is "Offline" and never sent, while a routine confirmation is "Local only"
+// because it was never going anywhere. This window is signed out, which is
+// exactly the case the offline marking exists for.
+void checkFiledPingSyncState(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    window.testFlashMessage(
+        QStringLiteral("Mirror push rejected by the gateway"), true);
+    QApplication::processEvents();
+    check(window.testNotificationsTitled(
+              QStringLiteral("Mirror push rejected")) == 1,
+          QStringLiteral("an error toast is filed on the Pings page, not just "
+                         "shown for a few seconds"));
+    check(window.testPingStatusFor(QStringLiteral("Mirror push rejected"))
+                  == QStringLiteral("Offline"),
+          QStringLiteral("an alert this node could not report is marked offline, "
+                         "so the page is visibly its only record"));
+
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    window.testFlashMessage(QStringLiteral("Copied the clone address"), false);
+    QApplication::processEvents();
+    check(window.testPingStatusFor(QStringLiteral("Copied the clone address"))
+                  == QStringLiteral("Local only"),
+          QStringLiteral("a routine confirmation is filed as local-only, not as "
+                         "something that failed to sync"));
+
+    // The toast a filed ping raises for itself must not come back through the
+    // funnel as a second row.
+    const int before = window.testNotificationsTitled(
+        QStringLiteral("Ping funnel check"));
+    window.testAddNotification(QStringLiteral("Ping funnel check"),
+                               QStringLiteral("one event, one row"), false);
+    QApplication::processEvents();
+    check(window.testNotificationsTitled(QStringLiteral("Ping funnel check"))
+                  == before + 1,
+          QStringLiteral("a ping and the toast it raises are one row"));
+
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
 // adhoc #1615: with the debug bar's Monitor box ticked, a Worker failure has to
 // reach the same red card as any other failure — and the healthy traffic around
 // it must not, or the app's own log would drown in Worker hits. Lines are fed in
@@ -1637,6 +1688,7 @@ int main(int argc, char *argv[])
         window.show();
         QApplication::processEvents();
         checkLoggedErrorAlert(window);
+        checkFiledPingSyncState(window);
         checkCloudLogMonitorAlert(window);
         checkCloudflareLogWindow(window);
         stopChildProcesses(window);
@@ -2552,6 +2604,7 @@ int main(int argc, char *argv[])
     runLogTimelineChecks(window);
 
     checkLoggedErrorAlert(window);
+    checkFiledPingSyncState(window);
     checkCloudLogMonitorAlert(window);
     checkCloudflareLogWindow(window);
 
