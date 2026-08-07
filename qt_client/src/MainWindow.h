@@ -1057,6 +1057,28 @@ public:
         }
         return outcomes;
     }
+    // Park a follow-up for a session that has no process, exactly as the
+    // composer's "add" does when it cannot deliver one.
+    void testQueueAgentSteerMessage(int sessionId, const QString &prompt)
+    {
+        queueAgentSteerMessage(sessionId, prompt);
+    }
+    QString testPendingSteerMessage(int sessionId) const
+    {
+        return m_pendingSteerMessage.value(sessionId);
+    }
+    // What startCliTranscript does with the parked message when a run starts:
+    // it takes it, and holds it until the CLI announces itself. Returns what the
+    // launch was given.
+    QString testTakeSteerMessageForLaunch(int sessionId)
+    {
+        const QString steer = m_pendingSteerMessage.take(sessionId);
+        if (steer.isEmpty())
+            m_inFlightSteerMessage.remove(sessionId);
+        else
+            m_inFlightSteerMessage.insert(sessionId, steer);
+        return steer;
+    }
     QString testAgentSessionLastError(int sessionId)
     {
         const AgentSession *session = findAgentSession(sessionId);
@@ -3278,6 +3300,23 @@ private:
     // Same as sendPromptToSelectedAgent, but for an arbitrary session id
     // (adhoc #182: an authenticated owner-sealed prompt names its session).
     void sendPromptToAgentSession(int sessionId, const QString &prompt);
+    // Hand a prompt to the process a session is running right now; false when
+    // nothing live took it, which is the caller's cue to restart the session with
+    // the prompt held for the resumed run (adhoc #1618).
+    bool deliverPromptToLiveAgentTransport(int sessionId, const QString &prompt);
+    // Park a prompt for a session's next start, accumulating rather than
+    // replacing what is already waiting (adhoc #1618).
+    void queueAgentSteerMessage(int sessionId, const QString &prompt);
+    // Drop a transport that is running but can no longer take a turn, so the
+    // restart gate stops calling this session live (adhoc #1618).
+    bool discardWedgedAgentTransport(int sessionId);
+    // Report what happened to a session in its transcript and its run log, so a
+    // restart that could not happen is not silent (adhoc #1618).
+    void noteAgentSessionNotice(int sessionId, const QString &text,
+                                bool error = false);
+    // Stamp a queued session that cannot start with its reason, and say so where
+    // the user is looking (adhoc #1618).
+    void failQueuedAgentSession(AgentSession &session, const QString &reason);
     // Full issue title + description + every comment, formatted for an agent
     // prompt. Shared by the initial issue-assignment prompt and the "Send
     // issue context" resend action, so a run that missed the context the
@@ -6864,7 +6903,6 @@ private:
     // line, so a typed prompt actually shows on two lines. Enter sends,
     // Shift+Enter inserts a newline; Up/Down still walk the prompt history.
     QPlainTextEdit *m_issueQuickAdd = nullptr;
-    QLabel *m_quickAddTargetAgentLabel = nullptr;
     QFrame *m_promptWrapper = nullptr; // geometry anchor for notification/prompt bubbles
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     // Canonical provider state behind the combined visible picker. It also
@@ -8586,6 +8624,12 @@ private:
     // it restarts the session and this is folded into the resumed run's prompt as
     // a steering instruction (the composer is always typeable — adhoc #177).
     QHash<int, QString> m_pendingSteerMessage;
+    // The steering message the CLI launch currently in flight was given. A launch
+    // that dies without ever starting a turn never delivered it, so the automatic
+    // re-queue puts it back on m_pendingSteerMessage instead of resuming with the
+    // user's instruction lost (adhoc #1618). Cleared once the CLI announces
+    // itself, which is where the message has demonstrably arrived.
+    QHash<int, QString> m_inFlightSteerMessage;
     // Snapshot of each live stream session, captured at launch so transcript
     // events can be persisted to disk without depending on m_agentSessions
     // (which doesn't yet hold a freshly created ad-hoc session). Issue #41.

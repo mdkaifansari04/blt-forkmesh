@@ -15958,30 +15958,76 @@ async def _users_directory_cache_get():
     }))
 
 
+# Per-isolate memo for _public_member_count. The badge behind it loads on
+# every page site-wide, so the moment its 30s edge copy lapsed a burst of
+# concurrent requests hit the cold path below — and each running its OWN
+# 1000-row sequential decrypt_row() pass congested the event loop until
+# unrelated requests in the isolate died with "Cannot enter into task"
+# (git-upload-pack info/refs, room websockets) and NoGilError fatals — the
+# same clone-path family as adhoc #144/#153/#167/#183. At most one caller
+# refreshes per TTL; everyone else is served the memo or a cheap approximate
+# count.
+_MEMBER_COUNT_MEMO = {"count": None, "ts": 0, "refresh_ts": 0}
+MEMBER_COUNT_MEMO_TTL_MS = 60 * 1000
+
+
 async def _public_member_count(env):
     # The one member count every surface should quote (site-wide chat badge,
-    # World campfire HUD). Prefers the roster the directory endpoint already
-    # cached at the edge; only falls back to its own decrypt scan on a cold
-    # cache, so this rarely pays the 1000-row decrypt cost twice.
+    # World campfire HUD): what _is_public_roster_member admits, deduped by
+    # name. Prefers the roster the directory endpoint already cached at the
+    # edge; the decrypt scan runs at most once per isolate per TTL — see
+    # _MEMBER_COUNT_MEMO.
+    now = int(Date.now())
+    memo = _MEMBER_COUNT_MEMO
+    if memo["count"] is not None and now - memo["ts"] < MEMBER_COUNT_MEMO_TTL_MS:
+        return memo["count"]
     cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
     if cached is not None:
         try:
             payload = json.loads(await cached.text())
-            return len(payload.get("users") or [])
+            count = len(payload.get("users") or [])
+            memo["count"] = count
+            memo["ts"] = now
+            return count
         except Exception:
             pass
-    seen = set()
-    count = 0
-    rows = await d1_all(env, "SELECT data FROM users LIMIT ?", 1000)
-    for row in rows or []:
-        rec = await decrypt_row(env, row.get("data", ""))
-        if not _is_public_roster_member(rec):
-            continue
-        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        count += 1
+    # Single-flight refill, the _decrypted_public_catalog pattern: the claim
+    # is atomic (no await between check and claim on the single-threaded
+    # loop) and deliberately NOT a shared future — a request resuming inside
+    # I/O another request started dies with "Cannot perform I/O on behalf of
+    # a different request" (see ensure_schema). Losing callers serve the
+    # stale memo; on a cold isolate with nothing stale they fall back to a
+    # cheap undeduplicated row count instead of piling onto the decrypt scan.
+    if now - memo["refresh_ts"] < MEMBER_COUNT_MEMO_TTL_MS:
+        if memo["count"] is not None:
+            return memo["count"]
+        row = await d1_first(
+            env,
+            "SELECT COUNT(*) AS c FROM users "
+            "WHERE email_bi IS NOT NULL AND email_bi <> ''",
+        )
+        return int((row or {}).get("c") or 0)
+    memo["refresh_ts"] = now
+    try:
+        seen = set()
+        count = 0
+        rows = await d1_all(env, "SELECT data FROM users LIMIT ?", 1000)
+        for row in rows or []:
+            rec = await decrypt_row(env, row.get("data", ""))
+            if not _is_public_roster_member(rec):
+                continue
+            name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            count += 1
+    except BaseException:
+        # Release the slot (covers CancelledError from a canceled request) so
+        # the next caller retries instead of waiting out a phantom refresh.
+        memo["refresh_ts"] = 0
+        raise
+    memo["count"] = count
+    memo["ts"] = now
     return count
 
 

@@ -440,6 +440,34 @@ bool lineHasIgnoreMarker(const QString &text, qsizetype offset)
     return text.mid(lineStart, lineEnd - lineStart).contains(secretScanIgnoreMarker());
 }
 
+// Best-effort line-comment token for a repo-relative path's language, used
+// when appending the inline suppression marker so it doesn't itself break
+// the line's syntax. Defaults to "#", which covers the scripts/configs
+// (install.sh, .env, YAML) most flagged assignments live in.
+QString lineCommentPrefix(const QString &path)
+{
+    static const QSet<QString> slashStyle{
+        QStringLiteral("c"), QStringLiteral("cc"), QStringLiteral("cpp"),
+        QStringLiteral("cxx"), QStringLiteral("h"), QStringLiteral("hh"),
+        QStringLiteral("hpp"), QStringLiteral("js"), QStringLiteral("jsx"),
+        QStringLiteral("ts"), QStringLiteral("tsx"), QStringLiteral("java"),
+        QStringLiteral("go"), QStringLiteral("rs"), QStringLiteral("swift"),
+        QStringLiteral("kt"), QStringLiteral("kts"), QStringLiteral("cs"),
+        QStringLiteral("m"), QStringLiteral("mm"), QStringLiteral("scala"),
+        QStringLiteral("dart"), QStringLiteral("php"), QStringLiteral("proto"),
+        QStringLiteral("groovy"),
+    };
+    static const QSet<QString> dashStyle{
+        QStringLiteral("sql"), QStringLiteral("lua"), QStringLiteral("hs"),
+    };
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    if (slashStyle.contains(suffix))
+        return QStringLiteral("//");
+    if (dashStyle.contains(suffix))
+        return QStringLiteral("--");
+    return QStringLiteral("#");
+}
+
 struct SecretPattern {
     QString name;
     QRegularExpression re;
@@ -1018,6 +1046,43 @@ QList<RepoSecurityFinding> RepoSecurity::findSecretsInPush(
     RepoSecurityInput input;
     input.localPath = localPath;
     return secretFindings(trackedTextFiles(input));
+}
+
+bool RepoSecurity::markFindingSafe(const QString &localPath,
+                                   const RepoSecurityFinding &finding)
+{
+    if (localPath.trimmed().isEmpty() || finding.path.trimmed().isEmpty() ||
+        finding.line <= 0)
+        return false;
+
+    QFile file(QDir(localPath).filePath(finding.path));
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray raw = file.readAll();
+    file.close();
+
+    const bool hadTrailingNewline = raw.endsWith('\n');
+    QStringList lines = QString::fromUtf8(raw).split(QLatin1Char('\n'));
+    if (hadTrailingNewline && !lines.isEmpty())
+        lines.removeLast();
+
+    const int idx = finding.line - 1;
+    if (idx < 0 || idx >= lines.size())
+        return false;
+    if (lines.at(idx).contains(secretScanIgnoreMarker()))
+        return true; // already suppressed
+
+    lines[idx] += QStringLiteral("  %1 %2")
+                      .arg(lineCommentPrefix(finding.path), secretScanIgnoreMarker());
+
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    QString content = lines.join(QLatin1Char('\n'));
+    if (hadTrailingNewline)
+        content += QLatin1Char('\n');
+    file.write(content.toUtf8());
+    file.close();
+    return true;
 }
 
 RepoSecuritySeverity RepoSecurity::highestSeverity(

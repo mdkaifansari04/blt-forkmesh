@@ -4292,6 +4292,15 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
     // "failed"/"unable" and would otherwise mis-badge the stall as ERROR.
     if (lower.contains(QLatin1String("ui stalled")))
         return {QString::fromLatin1(kStallAccent), QString::fromLatin1(kStallBadge)};
+    // A successful "Git: merged <base> into <branch> in its linked worktree."
+    // line embeds the branch name verbatim, and agent branches are slugged
+    // from issue titles — so a branch like "…-am-unable-continue-agent" trips
+    // the "unable" error keyword below and mis-badges a successful merge as
+    // ERROR (adhoc #1620). Checked ahead of the error precedence, same as the
+    // stall case above.
+    if (lower.startsWith(QLatin1String("git: merged ")) &&
+        lower.contains(QLatin1String(" in its linked worktree")))
+        return {QStringLiteral("#a371f7"), QStringLiteral("MERGE")};
     // Category should reflect *what drove the request*, not the payload the
     // server happened to return. The verbose "net" log line embeds a peeked
     // response snippet as "[body: …]", and a repository object always carries
