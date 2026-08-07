@@ -184,8 +184,8 @@ QPushButton#ghostButton:hover { color: #e6edf3; }
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
 QPushButton#logFilterChip {
     background: transparent; border: 1px solid #30363d; color: #8b949e;
-    font-weight: 600; font-size: 11px; padding: 2px 10px; border-radius: 11px;
-    min-height: 20px; max-height: 24px;
+    font-weight: 600; font-size: 12px; padding: 4px 12px; border-radius: 13px;
+    min-height: 24px; max-height: 28px;
 }
 QPushButton#logFilterChip:hover { color: #e6edf3; border-color: #6e7681; }
 QPushButton#logFilterChip:checked {
@@ -230,6 +230,12 @@ QPushButton#socialIconButton:hover { border-color: #6e7681; }
 /* Right-hand tool cluster (Restart / Resize / Log). The items paint themselves
    like every other rail entry, so the host only holds them off the edge. */
 #debugBarTools { background: transparent; }
+/* "Monitor" (adhoc #1615) sits in that cluster beside the Cloud button it
+   belongs to. It is the one plain checkbox in the strip, so it carries the
+   caption size the rail items paint and turns the Cloud blue when armed. */
+#cloudLogMonitorCheck { color: #8b949e; font-size: 11px; spacing: 4px; }
+#cloudLogMonitorCheck:hover { color: #58a6ff; }
+#cloudLogMonitorCheck:checked { color: #58a6ff; }
 #debugLogTail {
     background-color: #0d1117; border-top: 1px solid #30363d;
     color: #8b949e; padding: 2px 8px;
@@ -428,11 +434,14 @@ QPushButton#relayJoinApproveButton:hover { background-color: #f85149; }
    always visible, with a clear selected state. */
 #topNavBar { background: transparent; }
 #navDivider { background-color: #21262d; border: none; }
-QPushButton#topNavButton {
+QPushButton#topNavButton, QPushButton#cloudflareWorkerLogsButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #8b949e; font-size: 13px; font-weight: 600; padding: 5px 12px;
 }
-QPushButton#topNavButton:hover { background-color: #161b22; color: #e6edf3; }
+QPushButton#topNavButton:hover,
+QPushButton#cloudflareWorkerLogsButton:hover {
+    background-color: #161b22; color: #e6edf3;
+}
 QPushButton#topNavButton:checked {
     background-color: #21262d; color: #e6edf3; border-color: #30363d;
 }
@@ -506,12 +515,18 @@ QPushButton#agentsMagicButton:checked {
 #topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
-#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptStatus { font-weight: 500; font-size: 11px; }
 #topMessagePromptImage {
     background: rgba(48,54,61,0.35); border: 1px solid #30363d;
     border-radius: 5px; padding: 3px;
 }
 #topMessagePromptImage:hover { border-color: #58a6ff; }
+/* The agent detail header's attachment strip, above the title (adhoc #1598). */
+#agentPromptImage {
+    background: rgba(48,54,61,0.35); border: 1px solid #30363d;
+    border-radius: 6px; padding: 2px;
+}
+#agentPromptImage:hover { border-color: #58a6ff; }
 #topMessageQueue { background: transparent; border: none; }
 #topMessageQueueContent { background: transparent; }
 #topMessageQueueCard { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
@@ -803,6 +818,10 @@ QPushButton#quickAddGenieButton:hover {
 }
 #chatHeader QLabel { background: transparent; }
 #channelTitle { font-size: 16px; font-weight: 700; }
+#agentPromptTitle {
+    font-size: 16px; font-weight: 700;
+    padding-bottom: 8px; border-bottom: 1px solid #30363d;
+}
 #encryptionLabel { color: #8b949e; font-size: 12px; }
 
 /* --- Node profile control panel --- */
@@ -929,7 +948,7 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #0f2a1a; border: 1px solid #238636; border-radius: 10px;
     color: #3fb950; padding: 2px 8px; font-size: 11px; font-weight: 700;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #010409; border: none;
     color: #8b949e; font-family: monospace; font-size: 12px;
 }
@@ -1074,7 +1093,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     color: #6e7681;
     font-size: 11px;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #010409;
     border: none;
     color: #8b949e;
@@ -1487,13 +1506,15 @@ QPlainTextEdit#actionLog {
 QToolButton#agentStatusPill {
     background-color: transparent;
     border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 2px 7px 2px 4px;
+    border-radius: 24px;
+    padding: 0px 10px 0px 3px;
     font-size: 11px;
     font-weight: 600;
-    color: #1f2937;
+    /* Primer dark foreground: this rule lives in the dark sheet, where the
+       light-theme grey it used to carry read as near-black on the pane. */
+    color: #e6edf3;
 }
-QToolButton#agentStatusPill:hover { background-color: #f3f4f6; }
+QToolButton#agentStatusPill:hover { background-color: #21262d; }
 QToolButton#agentStatusPill[outcomeTone="success"] { border-color: #3fb950; }
 QToolButton#agentStatusPill[outcomeTone="failure"] { border-color: #f85149; }
 QToolButton#agentStatusPill[outcomeTone="pending"] { border-color: #e3742f; }
@@ -1662,8 +1683,8 @@ QPushButton#ghostButton:hover { color: #1f2328; }
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
 QPushButton#logFilterChip {
     background: transparent; border: 1px solid #d0d7de; color: #656d76;
-    font-weight: 600; font-size: 11px; padding: 2px 10px; border-radius: 11px;
-    min-height: 20px; max-height: 24px;
+    font-weight: 600; font-size: 12px; padding: 4px 12px; border-radius: 13px;
+    min-height: 24px; max-height: 28px;
 }
 QPushButton#logFilterChip:hover { color: #1f2328; border-color: #afb8c1; }
 QPushButton#logFilterChip:checked {
@@ -1883,11 +1904,14 @@ QPushButton#relayJoinApproveButton:hover { background-color: #a40e26; }
    always visible, with a clear selected state. */
 #topNavBar { background: transparent; }
 #navDivider { background-color: #d0d7de; border: none; }
-QPushButton#topNavButton {
+QPushButton#topNavButton, QPushButton#cloudflareWorkerLogsButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #656d76; font-size: 13px; font-weight: 600; padding: 5px 12px;
 }
-QPushButton#topNavButton:hover { background-color: #eaeef2; color: #1f2328; }
+QPushButton#topNavButton:hover,
+QPushButton#cloudflareWorkerLogsButton:hover {
+    background-color: #eaeef2; color: #1f2328;
+}
 QPushButton#topNavButton:checked {
     background-color: #eaeef2; color: #1f2328; border-color: #d0d7de;
 }
@@ -1949,12 +1973,18 @@ QPushButton#agentsMagicButton:checked {
 #topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
-#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptStatus { font-weight: 500; font-size: 11px; }
 #topMessagePromptImage {
     background: #f6f8fa; border: 1px solid #d0d7de;
     border-radius: 5px; padding: 3px;
 }
 #topMessagePromptImage:hover { border-color: #0969da; }
+/* See the dark rules: the agent detail header's attachment strip. */
+#agentPromptImage {
+    background: #f6f8fa; border: 1px solid #d0d7de;
+    border-radius: 6px; padding: 2px;
+}
+#agentPromptImage:hover { border-color: #0969da; }
 #topMessageQueue { background: transparent; border: none; }
 #topMessageQueueContent { background: transparent; }
 #topMessageQueueCard { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
@@ -2217,6 +2247,10 @@ QPushButton#quickAddGenieButton:hover {
 }
 #chatHeader QLabel { background: transparent; }
 #channelTitle { font-size: 16px; font-weight: 700; }
+#agentPromptTitle {
+    font-size: 16px; font-weight: 700;
+    padding-bottom: 8px; border-bottom: 1px solid #d0d7de;
+}
 #encryptionLabel { color: #656d76; font-size: 12px; }
 
 /* --- Node profile control panel --- */
@@ -2344,7 +2378,7 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #dafbe1; border: 1px solid #2da44e; border-radius: 10px;
     color: #1a7f37; padding: 2px 8px; font-size: 11px; font-weight: 700;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #ffffff; border: none;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
@@ -2374,6 +2408,10 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #debugBarScroll QScrollBar:horizontal { height: 7px; }
 /* See the dark rule: the tool items are painted, the host is just a layout. */
 #debugBarTools { background: transparent; }
+/* See the dark rule: the cloud log monitor toggle beside the Cloud button. */
+#cloudLogMonitorCheck { color: #57606a; font-size: 11px; spacing: 4px; }
+#cloudLogMonitorCheck:hover { color: #0969da; }
+#cloudLogMonitorCheck:checked { color: #0969da; }
 #debugLogTail {
     background-color: #ffffff; border-top: 1px solid #d0d7de;
     color: #57606a; padding: 2px 8px;
@@ -2512,7 +2550,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     color: #6e7681;
     font-size: 11px;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #ffffff;
     border: none;
     color: #1f2328;
@@ -2919,8 +2957,8 @@ QPlainTextEdit#actionLog {
 QToolButton#agentStatusPill {
     background-color: transparent;
     border: 1px solid #d0d7de;
-    border-radius: 12px;
-    padding: 2px 7px 2px 4px;
+    border-radius: 24px;
+    padding: 0px 10px 0px 3px;
     font-size: 11px;
     font-weight: 600;
 }

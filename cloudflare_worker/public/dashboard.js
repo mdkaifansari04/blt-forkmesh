@@ -10858,16 +10858,15 @@
         if (prior?.timer) clearTimeout(prior.timer);
         delete state.pendingInboxRefreshes[key];
       } else if (!prior?.timer) {
-        const attempt = Math.min(5, Math.max(0, Number(prior?.attempt) || 0));
         const refresh = {
-          attempt: attempt + 1,
           timer: setTimeout(() => {
             refresh.timer = 0;
             void loadRepoPendingCounts(repo);
-            // Ten minutes, matching the endpoint's edge cache: a faster
-            // re-poll only re-reads the same cached counts while adding
-            // load (this loop was a top contributor to /pending traffic).
-          }, Math.min(600_000, 15_000 * (2 ** attempt))),
+            // A flat ten minutes, matching the endpoint's edge cache: the
+            // first re-polls of the old 15s-doubling backoff only re-read
+            // the same cached counts, and this loop was a top contributor
+            // to /pending traffic.
+          }, 600_000),
         };
         state.pendingInboxRefreshes[key] = refresh;
       }

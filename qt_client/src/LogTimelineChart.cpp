@@ -1,10 +1,8 @@
 #include "LogTimelineChart.h"
 
 #include <QDateTime>
-#include <QLinearGradient>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPainterPath>
 #include <QPalette>
 #include <QWheelEvent>
 
@@ -212,35 +210,31 @@ void LogTimelineChart::paintEvent(QPaintEvent *)
     painter.drawLine(QPointF(plot.left(), plot.bottom()),
                      QPointF(plot.right(), plot.bottom()));
 
-    QPainterPath linePath;
-    for (int index = 0; index < bucketCount; ++index) {
-        const qreal x = plot.left() +
-                        (index + 0.5) * plot.width() / bucketCount;
-        const qreal y = plot.bottom() -
-                        qreal(buckets.at(index)) / maximum * plot.height();
-        if (index == 0)
-            linePath.moveTo(x, y);
-        else
-            linePath.lineTo(x, y);
-    }
-
-    QPainterPath fillPath = linePath;
-    fillPath.lineTo(plot.right(), plot.bottom());
-    fillPath.lineTo(plot.left(), plot.bottom());
-    fillPath.closeSubpath();
-    QColor fillTop = m_accent;
-    fillTop.setAlpha(105);
-    QColor fillBottom = m_accent;
-    fillBottom.setAlpha(12);
-    QLinearGradient fill(plot.topLeft(), plot.bottomLeft());
-    fill.setColorAt(0, fillTop);
-    fill.setColorAt(1, fillBottom);
+    // One upright line per bucket rather than a joined area curve: each line is
+    // the count in its own slice of time, so a quiet minute reads as a gap
+    // instead of a slope drawn between the two busy minutes on either side.
+    const qreal slot = plot.width() / bucketCount;
+    const qreal lineWidth = qBound(1.0, slot - 2.0, 3.0);
+    QColor emptyTick = m_accent;
+    emptyTick.setAlpha(38);
+    const QPen barPen(m_accent, lineWidth, Qt::SolidLine, Qt::FlatCap);
+    const QPen emptyPen(emptyTick, lineWidth, Qt::SolidLine, Qt::FlatCap);
     painter.save();
     painter.setClipRect(plot);
-    painter.fillPath(fillPath, fill);
-    painter.setPen(QPen(m_accent, 2.0));
-    painter.drawPath(linePath);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    for (int index = 0; index < bucketCount; ++index) {
+        const qreal x = plot.left() + (index + 0.5) * slot;
+        const int count = buckets.at(index);
+        // A stub tick keeps an empty slice legible as part of the same rail
+        // rather than an unexplained blank stretch.
+        painter.setPen(count > 0 ? barPen : emptyPen);
+        const qreal height =
+            count > 0 ? qMax(2.0, qreal(count) / maximum * plot.height()) : 1.5;
+        painter.drawLine(QPointF(x, plot.bottom()),
+                         QPointF(x, plot.bottom() - height));
+    }
     painter.restore();
+    painter.setRenderHint(QPainter::Antialiasing, true);
 
     if (total == 0) {
         QFont railFont = font();

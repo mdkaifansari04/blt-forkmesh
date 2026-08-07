@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.16 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.18 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -158,6 +158,7 @@ set(FORKMESH_MAIN_WINDOW_SOURCES
     src/MainWindowChat.cpp
     src/MainWindowTasks.cpp
     src/MainWindowNotes.cpp
+    src/MainWindowFiles.cpp
     src/MainWindowIssues.cpp
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp
@@ -187,6 +188,8 @@ set(FORKMESH_APP_SOURCES
     src/CrashHandler.cpp
     src/PlatformLogFilter.h
     src/PlatformLogFilter.cpp
+    src/LogSource.h
+    src/LogSource.cpp
     src/SingleInstance.h
     src/SingleInstance.cpp
     src/StartupSplash.h
@@ -213,6 +216,7 @@ set(FORKMESH_APP_SOURCES
     src/PublicMirrorRuntime.cpp
     src/UpstreamCheckoutSync.h
     src/UpstreamCheckoutSync.cpp
+    src/MirrorPushOutcome.h
     src/CoveStore.h
     src/CoveStore.cpp
     src/ChatHistoryLimits.h
@@ -229,6 +233,7 @@ set(FORKMESH_APP_SOURCES
     src/ActionTelemetry.h
     src/ActionTelemetry.cpp
     src/NetworkBackoff.h
+    src/NetworkReplyError.h
     src/BackoffNetworkAccessManager.h
     src/BackoffNetworkAccessManager.cpp
     src/ControlNode.h
@@ -710,6 +715,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ActionStore.cpp
         src/ActionRunner.h
         src/ActionRunner.cpp
+        src/SystemStats.h
+        src/SystemStats.cpp
     )
     target_include_directories(forkmesh-action-security-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -778,6 +785,25 @@ if(FORKMESH_BUILD_TESTS)
     target_link_libraries(forkmesh-upstream-sync-tests PRIVATE Qt6::Core)
     if(APPLE)
         set_target_properties(forkmesh-upstream-sync-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
+    endif()
+
+    # The unattended SSH mirror fan-out pushes every stable ref at once without
+    # forcing, so a branch the gateway advanced first is rejected while the
+    # rest land and git still exits non-zero. This suite proves that partial
+    # rejection reads as a healthy push (and that an unreachable gateway or a
+    # hook denial still reads as a failure), against real local git repos.
+    qt_add_executable(forkmesh-ssh-mirror-push-tests
+        tests/test_ssh_mirror_push.cpp
+        src/MirrorGatewayHealth.h
+        src/MirrorPushOutcome.h
+        src/NetworkBackoff.h
+    )
+    target_include_directories(forkmesh-ssh-mirror-push-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(forkmesh-ssh-mirror-push-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-ssh-mirror-push-tests PROPERTIES
             MACOSX_BUNDLE FALSE)
     endif()
 
@@ -1019,6 +1045,8 @@ if(FORKMESH_BUILD_TESTS)
              COMMAND forkmesh-public-mirror-tests)
     add_test(NAME forkmesh-upstream-sync-tests
              COMMAND forkmesh-upstream-sync-tests)
+    add_test(NAME forkmesh-ssh-mirror-push-tests
+             COMMAND forkmesh-ssh-mirror-push-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
     add_test(NAME forkmesh-mirror-fleet-window-tests
              COMMAND forkmesh-window-tests --mirror-fleet-only)
@@ -1062,6 +1090,7 @@ if(FORKMESH_BUILD_TESTS)
         forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
         forkmesh-upstream-sync-tests
+        forkmesh-ssh-mirror-push-tests
         forkmesh-window-tests forkmesh-perf-tests forkmesh-e2e
         forkmesh-e2e-stub-agent)
 

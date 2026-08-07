@@ -27,9 +27,17 @@ func TestLoadConfigDefaultsAndRejectsUnsafeInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	intakeCfg, err := LoadConfig(path)
-	if err != nil || intakeCfg.IntakePollInterval.Duration != 5*time.Second ||
-		intakeCfg.IntakeIdleGrace.Duration != 20*time.Second {
+	if err != nil || intakeCfg.IntakeIdleGrace.Duration != 2*time.Minute {
 		t.Fatalf("intake defaults not applied: %+v %v", intakeCfg, err)
+	}
+	// Intake is push-driven and never polls; the retired intakePollInterval
+	// key must still parse (deployed configs set it) but is ignored.
+	legacyPoll := strings.Replace(withIntake, `"upstreams":{}`, `"intakePollInterval":"5s","upstreams":{}`, 1)
+	if err := os.WriteFile(path, []byte(legacyPoll), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("legacy intakePollInterval no longer parses: %v", err)
 	}
 	for name, raw := range map[string]string{
 		"unknown":        strings.Replace(good, `"schemaVersion":1`, `"schemaVersion":1,"wat":true`, 1),

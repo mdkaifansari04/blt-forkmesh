@@ -163,10 +163,26 @@ The Control page links to the **Network → Hosts** tab, where operators can add
 remote machine, install/update ForkMesh, and view host logs. It also offers a
 confirmed fleet action to upload the current binary to saved hosts.
 
+Every host in the fleet authorizes one shared ForkMesh SSH key. The desktop
+keeps its private half owner-only beside its `known_hosts` store, at
+`<app data>/ssh/forkmesh_shared_ed25519` — a device set up before the switch
+keeps using the per-provider file it already has (`vultr_mirror_ed25519`), so
+mirrors provisioned earlier stay reachable without re-keying. The key is
+generated once, on the first flow that needs it, and registered with the
+provider as `forkmesh-shared-host-key` when a mirror is provisioned.
+
+Every host operation — install, update, uninstall, logs, size map, Actions, the
+agent-CLI installer and the sign-in shell — authenticates with that key, whether
+the host was provisioned by ForkMesh or added by hand in **Add a host**. A host
+saved without its own recorded key falls back to the shared one, so the password
+field stays optional: leave it blank when the host already carries the shared
+key.
+
 SSH passwords remain on the desktop and are supplied to local SSH tooling via
 environment/stdin, not command-line arguments. They are never sent to the
-Cloudflare Worker. Prefer dedicated hosts, scoped accounts, and key-based SSH
-where available.
+Cloudflare Worker. A password is only the fallback ssh reaches after the shared
+key is refused; the size map still asks for one when no key or password works.
+Prefer dedicated hosts and scoped accounts.
 
 ## First-instance reward-pool signer
 

@@ -6,7 +6,7 @@ Since 2026-08, the public site is served by four Cloudflare Workers on the
 | Worker | Config | Owns | How traffic reaches it |
 |---|---|---|---|
 | `forkmesh-relay` | `wrangler.toml` | The Python application's page/protocol surface: realtime Durable Objects (owner of the classes), git smart-HTTP, ActivityPub (`/ap/*`, `/@handle`), the dashboard, repo pages, auth pages, the homepage `/`, the Worker-built RSS feeds, `.html` canonical 404s, `/health`, the secret admin dashboard, cron — plus the **complete** `public/` asset tree | Custom domains `forkmesh.com` and `www.forkmesh.com` (the catch-all) |
-| `forkmesh-api` | `wrangler.api.toml` | The same Python application as the **canonical API host**: every `/api/*` route (REST + WebSockets via cross-script DO bindings), plus the traffic-diagnostics landing page at `api.forkmesh.com/` (charts from `GET /api/metrics/summary`, buckets recorded by `src/api_metrics.py`). The website's JS deliberately stays same-origin on `forkmesh.com/api/*` — no CORS surface — while docs and external callers use `api.forkmesh.com`. Emergency park: `FORKMESH_DEPLOY_API_WORKER=0` + `wrangler delete --name forkmesh-api` (its 2026-08-06 isolate meltdown was the shared startup-ceiling symptom; watch the landing page's 5xx series after deploys) | Custom domain `api.forkmesh.com` + zone routes `…/api/*` |
+| `forkmesh-api` | `wrangler.api.toml` | The same Python application as the **canonical API host** for docs and external callers: `/api/*` on `api.forkmesh.com` (REST + WebSockets via cross-script DO bindings), plus the traffic-diagnostics landing page at `api.forkmesh.com/` (charts from `GET /api/metrics/summary`, buckets recorded by `src/api_metrics.py`). The `forkmesh.com/api/*` zone routes are deliberately **not** claimed — forkmesh-api melts fresh isolates under cold-start churn (its 2026-08-06 meltdown broke `/api/ssh/authorize`), so the website's same-origin `/api/*` traffic resolves on the relay's catch-all. Emergency park: `FORKMESH_DEPLOY_API_WORKER=0` + `wrangler delete --name forkmesh-api` (watch the landing page's 5xx series after deploys) | Custom domain `api.forkmesh.com` only |
 | `forkmesh-www` | `wrangler.www.toml` | Marketing documents: `/pricing`, `/about`, `/features`, `/docs*`, `/blog*`, `/status`, and the other static pages | Exact/prefix zone routes (more specific than the custom domain, so they win) |
 | `forkmesh-world` | `wrangler.world.toml` | The `/world` three.js application shell and its module graph `/world/*` | Zone routes `…/world` and `…/world/*` |
 
@@ -22,8 +22,10 @@ Since 2026-08, the public site is served by four Cloudflare Workers on the
   `index.html` (homepage), the auth/chat documents, `dashboard/`, `notes/`,
   `assets/`, `favicon/`, and every root-level script. The api Worker's copy
   is the audited set its `/api/*` Python reads through ASSETS.
-- **Rollback**: deleting `forkmesh-api` rolls `/api/*` straight back to the
-  relay (same application). Deleting `forkmesh-www`/`forkmesh-world` frees
+- **Rollback**: same-origin `/api/*` already lives on the relay, so deleting
+  `forkmesh-api` only drops the `api.forkmesh.com` host (same application —
+  callers can fall back to `forkmesh.com/api/*`). Deleting
+  `forkmesh-www`/`forkmesh-world` frees
   their routes, but the slimmed relay no longer carries those files — so a
   full rollback of the assets split is `git revert` + `./deploy.sh` (the
   relay's staging then re-includes everything), not just a worker delete.
@@ -68,11 +70,13 @@ Since 2026-08, the public site is served by four Cloudflare Workers on the
   It has **no cron** (the relay's schedule must not double-run) and receives
   the same secret set on every deploy (`SPLIT_SECRET_WORKER=forkmesh-api
   push_secrets`). `tests/test_split_workers.py` enforces all of this.
-- **Build-stamp verification is per Worker**: `/api/version` (now served by
-  `forkmesh-api`) echoes `"worker": "api"` and its own `BUILD_REV`;
-  `/health` stays relay-routed and echoes `"worker": "relay"` plus the
-  relay's `rev`, which is how `verify_split_site_workers` proves both
-  deployments landed.
+- **Build-stamp verification is per Worker**:
+  `api.forkmesh.com/api/version` (served by `forkmesh-api`) echoes
+  `"worker": "api"` and its own `BUILD_REV`, while
+  `forkmesh.com/api/version` and the relay-routed `/health` echo
+  `"worker": "relay"` plus the relay's `rev` — which is how
+  `verify_split_site_workers` proves both deployments landed and that the
+  unclaimed `/api/*` zone routes still resolve on the relay.
 
 ## Operational notes
 

@@ -71,6 +71,21 @@ with open(sys.argv[1], encoding="utf-8") as stream:
 shutil.copyfile(sys.argv[1], sys.argv[2])
 PY
     printf '%s' "$payload" > "$FAKE_WRANGLER_CAPTURE.path"
+    transient="${FAKE_WRANGLER_TRANSIENT_BULK_FAILURES:-0}"
+    if [ "$transient" != "0" ]; then
+        counter="$FAKE_WRANGLER_CAPTURE.transient"
+        seen=0
+        if [ -f "$counter" ]; then
+            seen="$(cat "$counter")"
+        fi
+        if [ "$transient" = "always" ] || [ "$seen" -lt "$transient" ]; then
+            echo $((seen + 1)) > "$counter"
+            echo "🚨 Secrets failed to upload" >&2
+            echo "✘ [ERROR] A request to the Cloudflare API (/accounts/a/workers/scripts/forkmesh-relay/settings) failed." >&2
+            echo "  An unknown error has occurred. [code: 10013]" >&2
+            exit 1
+        fi
+    fi
     [ "${FAKE_WRANGLER_FAIL_BULK:-0}" != "1" ] || exit 23
 elif [ "$1" = "secret" ] && [ "$2" = "list" ]; then
     python3 - "$FAKE_WRANGLER_CAPTURE" <<'PY'
@@ -93,7 +108,11 @@ fi
 
 
 def _run_secrets(
-    tmp_path: Path, *, fail_bulk: bool = False
+    tmp_path: Path,
+    *,
+    fail_bulk: bool = False,
+    transient_bulk_failures: int | str = 0,
+    attempts: int | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     worker, log, captured = _sandbox(tmp_path)
     env = os.environ.copy()
@@ -103,8 +122,13 @@ def _run_secrets(
             "FAKE_WRANGLER_LOG": str(log),
             "FAKE_WRANGLER_CAPTURE": str(captured),
             "FAKE_WRANGLER_FAIL_BULK": "1" if fail_bulk else "0",
+            "FAKE_WRANGLER_TRANSIENT_BULK_FAILURES": str(transient_bulk_failures),
+            # Keep the retry pauses out of the test's wall clock.
+            "FORKMESH_SECRET_BULK_BACKOFF": "0",
         }
     )
+    if attempts is not None:
+        env["FORKMESH_SECRET_BULK_ATTEMPTS"] = str(attempts)
     result = subprocess.run(
         ["bash", "deploy.sh", "secrets"],
         cwd=worker,
@@ -161,6 +185,52 @@ def test_failed_bulk_update_is_not_retried_per_secret_and_cleans_payload(tmp_pat
     assert all("<secret><put>" not in line for line in calls)
     assert all("<secret><list>" not in line for line in calls)
     assert "no per-secret retry was attempted" in result.stderr
+
+    temporary_payload = Path(
+        (captured.with_suffix(captured.suffix + ".path")).read_text()
+    )
+    assert not temporary_payload.exists()
+
+
+def test_transient_cloudflare_error_resends_the_same_bulk_update(tmp_path):
+    # Cloudflare's script-settings endpoint 500s with [code: 10013] every so
+    # often; the identical payload publishes on a later attempt. Re-sending the
+    # one atomic update must recover the deploy without any `secret put`.
+    result, log, captured = _run_secrets(tmp_path, transient_bulk_failures=2)
+
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in calls if "<secret><bulk>" in line]) == 3
+    assert len([line for line in calls if "<secret><list>" in line]) == 1
+    assert all("<secret><put>" not in line for line in calls)
+    assert "Bulk secret update succeeded on attempt 3/4." in result.stdout
+
+    payload = json.loads(captured.read_text(encoding="utf-8"))
+    assert payload["ADMIN_PATH"] == REQUIRED["ADMIN_PATH"]
+    assert "CLOUDFLARE_API_TOKEN" not in payload
+
+    combined_output = result.stdout + result.stderr
+    for value in payload.values():
+        assert value not in combined_output
+
+    temporary_payload = Path(
+        (captured.with_suffix(captured.suffix + ".path")).read_text()
+    )
+    assert not temporary_payload.exists()
+
+
+def test_unrelenting_transient_error_stops_at_the_attempt_budget(tmp_path):
+    result, log, captured = _run_secrets(
+        tmp_path, transient_bulk_failures="always", attempts=3
+    )
+
+    assert result.returncode != 0
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in calls if "<secret><bulk>" in line]) == 3
+    assert all("<secret><put>" not in line for line in calls)
+    assert all("<secret><list>" not in line for line in calls)
+    assert "transient Cloudflare API error on all 3 attempts" in result.stderr
+    assert "re-run './deploy.sh secrets'" in result.stderr
 
     temporary_payload = Path(
         (captured.with_suffix(captured.suffix + ".path")).read_text()
@@ -241,6 +311,8 @@ def test_push_secrets_contains_bulk_contract_without_put_loop():
 
     assert function.count("pywrangler secret bulk") == 1
     assert "pywrangler secret put" not in function
+    # Retries re-send that one atomic update; they never fan out per secret.
+    assert "_secret_bulk_error_is_transient" in function
     assert 'chmod 0600 "$secret_bulk_file"' in function
     assert "trap 'rm -f -- \"$secret_bulk_file\"' EXIT" in function
 

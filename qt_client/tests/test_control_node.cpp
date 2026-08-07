@@ -269,6 +269,39 @@ int main(int argc, char **argv)
               QStringList{QStringLiteral("jett")},
           "invalid direct mirror owner aliases fail closed");
 
+    // A relay-only node leaves the direct gateway settings empty on purpose:
+    // background refreshes ask this before rebuilding, so "not configured"
+    // has to be reported as such instead of looking like a broken endpoint.
+    const QString routerKey = base64Url(QByteArray(32, 'R'));
+    check(forkmesh::control::isValidMirrorRouterPublicKey(routerKey),
+          "a 32-byte base64url router key is accepted");
+    check(!forkmesh::control::isValidMirrorRouterPublicKey(
+              base64Url(QByteArray(31, 'R'))),
+          "a short router key is rejected");
+    check(!forkmesh::control::isValidMirrorRouterPublicKey(
+              QString(routerKey).replace(0, 1, QLatin1Char('+'))),
+          "a non-base64url router key is rejected");
+    check(forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("mirror1"),
+              QStringLiteral("https://mirror1.example.com"), routerKey),
+          "a complete direct gateway configuration is recognized");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QString(), QString(), QString()),
+          "a relay-only node reports no direct gateway configuration");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("mirror1"), QString(), routerKey),
+          "an unusable mirror hostname leaves the gateway unconfigured");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("-mirror1"),
+              QStringLiteral("https://mirror1.example.com"), routerKey),
+          "a node name that is not a DNS label leaves the gateway "
+          "unconfigured");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("mirror1"),
+              QStringLiteral("https://mirror1.example.com"),
+              QStringLiteral("not-a-router-key")),
+          "a malformed router key leaves the gateway unconfigured");
+
     const QString publicKey = base64Url(QByteArray(32, 'K'));
     const QByteArray payload =
         QJsonDocument(QJsonObject{
@@ -567,7 +600,7 @@ int main(int argc, char **argv)
                                QStringLiteral("wrangler@4.42.1"),
                                QStringLiteral("tail"),
                                QStringLiteral("--format"),
-                               QStringLiteral("pretty")}),
+                               QStringLiteral("json")}),
           "Cloudflare tail uses a direct pinned Wrangler invocation");
     check(!tailCommand.arguments.join(QChar(u'\0')).contains(tailToken) &&
               tailCommand.environment.value(
@@ -580,6 +613,73 @@ int main(int argc, char **argv)
               tailToken, QStringLiteral("invalid account!"),
               QStringLiteral("/usr/bin/npx")).program.isEmpty(),
           "Cloudflare tail rejects malformed account IDs");
+
+    // --- Tail rendering (adhoc #1615): the viewer parses Wrangler's JSON so it
+    // can show the user agent behind each hit and tell a failure from a hit.
+    const auto okTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral(
+            "{\"outcome\":\"ok\",\"eventTimestamp\":1000,"
+            "\"event\":{\"request\":{\"method\":\"GET\","
+            "\"url\":\"https://forkmesh.com/api/status\","
+            "\"headers\":{\"User-Agent\":\"Mozilla/5.0 ForkMeshBot\"}},"
+            "\"response\":{\"status\":200}},"
+            "\"logs\":[{\"level\":\"log\",\"message\":[\"served\",7]}],"
+            "\"exceptions\":[]}"));
+    check(okTail.parsed && !okTail.isError &&
+              okTail.userAgent == QStringLiteral("Mozilla/5.0 ForkMeshBot") &&
+              okTail.method == QStringLiteral("GET") &&
+              okTail.status == 200 &&
+              okTail.messages == QStringList({QStringLiteral("served 7")}),
+          "a healthy Worker request decodes with its user agent");
+    check(okTail.summary.contains(QStringLiteral("UA Mozilla/5.0 ForkMeshBot")) &&
+              okTail.summary.contains(QStringLiteral("GET")) &&
+              okTail.summary.contains(QStringLiteral("200")) &&
+              okTail.summary.contains(
+                  QStringLiteral("https://forkmesh.com/api/status")),
+          "the rendered tail line carries the agent beside the request");
+
+    const auto exceptionTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral(
+            "{\"outcome\":\"exception\",\"eventTimestamp\":2000,"
+            "\"event\":{\"request\":{\"method\":\"POST\","
+            "\"url\":\"https://forkmesh.com/api/sync\",\"headers\":{}}},"
+            "\"exceptions\":[{\"name\":\"Error\",\"message\":\"boom\"}],"
+            "\"logs\":[]}"));
+    check(exceptionTail.parsed && exceptionTail.isError &&
+              exceptionTail.userAgent.isEmpty() &&
+              exceptionTail.summary.contains(QStringLiteral("Error: boom")) &&
+              exceptionTail.summary.contains(QStringLiteral("UA (none)")),
+          "a Worker exception is flagged as an error worth alerting on");
+    check(forkmesh::control::parseCloudflareTailLine(
+              QStringLiteral(
+                  "{\"outcome\":\"ok\",\"event\":{\"request\":{\"method\":"
+                  "\"GET\",\"url\":\"https://forkmesh.com/\",\"headers\":{}},"
+                  "\"response\":{\"status\":503}}}"))
+              .isError,
+          "a 5xx reply is an error even when the outcome reads ok");
+    check(!forkmesh::control::parseCloudflareTailLine(
+               QStringLiteral(
+                   "{\"outcome\":\"canceled\",\"event\":{\"request\":{"
+                   "\"method\":\"GET\",\"url\":\"https://forkmesh.com/\","
+                   "\"headers\":{}},\"response\":{\"status\":200}}}"))
+               .isError,
+          "a client hanging up mid-request is not a Worker failure");
+    check(forkmesh::control::parseCloudflareTailLine(
+              QStringLiteral(
+                  "{\"outcome\":\"ok\",\"event\":{},\"logs\":[{\"level\":"
+                  "\"error\",\"message\":[\"db unreachable\"]}]}"))
+              .isError,
+          "an error-level console log is an error");
+    const auto bannerTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral("  Connected to forkmesh-relay, waiting for logs...  "));
+    check(!bannerTail.parsed && !bannerTail.isError &&
+              bannerTail.summary ==
+                  QStringLiteral("Connected to forkmesh-relay, waiting for "
+                                 "logs..."),
+          "Wrangler's own banner lines pass through untouched");
+    check(!forkmesh::control::parseCloudflareTailLine(
+               QStringLiteral("{\"hello\":\"world\"}")).parsed,
+          "JSON that is not a tail event is not treated as one");
 
     const QMap<QString, QString> storedVariables = {
         {QStringLiteral("cloudflare_api_token"), QStringLiteral("  cf-stored  ")},
@@ -754,6 +854,49 @@ int main(int argc, char **argv)
               identityDir.filePath(QStringLiteral("missing_key")))
               .program.isEmpty(),
           "a missing managed identity file fails closed");
+
+    // Shared fleet key: every host now authorizes one ForkMesh key, so the
+    // controller keeps a single private half beside its known_hosts store and
+    // hands it to every host operation. A device that predates the switch keeps
+    // using the per-provider key file the mirrors already trust.
+    const QString sharedDir = forkmesh::control::sharedHostKeyDirectory();
+    const QString sharedKey =
+        QDir(sharedDir).filePath(QStringLiteral("forkmesh_shared_ed25519"));
+    const QString legacyKey =
+        QDir(sharedDir).filePath(QStringLiteral("vultr_mirror_ed25519"));
+    QFile::remove(sharedKey);
+    QFile::remove(legacyKey);
+    check(!sharedDir.isEmpty() && QFileInfo(sharedDir).isDir() &&
+              forkmesh::control::sharedHostKeyPath() == sharedKey &&
+              forkmesh::control::existingSharedHostIdentityFile().isEmpty(),
+          "the shared host key is named before it exists and is not offered "
+          "until it does");
+    const auto writeKeyFixture = [](const QString &path) {
+        QFile key(path);
+        return key.open(QIODevice::WriteOnly) &&
+               key.write("shared-key-material") > 0;
+    };
+    check(writeKeyFixture(legacyKey) &&
+              forkmesh::control::sharedHostKeyPath() == legacyKey &&
+              forkmesh::control::existingSharedHostIdentityFile() == legacyKey,
+          "a pre-existing per-provider key is adopted as the shared fleet key");
+    check(writeKeyFixture(sharedKey) &&
+              forkmesh::control::sharedHostKeyPath() == sharedKey &&
+              forkmesh::control::existingSharedHostIdentityFile() == sharedKey,
+          "the shared key wins once it exists");
+    const auto sharedCommand = forkmesh::control::buildHostSshCommand(
+        QStringLiteral("203.0.113.10"), QStringLiteral("root"),
+        QStringLiteral("session-only"), QStringLiteral("true"), &actionsError,
+        forkmesh::control::existingSharedHostIdentityFile());
+    check(actionsError.isEmpty() &&
+              sharedCommand.program == QStringLiteral("sshpass") &&
+              sharedCommand.arguments.contains(sharedKey) &&
+              sharedCommand.arguments.contains(
+                  QStringLiteral("PreferredAuthentications=publickey,password")),
+          "a host with both the shared key and a session password tries the "
+          "key first and keeps the password as the fallback");
+    QFile::remove(sharedKey);
+    QFile::remove(legacyKey);
 
     // Provider sign-in terminal (adhoc #422): the agent-CLI installer copies no
     // tokens, so ForkMesh opens a real interactive shell on the mirror right

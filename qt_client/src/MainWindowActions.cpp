@@ -29,6 +29,27 @@ QString actionRunLogPath(const ActionRun &run)
            QString::number(run.id) + QStringLiteral("/log.txt");
 }
 
+constexpr int kActionStatusIconPx = 14;
+
+QString actionRunStatusIconName(const QString &status)
+{
+    if (status == ActionStatus::Running)
+        return QStringLiteral("sync");
+    if (status == ActionStatus::Queued)
+        return QStringLiteral("history");
+    if (status == ActionStatus::AwaitingApproval)
+        return QStringLiteral("alert");
+    if (status == ActionStatus::Success)
+        return QStringLiteral("check-circle");
+    if (status == ActionStatus::Failed || status == ActionStatus::Rejected)
+        return QStringLiteral("x");
+    if (status == ActionStatus::Cancelled)
+        return QStringLiteral("circle-slash");
+    if (status == ActionStatus::Skipped)
+        return QStringLiteral("stop");
+    return QStringLiteral("terminal");
+}
+
 // First line (after the shebang) of the working-copy commit-signal hooks we
 // install; install/remove only ever touch a hook file carrying this marker.
 const char kCommitSignalMarker[] =
@@ -541,15 +562,18 @@ void MainWindow::scanActionSpool()
                     // refresh. Rebuild the gateway's exact refs pin before
                     // re-attesting the new catalog state, otherwise the direct
                     // endpoint stays online while quarantining the push it
-                    // just accepted.
-                    QString gatewayError;
-                    if (!rebuildDirectMirrorGatewayConfiguration(
-                            &gatewayError, true)) {
-                        logSystem(
-                            QStringLiteral(
-                                "Direct gateway refresh after pushed refs "
-                                "failed: %1")
-                                .arg(gatewayError));
+                    // just accepted. A relay-only node has no such endpoint,
+                    // so there is nothing to rebuild and nothing to report.
+                    if (directMirrorGatewayConfigured()) {
+                        QString gatewayError;
+                        if (!rebuildDirectMirrorGatewayConfiguration(
+                                &gatewayError, true)) {
+                            logSystem(
+                                QStringLiteral(
+                                    "Direct gateway refresh after pushed refs "
+                                    "failed: %1")
+                                    .arg(gatewayError));
+                        }
                     }
                     publishRepository(idx, false);
                 }
@@ -1720,6 +1744,9 @@ void MainWindow::notifyActionEvent(const QString &title, const QString &body,
     // "failed" lets only failures through (warning == true).
     const QString mode = actionAlertMode();
     if (mode == QLatin1String("none"))
+        return;
+    if (title == QLatin1String("Action started") &&
+        !QSettings().value(kActionAlertStartedSetting, false).toBool())
         return;
     if (mode == QLatin1String("failed") && !warning)
         return;
@@ -2933,6 +2960,9 @@ void MainWindow::refreshActionsTable()
         // Flag failed runs so the delegate draws a red outline around the row.
         wfItem->setData(ActionFailureBorderDelegate::ActionFailedRole,
                         run.status == ActionStatus::Failed);
+        wfItem->setIcon(themedOcticon(actionRunStatusIconName(run.status),
+                                      actionStatusColor(run.status),
+                                      kActionStatusIconPx));
         auto *statusItem = new QTableWidgetItem(actionStatusText(run.status));
         statusItem->setForeground(actionStatusColor(run.status));
         // Show a human-friendly relative time ("5m ago") in the column, with the
@@ -2976,6 +3006,7 @@ void MainWindow::refreshActionsTable()
         if (run.id == m_selectedRunId)
             m_actionsTable->selectRow(row);
     }
+    updateActionsSpinTimer();
     updateActionsTabIndicator();
 }
 
@@ -3198,6 +3229,57 @@ void MainWindow::updateAgentsTabIndicator()
     }
     if (!m_agentsSpinTimer->isActive())
         m_agentsSpinTimer->start(kAgentSpinTickMs);
+}
+
+void MainWindow::updateActionsSpinTimer()
+{
+    if (!m_actionsTable)
+        return;
+    bool anyRunning = false;
+    for (int r = 0; r < m_actionsTable->rowCount(); ++r) {
+        QTableWidgetItem *item = m_actionsTable->item(r, 0);
+        if (!item)
+            continue;
+        const ActionRun *run = findRun(item->data(Qt::UserRole).toInt());
+        if (run && run->status == ActionStatus::Running) {
+            anyRunning = true;
+            break;
+        }
+    }
+    if (!anyRunning) {
+        if (m_actionsSpinTimer)
+            m_actionsSpinTimer->stop();
+        return;
+    }
+    if (!m_actionsSpinTimer) {
+        m_actionsSpinTimer = new QTimer(this);
+        connect(m_actionsSpinTimer, &QTimer::timeout, this,
+                &MainWindow::animateRunningActionIcons);
+    }
+    if (!m_actionsSpinTimer->isActive())
+        m_actionsSpinTimer->start(kAgentSpinTickMs);
+}
+
+void MainWindow::animateRunningActionIcons()
+{
+    if (!m_actionsTable)
+        return;
+    ++m_actionSpinTicks;
+    const qreal angle = qreal((m_actionSpinTicks * 11) % 360);
+    QSignalBlocker block(m_actionsTable);
+    for (int r = 0; r < m_actionsTable->rowCount(); ++r) {
+        QTableWidgetItem *item = m_actionsTable->item(r, 0);
+        if (!item)
+            continue;
+        const ActionRun *run = findRun(item->data(Qt::UserRole).toInt());
+        if (!run || run->status != ActionStatus::Running)
+            continue;
+        const QPixmap spinning = rotatedTintedOcticonPixmap(
+            actionRunStatusIconName(run->status), actionStatusColor(run->status),
+            kActionStatusIconPx, angle);
+        item->setIcon(QIcon(spinning));
+        m_actionsTable->viewport()->update(m_actionsTable->visualItemRect(item));
+    }
 }
 
 // The mirror-activity dot strip (adhoc #197) and the current-release pill
@@ -4732,24 +4814,30 @@ void MainWindow::reloadVariablesList()
         auto *card = new QFrame;
         card->setObjectName(QStringLiteral("variableCard"));
         card->setFrameShape(QFrame::StyledPanel);
-        auto *cardLayout = new QVBoxLayout(card);
+        auto *cardLayout = new QHBoxLayout(card);
         cardLayout->setContentsMargins(12, 10, 12, 10);
-        cardLayout->setSpacing(6);
+        cardLayout->setSpacing(8);
 
-        auto *titleRow = new QHBoxLayout;
-        titleRow->setContentsMargins(0, 0, 0, 0);
         auto *nameLabel = new QLabel(name);
         nameLabel->setObjectName(QStringLiteral("variableName"));
         nameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        titleRow->addWidget(nameLabel);
-        titleRow->addStretch();
+        cardLayout->addWidget(nameLabel);
+
+        auto *valueEdit = new QLineEdit(value);
+        valueEdit->setReadOnly(true);
+        valueEdit->setEchoMode(m_varsRevealed ? QLineEdit::Normal
+                                              : QLineEdit::Password);
+        valueEdit->setToolTip(m_varsRevealed
+                                  ? QStringLiteral("Use Copy to copy this value")
+                                  : QStringLiteral("Reveal values to view or copy them"));
+        cardLayout->addWidget(valueEdit, 1);
 
         auto *editButton = new QPushButton(QStringLiteral("Edit\xE2\x80\xA6"));
         editButton->setObjectName(QStringLiteral("ghostButton"));
         editButton->setCursor(Qt::PointingHandCursor);
         connect(editButton, &QPushButton::clicked, this,
                 [this, name] { addOrEditVariable(name); });
-        titleRow->addWidget(editButton);
+        cardLayout->addWidget(editButton);
         auto *copyButton = new QPushButton(QStringLiteral("Copy"));
         copyButton->setObjectName(QStringLiteral("ghostButton"));
         copyButton->setCursor(Qt::PointingHandCursor);
@@ -4761,23 +4849,13 @@ void MainWindow::reloadVariablesList()
             QApplication::clipboard()->setText(value);
             logSystem(QStringLiteral("Copied %1 to clipboard.").arg(name));
         });
-        titleRow->addWidget(copyButton);
+        cardLayout->addWidget(copyButton);
         auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
         deleteButton->setObjectName(QStringLiteral("ghostButton"));
         deleteButton->setCursor(Qt::PointingHandCursor);
         connect(deleteButton, &QPushButton::clicked, this,
                 [this, name] { deleteVariable(name); });
-        titleRow->addWidget(deleteButton);
-        cardLayout->addLayout(titleRow);
-
-        auto *valueEdit = new QLineEdit(value);
-        valueEdit->setReadOnly(true);
-        valueEdit->setEchoMode(m_varsRevealed ? QLineEdit::Normal
-                                              : QLineEdit::Password);
-        valueEdit->setToolTip(m_varsRevealed
-                                  ? QStringLiteral("Use Copy to copy this value")
-                                  : QStringLiteral("Reveal values to view or copy them"));
-        cardLayout->addWidget(valueEdit);
+        cardLayout->addWidget(deleteButton);
         m_varsListLayout->addWidget(card);
     }
 

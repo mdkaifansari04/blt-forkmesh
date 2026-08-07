@@ -1,6 +1,10 @@
-qt_client/build-forkmesh/
-qt_client/build-ci/
-qt_client/build-release/
+# CMake writes here when a worktree is configured with the conventional
+# `-B build`, or into a build-<purpose>/ directory beside it (build-forkmesh,
+# build-ci, build-release, build-tests, …). Either way its ~700 generated files
+# otherwise swamp the branch's diff. Matched at any depth, since a worktree may
+# be configured from the repository root or from inside qt_client/.
+build/
+build-*/
 cloudflare_worker/python_modules/
 .wrangler/
 
@@ -8,7 +12,6 @@ cloudflare_worker/python_modules/
 .env
 .env.*
 !.env.*.example
-build-forkmesh/
 .venv/
 .git-rewrite/
 tools/__pycache__/

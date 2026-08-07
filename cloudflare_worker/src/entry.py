@@ -1655,16 +1655,19 @@ def request_bypasses_repository_metadata_cache(request):
 
 
 async def purge_catalog_related_caches():
-    # One concurrent sweep instead of four sequential awaits — this runs on
-    # every catalog write, inside the request's critical path.
-    await asyncio.gather(*(
-        edge_cache_delete(key)
-        for key in (
+    # Sequential on purpose. This runs on every catalog publish (each mirror
+    # node, every 30s), and gathering the deletes was the wedge site of the
+    # 2026-08-05/06 outage: the Pyodide runtime re-entered a concurrently
+    # scheduled task mid-`caches.delete` ("Cannot enter into task ...",
+    # issue #555), permanently poisoning the isolate. Four sequential cache
+    # deletes cost single-digit ms; a wedged isolate 500s until recycled.
+    for key in (
             CATALOG_CACHE_KEY,
             NETWORK_STATS_CACHE_KEY,
             NETWORK_LEADERBOARDS_CACHE_KEY,
             NETWORK_OVERVIEW_CACHE_KEY,
-        )), return_exceptions=True)
+    ):
+        await edge_cache_delete(key)
 
 
 # Versioned so neither the fail-closed visibility contract nor signed-endpoint
@@ -4010,11 +4013,12 @@ LEADERBOARD_LIMIT = 10  # rows returned per board
 
 async def _record_contributor(env, author, kind):
     # Bump a contributor's running activity tally. kind is one of
-    # "issues"/"pulls"/"commits". Called as signed issue/PR/commit events are
+    # "issues"/"pulls"/"commits"/"discussions". Called as signed issue/PR/commit
+    # (and discussion) events are
     # accepted into the inbox; best-effort so a tally failure never blocks the
     # submission. author is the public contributor name.
     name = clean_string(author or "", MAX_NODE_NAME)
-    if not name or kind not in ("issues", "pulls", "commits"):
+    if not name or kind not in ("issues", "pulls", "commits", "discussions"):
         return
     try:
         author_bi = await blind_index(env, name.lower())
@@ -10477,6 +10481,7 @@ SCHEMA_ALTER_STATEMENTS = [
     # Operator-settable flag granting a user access to the /outreach console
     # without a roster row (migration 0040). Mirrors is_admin.
     "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE contributor_activity ADD COLUMN discussions INTEGER NOT NULL DEFAULT 0",
     # Early local builds created membership rows before their encrypted display
     # payload was added. Existing blind-index grants remain valid; new writes
     # always provide this ciphertext column.
@@ -10933,6 +10938,13 @@ async def _chat_channel_signed_session(env, request):
 ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
 ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
 ORG_TASK_AGENT_STATUS_PROOF = "forkmesh-org-task-agent-status-v1"
+# The same reporting right, exercised for the whole fleet at once. A desktop
+# that restarts has a live state to publish for every session it owns, and one
+# signed POST per session made the relay rate-limit its own client (adhoc
+# #1618). This proof names no task because the batch carries them in its body;
+# each entry still passes the per-task ownership gate inside the task API, so a
+# batched write reaches exactly the rows a task-bound one could.
+ORG_TASK_AGENT_STATUS_BATCH_PROOF = "forkmesh-org-task-agent-status-batch-v1"
 # The same key, reading the board it can already write to. Without this the
 # desktop Tasks tab was empty for every operator who launched normally instead
 # of typing a password, because it had no session token to present (adhoc #52).
@@ -10953,6 +10965,8 @@ ORG_TASK_COMPLETE_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/complete/?$")
 ORG_TASK_AGENT_STATUS_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/agent-status/?$")
+ORG_TASK_AGENT_STATUS_BATCH_RE = re.compile(
+    r"^/api/tasks/agent-status/?$")
 ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
 ORG_TASK_ITEM_RE = re.compile(r"^/api/tasks/([a-f0-9]{32})/?$")
 
@@ -10986,6 +11000,7 @@ async def _org_task_signed_session(env, request):
         return "", None
     complete = ORG_TASK_COMPLETE_RE.match(url.path)
     agent_status = ORG_TASK_AGENT_STATUS_RE.match(url.path)
+    agent_status_batch = ORG_TASK_AGENT_STATUS_BATCH_RE.match(url.path)
     collection = ORG_TASK_COLLECTION_RE.match(url.path)
     if method == "GET":
         # Reads have no write proof to reuse: a GET signed with the open proof
@@ -11014,6 +11029,10 @@ async def _org_task_signed_session(env, request):
         canonical = (
             ORG_TASK_AGENT_STATUS_PROOF + "\n" + node + "\n"
             + agent_status.group(1) + "\n" + str(ts)
+        ).encode()
+    elif agent_status_batch:
+        canonical = (
+            ORG_TASK_AGENT_STATUS_BATCH_PROOF + "\n" + node + "\n" + str(ts)
         ).encode()
     elif collection:
         canonical = (
@@ -11215,10 +11234,11 @@ CHAT_ACTIVITY_TTL = 30
 
 async def chat_activity_handler(env, request):
     # Lightweight public digest behind the site-wide header chat badge: how many
-    # retained #general messages exist and how many user accounts are registered.
-    # Counts only — chat_history bodies stay encrypted and user rows are never
-    # decrypted (email_bi is only set on email-bearing user accounts, so it
-    # separates users from keyless node reservations without touching `data`).
+    # retained #general messages exist and how many members are registered.
+    # userCount reuses _public_member_count so this badge always agrees with
+    # the World campfire HUD, which quotes the same function (adhoc #1617 —
+    # they used to run two different filters over `users` and could drift by
+    # a few accounts).
     # Edge-cached so every page load across the site collapses to one D1 read
     # pair per colo per TTL.
     del request
@@ -11232,17 +11252,13 @@ async def chat_activity_handler(env, request):
         "WHERE room_key=?",
         FLAGSHIP_ROOM_KEY,
     )
-    user_row = await d1_first(
-        env,
-        "SELECT COUNT(*) AS c FROM users "
-        "WHERE email_bi IS NOT NULL AND email_bi <> ''",
-    )
+    user_count = await _public_member_count(env)
     resp = json_response(
         {
             "ok": True,
             "messageCount": int((msg_row or {}).get("c") or 0),
             "latestMessageTs": int((msg_row or {}).get("latest") or 0),
-            "userCount": int((user_row or {}).get("c") or 0),
+            "userCount": user_count,
         },
         cache_seconds=CHAT_ACTIVITY_TTL,
     )
@@ -12108,6 +12124,57 @@ async def _contribution_language_rows(env, owner_user_bi):
               ORDER BY languages.language ASC""",
         owner_user_bi, owner_user_bi,
     )
+
+
+async def _contribution_commit_totals(env):
+    """Map subject_user_bi -> lifetime commit count, for every account at once.
+
+    ``contributor_activity`` tallies issues, PRs, and discussions as each
+    signed event reaches an inbox, but nothing ever increments its ``commits``
+    column — commits arrive as whole-repo snapshots, not one event apiece, so
+    that column has always read 0. The real per-author counts live in
+    ``profile_contribution_days``, the same rows the profile contribution
+    graph draws from, so the directory sums them here instead of publishing a
+    commit count stuck at zero.
+
+    Only public projects on public repositories are counted, exactly as the
+    public profile graph does: the directory this feeds is unauthenticated, so
+    it may not expose commit activity a private repo would otherwise hide.
+    One source repo per project wins (latest capture), matching
+    _contribution_language_rows, so a project mirrored across several nodes is
+    not counted once per mirror.
+    """
+    rows = await d1_all(
+        env,
+        """WITH ranked_sources AS (
+               SELECT projects.source_repo_bi,
+                      projects.active_generation_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY projects.project_bi
+                        ORDER BY projects.captured_at DESC,
+                                 projects.source_repo_bi ASC) AS source_rank
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+                  AND projects.active_generation_bi IS NOT NULL
+             ), selected_sources AS (
+               SELECT * FROM ranked_sources WHERE source_rank=1
+             )
+             SELECT days.subject_user_bi AS user_bi,
+                    SUM(days.commits) AS commits
+               FROM selected_sources AS sources
+               JOIN profile_contribution_days AS days
+                 ON days.source_repo_bi=sources.source_repo_bi
+                AND days.generation_bi=sources.active_generation_bi
+              GROUP BY days.subject_user_bi""",
+    )
+    totals = {}
+    for row in rows or []:
+        user_bi = row.get("user_bi")
+        if user_bi:
+            totals[user_bi] = _contribution_tally(row.get("commits"))
+    return totals
 
 
 async def _contribution_coverage_rows(
@@ -13086,6 +13153,19 @@ async def catalog_handler(env, request):
                     record.get("changedFiles", []))
             except Exception:
                 pass
+            # The same moved head is what the mirror fleet waits on: push a
+            # payload-free "commits" event over the node event channel so
+            # mirrors fetch now instead of on a sync poll (the no-polling
+            # policy, docs/operations/polling-elimination.md). Only the
+            # source's own publish notifies — a mirror's "remote-clone"
+            # record echoes the same head after ITS fetch, and notifying on
+            # that would re-wake the fleet in a loop.
+            if record.get("source") == "local-node":
+                try:
+                    await notify_repo_mirrors(
+                        env, owner, record["name"], "commits")
+                except Exception:
+                    pass
         payload = {
             "ok": True,
             "repository": record,
@@ -14193,6 +14273,18 @@ def _account_kind(rec):
     if kind in ("user", "node"):
         return kind
     return "user" if rec.get("pass_hash") else "node"
+
+
+def _is_public_roster_member(rec):
+    # The one predicate for "counts as a member" everywhere the site shows a
+    # member figure (site-wide chat badge, World campfire HUD, accounts
+    # directory). Keeping this in one place is the fix for adhoc #1617: the
+    # chat badge and the World roster used to apply different filters over
+    # the same `users` table and could disagree by a few accounts.
+    return bool(rec) and (
+        _account_kind(rec) == "user"
+        and rec.get("status") == "active"
+        and not rec.get("profile_private"))
 
 
 def _account_has_legacy_wallet_key(rec):
@@ -15573,7 +15665,23 @@ def _account_public_last_email(rec):
     }
 
 
-def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
+def _contribution_tally(value):
+    """Coerce one contributor_activity column into a non-negative count.
+
+    The directory LEFT JOINs that table, so an account that has never opened
+    an issue or pushed a commit has no row at all and every tally column
+    arrives as SQL NULL — i.e. Python None, which int() rejects. Swallowing
+    that here keeps a contributor-less account from 500-ing the whole
+    directory read (and with it chat's roster and the World campfire).
+    """
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket="",
+                              issues=0, pulls=0, commits=0, discussions=0):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     solana = (rec.get("solana") or "").strip()
     return {
@@ -15587,6 +15695,12 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
+        # Lifetime contribution tallies, one per kind — the columns the Qt
+        # admin Users page shows next to each account.
+        "issues": _contribution_tally(issues),
+        "pulls": _contribution_tally(pulls),
+        "commits": _contribution_tally(commits),
+        "discussions": _contribution_tally(discussions),
         # Payout addresses are public profile data, but never pass through a
         # malformed value from a stored record.
         "solana": solana if SOLANA_RE.match(solana) else "",
@@ -15633,6 +15747,33 @@ async def _users_directory_cache_get():
     }))
 
 
+async def _public_member_count(env):
+    # The one member count every surface should quote (site-wide chat badge,
+    # World campfire HUD). Prefers the roster the directory endpoint already
+    # cached at the edge; only falls back to its own decrypt scan on a cold
+    # cache, so this rarely pays the 1000-row decrypt cost twice.
+    cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
+    if cached is not None:
+        try:
+            payload = json.loads(await cached.text())
+            return len(payload.get("users") or [])
+        except Exception:
+            pass
+    seen = set()
+    count = 0
+    rows = await d1_all(env, "SELECT data FROM users LIMIT ?", 1000)
+    for row in rows or []:
+        rec = await decrypt_row(env, row.get("data", ""))
+        if not _is_public_roster_member(rec):
+            continue
+        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        count += 1
+    return count
+
+
 async def _account_users_directory(env, request):
     # Public chat roster directory: user profiles only, with no email, password,
     # device, admin, or signature material. Live node presence is still carried
@@ -15650,19 +15791,22 @@ async def _account_users_directory(env, request):
     seen = set()
     rows = await d1_all(
         env,
-        "SELECT u.data,u.user_bi,a.total_active_ms FROM users u "
+        "SELECT u.data,u.user_bi,a.total_active_ms,c.issues,c.pulls,"
+        "c.discussions FROM users u "
         "LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "
+        "LEFT JOIN contributor_activity c ON c.author_bi=u.user_bi "
         "ORDER BY u.username COLLATE NOCASE LIMIT ?",
         1000,
     )
     # A bucket label only, joined in from its own query so this function
     # body never handles the raw touch timestamp behind it.
     activity_buckets = await _world_user_activity_buckets(env)
+    # Commits alone are not event-tallied in contributor_activity; they come
+    # from the contribution snapshots, summed per account in one pass.
+    commit_totals = await _contribution_commit_totals(env)
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
-        if (not rec or _account_kind(rec) != "user"
-                or rec.get("status") != "active"
-                or rec.get("profile_private")):
+        if not _is_public_roster_member(rec):
             continue
         name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
         if not name or name in seen:
@@ -15670,7 +15814,12 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(
             rec, row.get("total_active_ms", 0),
-            activity_buckets.get(row.get("user_bi"), "")))
+            activity_buckets.get(row.get("user_bi"), ""),
+            issues=row.get("issues", 0),
+            pulls=row.get("pulls", 0),
+            commits=commit_totals.get(row.get("user_bi"), 0),
+            discussions=row.get("discussions", 0),
+        ))
 
     # The campfire seats members in this same array order, one bench per
     # account for the session — so this is sorted by join date (oldest
@@ -31585,6 +31734,7 @@ async def discussions_handler(env, request, owner, repo):
                 env, request, owner, repo, "discussion", event.get("type"),
                 number, item.get("titleIfNew", ""), event.get("body", ""),
                 event.get("authorName", "")))
+        await _record_contributor(env, event.get("author", ""), "discussions")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":

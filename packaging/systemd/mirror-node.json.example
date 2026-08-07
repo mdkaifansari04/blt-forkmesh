@@ -14,8 +14,7 @@
   "intakeProgram": "/usr/local/bin/forkmesh",
   "intakeOwner": "forkmesh",
   "intakeRepository": "forkmesh",
-  "intakePollInterval": "5s",
-  "intakeIdleGrace": "20s",
+  "intakeIdleGrace": "2m",
   "syncInterval": "30s",
   "syncTimeout": "5m",
   "upstreams": {
