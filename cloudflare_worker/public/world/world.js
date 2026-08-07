@@ -7354,8 +7354,14 @@ class ForkMeshWorld extends HTMLElement {
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
           this.setInfrastructureConsoleEnabled(enabled),
-        onBuildBoardNearby: () =>
-          void this.refreshBuildBoard({ quiet: true }),
+        onBuildBoardNearby: ({ refetch } = {}) =>
+          this.startBuildBoardWatch({ refetch }),
+        onBuildBoardAway: () => this.stopBuildBoardWatch(),
+        onQaBoardNearby: ({ refetch } = {}) =>
+          this.startQaDeckWatch({ refetch }),
+        onQaBoardAway: () => this.stopQaDeckWatch(),
+        onLobbyLinkKioskNearby: () => void this.loadLobbyLinkBoard(),
+        onLeaderboardWallNearby: () => void this.loadReferralLeaderboard(),
         onBuildVideoSelect: () =>
           window.open(
             "/assets/video/forkmesh-forever.mp4",
@@ -7460,18 +7466,11 @@ class ForkMeshWorld extends HTMLElement {
       this.finishBootStep("scene");
       this.setLoadingProgress(68, "World is live · syncing nearby activity…");
       this.syncWorldCameraModeButton();
-      void this.refreshBuildBoard();
-      void this.refreshQaDeck();
       void this.refreshStoreLibrary();
-      this.buildBoardTimer = window.setInterval(
-        () => void this.refreshBuildBoard({ quiet: true }),
-        WORLD_BUILD_BOARD_POLL_MS,
-      );
-      this.qaTimer = window.setInterval(() => {
-        if (!this.destroyed && !document.hidden) {
-          void this.refreshQaDeck({ quiet: true });
-        }
-      }, WORLD_QA_POLL_MS);
+      // The build board and the QA deck are read from arm's length, so both
+      // load on approach and poll only while the visitor stays at them. See
+      // onBuildBoardNearby / onQaBoardNearby above; an entry that never walks
+      // over there costs no requests at all.
       void this.refreshOrgAgentBots();
       void this.refreshDesktopAgentBots();
       this.orgAgentTimer = window.setInterval(
@@ -7534,8 +7533,9 @@ class ForkMeshWorld extends HTMLElement {
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
       this.seatFreshArrivalAtCampfire();
-      void this.loadReferralLeaderboard();
-      void this.loadLobbyLinkBoard();
+      // The leaderboard wall and the lobby link kiosk each sit at one spot in
+      // the World and load when the visitor reaches them, so neither is part
+      // of entry. Both remain reachable on demand from their select handlers.
       this.syncRepositoryScene();
       void this.hydrateHostedRepositorySizeMaps();
       // Do not fan out a star request for every perimeter portal at startup.
@@ -7980,6 +7980,41 @@ class ForkMeshWorld extends HTMLElement {
         );
       return this.buildBoardRepositoryIssues;
     }
+  }
+
+  // Proximity-scoped polling for the two boards that carry live task state.
+  // The timer starts when the visitor arrives and is cleared when they leave,
+  // so an idle tab parked elsewhere in the World holds no cadence at all.
+  // `refetch` is false when the scene says the board was already loaded
+  // recently enough that a re-approach does not justify another request.
+  startBuildBoardWatch({ refetch = true } = {}) {
+    if (refetch) void this.refreshBuildBoard({ quiet: true });
+    if (this.buildBoardTimer) return;
+    this.buildBoardTimer = window.setInterval(() => {
+      if (!this.destroyed && !document.hidden) {
+        void this.refreshBuildBoard({ quiet: true });
+      }
+    }, WORLD_BUILD_BOARD_POLL_MS);
+  }
+
+  stopBuildBoardWatch() {
+    window.clearInterval(this.buildBoardTimer);
+    this.buildBoardTimer = 0;
+  }
+
+  startQaDeckWatch({ refetch = true } = {}) {
+    if (refetch) void this.refreshQaDeck({ quiet: true });
+    if (this.qaTimer) return;
+    this.qaTimer = window.setInterval(() => {
+      if (!this.destroyed && !document.hidden) {
+        void this.refreshQaDeck({ quiet: true });
+      }
+    }, WORLD_QA_POLL_MS);
+  }
+
+  stopQaDeckWatch() {
+    window.clearInterval(this.qaTimer);
+    this.qaTimer = 0;
   }
 
   async refreshBuildBoard({ quiet = false } = {}) {
