@@ -11,6 +11,7 @@
 #include "AgentJail.h"
 #include "AgentPromptImages.h"
 #include "AgentResumeIdentity.h"
+#include "AgentWorktree.h"
 #include "KebabHeaderView.h"
 #include "CodexAppServerSession.h"
 #include "UsageLimitCalendar.h"
@@ -7781,7 +7782,7 @@ static QString agentDetailTableHtml(const QStringList &headers, const QStringLis
 // Size the info popup's label to the table it just rendered. The popup is a
 // Qt::Popup laid out by adjustSize(), and a word-wrapping QLabel reports a
 // deliberately squarish sizeHint, so long values — agent/adhoc-NN-… branch names
-// and their /tmp/forkmesh-worktrees paths — wrapped mid-name in a narrow popup
+// and their .worktrees/agent-NN-… paths — wrapped mid-name in a narrow popup
 // (adhoc #68). Measure the rendered document instead and pin the label that
 // wide, capped against the screen so one pathological value can't grow the popup
 // off it (values longer than the cap still wrap, as before).
@@ -8685,73 +8686,12 @@ void MainWindow::assignIssueToAgent(const QString &provider, const QString &mode
     startAgentForIssue(*issue, provider, createPr, /*quiet=*/false, model);
 }
 
-// Short branch slug from a session title, in the spirit of the SCM tab's
-// auto commit message: keep only the title's significant words and cap the
-// result at a few of them, so "occasionally the codex sessions bleed into
-// each other" names the branch "codex-sessions-bleed" rather than a 48-char
-// transliteration of the whole sentence.
+// Short branch slug from a session title, in the spirit of the SCM tab's auto
+// commit message. Shared with the worktree directory name (AgentWorktree.h) so
+// a run's branch and the tree it is checked out in always read the same.
 static QString agentBranchSlug(const QString &title, const QString &fallback)
 {
-    // Filler that makes a poor branch name; mirrors the commit drafter's
-    // generic-name filter, but for prose.
-    static const QSet<QString> kFiller = {
-        QStringLiteral("a"),     QStringLiteral("an"),    QStringLiteral("and"),
-        QStringLiteral("are"),   QStringLiteral("as"),    QStringLiteral("at"),
-        QStringLiteral("be"),    QStringLiteral("but"),   QStringLiteral("can"),
-        QStringLiteral("could"), QStringLiteral("do"),    QStringLiteral("dont"),
-        QStringLiteral("each"),  QStringLiteral("for"),   QStringLiteral("from"),
-        QStringLiteral("get"),   QStringLiteral("has"),   QStringLiteral("have"),
-        QStringLiteral("i"),     QStringLiteral("id"),    QStringLiteral("if"),
-        QStringLiteral("in"),    QStringLiteral("into"),  QStringLiteral("is"),
-        QStringLiteral("it"),    QStringLiteral("its"),   QStringLiteral("just"),
-        QStringLiteral("let"),   QStringLiteral("lets"),  QStringLiteral("like"),
-        QStringLiteral("make"),  QStringLiteral("my"),    QStringLiteral("of"),
-        QStringLiteral("on"),    QStringLiteral("or"),    QStringLiteral("other"),
-        QStringLiteral("our"),   QStringLiteral("out"),   QStringLiteral("please"),
-        QStringLiteral("should"),QStringLiteral("so"),    QStringLiteral("some"),
-        QStringLiteral("that"),  QStringLiteral("the"),   QStringLiteral("their"),
-        QStringLiteral("them"),  QStringLiteral("then"),  QStringLiteral("there"),
-        QStringLiteral("these"), QStringLiteral("they"),  QStringLiteral("this"),
-        QStringLiteral("to"),    QStringLiteral("too"),   QStringLiteral("up"),
-        QStringLiteral("use"),   QStringLiteral("we"),    QStringLiteral("when"),
-        QStringLiteral("with"),  QStringLiteral("would"), QStringLiteral("you"),
-        QStringLiteral("your")};
-    QStringList words{QString()};
-    for (QChar ch : title.toLower()) {
-        const char a = ch.toLatin1();
-        if ((a >= 'a' && a <= 'z') || (a >= '0' && a <= '9'))
-            words.last().append(ch);
-        else if (!words.last().isEmpty())
-            words.append(QString());
-    }
-    QString slug;
-    int kept = 0;
-    for (const QString &word : words) {
-        if (word.isEmpty() || kFiller.contains(word))
-            continue;
-        if (!slug.isEmpty() &&
-            (kept >= 4 || slug.size() + 1 + word.size() > 30))
-            break;
-        if (!slug.isEmpty())
-            slug.append(QLatin1Char('-'));
-        slug.append(word);
-        ++kept;
-    }
-    if (slug.isEmpty()) {
-        // All filler (or non-latin): fall back to the first raw words.
-        for (const QString &word : words) {
-            if (word.isEmpty())
-                continue;
-            if (!slug.isEmpty() &&
-                (kept >= 4 || slug.size() + 1 + word.size() > 30))
-                break;
-            if (!slug.isEmpty())
-                slug.append(QLatin1Char('-'));
-            slug.append(word);
-            ++kept;
-        }
-    }
-    return slug.isEmpty() ? fallback : slug.left(30);
+    return forkmesh::agentwt::titleSlug(title, fallback);
 }
 
 int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
@@ -9630,6 +9570,7 @@ void MainWindow::purgeSessionState(int sessionId)
     m_agentRelaunchAttempts.remove(sessionId);
     m_sessionTokens.remove(sessionId);
     m_lastAssistantText.remove(sessionId);
+    m_agentDoneNotified.remove(sessionId);
     m_scannerStates.remove(sessionId);
     m_agentDiffStats.remove(sessionId);
     m_agentDiffSig.remove(sessionId);
@@ -10922,6 +10863,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                     as->lastError.clear();
                     m_agentStore->saveSession(*as);
                     updateAgentStatusCell(sid);
+                    // Completed here rather than in the drain poll, so this is
+                    // the path that owes the celebration (adhoc #1630).
+                    notifyAgentDone(sid);
                 }
             } else if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
@@ -11026,6 +10970,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     const QString branchName = session.branchName;
     const QString baseRef = session.baseRef;
     const int issueNumber = session.issueNumber;
+    const QString worktreeName =
+        forkmesh::agentwt::dirName(sid, session.issueTitle);
     QString selectedModel = session.model;
     if (selectedModel.isEmpty())
         selectedModel = QSettings()
@@ -11265,14 +11211,25 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         failLaunch(forkmesh::vm::pathError(repoPath));
         return;
     }
+    // The run's worktree lives inside the project it is working on, at
+    // <checkout>/.worktrees/agent-<id>-<desc> (adhoc #1624) — see AgentWorktree.h
+    // for why, and for the bare-mirror case that still lands in the temp dir.
+    // Under KVM it has to stay on the host directory mounted into the jail.
     const QString wtRoot = forkmesh::vm::active()
                                ? forkmesh::vm::worktreeRoot()
-                               : QStandardPaths::writableLocation(
-                                     QStandardPaths::TempLocation) +
-                                     QStringLiteral("/forkmesh-worktrees");
-    QDir().mkpath(wtRoot);
-    const QString wtPath =
-        wtRoot + QStringLiteral("/issue-%1-s%2").arg(issueNumber).arg(sid);
+                               : forkmesh::agentwt::root(repoPath);
+    forkmesh::agentwt::ensureRoot(wtRoot);
+    const QString wtPath = QDir(wtRoot).filePath(worktreeName);
+    // Where a session started by an older build put its worktree. Only relevant
+    // on a resume, and handled below: the branch is checked out *there*, so an
+    // add at the new path would fail outright ("already used by worktree at …")
+    // and take any uncommitted work in the old tree down with the run.
+    const QString legacyPath =
+        (forkmesh::vm::active()
+             ? forkmesh::vm::worktreeRoot()
+             : QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+                   QStringLiteral("/forkmesh-worktrees")) +
+        QStringLiteral("/issue-%1-s%2").arg(issueNumber).arg(sid);
     // Recreate the agent's worktree, robustly. A finished session tears its worktree
     // down asynchronously, so on a continue that teardown may still be in flight:
     // prune AND force-remove any lingering registration at this path in the same
@@ -11283,16 +11240,19 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     //
     // On a resume the branch already holds the agent's committed work, so check it
     // out as-is to continue from where it left off; only a fresh run (no resume id)
-    // creates the branch from baseRef. Branch names and the temp path are sanitised
-    // to [a-z0-9/-] / a fixed tmp layout, so single-quoting is safe.
+    // creates the branch from baseRef. Branch names are sanitised to [a-z0-9/-],
+    // so single-quoting them is safe; the worktree path now begins with the
+    // project directory the user cloned into, which is not, so it goes through
+    // the quoter (adhoc #1624).
+    const QString quotedPath = forkmesh::agentwt::shellQuote(wtPath);
     const QString addStep =
         resumeId.isEmpty()
-            ? QStringLiteral("git worktree add -B '%1' '%2' '%3'")
-                  .arg(branchName, wtPath, baseRef)
-            : QStringLiteral("git worktree add '%1' '%2'").arg(wtPath, branchName);
+            ? QStringLiteral("git worktree add -B '%1' %2 '%3'")
+                  .arg(branchName, quotedPath, baseRef)
+            : QStringLiteral("git worktree add %1 '%2'").arg(quotedPath, branchName);
     const QString script =
-        QStringLiteral("git worktree prune; git worktree remove --force '%1' 2>/dev/null; %2")
-            .arg(wtPath, addStep);
+        QStringLiteral("git worktree prune; git worktree remove --force %1 2>/dev/null; %2")
+            .arg(quotedPath, addStep);
     // Chaining prune+remove+add above only serializes *within* this one script;
     // it does NOT serialize against the previous run's teardown thread, which may
     // still be mid-`git worktree remove`/`prune` on this same repo. When our add
@@ -11351,8 +11311,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // into oblivion. Reuse only a tree that really is this session's branch: the
     // linked worktree's own HEAD names it without shelling git. Anything else (a
     // half-torn-down folder, a stale tree) goes through the recreate script.
-    auto worktreeOnSessionBranch = [&wtPath, &branchName]() -> bool {
-        QFile dotGit(wtPath + QStringLiteral("/.git"));
+    auto worktreeOnSessionBranch = [&branchName](const QString &path) -> bool {
+        QFile dotGit(path + QStringLiteral("/.git"));
         if (!dotGit.open(QIODevice::ReadOnly | QIODevice::Text))
             return false;
         QString gitDir = QString::fromUtf8(dotGit.readLine()).trimmed();
@@ -11360,7 +11320,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             return false;
         gitDir = gitDir.mid(7).trimmed();
         if (QDir::isRelativePath(gitDir))
-            gitDir = QDir(wtPath).absoluteFilePath(gitDir);
+            gitDir = QDir(path).absoluteFilePath(gitDir);
         QFile head(gitDir + QStringLiteral("/HEAD"));
         if (!head.open(QIODevice::ReadOnly | QIODevice::Text))
             return false;
@@ -11370,9 +11330,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     if (QThread *teardown = m_worktreeTeardown.value(sid);
         teardown && teardown->isRunning()) {
         connect(teardown, &QThread::finished, this, [runAdd] { (*runAdd)(3); });
-    } else if (worktreeOnSessionBranch()) {
+    } else if (worktreeOnSessionBranch(wtPath)) {
         m_streamWorktree[sid] = wtPath;
         launch(wtPath);
+    } else if (wtPath != legacyPath && worktreeOnSessionBranch(legacyPath)) {
+        // A run that started before agent worktrees moved into the project
+        // (adhoc #1624) carries on in the tree it already has, work in flight
+        // and all. It moves to the new layout on its next fresh run.
+        m_streamWorktree[sid] = legacyPath;
+        launch(legacyPath);
     } else {
         (*runAdd)(3);
     }
@@ -12903,6 +12869,10 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     // launch carried has demonstrably arrived, so it is no longer owed a retry.
     m_agentRelaunchAttempts.remove(sessionId);
     m_inFlightSteerMessage.remove(sessionId);
+    // A new turn is a new run to celebrate when it lands (adhoc #1630). Cleared
+    // ahead of the already-Running early return below so a session steered while
+    // it is still working also gets a card for the turn that follows.
+    m_agentDoneNotified.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status == AgentStatus::Running)
         return;
@@ -12970,6 +12940,10 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
     if (m_agentStore && !isExternalSession(sessionId))
         m_agentStore->saveSession(*session);
     updateAgentStatusCell(sessionId);
+    // The run is over and its figures are stored: celebrate it (adhoc #1630).
+    // This is where a Claude Code / Codex session lands — the legacy runner pool
+    // reaches the same call from onAgentFinished().
+    notifyAgentDone(sessionId);
 }
 
 // The agent's turn ended (or it needs permission) and it's now waiting on the
@@ -13005,6 +12979,88 @@ void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
     // doesn't have to hunt for it in the agents list (adhoc #189).
     flashMessage(msg, /*error=*/false,
                  QStringLiteral("fm:agent:%1").arg(sessionId));
+}
+
+// The last prose the agent produced — the sign-off it ends a run with, which is
+// the summary worth showing when it finishes. m_lastAssistantText holds it for a
+// session this process watched run; a session restored from disk (or one whose
+// final text arrived before the cache existed) has it only in the event buffer,
+// so fall back to walking that newest-first.
+QString MainWindow::agentClosingSummary(int sessionId) const
+{
+    const QString cached = m_lastAssistantText.value(sessionId).trimmed();
+    if (!cached.isEmpty())
+        return cached;
+    const QList<QJsonObject> events = m_streamEvents.value(sessionId);
+    for (int i = events.size() - 1; i >= 0; --i) {
+        const QJsonObject &ev = events.at(i);
+        const QString type = ev.value(QStringLiteral("type")).toString();
+        // Codex normalizes its final answer onto one event; Claude Code's is the
+        // text blocks of the last assistant message.
+        if (type == QLatin1String("_codex_agent_complete")) {
+            const QString text = ev.value(QStringLiteral("text")).toString().trimmed();
+            if (!text.isEmpty())
+                return text;
+            continue;
+        }
+        if (type != QLatin1String("assistant"))
+            continue;
+        QString text;
+        const QJsonArray content = ev.value(QStringLiteral("message"))
+                                       .toObject()
+                                       .value(QStringLiteral("content"))
+                                       .toArray();
+        for (const QJsonValue &bv : content) {
+            const QJsonObject block = bv.toObject();
+            if (block.value(QStringLiteral("type")).toString() == QLatin1String("text"))
+                text += block.value(QStringLiteral("text")).toString();
+        }
+        if (!text.trimmed().isEmpty())
+            return text.trimmed();
+    }
+    return QString();
+}
+
+// A run reached the end: celebrate it. The card carries the agent's own list
+// icon, a headline naming the run, and the summary it signed off with, and the
+// window edge pulses green so the news lands even when the Agents tab is closed
+// (adhoc #1630). Firing once per run is m_agentDoneNotified's job — completion
+// can be reached more than once (a re-fired signal, a requeue), and
+// markAgentSessionRunning() clears the mark when the next turn starts.
+void MainWindow::notifyAgentDone(int sessionId)
+{
+    if (m_agentDoneNotified.contains(sessionId))
+        return;
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->status != AgentStatus::Success)
+        return;
+    // Watch-only rows mirror another process's CLI: ForkMesh didn't run that
+    // work and surfaces it after the fact, so it has nothing to announce.
+    if (isExternalSession(sessionId))
+        return;
+    m_agentDoneNotified.insert(sessionId);
+
+    QString summary = agentClosingSummary(sessionId).simplified();
+    if (summary.isEmpty())
+        summary = QStringLiteral("Finished with no closing summary.");
+    // Long enough to carry the agent's actual conclusion, short of pasting a
+    // whole final message into the corner of the window.
+    if (summary.size() > kAgentDoneSummaryChars)
+        summary = summary.left(kAgentDoneSummaryChars - 1) +
+                  QString::fromUtf8("\xE2\x80\xA6"); // …
+    // The headline (icon, "Agent #12 is done!", the run's figures) is painted by
+    // renderTopMessage from the session behind this href, so a card that waits
+    // its turn in the queue still shows that agent's final numbers.
+    flashMessage(summary, /*error=*/false,
+                 QStringLiteral("fm:agent:%1").arg(sessionId),
+                 /*durationSeconds=*/0, kAgentDoneToastKind);
+    flashCelebrationBorder();
+    // Runs are long: the window is often behind something else by the time one
+    // lands, which is exactly when an OS notification earns its keep.
+    notifyIfInactive(QStringLiteral("ForkMesh %1 Agent #%2 is done!")
+                         .arg(QString::fromUtf8("\xE2\x80\x94")) // —
+                         .arg(sessionId),
+                     summary);
 }
 
 // Refresh just the Status cell for a session's row, in place — avoids the full
@@ -14647,7 +14703,7 @@ void MainWindow::maybeAutoMergeForSession(int sessionId)
 }
 
 // Release the temp worktree a stream session ran in once the run is over. The
-// worktree at /tmp/forkmesh-worktrees/issue-N-sSID holds its branch checked out,
+// worktree at <checkout>/.worktrees/agent-SID-desc holds its branch checked out,
 // so leaving it behind makes any later `git checkout <branch>` (e.g. opening the
 // PR locally) fail with "already used by worktree at …". Removing the worktree
 // frees the branch while keeping the branch ref, so the PR still resolves.
@@ -14850,6 +14906,11 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
             landAgentPullForSession(*session, patch, QString());
     }
     reloadAgents(); // rebuilds m_agentSessions; `session` is dangling after this
+    // The legacy runner pool's half of the completion celebration (adhoc #1630);
+    // stream sessions raise it from completeAgentSessionWhenSubprocessesExit().
+    // Only a run that actually succeeded qualifies — notifyAgentDone() checks the
+    // stored status, so a failed `ok` never reaches a card.
+    notifyAgentDone(sessionId);
     maybeAutoMergeForSession(sessionId); // adhoc #12: YOLO lands it without review
     completeOrgTaskForSession(sessionId); // adhoc #18: close out the org task
     if (sessionId == m_selectedAgentSessionId)

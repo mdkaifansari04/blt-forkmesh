@@ -165,7 +165,7 @@
       const note = document.createElement("p");
       note.className = "referral-signed-out";
       const login = document.createElement("a");
-      login.href = "/login";
+      login.href = "/login?next=" + encodeURIComponent(location.pathname + location.search);
       login.textContent = "Log in";
       const signup = document.createElement("a");
       signup.href = "/signup";

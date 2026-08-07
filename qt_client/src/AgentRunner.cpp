@@ -1,6 +1,7 @@
 #include "AgentRunner.h"
 
 #include "AgentJail.h"
+#include "AgentWorktree.h"
 #include "VirtualMachineRuntime.h"
 #include "BackgroundActivity.h"
 
@@ -313,14 +314,23 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
     }
     releaseBranchWorktree(m_repoPath, m_session.branchName);
 
+    // The worktree lives inside the project, at <checkout>/.worktrees/agent-<id>-<desc>
+    // (adhoc #1624; AgentWorktree.h explains the layout and the bare-mirror case).
+    // Under KVM it stays on the host directory mounted into the jail instead.
     const QString worktreeBase = forkmesh::vm::active()
                                      ? forkmesh::vm::worktreeRoot()
-                                     : QDir::tempPath();
-    QDir().mkpath(worktreeBase);
-    m_worktree = worktreeBase + QStringLiteral("/forkmesh-agent-") +
-                 QString::number(m_session.id) + QLatin1Char('-') +
-                 QString::number(QDateTime::currentMSecsSinceEpoch());
-    emitLog(QStringLiteral("==> Creating temporary worktree %1").arg(m_worktree));
+                                     : forkmesh::agentwt::root(m_repoPath);
+    forkmesh::agentwt::ensureRoot(worktreeBase);
+    m_worktree = QDir(worktreeBase)
+                     .filePath(forkmesh::agentwt::dirName(m_session.id,
+                                                          m_session.issueTitle));
+    // The path is now per session rather than per start (it used to carry a
+    // timestamp), so a folder left behind by a crashed run of this same session
+    // would make `git worktree add` fail outright. releaseBranchWorktree above
+    // already cleared any tree git still knows about — and saved its in-flight
+    // edits as a patch — so anything still sitting here is a husk.
+    QDir(m_worktree).removeRecursively();
+    emitLog(QStringLiteral("==> Creating worktree %1").arg(m_worktree));
     QStringList args{QStringLiteral("-C"), m_repoPath, QStringLiteral("worktree"),
                      QStringLiteral("add")};
     if (existingSessionBranch) {

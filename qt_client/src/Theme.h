@@ -516,6 +516,13 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
 #topMessagePromptStatus { font-weight: 500; font-size: 11px; }
+/* "🎉 Agent #12 is done!" — the headline of a finished run's celebration
+   (adhoc #1630). A step up from the ordinary message so the good news reads as
+   an event rather than another line of status. */
+#topMessageAgentRow, #topMessageAgentIcon { background: transparent; border: none; }
+#topMessageAgentHeadline {
+    background: transparent; border: none; font-size: 13px; font-weight: 700;
+}
 #topMessagePromptImage {
     background: rgba(48,54,61,0.35); border: 1px solid #30363d;
     border-radius: 5px; padding: 3px;
@@ -1976,6 +1983,11 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
 #topMessagePromptStatus { font-weight: 500; font-size: 11px; }
+/* See the dark rules: a finished agent's celebration headline. */
+#topMessageAgentRow, #topMessageAgentIcon { background: transparent; border: none; }
+#topMessageAgentHeadline {
+    background: transparent; border: none; font-size: 13px; font-weight: 700;
+}
 #topMessagePromptImage {
     background: #f6f8fa; border: 1px solid #d0d7de;
     border-radius: 5px; padding: 3px;

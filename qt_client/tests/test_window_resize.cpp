@@ -39,6 +39,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSemaphore>
 #include <QSet>
 #include <QThread>
@@ -731,6 +732,61 @@ void checkLoggedErrorAlert(MainWindow &window)
     QApplication::processEvents();
 }
 
+// adhoc #1630: a run finishing is the result the user has been waiting on, and
+// it used to land in silence. It now raises its own card — the agent's icon, a
+// headline naming the run, and the summary the agent signed off with — and
+// pulses the window green, once per run however many times completion fires.
+void checkAgentDoneCelebration(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    AgentSession finished;
+    finished.id = 133894;
+    finished.owner = QStringLiteral("me");
+    finished.name = QStringLiteral("forkmesh");
+    finished.issueNumber = 4242;
+    finished.provider = QStringLiteral("claude-code");
+    finished.prompt = QStringLiteral("Agent-done fixture");
+    finished.status = AgentStatus::Success;
+    finished.startedAtMs = 1'000'000;
+    finished.finishedAtMs = 1'125'000; // 2m 05s
+    finished.costUsd = 0.42;
+    window.testAddAgentSession(finished);
+
+    const QString summary =
+        QStringLiteral("Fixed the login redirect and added a regression test.");
+    window.testNotifyAgentDone(finished.id, summary);
+    QApplication::processEvents();
+
+    const QString headline = window.testTopMessageAgentHeadline();
+    check(window.testTopMessageRaw() == summary &&
+              headline.contains(QStringLiteral("Agent #133894 is done!")) &&
+              headline.contains(QStringLiteral("#4242")) &&
+              headline.contains(QStringLiteral("forkmesh")) &&
+              headline.contains(QStringLiteral("2m 05s")) &&
+              headline.contains(QStringLiteral("$0.42")) &&
+              window.testTopMessageAgentIconShown() &&
+              window.testCelebrationBorderVisible(),
+          QStringLiteral("a finished agent celebrates with its icon, the run's "
+                         "figures and the summary it signed off with"));
+
+    // Completion can be reached more than once for the same run (a re-fired
+    // signal, a requeue); the card must not pile up behind itself.
+    const int queuedAfterFirst = window.testTopMessageQueueDepth();
+    window.testNotifyAgentDone(finished.id, summary);
+    QApplication::processEvents();
+    check(window.testTopMessageQueueDepth() == queuedAfterFirst,
+          QStringLiteral("a completion reported twice celebrates once"));
+
+    window.testRemoveAgentSession(finished.id);
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    QApplication::processEvents();
+}
+
 // adhoc #1615: with the debug bar's Monitor box ticked, a Worker failure has to
 // reach the same red card as any other failure — and the healthy traffic around
 // it must not, or the app's own log would drown in Worker hits. Lines are fed in
@@ -827,6 +883,97 @@ void checkCloudLogMonitorAlert(MainWindow &window)
     window.testResetNetworkLog();
     window.testResetLoggedErrorAlerts();
     QApplication::processEvents();
+}
+
+// adhoc #1626: the cloud icon used to open a small modal box of text. The Worker
+// tail now reads like the app's own full log screen — its own window, an
+// activity chart of the errors over time above the stream, and a Pause control,
+// because a log that scrolls out from under the pointer cannot be read.
+void checkCloudflareLogWindow(MainWindow &window)
+{
+    window.testOpenCloudflareLogWindow();
+    QApplication::processEvents();
+
+    QWidget *viewer = window.testCloudflareLogWindow();
+    QWidget *chart =
+        viewer ? viewer->findChild<QWidget *>(
+                     QStringLiteral("cloudflareWorkerLogsChart"))
+               : nullptr;
+    auto *pane = viewer ? viewer->findChild<QPlainTextEdit *>(
+                              QStringLiteral("cloudflareWorkerLiveLogs"))
+                        : nullptr;
+    auto *pause = viewer ? viewer->findChild<QPushButton *>(
+                               QStringLiteral("cloudflareWorkerLogsPause"))
+                         : nullptr;
+    check(viewer && viewer->isWindow() && chart && pane && pause,
+          QStringLiteral("the Worker log viewer opens as a window of its own, "
+                         "with an activity chart and a pause control"));
+    if (!viewer || !pane || !pause)
+        return;
+
+    // Counts are read as deltas: the monitor checks above have already put a
+    // few events on the same timeline.
+    const int errorsBefore = window.testCloudflareLogTimelineCount();
+    window.testSetCloudflareLogErrorsOnly(false);
+    const int eventsBefore = window.testCloudflareLogTimelineCount();
+    window.testSetCloudflareLogErrorsOnly(true);
+
+    constexpr int kLines = 240;
+    for (int index = 0; index < kLines; ++index) {
+        window.testCloudflareLogLine(
+            QStringLiteral("GET https://forkmesh.com/api/status - %1 @ line %2")
+                .arg(index % 6 == 0 ? QStringLiteral("500 Exception Thrown")
+                                    : QStringLiteral("200 Ok"))
+                .arg(index),
+            index % 6 == 0);
+    }
+    QApplication::processEvents();
+    check(window.testCloudflareLogText().contains(QStringLiteral("line 239")) &&
+              window.testCloudflareLogAtBottom(),
+          QStringLiteral("the live stream renders into the pane and follows the "
+                         "tail while nobody has stopped it"));
+    check(window.testCloudflareLogTimelineCount() - errorsBefore == kLines / 6,
+          QStringLiteral("the chart plots the Worker's errors over time, not "
+                         "every request it served"));
+    window.testSetCloudflareLogErrorsOnly(false);
+    check(window.testCloudflareLogTimelineCount() - eventsBefore == kLines &&
+              window.testCloudflareLogTimelineSummary().contains(
+                  QStringLiteral("event")),
+          QStringLiteral("unticking Errors only charts every Worker event"));
+    window.testSetCloudflareLogErrorsOnly(true);
+
+    pause->click();
+    QApplication::processEvents();
+    const int held = pane->verticalScrollBar()->value();
+    for (int index = 0; index < 40; ++index) {
+        window.testCloudflareLogLine(
+            QStringLiteral("GET https://forkmesh.com/api/sync - 200 Ok @ held %1")
+                .arg(index),
+            false);
+    }
+    QApplication::processEvents();
+    check(window.testCloudflareLogPaused() &&
+              pane->verticalScrollBar()->value() == held &&
+              !window.testCloudflareLogAtBottom() &&
+              window.testCloudflareLogText().contains(
+                  QStringLiteral("held 39")) &&
+              window.testCloudflareLogStatusText().contains(
+                  QStringLiteral("paused")),
+          QStringLiteral("pausing stops the pane scrolling while the lines "
+                         "themselves keep arriving"));
+
+    pause->click();
+    QApplication::processEvents();
+    check(!window.testCloudflareLogPaused() &&
+              window.testCloudflareLogAtBottom() &&
+              !window.testCloudflareLogStatusText().contains(
+                  QStringLiteral("paused")),
+          QStringLiteral("resuming jumps back to the tail"));
+
+    viewer->close();
+    QApplication::processEvents();
+    check(!window.testCloudflareLogWindow(),
+          QStringLiteral("closing the viewer takes its window with it"));
 }
 
 // adhoc #1444: the alert stack has to hug its own content and read as one evenly
@@ -1617,6 +1764,7 @@ int main(int argc, char *argv[])
         QApplication::processEvents();
         checkLoggedErrorAlert(window);
         checkCloudLogMonitorAlert(window);
+        checkCloudflareLogWindow(window);
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
@@ -2530,7 +2678,9 @@ int main(int argc, char *argv[])
     runLogTimelineChecks(window);
 
     checkLoggedErrorAlert(window);
+    checkAgentDoneCelebration(window);
     checkCloudLogMonitorAlert(window);
+    checkCloudflareLogWindow(window);
 
     // adhoc #1389: notification actions are caption-height controls, not the
     // full-height buttons shown in the reference screenshot. The queued cards

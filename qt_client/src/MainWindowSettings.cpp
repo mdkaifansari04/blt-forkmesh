@@ -5375,6 +5375,10 @@ void MainWindow::alertOnLoggedError(const QString &message)
 static constexpr int kToastSuccessSeconds = 5;
 static constexpr int kToastErrorSeconds = 20;
 static constexpr int kPromptBubbleSeconds = 8;
+// A finished agent is the result the user has been waiting on, and its summary
+// is a paragraph rather than a line — it holds the screen for as long as an
+// error does so there is time to read it and click through to the transcript.
+static constexpr int kAgentDoneToastSeconds = 20;
 
 // How long the bubble takes to glide off the right edge once its countdown
 // finishes. It stays fully opaque throughout — the exit is the motion, not a fade
@@ -5434,10 +5438,21 @@ QString topMessageKindLabel(const QString &kind)
         {QStringLiteral("pull"), QStringLiteral("Pull request")},
         {QStringLiteral("prompt"), QStringLiteral("Prompt")},
         {QStringLiteral("repo"), QStringLiteral("Repository")},
+        {kAgentDoneToastKind, QStringLiteral("Agent done")},
     };
     return labels.value(kind, kind.trimmed().isEmpty()
                                   ? QStringLiteral("System")
                                   : kind.simplified());
+}
+
+// How long a card holds the screen when the caller doesn't say. Shared by the
+// active toast and the queue so a celebration parked behind another card keeps
+// its longer reading window when its turn comes.
+static int topMessageSecondsFor(const QString &kind, bool error)
+{
+    if (kind == kAgentDoneToastKind)
+        return kAgentDoneToastSeconds;
+    return error ? kToastErrorSeconds : kToastSuccessSeconds;
 }
 
 void setTopMessageAction(QPushButton *button, int agentSessionId)
@@ -5469,8 +5484,7 @@ void MainWindow::queueTopMessage(const QString &text, bool error,
         return;
     const int entryDuration = durationSeconds > 0
                                   ? durationSeconds
-                                  : (error ? kToastErrorSeconds
-                                           : kToastSuccessSeconds);
+                                  : topMessageSecondsFor(kind, error);
     m_topMessageQueue.append(
         {m_nextTopMessageQueueId++, trimmed, error, clickHref, entryDuration,
          kind, actionRunId});
@@ -5635,6 +5649,80 @@ bool MainWindow::topMessageBusy() const
             m_topMessageSlidingOut || m_topMessageEntering);
 }
 
+// The session an "agent finished" card belongs to, read back from its own click
+// target. Carrying it in the href rather than in a member is what lets the card
+// survive the queue: a celebration parked behind another toast is replayed
+// through showTopMessage() with nothing but its text, kind and href, and this
+// recovers the agent from that alone.
+int MainWindow::topMessageAgentDoneSessionId() const
+{
+    if (m_topMessageKind != kAgentDoneToastKind)
+        return -1;
+    const QString prefix = QStringLiteral("fm:agent:");
+    if (!m_topMessageHref.startsWith(prefix))
+        return -1;
+    bool ok = false;
+    const int id = m_topMessageHref.mid(prefix.size()).toInt(&ok);
+    return ok ? id : -1;
+}
+
+// The headline over a finished run's summary: whose run it was, and the figures
+// worth knowing at a glance (issue, run time, spend). Composed here rather than
+// baked into the toast text so a card that waited in the queue still shows the
+// session's final numbers.
+QString MainWindow::agentDoneHeadlineHtml(int sessionId)
+{
+    const AgentSession *session = findAgentSession(sessionId);
+    const QString party = QString::fromUtf8("\xF0\x9F\x8E\x89");   // 🎉
+    const QString sparkle = QString::fromUtf8("\xE2\x9C\xA8");     // ✨
+    const QString dot = QString::fromUtf8(" \xC2\xB7 ");           // ·
+    QStringList facts;
+    if (session) {
+        if (session->issueNumber > 0)
+            facts << QStringLiteral("#%1").arg(session->issueNumber);
+        if (!session->name.isEmpty())
+            facts << session->name.toHtmlEscaped();
+        const qint64 ran = session->finishedAtMs > session->startedAtMs &&
+                                   session->startedAtMs > 0
+                               ? session->finishedAtMs - session->startedAtMs
+                               : session->durationMs;
+        if (ran > 0)
+            facts << formatDuration(ran);
+        if (session->costUsd > 0)
+            facts << QStringLiteral("$%1").arg(session->costUsd, 0, 'f', 2);
+    }
+    // The headline itself is the link to the transcript, so the summary below it
+    // stays plain, readable prose instead of a paragraph of underlined blue.
+    const QString heading =
+        QStringLiteral("%1 <a href='fm:agent:%2' "
+                       "style='color:#3fb950;text-decoration:none'>"
+                       "<b>Agent #%2 is done!</b></a> %3")
+            .arg(party)
+            .arg(sessionId)
+            .arg(sparkle);
+    if (facts.isEmpty())
+        return QStringLiteral("<span style='color:#3fb950'>%1</span>").arg(heading);
+    return QStringLiteral("<span style='color:#3fb950'>%1</span>"
+                          "<span style='color:#8b949e'>%2%3</span>")
+        .arg(heading, dot, facts.join(dot));
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+// Out of line because MainWindow.h only forward-declares QLabel.
+QString MainWindow::testTopMessageAgentHeadline() const
+{
+    if (!m_topMessageAgentRow || !m_topMessageAgentHeadline || !m_topMessageBody ||
+        !m_topMessageAgentRow->isVisibleTo(m_topMessageBody))
+        return QString();
+    return m_topMessageAgentHeadline->text();
+}
+
+bool MainWindow::testTopMessageAgentIconShown() const
+{
+    return m_topMessageAgentIcon && !m_topMessageAgentIcon->pixmap().isNull();
+}
+#endif
+
 // (Re)paint the prompt-anchored bubble from m_topMessageRaw. Every message is
 // shown whole — it wraps across the bubble's full width and the bubble grows to
 // fit, so no notification is ever cut off behind an ellipsis.
@@ -5646,6 +5734,25 @@ void MainWindow::renderTopMessage()
     const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
     const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
                                             : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    // A finished agent gets the celebration treatment: its own list icon and a
+    // headline naming the run, with the summary it signed off with underneath.
+    const int doneSessionId = topMessageAgentDoneSessionId();
+    if (m_topMessageAgentRow) {
+        const bool celebrating = doneSessionId > 0;
+        if (celebrating && m_topMessageAgentIcon && m_topMessageAgentHeadline) {
+            // The very glyph this session wears in the agents list, so the card
+            // is unmistakably that agent's rather than a generic green tick.
+            const AgentSession *session = findAgentSession(doneSessionId);
+            const QIcon icon =
+                session ? agentStatusOcticon(*session, kToastAgentIconPx)
+                        : themedOcticon(QStringLiteral("check-circle"),
+                                        QColor("#3fb950"), kToastAgentIconPx);
+            m_topMessageAgentIcon->setPixmap(
+                icon.pixmap(kToastAgentIconPx, kToastAgentIconPx));
+            m_topMessageAgentHeadline->setText(agentDoneHeadlineHtml(doneSessionId));
+        }
+        m_topMessageAgentRow->setVisible(celebrating);
+    }
     // When a click target is set, the message text itself becomes a link so e.g.
     // an "agent is waiting for you" bubble jumps straight to that agent.
     QString visiblePrompt = promptTextWithoutImages(m_topMessageRaw);
@@ -5655,7 +5762,10 @@ void MainWindow::renderTopMessage()
     QString body = (m_topMessageIsPromptBubble ? visiblePrompt : m_topMessageRaw)
                        .toHtmlEscaped();
     body.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
-    if (!m_topMessageHref.isEmpty())
+    // A celebration's link lives on its headline instead (see
+    // agentDoneHeadlineHtml) — the summary underneath is a paragraph of the
+    // agent's own prose and reads far better left unlinked.
+    if (!m_topMessageHref.isEmpty() && doneSessionId <= 0)
         body = QStringLiteral(
                    "<a href='%1' style='color:%2;text-decoration:underline'>%3</a>")
                    .arg(m_topMessageHref.toHtmlEscaped(), fg, body);
@@ -5669,6 +5779,15 @@ void MainWindow::renderTopMessage()
         updateTopMessagePromptLiveStatus(m_topMessagePromptStatus);
         m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2</span>")
                                    .arg(fg, body);
+    } else if (doneSessionId > 0) {
+        if (m_topMessagePromptHeader)
+            m_topMessagePromptHeader->hide();
+        if (m_topMessagePromptStatusLabel)
+            m_topMessagePromptStatusLabel->hide();
+        // No status glyph: the headline row above already carries the agent's
+        // icon, and the summary keeps the ordinary text colour so several lines
+        // of prose stay comfortable to read.
+        m_topMessageBaseHtml = body;
     } else {
         if (m_topMessagePromptHeader)
             m_topMessagePromptHeader->hide();
@@ -6087,6 +6206,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     // The notification and restart borders hug the window edges.
     if (m_errorBorderOverlay && m_errorBorderOverlay->isVisible())
         m_errorBorderOverlay->setGeometry(rect());
+    if (m_celebrationBorderOverlay && m_celebrationBorderOverlay->isVisible())
+        m_celebrationBorderOverlay->setGeometry(rect());
     if (m_restartCautionBorderOverlay &&
         m_restartCautionBorderOverlay->isVisible())
         m_restartCautionBorderOverlay->setGeometry(rect());
@@ -6143,7 +6264,10 @@ void MainWindow::showTopMessage(const QString &text, bool error,
     // an ordinary toast is never left clickable from a previous message.
     m_topMessageHref = clickHref;
     m_topMessageKind = kind;
-    m_topMessageAgentSessionId = -1;
+    // An "agent finished" card names its session in that href, which is what
+    // turns the action row's button into "View agent" — including for a card
+    // replayed out of the queue, where the href is all that survives.
+    m_topMessageAgentSessionId = topMessageAgentDoneSessionId();
     m_topMessageActionRunId = actionRunId;
     m_topMessageError = error;
     m_topMessageIsPromptBubble = false;
@@ -6181,8 +6305,7 @@ void MainWindow::showTopMessage(const QString &text, bool error,
     // but otherwise behave exactly like a regular notification.
     m_topMessageSecondsLeft = durationSeconds > 0
                                   ? durationSeconds
-                                  : (error ? kToastErrorSeconds
-                                           : kToastSuccessSeconds);
+                                  : topMessageSecondsFor(kind, error);
     if (m_topMessageCopy)
         m_topMessageCopy->show();
     if (m_topMessageActionOutput) {
@@ -6191,7 +6314,7 @@ void MainWindow::showTopMessage(const QString &text, bool error,
         m_topMessageActionOutput->setVisible(canOpenOutput);
     }
     if (m_topMessageSendToPrompt) {
-        setTopMessageAction(m_topMessageSendToPrompt, -1);
+        setTopMessageAction(m_topMessageSendToPrompt, m_topMessageAgentSessionId);
         m_topMessageSendToPrompt->show();
     }
     if (m_topMessageClose)
@@ -6245,6 +6368,8 @@ void MainWindow::dismissTopMessage()
         m_topMessagePromptHeader->hide();
     if (m_topMessagePromptStatusLabel)
         m_topMessagePromptStatusLabel->hide();
+    if (m_topMessageAgentRow)
+        m_topMessageAgentRow->hide();
     renderTopMessagePromptImages();
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     m_topMessageKind.clear();

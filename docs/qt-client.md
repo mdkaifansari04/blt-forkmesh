@@ -168,7 +168,14 @@ For a PR within a repository you own:
 
 The button is disabled when the branch is the default branch, has no diff, or
 the repository has no writable working tree. Agents follow the same model: each
-agent works in an isolated worktree and can produce a branch-backed PR.
+agent works in an isolated worktree and can produce a branch-backed PR. That
+worktree lives inside the project, at
+`.worktrees/agent-<session>-<short-description>`, so the tree a run is editing
+sits beside the code it forked from. ForkMesh keeps the directory out of the
+project's Git status and removes each worktree when its run is finished; agents
+on a bare mirror (no working tree to nest one in) still use a temporary
+directory, as does a run under KVM isolation, where the worktree has to land on
+the host directory mounted into the guest.
 
 For a PR to another owner:
 
