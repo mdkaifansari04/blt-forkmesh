@@ -515,6 +515,12 @@ QPushButton#agentsMagicButton:checked {
     border-radius: 5px; padding: 3px;
 }
 #topMessagePromptImage:hover { border-color: #58a6ff; }
+/* The agent detail header's attachment strip, above the title (adhoc #1598). */
+#agentPromptImage {
+    background: rgba(48,54,61,0.35); border: 1px solid #30363d;
+    border-radius: 6px; padding: 2px;
+}
+#agentPromptImage:hover { border-color: #58a6ff; }
 #topMessageQueue { background: transparent; border: none; }
 #topMessageQueueContent { background: transparent; }
 #topMessageQueueCard { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
@@ -1490,13 +1496,15 @@ QPlainTextEdit#actionLog {
 QToolButton#agentStatusPill {
     background-color: transparent;
     border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 0px 7px 0px 4px;
+    border-radius: 24px;
+    padding: 0px 10px 0px 3px;
     font-size: 11px;
     font-weight: 600;
-    color: #1f2937;
+    /* Primer dark foreground: this rule lives in the dark sheet, where the
+       light-theme grey it used to carry read as near-black on the pane. */
+    color: #e6edf3;
 }
-QToolButton#agentStatusPill:hover { background-color: #f3f4f6; }
+QToolButton#agentStatusPill:hover { background-color: #21262d; }
 QToolButton#agentStatusPill[outcomeTone="success"] { border-color: #3fb950; }
 QToolButton#agentStatusPill[outcomeTone="failure"] { border-color: #f85149; }
 QToolButton#agentStatusPill[outcomeTone="pending"] { border-color: #e3742f; }
@@ -1961,6 +1969,12 @@ QPushButton#agentsMagicButton:checked {
     border-radius: 5px; padding: 3px;
 }
 #topMessagePromptImage:hover { border-color: #0969da; }
+/* See the dark rules: the agent detail header's attachment strip. */
+#agentPromptImage {
+    background: #f6f8fa; border: 1px solid #d0d7de;
+    border-radius: 6px; padding: 2px;
+}
+#agentPromptImage:hover { border-color: #0969da; }
 #topMessageQueue { background: transparent; border: none; }
 #topMessageQueueContent { background: transparent; }
 #topMessageQueueCard { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
@@ -2925,8 +2939,8 @@ QPlainTextEdit#actionLog {
 QToolButton#agentStatusPill {
     background-color: transparent;
     border: 1px solid #d0d7de;
-    border-radius: 12px;
-    padding: 0px 7px 0px 4px;
+    border-radius: 24px;
+    padding: 0px 10px 0px 3px;
     font-size: 11px;
     font-weight: 600;
 }

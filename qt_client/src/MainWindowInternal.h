@@ -10288,6 +10288,22 @@ public:
         update();
     }
 
+    // Re-label an item in place. The agent detail's Transcript/Raw toggle is a
+    // single tile naming the view a click switches to (adhoc #1598), so its
+    // glyph and caption change with the surface on screen. The fixed width its
+    // caller sized for the longest caption is deliberately left alone — a tile
+    // that resized as it toggled would shuffle the whole header row.
+    void setGlyph(const QString &iconName, const QString &label)
+    {
+        if (m_iconName == iconName && m_label == label)
+            return;
+        m_iconName = iconName;
+        m_label = label;
+        setText(label);
+        setAccessibleName(label);
+        update();
+    }
+
     // The count riding the icon's corner (0 hides the badge).
     void setBadgeCount(int count)
     {

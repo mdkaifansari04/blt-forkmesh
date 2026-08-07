@@ -1499,10 +1499,30 @@ private:
                                const QString &tagCommit);
     void installPrebuiltAndRelaunch(const QString &artifactPath,
                                     const QString &tag);
+    // Host deploys upload this desktop's local forkmesh-mirror-node, so a
+    // prebuilt client update must also refresh (or first produce) the Go
+    // companion the release publishes beside the client asset — otherwise a
+    // node missing it can never self-heal and every Vultr install fails with
+    // "forkmesh-mirror-node is missing". Verifies by SHA-256 from the release
+    // manifest (local mirror CAS first, else the relay blob route), installs
+    // beside the running client, then hands off to installPrebuiltAndRelaunch.
+    // Best-effort: a companion failure never blocks the client update.
+    void installMirrorCompanionThenRelaunch(const QString &artifactPath,
+                                            const QString &tag,
+                                            const QString &owner,
+                                            const QString &name,
+                                            const QString &companionHash);
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
                           const QString &relaunchPath = QString(),
                           const QString &buildType = QStringLiteral("Release"));
+    // Source-rebuild counterpart of the companion refresh: build
+    // mirror_node/cmd/forkmesh-mirror-node with the local Go toolchain into the
+    // client build directory so installAndRelaunch can place it beside the
+    // installed client. Skips (with a log line) when Go or the module source is
+    // unavailable; a build failure is logged and never blocks the client update.
+    void buildMirrorNodeCompanion(const QString &clientDir, const QString &buildDir,
+                                  std::function<void()> onDone);
     void installAndRelaunch(const QString &built, const QString &appPath);
     // When onFailure is set it is invoked instead of the default "Update failed"
     // handling if the step exits non-zero, letting callers recover (e.g. re-clone
@@ -8149,7 +8169,13 @@ private:
     QPushButton *m_agentHideDetailButton = nullptr;
     bool m_agentDetailHidden = false;
     QLabel *m_agentTitle = nullptr;
-    QLabel *m_agentPromptLabel = nullptr;
+    // Thumbnails of the images the session's prompt attached, above the title
+    // (adhoc #1598) — a run started from a screenshot shows what it was looking
+    // at before it says what it was asked. Click one for the full-size view.
+    QWidget *m_agentPromptImages = nullptr;
+    QStringList m_agentPromptImagePaths;
+    int m_agentPromptImageSession = -1;
+    void renderAgentPromptImages(int sessionId);
     QToolButton *m_agentStatusPill = nullptr; // compact model + outcome control
     // The session's field list (agent/model/mode/repo/status/issue/PR/branch/
     // worktree/stats) and the popup it lives in — opened from the header's
@@ -8159,7 +8185,10 @@ private:
     // "Pop out": stop the session here and reopen its CLI conversation in the
     // user's own terminal, from the popup that shows the session id (adhoc #1584).
     QPushButton *m_agentPopOutButton = nullptr;
-    QPlainTextEdit *m_agentPrompt = nullptr;
+    // adhoc #1598 removed the read-only "Prompt" box that sat under the title:
+    // the title is the prompt's first line and the transcript opens on the whole
+    // prompt as the run's first turn, so the box repeated what was already on
+    // screen twice over.
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create PR" — pull requests are user-driven (adhoc #2 follow-up): a run
@@ -8182,13 +8211,15 @@ private:
                           const QString &newPath, const QString &newContents);
     // Extension-style transcript for Claude Code sessions: claude runs in
     // stream-json mode (ClaudeStreamSession) and the events render as native
-    // cards (ClaudeTranscriptView, output stack page 2). The Transcript/Raw pair
-    // in the detail header flips to the raw process output (page 0) for
-    // debugging; both are rail-style tiles beside the session actions (adhoc
-    // #224) and are hidden for sessions that have no transcript at all.
+    // cards (ClaudeTranscriptView, output stack page 2). One rail-style tile in
+    // the detail header toggles to the raw process output (page 0) for debugging
+    // — adhoc #1598 folded the old checkable Transcript/Raw pair into it, so the
+    // tile names the view a click gives you and no selection line is drawn. It
+    // is hidden for sessions that have no transcript at all.
     ClaudeTranscriptView *m_agentTranscript = nullptr;
-    QPushButton *m_transcriptModeButton = nullptr;
-    QPushButton *m_terminalModeButton = nullptr;
+    ActivityRailButton *m_agentOutputModeButton = nullptr;
+    bool m_agentRawOutputMode = false;
+    void setAgentRawOutputMode(bool raw);
     // adhoc #201: the transcript's search query and "3/12" match counter. Both
     // are off-screen since adhoc #224 removed the detail pane's own search box —
     // the window's top-bar search mirrors into this line edit, which is what
