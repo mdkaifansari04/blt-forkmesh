@@ -7248,7 +7248,7 @@ int main(int argc, char *argv[])
     // that really failed still is, including a 200 carrying {"ok":false,…}.
     {
         window.testResetNetworkLog();
-        window.testLogSystem(QStringLiteral(
+        window.testLogSystem(QString::fromUtf8(
             "net GET 200 [body: {\"ok\":true,\"notifications\":[{\"kind\":"
             "\"operational_alert\",\"title\":\"Mirror node - mirror10 "
             "recovered\",\"body\":\"Down for under a minute. Last failure: "
@@ -7262,7 +7262,7 @@ int main(int argc, char *argv[])
                              "outage is not badged ERROR"));
 
         window.testResetNetworkLog();
-        window.testLogSystem(QStringLiteral(
+        window.testLogSystem(QString::fromUtf8(
             "net POST 200 [body: {\"ok\":false,\"error\":\"forbidden\"}] "
             "https://forkmesh.com/api/notifications \xC2\xB7 ping inbox"));
         stored = window.testNetworkLog();
@@ -7271,7 +7271,7 @@ int main(int argc, char *argv[])
               QStringLiteral("a 200 whose body reports ok:false is still ERROR"));
 
         window.testResetNetworkLog();
-        window.testLogSystem(QStringLiteral(
+        window.testLogSystem(QString::fromUtf8(
             "net GET ERR 503 Service Unavailable [body: {\"ok\":false,"
             "\"error\":\"mirror_unavailable\"}] "
             "https://forkmesh.com/api/repo/jett/forkmesh \xC2\xB7 repo fetch"));
@@ -7280,6 +7280,51 @@ int main(int argc, char *argv[])
                   window.testLogBadgeFor(stored.last()) == QStringLiteral("ERROR"),
               QStringLiteral("a failed reply is still classified from the body "
                              "that explains it"));
+
+        // adhoc #1613: the relay sends no reason phrase and this route's
+        // consumer streams the reply, so a release-blob 503 reaches the log with
+        // neither. What is left is the "ERR" marker — red has to come from that
+        // and not from words that happened to be in Qt's boilerplate.
+        window.testResetNetworkLog();
+        window.testLogSystem(QString::fromUtf8(
+            "net GET ERR 503 https://forkmesh.com/api/repo/forkmesh/forkmesh"
+            "/releases/blob/sha256/c832d0e0 \xC2\xB7 release fetch"));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("ERROR"),
+              QStringLiteral("a failed reply with no reason phrase and no body "
+                             "is still badged ERROR"));
+
+        // …and the marker must be the request's own, read from the status slot
+        // of this line, not quoted out of a successful reply's payload.
+        window.testResetNetworkLog();
+        window.testLogSystem(QString::fromUtf8(
+            "net GET 200 [body: {\"lastSeen\":\"net GET ERR 503\"}] "
+            "https://forkmesh.com/api/repo/jett/forkmesh/mirrors "
+            "\xC2\xB7 mirror sync"));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) != QStringLiteral("ERROR"),
+              QStringLiteral("an ERR marker quoted inside a 200's body does not "
+                             "make the line a failure"));
+        window.testResetNetworkLog();
+    }
+
+    // adhoc #1613: the separator between a verbose net line's URL and the event
+    // that drove it is a real middle dot. Built with QStringLiteral it was not:
+    // that macro concatenates onto a u"" literal, so each byte of the escaped
+    // UTF-8 sequence became its own code point and the pasted log line read
+    // "… Â· release fetch".
+    {
+        window.testResetNetworkLog();
+        window.testLogSystem(QString::fromUtf8(
+            "net GET ERR 503 https://forkmesh.com/api/repo/forkmesh/forkmesh"
+            "/releases/blob/sha256/c832d0e0 \xC2\xB7 release fetch"));
+        const QStringList stored = window.testNetworkLog();
+        check(!stored.isEmpty() && stored.last().contains(QChar(0x00B7)) &&
+                  !stored.last().contains(QChar(0x00C2)),
+              QStringLiteral("the verbose net line separates URL from event "
+                             "with a middle dot, not mojibake"));
         window.testResetNetworkLog();
     }
 
