@@ -1106,6 +1106,55 @@ QWidget *MainWindow::buildSettingsSection()
         updateNavRebuildButton();
     });
 
+    // The footer's debug bar normally waits for a click on the version button.
+    // This opens it at launch instead (adhoc #1632). With nothing stored the box
+    // shows the account's default — ticked for admins, who are the ones watching
+    // the resource chart and Worker status dots — and ticking or unticking it
+    // both records the choice and applies it to the window right away.
+    auto *debugBarStartupCheck =
+        new QCheckBox("Show the debug bar at startup");
+    m_debugBarStartupCheck = debugBarStartupCheck;
+    debugBarStartupCheck->setObjectName(QStringLiteral("debugBarStartupCheck"));
+    debugBarStartupCheck->setChecked(
+        QSettings().value(kShowDebugBarOnStartupSetting, m_isAdmin).toBool());
+    debugBarStartupCheck->setToolTip(
+        "Open the debug bar under the status line as soon as the app starts, "
+        "with its resource chart, log activity lights and Worker tools. On by "
+        "default for admins; the version button in the footer toggles it at any "
+        "time.");
+    connect(debugBarStartupCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+                QSettings().setValue(kShowDebugBarOnStartupSetting, enabled);
+                // An explicit choice retires the admin default for this run.
+                m_debugBarStartupApplied = true;
+                if (m_statusVersionButton)
+                    m_statusVersionButton->setChecked(enabled);
+            });
+
+    // The cloud monitor's off switch for nodes that keep the debug bar closed:
+    // it is on by default (adhoc #1632), so it must be reachable from Settings
+    // and not only from the bar's own Monitor box. The two mirror each other.
+    m_cloudLogMonitorSettingCheck =
+        new QCheckBox("Monitor the deployed Worker's log for errors");
+    m_cloudLogMonitorSettingCheck->setObjectName(
+        QStringLiteral("cloudLogMonitorSettingCheck"));
+    m_cloudLogMonitorSettingCheck->setChecked(
+        QSettings().value(kCloudLogMonitorSetting, true).toBool());
+    m_cloudLogMonitorSettingCheck->setToolTip(
+        "Keep a background tail of the deployed Worker's live log running, so "
+        "its exceptions and 5xx responses raise the same alert as any other "
+        "error. Needs a stored Cloudflare API token; on by default.");
+    connect(m_cloudLogMonitorSettingCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+                if (m_cloudLogMonitorCheck) {
+                    // The debug bar's box owns the preference and the tail.
+                    m_cloudLogMonitorCheck->setChecked(enabled);
+                    return;
+                }
+                QSettings().setValue(kCloudLogMonitorSetting, enabled);
+                setCloudLogMonitorEnabled(enabled);
+            });
+
     // Diagnostic: mirror every HTTP request the app makes into the network log
     // (verb + status + URL). Off by default; handy for confirming what the
     // background traffic actually is (adhoc #74).
@@ -2105,6 +2154,8 @@ QWidget *MainWindow::buildSettingsSection()
     appearanceGroup->addLayout(settingsHeading(appearanceLabel, "sun"));
     appearanceGroup->addWidget(m_themeCombo, 0, Qt::AlignLeft);
     appearanceGroup->addWidget(rebuildButtonCheck);
+    appearanceGroup->addWidget(debugBarStartupCheck);
+    appearanceGroup->addWidget(m_cloudLogMonitorSettingCheck);
     appearanceGroup->addWidget(verboseNetLogCheck);
 
     auto *startupGroup = generalTab->addSection();

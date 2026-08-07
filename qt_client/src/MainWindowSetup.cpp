@@ -1927,9 +1927,13 @@ void MainWindow::sendNodeHeartbeat()
         const bool wasAdmin = m_isAdmin;
         m_isAdmin = resp.value("isAdmin").toBool();
         // Admin status is learned after the initial nav render, so refresh the
-        // avatar crown badge once when it flips.
-        if (m_isAdmin != wasAdmin)
+        // avatar crown badge once when it flips — and give the debug bar, whose
+        // unset startup preference follows this same flag, its answer too
+        // (adhoc #1632).
+        if (m_isAdmin != wasAdmin) {
             updateAdminCrownBadge();
+            applyDebugBarStartupPreference();
+        }
         // A freshly launched instance's request to join rides the same signed
         // heartbeat reply for admins (adhoc #97): light the red dot over the
         // relay favicon and show the Approve button beside it.
