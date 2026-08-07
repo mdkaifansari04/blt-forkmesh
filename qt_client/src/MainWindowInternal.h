@@ -3198,6 +3198,10 @@ const QString kInAppNotificationDurationSetting =
 // Every ERROR-badged log line flashes the window border and shows itself as a
 // card. On by default: a failure nobody sees is the thing this exists to stop.
 const QString kErrorLogAlertSetting = QStringLiteral("notifications/errorLogFlash");
+// The "System alert" ping (kind operational_alert: a mesh system going down or
+// recovering, per webPingKindLabel). On by default like kErrorLogAlertSetting —
+// this only gates the toast/border flash, the Pings page logs it regardless.
+const QString kSystemAlertSetting = QStringLiteral("notifications/systemAlert");
 const QString kEmailNotifyMentionSetting = QStringLiteral("notifications/email/mention");
 const QString kEmailNotifySubscribedSetting = QStringLiteral("notifications/email/subscribed");
 const QString kEmailNotifyPullSubmittedSetting = QStringLiteral("notifications/email/pullSubmitted");
@@ -3878,6 +3882,11 @@ const QString kAgentDoneToastKind = QStringLiteral("agent-done");
 // conclusion (a few sentences), short of pasting an entire final message into
 // the corner of the window — the whole thing is a click away in the transcript.
 constexpr int kAgentDoneSummaryChars = 400;
+// Gates the native OS notification (tray/notify-send) notifyAgentDone() raises
+// when the window is inactive. On by default, matching the always-on behavior
+// this had before the toggle existed; the in-app celebration card above is
+// unaffected and always shows.
+const QString kAgentDoneAlertSetting = QStringLiteral("notifications/agentDone");
 
 // Provider family helpers. The Anthropic-backed "Claude API" script (plus the
 // legacy "claude"/"claude-code" values) shares usage windows, spend tracking and
