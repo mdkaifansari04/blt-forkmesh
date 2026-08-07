@@ -5591,8 +5591,9 @@ private:
     QString logBadgeFor(const QString &storedLine) const; // category of a line
     QString logAccentFor(const QString &storedLine) const; // badge colour of a line
     void rebuildLogFilterButtons(); // (re)build the category chip row
-    // "GIT 42" — chip text for a category, count included once it has one.
-    QString logFilterChipLabel(const QString &name, const QString &category) const;
+    // Buffered events in a category (empty category = the whole log), shown on
+    // the chip's corner badge.
+    int logFilterChipCount(const QString &category) const;
     void updateLogFilterChipCounts(); // refresh the counts without rebuilding
     void refreshLogTimelineChart();
     void appendLogTimelineEntry(const QString &storedLine);
