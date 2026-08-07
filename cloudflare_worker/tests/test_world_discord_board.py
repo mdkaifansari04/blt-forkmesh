@@ -16,7 +16,7 @@ def test_discord_board_is_aligned_with_the_existing_billboard_circle():
         'worldDiscordBoard.name = "forkmesh-world-discord-board"',
         'worldDiscordFrame.userData.interactive = "world-discord-board"',
         'worldDiscordFace.userData.interactive = "world-discord-board"',
-        'placeBillboardOnIsland(worldDiscordBoard, "world-discord-board")',
+        'placeBillboardOnIsland(worldDiscordBoard, { circle: "social" })',
     ):
         assert contract in SCENE
 

@@ -303,17 +303,19 @@ void CodexAppServerSession::onProcessFinished(int exitCode)
     emit finished(exitCode);
 }
 
-void CodexAppServerSession::sendUserText(const QString &text)
+bool CodexAppServerSession::sendUserText(const QString &text)
 {
-    if (text.trimmed().isEmpty() || !running())
-        return;
+    if (text.trimmed().isEmpty())
+        return true;
+    if (!running())
+        return false;
     if (!m_threadReady || (m_turnActive && m_turnId.isEmpty())) {
         m_queuedUserTexts.append(text);
-        return;
+        return true;
     }
     if (!m_turnActive) {
         beginTurn(text);
-        return;
+        return true;
     }
 
     QJsonObject params{{QStringLiteral("threadId"), m_threadId},
@@ -321,15 +323,17 @@ void CodexAppServerSession::sendUserText(const QString &text)
                        {QStringLiteral("expectedTurnId"), m_turnId}};
     const qint64 requestId = sendRequest(QStringLiteral("turn/steer"), params);
     m_pendingSteerTexts.insert(requestId, text);
+    return true;
 }
 
 void CodexAppServerSession::setTurnOptions(const QString &model,
                                            const QString &mode,
                                            const QString &effort)
 {
-    m_model = model.trimmed();
-    if (!m_model.isEmpty())
-        m_effectiveModel = m_model;
+    if (const QString trimmed = model.trimmed(); !trimmed.isEmpty()) {
+        m_model = trimmed;
+        m_effectiveModel = trimmed;
+    }
     m_mode = mode;
     m_effort = effort.trimmed();
 }
@@ -468,6 +472,11 @@ void CodexAppServerSession::interrupt()
 bool CodexAppServerSession::running() const
 {
     return m_proc && m_proc->state() != QProcess::NotRunning;
+}
+
+bool CodexAppServerSession::acceptsInput() const
+{
+    return running() && m_proc->isWritable();
 }
 
 qint64 CodexAppServerSession::processId() const

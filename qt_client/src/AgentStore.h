@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QJsonObject>
 #include <QList>
 #include <QString>
@@ -126,6 +127,17 @@ struct AgentSession {
     static AgentSession fromJson(const QJsonObject &obj);
 };
 
+// How one model has done, counted over sessions that no longer exist. The
+// composer ranks models by merged work, and that record used to live only in
+// the session files: deleting a landed branch and its agent erased the very
+// proof the model had succeeded, dropping it back to "0 merged". These totals
+// are written when a session is deleted and are never keyed by session id
+// (ids are reused), so they only ever grow.
+struct AgentModelOutcome {
+    int runs = 0;
+    int merged = 0;
+};
+
 class AgentStore
 {
 public:
@@ -138,6 +150,14 @@ public:
     bool saveSession(const AgentSession &session) const;
     bool deleteSession(const AgentSession &session) const;
     void appendLog(const AgentSession &session, const QString &text) const;
+
+    // Durable per-model run/merge tallies for deleted sessions, keyed by
+    // modelOutcomeKey(). deleteSession() folds a session in here the moment its
+    // record is removed, so a caller that wants a model's whole track record
+    // adds these to the live sessions it still holds. Sessions with no model
+    // recorded are ignored — there is nothing to credit them to.
+    static QString modelOutcomeKey(const QString &provider, const QString &model);
+    QHash<QString, AgentModelOutcome> retiredModelOutcomes() const;
     QString readLog(const AgentSession &session) const;
     // Claude Code stream-json transcript events, persisted one JSON object per
     // line so the rich transcript survives an app restart (issue #41).
@@ -182,6 +202,8 @@ public:
 private:
     QString sessionsDir() const;
     QString sessionDir(const AgentSession &session) const;
+    QString modelOutcomesPath() const;
+    void recordRetiredSession(const AgentSession &session) const;
     int nextId() const;
 
     QString m_root;

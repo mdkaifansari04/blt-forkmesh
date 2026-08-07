@@ -116,10 +116,9 @@ case "${1:-run}" in
             args+=("$arg")
         done < <(cmake_args)
         cmake -B build "${args[@]}" -DFORKMESH_BUILD_TESTS=ON
-        cmake --build build --parallel "$(build_jobs)" \
-            --target forkmesh-control-tests forkmesh-private-mirror-tests \
-                     forkmesh-public-mirror-tests forkmesh-codex-tests \
-                     forkmesh-vm-runtime-tests
+        # critical-tests tracks the "critical" CTest label in CMakeLists.txt;
+        # naming the suites here let this list fall behind the label instead.
+        cmake --build build --parallel "$(build_jobs)" --target critical-tests
         exec python3 ../tools/run_critical_tests.py qt --build-dir build
         ;;
     run)

@@ -34,13 +34,25 @@ public:
                const QString &effort = QString(),
                int memoryLimitMb = 0,
                const QString &resumeFallbackPrompt = QString());
-    void sendUserText(const QString &text);
+    // Returns false when the app-server is no longer there to take the turn, so
+    // the caller can restart the session instead of dropping the user's message
+    // (adhoc #1618). A turn parked for a thread that is still opening counts as
+    // delivered — it is sent the moment the thread is ready.
+    bool sendUserText(const QString &text);
     void respondToRequest(const QString &token, const QString &answer);
+    // Options for the next turn on the live thread. An empty `model` means "no
+    // opinion" and leaves the thread on the one it started with, so a caller
+    // with nothing valid to say (a session record naming another CLI's model)
+    // can steer without renaming the model out from under the running thread.
     void setTurnOptions(const QString &model, const QString &mode,
                         const QString &effort);
     void interrupt();
     void stop();
     bool running() const;
+    // Running *and* still able to take a turn. A failed handshake closes the
+    // app-server's stdin while the process winds down, so running() alone can
+    // report a transport that no follow-up will ever reach (adhoc #1618).
+    bool acceptsInput() const;
     // PID of the running app-server (0 when not running), so the UI can count
     // the build processes the agent spawned below it (adhoc #57).
     qint64 processId() const;

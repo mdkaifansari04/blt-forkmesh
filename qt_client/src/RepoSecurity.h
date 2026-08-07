@@ -97,6 +97,14 @@ public:
     // to that line; matches on that line are skipped.
     static QList<RepoSecurityFinding> findSecretsInPush(const QString &localPath,
                                                         const QString &upstreamRef);
+    // Appends the "forkmesh-secret-scan:ignore-line" marker (see above) to the
+    // source line a finding points at, so a reviewed/false-positive match no
+    // longer blocks future scans. Picks a line-comment token by file
+    // extension. Returns false if the file or line couldn't be read/written;
+    // a line that already carries the marker is left untouched and counts as
+    // success.
+    static bool markFindingSafe(const QString &localPath,
+                                const RepoSecurityFinding &finding);
 };
 
 // Local quality evidence for the Quality tab: check-run health, code volume,

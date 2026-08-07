@@ -87,7 +87,7 @@ def test_repository_and_leaderboard_districts_share_textured_flush_paths():
         "radius = DISTRICT_GROUND_RADIUS,",
         "`forkmesh-${kind}-textured-ground`",
         '"repositories",\n      REPOSITORY_GROUND_RADIUS,',
-        'createDistrictGroundCircle(THREE, "leaderboards")',
+        'createDistrictGroundCircle(\n      THREE,\n      "leaderboards",\n      LEADERBOARD_DISTRICT_GROUND_RADIUS,\n    )',
         "repositoryConnectionLength,\n      WORLD_PATH_HEIGHT,\n      WORLD_PATH_WIDTH,",
         "leaderboardConnectionLength,\n      WORLD_PATH_HEIGHT,\n      WORLD_PATH_WIDTH,",
         "repositoryPromenade.position.y = WORLD_PATH_CENTER_Y;",
@@ -117,6 +117,30 @@ def test_continuous_visible_foundation_drives_walkability():
     assert "WORLD_LOOP_CONTROL_POINTS" not in scene
 
 
+def test_world_edge_walk_uses_only_two_zero_triangle_line_rails():
+    scene = source()
+    for contract in (
+        "const VOID_WALK_CENTER_Z = 270;",
+        "const VOID_WALK_END_X = WORLD_RADIUS + 120;",
+        "function voidWalkSurfaceContains(",
+        "function createVoidWalkRails(THREE)",
+        'rails.name = "forkmesh-void-walk-rails"',
+        "new THREE.LineBasicMaterial({",
+        "new THREE.Line(geometry, railMaterial)",
+        "forkmesh-void-walk-${index === 0 ? \"south\" : \"north\"}-rail",
+        '"void-walk-rails", "World edge walk · line rails", "Terrain",',
+        "voidWalkSurfaceContains(x, z, radius)",
+    ):
+        assert contract in scene
+
+    void_walk = scene.split("function createVoidWalkRails(THREE)", 1)[1].split(
+        "const projectAssetTextures", 1
+    )[0]
+    assert "new THREE.Mesh(" not in void_walk
+    assert "new THREE.BoxGeometry(" not in void_walk
+    assert void_walk.count("new THREE.Line(geometry, railMaterial)") == 1
+
+
 def test_paths_share_a_concrete_brick_texture_and_closed_bike_lane():
     scene = source()
     for contract in (
@@ -134,25 +158,27 @@ def test_paths_share_a_concrete_brick_texture_and_closed_bike_lane():
     assert "WORLD_LOOP_CONTROL_POINTS" not in scene
 
 
-def test_leaderboards_have_one_square_raised_grid_without_circle_boards():
+def test_every_leaderboard_is_its_own_card_on_the_leaderboard_circle():
     scene = source()
-    for contract in (
-        '"forkmesh-leaderboard-super-panel"',
-        "new THREE.BoxGeometry(23, 23, 0.45)",
-        "leaderboardSuperBacking.position.set(0, 12, 0)",
-        "leaderboardSuperPanel.add(leaderboardGridFace)",
-        "function leaderboardGridTexture",
-        "for (let index = 0; index < 25; index += 1)",
-        "function leaderboardRowIsSpecial",
-        "leaderboardSuperPanel.position.set(-42, 0.22, 0)",
-    ):
-        assert contract in scene
     physical = scene.split(
-        "// One square 5×5 wall preserves", 1
-    )[1].split("let leaderboardGridKey", 1)[0]
-    assert "makeActiveLeaderboardSign" not in physical
-    assert "makeReferralLeaderboardSign" not in physical
-    assert "makeSiteReferrerLeaderboardSign" not in physical
+        "// Every public ranking is a card of its own again", 1
+    )[1].split("function repaintActiveLeaderboardCard", 1)[0]
+    for contract in (
+        'addLeaderboardCard("active-members", makeActiveLeaderboardSign(THREE))',
+        'addLeaderboardCard("referrals", makeReferralLeaderboardSign(THREE))',
+        'addLeaderboardCard("http-referrers", makeSiteReferrerLeaderboardSign(THREE))',
+        "for (const board of WORLD_LEADERBOARD_BOARD_STUBS) {",
+        "addLeaderboardCard(board.id, makeLeaderboardStatSign(THREE, board));",
+        'circle: "leaderboards",',
+        'feed: "leaderboards",',
+    ):
+        assert contract in physical
+    # The one 5x5 wall that replaced the cards is gone, painter included.
+    assert '"forkmesh-leaderboard-super-panel"' not in scene
+    assert "leaderboardSuperPanel" not in scene
+    assert "function leaderboardGridTexture" not in scene
+    assert "function leaderboardGridBoardDescriptors" not in scene
+    assert "for (let index = 0; index < 25; index += 1)" not in scene
     assert '"forkmesh-leaderboard-ring-walk"' not in scene
 
 
@@ -225,8 +251,10 @@ def test_leaderboard_contents_are_always_mounted_in_the_open_district():
     )
     assert "leaderboardInterior.visible = false" not in district
     assert "leaderboardInterior.add(\n    createDistrictGroundCircle" in district
-    assert "leaderboardInterior.add(object)" in scene
-    assert "leaderboardInterior.add(leaderboardSuperPanel)" in scene
+    # Boards mount on their own circle, and every circle mounts on the open
+    # district interior, so nothing is hidden behind a cover or a gate.
+    assert "leaderboardInterior.add(group);" in scene
+    assert "circle.group.add(object);" in scene
     assert "updateLeaderboardCircleOccupancy" not in scene
     assert "leaderboardCoverContainsWorldPoint" not in scene
 

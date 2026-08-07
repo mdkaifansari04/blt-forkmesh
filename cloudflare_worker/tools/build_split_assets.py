@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""Stage the asset subsets served by the split site Workers.
+
+The production site is served by three Workers on the same zone:
+
+- forkmesh-relay (wrangler.toml) — the Python application Worker. It keeps
+  the COMPLETE public/ asset tree and its custom-domain catch-all, so it can
+  serve every path by itself; deleting the split Workers below is always a
+  safe rollback.
+- forkmesh-www (wrangler.www.toml) — assets-only Worker that owns the
+  marketing documents via more-specific zone routes.
+- forkmesh-world (wrangler.world.toml) — assets-only Worker that owns the
+  /world three.js application via zone routes.
+
+This script materializes public_www/ and public_world/ from public/ — it
+COPIES, never moves: public/ stays the single source of truth so the relay
+remains a complete fallback and every existing test/tooling path
+(build_worker_footprint.py, _redirects/_headers contracts) is untouched.
+
+_redirects and _headers are copied verbatim into each staged tree so the
+split Workers keep byte-identical routing/header behavior with the relay
+(rules for paths a Worker is never routed to are inert). One marker block is
+appended to each staged _headers so live verification can prove which Worker
+answered: x-forkmesh-worker: www|world.
+
+Invoked by the [build] command of wrangler.www.toml / wrangler.world.toml.
+"""
+
+from __future__ import annotations
+
+import shutil
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+PUBLIC = ROOT / "public"
+
+# The marketing documents forkmesh-www owns. Clean URLs resolve to these via
+# the verbatim-copied _redirects. The homepage (index.html) is deliberately
+# NOT staged: / stays on the relay because _serve_homepage records
+# site_referrers and streams index.html with no-cache. The auth pages
+# (login/signup/forgot/reset) and /chat also deliberately stay on the relay.
+WWW_DOCUMENTS = [
+    "404.html",
+    "about.html",
+    "blog.html",
+    "careers.html",
+    "changelog.html",
+    "desktop.html",
+    # docs.html is deliberately NOT staged: with auto-trailing-slash it would
+    # shadow docs/index.html for /docs, and today's live /docs serves the
+    # docs/ tree index. /docs.html stays a relay-owned canonical 404.
+    "features.html",
+    "homev2.html",
+    "leaderboards.html",
+    "mirror-payouts.html",
+    "network.html",
+    "new-home.html",
+    "outreach.html",
+    "press.html",
+    "pricing.html",
+    "privacy.html",
+    "referrals.html",
+    "security-report.html",
+    "status.html",
+    "terms.html",
+]
+
+# Directory trees under www-owned route prefixes (/blog/*, /docs/*).
+WWW_TREES = ["blog", "docs"]
+
+# The world Worker serves only the /world/* module graph. Its /assets/* and
+# /api/world/* subresource requests are separate HTTP fetches that still
+# route to the relay, so nothing else needs to be staged.
+WORLD_TREES = ["world"]
+
+# Everything the forkmesh-api Worker's Python code reads through its ASSETS
+# binding while answering /api/* (it never serves an asset by URL — only
+# /api/* is routed to it). Audited from the env.ASSETS.fetch sites in
+# src/entry.py: the homepage no-cache origin probe (index.html), the blog
+# board's feed build + per-post network lookups (blog.html, blog/*), the
+# install-script and repo-shell readers (install.sh, dashboard/repo.html),
+# and the 404 document its assets config names.
+API_DOCUMENTS = [
+    "404.html",
+    "blog.html",
+    "index.html",
+    "install.sh",
+]
+API_TREES = ["blog"]
+API_EXTRAS = [Path("dashboard") / "repo.html"]
+
+# What the slimmed relay DROPS from its copy of public/: the paths owned by
+# the split Workers that no relay-served route or ASSETS read touches.
+# blog.html and blog/ stay — the relay's /rss.xml and its cron-driven blog
+# board refresh read them through ASSETS — as do index.html (homepage), the
+# auth/chat documents, every root-level script/stylesheet, dashboard/,
+# notes/, assets/ and favicon/ (all still relay-routed URLs).
+RELAY_DROP_TREES = {"world", "docs"}
+RELAY_DROP_DOCUMENTS = {
+    name for name in WWW_DOCUMENTS if name not in ("404.html", "blog.html")
+} | {"docs.html"}
+
+
+def _reset(directory: Path) -> None:
+    if directory.exists():
+        shutil.rmtree(directory)
+    directory.mkdir(parents=True)
+
+
+def _www_redirects() -> str:
+    """The tiny generated _redirects for the www Worker.
+
+    This Worker relies on html_handling="auto-trailing-slash" for every
+    clean URL (/pricing -> pricing.html, /blog/<slug>/ -> the post index),
+    so the relay's _redirects table must NOT be copied here: live Cloudflare
+    resolved /blog/rss.xml through the /blog/:slug placeholder rule (-> 404)
+    in preference to the exact safety-net rule above it, and the 100-rule
+    "dynamic" budget rules out enumerating posts instead. Only the rules the
+    native handling cannot express remain: the Worker-built feed bounces
+    (targets /rss.xml, which is deliberately un-routed so the relay renders
+    it) and the /blogs alias.
+    """
+    return (
+        "# Generated by tools/build_split_assets.py — see that file for why\n"
+        "# this is not a copy of public/_redirects.\n"
+        "/blog/rss.xml /rss.xml 308\n"
+        "/blog/feed.xml /rss.xml 308\n"
+        "/blog/rss.xml/ /rss.xml 308\n"
+        "/blog/feed.xml/ /rss.xml 308\n"
+        "/blogs /blog 308\n"
+    )
+
+
+def _copy_control_files(destination: Path, marker: str) -> None:
+    if marker == "www":
+        (destination / "_redirects").write_text(
+            _www_redirects(), encoding="utf-8"
+        )
+    else:
+        shutil.copy2(PUBLIC / "_redirects", destination / "_redirects")
+    headers = (PUBLIC / "_headers").read_text(encoding="utf-8")
+    headers += (
+        "\n# Appended by tools/build_split_assets.py: names the Worker that\n"
+        "# served the response so deploy verification can prove the zone\n"
+        "# routes actually carved this traffic off the relay.\n"
+        f"/*\n  x-forkmesh-worker: {marker}\n"
+    )
+    (destination / "_headers").write_text(headers, encoding="utf-8")
+
+
+def stage_www() -> Path:
+    staged = ROOT / "public_www"
+    _reset(staged)
+    for name in WWW_DOCUMENTS:
+        shutil.copy2(PUBLIC / name, staged / name)
+    for tree in WWW_TREES:
+        shutil.copytree(PUBLIC / tree, staged / tree)
+    _copy_control_files(staged, "www")
+    return staged
+
+
+def stage_world() -> Path:
+    staged = ROOT / "public_world"
+    _reset(staged)
+    for tree in WORLD_TREES:
+        shutil.copytree(PUBLIC / tree, staged / tree)
+    # not_found_handling="404-page" needs the shared 404 document at the
+    # asset root, exactly like the relay serves it.
+    shutil.copy2(PUBLIC / "404.html", staged / "404.html")
+    _copy_control_files(staged, "world")
+    return staged
+
+
+def stage_api() -> Path:
+    staged = ROOT / "public_api"
+    _reset(staged)
+    for name in API_DOCUMENTS:
+        shutil.copy2(PUBLIC / name, staged / name)
+    for tree in API_TREES:
+        shutil.copytree(PUBLIC / tree, staged / tree)
+    for extra in API_EXTRAS:
+        (staged / extra).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PUBLIC / extra, staged / extra)
+    return staged
+
+
+def stage_relay() -> Path:
+    staged = ROOT / "public_relay"
+    if staged.exists():
+        shutil.rmtree(staged)
+
+    def _drop(directory: str, names: list[str]) -> list[str]:
+        if Path(directory) != PUBLIC:
+            return []
+        return [
+            name
+            for name in names
+            if name in RELAY_DROP_TREES or name in RELAY_DROP_DOCUMENTS
+        ]
+
+    shutil.copytree(PUBLIC, staged, ignore=_drop)
+    return staged
+
+
+def main(argv: list[str]) -> int:
+    targets = argv[1:] or ["www", "world", "api", "relay"]
+    stagers = {
+        "www": stage_www,
+        "world": stage_world,
+        "api": stage_api,
+        "relay": stage_relay,
+    }
+    for target in targets:
+        if target not in stagers:
+            print(f"unknown split target: {target}", file=sys.stderr)
+            return 2
+        staged = stagers[target]()
+        files = sum(1 for p in staged.rglob("*") if p.is_file())
+        print(f"staged {target}: {files} files in {staged.relative_to(ROOT)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

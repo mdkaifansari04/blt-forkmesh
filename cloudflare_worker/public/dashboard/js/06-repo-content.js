@@ -1623,7 +1623,7 @@
 
   function renderIssueCommentForm(number) {
     if (!state.session?.nodeName) {
-      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment on this issue.</div>`;
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login?next=${encodeURIComponent(location.pathname + location.search)}" class="font-medium text-primary hover:underline">Log in</a> to comment on this issue.</div>`;
     }
     const detail = state.repoRecordDetail;
     const canManage = Boolean(detail?.parsed?.issueMutationAuthorized);
@@ -1646,7 +1646,7 @@
 
   function renderDiscussionReplyForm(number) {
     if (!state.session?.nodeName) {
-      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login?next=${encodeURIComponent(location.pathname + location.search)}" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
     }
     return `
       <form data-repo-discussion-reply-form data-repo-discussion-reply-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
@@ -1663,7 +1663,7 @@
 
   function renderPullReviewForm(number) {
     if (!state.session?.nodeName) {
-      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment or review this pull request.</div>`;
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login?next=${encodeURIComponent(location.pathname + location.search)}" class="font-medium text-primary hover:underline">Log in</a> to comment or review this pull request.</div>`;
     }
     return `
       <form data-repo-pull-review-form data-repo-pull-review-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
@@ -2091,7 +2091,9 @@
       detail?.kind !== "issues" ||
       !state.session?.sessionToken
     ) {
-      if (!state.session?.sessionToken) location.href = "/login";
+      if (!state.session?.sessionToken) {
+        location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
+      }
       return false;
     }
     const title = String(
@@ -2711,7 +2713,7 @@
       || (state.selectedRepo && repoKey(state.selectedRepo) === key ? state.selectedRepo : null);
     if (!repo) return;
     if (!state.session?.sessionToken) {
-      location.href = "/login";
+      location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
       return;
     }
     const nextStarred = button.getAttribute("aria-pressed") !== "true";
@@ -2766,13 +2768,15 @@
         if (prior?.timer) clearTimeout(prior.timer);
         delete state.pendingInboxRefreshes[key];
       } else if (!prior?.timer) {
-        const attempt = Math.min(5, Math.max(0, Number(prior?.attempt) || 0));
         const refresh = {
-          attempt: attempt + 1,
           timer: setTimeout(() => {
             refresh.timer = 0;
             void loadRepoPendingCounts(repo);
-          }, Math.min(30_000, 1500 * (2 ** attempt))),
+            // A flat ten minutes, matching the endpoint's edge cache: the
+            // first re-polls of the old 15s-doubling backoff only re-read
+            // the same cached counts, and this loop was a top contributor
+            // to /pending traffic.
+          }, 600_000),
         };
         state.pendingInboxRefreshes[key] = refresh;
       }
@@ -4947,18 +4951,29 @@
 
   function renderOrgAgentSession(session) {
     const history = Array.isArray(session.history) ? session.history : [];
+    const agentInfo =
+      session?.agentInfo && typeof session.agentInfo === "object"
+        ? session.agentInfo
+        : {};
+    const agentLabel = session?.provider === "codex" ? "Codex" : "Claude Code";
+    const permissionLabel = agentInfo.mode || "Node default";
+    const reasoningEffort = agentInfo.strength || "Provider default";
+    const modelLabel = agentInfo.model || session?.requestedModel || "Provider default";
     const promptable = ["running", "queued"].includes(String(session.status || ""));
     return `
-      <article class="grid gap-3 border-t border-border px-4 py-4" data-org-agent-session="${escapeHtml(session.id || "")}">
+      <article class="grid gap-3 border-t border-border px-4 py-4" data-org-agent-session="${escapeHtml(session.id || "")}" title="${escapeHtml(`Agent: ${agentLabel} · Permission: ${permissionLabel} · Reasoning effort: ${reasoningEffort}`)}">
         <div class="flex flex-wrap items-center gap-2">
           <span class="rounded-full border border-border px-2 py-0.5 font-mono text-[11px] ${repoAgentStatusTone(session.status)}">${escapeHtml(session.status || "unknown")}</span>
           <strong class="min-w-0 flex-1 truncate text-sm text-foreground">${escapeHtml(session.title || `${session.provider || "Agent"} session`)}</strong>
-          <span class="font-mono text-[11px] text-muted-foreground">${escapeHtml(session.provider === "codex" ? "Codex" : "Claude Code")}</span>
+          <span class="font-mono text-[11px] text-muted-foreground">${escapeHtml(agentLabel)}</span>
+          <span class="font-mono text-[11px] text-muted-foreground">${escapeHtml(modelLabel)}</span>
         </div>
         <div class="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
           <span>mirror <span class="font-mono text-foreground">${escapeHtml(session.targetNode || "pending")}</span></span>
           <span>started by @${escapeHtml(session.createdBy || "member")}</span>
           <span>Haiku gate: ${escapeHtml(session.security?.state || "pending")}</span>
+          <span>permission <span class="font-mono text-foreground">${escapeHtml(permissionLabel)}</span></span>
+          <span>reasoning <span class="font-mono text-foreground">${escapeHtml(reasoningEffort)}</span></span>
           ${session.taskKey ? `<span>board <span class="font-mono text-foreground">${escapeHtml(session.taskKey)}</span></span>` : ""}
         </div>
         <div class="max-h-72 space-y-2 overflow-auto rounded-md border border-border bg-secondary/20 p-3">

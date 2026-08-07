@@ -137,6 +137,19 @@ starts syncing the ForkMesh project. The main areas are:
 - **Settings** — account, node, agent, notification, network, storage, and
   backup controls.
 
+Under **Network → Hosts → Create a Vultr mirror**, the desired healthy mirror
+count can be set before opting in to automatic fleet sizing. While enabled, the
+client checks the public ForkMesh catalog every five minutes, counting down to
+the next check beside the checkbox. It creates one managed Vultr mirror at a
+time until the target is healthy, and permanently destroys one excess managed
+instance at a time when the target is lowered. A check that cannot reach the
+catalog — the shared relay answers HTTP 429 under a faster cadence — makes no
+fleet change and is simply retried on the next countdown.
+Only Vultr instances created and tracked by this client participate; manually
+added hosts and other providers are never destroyed by this setting. A mirror
+counts as healthy only when its public catalog row is online, fresh,
+integrity-approved, clone eligible, and serving healthy endpoint traffic.
+
 To add an existing project, choose **Repos → Add local repo** and select the
 working-tree folder. To contribute to someone else's repository, find it under
 **Repos**, choose **Fork**, and select a parent folder for the new working copy.
@@ -155,7 +168,14 @@ For a PR within a repository you own:
 
 The button is disabled when the branch is the default branch, has no diff, or
 the repository has no writable working tree. Agents follow the same model: each
-agent works in an isolated worktree and can produce a branch-backed PR.
+agent works in an isolated worktree and can produce a branch-backed PR. That
+worktree lives inside the project, at
+`.worktrees/agent-<session>-<short-description>`, so the tree a run is editing
+sits beside the code it forked from. ForkMesh keeps the directory out of the
+project's Git status and removes each worktree when its run is finished; agents
+on a bare mirror (no working tree to nest one in) still use a temporary
+directory, as does a run under KVM isolation, where the worktree has to land on
+the host directory mounted into the guest.
 
 For a PR to another owner:
 

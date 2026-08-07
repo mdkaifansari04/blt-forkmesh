@@ -782,8 +782,8 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=f2dbaa26a4e1" defer></script>
-<script src="/dashboard-chat.js?v=ebb3a8e06ab4" defer></script>
+    <script src="/dashboard.js?v=516368111f4a" defer></script>
+<script src="/dashboard-chat.js?v=a4aa74e46fde" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="chat">
     <div data-dashboard-root data-dashboard-section="chat" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
@@ -2233,7 +2233,10 @@
 
       // Chat is wired by /dashboard-chat.js.
 	      initProfileMenu();
-	      lucide.createIcons();
+	      // The lucide CDN script is deferred, so it has not executed yet while
+	      // this inline script parses; dashboard.js re-runs createIcons once
+	      // lucide exists. A bare call here throws on every page load.
+	      window.lucide?.createIcons();
     </script>
   </body>
 </html>

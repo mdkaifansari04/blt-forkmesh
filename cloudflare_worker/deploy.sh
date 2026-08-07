@@ -441,6 +441,7 @@ verify_public_assets() {
     local world_checks=(
         "/world/world.js|public/world/world.js"
         "/world/world-data.js|public/world/world-data.js"
+        "/world/world-avatar-face.js|public/world/world-avatar-face.js"
         "/world/world-scene.js|public/world/world-scene.js"
         "/world/world-mirror-nodes.js|public/world/world-mirror-nodes.js"
         "/world/world-mastodon.js|public/world/world-mastodon.js"
@@ -590,6 +591,214 @@ verify_marketing_routes() {
         return 1
     fi
     echo "Verified: one Worker serves the World, pricing, blog index and posts."
+}
+
+# The site is split across three Workers on the same zone: the relay above
+# stays the complete Python application AND a full catch-all (custom domains
+# forkmesh.com / www.forkmesh.com), while two assets-only Workers own the
+# marketing documents (wrangler.www.toml -> forkmesh-www) and the World module
+# graph (wrangler.world.toml -> forkmesh-world) through more-specific zone
+# routes. Deleting either split Worker removes its routes and the relay
+# resumes serving those paths byte-identically — that is the rollback story,
+# and it is the same mechanism retire_legacy_marketing_worker relies on.
+#
+# Forks must not attempt this: the committed route patterns claim
+# forkmesh.com, so the split deploy only runs when the manifest still targets
+# the canonical origin.
+split_site_workers_enabled() {
+    grep -q 'PUBLIC_BASE_URL = "https://forkmesh.com"' wrangler.toml
+}
+
+deploy_split_site_workers() {
+    if ! split_site_workers_enabled; then
+        echo "note: non-canonical PUBLIC_BASE_URL — skipping the forkmesh-www/forkmesh-world split deploy." >&2
+        return 0
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "ERROR: npm is required to deploy the assets-only split Workers." >&2
+        return 1
+    fi
+    local config
+    for config in wrangler.www.toml wrangler.world.toml; do
+        echo "Deploying split site Worker from $config ..."
+        npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.42.1}" -- \
+            wrangler deploy --config "$config"
+    done
+    # The API split ships the same Python application as the relay, so it
+    # deploys through pywrangler (which vendors the Python modules) with the
+    # same build stamps, then refreshes its copy of the production
+    # credentials. Those persist across deploys, so steady-state deploys
+    # have no unconfigured window.
+    #
+    # UN-PARKED (2026-08-06): forkmesh-api is the canonical API host at
+    # api.forkmesh.com and hosts the traffic-diagnostics landing page. It no
+    # longer claims the forkmesh.com/api/* zone routes — its isolate meltdown
+    # ("PyProxy when Python GIL not held" at initPyInstance under cold-start
+    # churn) broke same-origin API traffic, so those paths resolve on the
+    # relay's custom-domain catch-all (see wrangler.api.toml). Set
+    # FORKMESH_DEPLOY_API_WORKER=0 to park it again in an emergency
+    # (rollback: wrangler delete --name forkmesh-api).
+    if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" = "1" ]; then
+        echo "Deploying split site Worker from wrangler.api.toml ..."
+        pywrangler deploy --config wrangler.api.toml --env "" \
+            --var "BUILD_REV:${BUILD_REV}" \
+            --var "APP_VERSION:${APP_VERSION}" \
+            --var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}"
+        SPLIT_SECRET_WORKER=forkmesh-api push_secrets
+    else
+        echo "note: forkmesh-api stays parked (set FORKMESH_DEPLOY_API_WORKER=1 to ship it)." >&2
+    fi
+}
+
+# One split-route probe: the staged _headers of each split Worker append an
+# x-forkmesh-worker marker, so the served header proves which Worker answered.
+# want_worker="" asserts the path still resolves on the relay (no marker).
+_split_check() {
+    local url="$1" want_worker="$2" want_status="$3"
+    local attempts=10 sleep_s=3
+    local attempt headers status worker
+    for attempt in $(seq 1 "$attempts"); do
+        headers="$(curl -sSI --max-time 20 "$url" 2>/dev/null || true)"
+        status="$(
+            printf '%s\n' "$headers" |
+                awk 'toupper($1) ~ /^HTTP\// { code=$2 } END { print code }'
+        )"
+        worker="$(
+            printf '%s\n' "$headers" |
+                awk -F': *' 'tolower($1) == "x-forkmesh-worker" { value=$2 } END { sub(/\r$/, "", value); print value }'
+        )"
+        if [ "$status" = "$want_status" ] && [ "$worker" = "$want_worker" ]; then
+            return 0
+        fi
+        sleep "$sleep_s"
+    done
+    echo "ERROR: $url answered HTTP ${status:-<none>} via Worker '${worker:-relay}'" >&2
+    echo "       (expected HTTP $want_status via '${want_worker:-relay}')." >&2
+    return 1
+}
+
+verify_split_site_workers() {
+    if ! split_site_workers_enabled; then
+        return 0
+    fi
+    local expected_rev="${1:-}"
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "note: curl not found — skipping split Worker verification." >&2
+        return 0
+    fi
+    local base="${DEPLOY_VERIFY_URL:-https://forkmesh.com}"
+    base="${base%/}"
+    echo "Verifying the split Workers own their routes on $base ..."
+    local failed=0
+    # Same-origin /api/* always resolves on the relay's custom-domain
+    # catch-all: wrangler.api.toml deliberately leaves the forkmesh.com/api/*
+    # zone routes unclaimed while forkmesh-api melts fresh isolates under
+    # cold-start churn, so forkmesh-api answers only on api.forkmesh.com.
+    local api_body
+    api_body="$(curl -sS --max-time 25 "$base/api/version" 2>/dev/null || true)"
+    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"relay"' <<<"$api_body"; then
+        echo "ERROR: $base/api/version is not served by the relay Worker (got: ${api_body:-<none>})." >&2
+        failed=1
+    fi
+    if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" = "1" ] && [ "$base" = "https://forkmesh.com" ]; then
+        # The canonical API host: the diagnostics landing page and the same
+        # /api surface must answer on api.forkmesh.com.
+        local api_host_body
+        api_host_body="$(curl -sS --max-time 25 "https://api.forkmesh.com/api/version" 2>/dev/null || true)"
+        if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"api"' <<<"$api_host_body"; then
+            echo "ERROR: https://api.forkmesh.com/api/version is not served by forkmesh-api (got: ${api_host_body:-<none>})." >&2
+            failed=1
+        fi
+        local landing_status
+        landing_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 25 "https://api.forkmesh.com/" 2>/dev/null || true)"
+        if [ "$landing_status" != "200" ]; then
+            echo "ERROR: https://api.forkmesh.com/ answered HTTP ${landing_status:-<none>} (expected the diagnostics landing page)." >&2
+            failed=1
+        fi
+    fi
+    # ... and the relay also proves its build through the /health stamp,
+    # which stays relay-routed no matter who owns /api/*.
+    local health_body health_rev
+    health_body="$(curl -sS --max-time 25 "$base/health" 2>/dev/null || true)"
+    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"relay"' <<<"$health_body"; then
+        echo "ERROR: $base/health is not served by the relay (got: ${health_body:-<none>})." >&2
+        failed=1
+    fi
+    if [ -n "$expected_rev" ]; then
+        health_rev="$(sed -n 's/.*"rev"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$health_body")"
+        if [ "$health_rev" != "$expected_rev" ]; then
+            echo "ERROR: relay /health reports rev '${health_rev:-<none>}' (expected '$expected_rev')." >&2
+            failed=1
+        fi
+    fi
+    # Marketing documents must come from forkmesh-www ...
+    _split_check "$base/pricing" www 200 || failed=1
+    _split_check "$base/blog" www 200 || failed=1
+    _split_check "$base/blog/introducing-forkmesh/" www 200 || failed=1
+    # auto-trailing-slash canonicalizes /docs to /docs/ (307) by design.
+    _split_check "$base/docs/" www 200 || failed=1
+    _split_check "$base/status" www 200 || failed=1
+    # ... the World from forkmesh-world ...
+    _split_check "$base/world" world 200 || failed=1
+    _split_check "$base/world/world.js" world 200 || failed=1
+    _split_check "$base/world/world-scene.js" world 200 || failed=1
+    # ... while the application surface stays on the relay: the homepage
+    # (site_referrers recording), the APIs, auth pages, the dashboard, and the
+    # canonical-URL 404s for raw .html spellings.
+    _split_check "$base/" "" 200 || failed=1
+    _split_check "$base/api/version" "" 200 || failed=1
+    _split_check "$base/login" "" 200 || failed=1
+    _split_check "$base/dashboard" "" 200 || failed=1
+    _split_check "$base/pricing.html" "" 404 || failed=1
+    # The Worker-built RSS feed survives the /blog/* carve-out: forkmesh-www
+    # bounces /blog/rss.xml to /rss.xml (verbatim _redirects safety net), and
+    # /rss.xml is un-routed so the relay renders the feed dynamically.
+    local rss
+    rss="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 20 "$base/blog/rss.xml" 2>/dev/null || true)"
+    case "$rss" in
+        "308 $base/rss.xml"*) ;;
+        *)
+            echo "ERROR: $base/blog/rss.xml answered '$rss' (expected a 308 bounce to $base/rss.xml)." >&2
+            failed=1
+            ;;
+    esac
+    local rss_type
+    rss_type="$(curl -sS -o /dev/null -w '%{content_type}' --max-time 25 "$base/rss.xml" 2>/dev/null || true)"
+    case "$rss_type" in
+        application/rss+xml*) ;;
+        *)
+            echo "ERROR: $base/rss.xml served content-type '$rss_type' (expected application/rss+xml)." >&2
+            failed=1
+            ;;
+    esac
+    if [ "$failed" != "0" ]; then
+        echo "       The split Workers are not serving their routes correctly. To roll back" >&2
+        echo "       to the single-Worker layout: npx wrangler delete --name forkmesh-www" >&2
+        echo "       and --name forkmesh-world (their routes disappear with them)." >&2
+        return 1
+    fi
+    echo "Verified: forkmesh-www serves the marketing documents, forkmesh-world serves the World, and the relay keeps /, auth, RSS, dashboard and APIs."
+}
+
+# Cloudflare's Worker script-settings endpoint — the one `secret bulk` PATCHes —
+# intermittently answers HTTP 500 with "[code: 10013] An unknown error has
+# occurred" after ~30 seconds. Seen live: the GET of that same settings object
+# returned 200 milliseconds earlier and the byte-identical payload published
+# fine on the next run, so this is a server-side blip, not a rejected payload.
+# Wrangler never retries a PATCH, so recognise the transient shapes here and let
+# push_secrets re-send the WHOLE atomic update (still one Worker version per
+# successful attempt — never a per-secret `secret put` fan-out).
+_secret_bulk_error_is_transient() {
+    case "$1" in
+        *"code: 10013"*|\
+        *"Internal Server Error"*|*"Bad Gateway"*|*"Service Unavailable"*|\
+        *"Gateway Time-out"*|*"Gateway Timeout"*|\
+        *"fetch failed"*|*"socket hang up"*|*"ECONNRESET"*|*"ETIMEDOUT"*|\
+        *"EAI_AGAIN"*|*"Client network socket disconnected"*)
+            return 0
+            ;;
+    esac
+    return 1
 }
 
 # Push every KEY=VALUE in .env.production to the deployed Worker as a SECRET.
@@ -752,9 +961,51 @@ with open(sys.argv[1], "w", encoding="utf-8") as stream:
     json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
 PYEOF
         [ -s "$secret_bulk_file" ] || exit 1
-        pywrangler secret bulk --env "" "$secret_bulk_file"
+        # SPLIT_SECRET_WORKER retargets the same bulk update at a split
+        # Worker (forkmesh-api) that shares this application and its secret
+        # set; unset, it addresses the relay from wrangler.toml as always.
+        #
+        # Re-send the identical payload when Cloudflare returns one of the
+        # transient failures above: the update is a single atomic PATCH, so a
+        # retry is idempotent and still publishes exactly one Worker version.
+        # A payload/auth/permission rejection is NOT retried — it would fail
+        # the same way four times and only delay the real error.
+        attempts="${FORKMESH_SECRET_BULK_ATTEMPTS:-4}"
+        backoff="${FORKMESH_SECRET_BULK_BACKOFF:-5}"
+        attempt=1
+        while :; do
+            if bulk_output="$(pywrangler secret bulk --env "" ${SPLIT_SECRET_WORKER:+--name "$SPLIT_SECRET_WORKER"} "$secret_bulk_file" 2>&1)"; then
+                if [ -n "$bulk_output" ]; then
+                    printf '%s\n' "$bulk_output"
+                fi
+                if [ "$attempt" -gt 1 ]; then
+                    echo "Bulk secret update succeeded on attempt $attempt/$attempts."
+                fi
+                exit 0
+            fi
+            if [ -n "$bulk_output" ]; then
+                printf '%s\n' "$bulk_output" >&2
+            fi
+            if ! _secret_bulk_error_is_transient "$bulk_output"; then
+                exit 1
+            fi
+            if [ "$attempt" -ge "$attempts" ]; then
+                echo "  hit a transient Cloudflare API error on all $attempts attempts." >&2
+                exit 1
+            fi
+            echo "  attempt $attempt/$attempts hit a transient Cloudflare API error (the" >&2
+            echo "  Worker settings endpoint 5xx'd); re-sending the same bulk update in ${backoff}s..." >&2
+            sleep "$backoff"
+            attempt=$((attempt + 1))
+            backoff=$((backoff * 3))
+        done
     ); then
         echo "ERROR: bulk secret update failed; no per-secret retry was attempted." >&2
+        echo "       (Per-secret 'secret put' is deliberately never used: it publishes one" >&2
+        echo "       Worker version per secret, restarting Durable Objects mid-deploy.)" >&2
+        echo "       If the error above is Cloudflare's '[code: 10013] An unknown error has" >&2
+        echo "       occurred', the settings endpoint is having a bad minute and every" >&2
+        echo "       secret still holds its previous value — re-run './deploy.sh secrets'." >&2
         return 1
     fi
     echo "Pushed $count secret(s) from $ENV_FILE in one bulk update."
@@ -762,7 +1013,7 @@ PYEOF
     # Verify: confirm each pushed name actually exists on the Worker now, so a
     # silently-failed `secret bulk` becomes a loud error instead of a mystery.
     local listed
-    if listed="$(pywrangler secret list --env "" 2>/dev/null)"; then
+    if listed="$(pywrangler secret list --env "" ${SPLIT_SECRET_WORKER:+--name "$SPLIT_SECRET_WORKER"} 2>/dev/null)"; then
         local missing=()
         local k
         for k in ${pushed[@]+"${pushed[@]}"}; do
@@ -1089,10 +1340,18 @@ case "${1:-deploy}" in
         # Prove the public origin is actually serving what we just uploaded. A
         # failed/no-op/wrong-account deploy now aborts here instead of printing a
         # phantom success.
+        # The split Workers deploy immediately after the relay, BEFORE the
+        # build-stamp and public-asset checks below: /api/version is owned by
+        # forkmesh-api (so the rev poll must observe this build's api deploy)
+        # and /world/*.js by forkmesh-world (so the byte-for-byte World
+        # freshness check must observe the just-staged copy). The relay's own
+        # build stamp is proven via the relay-routed /health afterwards.
+        deploy_split_site_workers
         verify_deploy "$BUILD_REV"
         verify_public_assets
         retire_legacy_marketing_worker
         verify_marketing_routes
+        verify_split_site_workers "$BUILD_REV"
         if [ "$DEPLOY_SIGNAL_ACTIVE" = "1" ]; then
             signal_world_deploy ready "$BUILD_REV"
             DEPLOY_SIGNAL_ACTIVE=0
@@ -1129,8 +1388,16 @@ case "${1:-deploy}" in
     secrets)
         require_cloudflare_account
         require_cloudflare_auth
-        # Re-push just the .env.production secrets, no full redeploy.
+        # Re-push just the .env.production secrets, no full redeploy — to
+        # BOTH Python Workers. /api/* is served by forkmesh-api, so a
+        # relay-only push leaves every API route authorizing against stale
+        # credentials (2026-08-06: the SSH gateway kept reading the retired
+        # mirror2 allowlist after a relay-only secrets push).
         push_secrets
+        if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" = "1" ] && \
+           split_site_workers_enabled; then
+            SPLIT_SECRET_WORKER=forkmesh-api push_secrets
+        fi
         ;;
     dev)
         build_dashboard_assets

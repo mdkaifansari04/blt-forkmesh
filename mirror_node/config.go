@@ -33,7 +33,7 @@ type Config struct {
 	IntakeProgram      string              `json:"intakeProgram"`
 	IntakeOwner        string              `json:"intakeOwner"`
 	IntakeRepository   string              `json:"intakeRepository"`
-	IntakePollInterval Duration            `json:"intakePollInterval"`
+	IntakePollInterval Duration            `json:"intakePollInterval"` // deprecated: ignored, intake is push-driven
 	IntakeIdleGrace    Duration            `json:"intakeIdleGrace"`
 	DisableCatalog     bool                `json:"disableCatalog"`
 	DisableCloudflared bool                `json:"disableCloudflared"`
@@ -136,14 +136,16 @@ func (c *Config) validate() error {
 			!repositoryPattern.MatchString(c.IntakeRepository) || c.CatalogURL == "" {
 			return errors.New("intakeProgram, intakeOwner, intakeRepository, and catalogUrl must be valid")
 		}
-		if c.IntakePollInterval.Duration == 0 {
-			c.IntakePollInterval.Duration = 5 * time.Second
-		}
-		if c.IntakePollInterval.Duration < time.Second || c.IntakePollInterval.Duration > 5*time.Minute {
-			return errors.New("intakePollInterval must be between 1s and 5m")
-		}
+		// intakePollInterval is accepted but ignored: intake is push-driven
+		// over the relay's node event WebSocket and never polls /pending.
+		// The field survives only so deployed configs that still set it
+		// keep loading (decoding rejects unknown fields).
+		// idleGrace now bounds how long the worker keeps running after the
+		// LAST push event (each new event extends the window). The old 20s
+		// default assumed a live queue-drained signal; without one the
+		// window must comfortably cover a full inbox drain.
 		if c.IntakeIdleGrace.Duration == 0 {
-			c.IntakeIdleGrace.Duration = 20 * time.Second
+			c.IntakeIdleGrace.Duration = 2 * time.Minute
 		}
 		if c.IntakeIdleGrace.Duration < 5*time.Second || c.IntakeIdleGrace.Duration > 10*time.Minute {
 			return errors.New("intakeIdleGrace must be between 5s and 10m")

@@ -1,24 +1,39 @@
 name = "forkmesh-relay"
-main = "src/entry.py"
+main = "src_build/entry.py"
 # workers-runtime-sdk is supplied by the Python Workers runtime.  Do not add a
 # made-up flag to suppress it: Cloudflare rejects unknown compatibility flags
 # before it can validate a new Worker version.
 compatibility_flags = [ "python_workers" ]
 # Keep the Python/Pyodide runtime on Cloudflare's current snapshot. The older
 # 2026-06-14 snapshot could re-enter one scheduled wrapper task while another
-# request wrapper was executing ("Cannot enter into task ...").
+# request wrapper was executing ("Cannot enter into task ..."); the 2026-07-23
+# snapshot still did the same between concurrent REQUEST wrappers (2026-08-05/06:
+# poisoned isolates answered 30-90% of traffic with 1101 until recycled — issue
+# #555). The 2026-08-05 snapshot cut is UNDEPLOYABLE: upload validation dies in
+# Pyodide's own bootstrap ("Dynamic require of \"fs\" is not supported", code
+# 10021) on both wrangler 4.42.1 and 4.119.0 — that is why 1eb2027b9 was
+# reverted within minutes. 2026-08-04 deliberately sits one day earlier so we
+# ride the newest snapshot cut that still boots; retry 2026-08-05+ once
+# Cloudflare fixes the bootstrap regression.
 compatibility_date = "2026-07-23"
 
-# Runs automatically before every deploy: applies the D1 schema (idempotent).
+# Runs automatically before every deploy: applies the D1 schema (idempotent)
+# and stages the relay's slimmed asset copy (public/ minus the trees owned by
+# the forkmesh-www/-world split Workers — see docs/worker-split.md).
 [build]
-command = "python3 tools/build_dashboard_assets.py && python3 tools/build_worker_footprint.py && ./migrate.sh"
+command = "python3 tools/build_dashboard_assets.py && python3 tools/build_worker_footprint.py && python3 tools/build_worker_python.py && python3 tools/build_split_assets.py relay && ./migrate.sh"
 
 
 [triggers]
 crons = ["* * * * *"]
 
+# public/ stays the source of truth for every Worker's assets; the relay
+# ships the staged public_relay/ copy, which drops only what the split
+# Workers own outright (/world's module graph, /docs, and the marketing
+# documents behind forkmesh-www's routes). Everything a relay-served route
+# or an env.ASSETS read touches is still here.
 [assets]
-directory = "./public"
+directory = "./public_relay"
 binding = "ASSETS"
 html_handling = "none"
 not_found_handling = "404-page"

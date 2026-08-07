@@ -269,6 +269,39 @@ int main(int argc, char **argv)
               QStringList{QStringLiteral("jett")},
           "invalid direct mirror owner aliases fail closed");
 
+    // A relay-only node leaves the direct gateway settings empty on purpose:
+    // background refreshes ask this before rebuilding, so "not configured"
+    // has to be reported as such instead of looking like a broken endpoint.
+    const QString routerKey = base64Url(QByteArray(32, 'R'));
+    check(forkmesh::control::isValidMirrorRouterPublicKey(routerKey),
+          "a 32-byte base64url router key is accepted");
+    check(!forkmesh::control::isValidMirrorRouterPublicKey(
+              base64Url(QByteArray(31, 'R'))),
+          "a short router key is rejected");
+    check(!forkmesh::control::isValidMirrorRouterPublicKey(
+              QString(routerKey).replace(0, 1, QLatin1Char('+'))),
+          "a non-base64url router key is rejected");
+    check(forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("mirror1"),
+              QStringLiteral("https://mirror1.example.com"), routerKey),
+          "a complete direct gateway configuration is recognized");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QString(), QString(), QString()),
+          "a relay-only node reports no direct gateway configuration");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("mirror1"), QString(), routerKey),
+          "an unusable mirror hostname leaves the gateway unconfigured");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("-mirror1"),
+              QStringLiteral("https://mirror1.example.com"), routerKey),
+          "a node name that is not a DNS label leaves the gateway "
+          "unconfigured");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("mirror1"),
+              QStringLiteral("https://mirror1.example.com"),
+              QStringLiteral("not-a-router-key")),
+          "a malformed router key leaves the gateway unconfigured");
+
     const QString publicKey = base64Url(QByteArray(32, 'K'));
     const QByteArray payload =
         QJsonDocument(QJsonObject{
@@ -567,7 +600,7 @@ int main(int argc, char **argv)
                                QStringLiteral("wrangler@4.42.1"),
                                QStringLiteral("tail"),
                                QStringLiteral("--format"),
-                               QStringLiteral("pretty")}),
+                               QStringLiteral("json")}),
           "Cloudflare tail uses a direct pinned Wrangler invocation");
     check(!tailCommand.arguments.join(QChar(u'\0')).contains(tailToken) &&
               tailCommand.environment.value(
@@ -580,6 +613,161 @@ int main(int argc, char **argv)
               tailToken, QStringLiteral("invalid account!"),
               QStringLiteral("/usr/bin/npx")).program.isEmpty(),
           "Cloudflare tail rejects malformed account IDs");
+
+    // --- Tail rendering (adhoc #1615): the viewer parses Wrangler's JSON so it
+    // can show the user agent behind each hit and tell a failure from a hit.
+    const auto okTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral(
+            "{\"outcome\":\"ok\",\"eventTimestamp\":1000,"
+            "\"event\":{\"request\":{\"method\":\"GET\","
+            "\"url\":\"https://forkmesh.com/api/status\","
+            "\"headers\":{\"User-Agent\":\"Mozilla/5.0 ForkMeshBot\"}},"
+            "\"response\":{\"status\":200}},"
+            "\"logs\":[{\"level\":\"log\",\"message\":[\"served\",7]}],"
+            "\"exceptions\":[]}"));
+    check(okTail.parsed && !okTail.isError &&
+              okTail.userAgent == QStringLiteral("Mozilla/5.0 ForkMeshBot") &&
+              okTail.method == QStringLiteral("GET") &&
+              okTail.status == 200 &&
+              okTail.messages == QStringList({QStringLiteral("served 7")}),
+          "a healthy Worker request decodes with its user agent");
+    check(okTail.summary.contains(QStringLiteral("UA Mozilla/5.0 ForkMeshBot")) &&
+              okTail.summary.contains(QStringLiteral("GET")) &&
+              okTail.summary.contains(QStringLiteral("200")) &&
+              okTail.summary.contains(
+                  QStringLiteral("https://forkmesh.com/api/status")),
+          "the rendered tail line carries the agent beside the request");
+
+    const auto exceptionTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral(
+            "{\"outcome\":\"exception\",\"eventTimestamp\":2000,"
+            "\"event\":{\"request\":{\"method\":\"POST\","
+            "\"url\":\"https://forkmesh.com/api/sync\",\"headers\":{}}},"
+            "\"exceptions\":[{\"name\":\"Error\",\"message\":\"boom\"}],"
+            "\"logs\":[]}"));
+    check(exceptionTail.parsed && exceptionTail.isError &&
+              exceptionTail.userAgent.isEmpty() &&
+              exceptionTail.summary.contains(QStringLiteral("Error: boom")) &&
+              exceptionTail.summary.contains(QStringLiteral("UA (none)")),
+          "a Worker exception is flagged as an error worth alerting on");
+    check(forkmesh::control::parseCloudflareTailLine(
+              QStringLiteral(
+                  "{\"outcome\":\"ok\",\"event\":{\"request\":{\"method\":"
+                  "\"GET\",\"url\":\"https://forkmesh.com/\",\"headers\":{}},"
+                  "\"response\":{\"status\":503}}}"))
+              .isError,
+          "a 5xx reply is an error even when the outcome reads ok");
+    check(!forkmesh::control::parseCloudflareTailLine(
+               QStringLiteral(
+                   "{\"outcome\":\"canceled\",\"event\":{\"request\":{"
+                   "\"method\":\"GET\",\"url\":\"https://forkmesh.com/\","
+                   "\"headers\":{}},\"response\":{\"status\":200}}}"))
+               .isError,
+          "a client hanging up mid-request is not a Worker failure");
+    check(forkmesh::control::parseCloudflareTailLine(
+              QStringLiteral(
+                  "{\"outcome\":\"ok\",\"event\":{},\"logs\":[{\"level\":"
+                  "\"error\",\"message\":[\"db unreachable\"]}]}"))
+              .isError,
+          "an error-level console log is an error");
+    const auto bannerTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral("  Connected to forkmesh-relay, waiting for logs...  "));
+    check(!bannerTail.parsed && !bannerTail.isError &&
+              bannerTail.summary ==
+                  QStringLiteral("Connected to forkmesh-relay, waiting for "
+                                 "logs..."),
+          "Wrangler's own banner lines pass through untouched");
+    check(!forkmesh::control::parseCloudflareTailLine(
+               QStringLiteral("{\"hello\":\"world\"}")).parsed,
+          "JSON that is not a tail event is not treated as one");
+    check(okTail.summary.startsWith(
+              QStringLiteral("GET https://forkmesh.com/api/status - 200 Ok @")),
+          "the tail line opens in Wrangler's own default shape");
+    const auto unknownJson = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral("{\n    \"hello\": \"world\",\n    \"n\": 1\n}"));
+    check(!unknownJson.parsed &&
+              !unknownJson.summary.contains(QLatin1Char('\n')) &&
+              unknownJson.summary == QStringLiteral("{ \"hello\": \"world\", "
+                                                    "\"n\": 1 }"),
+          "JSON nobody understands is still collapsed to a single log line");
+
+    // --- Record framing (adhoc #1623): Wrangler's --format json is NOT NDJSON.
+    // It pretty-prints each event over many lines, so the stream is cut on brace
+    // balance, not on newlines — the per-line split showed the raw expanded JSON
+    // and never decoded an error.
+    QByteArray tailStream =
+        "Connected to forkmesh-relay, waiting for logs...\n"
+        "{\n"
+        "    \"outcome\": \"ok\",\n"
+        "    \"eventTimestamp\": 1000,\n"
+        "    \"event\": {\n"
+        "        \"request\": {\n"
+        "            \"method\": \"GET\",\n"
+        "            \"url\": \"https://forkmesh.com/a{b}\",\n"
+        "            \"headers\": {\n"
+        "                \"user-agent\": \"Mozilla/5.0 {curly}\"\n"
+        "            }\n"
+        "        },\n"
+        "        \"response\": {\n"
+        "            \"status\": 200\n"
+        "        }\n"
+        "    },\n"
+        "    \"logs\": [],\n"
+        "    \"exceptions\": []\n"
+        "}\n";
+    QStringList tailRecords =
+        forkmesh::control::takeCloudflareTailRecords(&tailStream);
+    check(tailRecords.size() == 2 && tailStream.isEmpty() &&
+              tailRecords.constFirst() ==
+                  QStringLiteral("Connected to forkmesh-relay, waiting for "
+                                 "logs...") &&
+              tailRecords.constLast().startsWith(QLatin1Char('{')) &&
+              tailRecords.constLast().endsWith(QLatin1Char('}')),
+          "a pretty-printed event is framed as one record beside plain lines");
+    const auto prettyTail =
+        forkmesh::control::parseCloudflareTailLine(tailRecords.constLast());
+    check(prettyTail.parsed && !prettyTail.isError && prettyTail.status == 200 &&
+              prettyTail.userAgent == QStringLiteral("Mozilla/5.0 {curly}") &&
+              prettyTail.summary.contains(
+                  QStringLiteral("UA Mozilla/5.0 {curly}")),
+          "the framed record decodes, braces inside strings and all");
+
+    // A read can land anywhere: the half-arrived record waits in the buffer
+    // rather than reaching the parser as fragments.
+    QByteArray split = "{\n    \"outcome\": \"exce";
+    check(forkmesh::control::takeCloudflareTailRecords(&split).isEmpty() &&
+              !split.isEmpty(),
+          "an event split across reads is held back until it closes");
+    split += "ption\",\n    \"event\": {},\n    \"exceptions\": [\n"
+             "        {\n            \"name\": \"TypeError\",\n"
+             "            \"message\": \"boom\"\n        }\n    ]\n}\n"
+             "{\"outcome\":\"ok\",\"event\":{}}\n";
+    const QStringList resumed =
+        forkmesh::control::takeCloudflareTailRecords(&split);
+    check(resumed.size() == 2 && split.isEmpty() &&
+              forkmesh::control::parseCloudflareTailLine(resumed.constFirst())
+                  .isError &&
+              forkmesh::control::parseCloudflareTailLine(resumed.constFirst())
+                  .summary.contains(QStringLiteral("TypeError: boom")),
+          "the rest of a split event completes it, compact events still work");
+    // stderr is merged into this stream, so a warning carrying a stray brace
+    // must not swallow the events behind it.
+    QByteArray interleaved =
+        "{ WARNING: unbalanced {\n"
+        "{\"outcome\":\"ok\",\"event\":{\"request\":{\"method\":\"GET\","
+        "\"url\":\"https://forkmesh.com/\",\"headers\":{}}}}\n";
+    const QStringList resynced =
+        forkmesh::control::takeCloudflareTailRecords(&interleaved);
+    check(resynced.size() == 2 && interleaved.isEmpty() &&
+              resynced.constFirst() == QStringLiteral("{ WARNING: unbalanced {") &&
+              forkmesh::control::parseCloudflareTailLine(resynced.constLast())
+                  .parsed,
+          "a stray brace on stderr cannot swallow the events behind it");
+    QByteArray runaway(3 * 1024 * 1024, '{');
+    runaway += '\n';
+    check(forkmesh::control::takeCloudflareTailRecords(&runaway).isEmpty() &&
+              runaway.isEmpty(),
+          "a record that never closes cannot grow the buffer without bound");
 
     const QMap<QString, QString> storedVariables = {
         {QStringLiteral("cloudflare_api_token"), QStringLiteral("  cf-stored  ")},
@@ -754,6 +942,49 @@ int main(int argc, char **argv)
               identityDir.filePath(QStringLiteral("missing_key")))
               .program.isEmpty(),
           "a missing managed identity file fails closed");
+
+    // Shared fleet key: every host now authorizes one ForkMesh key, so the
+    // controller keeps a single private half beside its known_hosts store and
+    // hands it to every host operation. A device that predates the switch keeps
+    // using the per-provider key file the mirrors already trust.
+    const QString sharedDir = forkmesh::control::sharedHostKeyDirectory();
+    const QString sharedKey =
+        QDir(sharedDir).filePath(QStringLiteral("forkmesh_shared_ed25519"));
+    const QString legacyKey =
+        QDir(sharedDir).filePath(QStringLiteral("vultr_mirror_ed25519"));
+    QFile::remove(sharedKey);
+    QFile::remove(legacyKey);
+    check(!sharedDir.isEmpty() && QFileInfo(sharedDir).isDir() &&
+              forkmesh::control::sharedHostKeyPath() == sharedKey &&
+              forkmesh::control::existingSharedHostIdentityFile().isEmpty(),
+          "the shared host key is named before it exists and is not offered "
+          "until it does");
+    const auto writeKeyFixture = [](const QString &path) {
+        QFile key(path);
+        return key.open(QIODevice::WriteOnly) &&
+               key.write("shared-key-material") > 0;
+    };
+    check(writeKeyFixture(legacyKey) &&
+              forkmesh::control::sharedHostKeyPath() == legacyKey &&
+              forkmesh::control::existingSharedHostIdentityFile() == legacyKey,
+          "a pre-existing per-provider key is adopted as the shared fleet key");
+    check(writeKeyFixture(sharedKey) &&
+              forkmesh::control::sharedHostKeyPath() == sharedKey &&
+              forkmesh::control::existingSharedHostIdentityFile() == sharedKey,
+          "the shared key wins once it exists");
+    const auto sharedCommand = forkmesh::control::buildHostSshCommand(
+        QStringLiteral("203.0.113.10"), QStringLiteral("root"),
+        QStringLiteral("session-only"), QStringLiteral("true"), &actionsError,
+        forkmesh::control::existingSharedHostIdentityFile());
+    check(actionsError.isEmpty() &&
+              sharedCommand.program == QStringLiteral("sshpass") &&
+              sharedCommand.arguments.contains(sharedKey) &&
+              sharedCommand.arguments.contains(
+                  QStringLiteral("PreferredAuthentications=publickey,password")),
+          "a host with both the shared key and a session password tries the "
+          "key first and keeps the password as the fallback");
+    QFile::remove(sharedKey);
+    QFile::remove(legacyKey);
 
     // Provider sign-in terminal (adhoc #422): the agent-CLI installer copies no
     // tokens, so ForkMesh opens a real interactive shell on the mirror right
@@ -1202,6 +1433,85 @@ int main(int argc, char **argv)
                    .isEmpty(),
           "a destroy call is refused without a plausible API key and instance "
           "id");
+
+    // --- Desired healthy Vultr mirror fleet --------------------------------
+    const auto managedHost = [](const QString &name, const QString &id) {
+        return QJsonObject{
+            {QStringLiteral("name"), name},
+            {QStringLiteral("provider"), QStringLiteral("Vultr")},
+            {QStringLiteral("instanceId"), id},
+        };
+    };
+    const auto healthyMirror = [](const QString &name) {
+        return QJsonObject{
+            {QStringLiteral("node"), name},
+            {QStringLiteral("status"), QStringLiteral("online")},
+            {QStringLiteral("integrity"), QStringLiteral("ok")},
+            {QStringLiteral("lastSync"), 123456},
+            {QStringLiteral("cloneAvailable"), true},
+            {QStringLiteral("endpointHealthy"), true},
+            {QStringLiteral("endpointFresh"), true},
+        };
+    };
+    const QString destroyId2 =
+        QStringLiteral("2f2e3d4c-5b6a-4798-8899-aabbccddeeff");
+    const QString destroyId3 =
+        QStringLiteral("3f2e3d4c-5b6a-4798-8899-aabbccddeeff");
+    const QJsonArray managedFleet{
+        managedHost(QStringLiteral("mirror1"), destroyId),
+        managedHost(QStringLiteral("mirror2"), destroyId2),
+        managedHost(QStringLiteral("mirror3"), destroyId3),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("manual-host")},
+                    {QStringLiteral("provider"), QStringLiteral("manual")}},
+    };
+    const QJsonArray twoHealthy{
+        healthyMirror(QStringLiteral("MIRROR1")),
+        healthyMirror(QStringLiteral("mirror2")),
+    };
+    const auto steadyPlan =
+        forkmesh::control::planMirrorFleetReconciliation(
+            3, managedFleet,
+            QJsonArray{healthyMirror(QStringLiteral("mirror1")),
+                       healthyMirror(QStringLiteral("mirror2")),
+                       healthyMirror(QStringLiteral("mirror3"))});
+    check(steadyPlan.action == forkmesh::control::MirrorFleetAction::None &&
+              steadyPlan.managedCount == 3 && steadyPlan.healthyCount == 3,
+          "a healthy managed Vultr fleet at its target is left unchanged");
+
+    const auto replacementPlan =
+        forkmesh::control::planMirrorFleetReconciliation(
+            3, managedFleet, twoHealthy);
+    check(replacementPlan.action ==
+                  forkmesh::control::MirrorFleetAction::Create &&
+              replacementPlan.managedCount == 3 &&
+              replacementPlan.healthyCount == 2,
+          "an unhealthy managed mirror at the target requests one replacement");
+
+    const auto shrinkPlan =
+        forkmesh::control::planMirrorFleetReconciliation(
+            2, managedFleet, twoHealthy);
+    check(shrinkPlan.action ==
+                  forkmesh::control::MirrorFleetAction::Destroy &&
+              shrinkPlan.nodeName == QStringLiteral("mirror3"),
+          "scale-down destroys the newest unhealthy managed mirror first");
+
+    const auto shrinkHealthyPlan =
+        forkmesh::control::planMirrorFleetReconciliation(
+            1,
+            QJsonArray{managedHost(QStringLiteral("mirror1"), destroyId),
+                       managedHost(QStringLiteral("mirror2"), destroyId2)},
+            twoHealthy);
+    check(shrinkHealthyPlan.action ==
+                  forkmesh::control::MirrorFleetAction::Destroy &&
+              shrinkHealthyPlan.nodeName == QStringLiteral("mirror2"),
+          "lowering a fully healthy fleet removes its newest excess mirror");
+
+    QJsonObject staleMirror = healthyMirror(QStringLiteral("mirror1"));
+    staleMirror.insert(QStringLiteral("endpointFresh"), false);
+    check(forkmesh::control::mirrorCatalogEntryIsHealthy(
+              healthyMirror(QStringLiteral("mirror1"))) &&
+              !forkmesh::control::mirrorCatalogEntryIsHealthy(staleMirror),
+          "fleet health requires the complete public traffic health contract");
 
     // --- Installing a fresh mirror without a published release (adhoc #408) -
     check(forkmesh::control::localBinaryRunsOnVultrMirror(

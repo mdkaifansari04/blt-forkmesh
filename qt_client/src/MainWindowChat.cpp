@@ -13,6 +13,7 @@
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 #include "LogTimelineChart.h"
+#include "OfficeChannelMirror.h"
 #include "PrivateMirrorStore.h"
 #include "PublicMirrorRuntime.h"
 #include "RepoSecurity.h"
@@ -23,14 +24,18 @@
 #include "WorldSpeechBridge.h"
 
 #include <QBrush>
+#include <QCheckBox>
 #include <QCryptographicHash>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDateTimeEdit>
 #include <QElapsedTimer>
+#include <QFontDatabase>
+#include <QGridLayout>
 #include <QFormLayout>
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
+#include <QHostAddress>
 #include <QInputDialog>
 #include <QNetworkInformation>
 #include <QPlainTextEdit>
@@ -811,14 +816,25 @@ void MainWindow::selectAgentAccount(const QString &provider,
         return;
 
     const bool codex = agentIsCodexProvider(provider);
+    // The "ran out" flags travel with the account too (issue #346 tracks them per
+    // provider). Leaving them behind made the account just switched to inherit
+    // the exhausted one's "usage limit reached" — on the very screen the user is
+    // looking at while switching away from a limit, and on a login with usage to
+    // spare. An account with no flag of its own reads as not exhausted, which is
+    // the truth until its own run reports otherwise.
     const QStringList globals = codex
         ? QStringList{kCodexUsage5hPctSetting, kCodexUsageWeekPctSetting,
                       kCodexUsage5hResetSetting, kCodexUsageWeekResetSetting,
-                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting}
+                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting,
+                      kCodexUsage5hExhaustedSetting,
+                      kCodexUsageWeekExhaustedSetting}
         : QStringList{kClaudeUsage5hPctSetting, kClaudeUsageWeekPctSetting,
                       kClaudeUsageFablePctSetting, kClaudeUsage5hResetSetting,
                       kClaudeUsageWeekResetSetting, kClaudeUsageFableResetSetting,
-                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting};
+                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting,
+                      kClaudeUsage5hExhaustedSetting,
+                      kClaudeUsageWeekExhaustedSetting,
+                      kClaudeUsageFableExhaustedSetting};
     QSettings settings;
     const QString oldId = activeAgentAccount(provider).id;
     // Preserve the current account's last provider reading before replacing the
@@ -839,6 +855,10 @@ void MainWindow::selectAgentAccount(const QString &provider,
         else
             settings.remove(global);
     }
+    // Re-arm the "your limit has refilled" reminders against the account now
+    // selected: the ones standing were armed from the previous account's
+    // exhausted windows, which this login neither shares nor waits on.
+    restoreUsageLimitReminders();
 
     if (codex) {
         refreshCodexUsageRemaining();
@@ -1025,17 +1045,36 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
     }
 
     const QString cwd = repoGitDir().isEmpty() ? QDir::homePath() : repoGitDir();
+    QMap<QString, QString> accountEnv;
+    const AgentAccountProfile account = activeAgentAccount(provider);
+    if (!account.builtIn)
+        accountEnv.insert(codex ? QStringLiteral("CODEX_HOME")
+                                : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                          account.configDir);
+    launchSystemTerminal(program, commandArgs, cwd, accountEnv);
+}
+
+// Open the host's own terminal emulator on `program args` in `cwd`, with the
+// caller's environment overrides (a provider account's CLAUDE_CONFIG_DIR /
+// CODEX_HOME) applied on top of a copy of ForkMesh's environment that has every
+// provider API key stripped: a hand-off terminal must authenticate as the
+// account the user picked, not as whatever key happened to be exported into the
+// app. Split out of launchAgentSystemTerminal so the agent detail's "Pop out"
+// hand-off (adhoc #1584) reaches the same emulator lookup rather than repeating
+// the per-platform table. Reports its own failures and returns false.
+bool MainWindow::launchSystemTerminal(const QString &program,
+                                      const QStringList &commandArgs,
+                                      const QString &cwd,
+                                      const QMap<QString, QString> &extraEnv)
+{
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     environment.remove(QStringLiteral("ANTHROPIC_API_KEY"));
     environment.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
     environment.remove(QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN"));
     environment.remove(QStringLiteral("OPENAI_API_KEY"));
     environment.remove(QStringLiteral("CODEX_API_KEY"));
-    const AgentAccountProfile account = activeAgentAccount(provider);
-    if (!account.builtIn)
-        environment.insert(codex ? QStringLiteral("CODEX_HOME")
-                                 : QStringLiteral("CLAUDE_CONFIG_DIR"),
-                           account.configDir);
+    for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+        environment.insert(it.key(), it.value());
 
     QString terminalProgram;
     QStringList terminalArgs;
@@ -1054,11 +1093,12 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
         return QLatin1Char('\'') + value + QLatin1Char('\'');
     };
     QString command = QStringLiteral("cd %1 && ").arg(shellQuote(cwd));
-    if (!account.builtIn) {
-        command += QStringLiteral("env %1=%2 ")
-                       .arg(codex ? QStringLiteral("CODEX_HOME")
-                                  : QStringLiteral("CLAUDE_CONFIG_DIR"),
-                            shellQuote(account.configDir));
+    // osascript hands the command to a fresh login shell, so the environment
+    // built above cannot reach it — the overrides ride along as an `env` prefix.
+    if (!extraEnv.isEmpty()) {
+        command += QStringLiteral("env ");
+        for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+            command += QStringLiteral("%1=%2 ").arg(it.key(), shellQuote(it.value()));
     }
     command += shellQuote(program);
     for (const QString &argument : commandArgs)
@@ -1087,7 +1127,7 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
 #endif
     if (terminalProgram.isEmpty()) {
         flashMessage(QStringLiteral("No supported system terminal was found."), true);
-        return;
+        return false;
     }
     QProcess launcher;
     launcher.setProgram(terminalProgram);
@@ -1096,8 +1136,9 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
     launcher.setProcessEnvironment(environment);
     if (!launcher.startDetached()) {
         flashMessage(QStringLiteral("Could not launch the system terminal."), true);
-        return;
+        return false;
     }
+    return true;
 }
 
 // -------------------------------------------------------------- server rail
@@ -1454,7 +1495,7 @@ QWidget *MainWindow::buildChatPage()
     for (int index = 3; index <= 8; ++index)
         addDeferredSection();
     m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
-    for (int index = 10; index <= 17; ++index)
+    for (int index = 10; index <= 18; ++index)
         addDeferredSection();
     logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
@@ -1493,7 +1534,12 @@ QWidget *MainWindow::buildChatPage()
     m_globalOverlayHost = content;
     logDock->setParent(content);
     content->installEventFilter(this);
-    QTimer::singleShot(0, this, &MainWindow::positionGlobalFooterOverlays);
+    // The overlay host has to exist before a persisted free/popped-out placement
+    // can be restored onto it, so both happen on the first event-loop turn.
+    QTimer::singleShot(0, this, [this] {
+        loadPromptOverlayPlacement();
+        positionGlobalFooterOverlays();
+    });
     layout->addLayout(bodyLayout, 1);
 
     // One persistent VS Code-style rail owns app navigation. It begins below
@@ -1520,7 +1566,8 @@ QWidget *MainWindow::buildChatPage()
     // the bottom utility group, Tasks directly above Pings (adhoc #97).
     for (QPushButton *button :
          {m_agentsNavButton, m_reposNavButton, m_chatButton,
-          m_controlNodeNavButton, m_networkNavButton, m_usersNavButton})
+          m_controlNodeNavButton, m_networkNavButton, m_usersNavButton,
+          m_filesNavButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
     // Repo is redundant with the contextual Code entry. Keep the hidden button
     // as section 0's QButtonGroup state carrier for programmatic navigation.
@@ -1532,9 +1579,11 @@ QWidget *MainWindow::buildChatPage()
     // destination is reached through the third state of the bottom-left log
     // overlay, so it no longer consumes a second navigation entry.
     // directly above Pings (adhoc #97).
+    // Resize left the rail for the debug bar's right-hand tool cluster, beside
+    // the rebuild+restart button it belongs with (see buildStatusBar).
     for (QPushButton *button :
          {m_settingsNavButton, m_navScreenshotButton,
-          m_navResizeButton, m_notesNavButton, m_tasksNavButton,
+          m_notesNavButton, m_tasksNavButton,
           m_notificationButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
 
@@ -1712,19 +1761,155 @@ QWidget *MainWindow::buildStatusBar()
         debugRow->addWidget(m_logActivityLights, 0, Qt::AlignVCenter);
     debugRow->addStretch(1);
     debugScroll->setWidget(debugContent);
-    debugBarLayout->addWidget(debugScroll);
+    debugBarLayout->addWidget(debugScroll, 1);
+
+    // Window/dev tools live at the debug bar's right edge, outside the scroll
+    // area so they stay pinned to the window edge instead of scrolling away with
+    // the category lights. Rebuild+restart came down from the window-chrome line
+    // and Resize came out of the navigation rail; both are the rail's own
+    // icon-over-caption item, so each keeps its small word under its icon.
+    auto *debugTools = new QWidget;
+    debugTools->setObjectName(QStringLiteral("debugBarTools"));
+    auto *debugToolsRow = new QHBoxLayout(debugTools);
+    debugToolsRow->setContentsMargins(4, 2, 8, 2);
+    debugToolsRow->setSpacing(2);
+    auto *toolsSeparator = new QFrame;
+    toolsSeparator->setObjectName(QStringLiteral("debugBarSeparator"));
+    toolsSeparator->setFrameShape(QFrame::VLine);
+    toolsSeparator->setFixedHeight(32);
+    debugToolsRow->addWidget(toolsSeparator, 0, Qt::AlignVCenter);
+
+    // The relay's live tail is a section of this strip now (adhoc #1559) rather
+    // than a button on the Log page: it sits beside the Worker status dots it
+    // explains, and one click opens the full viewer.
+    auto *cloudflareButton = new ActivityRailButton(QStringLiteral("cloud"),
+                                                    QStringLiteral("Cloud"));
+    cloudflareButton->setObjectName(
+        QStringLiteral("cloudflareWorkerLogsButton"));
+    cloudflareButton->setCheckable(false);
+    cloudflareButton->setCursor(Qt::PointingHandCursor);
+    cloudflareButton->setIconSize(QSize(kRailIconPx, kRailIconPx));
+    cloudflareButton->setToolTip(
+        QStringLiteral("Open the deployed Cloudflare Worker's live logs in a "
+                       "window of their own, with its errors charted over time"));
+    connect(cloudflareButton, &QPushButton::clicked, this,
+            &MainWindow::showCloudflareWorkerLogs);
+
+    // Beside the button that opens that tail, the checkbox that keeps it
+    // running without one (adhoc #1615): while it is ticked a background
+    // Wrangler tail feeds every Worker error into the log, where it raises the
+    // same red card as any other failure. Session-only on purpose — it holds a
+    // Cloudflare API token open, which is not a state to restore silently at
+    // launch.
+    m_cloudLogMonitorCheck = new QCheckBox(QStringLiteral("Monitor"));
+    m_cloudLogMonitorCheck->setObjectName(QStringLiteral("cloudLogMonitorCheck"));
+    m_cloudLogMonitorCheck->setCursor(Qt::PointingHandCursor);
+    updateCloudLogMonitorTooltip();
+    connect(m_cloudLogMonitorCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setCloudLogMonitorEnabled(on); });
+
+    // Third tool: grow the window by a five-line live tail of the log, so the
+    // newest lines are readable without opening the footer overlay or the full
+    // Log page. Checkable — it is a state, not a one-shot action.
+    auto *logTailButton = new ActivityRailButton(QStringLiteral("list-unordered"),
+                                                 QStringLiteral("Log"));
+    m_debugLogTailButton = logTailButton;
+    logTailButton->setObjectName("topNavButton");
+    logTailButton->setCursor(Qt::PointingHandCursor);
+    logTailButton->setToolTip(
+        QStringLiteral("Expand the window with the last %1 log lines, live")
+            .arg(kDebugLogTailLines));
+    connect(logTailButton, &QPushButton::toggled, this,
+            [this](bool on) { setDebugLogTailVisible(on); });
+
+    debugToolsRow->addWidget(cloudflareButton, 0, Qt::AlignVCenter);
+    debugToolsRow->addWidget(m_cloudLogMonitorCheck, 0, Qt::AlignVCenter);
+    for (QPushButton *tool : {m_navRebuildButton, m_navResizeButton,
+                              static_cast<QPushButton *>(logTailButton)})
+        if (tool)
+            debugToolsRow->addWidget(tool, 0, Qt::AlignVCenter);
+    debugBarLayout->addWidget(debugTools, 0);
     debugBar->hide();
     statusAreaLayout->addWidget(debugBar);
+
+    // The tail itself sits under the debug bar, spanning the window: five lines
+    // of the same stream setFooterUpdateLine() writes, oldest at top. It is
+    // written to even while hidden (five blocks cost nothing), so revealing it
+    // shows real history rather than waiting for the next event.
+    m_debugLogTail = new QPlainTextEdit;
+    m_debugLogTail->setObjectName(QStringLiteral("debugLogTail"));
+    m_debugLogTail->setReadOnly(true);
+    m_debugLogTail->setFrameShape(QFrame::NoFrame);
+    m_debugLogTail->setMaximumBlockCount(kDebugLogTailLines);
+    m_debugLogTail->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_debugLogTail->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_debugLogTail->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_debugLogTail->document()->setDocumentMargin(0);
+    m_debugLogTail->setToolTip(
+        QStringLiteral("Live log tail \xE2\x80\x94 the newest %1 lines")
+            .arg(kDebugLogTailLines));
+    // Theme.h's global QWidget{font-size:14px} beats setFont(), so the tail's
+    // size has to be declared on the widget itself or the five lines would be
+    // drawn taller than the strip measured for them and the oldest would clip.
+    // Colour and background stay in the theme's #debugLogTail rule.
+    QFont tailFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    tailFont.setPixelSize(11);
+    m_debugLogTail->setFont(tailFont);
+    m_debugLogTail->setStyleSheet(
+        QStringLiteral("QPlainTextEdit#debugLogTail{font-family:'%1';"
+                       "font-size:11px;}")
+            .arg(tailFont.family()));
+    m_debugLogTailHeight =
+        kDebugLogTailLines * QFontMetrics(tailFont).lineSpacing() + 8;
+    m_debugLogTail->setFixedHeight(m_debugLogTailHeight);
+    if (!m_networkLog.isEmpty()) {
+        QStringList seed;
+        for (int i = qMax(0, m_networkLog.size() - kDebugLogTailLines);
+             i < m_networkLog.size(); ++i) {
+            const QString clean = m_networkLog.at(i).trimmed();
+            if (!clean.isEmpty())
+                seed << clean;
+        }
+        m_debugLogTail->setPlainText(seed.join(QLatin1Char('\n')));
+    }
+    m_debugLogTail->hide();
+    statusAreaLayout->addWidget(m_debugLogTail);
 
     connect(versionButton, &QPushButton::toggled, this,
             [this, versionButton](bool expanded) {
                 if (m_debugBar)
                     m_debugBar->setVisible(expanded);
+                // Collapsing the debug bar takes its tail with it: the toggle
+                // that owns the tail lives inside the bar, so leaving the five
+                // lines behind would strand them with no way to dismiss them.
+                if (!expanded && m_debugLogTailButton)
+                    m_debugLogTailButton->setChecked(false);
                 versionButton->setToolTip(
                     expanded ? QStringLiteral("Hide debug activity and resource use")
                              : QStringLiteral("Show debug activity and resource use"));
             });
     return statusArea;
+}
+
+// Five lines of live log below the debug bar. The window grows by exactly that
+// strip rather than the workspace losing five lines to it — the tail is an
+// expansion of the window, not a new claim on the page area. A maximized or
+// full-screen window has no room to grow into, so it just shows the strip.
+void MainWindow::setDebugLogTailVisible(bool visible)
+{
+    if (!m_debugLogTail || m_debugLogTailShown == visible)
+        return;
+    m_debugLogTailShown = visible;
+    const int strip = m_debugLogTailHeight;
+    m_debugLogTail->setVisible(visible);
+    if (m_debugLogTailButton && m_debugLogTailButton->isChecked() != visible)
+        m_debugLogTailButton->setChecked(visible);
+    if (visible)
+        if (QScrollBar *bar = m_debugLogTail->verticalScrollBar())
+            bar->setValue(bar->maximum());
+    if (!isMaximized() && !isFullScreen())
+        resize(width(), qMax(minimumHeight(),
+                             height() + (visible ? strip : -strip)));
 }
 
 // kFooterLogSeedLines (MainWindowInternal.h) bounds both the startup seed and
@@ -1759,14 +1944,27 @@ QWidget *MainWindow::buildNetworkLogDock()
     // footer top to bottom the way the log panel beside it does.
     m_issueQuickAdd->document()->setDocumentMargin(2);
     // Four rows + the QSS vertical padding (4px top/bottom) + document margins.
+    // A minimum, not a fixed height (adhoc #1621): resizing the composer taller
+    // should grow the text area itself, not just leave blank space above it.
     const int kQuickAddRowH = m_issueQuickAdd->fontMetrics().lineSpacing();
-    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 4 + 8 + 4);
+    m_issueQuickAdd->setMinimumHeight(kQuickAddRowH * 4 + 8 + 4);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is capped at the same length as the Claude prompt / message input
     // (kMaxTextChars). QPlainTextEdit has no setMaxLength, so the cap is enforced
     // in the textChanged handler below.
     const int kQuickAddMaxChars = 16000;
+    // The follow-up target used to ride a separate "Agent #123" label pinned to
+    // the box's top-right corner, disconnected from the placeholder text it
+    // described. It now folds straight into the placeholder itself (adhoc
+    // #1621) via updateQuickAddTargetAgentLabel(), so "enter prompt to agent
+    // #123" reads as one line in the text area.
+    auto *quickAddInputHost = new QWidget;
+    auto *quickAddInputLayout = new QGridLayout(quickAddInputHost);
+    quickAddInputLayout->setContentsMargins(0, 0, 0, 0);
+    quickAddInputLayout->setSpacing(0);
+    quickAddInputLayout->addWidget(m_issueQuickAdd, 0, 0);
+
     // Ctrl+V with an image on the clipboard attaches it (issue #79).
     m_issueQuickAdd->installEventFilter(this);
     // Restore the prompt history persisted from earlier sessions so Up recalls
@@ -2178,12 +2376,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendButton->setObjectName("quickAddSendIcon");
     m_quickAddSendButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_quickAddSendButton, "paper-airplane", 17);
-    // Fixed width, but stretch vertically (adhoc #115): the two send buttons now
-    // form a full-height column down the right edge of the prompt frame, so the
-    // prompt box is exactly as tall as the stacked add/new buttons.
+    // Fixed width and height (adhoc #1621): the send column sits at the bottom
+    // of the prompt frame's right edge and does not grow when the composer is
+    // resized taller — only the text area to its left should open up.
     m_quickAddSendButton->setFixedWidth(58);
     m_quickAddSendButton->setMinimumHeight(28);
-    m_quickAddSendButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    m_quickAddSendButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     connect(m_quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
     // No corner glyph on the button any more (adhoc #120): the little green "⏎"
@@ -2202,7 +2400,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendToAgentButton->setFixedWidth(58);
     m_quickAddSendToAgentButton->setMinimumHeight(28);
     m_quickAddSendToAgentButton->setSizePolicy(QSizePolicy::Fixed,
-                                               QSizePolicy::Expanding);
+                                               QSizePolicy::Fixed);
     connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
         if (!m_issueQuickAdd)
             return;
@@ -2254,7 +2452,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddGenieButton->setFixedWidth(58);
     m_quickAddGenieButton->setMinimumHeight(24);
     m_quickAddGenieButton->setSizePolicy(QSizePolicy::Fixed,
-                                         QSizePolicy::Expanding);
+                                         QSizePolicy::Fixed);
     m_quickAddGenieButton->setToolTip(
         QString::fromUtf8("Task \xE2\x80\x94 add this prompt to the organization's "
                           "general task list."));
@@ -2269,16 +2467,18 @@ QWidget *MainWindow::buildNetworkLogDock()
     // the text).
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // Three buttons stacked in a full-height column down the prompt's right edge
-    // (adhoc #115): each stretches to take its share of the frame height, so the
-    // text area to their left ends flush against them and the whole prompt box is
-    // just as tall as the task/add/new stack. "task" sits on top (adhoc #42).
+    // Three fixed-height buttons stacked down the prompt's right edge (adhoc
+    // #115, resized adhoc #1621): a leading stretch soaks up any extra height
+    // the resized frame gives this column, so the buttons stay put at the foot
+    // instead of growing — when the composer opens up taller, only the text
+    // area beside them should grow. "task" sits on top (adhoc #42).
     auto *sendColumn = new QVBoxLayout;
     sendColumn->setContentsMargins(0, 0, 0, 0);
     sendColumn->setSpacing(2);
-    sendColumn->addWidget(m_quickAddGenieButton, 1);
-    sendColumn->addWidget(m_quickAddSendToAgentButton, 1);
-    sendColumn->addWidget(m_quickAddSendButton, 1);
+    sendColumn->addStretch(1);
+    sendColumn->addWidget(m_quickAddGenieButton, 0);
+    sendColumn->addWidget(m_quickAddSendToAgentButton, 0);
+    sendColumn->addWidget(m_quickAddSendButton, 0);
     // Enter targets "new" until an agent session is opened above.
     updateQuickAddEnterTarget();
 
@@ -2305,8 +2505,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Bottom bar nested inside the prompt frame, below the text area (adhoc
     // #99): paperclip and mic at the bottom-left (opposite the send icons),
     // the Auto/Create-issue toggles, the Agent box centred by the stretches on
-    // either side, then the character count immediately left of the send icons.
-    // No bottom margin (adhoc #111) so the row sits flush against the frame.
+    // either side, then the usage gauges immediately left of the send icons.
+    // The character count moved up to the top strip (adhoc #1625). No bottom
+    // margin (adhoc #111) so the row sits flush against the frame.
     // Everything is bottom-aligned (adhoc #114): the send column is two stacked
     // 28px icons, so without it Qt centres the shorter controls in that extra
     // height and they float above the send icons instead of sitting level.
@@ -2326,7 +2527,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_quickAddSlashButton, 0, Qt::AlignBottom);
     bottomBar->addWidget(agentBox, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
-    bottomBar->addWidget(m_quickAddCharCount, 0, Qt::AlignBottom);
     // The tiny Codex + Claude usage gauges sit immediately left of the send
     // icons (adhoc #47), moved down from the top bar so the current 5h/weekly
     // utilisation is visible right where prompts are launched.
@@ -2377,16 +2577,96 @@ QWidget *MainWindow::buildNetworkLogDock()
     // a left column, and the genie/add/new buttons form a full-height column down
     // the right edge. The text entry therefore ends flush against the buttons and
     // the whole box is exactly as tall as the stacked buttons.
-    auto *promptLayout = new QHBoxLayout(promptWrapper);
+    // Placement strip along the composer's top edge (adhoc #1536): a corner
+    // grip on the left resizes the panel, the centre pill drags it anywhere over
+    // the workspace, and the right side carries the characters-remaining count,
+    // an explicit reset button and the pop-out button (adhoc #1625). Double-
+    // clicking the strip also puts it back on the footer anchor. It is
+    // deliberately the thinnest row that still gives each control a real
+    // target, so the four prompt lines below it are untouched.
+    auto *promptHandle = new QWidget;
+    m_promptDragHandle = promptHandle;
+    promptHandle->setObjectName(QStringLiteral("promptDragHandle"));
+    promptHandle->setFixedHeight(16);
+    promptHandle->setCursor(Qt::OpenHandCursor);
+    promptHandle->setToolTip(
+        QStringLiteral("Drag to move the prompt; double-click to snap it back "
+                       "to the corner"));
+    promptHandle->installEventFilter(this);
+    auto *promptHandleRow = new QHBoxLayout(promptHandle);
+    promptHandleRow->setContentsMargins(4, 2, 4, 2);
+    promptHandleRow->setSpacing(4);
+
+    // A QFrame, not a bare QWidget: only styled widgets paint a QSS background,
+    // and the grip is nothing but its background.
+    m_promptResizeGrip = new QFrame;
+    m_promptResizeGrip->setObjectName(QStringLiteral("promptResizeGrip"));
+    m_promptResizeGrip->setFixedSize(12, 12);
+    // Top-left corner grip: dragging it up and to the left grows the panel while
+    // its lower-right corner stays put, which is the direction there is room in.
+    m_promptResizeGrip->setCursor(Qt::SizeFDiagCursor);
+    m_promptResizeGrip->setToolTip(QStringLiteral("Drag to resize the prompt"));
+    m_promptResizeGrip->installEventFilter(this);
+    promptHandleRow->addWidget(m_promptResizeGrip, 0);
+    promptHandleRow->addStretch(1);
+
+    // Font-independent grab affordance: a short pill rather than a glyph that
+    // may not exist in the user's monospace face.
+    auto *promptDragPill = new QFrame;
+    promptDragPill->setObjectName(QStringLiteral("promptDragPill"));
+    promptDragPill->setFixedSize(36, 3);
+    promptDragPill->setAttribute(Qt::WA_TransparentForMouseEvents);
+    promptHandleRow->addWidget(promptDragPill, 0, Qt::AlignVCenter);
+    promptHandleRow->addStretch(1);
+
+    // The characters-remaining count used to sit in the bottom toolbar, jammed
+    // between the agent picker and the usage gauges. It reads more like a size
+    // limit on the box itself, so it now rides the top strip's right side next
+    // to the resize/reset/pop-out controls it is a sibling of.
+    promptHandleRow->addWidget(m_quickAddCharCount, 0);
+
+    // A small, explicit undo for the drag handle's double-click gesture, which
+    // is not discoverable on its own (adhoc #1625): snaps the panel back to its
+    // default corner-anchored placement and size.
+    m_promptResetButton = new QPushButton;
+    m_promptResetButton->setObjectName(QStringLiteral("promptResetButton"));
+    m_promptResetButton->setCursor(Qt::PointingHandCursor);
+    m_promptResetButton->setFixedSize(16, 16);
+    setOcticon(m_promptResetButton, "sync", 10);
+    m_promptResetButton->setToolTip(
+        QStringLiteral("Reset the prompt back to its default size and position"));
+    connect(m_promptResetButton, &QPushButton::clicked, this,
+            &MainWindow::resetPromptOverlayPlacement);
+    promptHandleRow->addWidget(m_promptResetButton, 0);
+
+    // Its own name, not the shared ghostButton one: that rule pads 4px/8px,
+    // which would swallow a 10px glyph in a 16px button.
+    m_promptDetachButton = new QPushButton;
+    m_promptDetachButton->setObjectName(QStringLiteral("promptDetachButton"));
+    m_promptDetachButton->setCursor(Qt::PointingHandCursor);
+    m_promptDetachButton->setFixedSize(16, 16);
+    setOcticon(m_promptDetachButton, "screen-full", 10);
+    m_promptDetachButton->setToolTip(
+        QStringLiteral("Pop the prompt out into its own window"));
+    connect(m_promptDetachButton, &QPushButton::clicked, this,
+            [this] { setPromptOverlayDetached(!m_promptOverlayDetached); });
+    promptHandleRow->addWidget(m_promptDetachButton, 0);
+
+    auto *promptStack = new QVBoxLayout(promptWrapper);
+    promptStack->setContentsMargins(0, 0, 0, 0);
+    promptStack->setSpacing(0);
+    promptStack->addWidget(promptHandle, 0);
+    auto *promptLayout = new QHBoxLayout;
     promptLayout->setContentsMargins(0, 0, 0, 0);
     promptLayout->setSpacing(0);
+    promptStack->addLayout(promptLayout, 1);
     auto *promptLeftCol = new QVBoxLayout;
     promptLeftCol->setContentsMargins(0, 0, 0, 0);
     promptLeftCol->setSpacing(0);
     // The editor stretches to fill the freed vertical space (the send column no
     // longer sits below it), and the bottom bar carries its own fixed height, so
     // the border sits right above the text and the controls weld to the foot.
-    promptLeftCol->addWidget(m_issueQuickAdd, 1);
+    promptLeftCol->addWidget(quickAddInputHost, 1);
     promptLeftCol->addWidget(bottomBarScroll, 0);
     promptLayout->addLayout(promptLeftCol, 1);
     promptLayout->addLayout(sendColumn, 0);
@@ -2586,6 +2866,18 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_logActivityLights->onCategoryClicked = [this](const QString &category) {
         openFullLogForCategory(category);
     };
+    // The status dots to the right of the categories are the deployed Worker's
+    // own health checks, so clicking them opens the page that dot is about
+    // (adhoc #1559, #1602); the viewer that used to be a button on the Log page
+    // stays available on the dedicated Cloudflare tool button. The click also
+    // re-runs that dot's checks on the spot (adhoc #1616) so the row is not
+    // still showing a minute-old verdict while its page loads.
+    m_logActivityLights->onWebsiteClicked = [this](const QString &statusId) {
+        // Rechecked first so the dot is already blinking as the browser comes
+        // up — opening a URL hands the desktop's focus to another process.
+        recheckWebsiteStatus(statusId);
+        openWebsiteStatusTarget(statusId);
+    };
     const QString stallTip = QStringLiteral(
         "Click to draft a fix-it prompt for recorded UI stalls; right-click "
         "for the captured backtraces.");
@@ -2613,7 +2905,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Only the top inset contributes to the dock height. Its bottom and the
     // prompt's bottom are flush with the workspace, eliminating the blank band
     // that used to sit below the composer.
-    dock->setFixedHeight(promptWrapper->sizeHint().height() + 8);
+    m_promptAnchoredHeight = promptWrapper->sizeHint().height();
+    dock->setFixedHeight(m_promptAnchoredHeight + 8);
     dock->setAttribute(Qt::WA_StyledBackground, false);
     setLogOverlayExpanded(false);
 
@@ -2621,6 +2914,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     // samples. Fetch once after the overlay exists; MainWindow's existing minute
     // timer keeps it fresh after that.
     QTimer::singleShot(1500, this, &MainWindow::refreshFooterWebsiteStatus);
+    // The desktop-side edge checks are staggered a little behind that read so
+    // the first paint of the row isn't three requests in the same instant.
+    // They are the one part of this row that leaves the machine on its own
+    // schedule, so the window tests — which feed the probes their responses
+    // directly — never let a real one race their assertions.
+#ifndef FORKMESH_WINDOW_TESTS
+    QTimer::singleShot(3000, this, &MainWindow::refreshDesktopWebsiteProbes);
+#endif
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
@@ -2644,6 +2945,301 @@ void MainWindow::setPromptOverlayCollapsed(bool collapsed)
     positionGlobalFooterOverlays();
 }
 
+namespace {
+// Persisted composer placement (adhoc #1536).
+const char kPromptFloatingSetting[] = "prompt/floating";
+const char kPromptFloatPosSetting[] = "prompt/floatPos";
+const char kPromptFloatSizeSetting[] = "prompt/floatSize";
+const char kPromptDetachedSetting[] = "prompt/detached";
+const char kPromptDetachGeometrySetting[] = "prompt/detachGeometry";
+// Below this the four prompt lines and the send column stop being usable, so
+// the resize grip refuses to go smaller rather than letting the panel vanish.
+constexpr int kPromptMinWidth = 280;
+constexpr int kPromptMinHeight = 120;
+} // namespace
+
+// Keep a free-floating composer inside the workspace, at the size the user
+// dragged it to. Called on every layout pass, so a shrinking window pushes the
+// panel back into view instead of stranding it off the edge.
+void MainWindow::clampPromptOverlayIntoHost()
+{
+    if (!m_globalOverlayHost || !m_promptOverlayHost)
+        return;
+    if (m_promptOverlayHost->parentWidget() != m_globalOverlayHost)
+        m_promptOverlayHost->setParent(m_globalOverlayHost);
+    QSize size = m_promptOverlaySize.isValid()
+                     ? m_promptOverlaySize
+                     : QSize(qMin(560, m_globalOverlayHost->width()),
+                             m_promptWrapper ? m_promptWrapper->sizeHint().height()
+                                             : kPromptMinHeight);
+    if (m_promptOverlayCollapsed) {
+        // Collapsed to the round launcher: keep the free position, drop the
+        // size — positionGlobalFooterOverlays has already pinned it to 34x34.
+        size = QSize(34, 34);
+    } else {
+        size.setWidth(qBound(kPromptMinWidth, size.width(),
+                             qMax(kPromptMinWidth, m_globalOverlayHost->width())));
+        size.setHeight(qBound(kPromptMinHeight, size.height(),
+                              qMax(kPromptMinHeight, m_globalOverlayHost->height())));
+    }
+    // Keep the panel pinned to the corner it's parked near (adhoc #1625): carry
+    // its position by the same amount the workspace grew or shrank, so the
+    // margin to the right/bottom edges stays put across a window resize instead
+    // of the panel sitting wherever its old absolute position happened to land.
+    const QSize hostSize = m_globalOverlayHost->size();
+    if (m_promptOverlayHostSize.isValid() && m_promptOverlayHostSize != hostSize) {
+        m_promptOverlayPos += QPoint(hostSize.width() - m_promptOverlayHostSize.width(),
+                                     hostSize.height() - m_promptOverlayHostSize.height());
+    }
+    m_promptOverlayHostSize = hostSize;
+    const QPoint pos(
+        qBound(0, m_promptOverlayPos.x(),
+               qMax(0, m_globalOverlayHost->width() - size.width())),
+        qBound(0, m_promptOverlayPos.y(),
+               qMax(0, m_globalOverlayHost->height() - size.height())));
+    m_promptOverlayPos = pos;
+    m_promptOverlayHost->setGeometry(QRect(pos, size));
+}
+
+// Pop the composer out of the app into a window of its own — and back. The
+// window is parented to the main window so it closes with it, but it is a real
+// top-level: the window manager can move it onto a second monitor or park it
+// beside an editor, which is the point.
+void MainWindow::setPromptOverlayDetached(bool detached)
+{
+    if (!m_promptOverlayHost || detached == m_promptOverlayDetached)
+        return;
+    auto *dockRow = m_footerDock
+                        ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
+                        : nullptr;
+    if (detached) {
+        if (!m_promptDetachWindow) {
+            m_promptDetachWindow = new QWidget(this, Qt::Window);
+            m_promptDetachWindow->setObjectName(QStringLiteral("promptDetachWindow"));
+            m_promptDetachWindow->setAttribute(Qt::WA_StyledBackground, true);
+            m_promptDetachWindow->setWindowTitle(QStringLiteral("ForkMesh Prompt"));
+            auto *windowLayout = new QVBoxLayout(m_promptDetachWindow);
+            windowLayout->setContentsMargins(6, 6, 6, 6);
+            // Closing the window is the same gesture as pressing the button
+            // again: dock the composer, never destroy it.
+            m_promptDetachWindow->installEventFilter(this);
+        }
+        const QSize previous = m_promptOverlayHost->size();
+        if (dockRow)
+            dockRow->removeWidget(m_promptOverlayHost);
+        m_promptDetachWindow->layout()->addWidget(m_promptOverlayHost);
+        m_promptOverlayDetached = true;
+        // Collapsed makes no sense once it has its own window.
+        m_promptOverlayCollapsed = false;
+        m_promptOverlayHost->show();
+        if (m_promptDetachGeometry.isValid())
+            m_promptDetachWindow->setGeometry(m_promptDetachGeometry);
+        else
+            m_promptDetachWindow->resize(
+                qMax(kPromptMinWidth, previous.width() + 12),
+                qMax(kPromptMinHeight, previous.height() + 12));
+        m_promptDetachWindow->show();
+        m_promptDetachWindow->raise();
+        m_promptDetachWindow->activateWindow();
+    } else {
+        if (m_promptDetachWindow) {
+            m_promptDetachGeometry = m_promptDetachWindow->geometry();
+            m_promptDetachWindow->layout()->removeWidget(m_promptOverlayHost);
+            m_promptDetachWindow->hide();
+        }
+        m_promptOverlayDetached = false;
+        if (m_promptOverlayFloating) {
+            m_promptOverlayHost->setParent(m_globalOverlayHost);
+        } else if (dockRow) {
+            // It was the row's last item before it left, so appending restores
+            // the original left-region / spacer / composer order.
+            dockRow->addWidget(m_promptOverlayHost, 1,
+                               Qt::AlignRight | Qt::AlignBottom);
+        }
+        m_promptOverlayHost->show();
+    }
+    if (m_promptDetachButton) {
+        setOcticon(m_promptDetachButton,
+                   m_promptOverlayDetached ? "sign-in" : "screen-full", 10);
+        m_promptDetachButton->setToolTip(
+            m_promptOverlayDetached
+                ? QStringLiteral("Dock the prompt back into the window")
+                : QStringLiteral("Pop the prompt out into its own window"));
+    }
+    positionGlobalFooterOverlays();
+    savePromptOverlayPlacement();
+}
+
+// Back to the footer's lower-right anchor: forget the free position, the
+// dragged size and the popped-out window.
+void MainWindow::resetPromptOverlayPlacement()
+{
+    if (m_promptOverlayDetached)
+        setPromptOverlayDetached(false);
+    if (!m_promptOverlayFloating)
+        return;
+    m_promptOverlayFloating = false;
+    m_promptOverlaySize = QSize();
+    m_promptOverlayPos = QPoint();
+    m_promptOverlayHostSize = QSize();
+    if (auto *dockRow = m_footerDock
+                            ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
+                            : nullptr) {
+        dockRow->addWidget(m_promptOverlayHost, 1,
+                           Qt::AlignRight | Qt::AlignBottom);
+    }
+    positionGlobalFooterOverlays();
+    savePromptOverlayPlacement();
+}
+
+void MainWindow::savePromptOverlayPlacement()
+{
+    QSettings settings;
+    settings.setValue(QLatin1String(kPromptFloatingSetting), m_promptOverlayFloating);
+    settings.setValue(QLatin1String(kPromptFloatPosSetting), m_promptOverlayPos);
+    settings.setValue(QLatin1String(kPromptFloatSizeSetting), m_promptOverlaySize);
+    settings.setValue(QLatin1String(kPromptDetachedSetting), m_promptOverlayDetached);
+    if (m_promptOverlayDetached && m_promptDetachWindow)
+        m_promptDetachGeometry = m_promptDetachWindow->geometry();
+    settings.setValue(QLatin1String(kPromptDetachGeometrySetting),
+                      m_promptDetachGeometry);
+}
+
+// Every launch starts on the footer's lower-right anchor (adhoc #1565). Moving
+// the composer — dragging it over the workspace or popping it out into its own
+// window — is a gesture for the task at hand, and restoring it a day later meant
+// the app opened with its prompt parked mid-page or on a window the compositor
+// had put behind everything else, which reads as the prompt having gone missing.
+// The drag, the resize and the pop-out all still work and still hold for the rest
+// of the session; they simply do not decide where the next launch opens. Only the
+// popped-out window's own geometry is kept, so re-popping it lands where it was.
+void MainWindow::loadPromptOverlayPlacement()
+{
+    if (!m_promptOverlayHost)
+        return;
+    QSettings settings;
+    m_promptDetachGeometry =
+        settings.value(QLatin1String(kPromptDetachGeometrySetting)).toRect();
+    m_promptOverlayFloating = false;
+    m_promptOverlayDetached = false;
+    m_promptOverlaySize = QSize();
+    m_promptOverlayPos = QPoint();
+    // The composer was added to the footer row when it was built and has not
+    // moved since, so anchoring it is a matter of leaving it there — but the
+    // stored placement has to go with it, or a session that never touches the
+    // prompt would write yesterday's float back out on the next save.
+    savePromptOverlayPlacement();
+}
+
+// Drag/resize gestures on the composer's top strip. Everything is done in
+// global coordinates so a gesture that starts while the panel is still anchored
+// survives the reparent into free-floating mode halfway through.
+bool MainWindow::handlePromptPlacementEvent(QObject *object, QEvent *event)
+{
+    const bool onHandle = object == m_promptDragHandle;
+    const bool onGrip = object == m_promptResizeGrip;
+    if (!onHandle && !onGrip)
+        return false;
+    if (!m_promptOverlayHost || !m_globalOverlayHost)
+        return false;
+
+    switch (event->type()) {
+    case QEvent::MouseButtonDblClick:
+        if (onHandle) {
+            resetPromptOverlayPlacement();
+            return true;
+        }
+        return false;
+    case QEvent::MouseButtonPress: {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() != Qt::LeftButton)
+            return false;
+        // A popped-out composer is moved and resized by the window manager;
+        // dragging the strip there would fight it.
+        if (m_promptOverlayDetached)
+            return false;
+        // The first drag or resize is what takes the panel off its anchor. Seed
+        // the free position from where it is sitting right now so it does not
+        // jump under the cursor.
+        if (!m_promptOverlayFloating) {
+            const QPoint topLeft = m_globalOverlayHost->mapFromGlobal(
+                m_promptOverlayHost->mapToGlobal(QPoint()));
+            m_promptOverlayPos = topLeft;
+            m_promptOverlaySize = m_promptOverlayHost->size();
+            m_promptOverlayFloating = true;
+            // Forget the last host size the corner-pin tracked (adhoc #1625): it
+            // may be stale from an earlier floating session, and the panel just
+            // seeded a fresh position above that a stale delta would displace.
+            m_promptOverlayHostSize = QSize();
+            if (auto *dockRow =
+                    m_footerDock
+                        ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
+                        : nullptr)
+                dockRow->removeWidget(m_promptOverlayHost);
+            m_promptOverlayHost->setParent(m_globalOverlayHost);
+            m_promptOverlayHost->show();
+            positionGlobalFooterOverlays();
+        }
+        m_promptPlacementGrab = mouse->globalPosition().toPoint();
+        m_promptPlacementStartRect =
+            QRect(m_promptOverlayPos, m_promptOverlayHost->size());
+        m_promptPlacementDragging = onHandle;
+        m_promptPlacementResizing = onGrip;
+        if (onHandle)
+            m_promptDragHandle->setCursor(Qt::ClosedHandCursor);
+        // Grab explicitly, and only after the reparent above: an implicit grab
+        // would not survive the move into m_globalOverlayHost, and without one
+        // the drag stops the moment the cursor leaves this 16px strip.
+        (onHandle ? m_promptDragHandle : m_promptResizeGrip)->grabMouse();
+        return true;
+    }
+    case QEvent::MouseMove: {
+        if (!m_promptPlacementDragging && !m_promptPlacementResizing)
+            return false;
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        const QPoint delta =
+            mouse->globalPosition().toPoint() - m_promptPlacementGrab;
+        if (m_promptPlacementDragging) {
+            m_promptOverlayPos = m_promptPlacementStartRect.topLeft() + delta;
+        } else {
+            // The grip is the panel's top-left corner: the lower-right corner
+            // stays where it is, so growing goes into the empty workspace.
+            const QSize size(m_promptPlacementStartRect.width() - delta.x(),
+                             m_promptPlacementStartRect.height() - delta.y());
+            m_promptOverlaySize =
+                QSize(qMax(kPromptMinWidth, size.width()),
+                      qMax(kPromptMinHeight, size.height()));
+            m_promptOverlayPos =
+                m_promptPlacementStartRect.bottomRight() -
+                QPoint(m_promptOverlaySize.width() - 1,
+                       m_promptOverlaySize.height() - 1);
+        }
+        // Full relayout, not just the geometry clamp: positionGlobalFooterOverlays()
+        // is what re-anchors the avatar to the bottom-left corner off the host's
+        // current height, so it has to run on every drag step or the avatar is
+        // left stranded at its pre-drag position while the panel resizes around
+        // it (adhoc #1621).
+        positionGlobalFooterOverlays();
+        m_promptOverlayHost->raise();
+        return true;
+    }
+    case QEvent::MouseButtonRelease: {
+        if (!m_promptPlacementDragging && !m_promptPlacementResizing)
+            return false;
+        (onHandle ? m_promptDragHandle : m_promptResizeGrip)->releaseMouse();
+        m_promptPlacementDragging = false;
+        m_promptPlacementResizing = false;
+        if (m_promptDragHandle)
+            m_promptDragHandle->setCursor(Qt::OpenHandCursor);
+        m_promptOverlaySize = m_promptOverlayHost->size();
+        savePromptOverlayPlacement();
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 void MainWindow::positionGlobalFooterOverlays()
 {
     if (!m_globalOverlayHost || !m_footerDock)
@@ -2652,7 +3248,13 @@ void MainWindow::positionGlobalFooterOverlays()
         (!m_sectionStack || m_sectionStack->currentIndex() == 0) &&
         m_repoDetailStack &&
         m_repoDetailStack->currentIndex() == kRepoAgentsTab;
-    const bool dockAgentPrompt = onAgents && !m_promptOverlayCollapsed;
+    // Once the composer has been dragged off its anchor or popped out of the
+    // window it owns its own geometry, so the footer row lays out around a gap
+    // where it used to sit (adhoc #1536).
+    const bool anchoredPrompt =
+        !m_promptOverlayFloating && !m_promptOverlayDetached;
+    const bool dockAgentPrompt =
+        onAgents && !m_promptOverlayCollapsed && anchoredPrompt;
 
     // Agents is the one conversation-first workspace: dock the composer in the
     // transcript pane's half of the foot and keep the transcript/list layout
@@ -2672,25 +3274,62 @@ void MainWindow::positionGlobalFooterOverlays()
                             : Qt::AlignRight | Qt::AlignBottom);
     }
     if (m_promptOverlayHost && m_promptWrapper) {
-        const bool showPrompt = !m_promptOverlayCollapsed;
+        // A popped-out composer is never collapsed: its window is the toggle.
+        const bool showPrompt = !m_promptOverlayCollapsed || m_promptOverlayDetached;
         m_promptWrapper->setVisible(showPrompt);
         if (!showPrompt) {
             m_promptOverlayHost->setFixedSize(34, 34);
             m_userAvatarNavButton->setToolTip(
                 QStringLiteral("Show the prompt overlay"));
-        } else {
+        } else if (anchoredPrompt) {
+            // Undo the floating branch's unbounded cap (below) so the text area
+            // itself is visually pinned to its compact four-line height again.
+            m_issueQuickAdd->setMaximumHeight(m_issueQuickAdd->minimumHeight());
             m_promptOverlayHost->setMinimumSize(0, 0);
             m_promptOverlayHost->setMaximumSize(
                 dockAgentPrompt ? QWIDGETSIZE_MAX : 560, QWIDGETSIZE_MAX);
-            m_promptOverlayHost->setFixedHeight(
-                m_promptWrapper->sizeHint().height());
+            // The cached construction-time height (adhoc #1625), not a live
+            // m_promptWrapper->sizeHint() re-query: once the composer has been
+            // floated and resized, some Qt-internal layout state QPlainTextEdit's
+            // sizeHint() consults no longer matches its construction-time value,
+            // so a live re-query drifted taller than the footer dock's own fixed
+            // height (computed once, at construction, from the same original
+            // hint) and the docked composer stopped sitting flush with the
+            // dock's bottom edge.
+            m_promptOverlayHost->setFixedHeight(m_promptAnchoredHeight);
             m_promptOverlayHost->setSizePolicy(QSizePolicy::Expanding,
                                                QSizePolicy::Fixed);
             m_userAvatarNavButton->setToolTip(
                 dockAgentPrompt
                     ? QStringLiteral("The prompt is docked on the Agents page")
                     : QStringLiteral("Collapse the prompt overlay"));
+        } else {
+            // Free or popped out: the user's drag decides the size, so drop the
+            // anchored caps entirely and let the panel take the geometry given.
+            m_promptOverlayHost->setMinimumSize(0, 0);
+            m_promptOverlayHost->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+            m_promptOverlayHost->setSizePolicy(QSizePolicy::Expanding,
+                                               QSizePolicy::Expanding);
+            // Querying promptWrapper->sizeHint() during construction (to size the
+            // anchored dock) leaves Qt's layout engine caching a resolved
+            // maximumHeight on the text edit itself, even though its size policy
+            // is Expanding — so a floating/resized panel silently stopped growing
+            // the text area at exactly its four-line minimum (adhoc #1625). Clear
+            // it explicitly whenever the panel is free to take the size it's
+            // given.
+            m_issueQuickAdd->setMaximumHeight(QWIDGETSIZE_MAX);
+            m_userAvatarNavButton->setToolTip(
+                m_promptOverlayDetached
+                    ? QStringLiteral("The prompt is in its own window")
+                    : QStringLiteral("Collapse the prompt overlay"));
         }
+    }
+    // Free-floating: place the panel ourselves over the workspace, above the
+    // footer dock so it can be dragged across the log strip.
+    if (m_promptOverlayFloating && !m_promptOverlayDetached && m_promptOverlayHost) {
+        clampPromptOverlayIntoHost();
+        m_promptOverlayHost->show();
+        m_promptOverlayHost->raise();
     }
     constexpr int kHorizontalMargin = 8;
     const int height = m_footerDock->sizeHint().height();
@@ -2720,10 +3359,304 @@ void MainWindow::positionGlobalFooterOverlays()
     QRegion interactive;
     if (m_footerLeftRegion && m_footerLeftRegion->isVisible())
         interactive += m_footerLeftRegion->geometry();
-    if (m_promptOverlayHost && m_promptOverlayHost->isVisible())
+    // Only count the composer when it is still one of the dock's children; once
+    // it floats or pops out its geometry is in another coordinate space, and
+    // adding it here would punch a hole in the wrong corner of the mask.
+    if (anchoredPrompt && m_promptOverlayHost && m_promptOverlayHost->isVisible())
         interactive += m_promptOverlayHost->geometry();
     m_footerDock->setMask(interactive);
+    // The dock was just raised, so a free-floating composer has to come back on
+    // top of it — otherwise dragging it over the log strip hides it behind one.
+    if (m_promptOverlayFloating && !m_promptOverlayDetached && m_promptOverlayHost)
+        m_promptOverlayHost->raise();
 }
+
+namespace {
+
+// The two edge checks this desktop runs itself (adhoc #1564). Each names the
+// document it loads over the real public hostname and the lowercase markers
+// that document must carry, so a Cloudflare interstitial served with HTTP 200
+// still fails instead of counting as a healthy page.
+struct DesktopEdgeProbe {
+    const char *id;
+    const char *path;
+    const char *label;
+    const char *marker;     // identity of the expected document
+    const char *what;       // how the row names itself in a reason line
+    // The relay-reported system this check grades from the other side. Both
+    // verdicts share one dot (adhoc #1602) rather than repeating the same two
+    // subjects at the end of the row.
+    const char *mergesInto;
+};
+
+const QVector<DesktopEdgeProbe> &desktopEdgeProbes()
+{
+    static const QVector<DesktopEdgeProbe> probes = {
+        {"desktop_website", "/", "Website loaded from this desktop", "forkmesh",
+         "The site", "website"},
+        // status.html carries this id on its heading; the homepage does not, so
+        // a /status route quietly serving some other document still fails.
+        {"desktop_status_page", "/status", "Status page loaded from this desktop",
+         "status-title", "The /status page", "status_page"},
+    };
+    return probes;
+}
+
+// Position of a probe in the declared order; unknown ids sort last.
+int desktopEdgeProbeRank(const QString &id)
+{
+    const QVector<DesktopEdgeProbe> &probes = desktopEdgeProbes();
+    for (int i = 0; i < probes.size(); ++i) {
+        if (id == QLatin1String(probes.at(i).id))
+            return i;
+    }
+    return int(probes.size());
+}
+
+const DesktopEdgeProbe *desktopEdgeProbe(const QString &id)
+{
+    for (const DesktopEdgeProbe &probe : desktopEdgeProbes()) {
+        if (id == QLatin1String(probe.id))
+            return &probe;
+    }
+    return nullptr;
+}
+
+// Which desktop-side checks one dot speaks for: the probe's own row while it
+// still has a dot to itself, and the relay row it merges into once that row
+// exists (adhoc #1616 — clicking a merged dot must re-run the local half too,
+// since that is the half of the verdict this machine can actually re-measure).
+QStringList desktopProbesForStatus(const QString &statusId)
+{
+    QStringList ids;
+    for (const DesktopEdgeProbe &probe : desktopEdgeProbes()) {
+        if (statusId == QLatin1String(probe.id) ||
+            statusId == QLatin1String(probe.mergesInto))
+            ids.append(QString::fromLatin1(probe.id));
+    }
+    return ids;
+}
+
+// Cloudflare's own edge failures are the ones the Worker can never report: it
+// is not running when the edge answers 520-527 or blocks the caller, and the
+// response is a branded error document rather than the site. Name the code so
+// the tooltip says which failure this is.
+QString cloudflareEdgeErrorName(int httpStatus)
+{
+    switch (httpStatus) {
+    case 520: return QStringLiteral("web server returned an unknown error");
+    case 521: return QStringLiteral("web server is down");
+    case 522: return QStringLiteral("connection timed out");
+    case 523: return QStringLiteral("origin is unreachable");
+    case 524: return QStringLiteral("a timeout occurred");
+    case 525: return QStringLiteral("SSL handshake failed");
+    case 526: return QStringLiteral("invalid SSL certificate");
+    case 527: return QStringLiteral("Railgun listener to origin error");
+    case 530: return QStringLiteral("origin DNS error");
+    default: return QString();
+    }
+}
+
+// Does this body look like a Cloudflare error/challenge document rather than
+// the page that was asked for? The branded pages all pair the Cloudflare name
+// with a Ray ID or a numeric error code, which no ForkMesh page carries.
+bool looksLikeCloudflareErrorDocument(const QString &lowered)
+{
+    if (!lowered.contains(QLatin1String("cloudflare")))
+        return false;
+    return lowered.contains(QLatin1String("cf-error")) ||
+           lowered.contains(QLatin1String("ray id")) ||
+           lowered.contains(QLatin1String("error code")) ||
+           lowered.contains(QLatin1String("attention required")) ||
+           lowered.contains(QLatin1String("just a moment"));
+}
+
+struct DesktopEdgeVerdict {
+    QString status;
+    QString reason;
+};
+
+// How much recent history one desktop-measured dot keeps: ten samples at the
+// minute cadence, and nothing older than ten minutes, so a laptop that slept
+// through an outage does not wake up still painting it.
+constexpr int kDesktopProbeHistoryMax = 10;
+constexpr qint64 kDesktopProbeHistoryMs = 10 * 60 * 1000;
+
+// Severity of one verdict, used when the relay's own grade and this desktop's
+// grade for the same system are merged into a single dot. "unknown" ranks below
+// every real answer: nobody being able to look is not evidence of health, but
+// it must never overwrite a verdict somebody did manage to take.
+int websiteStatusSeverity(const QString &status)
+{
+    if (status == QLatin1String("down"))
+        return 3;
+    if (status == QLatin1String("degraded"))
+        return 2;
+    if (status == QLatin1String("operational"))
+        return 1;
+    return 0;
+}
+
+// The worse of two verdicts for the same system: a site that fails from either
+// side is not working, whatever the other side says.
+QString worseWebsiteStatus(const QString &left, const QString &right)
+{
+    return websiteStatusSeverity(right) > websiteStatusSeverity(left) ? right
+                                                                     : left;
+}
+
+// What a desktop-measured dot publishes, given how the newest reply graded and
+// how the last few minutes went (adhoc #1614). An edge that throws on a large
+// share of requests still answers plenty of them correctly, so "the last reply
+// was fine" is not the same as "the site is working" — the page the operator
+// just failed to load and the page this probe just loaded are the same site,
+// one minute apart. A row that failed anywhere inside the remembered window
+// therefore never paints green, and one that failed at least half of those
+// checks stays red outright rather than flickering with the dice.
+DesktopEdgeVerdict mergeDesktopEdgeHistory(const DesktopEdgeVerdict &sample,
+                                           const QString &what, int downs,
+                                           int samples, qint64 lastDownTs)
+{
+    if (downs <= 0 || samples <= 0 || sample.status == QLatin1String("down"))
+        return sample;
+    const QString tally =
+        QStringLiteral("%1 failed %2 of the last %3 checks from this desktop "
+                       "(most recently at %4).")
+            .arg(what)
+            .arg(downs)
+            .arg(samples)
+            .arg(QDateTime::fromMSecsSinceEpoch(lastDownTs)
+                     .toLocalTime()
+                     .toString(QStringLiteral("HH:mm")));
+    if (downs * 2 >= samples) {
+        return {QStringLiteral("down"),
+                tally + QStringLiteral(" A page that happens to load does not "
+                                       "make it reachable.")};
+    }
+    return {QStringLiteral("degraded"),
+            tally + QStringLiteral(" This check answered, but the site is not "
+                                   "serving reliably.")};
+}
+
+// The public API answers on its own hostname (api.forkmesh.com in production),
+// so the API dot opens that host instead of the site's front page. Anything
+// that is not a plain multi-label domain — an IP literal, a bare "localhost",
+// a host that already is the API — is left exactly as it is.
+QString apiHostFor(const QString &host)
+{
+    if (host.startsWith(QLatin1String("api."), Qt::CaseInsensitive))
+        return host;
+    QString bare = host;
+    if (bare.startsWith(QLatin1String("www."), Qt::CaseInsensitive))
+        bare = bare.mid(4);
+    if (!bare.contains(QLatin1Char('.')) || !QHostAddress(bare).isNull())
+        return host;
+    return QStringLiteral("api.") + bare;
+}
+
+// The admin console answers on a secret path each deployment chooses (the
+// Worker's ADMIN_PATH), so it is deliberately never baked into this public
+// source. An operator can point their desktop straight at it with
+// FORKMESH_ADMIN_PATH; otherwise the relay hands a signed-in admin their own
+// URL (see MainWindow::openAdminErrorConsole).
+QString configuredAdminPath()
+{
+    QString path = qEnvironmentVariable("FORKMESH_ADMIN_PATH").trimmed();
+    if (path.isEmpty())
+        path = qEnvironmentVariable("ADMIN_PATH").trimmed();
+    while (path.startsWith(QLatin1Char('/')))
+        path.remove(0, 1);
+    while (path.endsWith(QLatin1Char('/')))
+        path.chop(1);
+    return path;
+}
+
+// Grade one desktop-side probe. Everything here is decided from the response
+// alone so the same rules can be replayed in tests without a network.
+DesktopEdgeVerdict gradeDesktopEdgeProbe(const DesktopEdgeProbe &probe,
+                                         const QString &host, int httpStatus,
+                                         const QByteArray &body,
+                                         const QString &transportError,
+                                         bool osOffline)
+{
+    const QString what = QString::fromLatin1(probe.what);
+    if (!transportError.isEmpty()) {
+        // A request this desktop refused to send never saw the edge at all.
+        if (transportError.contains(QLatin1String("firewall blocked"),
+                                    Qt::CaseInsensitive)) {
+            return {QStringLiteral("unknown"),
+                    QStringLiteral("This desktop's own firewall blocked the "
+                                   "check, so %1 was not loaded from here.")
+                        .arg(what.toLower())};
+        }
+        // A desktop with no link at all says nothing about the site, so that
+        // case stays grey rather than painting a false outage.
+        if (osOffline) {
+            return {QStringLiteral("unknown"),
+                    QStringLiteral("This desktop is offline, so %1 could not be "
+                                   "checked from here.")
+                        .arg(host)};
+        }
+        return {QStringLiteral("down"),
+                QStringLiteral("%1 could not be reached from this desktop: %2")
+                    .arg(what, transportError)};
+    }
+
+    const QString lowered = QString::fromUtf8(body.left(64 * 1024)).toLower();
+    const bool branded = looksLikeCloudflareErrorDocument(lowered);
+    const QString edgeError = cloudflareEdgeErrorName(httpStatus);
+    if (!edgeError.isEmpty()) {
+        return {QStringLiteral("down"),
+                QStringLiteral("Cloudflare answered %1 with HTTP %2 — %3.")
+                    .arg(what)
+                    .arg(httpStatus)
+                    .arg(edgeError)};
+    }
+    if (httpStatus == 429 || lowered.contains(QLatin1String("error 1015"))) {
+        return {QStringLiteral("degraded"),
+                QStringLiteral("Cloudflare rate-limited this desktop (HTTP %1) "
+                               "instead of serving %2.")
+                    .arg(httpStatus)
+                    .arg(what.toLower())};
+    }
+    if ((httpStatus == 403 || httpStatus == 503) && branded) {
+        return {QStringLiteral("degraded"),
+                QStringLiteral("Cloudflare challenged or blocked this desktop "
+                               "(HTTP %1) instead of serving %2.")
+                    .arg(httpStatus)
+                    .arg(what.toLower())};
+    }
+    if (httpStatus >= 500) {
+        return {QStringLiteral("down"),
+                QStringLiteral("%1 returned HTTP %2 to this desktop.")
+                    .arg(what)
+                    .arg(httpStatus)};
+    }
+    // A ranged request answers 206; a server that ignores Range answers 200.
+    if (httpStatus != 200 && httpStatus != 206) {
+        return {QStringLiteral("down"),
+                QStringLiteral("%1 returned HTTP %2 to this desktop.")
+                    .arg(what)
+                    .arg(httpStatus)};
+    }
+    if (branded) {
+        return {QStringLiteral("down"),
+                QStringLiteral("Cloudflare served an error document for %1 "
+                               "instead of the page.")
+                    .arg(what.toLower())};
+    }
+    if (!lowered.contains(QLatin1String("<!doctype html")) ||
+        !lowered.contains(QLatin1String(probe.marker))) {
+        return {QStringLiteral("degraded"),
+                QStringLiteral("%1 answered HTTP %2 from this desktop, but the "
+                               "document was not the expected page.")
+                    .arg(what)
+                    .arg(httpStatus)};
+    }
+    return {QStringLiteral("operational"), QString()};
+}
+
+} // namespace
 
 // Apply the compact public /status projection to both footer icon surfaces.
 // The last array cell is commonly the still-in-progress current minute, marked
@@ -2739,11 +3672,11 @@ bool MainWindow::applyFooterWebsiteStatusPayload(const QJsonObject &payload)
     const qint64 payloadNow = static_cast<qint64>(
         payload.value(QStringLiteral("now")).toDouble(
             QDateTime::currentMSecsSinceEpoch()));
-    QList<LogActivityLights::WebsiteStatus> statuses;
+    QList<FooterStatusRow> statuses;
     statuses.reserve(systems.size());
     for (const QJsonValue &value : systems) {
         const QJsonObject system = value.toObject();
-        LogActivityLights::WebsiteStatus result;
+        FooterStatusRow result;
         result.id = system.value(QStringLiteral("id")).toString().trimmed();
         result.label = system.value(QStringLiteral("label")).toString().trimmed();
         if (result.id.isEmpty())
@@ -2778,12 +3711,215 @@ bool MainWindow::applyFooterWebsiteStatusPayload(const QJsonObject &payload)
     }
     if (statuses.isEmpty())
         return false;
-    if (m_logActivityLights)
-        m_logActivityLights->setWebsiteStatuses(statuses);
-    if (m_logActivityHeader)
-        m_logActivityHeader->setWebsiteStatuses(statuses);
-    positionGlobalFooterOverlays();
+    m_footerRelayStatuses = statuses;
+    publishFooterWebsiteStatuses();
     return true;
+}
+
+// One dot row out of the two sources. The relay's own systems keep their
+// published order, and each desktop-measured edge check folds into the relay
+// row for the same subject (adhoc #1602): "Web here" and "Status here" were the
+// site and the /status page all over again, so one dot now carries both
+// verdicts — the worse of the two, with each side named in the tooltip.
+void MainWindow::publishFooterWebsiteStatuses()
+{
+    QList<LogActivityLights::WebsiteStatus> rows;
+    rows.reserve(m_footerRelayStatuses.size() + m_footerDesktopStatuses.size());
+    for (const FooterStatusRow &source : m_footerRelayStatuses) {
+        LogActivityLights::WebsiteStatus row;
+        row.id = source.id;
+        row.label = source.label;
+        row.status = source.status;
+        row.reason = source.reason;
+        row.minuteTs = source.minuteTs;
+        row.local = source.local;
+        // One fetch grades every relay-reported row, so they all blink together.
+        row.checking = m_footerWebsiteStatusInFlight;
+        rows.append(row);
+    }
+    for (const FooterStatusRow &source : m_footerDesktopStatuses) {
+        const DesktopEdgeProbe *probe = desktopEdgeProbe(source.id);
+        const QString target =
+            probe ? QString::fromLatin1(probe->mergesInto) : QString();
+        int merged = -1;
+        for (int i = 0; i < rows.size() && merged < 0; ++i) {
+            if (!target.isEmpty() && rows.at(i).id == target)
+                merged = i;
+        }
+        const bool checking = m_desktopProbesInFlight.contains(source.id);
+        if (merged < 0) {
+            // Nothing to merge into: the relay's own list has not arrived yet,
+            // or it no longer publishes that system. Keep the local check as
+            // its own dot rather than dropping the only verdict there is.
+            LogActivityLights::WebsiteStatus row;
+            row.id = source.id;
+            row.label = source.label;
+            row.status = source.status;
+            row.reason = source.reason;
+            row.minuteTs = source.minuteTs;
+            row.local = true;
+            row.checking = checking;
+            rows.append(row);
+            continue;
+        }
+        LogActivityLights::WebsiteStatus &row = rows[merged];
+        row.status = worseWebsiteStatus(row.status, source.status);
+        row.localStatus = source.status;
+        row.localReason = source.reason;
+        row.localCheckedTs = source.minuteTs;
+        row.checking = row.checking || checking;
+    }
+    if (rows.isEmpty())
+        return;
+    if (m_logActivityLights)
+        m_logActivityLights->setWebsiteStatuses(rows);
+    if (m_logActivityHeader)
+        m_logActivityHeader->setWebsiteStatuses(rows);
+    positionGlobalFooterOverlays();
+}
+
+// Where one footer status dot leads. Each dot is about a specific surface, so
+// clicking it opens that surface rather than dropping every click on the site's
+// front page (adhoc #1602). An invalid URL means "this one cannot be built from
+// here": only the Worker-errors dot, whose admin console lives at a path this
+// desktop has to be told or ask for — see openAdminErrorConsole.
+QUrl MainWindow::websiteStatusTargetUrl(const QString &statusId) const
+{
+    QUrl url = catalogApiUrl();
+    if (!url.isValid() || url.host().isEmpty())
+        return QUrl();
+    url.setPath(QStringLiteral("/"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    if (statusId == QLatin1String("status_page") ||
+        statusId == QLatin1String("desktop_status_page")) {
+        url.setPath(QStringLiteral("/status"));
+    } else if (statusId == QLatin1String("api")) {
+        url.setHost(apiHostFor(url.host()));
+    } else if (statusId == QLatin1String("flagship_repository")) {
+        url.setPath(QStringLiteral("/forkmesh/forkmesh"));
+    } else if (statusId == QLatin1String("errors")) {
+        const QString adminPath = configuredAdminPath();
+        if (adminPath.isEmpty())
+            return QUrl();
+        url.setPath(QLatin1Char('/') + adminPath);
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("table"),
+                           QStringLiteral("error_log"));
+        url.setQuery(query);
+    }
+    return url;
+}
+
+void MainWindow::openWebsiteStatusTarget(const QString &statusId)
+{
+    if (statusId == QLatin1String("errors")) {
+        openAdminErrorConsole();
+        return;
+    }
+    const QUrl url = websiteStatusTargetUrl(statusId);
+    if (url.isValid() && !url.host().isEmpty())
+        QDesktopServices::openUrl(url);
+}
+
+// Re-run everything that grades one dot, right now (adhoc #1616). A red dot is
+// the thing you most want a second opinion on, so opening its page also asks
+// for a current verdict instead of leaving the minute timer to answer later.
+//
+// Both in-flight guards below make a second click while a check is still out a
+// no-op, so leaning on a dot cannot stack requests to the site.
+void MainWindow::recheckWebsiteStatus(const QString &statusId)
+{
+    // The relay grades all of its systems together and publishes them in one
+    // payload, so any of its rows re-reads that whole payload. It answers from
+    // the newest completed cron minute — this cannot make the Worker sample
+    // again — but it does pick up a minute this desktop has not fetched yet,
+    // and it ends a stale "the status API answered HTTP …" row as soon as the
+    // endpoint recovers.
+    refreshFooterWebsiteStatus();
+    // The desktop-side checks are ours to run, so these really do re-measure:
+    // the dot's own probe loads the page again from this machine.
+    for (const QString &id : desktopProbesForStatus(statusId))
+        probeDesktopWebsite(id);
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QStringList MainWindow::testWebsiteRecheckProbes(const QString &statusId) const
+{
+    return desktopProbesForStatus(statusId);
+}
+#endif
+
+// The Worker-errors dot opens the admin error log itself. Its console sits
+// behind a secret, deployment-configured path, so unless this desktop was told
+// that path outright it asks the relay for the signed-in admin's own URL. An
+// account that is not an admin gets the public /status page instead — the only
+// error view it could open anyway.
+void MainWindow::openAdminErrorConsole()
+{
+    const QUrl configured = websiteStatusTargetUrl(QStringLiteral("errors"));
+    if (configured.isValid() && !configured.host().isEmpty()) {
+        QDesktopServices::openUrl(configured);
+        return;
+    }
+    QUrl base = catalogApiUrl();
+    if (!base.isValid() || base.host().isEmpty())
+        return;
+    base.setQuery(QString());
+    base.setFragment(QString());
+    const auto openStatusPage = [this, base] {
+        QUrl fallback = base;
+        fallback.setPath(QStringLiteral("/status"));
+        QDesktopServices::openUrl(fallback);
+    };
+    const QString token = m_accountSessionToken.trimmed();
+    if (!m_networkAccess || token.isEmpty()) {
+        openStatusPage();
+        return;
+    }
+    if (m_adminConsoleUrlInFlight)
+        return;
+
+    QUrl url = base;
+    url.setPath(QStringLiteral("/api/accounts/admin-session"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    request.setRawHeader("authorization",
+                         QByteArrayLiteral("Bearer ") + token.toUtf8());
+    request.setTransferTimeout(8000);
+    m_adminConsoleUrlInFlight = true;
+    QNetworkReply *reply =
+        m_networkAccess->post(request, QByteArrayLiteral("{}"));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, base, openStatusPage] {
+        m_adminConsoleUrlInFlight = false;
+        const QByteArray body = reply->readAll();
+        const bool transportOk = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        QString adminUrl;
+        if (transportOk) {
+            const QJsonObject payload =
+                QJsonDocument::fromJson(body).object();
+            if (payload.value(QStringLiteral("ok")).toBool())
+                adminUrl =
+                    payload.value(QStringLiteral("adminUrl")).toString().trimmed();
+        }
+        // The relay answers with a path plus the ?admin= identity it wants
+        // carried along, so keep its query and add the error log table to it.
+        if (!adminUrl.startsWith(QLatin1Char('/'))) {
+            openStatusPage();
+            return;
+        }
+        const QUrl relative(adminUrl);
+        QUrl target = base;
+        target.setPath(relative.path());
+        QUrlQuery query(relative.query());
+        query.removeAllQueryItems(QStringLiteral("table"));
+        query.addQueryItem(QStringLiteral("table"), QStringLiteral("error_log"));
+        target.setQuery(query);
+        QDesktopServices::openUrl(target);
+    });
 }
 
 void MainWindow::refreshFooterWebsiteStatus()
@@ -2807,21 +3943,260 @@ void MainWindow::refreshFooterWebsiteStatus()
     request.setRawHeader("accept", "application/json");
     request.setTransferTimeout(8000);
     m_footerWebsiteStatusInFlight = true;
+    // Repaint the row so its dots blink for as long as this read is out.
+    publishFooterWebsiteStatuses();
     QNetworkReply *reply = m_networkAccess->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         m_footerWebsiteStatusInFlight = false;
         const QByteArray body = reply->readAll();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const bool transportOk = reply->error() == QNetworkReply::NoError;
         reply->deleteLater();
-        if (!transportOk)
-            return; // Retain the last good minute through a transient miss.
+        if (!transportOk && httpStatus <= 0) {
+            // This desktop never got an answer at all (DNS/timeout/refused):
+            // that says nothing about the relay, so keep showing the last
+            // good minute rather than paint a false outage from a local miss.
+            // The row still repaints, to end the blink and restart the ring.
+            publishFooterWebsiteStatuses();
+            return;
+        }
         QJsonParseError error;
         const QJsonDocument document = QJsonDocument::fromJson(body, &error);
-        if (error.error != QJsonParseError::NoError || !document.isObject())
+        if (transportOk && error.error == QJsonParseError::NoError &&
+            document.isObject() &&
+            applyFooterWebsiteStatusPayload(document.object()))
             return;
-        applyFooterWebsiteStatusPayload(document.object());
+        // The edge answered — with an HTTP error, a Cloudflare error document,
+        // or malformed JSON — instead of the status payload. That is real
+        // information (this is exactly how a Worker exception/1101 shows up),
+        // so the dots must stop claiming the stale cached minute is current.
+        applyFooterWebsiteStatusFailure(httpStatus);
     });
 }
+
+// The relay's own /api/status fetch answered, but not with a usable status
+// payload — mark every relay-reported row unknown rather than keep repainting
+// whatever minute happened to be cached last, which would silently hide an
+// ongoing outage of the status endpoint itself.
+void MainWindow::applyFooterWebsiteStatusFailure(int httpStatus)
+{
+    if (m_footerRelayStatuses.isEmpty()) {
+        // Nothing of the relay's to mark stale, but the row still repaints so
+        // a finished read stops blinking.
+        publishFooterWebsiteStatuses();
+        return;
+    }
+    const QString reason =
+        httpStatus > 0
+            ? QStringLiteral(
+                  "The status API answered HTTP %1 instead of a status "
+                  "payload, so this data is stale.")
+                  .arg(httpStatus)
+            : QStringLiteral("The status API did not return a usable "
+                             "payload, so this data is stale.");
+    for (FooterStatusRow &row : m_footerRelayStatuses) {
+        row.status = QStringLiteral("unknown");
+        row.reason = reason;
+    }
+    publishFooterWebsiteStatuses();
+}
+
+// Run both desktop-side edge checks for the active relay's public hostname.
+void MainWindow::refreshDesktopWebsiteProbes()
+{
+    for (const DesktopEdgeProbe &probe : desktopEdgeProbes())
+        probeDesktopWebsite(QString::fromLatin1(probe.id));
+}
+
+// Load one public document the way a browser on this machine would. Only the
+// first few kilobytes are asked for: the marker and any Cloudflare branding sit
+// in the head, and a full homepage every minute would be megabytes an hour for
+// a two-pixel dot. A Cloudflare error is served whole regardless of Range, so
+// nothing that this row exists to catch is truncated away.
+void MainWindow::probeDesktopWebsite(const QString &id)
+{
+    const DesktopEdgeProbe *probe = desktopEdgeProbe(id);
+    if (!probe || !m_networkAccess || !m_logActivityLights ||
+        m_desktopProbesInFlight.contains(id))
+        return;
+
+    QUrl url = catalogApiUrl();
+    if (!url.isValid() || url.host().isEmpty())
+        return;
+    url.setPath(QString::fromLatin1(probe->path));
+    url.setQuery(QString());
+    url.setFragment(QString());
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    // Follow the edge's own canonical redirects; the check is "does this
+    // hostname serve the page", not "does it serve it without a hop".
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QVariant::fromValue(
+                             QNetworkRequest::NoLessSafeRedirectPolicy));
+    request.setMaximumRedirectsAllowed(3);
+    request.setRawHeader("accept", "text/html");
+    request.setRawHeader("cache-control", "no-cache");
+    request.setRawHeader("range", "bytes=0-8191");
+    request.setTransferTimeout(8000);
+    m_desktopProbesInFlight.insert(id);
+    // Blink this row's dot for as long as the check is out.
+    publishFooterWebsiteStatuses();
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, id] {
+        m_desktopProbesInFlight.remove(id);
+        const QByteArray body = reply->readAll();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // An HTTP answer is the verdict even when Qt flags the reply as an
+        // error: a Cloudflare 5xx interstitial is exactly what this row is
+        // looking for. Only a reply that never produced a status counts as a
+        // transport failure.
+        const QString transportError =
+            (httpStatus <= 0 && reply->error() != QNetworkReply::NoError)
+                ? reply->errorString()
+                : QString();
+        reply->deleteLater();
+        applyDesktopWebsiteProbe(id, httpStatus, body, transportError);
+    });
+}
+
+// Grade one probe response and repaint the merged dot row.
+void MainWindow::applyDesktopWebsiteProbe(const QString &id, int httpStatus,
+                                          const QByteArray &body,
+                                          const QString &transportError)
+{
+    const DesktopEdgeProbe *probe = desktopEdgeProbe(id);
+    if (!probe)
+        return;
+    const auto *netInfo = QNetworkInformation::instance();
+    const bool osOffline = netInfo &&
+                           netInfo->reachability() ==
+                               QNetworkInformation::Reachability::Disconnected;
+    const QString host = catalogApiUrl().host();
+    const DesktopEdgeVerdict sample = gradeDesktopEdgeProbe(
+        *probe, host, httpStatus, body, transportError, osOffline);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    // Remember how this reply graded, then let the last few minutes widen the
+    // verdict (adhoc #1614). "unknown" is this desktop being unable to look —
+    // no evidence either way — so it is never recorded: it must neither count
+    // as a healthy check that dilutes a real failure nor as a failure itself.
+    QList<DesktopProbeSample> &history = m_desktopProbeHistory[id];
+    if (sample.status != QLatin1String("unknown"))
+        history.append({now, sample.status});
+    while (!history.isEmpty() &&
+           (history.size() > kDesktopProbeHistoryMax ||
+            now - history.first().ts > kDesktopProbeHistoryMs))
+        history.removeFirst();
+    int downs = 0;
+    qint64 lastDownTs = 0;
+    for (const DesktopProbeSample &past : history) {
+        if (past.status != QLatin1String("down"))
+            continue;
+        ++downs;
+        lastDownTs = past.ts;
+    }
+    const DesktopEdgeVerdict verdict = mergeDesktopEdgeHistory(
+        sample, QString::fromLatin1(probe->what), downs, history.size(),
+        lastDownTs);
+
+    FooterStatusRow row;
+    row.id = id;
+    row.label = QString::fromLatin1(probe->label);
+    row.status = verdict.status;
+    row.sampleStatus = sample.status;
+    row.reason = verdict.reason;
+    row.minuteTs = now;
+    row.local = true;
+
+    bool replaced = false;
+    for (FooterStatusRow &existing : m_footerDesktopStatuses) {
+        if (existing.id == id) {
+            existing = row;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) {
+        m_footerDesktopStatuses.append(row);
+        // Keep the two rows in their declared order however the replies land.
+        std::stable_sort(m_footerDesktopStatuses.begin(),
+                         m_footerDesktopStatuses.end(),
+                         [](const FooterStatusRow &left,
+                            const FooterStatusRow &right) {
+                             return desktopEdgeProbeRank(left.id) <
+                                    desktopEdgeProbeRank(right.id);
+                         });
+    }
+    publishFooterWebsiteStatuses();
+    alertOnDesktopEdgeOutage(row);
+}
+
+// Announce a desktop-measured outage. Every graded reply comes here, and the
+// probes are driven by the minute timer, so a check that stays down raises one
+// ping a minute for as long as it keeps failing — deliberately not deduplicated,
+// because a site that is still down a minute later is still news (adhoc #1596).
+//
+// Only "down" alerts. "degraded" is the edge answering imperfectly (a rate
+// limit, an unexpected document) and "unknown" is this desktop being unable to
+// look at all — a firewall block or no link — neither of which is an outage of
+// the site, and both of which would otherwise alert every minute from a laptop
+// that is merely asleep on a train.
+void MainWindow::alertOnDesktopEdgeOutage(const FooterStatusRow &row)
+{
+    // Keyed on the reply this run actually got, not on the history-widened dot
+    // (adhoc #1614): a row held red because the site failed half of the last
+    // ten checks would otherwise keep pinging on the minutes it did load, long
+    // after the reply that earned the alert.
+    if (row.sampleStatus != QLatin1String("down"))
+        return;
+    const DesktopEdgeProbe *probe = desktopEdgeProbe(row.id);
+    if (!probe)
+        return;
+    const QString host = catalogApiUrl().host();
+    const QString title =
+        host.isEmpty()
+            ? QStringLiteral("%1 is down").arg(QString::fromLatin1(probe->what))
+            : QStringLiteral("%1 on %2 is down")
+                  .arg(QString::fromLatin1(probe->what), host);
+    const QString body =
+        row.reason.isEmpty()
+            ? QStringLiteral("This desktop could not load the page.")
+            : row.reason;
+    // Files the outage on the Pings page and raises the red toast above the
+    // footer log, exactly like any other failure this node reports. No OS
+    // notification here: this is a self-check of ForkMesh's own site, so the
+    // in-app alert plus the footer dot turning red (adhoc #1600) is enough —
+    // it doesn't need to interrupt whatever else is on screen.
+    addNotification(title, body, /*warning=*/true);
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testApplyDesktopWebsiteProbe(const QString &id,
+                                                 int httpStatus,
+                                                 const QByteArray &body,
+                                                 const QString &transportError)
+{
+    applyDesktopWebsiteProbe(id, httpStatus, body, transportError);
+    for (const FooterStatusRow &row : m_footerDesktopStatuses) {
+        if (row.id == id)
+            return row.sampleStatus;
+    }
+    return QString();
+}
+
+QString MainWindow::testDesktopWebsiteRowStatus(const QString &id) const
+{
+    for (const FooterStatusRow &row : m_footerDesktopStatuses) {
+        if (row.id == id)
+            return row.status;
+    }
+    return QString();
+}
+#endif
 
 // One-word tag for the strip: callers may hand over a phrase, the icon maps the
 // first word ("git", "net", "fork" …) to a glyph and keeps the detail in its
@@ -3495,6 +4870,9 @@ void MainWindow::refreshCloudflareAiModels()
                                  : picked);
         }
         refreshQuickAddAgentModelSelector();
+        // Settings lists the same line-up with a checkbox each, so newly
+        // announced models have to reach it too.
+        refreshComposerModelVisibilityList();
     });
 }
 
@@ -3652,15 +5030,96 @@ void MainWindow::refreshQuickAddSpeedSelector()
         QStringLiteral(". Higher levels are slower and more thorough."));
 }
 
+// Every agent/model the composer could offer, in provider order and before any
+// ranking or filtering. Shared by the composer's dropdown (which ranks these by
+// merged success) and Settings → Agents → "Composer models" (which lists them
+// with a checkbox each), so the setting can never drift out of step with the
+// menu it governs.
+//
+// "Manual · create issue" is deliberately absent: it starts no agent, and it is
+// the row the dropdown falls back to, so it is always offered.
+QList<ComposerModelChoice> MainWindow::composerModelCatalog() const
+{
+    QList<ComposerModelChoice> choices;
+
+    QComboBox claudeModels;
+    populateClaudeModelCombo(&claudeModels);
+    if (!m_liveClaudeModels.isEmpty())
+        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
+    for (int i = 0; i < claudeModels.count(); ++i) {
+        const QString id = claudeModels.itemData(i).toString();
+        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
+        // borrowing one model's portrait.
+        const int icon =
+            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
+                ? 7
+                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
+        choices.append(ComposerModelChoice{
+            QStringLiteral("claude-code"), id,
+            compactModelName(claudeModels.itemText(i)),
+            QStringLiteral("Claude Code"), QString(), icon, true});
+    }
+
+    QComboBox codexModels;
+    populateCodexModelCombo(&codexModels);
+    for (int i = 0; i < codexModels.count(); ++i) {
+        const QString id = codexModels.itemData(i).toString();
+        choices.append(ComposerModelChoice{
+            kCodexProvider, id, codexModels.itemText(i),
+            QStringLiteral("Codex"), QString(),
+            agentModelFaceIconIndex(kCodexProvider, id), true});
+    }
+
+    // These API agents do not expose a per-run model chooser in this composer,
+    // but remain first-class choices in the combined menu.
+    choices.append(ComposerModelChoice{
+        QStringLiteral("openai"), QString(), QStringLiteral("OpenAI API"),
+        QStringLiteral("OpenAI API"), QStringLiteral("Headless OpenAI API agent"),
+        agentModelFaceIconIndex(QStringLiteral("openai"), QString()), false});
+    choices.append(ComposerModelChoice{
+        QStringLiteral("claude-api"), QString(), QStringLiteral("Claude API"),
+        QStringLiteral("Claude API"), QStringLiteral("Headless Claude API agent"),
+        agentModelFaceIconIndex(QStringLiteral("claude-api"), QString()), false});
+
+    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
+    // rather than starting an agent, so they are their own group instead of
+    // being ranked among the coding models above — a 70B chat model is not
+    // "stronger" or "weaker" than an agent that can edit the repository.
+    QComboBox cloudflareModels;
+    populateCloudflareAiModelCombo(&cloudflareModels);
+    for (int i = 0; i < cloudflareModels.count(); ++i) {
+        const QString label = cloudflareModels.itemText(i);
+        // One mark for the whole group: these are relay chat models, not one of
+        // the top lines the World drew a portrait for.
+        choices.append(ComposerModelChoice{
+            kCloudflareAiProvider, cloudflareModels.itemData(i).toString(), label,
+            QStringLiteral("Cloudflare AI"),
+            QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
+                           "starts no agent").arg(label),
+            agentModelFaceIconIndex(kCloudflareAiProvider, QString()), false});
+    }
+    return choices;
+}
+
 // Build the one visible agent/model menu from the canonical hidden provider and
 // model controls. Each row stores provider in UserRole and model in UserRole+1,
 // allowing a single click to update both without changing the launch contract.
 //
-// Rows read as the bare model name (adhoc #1204): "Opus 5", not "Opus 5 · Claude
-// Code". Which CLI runs a model follows from the model, so the suffix was the
-// same handful of words repeated down the whole menu; the tooltip still carries
-// it. Models the user has run most often lead the list; power is a stable
-// tie-breaker for models with the same history.
+// Rows read as the model name plus its merged-work count — "Opus 5   3 merged",
+// not "Opus 5 · Claude Code". Which CLI runs a model follows from the model, so
+// the provider suffix was the same handful of words repeated down the whole
+// menu; the tooltip still carries it. The count is a popup-only second column
+// (kAgentChoiceDescriptionRole): the closed control shows the bare model name,
+// since the badge on the prompt should say what is about to run rather than
+// carry a standing scoreboard. A merge is the durable success signal for
+// an agent run, so models with the most merged work lead the list; power is a
+// stable tie-breaker for equal success counts. Scores count every run this
+// desktop has made, including the ones whose branch and session were cleaned up
+// afterwards (see AgentStore::retiredModelOutcomes).
+//
+// Rows switched off in Settings → Agents (adhoc #1557) are left out, except the
+// one currently selected: the menu has to be able to show what the composer is
+// actually about to run, even if that model was hidden after it was picked.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -3683,75 +5142,91 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         QString provider;
         QString model;
         QString agentName; // which CLI/API runs it, for the tooltip
-        int useCount = 0;  // higher sorts nearer the top
+        int mergedCount = 0; // higher sorts nearer the top
+        int runCount = 0;
         int powerRank = 0; // stable tie-breaker for equally-used models
     };
-    QHash<QString, int> modelUseCounts;
-    for (const AgentSession &session : std::as_const(m_agentSessions)) {
-        const QString model = session.model.trimmed().toLower();
-        if (!model.isEmpty())
-            ++modelUseCounts[session.provider + QLatin1Char('\x1f') + model];
-    }
-    QList<Choice> models;
-    auto addModel = [&models, &modelUseCounts](
-                        const QIcon &icon, const QString &label,
-                        const QString &provider, const QString &model,
-                        const QString &agentName) {
-        const int useCount = modelUseCounts.value(
-            provider + QLatin1Char('\x1f') + model.trimmed().toLower());
-        models.append(Choice{icon, label, provider, model, agentName, useCount,
-                             agentModelPowerRank(model, label)});
+    // A row the user switched off in Settings stays out of the menu unless it is
+    // the current selection (see the note above this function).
+    const QSet<QString> hidden = hiddenComposerModels();
+    const auto rowIsVisible = [&](const QString &provider,
+                                  const QString &model) {
+        if (!hidden.contains(composerModelKey(provider, model)))
+            return true;
+        return provider == selectedProvider &&
+               (selectedModel.isEmpty() || model == selectedModel);
     };
-
-    QComboBox claudeModels;
-    populateClaudeModelCombo(&claudeModels);
-    if (!m_liveClaudeModels.isEmpty())
-        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
-    for (int i = 0; i < claudeModels.count(); ++i) {
-        const QString id = claudeModels.itemData(i).toString();
-        const QString lower = id.toLower();
-        int icon = 7;
-        if (lower.contains(QLatin1String("opus")))
-            icon = 0;
-        else if (lower.contains(QLatin1String("fable")))
-            icon = 1;
-        else if (lower.contains(QLatin1String("sonnet")))
-            icon = 2;
-        else if (lower.contains(QLatin1String("haiku")))
-            icon = 3;
-        addModel(agentControlIcon(icon),
-                 compactModelName(claudeModels.itemText(i)),
-                 QStringLiteral("claude-code"), id,
-                 QStringLiteral("Claude Code"));
+    QHash<QString, int> modelMergedCounts;
+    QHash<QString, int> modelRunCounts;
+    // A model's track record has to outlive the work that earned it. Sweeping up
+    // a landed branch deletes its agent session, and while those counts were read
+    // only from the live sessions that meant tidying up reset every model to
+    // "0 merged". AgentStore keeps a tally of what each deleted session scored,
+    // so the ranking below is the retired history plus the sessions still here.
+    if (m_agentStore) {
+        const QHash<QString, AgentModelOutcome> retired =
+            m_agentStore->retiredModelOutcomes();
+        for (auto it = retired.constBegin(); it != retired.constEnd(); ++it) {
+            modelRunCounts[it.key()] += it.value().runs;
+            modelMergedCounts[it.key()] += it.value().merged;
+        }
+    }
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        const QString key =
+            AgentStore::modelOutcomeKey(session.provider, session.model);
+        if (key.isEmpty())
+            continue;
+        ++modelRunCounts[key];
+        if (session.merged)
+            ++modelMergedCounts[key];
+    }
+    // The catalog is the single source of what the picker can offer; this
+    // function only scores, orders and filters it.
+    const QList<ComposerModelChoice> catalog = composerModelCatalog();
+    QList<Choice> models;
+    QList<ComposerModelChoice> unranked;
+    for (const ComposerModelChoice &entry : catalog) {
+        if (!rowIsVisible(entry.provider, entry.model))
+            continue;
+        if (!entry.ranked) {
+            unranked.append(entry);
+            continue;
+        }
+        const QString key =
+            AgentStore::modelOutcomeKey(entry.provider, entry.model);
+        models.append(Choice{agentControlIcon(entry.iconIndex), entry.label,
+                             entry.provider, entry.model, entry.agentName,
+                             modelMergedCounts.value(key),
+                             modelRunCounts.value(key),
+                             agentModelPowerRank(entry.model, entry.label)});
     }
 
-    QComboBox codexModels;
-    populateCodexModelCombo(&codexModels);
-    for (int i = 0; i < codexModels.count(); ++i) {
-        addModel(agentControlIcon(4 + (i % 3)), codexModels.itemText(i),
-                 kCodexProvider, codexModels.itemData(i).toString(),
-                 QStringLiteral("Codex"));
-    }
-
-    // Most-used first. Power ties (Opus 4.8 and Sonnet 5 score the same) keep
-    // the provider catalog order, so the menu never reshuffles between two
-    // otherwise-equal models from one refresh to the next.
+    // Most merged work first. Power ties (Opus 4.8 and Sonnet 5 score the
+    // same) keep the provider catalog order, so the menu never reshuffles
+    // between two otherwise-equal models from one refresh to the next.
     std::stable_sort(models.begin(), models.end(),
                      [](const Choice &a, const Choice &b) {
-                         if (a.useCount != b.useCount)
-                             return a.useCount > b.useCount;
+                         if (a.mergedCount != b.mergedCount)
+                             return a.mergedCount > b.mergedCount;
                          return a.powerRank > b.powerRank;
                      });
 
     auto addChoice = [this](const QIcon &icon, const QString &label,
                             const QString &provider, const QString &model,
-                            const QString &tooltip) {
+                            const QString &tooltip,
+                            const QString &description = QString()) {
         const int row = m_quickAddAgentModelSelector->count();
         m_quickAddAgentModelSelector->addItem(icon, label, provider);
         m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
         if (!tooltip.isEmpty())
             m_quickAddAgentModelSelector->setItemData(row, tooltip,
                                                       Qt::ToolTipRole);
+        // Painted beside the label by AgentChoiceDescriptionDelegate, which only
+        // draws the popup rows — so this half of the row exists in the open menu
+        // and nowhere else.
+        if (!description.isEmpty())
+            m_quickAddAgentModelSelector->setItemData(
+                row, description, kAgentChoiceDescriptionRole);
     };
     addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
               QStringLiteral("manual"), QString(),
@@ -3767,11 +5242,22 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
     QHash<QString, QString> providerIdentities;
     for (const Choice &choice : models) {
-        // The open list is intentionally just model names: status, account,
-        // provider, and quota details belong in the tooltip, not every row.
+        // Keep the success count in the open menu so the best model can be
+        // spotted without opening a tooltip — but only there (adhoc #1565). The
+        // closed control is a one-line badge on the prompt and its job is to say
+        // which model is about to run; "Opus 5 · 11 merged" sitting there all day
+        // is a scoreboard for a comparison the user is not making until they open
+        // the picker. The run total remains in the tooltip: a session that is
+        // still under review must not be mistaken for a failed merge simply
+        // because it has not landed yet.
         const QString label = choice.label;
+        const QString mergedNote =
+            QStringLiteral("%1 merged").arg(choice.mergedCount);
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
+        toolTip += QStringLiteral("\nMerged success: %1 of %2 runs")
+                       .arg(choice.mergedCount)
+                       .arg(choice.runCount);
         if (!providerIdentities.contains(choice.provider)) {
             const AgentAccountProfile account =
                 activeAgentAccount(choice.provider);
@@ -3784,31 +5270,18 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(chosenIdentity, toolTip);
-        addChoice(choice.icon, label, choice.provider, choice.model, toolTip);
+        addChoice(choice.icon, label, choice.provider, choice.model, toolTip,
+                  mergedNote);
     }
 
-    // These API agents do not expose a per-run model chooser in this composer,
-    // but remain first-class choices in the combined menu.
-    addChoice(agentControlIcon(4), QStringLiteral("OpenAI API"),
-              QStringLiteral("openai"), QString(),
-              QStringLiteral("Headless OpenAI API agent"));
-    addChoice(agentControlIcon(2), QStringLiteral("Claude API"),
-              QStringLiteral("claude-api"), QString(),
-              QStringLiteral("Headless Claude API agent"));
-
-    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
-    // rather than starting an agent, so they are appended as their own group
-    // instead of being ranked among the coding models above — a 70B chat model
-    // is not "stronger" or "weaker" than an agent that can edit the repository.
-    QComboBox cloudflareModels;
-    populateCloudflareAiModelCombo(&cloudflareModels);
-    for (int i = 0; i < cloudflareModels.count(); ++i) {
-        const QString label = cloudflareModels.itemText(i);
-        addChoice(agentControlIcon(5), label, kCloudflareAiProvider,
-                  cloudflareModels.itemData(i).toString(),
-                  QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
-                                 "starts no agent").arg(label));
-    }
+    // The headless API agents and the Cloudflare Workers AI chat models, in
+    // catalog order below the ranked coding models. None of them has a merge
+    // outcome to count — a Workers AI model only answers a prompt and never
+    // creates a branch — so they carry no "0 merged" score that would read as a
+    // failure rather than as "not applicable".
+    for (const ComposerModelChoice &entry : unranked)
+        addChoice(agentControlIcon(entry.iconIndex), entry.label, entry.provider,
+                  entry.model, entry.tooltip);
 
     int selected = -1;
     for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
@@ -3862,6 +5335,28 @@ QString MainWindow::testQuickAddAgentModelLabel(const QString &model) const
             return m_quickAddAgentModelSelector->itemText(row);
     }
     return QString();
+}
+
+QString MainWindow::testQuickAddAgentModelMergedNote(const QString &model) const
+{
+    if (!m_quickAddAgentModelSelector)
+        return QString();
+    for (int row = 0; row < m_quickAddAgentModelSelector->count(); ++row) {
+        if (m_quickAddAgentModelSelector->itemData(row, Qt::UserRole + 1)
+                .toString() == model)
+            return m_quickAddAgentModelSelector
+                ->itemData(row, kAgentChoiceDescriptionRole)
+                .toString();
+    }
+    return QString();
+}
+
+QString MainWindow::testPromptOverlayPlacement() const
+{
+    if (m_promptOverlayDetached)
+        return QStringLiteral("detached");
+    return m_promptOverlayFloating ? QStringLiteral("floating")
+                                   : QStringLiteral("anchored");
 }
 #endif // FORKMESH_WINDOW_TESTS
 
@@ -5461,7 +6956,7 @@ void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace
         m_autoFiledStallSignatures.insert(signature);
         logSystem(QStringLiteral(
             "Auto-started an agent to fix the UI stall (toggle in Settings > "
-            "Agents & IDE)."));
+            "Agents / IDE)."));
     }
 }
 
@@ -6587,15 +8082,18 @@ QWidget *MainWindow::buildLogSection()
     clearButton->setCursor(Qt::PointingHandCursor);
     clearButton->setToolTip("Clear all saved logs");
     setOcticon(clearButton, "trash", 14);
-    auto *cloudflareButton = new QPushButton("Cloudflare logs");
-    cloudflareButton->setObjectName(
-        QStringLiteral("cloudflareWorkerLogsButton"));
-    cloudflareButton->setCursor(Qt::PointingHandCursor);
-    cloudflareButton->setToolTip(
-        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
-    setOcticon(cloudflareButton, "cloud", 14);
-    connect(cloudflareButton, &QPushButton::clicked, this,
-            &MainWindow::showCloudflareWorkerLogs);
+    // The Cloudflare viewer moved down to the debug strip beside the Worker's
+    // own status dots (adhoc #1559). What sits here instead is the whole log in
+    // its own window: every retained line, unfiltered, in one scrollback.
+    auto *popoutButton = new QPushButton("Pop out");
+    popoutButton->setObjectName(QStringLiteral("logPopoutButton"));
+    popoutButton->setCursor(Qt::PointingHandCursor);
+    popoutButton->setToolTip(
+        QStringLiteral("Open the complete log — every category, every retained "
+                       "line — in its own window"));
+    setOcticon(popoutButton, "screen-full", 14);
+    connect(popoutButton, &QPushButton::clicked, this,
+            &MainWindow::showNetworkLogPopout);
 
     // The timeline is only a compact overview. Keep the paged rich log visible
     // below it so opening Logs stays useful immediately instead of spending the
@@ -6677,7 +8175,9 @@ QWidget *MainWindow::buildLogSection()
     filterScroll->setFrameShape(QFrame::NoFrame);
     filterScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     filterScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    filterScroll->setFixedHeight(34);
+    // Tall enough for the bigger, icon-bearing chips (adhoc #1559) plus the
+    // horizontal scrollbar the full taxonomy needs on a laptop-width window.
+    filterScroll->setFixedHeight(44);
 
     // Discover which categories the buffered history contains and build the
     // chips now, but leave rendering the history itself (the newest
@@ -6701,6 +8201,12 @@ QWidget *MainWindow::buildLogSection()
         m_logFilterEmptyNotice = false;
         if (m_settingsLog)
             m_settingsLog->clear();
+        // The pop-out shows the same buffer, so it empties with it.
+        if (m_logPopoutView)
+            m_logPopoutView->clear();
+        m_logPopoutDate.clear();
+        m_logPopoutPending.clear();
+        updateNetworkLogPopoutStatus();
         if (m_logActivityLights)
             m_logActivityLights->reset();
         if (m_logActivityHeader)
@@ -6715,7 +8221,7 @@ QWidget *MainWindow::buildLogSection()
     headerRow->addWidget(label);
     headerRow->addWidget(m_logTimelineSummary);
     headerRow->addStretch();
-    headerRow->addWidget(cloudflareButton);
+    headerRow->addWidget(popoutButton);
     headerRow->addWidget(clearButton);
 
     auto *layout = new QVBoxLayout(page);
@@ -6923,42 +8429,64 @@ QString MainWindow::testLogTimelineSummary() const
 }
 #endif
 
-void MainWindow::showCloudflareWorkerLogs()
+// Shared by the live viewer and the debug bar's Monitor toggle: both need the
+// same Worker directory, the same pinned Wrangler invocation, and the same
+// credential — and neither may ever put that credential in argv.
+bool MainWindow::prepareCloudflareTail(
+    QString *token, QString *workerDirectory,
+    forkmesh::control::CloudflareBootstrapCommand *command,
+    bool *fromStoredSecret, bool allowPrompt)
 {
-    QString token =
-        m_cloudflareTokenEdit
-            ? m_cloudflareTokenEdit->text().trimmed()
-            : QString();
+    if (!token || !workerDirectory || !command)
+        return false;
+    const auto scrub = [token] {
+        token->fill(QChar(u'\0'));
+        token->clear();
+    };
+    *token = m_cloudflareTokenEdit ? m_cloudflareTokenEdit->text().trimmed()
+                                   : QString();
     // Fall back to the credential this node already stores for the deploy
     // workflow (Settings > Secrets & Coves) so the viewer does not ask for a
     // second token that authenticates against the same account.
     const QMap<QString, QString> storedVariables = ActionStore::variables();
-    bool storedToken = false;
-    if (token.isEmpty()) {
-        token = forkmesh::control::cloudflareApiTokenFromVariables(
+    if (fromStoredSecret)
+        *fromStoredSecret = false;
+    if (token->isEmpty()) {
+        *token = forkmesh::control::cloudflareApiTokenFromVariables(
             storedVariables);
-        storedToken = !token.isEmpty();
+        if (fromStoredSecret)
+            *fromStoredSecret = !token->isEmpty();
     }
-    if (token.isEmpty()) {
+    if (token->isEmpty()) {
+        // A background monitor must never be the thing that pops a modal —
+        // it can be switched on from the debug bar at any moment, including
+        // on a headless node with nobody there to type.
+        if (!allowPrompt) {
+            flashMessage(
+                QStringLiteral(
+                    "Cloud log monitoring needs a Cloudflare API token. Open "
+                    "the Cloud viewer once, or store CLOUDFLARE_API_TOKEN in "
+                    "Settings > Secrets."),
+                true);
+            return false;
+        }
         bool accepted = false;
-        token = QInputDialog::getText(
-                    this, QStringLiteral("Cloudflare Worker logs"),
-                    QStringLiteral(
-                        "Scoped Cloudflare API token (used for this live "
-                        "viewer only):"),
-                    QLineEdit::Password, QString(), &accepted)
-                    .trimmed();
-        if (!accepted || token.isEmpty()) {
-            token.fill(QChar(u'\0'));
-            token.clear();
-            return;
+        *token = QInputDialog::getText(
+                     this, QStringLiteral("Cloudflare Worker logs"),
+                     QStringLiteral(
+                         "Scoped Cloudflare API token (used for this live "
+                         "viewer only):"),
+                     QLineEdit::Password, QString(), &accepted)
+                     .trimmed();
+        if (!accepted || token->isEmpty()) {
+            scrub();
+            return false;
         }
     }
 
-    const QString workerDirectory =
-        forkmesh::control::findCloudflareWorkerDirectory(
-            QStringLiteral(FORKMESH_SOURCE_DIR),
-            QCoreApplication::applicationDirPath());
+    *workerDirectory = forkmesh::control::findCloudflareWorkerDirectory(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
     const QString npx =
         QStandardPaths::findExecutable(QStringLiteral("npx"));
     QString account =
@@ -6976,31 +8504,28 @@ void MainWindow::showCloudflareWorkerLogs()
         account = forkmesh::control::cloudflareAccountIdFromVariables(
             storedVariables);
     }
-    const auto command =
-        forkmesh::control::buildCloudflareTailCommand(
-            token, account, npx);
-    if (workerDirectory.isEmpty() || command.program.isEmpty()) {
+    *command = forkmesh::control::buildCloudflareTailCommand(*token, account,
+                                                             npx);
+    if (workerDirectory->isEmpty() || command->program.isEmpty()) {
         flashMessage(
-            workerDirectory.isEmpty()
+            workerDirectory->isEmpty()
                 ? QStringLiteral(
                       "The installed Cloudflare Worker bundle is incomplete.")
                 : QStringLiteral(
                       "Cloudflare live logs require Node.js/npx and a valid "
                       "account ID."),
             true);
-        token.fill(QChar(u'\0'));
-        token.clear();
-        return;
+        scrub();
+        return false;
     }
-    if (command.arguments.join(QChar(u'\0')).contains(token)) {
+    if (command->arguments.join(QChar(u'\0')).contains(*token)) {
         flashMessage(
             QStringLiteral(
                 "Refusing an unsafe Worker log command containing a "
                 "credential."),
             true);
-        token.fill(QChar(u'\0'));
-        token.clear();
-        return;
+        scrub();
+        return false;
     }
     if (m_cloudflareTokenEdit &&
         !m_cloudflareTokenEdit->text().isEmpty()) {
@@ -7008,112 +8533,844 @@ void MainWindow::showCloudflareWorkerLogs()
         m_cloudflareTokenEdit->setPlaceholderText(
             QStringLiteral("token is in the live log viewer only"));
     }
+    return true;
+}
 
-    QDialog dialog(this);
-    dialog.setObjectName(QStringLiteral("cloudflareWorkerLogsDialog"));
-    dialog.setWindowTitle(QStringLiteral("Cloudflare Worker live logs"));
-    dialog.resize(900, 560);
-    auto *layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(16, 16, 16, 16);
+// --------------------------------------------------------------------------
+// Cloudflare Worker live logs (adhoc #1626)
+//
+// The tail used to open in a small modal pane holding nothing but a text box.
+// It now opens the way the app's own log does: a window of its own you can park
+// beside the app, an activity rail of Worker errors over time above the stream,
+// and a Pause control so the scrollback holds still while a line is read
+// instead of sliding out from under the pointer.
+// --------------------------------------------------------------------------
+
+namespace {
+// One (timestamp, isError) pair per Worker event, kept for the chart. A busy
+// Worker fills this in well under a day, so the oldest tenth is dropped in one
+// move rather than one element per event.
+constexpr int kCloudLogTimelineTicks = 20000;
+// What the chart's Errors-only view keeps. The other events carry the second
+// category so they still draw when the filter is off.
+QString cloudLogErrorCategory() { return QStringLiteral("error"); }
+QString cloudLogRequestCategory() { return QStringLiteral("request"); }
+} // namespace
+
+// Records a Worker event on the chart's timeline. Ticks accrue whether or not
+// the window is open — the monitor may have been running for hours by the time
+// somebody opens the viewer, and the point of the chart is that history.
+void MainWindow::recordCloudLogEvent(bool isError)
+{
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    m_cloudLogTicks.append(qMakePair(nowMs, isError));
+    if (m_cloudLogTicks.size() > kCloudLogTimelineTicks)
+        m_cloudLogTicks.remove(0, kCloudLogTimelineTicks / 10);
+    if (!m_cloudLogWindowChart)
+        return;
+    // A preset range follows the present as events arrive, but an interval the
+    // reader dragged out is theirs — same rule as the app log's own rail.
+    if (m_cloudLogWindowRangeMinutes > 0 && !m_cloudLogWindowChart->isZoomed()) {
+        m_cloudLogWindowChart->setRange(
+            nowMs - qint64(m_cloudLogWindowRangeMinutes) * 60 * 1000, nowMs);
+    }
+    if (nowMs < m_cloudLogWindowChart->viewFromMs() ||
+        nowMs > m_cloudLogWindowChart->viewToMs())
+        return;
+    LogTimelineEntry entry;
+    entry.timestampMs = nowMs;
+    entry.category =
+        isError ? cloudLogErrorCategory() : cloudLogRequestCategory();
+    m_cloudLogWindowChart->appendEntry(entry);
+}
+
+// Rebuilds the rail from the retained ticks: on open, and whenever the range
+// or the Errors-only toggle changes.
+void MainWindow::refreshCloudLogTimeline()
+{
+    if (!m_cloudLogWindowChart)
+        return;
+    QVector<LogTimelineEntry> entries;
+    entries.reserve(m_cloudLogTicks.size());
+    for (const auto &tick : std::as_const(m_cloudLogTicks)) {
+        LogTimelineEntry entry;
+        entry.timestampMs = tick.first;
+        entry.category = tick.second ? cloudLogErrorCategory()
+                                     : cloudLogRequestCategory();
+        entries.append(entry);
+    }
+    m_cloudLogWindowChart->setEntries(std::move(entries));
+    // Red for the errors-only rail, the log page's blue for all traffic.
+    m_cloudLogWindowChart->setCategoryFilter(
+        m_cloudLogWindowErrorsOnly ? cloudLogErrorCategory() : QString(),
+        QColor(m_cloudLogWindowErrorsOnly ? QStringLiteral("#f85149")
+                                          : QStringLiteral("#58a6ff")));
+    updateCloudLogTimelineSummary();
+}
+
+void MainWindow::setCloudLogTimelineMinutes(int minutes)
+{
+    if (minutes <= 0)
+        return;
+    m_cloudLogWindowRangeMinutes = minutes;
+    if (!m_cloudLogWindowChart)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_cloudLogWindowChart->setRange(now - qint64(minutes) * 60 * 1000, now);
+    refreshCloudLogTimeline();
+}
+
+// "41 errors · Aug 7, 4:12 PM – 5:12 PM" under the rail, plus the Reset zoom
+// button's enabled state.
+void MainWindow::updateCloudLogTimelineSummary()
+{
+    if (!m_cloudLogWindowChart || !m_cloudLogWindowSummary)
+        return;
+    const int count = m_cloudLogWindowChart->visibleEntryCount();
+    const QString noun = m_cloudLogWindowErrorsOnly ? QStringLiteral("error")
+                                                    : QStringLiteral("event");
+    QString text = QStringLiteral("%1 %2%3 · %4 – %5")
+                       .arg(count)
+                       .arg(noun)
+                       .arg(count == 1 ? QString() : QStringLiteral("s"))
+                       .arg(QDateTime::fromMSecsSinceEpoch(
+                                m_cloudLogWindowChart->viewFromMs())
+                                .toString(QStringLiteral("MMM d, h:mm AP")))
+                       .arg(QDateTime::fromMSecsSinceEpoch(
+                                m_cloudLogWindowChart->viewToMs())
+                                .toString(QStringLiteral("MMM d, h:mm AP")));
+    if (m_cloudLogWindowChart->isZoomed())
+        text += QStringLiteral(" · Zoomed");
+    m_cloudLogWindowSummary->setText(text);
+    if (m_cloudLogWindowResetZoom)
+        m_cloudLogWindowResetZoom->setEnabled(m_cloudLogWindowChart->isZoomed());
+}
+
+// Which stream, if any, is feeding the window right now.
+bool MainWindow::cloudLogMonitorRunning() const
+{
+    return m_cloudLogMonitorProcess &&
+           m_cloudLogMonitorProcess->state() != QProcess::NotRunning;
+}
+
+bool MainWindow::cloudLogViewerRunning() const
+{
+    return m_cloudLogViewerProcess &&
+           m_cloudLogViewerProcess->state() != QProcess::NotRunning;
+}
+
+void MainWindow::updateCloudLogWindowNotice()
+{
+    if (!m_cloudLogWindowNotice)
+        return;
+    if (cloudLogMonitorRunning()) {
+        m_cloudLogWindowNotice->setText(QStringLiteral(
+            "Attached to the debug bar's cloud log monitor. Every request "
+            "shows the user agent behind it; Worker errors also raise an "
+            "alert. Unchecking Monitor stops the stream."));
+        return;
+    }
+    if (cloudLogViewerRunning() || m_cloudLogViewerProcess) {
+        m_cloudLogWindowNotice->setText(
+            m_cloudLogViewerStoredToken
+                ? QStringLiteral(
+                      "Read-only live tail for the configured ForkMesh Worker, "
+                      "showing the user agent behind each request, "
+                      "authenticated with the stored CLOUDFLARE_API_TOKEN "
+                      "secret. The token stays in this process's memory only "
+                      "and is erased when this viewer closes.")
+                : QStringLiteral(
+                      "Read-only live tail for the configured ForkMesh Worker, "
+                      "showing the user agent behind each request. The API "
+                      "token stays in this process's memory only and is erased "
+                      "when this viewer closes."));
+        return;
+    }
+    m_cloudLogWindowNotice->setText(QStringLiteral(
+        "Nothing is streaming. Click Cloud in the debug bar again to start a "
+        "fresh tail, or tick Monitor to keep one running in the background."));
+}
+
+// "Monitoring · 114 events · 41 errors · paused · 12 new lines below".
+void MainWindow::updateCloudLogWindowStatus()
+{
+    if (!m_cloudLogWindowStatus)
+        return;
+    const bool monitoring = cloudLogMonitorRunning();
+    // Counts come from the stream that is feeding the pane, and — once both
+    // have stopped — from the one that last did, so switching the Monitor box
+    // off does not blank the totals it just reported.
+    const bool fromMonitor =
+        monitoring || (!cloudLogViewerRunning() && m_cloudLogWindowFromMonitor);
+    const int events =
+        fromMonitor ? m_cloudLogMonitorEvents : m_cloudLogViewerEvents;
+    const int errors =
+        fromMonitor ? m_cloudLogMonitorErrors : m_cloudLogViewerErrors;
+    QString text = m_cloudLogWindowState;
+    if (text.isEmpty())
+        text = monitoring ? QStringLiteral("Monitoring")
+                          : QStringLiteral("Stopped");
+    text += QStringLiteral(" · %1 event%2 · %3 error%4")
+                .arg(events)
+                .arg(events == 1 ? QString() : QStringLiteral("s"))
+                .arg(errors)
+                .arg(errors == 1 ? QString() : QStringLiteral("s"));
+    if (m_cloudLogWindowPaused) {
+        text += m_cloudLogWindowHeld > 0
+                    ? QStringLiteral(" · paused · %1 new line%2 below")
+                          .arg(m_cloudLogWindowHeld)
+                          .arg(m_cloudLogWindowHeld == 1 ? QString()
+                                                         : QStringLiteral("s"))
+                    : QStringLiteral(" · paused");
+    }
+    m_cloudLogWindowStatus->setText(text);
+}
+
+// Follows the tail. Flagged while it runs so the scrollbar handler can tell our
+// own move from the reader scrolling away from the bottom.
+void MainWindow::scrollCloudLogWindowToEnd()
+{
+    if (!m_cloudLogWindowView)
+        return;
+    m_cloudLogWindowScrolling = true;
+    m_cloudLogWindowView->moveCursor(QTextCursor::End);
+    m_cloudLogWindowView->ensureCursorVisible();
+    if (QScrollBar *bar = m_cloudLogWindowView->verticalScrollBar())
+        bar->setValue(bar->maximum());
+    m_cloudLogWindowScrolling = false;
+}
+
+// Stops the pane from following the stream. Lines still arrive and still count
+// — the view simply holds where it is until the reader is done with it.
+void MainWindow::setCloudLogWindowPaused(bool paused)
+{
+    m_cloudLogWindowPaused = paused;
+    if (m_cloudLogWindowPauseButton) {
+        const QSignalBlocker blocker(m_cloudLogWindowPauseButton);
+        m_cloudLogWindowPauseButton->setChecked(paused);
+        m_cloudLogWindowPauseButton->setText(
+            paused ? QStringLiteral("Resume scrolling")
+                   : QStringLiteral("Pause scrolling"));
+        setOcticon(m_cloudLogWindowPauseButton, paused ? "play" : "stop", 14);
+    }
+    if (!paused) {
+        m_cloudLogWindowHeld = 0;
+        scrollCloudLogWindowToEnd();
+    }
+    updateCloudLogWindowStatus();
+}
+
+// Scrolling away from the bottom is itself a pause, and scrolling back to it
+// resumes: the button reports the state rather than fighting the reader for it.
+void MainWindow::onCloudLogWindowScrolled(int value)
+{
+    if (m_cloudLogWindowScrolling || !m_cloudLogWindowView)
+        return;
+    QScrollBar *bar = m_cloudLogWindowView->verticalScrollBar();
+    if (!bar || bar->maximum() <= 0)
+        return;
+    const bool atBottom = value >= bar->maximum() - 4;
+    if (atBottom == !m_cloudLogWindowPaused)
+        return;
+    setCloudLogWindowPaused(!atBottom);
+}
+
+// One rendered line into the open window, from whichever tail produced it.
+void MainWindow::appendCloudLogWindowLine(const QString &line, bool)
+{
+    if (!m_cloudLogWindowView)
+        return;
+    QScrollBar *bar = m_cloudLogWindowView->verticalScrollBar();
+    const int anchor = bar ? bar->value() : 0;
+    QTextCursor cursor(m_cloudLogWindowView->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(line + QLatin1Char('\n'));
+    if (m_cloudLogWindowPaused) {
+        ++m_cloudLogWindowHeld;
+        // Pinned back where the reader left it: a paused pane that still drifts
+        // with the stream is not paused.
+        if (bar && bar->value() != anchor) {
+            const QSignalBlocker blocker(bar);
+            bar->setValue(qMin(anchor, bar->maximum()));
+        }
+    } else {
+        scrollCloudLogWindowToEnd();
+    }
+    updateCloudLogWindowStatus();
+}
+
+// The viewer's own Wrangler tail, for when the debug bar's Monitor box is off.
+// Owned by the window rather than by a modal exec(): the pane is a window you
+// can leave open beside the app, so the process outlives the call that started
+// it and is torn down when the window closes (or the monitor takes over).
+void MainWindow::startCloudflareLogViewerTail(
+    const QString &token, const QString &workerDirectory,
+    const forkmesh::control::CloudflareBootstrapCommand &command)
+{
+    stopCloudflareLogViewerTail();
+    m_cloudLogWindowFromMonitor = false;
+    m_cloudLogViewerToken = token;
+    m_cloudLogViewerEvents = 0;
+    m_cloudLogViewerErrors = 0;
+    m_cloudLogViewerBuffer.clear();
+    m_cloudLogViewerProcess = new QProcess(this);
+    m_cloudLogViewerProcess->setWorkingDirectory(workerDirectory);
+    m_cloudLogViewerProcess->setProcessEnvironment(command.environment);
+    m_cloudLogViewerProcess->setProcessChannelMode(QProcess::MergedChannels);
+    m_cloudLogViewerProcess->setStandardInputFile(QProcess::nullDevice());
+    connect(m_cloudLogViewerProcess, &QProcess::readyReadStandardOutput, this,
+            &MainWindow::readCloudflareLogViewerOutput);
+    connect(m_cloudLogViewerProcess, &QProcess::started, this, [this] {
+        m_cloudLogWindowState =
+            QStringLiteral("Connected · waiting for Worker events");
+        updateCloudLogWindowStatus();
+    });
+    connect(m_cloudLogViewerProcess, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                m_cloudLogWindowState = QStringLiteral(
+                    "Could not start npx. Install Node.js to use live Worker "
+                    "logs.");
+                updateCloudLogWindowStatus();
+                updateCloudLogWindowNotice();
+            });
+    connect(m_cloudLogViewerProcess, &QProcess::finished, this,
+            [this](int exitCode, QProcess::ExitStatus exitStatus) {
+                readCloudflareLogViewerOutput();
+                m_cloudLogWindowState =
+                    exitStatus == QProcess::NormalExit && exitCode == 0
+                        ? QStringLiteral("Log stream ended")
+                        : QStringLiteral("Log stream stopped (exit %1)")
+                              .arg(exitCode);
+                updateCloudLogWindowStatus();
+                updateCloudLogWindowNotice();
+            });
+    m_cloudLogWindowState = QStringLiteral("Connecting…");
+    updateCloudLogWindowStatus();
+    updateCloudLogWindowNotice();
+    m_cloudLogViewerProcess->start(command.program, command.arguments);
+}
+
+void MainWindow::stopCloudflareLogViewerTail()
+{
+    if (!m_cloudLogViewerProcess)
+        return;
+    // Cleared first: terminate() re-enters through finished(), and this path is
+    // a deliberate stop rather than the stream dying on its own.
+    QProcess *process = m_cloudLogViewerProcess;
+    m_cloudLogViewerProcess = nullptr;
+    process->disconnect(this);
+    if (process->state() != QProcess::NotRunning) {
+        process->terminate();
+        if (!process->waitForFinished(1500)) {
+            process->kill();
+            process->waitForFinished(1000);
+        }
+    }
+    // The environment holds the API token, so it goes with the child that
+    // needed it, as does this side's copy.
+    process->setProcessEnvironment(QProcessEnvironment());
+    process->deleteLater();
+    m_cloudLogViewerBuffer.clear();
+    m_cloudLogViewerToken.fill(QChar(u'\0'));
+    m_cloudLogViewerToken.clear();
+    if (m_cloudflareTokenEdit && m_cloudflareTokenEdit->text().isEmpty()) {
+        m_cloudflareTokenEdit->setPlaceholderText(
+            QStringLiteral("session-only Cloudflare API token"));
+    }
+}
+
+// Wrangler pretty-prints its JSON, so one event spans many lines and a read can
+// split it anywhere; takeCloudflareTailRecords() hands back whole events only
+// and keeps the remainder for the next read (adhoc #1623).
+void MainWindow::readCloudflareLogViewerOutput()
+{
+    if (!m_cloudLogViewerProcess)
+        return;
+    m_cloudLogViewerBuffer += m_cloudLogViewerProcess->readAllStandardOutput();
+    const QStringList records =
+        forkmesh::control::takeCloudflareTailRecords(&m_cloudLogViewerBuffer);
+    for (const QString &record : records) {
+        const forkmesh::control::CloudflareTailEvent event =
+            forkmesh::control::parseCloudflareTailLine(record);
+        const QString rendered = forkmesh::control::redactProcessOutput(
+            event.summary, {m_cloudLogViewerToken});
+        if (rendered.isEmpty())
+            continue;
+        if (event.parsed)
+            ++m_cloudLogViewerEvents;
+        if (event.isError)
+            ++m_cloudLogViewerErrors;
+        recordCloudLogEvent(event.isError);
+        // Same route the monitor's lines take, so the window renders one stream
+        // whichever tail is behind it.
+        emit cloudLogLineReceived(rendered, event.isError);
+    }
+}
+
+// The window: chart on top, stream below, and the controls for both.
+void MainWindow::buildCloudflareLogWindow()
+{
+    auto *dialog = new QDialog(this);
+    m_cloudLogWindow = dialog;
+    dialog->setObjectName(QStringLiteral("cloudflareWorkerLogsDialog"));
+    dialog->setWindowTitle(QStringLiteral("Cloudflare Worker live logs"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowFlag(Qt::Window);
+    dialog->resize(1180, 760);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(8);
 
-    auto *notice = new QLabel(
-        storedToken
-            ? QStringLiteral(
-                  "Read-only live tail for the configured ForkMesh Worker, "
-                  "authenticated with the stored CLOUDFLARE_API_TOKEN secret. "
-                  "The token stays in this process's memory only and is erased "
-                  "when this viewer closes.")
-            : QStringLiteral(
-                  "Read-only live tail for the configured ForkMesh Worker. The "
-                  "API token stays in this process's memory only and is erased "
-                  "when this viewer closes."));
+    auto *notice = new QLabel;
     notice->setObjectName(QStringLiteral("modeHint"));
     notice->setWordWrap(true);
+    m_cloudLogWindowNotice = notice;
     layout->addWidget(notice);
 
-    auto *status = new QLabel(QStringLiteral("Connecting…"));
+    auto *status = new QLabel;
     status->setObjectName(QStringLiteral("cloudflareWorkerLogsStatus"));
+    m_cloudLogWindowStatus = status;
     layout->addWidget(status);
 
-    auto *output = new QPlainTextEdit;
-    output->setObjectName(QStringLiteral("cloudflareWorkerLiveLogs"));
-    output->setReadOnly(true);
-    output->setLineWrapMode(QPlainTextEdit::NoWrap);
-    output->document()->setMaximumBlockCount(2500);
-    layout->addWidget(output, 1);
+    auto *chart = new LogTimelineChart(dialog);
+    chart->setObjectName(QStringLiteral("cloudflareWorkerLogsChart"));
+    chart->setFixedHeight(68);
+    chart->setAccessibleName(QStringLiteral("Worker error activity chart"));
+    m_cloudLogWindowChart = chart;
+    chart->viewChanged = [this] { updateCloudLogTimelineSummary(); };
+
+    auto *summary = new QLabel;
+    summary->setObjectName(QStringLiteral("logTimelineSummary"));
+    summary->setAccessibleName(QStringLiteral("Visible Worker event summary"));
+    m_cloudLogWindowSummary = summary;
+
+    auto *rangeRow = new QHBoxLayout;
+    rangeRow->setContentsMargins(0, 0, 0, 0);
+    rangeRow->setSpacing(6);
+    auto *rangeGroup = new QButtonGroup(dialog);
+    rangeGroup->setExclusive(true);
+    const struct {
+        const char *label;
+        int minutes;
+    } presets[] = {{"15m", 15}, {"1h", 60}, {"24h", 24 * 60}};
+    for (const auto &preset : presets) {
+        auto *button = new QPushButton(QString::fromLatin1(preset.label));
+        button->setObjectName(QStringLiteral("logRangeButton"));
+        button->setCheckable(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(QStringLiteral("Chart the past %1 of Worker events")
+                               .arg(QString::fromLatin1(preset.label)));
+        rangeGroup->addButton(button, preset.minutes);
+        rangeRow->addWidget(button);
+        const int minutes = preset.minutes;
+        connect(button, &QPushButton::clicked, this,
+                [this, minutes] { setCloudLogTimelineMinutes(minutes); });
+        if (minutes == m_cloudLogWindowRangeMinutes)
+            button->setChecked(true);
+    }
+
+    auto *errorsOnly = new QCheckBox(QStringLiteral("Errors only"));
+    errorsOnly->setObjectName(QStringLiteral("cloudflareWorkerLogsErrorsOnly"));
+    errorsOnly->setCursor(Qt::PointingHandCursor);
+    errorsOnly->setToolTip(QStringLiteral(
+        "Chart only the Worker's failures, not every request it served"));
+    errorsOnly->setChecked(m_cloudLogWindowErrorsOnly);
+    connect(errorsOnly, &QCheckBox::toggled, this, [this](bool on) {
+        m_cloudLogWindowErrorsOnly = on;
+        refreshCloudLogTimeline();
+    });
+    rangeRow->addWidget(errorsOnly);
+    rangeRow->addSpacing(8);
+    rangeRow->addWidget(summary);
+    rangeRow->addStretch(1);
+
+    m_cloudLogWindowResetZoom = new QPushButton(QStringLiteral("Reset zoom"));
+    m_cloudLogWindowResetZoom->setObjectName(QStringLiteral("ghostButton"));
+    m_cloudLogWindowResetZoom->setCursor(Qt::PointingHandCursor);
+    m_cloudLogWindowResetZoom->setEnabled(false);
+    setOcticon(m_cloudLogWindowResetZoom, "screen-full", 14);
+    connect(m_cloudLogWindowResetZoom, &QPushButton::clicked, chart,
+            &LogTimelineChart::resetZoom);
+    rangeRow->addWidget(m_cloudLogWindowResetZoom);
+
+    layout->addLayout(rangeRow);
+    layout->addWidget(chart);
+
+    auto *view = new QPlainTextEdit(dialog);
+    view->setObjectName(QStringLiteral("cloudflareWorkerLiveLogs"));
+    view->setReadOnly(true);
+    view->setLineWrapMode(QPlainTextEdit::NoWrap);
+    // A window this size holds far more than the old pane did, and the reader
+    // can now stop the stream to scroll back through it.
+    view->document()->setMaximumBlockCount(5000);
+    view->document()->setUndoRedoEnabled(false);
+    m_cloudLogWindowView = view;
+    connect(view->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            &MainWindow::onCloudLogWindowScrolled);
+    layout->addWidget(view, 1);
+
+    auto *copyButton = new QPushButton(QStringLiteral("Copy all"));
+    copyButton->setObjectName(QStringLiteral("cloudflareWorkerLogsCopy"));
+    copyButton->setCursor(Qt::PointingHandCursor);
+    copyButton->setToolTip(
+        QStringLiteral("Copy every line in this pane as plain text"));
+    connect(copyButton, &QPushButton::clicked, this, [this, copyButton] {
+        if (!m_cloudLogWindowView)
+            return;
+        QApplication::clipboard()->setText(m_cloudLogWindowView->toPlainText());
+        copyButton->setText(QStringLiteral("Copied!"));
+    });
+
+    auto *pauseButton = new QPushButton(QStringLiteral("Pause scrolling"));
+    pauseButton->setObjectName(QStringLiteral("cloudflareWorkerLogsPause"));
+    pauseButton->setCheckable(true);
+    pauseButton->setCursor(Qt::PointingHandCursor);
+    pauseButton->setToolTip(QStringLiteral(
+        "Hold the pane still while lines keep arriving. Scrolling away from "
+        "the bottom does the same; scrolling back resumes."));
+    setOcticon(pauseButton, "stop", 14);
+    m_cloudLogWindowPauseButton = pauseButton;
+    connect(pauseButton, &QPushButton::toggled, this,
+            [this](bool on) { setCloudLogWindowPaused(on); });
 
     auto *closeButton = new QPushButton(QStringLiteral("Close"));
     closeButton->setObjectName(QStringLiteral("primaryButton"));
     closeButton->setCursor(Qt::PointingHandCursor);
-    connect(closeButton, &QPushButton::clicked, &dialog,
-            &QDialog::accept);
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::close);
+
     auto *buttons = new QHBoxLayout;
+    buttons->addWidget(copyButton);
     buttons->addStretch(1);
+    buttons->addWidget(pauseButton);
     buttons->addWidget(closeButton);
     layout->addLayout(buttons);
 
-    QProcess process(&dialog);
-    process.setWorkingDirectory(workerDirectory);
-    process.setProcessEnvironment(command.environment);
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.setStandardInputFile(QProcess::nullDevice());
-    const auto appendOutput = [&process, output, &token] {
-        const QString chunk =
-            QString::fromUtf8(process.readAllStandardOutput());
-        if (chunk.isEmpty())
-            return;
-        output->moveCursor(QTextCursor::End);
-        output->insertPlainText(
-            forkmesh::control::redactProcessOutput(chunk, {token}));
-        output->moveCursor(QTextCursor::End);
-        output->ensureCursorVisible();
-    };
-    connect(&process, &QProcess::readyReadStandardOutput, &dialog,
-            appendOutput);
-    connect(&process, &QProcess::started, &dialog, [status] {
-        status->setText(
-            QStringLiteral("Connected · waiting for Worker events"));
-    });
-    connect(
-        &process, &QProcess::errorOccurred, &dialog,
-        [status](QProcess::ProcessError error) {
-            if (error == QProcess::FailedToStart) {
-                status->setText(
-                    QStringLiteral(
-                        "Could not start npx. Install Node.js to use live "
-                        "Worker logs."));
-            }
-        });
-    connect(
-        &process, &QProcess::finished, &dialog,
-        [status, appendOutput](int exitCode,
-                               QProcess::ExitStatus exitStatus) {
-            appendOutput();
-            status->setText(
-                exitStatus == QProcess::NormalExit && exitCode == 0
-                    ? QStringLiteral("Log stream ended")
-                    : QStringLiteral("Log stream stopped (exit %1)")
-                          .arg(exitCode));
-        });
-    process.start(command.program, command.arguments);
-    dialog.exec();
+    // Every line, whichever tail produced it, arrives here. Bound to the dialog
+    // so the connection dies with the window.
+    connect(this, &MainWindow::cloudLogLineReceived, dialog,
+            [this](const QString &line, bool isError) {
+                appendCloudLogWindowLine(line, isError);
+            });
+    // Closing the window stops the tail it owns; the debug bar's monitor, which
+    // is nobody's window, keeps running.
+    connect(dialog, &QDialog::finished, this,
+            [this] { stopCloudflareLogViewerTail(); });
 
-    if (process.state() != QProcess::NotRunning) {
-        process.terminate();
-        if (!process.waitForFinished(1500)) {
-            process.kill();
-            process.waitForFinished(1000);
-        }
+    m_cloudLogWindowPaused = false;
+    m_cloudLogWindowHeld = 0;
+    setCloudLogTimelineMinutes(m_cloudLogWindowRangeMinutes);
+    updateCloudLogWindowNotice();
+    updateCloudLogWindowStatus();
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
+void MainWindow::showCloudflareWorkerLogs()
+{
+    // The debug bar's Monitor toggle already holds a tail open against this
+    // Worker. Cloudflare caps how many tails one script can carry, and a second
+    // one would double the traffic for the same lines, so the viewer attaches
+    // to the running monitor instead: its backlog fills the pane and every new
+    // line arrives over cloudLogLineReceived().
+    const bool attached = cloudLogMonitorRunning();
+    const bool alreadyOpen = !m_cloudLogWindow.isNull();
+
+    if (alreadyOpen) {
+        m_cloudLogWindow->show();
+        m_cloudLogWindow->raise();
+        m_cloudLogWindow->activateWindow();
+        if (attached || cloudLogViewerRunning())
+            return;
+        // Otherwise the window outlived its stream — the monitor was switched
+        // off, or the tail died — and clicking Cloud starts a fresh one into
+        // the window that is already up.
     }
-    process.setProcessEnvironment(QProcessEnvironment());
+
+    if (attached) {
+        if (!alreadyOpen) {
+            buildCloudflareLogWindow();
+            if (!m_cloudLogMonitorRecent.isEmpty() && m_cloudLogWindowView) {
+                // Trailing newline included: live lines append at the end, and
+                // without it the first would run into the last of the backlog.
+                m_cloudLogWindowView->setPlainText(
+                    m_cloudLogMonitorRecent.join(QLatin1Char('\n')) +
+                    QLatin1Char('\n'));
+                scrollCloudLogWindowToEnd();
+            }
+        }
+        m_cloudLogWindowFromMonitor = true;
+        m_cloudLogWindowState = QStringLiteral("Monitoring");
+        updateCloudLogWindowNotice();
+        updateCloudLogWindowStatus();
+        return;
+    }
+
+    QString token;
+    QString workerDirectory;
+    forkmesh::control::CloudflareBootstrapCommand command;
+    bool storedToken = false;
+    if (!prepareCloudflareTail(&token, &workerDirectory, &command, &storedToken,
+                               true)) {
+        return;
+    }
+    m_cloudLogViewerStoredToken = storedToken;
+    // Re-checked rather than trusting `alreadyOpen`: asking for a token above
+    // runs a modal, and the window can be closed while it is up.
+    if (!m_cloudLogWindow)
+        buildCloudflareLogWindow();
+    startCloudflareLogViewerTail(token, workerDirectory, command);
     token.fill(QChar(u'\0'));
     token.clear();
-    if (m_cloudflareTokenEdit &&
-        m_cloudflareTokenEdit->text().isEmpty()) {
-        m_cloudflareTokenEdit->setPlaceholderText(
-            QStringLiteral("session-only Cloudflare API token"));
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QWidget *MainWindow::testCloudflareLogWindow() const
+{
+    return m_cloudLogWindow;
+}
+
+QString MainWindow::testCloudflareLogText() const
+{
+    return m_cloudLogWindowView ? m_cloudLogWindowView->toPlainText()
+                                : QString();
+}
+
+QString MainWindow::testCloudflareLogStatusText() const
+{
+    return m_cloudLogWindowStatus ? m_cloudLogWindowStatus->text() : QString();
+}
+
+QString MainWindow::testCloudflareLogTimelineSummary() const
+{
+    return m_cloudLogWindowSummary ? m_cloudLogWindowSummary->text()
+                                   : QString();
+}
+
+int MainWindow::testCloudflareLogTimelineCount() const
+{
+    return m_cloudLogWindowChart ? m_cloudLogWindowChart->visibleEntryCount()
+                                 : -1;
+}
+
+bool MainWindow::testCloudflareLogAtBottom() const
+{
+    if (!m_cloudLogWindowView)
+        return false;
+    const QScrollBar *bar = m_cloudLogWindowView->verticalScrollBar();
+    return !bar || bar->value() >= bar->maximum() - 4;
+}
+#endif
+
+// How much of the monitor's stream is kept for a viewer opened later. The point
+// of the backlog is context around the error that raised the alert, not a
+// second copy of the log.
+static constexpr int kCloudLogMonitorBacklog = 500;
+
+// The debug bar's Monitor checkbox. Checked, it holds one Wrangler tail open in
+// the background and turns every Worker failure into an ERROR-badged log line —
+// which is all it takes for alertOnLoggedError() to raise the same red card any
+// other failure gets (adhoc #1615). Healthy hits are not logged: they would bury
+// the app's own log under Worker traffic. The viewer sees them instead.
+void MainWindow::setCloudLogMonitorEnabled(bool enabled)
+{
+    if (enabled && m_cloudLogMonitorProcess)
+        return; // already monitoring (or still tearing the last one down)
+
+    if (!enabled) {
+        // Idempotent: the failed-start and died-on-its-own paths both come back
+        // through here by unchecking the box, and neither should log a stop for
+        // a monitor that is already gone.
+        if (!m_cloudLogMonitorProcess)
+            return;
+        m_cloudLogMonitorStopping = true;
+        if (m_cloudLogMonitorProcess->state() != QProcess::NotRunning) {
+            m_cloudLogMonitorProcess->terminate();
+            if (!m_cloudLogMonitorProcess->waitForFinished(1500)) {
+                m_cloudLogMonitorProcess->kill();
+                m_cloudLogMonitorProcess->waitForFinished(1000);
+            }
+        }
+        // The environment holds the API token, so it is dropped the moment the
+        // child that needed it is gone.
+        m_cloudLogMonitorProcess->setProcessEnvironment(QProcessEnvironment());
+        m_cloudLogMonitorProcess->disconnect(this);
+        m_cloudLogMonitorProcess->deleteLater();
+        m_cloudLogMonitorProcess = nullptr;
+        m_cloudLogMonitorStopping = false;
+        m_cloudLogMonitorBuffer.clear();
+        if (m_cloudLogWindow) {
+            // An open viewer was reading this stream. Say so rather than
+            // leaving it looking live; clicking Cloud again starts its own.
+            m_cloudLogWindowState = QStringLiteral("Monitor stopped");
+            updateCloudLogWindowNotice();
+            updateCloudLogWindowStatus();
+        }
+        logSystem(QStringLiteral(
+                      "Cloud: stopped monitoring the Worker log (%1 event%2, "
+                      "%3 error%4).")
+                      .arg(m_cloudLogMonitorEvents)
+                      .arg(m_cloudLogMonitorEvents == 1 ? QString()
+                                                        : QStringLiteral("s"))
+                      .arg(m_cloudLogMonitorErrors)
+                      .arg(m_cloudLogMonitorErrors == 1 ? QString()
+                                                        : QStringLiteral("s")));
+        updateCloudLogMonitorTooltip();
+        return;
     }
+
+    QString token;
+    QString workerDirectory;
+    forkmesh::control::CloudflareBootstrapCommand command;
+    // allowPrompt=false: a checkbox in the debug bar must not open a modal
+    // asking for a credential. Without a stored token it explains itself and
+    // pops back out.
+    if (!prepareCloudflareTail(&token, &workerDirectory, &command, nullptr,
+                               false)) {
+        if (m_cloudLogMonitorCheck)
+            m_cloudLogMonitorCheck->setChecked(false);
+        return;
+    }
+
+    // One tail per Worker: if the viewer window opened its own, hand it over to
+    // the monitor instead of running a second stream against the same script.
+    stopCloudflareLogViewerTail();
+
+    m_cloudLogMonitorBuffer.clear();
+    m_cloudLogMonitorRecent.clear();
+    m_cloudLogMonitorErrors = 0;
+    m_cloudLogMonitorEvents = 0;
+    m_cloudLogMonitorStopping = false;
+    m_cloudLogMonitorProcess = new QProcess(this);
+    m_cloudLogMonitorProcess->setWorkingDirectory(workerDirectory);
+    m_cloudLogMonitorProcess->setProcessEnvironment(command.environment);
+    m_cloudLogMonitorProcess->setProcessChannelMode(QProcess::MergedChannels);
+    m_cloudLogMonitorProcess->setStandardInputFile(QProcess::nullDevice());
+    connect(m_cloudLogMonitorProcess, &QProcess::readyReadStandardOutput, this,
+            &MainWindow::readCloudLogMonitorOutput);
+    connect(m_cloudLogMonitorProcess, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                logSystem(QStringLiteral(
+                    "Cloud: could not start the Worker log monitor \xE2\x80\x94 "
+                    "Node.js and npx are required."));
+                // Unchecking runs the teardown; the direct call covers a node
+                // with no debug bar to uncheck. Both are idempotent.
+                if (m_cloudLogMonitorCheck)
+                    m_cloudLogMonitorCheck->setChecked(false);
+                setCloudLogMonitorEnabled(false);
+            });
+    connect(m_cloudLogMonitorProcess, &QProcess::finished, this,
+            [this](int exitCode, QProcess::ExitStatus) {
+                readCloudLogMonitorOutput();
+                if (m_cloudLogMonitorStopping)
+                    return;
+                // The stream dying on its own is itself worth an alert: a
+                // monitor nobody knows has stopped is worse than no monitor.
+                logSystem(QStringLiteral(
+                              "Cloud: the Worker log monitor failed and "
+                              "stopped (exit %1).")
+                              .arg(exitCode));
+                if (m_cloudLogMonitorCheck)
+                    m_cloudLogMonitorCheck->setChecked(false);
+                setCloudLogMonitorEnabled(false);
+            });
+    // Logged before start() so the order reads right even when the child fails
+    // to launch synchronously.
+    logSystem(QStringLiteral(
+        "Cloud: monitoring the deployed Worker's live log for errors."));
+    updateCloudLogMonitorTooltip();
+    m_cloudLogMonitorProcess->start(command.program, command.arguments);
+    if (m_cloudLogWindow) {
+        m_cloudLogWindowFromMonitor = true;
+        m_cloudLogWindowState = QStringLiteral("Monitoring");
+        updateCloudLogWindowNotice();
+        updateCloudLogWindowStatus();
+    }
+    // The token only ever lived in the child's environment and this local; both
+    // copies go now that the process owns its own.
+    token.fill(QChar(u'\0'));
+    token.clear();
+}
+
+void MainWindow::readCloudLogMonitorOutput()
+{
+    if (!m_cloudLogMonitorProcess)
+        return;
+    consumeCloudLogMonitorBytes(
+        m_cloudLogMonitorProcess->readAllStandardOutput());
+}
+
+// Wrangler's `--format json` is pretty-printed, so one Worker event arrives as
+// ~30 indented lines and a read can cut through the middle of any of them.
+// Splitting per line used to hand parseCloudflareTailLine() fragments that never
+// decoded: the expanded JSON went straight to the viewer and no failure ever set
+// isError, so the Monitor box raised no alerts at all (adhoc #1623).
+void MainWindow::consumeCloudLogMonitorBytes(const QByteArray &chunk)
+{
+    m_cloudLogMonitorBuffer += chunk;
+    const QStringList records =
+        forkmesh::control::takeCloudflareTailRecords(&m_cloudLogMonitorBuffer);
+    for (const QString &record : records)
+        handleCloudLogMonitorLine(record);
+}
+
+void MainWindow::handleCloudLogMonitorLine(const QString &line)
+{
+    const forkmesh::control::CloudflareTailEvent event =
+        forkmesh::control::parseCloudflareTailLine(line);
+    const QString rendered =
+        forkmesh::control::redactProcessOutput(event.summary);
+    if (rendered.isEmpty())
+        return;
+    if (event.parsed)
+        ++m_cloudLogMonitorEvents;
+    m_cloudLogMonitorRecent << rendered;
+    while (m_cloudLogMonitorRecent.size() > kCloudLogMonitorBacklog)
+        m_cloudLogMonitorRecent.removeFirst();
+    // The viewer's chart is fed here rather than from the window, so the rail
+    // already has the monitor's history the first time somebody opens it.
+    recordCloudLogEvent(event.isError);
+    emit cloudLogLineReceived(rendered, event.isError);
+    if (!event.isError) {
+        updateCloudLogMonitorTooltip();
+        return;
+    }
+    ++m_cloudLogMonitorErrors;
+    // "error" in the text is what networkLogStyleFor() badges ERROR, and an
+    // ERROR-badged line is what alertOnLoggedError() turns into the red card.
+    // Nothing else here has to know about the alert path.
+    logSystem(QStringLiteral("Cloud: Worker error \xC2\xB7 %1").arg(rendered));
+    updateCloudLogMonitorTooltip();
+}
+
+void MainWindow::updateCloudLogMonitorTooltip()
+{
+    // Called from every point the monitor's counters move, so the open viewer's
+    // status line rides along with the checkbox's tooltip.
+    updateCloudLogWindowStatus();
+    if (!m_cloudLogMonitorCheck)
+        return;
+    const bool running = m_cloudLogMonitorProcess &&
+                         m_cloudLogMonitorProcess->state() !=
+                             QProcess::NotRunning;
+    m_cloudLogMonitorCheck->setToolTip(
+        running ? QStringLiteral(
+                      "Watching the deployed Worker's live log \xC2\xB7 %1 "
+                      "event%2, %3 error%4. Errors raise an alert.")
+                      .arg(m_cloudLogMonitorEvents)
+                      .arg(m_cloudLogMonitorEvents == 1 ? QString()
+                                                        : QStringLiteral("s"))
+                      .arg(m_cloudLogMonitorErrors)
+                      .arg(m_cloudLogMonitorErrors == 1 ? QString()
+                                                        : QStringLiteral("s"))
+                : QStringLiteral(
+                      "Watch the deployed Cloudflare Worker's live log and "
+                      "alert on every error it reports"));
 }
 
 QWidget *MainWindow::buildBreadcrumb()
@@ -7420,6 +9677,11 @@ QWidget *MainWindow::buildBreadcrumb()
                 switchToAgentsTab(sid);
                 dismissTopMessage();
             }
+        } else if (href == QLatin1String("fm:log:errors")) {
+            // Auto-raised error card (alertOnLoggedError): open the Log filtered
+            // to ERROR, where this failure and its neighbours are in full.
+            openFullLogForCategory(QStringLiteral("ERROR"));
+            dismissTopMessage();
         }
     });
     m_topMessage->hide();
@@ -7445,13 +9707,60 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessagePromptStatusLabel = new QLabel;
     m_topMessagePromptStatusLabel->setObjectName("topMessagePromptStatus");
     m_topMessagePromptStatusLabel->setTextFormat(Qt::RichText);
-    m_topMessagePromptStatusLabel->setWordWrap(true);
+    // One line, always — a live status keeps replacing this as the agent
+    // streams (adhoc #1570), so it elides rather than wrapping onto a second
+    // line and shifting the bubble's height on every event.
+    m_topMessagePromptStatusLabel->setWordWrap(false);
     m_topMessagePromptStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_topMessagePromptStatusLabel->setMinimumWidth(1);
     m_topMessagePromptStatusLabel->setFocusPolicy(Qt::NoFocus);
     m_topMessagePromptStatusLabel->setSizePolicy(QSizePolicy::Preferred,
                                                  QSizePolicy::Minimum);
     m_topMessagePromptStatusLabel->hide();
+
+    // "Agent #12 is done!" headline for a completion celebration (adhoc #1630).
+    // The icon is the very glyph that session wears in the agents list, so the
+    // card is recognisably that agent's rather than a generic green tick, and it
+    // sits on its own row so the summary underneath keeps the full bubble width.
+    m_topMessageAgentRow = new QWidget;
+    m_topMessageAgentRow->setObjectName("topMessageAgentRow");
+    auto *agentHeadlineRow = new QHBoxLayout(m_topMessageAgentRow);
+    agentHeadlineRow->setContentsMargins(0, 0, 0, 0);
+    agentHeadlineRow->setSpacing(6);
+    m_topMessageAgentIcon = new QLabel;
+    m_topMessageAgentIcon->setObjectName("topMessageAgentIcon");
+    m_topMessageAgentIcon->setFocusPolicy(Qt::NoFocus);
+    m_topMessageAgentIcon->setFixedSize(kToastAgentIconPx, kToastAgentIconPx);
+    m_topMessageAgentIcon->setScaledContents(false);
+    m_topMessageAgentIcon->setAlignment(Qt::AlignCenter);
+    m_topMessageAgentHeadline = new QLabel;
+    m_topMessageAgentHeadline->setObjectName("topMessageAgentHeadline");
+    m_topMessageAgentHeadline->setTextFormat(Qt::RichText);
+    m_topMessageAgentHeadline->setWordWrap(true);
+    m_topMessageAgentHeadline->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_topMessageAgentHeadline->setMinimumWidth(1);
+    m_topMessageAgentHeadline->setFocusPolicy(Qt::NoFocus);
+    m_topMessageAgentHeadline->setSizePolicy(QSizePolicy::Preferred,
+                                             QSizePolicy::Minimum);
+    m_topMessageAgentHeadline->setCursor(Qt::PointingHandCursor);
+    // The headline is the celebration's link to the transcript, so it routes
+    // "fm:agent:<id>" exactly as the message label does for a waiting agent.
+    connect(m_topMessageAgentHeadline, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                if (!href.startsWith(QLatin1String("fm:agent:")))
+                    return;
+                bool ok = false;
+                const int sid = href.mid(9).toInt(&ok);
+                if (!ok)
+                    return;
+                switchToAgentsTab(sid);
+                dismissTopMessage();
+            });
+    agentHeadlineRow->addWidget(m_topMessageAgentIcon, 0, Qt::AlignTop);
+    agentHeadlineRow->addWidget(m_topMessageAgentHeadline, 1);
+    m_topMessageAgentRow->setSizePolicy(QSizePolicy::Preferred,
+                                        QSizePolicy::Minimum);
+    m_topMessageAgentRow->hide();
 
     m_topMessagePromptImages = new QWidget;
     m_topMessagePromptImages->setObjectName("topMessagePromptImages");
@@ -7580,6 +9889,7 @@ QWidget *MainWindow::buildBreadcrumb()
     topMessageBodyLayout->setContentsMargins(0, 0, 0, 0);
     topMessageBodyLayout->setSpacing(kToastLineSpacing);
     topMessageBodyLayout->addWidget(m_topMessagePromptHeader);
+    topMessageBodyLayout->addWidget(m_topMessageAgentRow);
     topMessageBodyLayout->addWidget(m_topMessagePromptStatusLabel);
     topMessageBodyLayout->addWidget(m_topMessage);
     topMessageBodyLayout->addWidget(m_topMessagePromptImages);
@@ -7619,6 +9929,9 @@ QWidget *MainWindow::buildBreadcrumb()
     for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
                             static_cast<QWidget *>(m_topMessageBody),
                             static_cast<QWidget *>(m_topMessagePromptHeader),
+                            static_cast<QWidget *>(m_topMessageAgentRow),
+                            static_cast<QWidget *>(m_topMessageAgentIcon),
+                            static_cast<QWidget *>(m_topMessageAgentHeadline),
                             static_cast<QWidget *>(m_topMessagePromptStatusLabel),
                             static_cast<QWidget *>(m_topMessagePromptImages),
                             static_cast<QWidget *>(m_topMessageScroll),
@@ -7873,18 +10186,43 @@ QWidget *MainWindow::buildBreadcrumb()
             [this] { showSection(kUsersSectionIndex); });
     m_usersNavButton->setVisible(m_isAdmin);
 
-    // Small, icon-only rebuild+restart button, right-aligned under the avatar on
-    // the section-nav row. Hidden unless opted in via Settings (off by default);
-    // it's a dev-iteration shortcut for the same fast rebuild as the profile panel.
-    m_navRebuildButton = new QPushButton;
-    m_navRebuildButton->setObjectName("topNavButton");
-    m_navRebuildButton->setCursor(Qt::PointingHandCursor);
-    m_navRebuildButton->setToolTip(
+    // Files sits directly under Users, closing out the Network group: the same
+    // file-directory glyph the repo Explorer tab uses, so the rail reads as
+    // "the mesh, then the machine it runs on". Unlike the repo Explorer this
+    // browses the real filesystem — hidden entries included — so .git,
+    // .forkmesh and dotfiles are reachable without leaving the app.
+    m_filesNavButton = new ActivityRailButton(QStringLiteral("file-directory"),
+                                              QStringLiteral("Files"));
+    m_filesNavButton->setObjectName(QStringLiteral("topNavButton"));
+    m_filesNavButton->setCheckable(true);
+    m_filesNavButton->setCursor(Qt::PointingHandCursor);
+    m_filesNavButton->setToolTip(
+        QStringLiteral("Files - browse this machine's filesystem, hidden files "
+                       "included"));
+    setOcticon(m_filesNavButton, "file-directory", 16);
+    m_navGroup->addButton(m_filesNavButton, kFilesSectionIndex);
+    connect(m_filesNavButton, &QPushButton::clicked, this,
+            [this] { showSection(kFilesSectionIndex); });
+
+    // Rebuild+restart. It used to be an icon-only button on the window-chrome
+    // line; it now sits in the debug bar's right-hand tool cluster as a captioned
+    // rail item (see buildStatusBar), so the icon carries its word like every
+    // other labelled control. Hidden unless opted in via Settings (off by
+    // default); it's a dev-iteration shortcut for the same fast rebuild as the
+    // profile panel. iconSize is pinned because startButtonSpin renders its
+    // rotating frames at the button's icon size, and ActivityRailButton paints
+    // that icon in place of the octicon while the restart spin runs.
+    auto *rebuildButton = new ActivityRailButton(QStringLiteral("sync"),
+                                                 QStringLiteral("Restart"));
+    m_navRebuildButton = rebuildButton;
+    rebuildButton->setCheckable(false);
+    rebuildButton->setObjectName("topNavButton");
+    rebuildButton->setCursor(Qt::PointingHandCursor);
+    rebuildButton->setIconSize(QSize(kRailIconPx, kRailIconPx));
+    rebuildButton->setToolTip(
         QString::fromUtf8("Rebuild & restart \xE2\x80\x94 fast local rebuild, "
                           "then relaunch"));
-    m_navRebuildButton->setFixedSize(30, 30);
-    setOcticon(m_navRebuildButton, "sync", 14);
-    connect(m_navRebuildButton, &QPushButton::clicked, this,
+    connect(rebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_navRebuildButton); quickRebuildRestart(); });
 
     // "Log in / Sign up" pill (adhoc #115). The old first-run screen that asked
@@ -8010,9 +10348,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // #124) — its colour moved to the dot above the instance logo and its
     // node blips to the node dots beside the agent fleet.
     // Resource traces and the version moved to the opt-in debug/status rows at
-    // the bottom, leaving this chrome cluster for window-level actions only.
-    chromeRow->addWidget(m_navRebuildButton, 0, Qt::AlignVCenter);
-    chromeRow->addSpacing(8);
+    // the bottom, leaving this chrome cluster for the window buttons only —
+    // rebuild+restart went down to the debug bar's tool cluster with Resize.
 
     auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
         auto *button = new QPushButton;
@@ -8120,7 +10457,12 @@ void MainWindow::updateSignInButton()
 {
     if (!m_navSignInButton)
         return;
-    const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
+    // Signed-in state is now tracked explicitly on the auth path (`hasActive`
+    // includes a successful in-app login or matching desktop key binding). Use
+    // that primary signal and fall back to owner-name inference for any older
+    // state where the cached relay profile has already resolved the owner.
+    const bool signedIn = hasActiveAccountSession() ||
+                         !nodeOwnerDisplayName().trimmed().isEmpty();
     m_navSignInButton->setVisible(!m_headless && m_startupAuthResolved && !signedIn);
 }
 
@@ -10209,12 +12551,67 @@ void MainWindow::pushCurrentRepoUpstream()
                         .arg(repo.owner, repo.name, detail));
                 auto *viewBtn = box.addButton(QStringLiteral("View code"),
                                               QMessageBox::ActionRole);
+                auto *markSafeBtn = box.addButton(QStringLiteral("Mark safe & commit"),
+                                                  QMessageBox::YesRole);
                 auto *cancelBtn = box.addButton(QStringLiteral("Cancel push"),
                                                 QMessageBox::RejectRole);
                 auto *bypassBtn = box.addButton(QStringLiteral("Push anyway"),
                                                 QMessageBox::DestructiveRole);
                 box.setDefaultButton(cancelBtn);
                 box.exec();
+                if (box.clickedButton() == markSafeBtn) {
+                    // Reviewed-safe path: append the scanner's inline
+                    // suppression marker to each flagged line, commit that as
+                    // its own change, then rescan/push — the new commit no
+                    // longer matches, so the retry should sail through.
+                    QSet<QString> touchedPaths;
+                    bool allMarked = true;
+                    for (const RepoSecurityFinding &f : scan.findings) {
+                        if (RepoSecurity::markFindingSafe(repo.localPath, f))
+                            touchedPaths.insert(f.path);
+                        else
+                            allMarked = false;
+                    }
+                    m_pushingRepos.remove(index);
+                    clearRepoSyncActivity(index);
+                    refreshRepoSyncIndicators();
+                    if (touchedPaths.isEmpty()) {
+                        flashMessage(QStringLiteral("Could not mark the flagged "
+                                                    "lines as safe."),
+                                     true);
+                        return;
+                    }
+                    QStringList addArgs{QStringLiteral("add"), QStringLiteral("--")};
+                    for (const QString &path : std::as_const(touchedPaths))
+                        addArgs << path;
+                    runGitCapture(repo.localPath, addArgs, nullptr, nullptr);
+                    QString commitErr;
+                    if (!runGitCapture(repo.localPath,
+                                       {QStringLiteral("commit"), QStringLiteral("-m"),
+                                        QStringLiteral("Mark flagged secret scan "
+                                                       "findings as reviewed/safe")},
+                                       nullptr, &commitErr)) {
+                        flashMessage(QStringLiteral("Could not commit the "
+                                                    "reviewed-safe markers: %1")
+                                         .arg(commitErr.trimmed()),
+                                     true);
+                        return;
+                    }
+                    logSystem(QStringLiteral(
+                                  "Git: marked %1 finding%2 as reviewed/safe in "
+                                  "%3/%4 and committed the change.")
+                                  .arg(scan.findings.size())
+                                  .arg(scan.findings.size() == 1
+                                           ? QString()
+                                           : QStringLiteral("s"))
+                                  .arg(repo.owner, repo.name));
+                    if (!allMarked)
+                        flashMessage(QStringLiteral("Some flagged lines could not "
+                                                    "be marked safe; rescanning."),
+                                     true);
+                    pushCurrentRepoUpstream();
+                    return;
+                }
                 if (box.clickedButton() == viewBtn) {
                     // Jumping to the code cancels the push: the point is to remove
                     // the credential first. Copy the path/line out before the
@@ -10226,13 +12623,8 @@ void MainWindow::pushCurrentRepoUpstream()
                     clearRepoSyncActivity(index);
                     refreshRepoSyncIndicators();
                     openRepoDetail(index);
-                    // Switch to the Code tab (index 0) so the highlighted line is
-                    // visible; openRepoFileAtLine alone only touches the (currently
-                    // hidden) files panel.
-                    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-                        m_repoDetailTabs->button(0)->setChecked(true);
-                    if (m_repoDetailStack)
-                        m_repoDetailStack->setCurrentIndex(0);
+                    // openRepoFileAtLine opens the Files section itself
+                    // (adhoc #1590), which is where the highlighted line shows.
                     openRepoFileAtLine(path, line);
                     return;
                 }
@@ -10426,6 +12818,12 @@ void MainWindow::showChatView()
     showSection(2);
     if (!unread.isEmpty())
         switchConversation(unread);
+    // Nothing polls the office channel list any more (its messages arrive on
+    // each room's socket), so a channel created since launch would otherwise be
+    // missing from the sidebar. Opening chat is the user action that has to
+    // show it — and it re-lists once, not on a beat.
+    if (m_officeChannelMirror)
+        m_officeChannelMirror->refresh();
 }
 
 QString MainWindow::mostRecentUnreadConversation() const
@@ -10768,6 +13166,7 @@ void MainWindow::ensureSectionBuilt(int index)
     case 15: section = buildOrganizationTasksSection(); break;
     case 16: section = buildNotesSection(); break;
     case 17: section = buildUsersSection(); break;
+    case 18: section = buildFilesSection(); break;
     default: break;
     }
     if (!section)
@@ -10831,7 +13230,9 @@ void MainWindow::showSection(int index)
     } else if (index == 3) {
         // Opening Pings is the moment the website inbox has to be current
         // (adhoc #59); refreshWebAlerts() repaints the table when it lands.
-        refreshWebAlerts();
+        // Forced, because the unforced read is a one-shot seed at launch — a
+        // user action is exactly the case that outranks it.
+        refreshWebAlerts(true);
         refreshNotificationsTable();
     } else if (index == 4 && m_settingsLog) {
         // First visit renders the persisted history that buildLogSection()
@@ -10853,6 +13254,8 @@ void MainWindow::showSection(int index)
     } else if (index == kNetworkDiagnosticsSectionIndex) {
         refreshFirewallTables();
         refreshNetworkDiagnostics();
+        // Guards itself on the Web Requests tab being the current one.
+        refreshNetworkWebRequests();
     } else if (index == kControlNodeSectionIndex) {
         refreshControlNode();
     } else if (index == kOrganizationTasksSectionIndex) {
@@ -10861,6 +13264,8 @@ void MainWindow::showSection(int index)
         refreshNotes();
     } else if (index == kUsersSectionIndex) {
         refreshUsersPage();
+    } else if (index == kFilesSectionIndex) {
+        refreshFilesPage();
     }
 }
 
@@ -10879,6 +13284,12 @@ void MainWindow::showNetworkTab(int tabIndex)
 
 void MainWindow::refreshNetworkTab(int tabIndex)
 {
+    if (tabIndex >= 0 && tabIndex == m_networkWebRequestsTabIndex) {
+        // Web Requests reads the Worker's own traffic buckets, not local
+        // state, so it has its own fetch instead of the diagnostics rebuild.
+        refreshNetworkWebRequests();
+        return;
+    }
     switch (tabIndex) {
     case kNetworkRelaysTab:
         // Re-list and re-probe the relays each time the Relays tab opens.
@@ -11216,10 +13627,40 @@ void MainWindow::refreshNetworkReposPage()
     if (m_networkReposRefreshButton)
         m_networkReposRefreshButton->setEnabled(false);
 
+    const auto localCatalog = [this]() -> QJsonArray {
+        QJsonArray repos;
+        const QString localOwner = accountOwner().trimmed();
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (repo.previewOnly || repo.owner.trimmed().isEmpty() ||
+                repo.name.trimmed().isEmpty())
+                continue;
+            if (repo.localPath.trimmed().isEmpty() &&
+                repo.mirrorPath.trimmed().isEmpty())
+                continue;
+            const QString owner = repo.owner.trimmed();
+            const QString name = repo.name.trimmed();
+            QJsonObject localRepo;
+            localRepo.insert(QStringLiteral("owner"), owner);
+            localRepo.insert(QStringLiteral("name"), name);
+            localRepo.insert(QStringLiteral("source"), QStringLiteral("local-node"));
+            localRepo.insert(QStringLiteral("servingOwner"), owner);
+            const QString cloneUrl = repo.cloneUrl.trimmed();
+            localRepo.insert(
+                QStringLiteral("cloneUrl"),
+                cloneUrl.isEmpty() ? hostedCloneUrl(owner, name) : cloneUrl);
+            localRepo.insert(QStringLiteral("private"), repo.isPrivate);
+            localRepo.insert(QStringLiteral("isPrivate"), repo.isPrivate);
+            localRepo.insert(QStringLiteral("machineName"), localOwner);
+            repos.append(localRepo);
+        }
+        return repos;
+    };
+
     QNetworkRequest request(catalogListUrl());
     request.setRawHeader("accept", "application/json");
     QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, generation] {
+	connect(reply, &QNetworkReply::finished, this,
+	        [this, reply, localCatalog, generation] {
         const QByteArray body = reply->readAll();
         const QNetworkReply::NetworkError error = reply->error();
         const QString errorString = reply->errorString();
@@ -11229,9 +13670,19 @@ void MainWindow::refreshNetworkReposPage()
         if (m_networkReposRefreshButton)
             m_networkReposRefreshButton->setEnabled(true);
         if (error != QNetworkReply::NoError) {
-            if (m_networkReposStatus)
+            if (m_networkReposStatus) {
+                const QJsonArray localRepos = localCatalog();
+                if (!localRepos.isEmpty()) {
+                    m_networkReposStatus->setText(
+                        QStringLiteral("Showing local repositories (website unavailable): %1")
+                            .arg(errorString));
+                    renderNetworkRepos(localRepos);
+                    return;
+                }
                 m_networkReposStatus->setText(
-                    QStringLiteral("Repositories unavailable: %1").arg(errorString));
+                    QStringLiteral("Repositories unavailable: %1")
+                        .arg(errorString));
+            }
             return;
         }
         const QJsonObject obj = QJsonDocument::fromJson(body).object();
@@ -12464,10 +14915,12 @@ QWidget *MainWindow::buildHostsSection()
     m_hostPassEdit = new QLineEdit;
     m_hostPassEdit->setEchoMode(QLineEdit::Password);
     m_hostPassEdit->setPlaceholderText(
-        QStringLiteral("Optional — SSH agent/default key is preferred"));
+        QStringLiteral("Optional — the shared ForkMesh key is used first"));
     m_hostPassEdit->setToolTip(QStringLiteral(
-        "Leave blank to use your SSH agent, default key, or ~/.ssh/config. "
-        "A password entered here is kept only until ForkMesh exits and is "
+        "Leave blank when this host already authorizes the shared ForkMesh SSH "
+        "key (every fleet host does); ForkMesh falls back to your SSH agent, "
+        "default key, or ~/.ssh/config. A password entered here is only used "
+        "if the shared key is refused, is kept until ForkMesh exits, and is "
         "never written to settings."));
     form->addRow(QStringLiteral("SSH password (optional)"), m_hostPassEdit);
 
@@ -12629,7 +15082,97 @@ QWidget *MainWindow::buildHostsSection()
         "Optional \xE2\x80\x94 defaults to the next free mirrorN "
         "(mirror5, mirror6, \xE2\x80\xA6)"));
     vultrForm->addRow(QStringLiteral("Node name"), m_vultrNameEdit);
+
+    m_mirrorFleetDesiredSpin = new QSpinBox;
+    m_mirrorFleetDesiredSpin->setObjectName(
+        QStringLiteral("desiredHealthyMirrorCount"));
+    m_mirrorFleetDesiredSpin->setRange(0, 9999);
+    QSettings fleetSettings;
+    int initialDesired = 0;
+    if (fleetSettings.contains(kMirrorFleetDesiredSetting)) {
+        initialDesired =
+            fleetSettings.value(kMirrorFleetDesiredSetting).toInt();
+    } else {
+        // First exposure must be non-destructive for existing installations:
+        // seed the target from the managed fleet instead of an arbitrary one
+        // that could delete paid-for servers as soon as automation is enabled.
+        const QJsonArray existingHosts = forkmesh::control::loadSavedHosts(
+            fleetSettings, kHostsSetting, nullptr);
+        for (const QJsonValue &value : existingHosts) {
+            if (!forkmesh::control::savedHostVultrInstanceId(
+                     value.toObject()).isEmpty()) {
+                ++initialDesired;
+            }
+        }
+    }
+    m_mirrorFleetDesiredSpin->setValue(initialDesired);
+    m_mirrorFleetDesiredSpin->setToolTip(QStringLiteral(
+        "The number of healthy ForkMesh-managed Vultr mirrors to keep. "
+        "Increasing this creates servers; lowering it permanently destroys "
+        "excess managed servers. A mirror counts as healthy only after the "
+        "public catalog confirms live, fresh, integrity-approved clone traffic."));
+    vultrForm->addRow(QStringLiteral("Healthy mirrors to keep"),
+                      m_mirrorFleetDesiredSpin);
     vultrCol->addLayout(vultrForm);
+
+    m_mirrorFleetEnabledCheck = new QCheckBox(QStringLiteral(
+        "Automatically maintain this healthy mirror count"));
+    m_mirrorFleetEnabledCheck->setObjectName(
+        QStringLiteral("healthyMirrorFleetEnabled"));
+    m_mirrorFleetEnabledCheck->setChecked(
+        QSettings().value(kMirrorFleetEnabledSetting, false).toBool());
+    m_mirrorFleetEnabledCheck->setToolTip(QStringLiteral(
+        "Opt in to automatic Vultr fleet sizing. ForkMesh creates one server "
+        "at a time when healthy capacity is short and permanently destroys "
+        "excess servers when the number above is lowered. Only Vultr mirrors "
+        "created and tracked by this app are ever destroyed; manual hosts and "
+        "other providers are never touched."));
+    connect(m_mirrorFleetEnabledCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+        QSettings settings;
+        settings.setValue(kMirrorFleetEnabledSetting, enabled);
+        if (enabled && m_mirrorFleetDesiredSpin) {
+            // Persist even an untouched, safety-seeded target. Otherwise a
+            // restart during temporary replacement over-capacity could infer
+            // that larger transient fleet as the new desired count.
+            settings.setValue(kMirrorFleetDesiredSetting,
+                              m_mirrorFleetDesiredSpin->value());
+        }
+        if (!enabled) {
+            setMirrorFleetStatus(QStringLiteral(
+                "Automatic fleet sizing is off; existing servers are unchanged."));
+            armMirrorFleetCountdown(); // stops the check and its countdown
+            return;
+        }
+        QTimer::singleShot(0, this,
+                           &MainWindow::reconcileDesiredMirrorFleet);
+    });
+    connect(m_mirrorFleetDesiredSpin,
+            qOverload<int>(&QSpinBox::valueChanged), this,
+            [this](int desired) {
+        QSettings().setValue(kMirrorFleetDesiredSetting, desired);
+        if (m_mirrorFleetEnabledCheck &&
+            m_mirrorFleetEnabledCheck->isChecked()) {
+            QTimer::singleShot(0, this,
+                               &MainWindow::reconcileDesiredMirrorFleet);
+        }
+    });
+    vultrCol->addWidget(m_mirrorFleetEnabledCheck);
+    m_mirrorFleetStatus = new QLabel;
+    m_mirrorFleetStatus->setObjectName(
+        QStringLiteral("healthyMirrorFleetStatus"));
+    m_mirrorFleetStatus->setWordWrap(true);
+    m_mirrorFleetStatus->setToolTip(QStringLiteral(
+        "While automation is on, ForkMesh re-checks the public health catalog "
+        "every five minutes and creates or destroys one managed mirror per "
+        "check until the target is met. The countdown shows when the next "
+        "check runs."));
+    setMirrorFleetStatus(
+        m_mirrorFleetEnabledCheck->isChecked()
+            ? QStringLiteral("Checking managed mirror health…")
+            : QStringLiteral(
+                  "Automatic fleet sizing is off; existing servers are unchanged."));
+    vultrCol->addWidget(m_mirrorFleetStatus);
 
     // Agent CLIs on the new mirror (adhoc #418). A headless VPS has no browser
     // to sign either provider in with, so the installed binaries would sit
@@ -12761,6 +15304,7 @@ QWidget *MainWindow::buildHostsSection()
     renderVultrProvisionProgress();
     restoreVultrProvision();
     QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
+    QTimer::singleShot(0, this, &MainWindow::reconcileDesiredMirrorFleet);
     return page;
 }
 
@@ -13089,6 +15633,270 @@ void MainWindow::probeSavedHosts()
             host.value(QStringLiteral("user")).toString().trimmed(),
             host.value(QStringLiteral("status")).toString().trimmed());
     }
+    // The healthy-node check deliberately does not ride this 30-second probe:
+    // it queries the shared relay, which rate-limits at that cadence. It owns
+    // the five-minute timer armed by armMirrorFleetCountdown() instead.
+}
+
+void MainWindow::armMirrorFleetCountdown()
+{
+    if (!m_mirrorFleetEnabledCheck || !m_mirrorFleetEnabledCheck->isChecked()) {
+        if (m_mirrorFleetCheckTimer)
+            m_mirrorFleetCheckTimer->stop();
+        if (m_mirrorFleetCountdownTimer)
+            m_mirrorFleetCountdownTimer->stop();
+        updateMirrorFleetCountdownLabel();
+        return;
+    }
+    if (!m_mirrorFleetCheckTimer) {
+        m_mirrorFleetCheckTimer = new QTimer(this);
+        m_mirrorFleetCheckTimer->setObjectName(
+            QStringLiteral("healthyMirrorFleetTimer"));
+        m_mirrorFleetCheckTimer->setInterval(kMirrorFleetCheckIntervalMs);
+        connect(m_mirrorFleetCheckTimer, &QTimer::timeout, this,
+                &MainWindow::reconcileDesiredMirrorFleet);
+    }
+    if (!m_mirrorFleetCountdownTimer) {
+        m_mirrorFleetCountdownTimer = new QTimer(this);
+        m_mirrorFleetCountdownTimer->setObjectName(
+            QStringLiteral("healthyMirrorFleetCountdown"));
+        m_mirrorFleetCountdownTimer->setInterval(1000);
+        connect(m_mirrorFleetCountdownTimer, &QTimer::timeout, this,
+                &MainWindow::updateMirrorFleetCountdownLabel);
+    }
+    // start() on a running timer restarts it, so each check — whether it acted,
+    // found nothing to do, or could not reach the catalog — measures the next
+    // five minutes from itself rather than stacking extra checks.
+    m_mirrorFleetCheckTimer->start();
+    m_mirrorFleetCountdownTimer->start();
+    updateMirrorFleetCountdownLabel();
+}
+
+void MainWindow::updateMirrorFleetCountdownLabel()
+{
+    if (!m_mirrorFleetStatus)
+        return;
+    const int remainingMs =
+        m_mirrorFleetCheckTimer && m_mirrorFleetCheckTimer->isActive()
+            ? m_mirrorFleetCheckTimer->remainingTime()
+            : -1;
+    if (remainingMs < 0) {
+        m_mirrorFleetStatus->setText(m_mirrorFleetStatusText);
+        return;
+    }
+    // Round up so a freshly armed five-minute window reads 5:00, not 4:59.
+    const int seconds = (remainingMs + 999) / 1000;
+    const QString countdown =
+        QStringLiteral("next healthy-node check in %1:%2")
+            .arg(seconds / 60)
+            .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    m_mirrorFleetStatus->setText(
+        m_mirrorFleetStatusText.isEmpty()
+            ? countdown
+            : m_mirrorFleetStatusText + QString::fromUtf8(" \xC2\xB7 ") +
+                  countdown);
+}
+
+void MainWindow::setMirrorFleetStatus(const QString &text)
+{
+    m_mirrorFleetStatusText = text;
+    updateMirrorFleetCountdownLabel();
+}
+
+void MainWindow::reconcileDesiredMirrorFleet()
+{
+    if (!m_mirrorFleetEnabledCheck || !m_mirrorFleetDesiredSpin ||
+        !m_mirrorFleetEnabledCheck->isChecked()) {
+        armMirrorFleetCountdown();
+        return;
+    }
+    // Every entry point — startup, the opt-in checkbox, a target edit, the
+    // five-minute timer, and the follow-up after a create or destroy — restarts
+    // the window, so the countdown always names the next real check.
+    armMirrorFleetCountdown();
+    const int desired = m_mirrorFleetDesiredSpin->value();
+    if (m_vultrProvisionActive) {
+        setMirrorFleetStatus(QStringLiteral(
+            "Target: %1 healthy mirror(s) · waiting for the current "
+            "deployment to become healthy.").arg(desired));
+        return;
+    }
+    if (m_mirrorFleetMutationInFlight || m_mirrorFleetReconcileInFlight)
+        return;
+    if (!m_networkAccess) {
+        setMirrorFleetStatus(
+            QStringLiteral("Mirror health cannot be checked while network access is unavailable."));
+        return;
+    }
+
+    m_mirrorFleetReconcileInFlight = true;
+    setMirrorFleetStatus(
+        QStringLiteral("Checking managed mirrors against the public health catalog…"));
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/forkmesh/forkmesh/mirrors"));
+    url.setQuery(QString());
+    QNetworkRequest request(url);
+    request.setRawHeader(QByteArrayLiteral("accept"),
+                         QByteArrayLiteral("application/json"));
+    // A stalled connection must not outlive its own five-minute window: the
+    // in-flight guard would then reject every later check and the loop would
+    // silently stop taking action.
+    request.setTransferTimeout(15000);
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const QByteArray body = reply->readAll();
+        const QString networkError = reply->errorString();
+        const bool networkOk = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        m_mirrorFleetReconcileInFlight = false;
+        if (!m_mirrorFleetEnabledCheck || !m_mirrorFleetDesiredSpin ||
+            !m_mirrorFleetEnabledCheck->isChecked()) {
+            return;
+        }
+
+        const QJsonObject payload = QJsonDocument::fromJson(body).object();
+        if (!networkOk || !payload.value(QStringLiteral("ok")).toBool()) {
+            // The countdown is still running, so this is a deferral rather than
+            // a dead end: say so instead of leaving a bare failure on screen.
+            setMirrorFleetStatus(
+                QStringLiteral("Could not verify mirror health; no fleet change was made, retrying. %1")
+                    .arg(networkOk ? QStringLiteral("The catalog response was invalid.")
+                                   : networkError));
+            return;
+        }
+
+        QSettings settings;
+        const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+            settings, kHostsSetting, &m_hostSessionPasswords);
+        const int desired = m_mirrorFleetDesiredSpin->value();
+        const forkmesh::control::MirrorFleetReconcilePlan plan =
+            forkmesh::control::planMirrorFleetReconciliation(
+                desired, hosts,
+                payload.value(QStringLiteral("mirrors")).toArray());
+        const QString summary = QStringLiteral(
+            "%1 of %2 managed mirror(s) healthy · target %3")
+                                    .arg(plan.healthyCount)
+                                    .arg(plan.managedCount)
+                                    .arg(desired);
+
+        switch (plan.action) {
+        case forkmesh::control::MirrorFleetAction::None:
+            setMirrorFleetStatus(QString::fromUtf8("\xE2\x9C\x94 ") + summary);
+            return;
+        case forkmesh::control::MirrorFleetAction::Create:
+            setMirrorFleetStatus(
+                summary + QStringLiteral(
+                              " · creating one mirror to restore healthy capacity."));
+            // A failed durable deployment must resume its exact server. A new
+            // capacity request, however, always lets the normal name allocator
+            // choose a fresh collision-free mirrorN.
+            if (!m_vultrResumeRequested && m_vultrNameEdit)
+                m_vultrNameEdit->clear();
+            createVultrMirrorFromForm();
+            return;
+        case forkmesh::control::MirrorFleetAction::Destroy:
+            setMirrorFleetStatus(
+                summary +
+                QStringLiteral(" · destroying excess managed mirror %1.")
+                    .arg(plan.nodeName));
+            destroyDesiredMirrorFleetNode(plan.nodeName);
+            return;
+        }
+    });
+}
+
+void MainWindow::destroyDesiredMirrorFleetNode(const QString &node)
+{
+    if (m_mirrorFleetMutationInFlight || node.trimmed().isEmpty())
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QJsonObject target;
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString().trimmed().compare(
+                node, Qt::CaseInsensitive) == 0) {
+            target = host;
+            break;
+        }
+    }
+    const QString instanceId =
+        forkmesh::control::savedHostVultrInstanceId(target);
+    QString apiKey =
+        m_vultrApiKeyEdit ? m_vultrApiKeyEdit->text().trimmed() : QString();
+    if (apiKey.isEmpty()) {
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+    }
+    const QString invalid =
+        forkmesh::control::validateVultrDestroyRequest(apiKey, instanceId);
+    if (!invalid.isEmpty()) {
+        setMirrorFleetStatus(
+            QStringLiteral("Could not scale down %1: %2").arg(node, invalid));
+        return;
+    }
+
+    m_mirrorFleetMutationInFlight = true;
+    appendHostInstallLog(QString::fromUtf8(
+        "Automatic fleet sizing: destroying excess Vultr instance %1 "
+        "(\"%2\")\xE2\x80\xA6\n").arg(instanceId, node));
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances/") + instanceId,
+        QByteArrayLiteral("DELETE"), {},
+        [this, node, instanceId](QJsonObject, QString error) {
+            m_mirrorFleetMutationInFlight = false;
+            if (!error.isEmpty()) {
+                setMirrorFleetStatus(
+                    QStringLiteral("Could not automatically destroy %1: %2")
+                        .arg(node, error));
+                appendHostInstallLog(
+                    QStringLiteral("Automatic fleet scale-down failed: %1\n")
+                        .arg(error));
+                return;
+            }
+
+            appendHostInstallLog(QStringLiteral(
+                "Automatic fleet sizing destroyed Vultr instance %1 (\"%2\").\n")
+                                     .arg(instanceId, node));
+            // A checkpoint for the removed node is no longer meaningful. In
+            // particular, a failed checkpoint must not resurrect the server
+            // we just intentionally removed after a target reduction.
+            if (m_vultrProvisionNode.compare(node, Qt::CaseInsensitive) == 0) {
+                m_vultrResumeRequested = false;
+                m_vultrResumeChain = false;
+                m_vultrProvisionState.clear();
+                m_vultrProvisionStage = 0;
+                m_vultrProvisionDetail.clear();
+                m_vultrProvisionMessage.clear();
+                m_vultrProvisionNode.clear();
+                m_vultrInstanceId.clear();
+                m_vultrInstanceIp.clear();
+                m_vultrIdentityFile.clear();
+                m_vultrDnsHostname.clear();
+                m_vultrHostMetadata = QJsonObject();
+                QSettings().remove(kVultrProvisionSetting);
+                if (m_vultrNameEdit)
+                    m_vultrNameEdit->clear();
+                renderVultrProvisionProgress();
+            }
+            forgetSavedHostNamed(node);
+            removeVultrMirrorDns(
+                node, [this](QString outcome) {
+                    if (!outcome.isEmpty())
+                        appendHostInstallLog(outcome + QLatin1Char('\n'));
+                });
+            addNotification(
+                QStringLiteral("Mirror fleet scaled down"),
+                QStringLiteral("Destroyed excess managed mirror %1; Vultr billing for instance %2 has stopped.")
+                    .arg(node, instanceId),
+                false);
+            setMirrorFleetStatus(
+                QStringLiteral("Destroyed excess managed mirror %1; checking the new target…")
+                    .arg(node));
+            QTimer::singleShot(0, this,
+                               &MainWindow::reconcileDesiredMirrorFleet);
+        });
 }
 
 void MainWindow::probeSavedHost(const QString &name, const QString &ip,
@@ -13154,9 +15962,10 @@ void MainWindow::probeSavedHost(const QString &name, const QString &ip,
             break;
         }
     }
+    // The shared fleet key answers for every host, so it is always offered
+    // first; a saved session password stays as the fallback for a host that
+    // has not been given the shared key yet.
     const QString identityFile = savedHostIdentityFile(name, ip, user);
-    if (!identityFile.isEmpty())
-        password.clear();
     const QString remoteCommand = QStringLiteral(
         "sh -lc 'probe_home=\"$HOME\"; "
         "if test \"$(id -u)\" = 0 && id forkmesh-node >/dev/null 2>&1; then "
@@ -13343,12 +16152,11 @@ void MainWindow::installAgentClisForHost(int row)
         }
     }
     const QString identityFile = savedHostIdentityFile(node, ip, user);
-    // A Vultr mirror provisioned by ForkMesh has a pinned per-host identity.
-    // Use only that identity even if this process still has an old session
-    // password in memory; this avoids an opaque password fallback and makes
-    // the authentication path match every later headless-agent connection.
-    const QString sshPassword =
-        identityFile.isEmpty() ? pass : QString();
+    // Every mirror authorizes the shared ForkMesh key, so that key is what the
+    // installer authenticates with — the same transport every later
+    // headless-agent connection uses. A session password is still passed when
+    // one was entered, and ssh only reaches it if the shared key is refused.
+    const QString sshPassword = pass;
     if (m_hostInstallLog)
         m_hostInstallLog->clear();
     if (m_hostInstallStatus)
@@ -13420,10 +16228,12 @@ void MainWindow::runAgentCliInstall(
     appendHostInstallLog(
         identityFile.isEmpty()
             ? QStringLiteral(
-                  "No managed key is saved for this host; using the current "
-                  "session credential or the system SSH agent.\n")
+                  "The shared ForkMesh SSH key has not been generated on this "
+                  "device; using the current session credential or the system "
+                  "SSH agent.\n")
             : QStringLiteral(
-                  "Using the ForkMesh-managed SSH identity for this host.\n"));
+                  "Using the shared ForkMesh SSH identity (%1).\n")
+                  .arg(identityFile));
     if (copyCredentials)
         appendHostInstallLog(
             QStringLiteral("Copying this device's agent access (%1) over the "
@@ -13493,9 +16303,10 @@ void MainWindow::runAgentCliInstall(
                           .arg(ip)
                     : keyRejected && !identityFile.isEmpty()
                         ? QStringLiteral(
-                              "The mirror rejected its saved ForkMesh SSH "
-                              "key. Re-provision or replace that host key, "
+                              "The mirror rejected the shared ForkMesh SSH "
+                              "key. Add that key to %1's authorized_keys, "
                               "then retry.")
+                              .arg(node)
                 : QStringLiteral(
                       "Agent CLI installation failed on %1; see Live output.")
                       .arg(node));
@@ -13555,10 +16366,10 @@ void MainWindow::openHostAgentLoginTerminal(const QString &node,
         }
     }
     const QString identityFile = savedHostIdentityFile(node, ip, user);
-    // Same rule as the installer: a pinned managed key is the only credential
-    // used when one exists, so the sign-in shell rides the exact transport
-    // every later headless-agent connection does.
-    const QString sshPassword = identityFile.isEmpty() ? pass : QString();
+    // Same rule as the installer: the shared fleet key is offered first, so the
+    // sign-in shell rides the exact transport every later headless-agent
+    // connection does, with the session password only as a fallback.
+    const QString sshPassword = pass;
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostInteractiveSshCommand(
@@ -16243,13 +19054,200 @@ QWidget *networkTabPage()
     return page;
 }
 
+// Web Requests tab columns: identity first, then volume, the status-class
+// split, and latency. Everything /api/metrics/summary publishes per group.
+enum WebRequestsColumn {
+    kWebRequestsColGroup = 0,
+    kWebRequestsColRequests,
+    kWebRequestsColShare,
+    kWebRequestsCol2xx,
+    kWebRequestsCol3xx,
+    kWebRequestsCol4xx,
+    kWebRequestsCol5xx,
+    kWebRequestsColAvg,
+    kWebRequestsColMax,
+    kWebRequestsColCount,
+};
+
+// A table item that displays a formatted count but sorts by the raw value
+// (QTableWidgetItem's default comparison is lexical over the display text).
+class WebRequestsNumberItem final : public QTableWidgetItem
+{
+public:
+    WebRequestsNumberItem(qlonglong value, const QString &text)
+        : QTableWidgetItem(text)
+    {
+        setData(Qt::UserRole, value);
+        setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    }
+
+    bool operator<(const QTableWidgetItem &other) const override
+    {
+        return data(Qt::UserRole).toLongLong() <
+               other.data(Qt::UserRole).toLongLong();
+    }
+};
+
+// The landing page's "Top endpoints" bar chart redrawn as a QWidget: one
+// horizontal bar per route group, most frequent first. Identity rides the row
+// label and the value a direct label at the bar's end, so a single hue is
+// enough — categorical slot 1 (#3987e5), the same hue the landing page's
+// charts use for the request series.
+class WebRequestsBarChart final : public QWidget
+{
+public:
+    struct Entry {
+        QString group;
+        qlonglong requests = 0;
+        QString valueLabel;
+        QString tooltip;
+    };
+
+    explicit WebRequestsBarChart(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("webRequestsChart"));
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setMouseTracking(true);
+        setFixedHeight(kRowHeight + 2 * kPadding);
+    }
+
+    void setEntries(const QVector<Entry> &entries, const QString &emptyText)
+    {
+        m_entries = entries;
+        m_emptyText = emptyText;
+        m_hovered = -1;
+        setFixedHeight(qMax(1, int(m_entries.size())) * kRowHeight +
+                       2 * kPadding);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const QColor ink = palette().color(QPalette::WindowText);
+        if (m_entries.isEmpty()) {
+            QColor muted = ink;
+            muted.setAlpha(150);
+            painter.setPen(muted);
+            painter.drawText(rect(), Qt::AlignCenter, m_emptyText);
+            return;
+        }
+
+        QFont valueFont = font();
+        valueFont.setPointSizeF(qMax(7.0, valueFont.pointSizeF() - 1.0));
+        const QFontMetrics labelMetrics(font());
+        const QFontMetrics valueMetrics(valueFont);
+
+        qlonglong maxRequests = 1;
+        int labelWidth = 0;
+        int valueWidth = 0;
+        for (const Entry &entry : m_entries) {
+            maxRequests = qMax(maxRequests, entry.requests);
+            labelWidth = qMax(labelWidth,
+                              labelMetrics.horizontalAdvance(entry.group));
+            valueWidth = qMax(
+                valueWidth, valueMetrics.horizontalAdvance(entry.valueLabel));
+        }
+        labelWidth = qMin(labelWidth, width() / 3);
+        const qreal barLeft = labelWidth + 12.0;
+        const qreal barSpan =
+            qMax(1.0, width() - barLeft - valueWidth - 12.0);
+
+        for (int row = 0; row < m_entries.size(); ++row) {
+            const Entry &entry = m_entries.at(row);
+            const qreal top = kPadding + row * kRowHeight;
+
+            if (row == m_hovered) {
+                QColor highlight = ink;
+                highlight.setAlpha(14);
+                painter.fillRect(QRectF(0, top, width(), kRowHeight),
+                                 highlight);
+            }
+
+            painter.setFont(font());
+            painter.setPen(ink);
+            painter.drawText(
+                QRectF(0, top, labelWidth, kRowHeight),
+                Qt::AlignRight | Qt::AlignVCenter,
+                labelMetrics.elidedText(entry.group, Qt::ElideMiddle,
+                                        labelWidth));
+
+            const qreal barWidth = qMax(
+                2.0, barSpan * (qreal(entry.requests) / qreal(maxRequests)));
+            const QRectF bar(barLeft, top + (kRowHeight - kBarHeight) / 2.0,
+                             barWidth, kBarHeight);
+            // Rounded data end, square baseline end. Winding fill so the two
+            // overlapping rects union instead of odd-even cancelling.
+            QPainterPath path;
+            path.setFillRule(Qt::WindingFill);
+            path.addRoundedRect(bar, 4.0, 4.0);
+            path.addRect(bar.left(), bar.top(),
+                         qMin(4.0, bar.width() / 2.0), bar.height());
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(QStringLiteral("#3987e5")));
+            painter.drawPath(path);
+
+            QColor valueInk = ink;
+            valueInk.setAlpha(190);
+            painter.setFont(valueFont);
+            painter.setPen(valueInk);
+            painter.drawText(
+                QRectF(bar.right() + 6.0, top,
+                       qMax(0.0, width() - bar.right() - 6.0), kRowHeight),
+                Qt::AlignLeft | Qt::AlignVCenter, entry.valueLabel);
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int row = rowAt(event->pos());
+        if (row != m_hovered) {
+            m_hovered = row;
+            update();
+        }
+        if (row >= 0 && row < m_entries.size())
+            QToolTip::showText(event->globalPosition().toPoint(),
+                               m_entries.at(row).tooltip, this);
+        else
+            QToolTip::hideText();
+    }
+
+    void leaveEvent(QEvent *) override
+    {
+        m_hovered = -1;
+        update();
+    }
+
+private:
+    int rowAt(const QPoint &pos) const
+    {
+        const int row = (pos.y() - kPadding) / kRowHeight;
+        return row >= 0 && row < m_entries.size() ? row : -1;
+    }
+
+    static constexpr int kRowHeight = 26;
+    static constexpr int kBarHeight = 12;
+    static constexpr int kPadding = 4;
+    QVector<Entry> m_entries;
+    QString m_emptyText;
+    int m_hovered = -1;
+};
+
 enum UsersColumn {
     kUsersColName = 0,
+    kUsersColSolana,
     kUsersColVerified,
     kUsersColStatus,
     kUsersColJoined,
     kUsersColWorldActivity,
     kUsersColActivityRecency,
+    kUsersColPulls,
+    kUsersColIssues,
+    kUsersColCommits,
+    kUsersColDiscussions,
     kUsersColLastEmail,
     kUsersColEmailDelivery,
     kUsersColCountry,
@@ -16261,10 +19259,13 @@ enum UsersColumn {
 
 QStringList usersTableHeaders()
 {
-    return {QStringLiteral("User"), QStringLiteral("Email verified"),
+    return {QStringLiteral("User"), QStringLiteral("Solana"),
+            QStringLiteral("Email verified"),
             QStringLiteral("Status"), QStringLiteral("Joined"),
             QStringLiteral("World activity"),
-            QStringLiteral("Activity recency"), QStringLiteral("Last email"),
+            QStringLiteral("Activity recency"), QStringLiteral("PRs"),
+            QStringLiteral("Issues"), QStringLiteral("Commits"),
+            QStringLiteral("Discussions"), QStringLiteral("Last email"),
             QStringLiteral("Email delivery"), QStringLiteral("Country"),
             QStringLiteral("Browser"), QStringLiteral("OS"),
             QStringLiteral("Nodes")};
@@ -16417,6 +19418,14 @@ void MainWindow::renderUsersPage(const QJsonArray &users)
             nameItem->setIcon(QIcon(*avatar));
         m_usersTable->setItem(row, kUsersColName, nameItem);
 
+        const QString solana =
+            user.value(QStringLiteral("solana")).toString().trimmed();
+        m_usersTable->setItem(
+            row, kUsersColSolana,
+            usersTableItem(solana.isEmpty() ? QStringLiteral("Not set")
+                                             : solana,
+                           solana.toLower()));
+
         const bool verified =
             user.value(QStringLiteral("emailVerified")).toBool();
         m_usersTable->setItem(
@@ -16446,6 +19455,30 @@ void MainWindow::renderUsersPage(const QJsonArray &users)
         m_usersTable->setItem(
             row, kUsersColActivityRecency,
             usersTableItem(recency.first, recency.second));
+
+        const int pulls =
+            static_cast<int>(user.value(QStringLiteral("pulls")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColPulls,
+            usersTableItem(QString::number(pulls), pulls));
+
+        const int issues =
+            static_cast<int>(user.value(QStringLiteral("issues")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColIssues,
+            usersTableItem(QString::number(issues), issues));
+
+        const int commits =
+            static_cast<int>(user.value(QStringLiteral("commits")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColCommits,
+            usersTableItem(QString::number(commits), commits));
+
+        const int discussions =
+            static_cast<int>(user.value(QStringLiteral("discussions")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColDiscussions,
+            usersTableItem(QString::number(discussions), discussions));
 
         const qint64 lastEmail = static_cast<qint64>(
             user.value(QStringLiteral("lastEmailAt")).toDouble());
@@ -16586,6 +19619,7 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
             [this] {
                 refreshFirewallTables();
                 refreshNetworkDiagnostics();
+                refreshNetworkWebRequests();
             });
     header->addWidget(m_networkDiagnosticsRefreshButton);
     outer->addLayout(header);
@@ -16642,6 +19676,70 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
             [this] { m_networkEndpointsUserSorted = true; });
     endpointsLayout->addWidget(m_networkEndpointsTable, 1);
     tabs->addTab(endpointsPage, QStringLiteral("Endpoints"));
+
+    // Web Requests: the mirror image of Endpoints. That table is the traffic
+    // this client sends; this one is everything the Worker answered, fetched
+    // from the same public /api/metrics/summary buckets the api.forkmesh.com
+    // landing page charts — masked route groups, most frequent first. The
+    // chart carries the busiest groups; the table lists every group the
+    // Worker reported, without pagination.
+    auto *webRequestsPage = networkTabPage();
+    auto *webRequestsLayout =
+        qobject_cast<QVBoxLayout *>(webRequestsPage->layout());
+    auto *webRequestsRow = new QHBoxLayout;
+    webRequestsRow->setContentsMargins(0, 0, 0, 0);
+    webRequestsRow->setSpacing(8);
+    m_networkWebRequestsStatus = new QLabel(
+        QStringLiteral("Open this tab to load the worker's web requests."));
+    m_networkWebRequestsStatus->setObjectName("mutedLabel");
+    // A failure line quotes the worker's own error, so it can run long: wrap
+    // it instead of widening the page, and let it be selected for a report.
+    m_networkWebRequestsStatus->setWordWrap(true);
+    m_networkWebRequestsStatus->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
+    webRequestsRow->addWidget(m_networkWebRequestsStatus, 1);
+    m_networkWebRequestsRange = new QComboBox;
+    m_networkWebRequestsRange->setCursor(Qt::PointingHandCursor);
+    m_networkWebRequestsRange->addItem(QStringLiteral("Last hour"), 60);
+    m_networkWebRequestsRange->addItem(QStringLiteral("Last 6 hours"), 360);
+    m_networkWebRequestsRange->addItem(QStringLiteral("Last 24 hours"), 1440);
+    connect(m_networkWebRequestsRange, &QComboBox::currentIndexChanged, this,
+            [this](int) {
+                m_networkWebRequestsMinutes =
+                    m_networkWebRequestsRange->currentData().toInt();
+                refreshNetworkWebRequests();
+            });
+    webRequestsRow->addWidget(m_networkWebRequestsRange);
+    webRequestsLayout->addLayout(webRequestsRow);
+
+    m_networkWebRequestsChart = new WebRequestsBarChart;
+    webRequestsLayout->addWidget(m_networkWebRequestsChart);
+
+    m_networkWebRequestsTable = new QTableWidget(0, kWebRequestsColCount);
+    installColumnHeaderMenu(m_networkWebRequestsTable);
+    m_networkWebRequestsTable->setObjectName("issueTable");
+    m_networkWebRequestsTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Route group"), QStringLiteral("Requests"),
+         QStringLiteral("Share"), QStringLiteral("2xx"), QStringLiteral("3xx"),
+         QStringLiteral("4xx"), QStringLiteral("5xx"), QStringLiteral("Avg ms"),
+         QStringLiteral("Max ms")});
+    m_networkWebRequestsTable->verticalHeader()->setVisible(false);
+    m_networkWebRequestsTable->setSelectionBehavior(
+        QAbstractItemView::SelectRows);
+    m_networkWebRequestsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_networkWebRequestsTable->setShowGrid(false);
+    m_networkWebRequestsTable->setSortingEnabled(true);
+    networkPrepareFullTable(m_networkWebRequestsTable);
+    for (int c = 0; c < m_networkWebRequestsTable->columnCount(); ++c)
+        m_networkWebRequestsTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_networkWebRequestsTable);
+    connect(m_networkWebRequestsTable->horizontalHeader(),
+            &QHeaderView::sortIndicatorChanged, this,
+            [this] { m_networkWebRequestsUserSorted = true; });
+    webRequestsLayout->addWidget(m_networkWebRequestsTable, 1);
+    m_networkWebRequestsTabIndex =
+        tabs->addTab(webRequestsPage, QStringLiteral("Web Requests"));
 
     auto *socketsPage = networkTabPage();
     auto *socketsLayout = qobject_cast<QVBoxLayout *>(socketsPage->layout());
@@ -17015,6 +20113,397 @@ void MainWindow::refreshNetworkDiagnostics()
     m_networkDiagnosticsTable->setSortingEnabled(true);
     m_networkDiagnosticsTable->resizeColumnsToContents();
     m_networkDiagnosticsTable->resizeRowsToContents();
+}
+
+namespace {
+
+// How many times one open of the tab asks the Worker before giving up. The
+// relay answers a slice of every request with a Cloudflare 1101 error page
+// (adhoc #1585), so a single attempt fails often enough to look broken.
+constexpr int kWebRequestsMaxAttempts = 3;
+
+// A short, single-line quote of whatever the Worker actually sent back. HTML
+// error pages and JSON blobs both collapse to something a user can read (and
+// paste into a bug report) instead of flooding the status line.
+QString webRequestsBodySnippet(const QByteArray &body)
+{
+    QString text = QString::fromUtf8(body).simplified();
+    if (text.startsWith(QLatin1Char('<'))) {
+        // Cloudflare's 1101/1102 pages are HTML; keep their words, drop tags.
+        static const QRegularExpression tags(QStringLiteral("<[^>]*>"));
+        text = text.remove(tags).simplified();
+    }
+    if (text.size() > 160)
+        text = text.left(157) + QStringLiteral("...");
+    return text;
+}
+
+QString webRequestsSeconds(qint64 ms)
+{
+    const qint64 seconds = (qMax<qint64>(0, ms) + 999) / 1000;
+    return seconds >= 60 ? QStringLiteral("%1m %2s").arg(seconds / 60).arg(seconds % 60)
+                         : QStringLiteral("%1s").arg(seconds);
+}
+
+// Names what actually failed. Everything arrives as plain values rather than a
+// QNetworkReply so the tests can drive every branch without a socket. A
+// positive cooldownMs means this client suppressed the request itself; a
+// negative one means it did with no window left to quote.
+QString webRequestsFailureDetail(const QString &host, qint64 cooldownMs,
+                                 int httpStatus, const QString &transportError,
+                                 const QString &parseError,
+                                 const QString &payloadError,
+                                 const QByteArray &body)
+{
+    const QString where =
+        host.isEmpty() ? QStringLiteral("the worker") : host;
+    // The client's own host-wide cooldown, not the network: say so, because
+    // this request never left the machine and waiting is the only cure.
+    if (cooldownMs > 0)
+        return QStringLiteral(
+                   "%1 is in this client's rate-limit cooldown after repeated "
+                   "relay errors (%2 left); the request never left this machine")
+            .arg(where, webRequestsSeconds(cooldownMs));
+    if (cooldownMs < 0)
+        return QStringLiteral(
+                   "%1 is in this client's rate-limit cooldown after repeated "
+                   "relay errors; the request never left this machine")
+            .arg(where);
+    const QString snippet = webRequestsBodySnippet(body);
+    if (httpStatus >= 400)
+        return snippet.isEmpty()
+                   ? QStringLiteral("%1 answered HTTP %2").arg(where).arg(httpStatus)
+                   : QStringLiteral("%1 answered HTTP %2 - %3")
+                         .arg(where, QString::number(httpStatus), snippet);
+    if (!transportError.isEmpty())
+        return QStringLiteral("%1 could not be reached - %2")
+            .arg(where, transportError);
+    if (!parseError.isEmpty())
+        return QStringLiteral("%1 answered unreadable JSON - %2%3")
+            .arg(where, parseError,
+                 snippet.isEmpty() ? QString()
+                                   : QStringLiteral(" (%1)").arg(snippet));
+    if (!payloadError.isEmpty())
+        return QStringLiteral("%1 refused the metrics query - %2")
+            .arg(where, payloadError);
+    return QStringLiteral("%1 answered a payload without ok=true%2")
+        .arg(where, snippet.isEmpty() ? QString()
+                                      : QStringLiteral(" (%1)").arg(snippet));
+}
+
+} // namespace
+
+void MainWindow::showNetworkWebRequestsFailure(const QString &detail,
+                                               bool willRetry, qint64 retryInMs)
+{
+    // Every failed attempt is logged, not just the last: a tab that recovers
+    // on attempt three still leaves the relay's 500s visible in the Log tab.
+    logSystem(QStringLiteral("Web Requests: %1.").arg(detail));
+    if (!m_networkWebRequestsStatus)
+        return;
+    if (willRetry) {
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral("Could not load web requests: %1. Retrying "
+                           "(attempt %2 of %3) in %4...")
+                .arg(detail)
+                .arg(m_networkWebRequestsAttempt + 1)
+                .arg(kWebRequestsMaxAttempts)
+                .arg(webRequestsSeconds(retryInMs)));
+    } else if (m_networkWebRequestsAttempt > 0) {
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral("Could not load web requests: %1. Gave up after %2 "
+                           "attempt(s) - reopen the tab or pick a range to try "
+                           "again.")
+                .arg(detail)
+                .arg(m_networkWebRequestsAttempt));
+    } else {
+        // Nothing was ever sent (no relay configured), so there is no attempt
+        // count to report and nothing a retry could improve.
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral("Could not load web requests: %1.").arg(detail));
+    }
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testNetworkWebRequestsFailureText(
+    int httpStatus, const QString &transportError, const QString &parseError,
+    const QString &payloadError, const QByteArray &body, qint64 cooldownMs,
+    qint64 retryInMs)
+{
+    m_networkWebRequestsAttempt = 1;
+    showNetworkWebRequestsFailure(
+        webRequestsFailureDetail(QStringLiteral("forkmesh.com"), cooldownMs,
+                                 httpStatus, transportError, parseError,
+                                 payloadError, body),
+        retryInMs >= 0, retryInMs);
+    m_networkWebRequestsAttempt = 0;
+    return testNetworkWebRequestsStatusText();
+}
+#endif // FORKMESH_WINDOW_TESTS
+
+void MainWindow::refreshNetworkWebRequests(bool isRetry)
+{
+    if (!m_networkWebRequestsTable || !m_networkAccess ||
+        m_networkWebRequestsInFlight)
+        return;
+    // Same visibility discipline as refreshNetworkDiagnostics(), one level
+    // down: only fetch while this tab is actually on screen. Opening the tab
+    // (or the section with it in front) refreshes it, so nothing goes stale.
+    if (m_sectionStack &&
+        m_sectionStack->currentIndex() != kNetworkDiagnosticsSectionIndex)
+        return;
+    if (m_networkTabs &&
+        m_networkTabs->currentIndex() != m_networkWebRequestsTabIndex)
+        return;
+
+    // A user-driven open, or a range change, is a fresh load: forget the
+    // attempts a previous one spent and drop any retry it still had pending.
+    if (!isRetry) {
+        m_networkWebRequestsAttempt = 0;
+        if (m_networkWebRequestsRetryTimer)
+            m_networkWebRequestsRetryTimer->stop();
+    }
+
+    QUrl url = catalogApiUrl();
+    if (!url.isValid() || url.host().isEmpty()) {
+        showNetworkWebRequestsFailure(
+            QStringLiteral("no relay host is configured in Settings"), false, 0);
+        return;
+    }
+    url.setPath(QStringLiteral("/api/metrics/summary"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("minutes"),
+                       QString::number(m_networkWebRequestsMinutes));
+    // Every group the Worker holds, not the landing page's top-40 slice —
+    // route_group() already caps cardinality before folding into "other".
+    query.addQueryItem(QStringLiteral("limit"), QStringLiteral("500"));
+    url.setQuery(query);
+    url.setFragment(QString());
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("accept", "application/json");
+    request.setTransferTimeout(8000);
+    m_networkWebRequestsInFlight = true;
+    ++m_networkWebRequestsAttempt;
+    if (m_networkWebRequestsStatus)
+        m_networkWebRequestsStatus->setText(
+            m_networkWebRequestsAttempt > 1
+                ? QStringLiteral("Loading web requests (attempt %1 of %2)...")
+                      .arg(m_networkWebRequestsAttempt)
+                      .arg(kWebRequestsMaxAttempts)
+                : QStringLiteral("Loading web requests..."));
+    const QString host = url.host();
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, host] {
+        m_networkWebRequestsInFlight = false;
+        const QByteArray body = reply->readAll();
+        const bool transportOk = reply->error() == QNetworkReply::NoError;
+        const QString transportError =
+            transportOk ? QString() : reply->errorString();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // A reply the firewall manager answered locally never reached the
+        // network; its "rate-limited" error string would otherwise be pinned
+        // on the Worker.
+        const bool suppressed =
+            BackoffNetworkAccessManager::isBackoffSuppressed(reply);
+        reply->deleteLater();
+        QJsonParseError parseError;
+        const QJsonDocument document =
+            QJsonDocument::fromJson(body, &parseError);
+        const QJsonObject payload = document.object();
+        if (transportOk && parseError.error == QJsonParseError::NoError &&
+            document.isObject() &&
+            payload.value(QStringLiteral("ok")).toBool()) {
+            m_networkWebRequestsAttempt = 0;
+            renderNetworkWebRequests(payload);
+            return;
+        }
+
+        // The relay's 5xx also trips this client's host-wide cooldown, so the
+        // next attempt has to wait for that window to close or it is answered
+        // locally without ever being sent.
+        qint64 cooldownMs = 0;
+        if (auto *manager = requestFirewallManager(m_networkAccess))
+            cooldownMs = manager->hostCooldownRemainingMs(host);
+        const QString detail = webRequestsFailureDetail(
+            host, suppressed ? (cooldownMs > 0 ? cooldownMs : -1) : 0, httpStatus,
+            transportError, parseError.error == QJsonParseError::NoError
+                                ? QString()
+                                : parseError.errorString(),
+            payload.value(QStringLiteral("error")).toString(), body);
+
+        const qint64 retryInMs =
+            qMax<qint64>(cooldownMs + 400, 1200LL * m_networkWebRequestsAttempt);
+        // Past the cap the wait is long enough that the reader is better served
+        // by a message than by a spinner they cannot see progress on.
+        const bool willRetry =
+            m_networkWebRequestsAttempt < kWebRequestsMaxAttempts &&
+            retryInMs <= 30000;
+        showNetworkWebRequestsFailure(detail, willRetry, retryInMs);
+        if (!willRetry)
+            return;
+        if (!m_networkWebRequestsRetryTimer) {
+            m_networkWebRequestsRetryTimer = new QTimer(this);
+            m_networkWebRequestsRetryTimer->setSingleShot(true);
+            connect(m_networkWebRequestsRetryTimer, &QTimer::timeout, this,
+                    [this] { refreshNetworkWebRequests(true); });
+        }
+        m_networkWebRequestsRetryTimer->start(int(retryInMs));
+    });
+}
+
+void MainWindow::renderNetworkWebRequests(const QJsonObject &payload)
+{
+    if (!m_networkWebRequestsTable || !m_networkWebRequestsChart)
+        return;
+
+    // The Worker answers most-frequent-first already, but sort defensively:
+    // the chart's bar order and its top-N cut both depend on it.
+    QVector<QJsonObject> groups;
+    const QJsonArray groupsPayload =
+        payload.value(QStringLiteral("groups")).toArray();
+    groups.reserve(groupsPayload.size());
+    for (const QJsonValue &value : groupsPayload)
+        groups.append(value.toObject());
+    std::sort(groups.begin(), groups.end(),
+              [](const QJsonObject &a, const QJsonObject &b) {
+                  return a.value(QStringLiteral("requests")).toDouble() >
+                         b.value(QStringLiteral("requests")).toDouble();
+              });
+    qlonglong totalRequests = 0;
+    qlonglong totalErrors = 0;
+    for (const QJsonObject &group : std::as_const(groups)) {
+        totalRequests +=
+            qlonglong(group.value(QStringLiteral("requests")).toDouble());
+        totalErrors +=
+            qlonglong(group.value(QStringLiteral("errors")).toDouble());
+    }
+    const auto share = [totalRequests](qlonglong requests) {
+        return totalRequests > 0 ? 100.0 * requests / totalRequests : 0.0;
+    };
+
+    // The chart carries the busiest groups (the landing page's top-12 cut);
+    // the table below is the full list.
+    QVector<WebRequestsBarChart::Entry> chartEntries;
+    for (const QJsonObject &group : std::as_const(groups)) {
+        if (chartEntries.size() >= 12)
+            break;
+        const QJsonObject classes =
+            group.value(QStringLiteral("classes")).toObject();
+        WebRequestsBarChart::Entry entry;
+        entry.group = group.value(QStringLiteral("group")).toString();
+        entry.requests =
+            qlonglong(group.value(QStringLiteral("requests")).toDouble());
+        entry.valueLabel = formatCount(entry.requests);
+        entry.tooltip =
+            QStringLiteral("%1\n%2 request(s) - %3% of the window\n"
+                           "avg %4 ms - max %5 ms\n2xx %6 - 3xx %7 - 4xx %8 - "
+                           "5xx %9")
+                .arg(entry.group, formatCount(entry.requests),
+                     QString::number(share(entry.requests), 'f', 1),
+                     QString::number(qlonglong(
+                         group.value(QStringLiteral("avg_ms")).toDouble())),
+                     QString::number(qlonglong(
+                         group.value(QStringLiteral("dur_ms_max")).toDouble())),
+                     formatCount(qlonglong(
+                         classes.value(QStringLiteral("2xx")).toDouble())),
+                     formatCount(qlonglong(
+                         classes.value(QStringLiteral("3xx")).toDouble())),
+                     formatCount(qlonglong(
+                         classes.value(QStringLiteral("4xx")).toDouble())))
+                .arg(formatCount(qlonglong(
+                    classes.value(QStringLiteral("5xx")).toDouble())));
+        chartEntries.append(entry);
+    }
+    static_cast<WebRequestsBarChart *>(m_networkWebRequestsChart)
+        ->setEntries(chartEntries,
+                     QStringLiteral(
+                         "No web requests reached the worker in this window."));
+
+    {
+        TableRepaintGuard repaintGuard(m_networkWebRequestsTable);
+        const int sortColumn = m_networkWebRequestsTable->horizontalHeader()
+                                   ->sortIndicatorSection();
+        const Qt::SortOrder sortOrder =
+            m_networkWebRequestsTable->horizontalHeader()->sortIndicatorOrder();
+        m_networkWebRequestsTable->setSortingEnabled(false);
+        m_networkWebRequestsTable->setRowCount(0);
+        for (const QJsonObject &group : std::as_const(groups)) {
+            const QJsonObject classes =
+                group.value(QStringLiteral("classes")).toObject();
+            const qlonglong requests =
+                qlonglong(group.value(QStringLiteral("requests")).toDouble());
+            const int row = m_networkWebRequestsTable->rowCount();
+            m_networkWebRequestsTable->insertRow(row);
+            const QString name =
+                group.value(QStringLiteral("group")).toString();
+            m_networkWebRequestsTable->setItem(row, kWebRequestsColGroup,
+                                               networkDiagItem(name, name));
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColRequests,
+                new WebRequestsNumberItem(requests, formatCount(requests)));
+            const double sharePercent = share(requests);
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColShare,
+                new WebRequestsNumberItem(
+                    qlonglong(sharePercent * 10.0),
+                    QStringLiteral("%1%").arg(sharePercent, 0, 'f', 1)));
+            const struct {
+                WebRequestsColumn column;
+                const char *key;
+            } classColumns[] = {{kWebRequestsCol2xx, "2xx"},
+                                {kWebRequestsCol3xx, "3xx"},
+                                {kWebRequestsCol4xx, "4xx"},
+                                {kWebRequestsCol5xx, "5xx"}};
+            for (const auto &classColumn : classColumns) {
+                const qlonglong count = qlonglong(
+                    classes.value(QLatin1String(classColumn.key)).toDouble());
+                auto *item =
+                    new WebRequestsNumberItem(count, formatCount(count));
+                if (classColumn.column == kWebRequestsCol5xx && count > 0)
+                    item->setForeground(QColor(QStringLiteral("#f85149")));
+                m_networkWebRequestsTable->setItem(row, classColumn.column,
+                                                   item);
+            }
+            const qlonglong avgMs =
+                qlonglong(group.value(QStringLiteral("avg_ms")).toDouble());
+            const qlonglong maxMs = qlonglong(
+                group.value(QStringLiteral("dur_ms_max")).toDouble());
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColAvg,
+                new WebRequestsNumberItem(avgMs, formatCount(avgMs)));
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColMax,
+                new WebRequestsNumberItem(maxMs, formatCount(maxMs)));
+        }
+        m_networkWebRequestsTable->setSortingEnabled(true);
+        if (m_networkWebRequestsUserSorted)
+            m_networkWebRequestsTable->sortItems(sortColumn, sortOrder);
+        else
+            m_networkWebRequestsTable->sortItems(kWebRequestsColRequests,
+                                                 Qt::DescendingOrder);
+        m_networkWebRequestsTable->resizeColumnsToContents();
+        m_networkWebRequestsTable->resizeRowsToContents();
+    }
+
+    if (m_networkWebRequestsStatus) {
+        const int windowMinutes =
+            payload.value(QStringLiteral("windowMinutes"))
+                .toInt(m_networkWebRequestsMinutes);
+        const QString window =
+            windowMinutes % 60 == 0
+                ? QStringLiteral("%1 hour(s)").arg(windowMinutes / 60)
+                : QStringLiteral("%1 minute(s)").arg(windowMinutes);
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral(
+                "%1 request(s) across %2 route group(s) in the last %3 - "
+                "%4 5xx")
+                .arg(formatCount(totalRequests), formatCount(groups.size()),
+                     window, formatCount(totalErrors)));
+    }
 }
 
 void MainWindow::showEndpointRequestDetails(int row, int column)
@@ -17784,7 +21273,7 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         connect(proc, &QProcess::finished, dialog,
                 [this, dialog, proc, output, table, status, totalLabel,
                  navWidgets, path, ip, user, mountCardsLayout, mountStatus,
-                 loadPath, sessionPass, identityFile, credentialKey](
+                 loadPath, sessionPass, credentialKey](
                     int code, QProcess::ExitStatus exitStatus) {
                     if (m_hostDiskProcess == proc)
                         m_hostDiskProcess = nullptr;
@@ -17898,11 +21387,13 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
                         // Without a password ssh runs BatchMode/publickey-only,
                         // so a password-login host can never finish this scan:
                         // ask for the one credential that would, then retry the
-                        // same folder. Hosts pinned to a ForkMesh-managed key
-                        // never fall back to a password, so they are left alone.
+                        // same folder. The shared fleet key is offered to every
+                        // host, so a rejected key is exactly the case that needs
+                        // the prompt — only an already-entered password is a
+                        // reason not to ask again.
                         const int sshExit =
                             exitStatus == QProcess::NormalExit ? code : 255;
-                        if (identityFile.isEmpty() &&
+                        if (sessionPass->isEmpty() &&
                             forkmesh::control::sshFailureNeedsPassword(sshExit,
                                                                        tail)) {
                             status->setText(
@@ -18094,11 +21585,23 @@ void MainWindow::addHostFromForm()
         return;
     }
     // Save the server info up front with a not-yet-installed status. Running
-    // the installer later flips it to "installed".
-    rememberHost(node, ip, user, pass, QStringLiteral("added"));
-    if (m_hostInstallStatus)
-        m_hostInstallStatus->setText(QString::fromUtf8(
-            "Saved \"%1\". Click Install ForkMesh to provision it.").arg(node));
+    // the installer later flips it to "installed". A host added by hand joins
+    // a fleet that authorizes one shared key, so it is recorded against that
+    // key just like a provisioned mirror.
+    const QString identityFile =
+        forkmesh::control::existingSharedHostIdentityFile();
+    rememberHost(node, ip, user, pass, QStringLiteral("added"), identityFile);
+    if (m_hostInstallStatus) {
+        m_hostInstallStatus->setText(
+            identityFile.isEmpty()
+                ? QString::fromUtf8(
+                      "Saved \"%1\". Click Install ForkMesh to provision it.")
+                      .arg(node)
+                : QString::fromUtf8(
+                      "Saved \"%1\" against the shared ForkMesh SSH key. Click "
+                      "Install ForkMesh to provision it.")
+                      .arg(node));
+    }
 }
 
 void MainWindow::rememberHost(const QString &name, const QString &ip,
@@ -18345,9 +21848,14 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
         // buildHostSshCommand() owns validation and will then fail closed with
         // "The managed SSH key for this host is missing." Treating the path as
         // absent here would silently fall back to a session password.
-        return identity;
+        if (!identity.isEmpty())
+            return identity;
+        break;
     }
-    return {};
+    // Every host in the fleet now authorizes the same ForkMesh key, so a saved
+    // row without its own recorded identity — a host added by hand, or one
+    // saved before the switch — still connects with the shared key.
+    return forkmesh::control::existingSharedHostIdentityFile();
 }
 
 // --- One-click Vultr mirror provisioning (adhoc #315) -----------------------
@@ -18760,6 +22268,11 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
     m_vultrTunnelApiToken.clear();
     if (m_vultrCreateButton)
         m_vultrCreateButton->setEnabled(true);
+    if (ok && m_mirrorFleetEnabledCheck &&
+        m_mirrorFleetEnabledCheck->isChecked()) {
+        QTimer::singleShot(0, this,
+                           &MainWindow::reconcileDesiredMirrorFleet);
+    }
 }
 
 void MainWindow::waitForVultrMirrorPublication(
@@ -18805,19 +22318,7 @@ void MainWindow::waitForVultrMirrorPublication(
                     candidate =
                         mirror.value(QStringLiteral("owner")).toString().trimmed();
                 if (candidate.compare(node, Qt::CaseInsensitive) == 0 &&
-                    mirror.value(QStringLiteral("status"))
-                            .toString()
-                            .compare(QStringLiteral("online"),
-                                     Qt::CaseInsensitive) == 0 &&
-                    mirror.value(QStringLiteral("integrity"))
-                            .toString()
-                            .compare(QStringLiteral("ok"),
-                                     Qt::CaseInsensitive) == 0 &&
-                    mirror.value(QStringLiteral("lastSync")).toVariant()
-                            .toLongLong() > 0 &&
-                    mirror.value(QStringLiteral("cloneAvailable")).toBool() &&
-                    mirror.value(QStringLiteral("endpointHealthy")).toBool() &&
-                    mirror.value(QStringLiteral("endpointFresh")).toBool()) {
+                    forkmesh::control::mirrorCatalogEntryIsHealthy(mirror)) {
                     // The relay reports endpoint health for this exact node.
                     // Do not require its URL spelling to match the hostname
                     // saved before installation: Cloudflare can normalize the
@@ -19092,22 +22593,18 @@ void MainWindow::ensureVultrMirrorDns(const QString &node, const QString &ip,
         });
 }
 
-void MainWindow::ensureVultrManagedKeypair(
+void MainWindow::ensureSharedHostKeypair(
     std::function<void(QString, QString, QString)> onDone)
 {
-    const QString appDataDir =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    const QString sshDir = QDir(appDataDir).filePath(QStringLiteral("ssh"));
-    if (appDataDir.isEmpty() || !QDir().mkpath(sshDir)) {
+    // One key for the whole fleet: newly provisioned mirrors get it from the
+    // provider, hand-added hosts already carry it in authorized_keys, and this
+    // device keeps the single private half.
+    const QString keyPath = forkmesh::control::sharedHostKeyPath();
+    if (keyPath.isEmpty()) {
         onDone({}, {}, QStringLiteral(
             "ForkMesh could not create its managed SSH key directory."));
         return;
     }
-    QFile::setPermissions(sshDir,
-                          QFileDevice::ReadOwner | QFileDevice::WriteOwner |
-                              QFileDevice::ExeOwner);
-    const QString keyPath =
-        QDir(sshDir).filePath(QStringLiteral("vultr_mirror_ed25519"));
     const QString pubPath = keyPath + QStringLiteral(".pub");
     const auto readPublicKey = [pubPath]() {
         QFile pub(pubPath);
@@ -19123,7 +22620,7 @@ void MainWindow::ensureVultrManagedKeypair(
         }
     }
     appendHostInstallLog(QString::fromUtf8(
-        "Generating the managed SSH key for Vultr mirrors\xE2\x80\xA6\n"));
+        "Generating the shared ForkMesh SSH key for this fleet\xE2\x80\xA6\n"));
     auto *keygen = new QProcess(this);
     keygen->setProcessChannelMode(QProcess::MergedChannels);
     connect(keygen, &QProcess::errorOccurred, this,
@@ -19161,7 +22658,7 @@ void MainWindow::ensureVultrManagedKeypair(
                   {QStringLiteral("-q"), QStringLiteral("-t"),
                    QStringLiteral("ed25519"), QStringLiteral("-N"),
                    QString(), QStringLiteral("-C"),
-                   QStringLiteral("forkmesh-vultr-mirror"),
+                   QStringLiteral("forkmesh-shared-host-key"),
                    QStringLiteral("-f"), keyPath});
 }
 
@@ -19201,7 +22698,7 @@ void MainWindow::resolveVultrSshKeyId(
             }
             const QJsonObject body{
                 {QStringLiteral("name"),
-                 QStringLiteral("forkmesh-mirror-controller")},
+                 QStringLiteral("forkmesh-shared-host-key")},
                 {QStringLiteral("ssh_key"), publicKey},
             };
             vultrApiCall(
@@ -19409,12 +22906,12 @@ void MainWindow::createVultrMirrorFromForm()
     }
     setVultrProvisionStage(
         1, resumedPreInstance
-               ? QStringLiteral("Resuming credentials and managed SSH key…")
-               : QStringLiteral("Preparing credentials and managed SSH key…"));
+               ? QStringLiteral("Resuming credentials and shared SSH key…")
+               : QStringLiteral("Preparing credentials and shared SSH key…"));
 
-    ensureVultrManagedKeypair([this, apiKey, node](
-                                  QString keyPath, QString publicKey,
-                                  QString keyError) {
+    ensureSharedHostKeypair([this, apiKey, node](QString keyPath,
+                                                 QString publicKey,
+                                                 QString keyError) {
         if (!keyError.isEmpty()) {
             finishVultrProvision(false, keyError);
             return;
@@ -19422,7 +22919,7 @@ void MainWindow::createVultrMirrorFromForm()
         m_vultrIdentityFile = keyPath;
         persistVultrProvisionState();
         appendHostInstallLog(
-            QStringLiteral("Managed SSH key: %1\n").arg(keyPath));
+            QStringLiteral("Shared ForkMesh SSH key: %1\n").arg(keyPath));
         if (m_vultrStatus)
             m_vultrStatus->setText(QString::fromUtf8(
                 "Registering the SSH key with Vultr\xE2\x80\xA6"));
@@ -20288,6 +23785,17 @@ bool MainWindow::buildVultrMirrorNodeInstallCommand(
             mirrorBinary = sibling;
     }
     if (mirrorBinary.isEmpty()) {
+        // Desktop-launched GUIs often run without ~/.local/bin in PATH, and a
+        // working-tree build's sibling directory holds no companion — check the
+        // installer-owned location the desktop installer and update flow write.
+        const QString installed =
+            QFileInfo(runningClientExecutable())
+                .dir()
+                .filePath(QStringLiteral("forkmesh-mirror-node"));
+        if (QFileInfo(installed).isExecutable())
+            mirrorBinary = installed;
+    }
+    if (mirrorBinary.isEmpty()) {
         const QString sourceBinary =
             QDir(QStringLiteral(FORKMESH_SOURCE_DIR))
                 .filePath(QStringLiteral("../mirror_node/forkmesh-mirror-node"));
@@ -20703,7 +24211,8 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QString::fromUtf8(
                 "Enter the host IP, SSH username and a node name first. "
-                "Leave the password blank to use your SSH agent/default key."));
+                "Leave the password blank to use the shared ForkMesh SSH "
+                "key."));
         if (onFinished)
             onFinished(false);
         return;
@@ -21084,8 +24593,9 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
     if (!m_hostDeployPanel || !m_hostDeployGrid)
         return;
 
-    // Load non-sensitive host metadata. A password may exist only in this
-    // process's cache; otherwise the session uses an SSH agent/default key.
+    // Load non-sensitive host metadata. Every session authenticates with the
+    // shared ForkMesh key; a password cached in this process (or, failing
+    // both, an SSH agent/default key) is only the fallback.
     QSettings settings;
     const QJsonArray hosts = forkmesh::control::loadSavedHosts(
         settings, kHostsSetting, &m_hostSessionPasswords);
@@ -21404,7 +24914,8 @@ void MainWindow::runHostUninstall()
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QString::fromUtf8(
                 "Enter the host IP, SSH username and a node name first. "
-                "Leave the password blank to use your SSH agent/default key."));
+                "Leave the password blank to use the shared ForkMesh SSH "
+                "key."));
         return;
     }
     const QString uninstallUrl = uninstallScriptUrl();

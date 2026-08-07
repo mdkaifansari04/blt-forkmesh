@@ -2301,6 +2301,11 @@ void MainWindow::resetIssueFilters()
 
 void MainWindow::refreshIssueList()
 {
+    // Deferred inside a batch so it renders AFTER reloadAgents(): this list
+    // shows agent assignment, and running it against stale sessions was one
+    // of the flashes during "Merge & clean up".
+    if (deferUiRefresh(UiRefreshIssues))
+        return;
     if (!m_issueTable)
         return;
     const QString statusFilter = m_issueStatusFilter->currentText();
@@ -4399,8 +4404,12 @@ void MainWindow::quickAddIssue()
                 prompt += QLatin1Char('\n');
             prompt += QStringLiteral("Attached image: %1").arg(img);
         }
+        // switchToTab=false: this is the quick-add bar's "new" button, docked on
+        // every page — starting a run from it must not jump the user onto the
+        // Agents tab away from whatever they were looking at (adhoc #1573).
         const int agentSessionId = startAdHocAgentForRepo(
-            issuesRepoIndex(), prompt, provider, createPr, model);
+            issuesRepoIndex(), prompt, provider, createPr, model, QString(),
+            /*genie=*/false, /*switchToTab=*/false);
         if (agentSessionId > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
@@ -5332,6 +5341,8 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         obj == m_topMessageContainer || obj == m_topMessage ||
         obj == m_topMessageScroll || obj == m_topMessageActions ||
         obj == m_topMessageMeta || obj == m_topMessageTypeBadge ||
+        obj == m_topMessageAgentRow || obj == m_topMessageAgentIcon ||
+        obj == m_topMessageAgentHeadline ||
         obj == m_topMessageActionOutput ||
         obj == m_topMessageCopy ||
         obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
@@ -5359,6 +5370,30 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                     applyLiveClaudeModelsToCombos();
             }
         }
+        // Any warning/critical modal, wherever it was raised: report it to the
+        // relay so a failure that only ever appeared on one screen still becomes
+        // an operational record and an administrator ping (adhoc #1538). This
+        // filter is already installed application-wide, so none of the ~150
+        // QMessageBox::warning/critical call sites has to remember to report.
+        if (auto *box = qobject_cast<QMessageBox *>(obj)) {
+            const QMessageBox::Icon icon = box->icon();
+            // A warning that asks something ("Discard changes?" with
+            // Discard/Cancel) is a confirmation prompt, not a failure. Only the
+            // boxes that merely inform are reports of something going wrong.
+            const bool informational =
+                (box->standardButtons()
+                 & ~(QMessageBox::Ok | QMessageBox::Close))
+                == QMessageBox::NoButton;
+            if (informational
+                && (icon == QMessageBox::Warning
+                    || icon == QMessageBox::Critical)) {
+                QString text = box->text();
+                if (!box->informativeText().isEmpty())
+                    text += QLatin1Char(' ') + box->informativeText();
+                reportUserVisibleError(QStringLiteral("dialog"),
+                                       box->windowTitle(), text);
+            }
+        }
     }
     // The collapsed prompt leaves only the account avatar at the footer's
     // lower-right corner. Hovering that launcher should restore the composer
@@ -5366,6 +5401,21 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (obj == m_userAvatarNavButton && event->type() == QEvent::Enter &&
         m_promptOverlayCollapsed) {
         setPromptOverlayCollapsed(false);
+    }
+    // Dragging the composer's top strip moves it, its corner grip resizes it,
+    // and double-clicking the strip snaps it back to the footer (adhoc #1536).
+    if (handlePromptPlacementEvent(obj, event))
+        return true;
+    // Closing the popped-out prompt window docks the composer rather than
+    // destroying it — the widget inside is the app's one and only composer.
+    if (obj == m_promptDetachWindow && m_promptDetachWindow) {
+        if (event->type() == QEvent::Close) {
+            event->ignore();
+            setPromptOverlayDetached(false);
+            return true;
+        }
+        if (event->type() == QEvent::Move || event->type() == QEvent::Resize)
+            m_promptDetachGeometry = m_promptDetachWindow->geometry();
     }
     // Ctrl + mouse wheel over any registered diff viewer zooms its text size,
     // mirroring the +/- buttons (issue #254). Consume so the view doesn't scroll.
@@ -5581,6 +5631,20 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                                    m_footerUpdateLog->viewport());
                 return true;
             }
+            // The trailing origin is likewise its own affordance (adhoc #1587):
+            // the tooltip carries the full path the link abbreviates.
+            QString sourcePath;
+            int sourceLine = 0;
+            if (logSourceAnchorTarget(m_footerUpdateLog->anchorAt(he->pos()),
+                                      &sourcePath, &sourceLine)) {
+                QToolTip::showText(
+                    he->globalPos(),
+                    QStringLiteral("Logged from %1:%2 — click to open it in Files")
+                        .arg(sourcePath)
+                        .arg(sourceLine),
+                    m_footerUpdateLog->viewport());
+                return true;
+            }
             const QString line = lineAt(he->pos());
             if (!line.isEmpty()) {
                 QToolTip::showText(he->globalPos(), line,
@@ -5597,6 +5661,15 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                     logPromptAnchorLine(m_footerUpdateLog->anchorAt(pos));
                 if (!promptLine.isEmpty()) {
                     appendTextToActivePrompt(promptLine);
+                    return true;
+                }
+                // ...and the origin at the far right opens the code that wrote
+                // the entry, rather than the Log view showing it.
+                QString sourcePath;
+                int sourceLine = 0;
+                if (logSourceAnchorTarget(m_footerUpdateLog->anchorAt(pos),
+                                          &sourcePath, &sourceLine)) {
+                    revealLogSourceInExplorer(sourcePath, sourceLine);
                     return true;
                 }
                 const QString line = lineAt(pos);
@@ -5623,14 +5696,37 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                                    m_settingsLog->viewport());
                 return true;
             }
+            QString sourcePath;
+            int sourceLine = 0;
+            if (logSourceAnchorTarget(m_settingsLog->anchorAt(he->pos()),
+                                      &sourcePath, &sourceLine)) {
+                QToolTip::showText(
+                    he->globalPos(),
+                    QStringLiteral("Logged from %1:%2 — click to open it in Files")
+                        .arg(sourcePath)
+                        .arg(sourceLine),
+                    m_settingsLog->viewport());
+                return true;
+            }
         } else {
             auto *me = static_cast<QMouseEvent *>(event);
             if (me->button() == Qt::LeftButton) {
-                const QString promptLine = logPromptAnchorLine(
-                    m_settingsLog->anchorAt(me->position().toPoint()));
+                const QString anchor =
+                    m_settingsLog->anchorAt(me->position().toPoint());
+                const QString promptLine = logPromptAnchorLine(anchor);
                 if (!promptLine.isEmpty()) {
                     if (event->type() == QEvent::MouseButtonRelease)
                         appendTextToActivePrompt(promptLine);
+                    return true;
+                }
+                // The origin link closing the entry (adhoc #1587), swallowed
+                // here for the same reason: QTextBrowser would otherwise try to
+                // navigate to "fmlogsrc:…" on the release.
+                QString sourcePath;
+                int sourceLine = 0;
+                if (logSourceAnchorTarget(anchor, &sourcePath, &sourceLine)) {
+                    if (event->type() == QEvent::MouseButtonRelease)
+                        revealLogSourceInExplorer(sourcePath, sourceLine);
                     return true;
                 }
             }
@@ -8157,6 +8253,46 @@ void MainWindow::syncIssuesInbox()
     showPendingInbox(m_repositories.at(idx), QStringLiteral("issues"));
 }
 
+void MainWindow::noteInboxDrainFailure(const QString &backoffKey, int status,
+                                       bool mirrorIntake)
+{
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!mirrorIntake || (status != 401 && status != 403)) {
+        m_pollBackoff.noteFailure(backoffKey, nowMs);
+        return;
+    }
+    // Mirror intake authorization is not backpressure. The relay grants it from
+    // this node's identity plus fresh health/integrity and membership in the
+    // repo's signed mirror group, so a node outside that group is rejected
+    // identically forever — and NetworkBackoff's ordinary ten-minute cap turns
+    // that into a permanent 401 every ten minutes, for every mirrored repo and
+    // each of its three queues. That is the stream of Qt "Host requires
+    // authentication" HTTP/2 warnings a headless mirror logs all day.
+    //
+    // Rejections still retry on the normal cadence for a couple of rounds: a
+    // group member whose endpoint health check has merely lapsed recovers on
+    // its own, and delaying its queue by hours would strand real submissions.
+    // Only a node that keeps being refused drops to the long cooldown. An
+    // OWNER drain keeps the ordinary curve above: that 401 means the node is
+    // unlinked, and the user fixes it by re-linking and expects their own
+    // queue back within a poll cycle, not hours.
+    static constexpr int kAuthRejectionGrace = 2;
+    static constexpr qint64 kAuthBaseMs = 30LL * 60 * 1000;
+    static constexpr qint64 kAuthCapMs = 6LL * 60 * 60 * 1000;
+    const int rejections = ++m_inboxAuthRejections[backoffKey];
+    if (rejections <= kAuthRejectionGrace) {
+        m_pollBackoff.noteFailure(backoffKey, nowMs);
+        return;
+    }
+    m_pollBackoff.noteFailure(backoffKey, nowMs, kAuthBaseMs, kAuthCapMs);
+}
+
+void MainWindow::noteInboxDrainSuccess(const QString &backoffKey)
+{
+    m_inboxAuthRejections.remove(backoffKey);
+    m_pollBackoff.noteSuccess(backoffKey);
+}
+
 void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
                                      bool forceMirrorIntake)
 {
@@ -8243,11 +8379,10 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
         if (mirrorIntake)
             m_mirrorIssueIntakeInFlight.remove(intakeKey);
         if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(backoffKey,
-                                      QDateTime::currentMSecsSinceEpoch());
             const int status =
                 reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
                     .toInt();
+            noteInboxDrainFailure(backoffKey, status, mirrorIntake);
             // A rejected drain is the difference between "nothing is queued"
             // and "everything is queued and unreachable". Say so once per repo
             // instead of only backing off: this failure mode is invisible on an
@@ -8257,7 +8392,24 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
                 static QSet<QString> s_inboxAuthWarned;
                 if (!s_inboxAuthWarned.contains(backoffKey)) {
                     s_inboxAuthWarned.insert(backoffKey);
-                    logSystem(QStringLiteral(
+                    // Mirror intake and owner intake fail for different
+                    // reasons, and the remedy differs with them: an owner drain
+                    // needs the node re-linked, while a mirror drain needs this
+                    // node inside the repo's approved mirror group with a fresh
+                    // healthy endpoint. Naming the wrong one sends whoever
+                    // reads the log after the wrong setting.
+                    logSystem(
+                        mirrorIntake
+                            ? QStringLiteral(
+                                  "The relay rejected this node's signed mirror "
+                                  "issue intake for %1/%2 as \"%3\" (HTTP %4), "
+                                  "so web-filed issues are materialized "
+                                  "elsewhere. This node needs a healthy direct "
+                                  "HTTPS endpoint inside that repo's approved "
+                                  "mirror group; retries now slow to hours.")
+                                  .arg(repo.owner, repo.name, signer)
+                                  .arg(status)
+                            : QStringLiteral(
                                   "The relay rejected this node's signed issue "
                                   "drain for %1/%2 as \"%3\" (HTTP %4), so "
                                   "web-filed issues can't sync down. Re-link "
@@ -8272,7 +8424,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
                                      true);
             return;
         }
-        m_pollBackoff.noteSuccess(backoffKey);
+        noteInboxDrainSuccess(backoffKey);
         const QJsonArray pending =
             QJsonDocument::fromJson(reply->readAll())
                 .object()

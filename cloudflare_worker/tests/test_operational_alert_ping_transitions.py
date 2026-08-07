@@ -16,7 +16,10 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+ENTRY_TEXT = (
+    ENTRY.read_text(encoding="utf-8") + "\n"
+    + ENTRY.with_name("status_monitoring.py").read_text(encoding="utf-8")
+)
 
 SYSTEMS = [("edge_api", "Edge API"), ("flagship_repository", "Flagship repo")]
 
@@ -240,19 +243,10 @@ def test_ping_state_is_only_recorded_once_delivered():
     assert monitors["status:edge_api"]["pinged_state"] == ""
 
 
-def test_flagship_grace_defers_the_ping_until_the_failure_is_sustained():
+def test_flagship_repository_outage_pings_on_the_first_failed_probe():
     namespace, monitors, pings = _load()
-    grace = namespace["STATUS_DEPLOY_GRACE_MS"]
     _sample(namespace, 10 * 60_000)
     _sample(namespace, 11 * 60_000, down=("flagship_repository",))
-    assert pings == []
-
-    # Recovering inside the grace window must not ping a recovery for an
-    # outage that was never announced.
-    _sample(namespace, 12 * 60_000)
-    assert pings == []
-    assert monitors["status:flagship_repository"]["pinged_state"] == "up"
-
-    _sample(namespace, 13 * 60_000, down=("flagship_repository",))
-    _sample(namespace, 13 * 60_000 + grace, down=("flagship_repository",))
-    assert [ping["state"] for ping in pings] == ["down"]
+    assert [(ping["state"], ping["title"]) for ping in pings] == [
+        ("down", "Flagship repo needs attention")]
+    assert monitors["status:flagship_repository"]["pinged_state"] == "down"

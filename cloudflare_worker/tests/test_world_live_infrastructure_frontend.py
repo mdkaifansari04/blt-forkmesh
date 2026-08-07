@@ -60,7 +60,9 @@ def test_infrastructure_display_adds_no_durable_object_polling():
     for method in (
         "startStatusBoardPolling",
         "startEventPolling",
-        "startNotificationPolling",
+        # Pings are pushed now, not polled (adhoc #1604), but the starter is
+        # still the place a stray bootstrap read would get bolted on.
+        "startNotificationChannel",
         "startMediaPlaybackPolling",
     ):
         section = _between(f"  {method}(", "\n  }")

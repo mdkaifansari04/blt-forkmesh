@@ -46,7 +46,8 @@ inline QStringList envEntries(const QString &jailDir)
 }
 
 // Per-session jail directory for transcript (stream) sessions, kept under the
-// system temp location beside the worktrees so it never pollutes the repo.
+// system temp location — unlike the worktree itself, which lives in the project
+// (AgentWorktree.h), agent scratch state has no business there.
 inline QString sessionJailDir(int sessionId)
 {
     return QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
