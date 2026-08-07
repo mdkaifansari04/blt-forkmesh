@@ -13056,7 +13056,11 @@ void MainWindow::notifyAgentDone(int sessionId)
                  /*durationSeconds=*/0, kAgentDoneToastKind);
     flashCelebrationBorder();
     // Runs are long: the window is often behind something else by the time one
-    // lands, which is exactly when an OS notification earns its keep.
+    // lands, which is exactly when an OS notification earns its keep. Opt-out,
+    // not opt-in — a finished run is worth surfacing by default — but still a
+    // dedicated Settings toggle like every other native alert.
+    if (!QSettings().value(kAgentDoneAlertSetting, true).toBool())
+        return;
     notifyIfInactive(QStringLiteral("ForkMesh %1 Agent #%2 is done!")
                          .arg(QString::fromUtf8("\xE2\x80\x94")) // —
                          .arg(sessionId),
