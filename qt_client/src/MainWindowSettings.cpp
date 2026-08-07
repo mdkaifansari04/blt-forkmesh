@@ -1726,14 +1726,17 @@ QWidget *MainWindow::buildSettingsSection()
     importLabel->setObjectName("sectionLabel");
     auto *importHint = new QLabel(
         "Clone a GitHub or GitLab repository into a local folder, then mirror "
-        "and publish it under your node. Add an access token to avoid "
-        "unauthenticated rate limits — tokens are stored locally only.");
+        "and publish it under your node. Paste a GitLab group instead of a "
+        "project to import the entire organization, subgroups included. Add an "
+        "access token to avoid unauthenticated rate limits (and to reach "
+        "private groups) — tokens are stored locally only.");
     importHint->setObjectName("statusLine");
     importHint->setWordWrap(true);
 
     m_importUrlEdit = new QLineEdit;
     m_importUrlEdit->setPlaceholderText(
-        "https://github.com/owner/repo  or  https://gitlab.com/group/repo");
+        "https://github.com/owner/repo  ·  https://gitlab.com/group/repo  ·  "
+        "https://gitlab.com/group");
     m_importButton = new QPushButton("Import");
     m_importButton->setObjectName("primaryButton");
     m_importButton->setCursor(Qt::PointingHandCursor);

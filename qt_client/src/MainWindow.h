@@ -5094,9 +5094,41 @@ private:
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.
     void importRemoteRepository();
+    // Clone one repository URL; the tail of importRemoteRepository() once the
+    // URL is known to name a single project rather than a whole organization.
+    void importSingleRemoteRepository(const QString &url);
     // Provider-aware "-c http.extraHeader=Authorization: Basic ..." clone args
     // carrying the saved token for the URL's host, or empty when none is set.
     QStringList importAuthGitArgs(const QString &url) const;
+    // Importing an entire GitLab organization. A GitLab organization is a
+    // group, and a group path is indistinguishable from a project path by
+    // inspection (gitlab.com/acme/platform is either), so the API is asked
+    // which one it is before anything is cloned. Only one bulk import runs at
+    // a time — the Import controls stay disabled until the queue drains — so
+    // the in-flight state lives in a single member.
+    struct GitlabGroupImport {
+        QString group;          // full group path, e.g. acme/platform
+        QString parentDir;      // directory each clone lands in
+        QStringList cloneUrls;  // projects still to clone
+        QStringList names;      // repository name chosen for each clone URL
+        int total = 0;
+        int imported = 0;
+        int failed = 0;
+    };
+    GitlabGroupImport m_gitlabGroupImport;
+    // Group path for a canonical gitlab.com organization/subgroup URL, or an
+    // empty string when the URL is not a GitLab namespace at all.
+    QString gitlabGroupPathFor(const QUrl &url) const;
+    // Ask GitLab whether the path is a group; a group starts the bulk import
+    // and anything else falls back to a single-repository clone.
+    void probeGitlabGroup(const QString &url, const QString &groupPath);
+    void fetchGitlabGroupProjects(const QString &groupPath, int page);
+    void cloneNextGitlabGroupProject();
+    void finishGitlabGroupImport();
+    // Shared by both import paths so the single and bulk flows report through
+    // one status line and re-enable the same controls.
+    void setImportStatus(const QString &text, bool error);
+    void setImportControlsEnabled(bool enabled);
     void previewAdvertisedRepo(const QString &ownerName);
     void mirrorAdvertisedRepo(const QString &ownerName);
     void mirrorPreviewRepository(int index);
