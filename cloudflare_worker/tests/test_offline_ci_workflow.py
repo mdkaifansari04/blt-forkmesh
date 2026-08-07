@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".forkmesh" / "ci.yml"
 DEPLOY_WORKFLOW = ROOT / ".forkmesh" / "deploy.yml"
+RELEASE_WORKFLOW = ROOT / ".forkmesh" / "release.yml"
 CRITICAL_RUNNER = ROOT / "tools" / "run_critical_tests.py"
 BROWSER_PACKAGE = ROOT / "cloudflare_worker" / "browser_tests" / "package.json"
 BROWSER_CONFIG = ROOT / "cloudflare_worker" / "browser_tests" / "playwright.config.js"
@@ -72,6 +73,20 @@ def _cmake_list(cmake: str, name: str) -> list[str]:
     _, _, rest = cmake.partition(f"set({name}\n")
     body, _, _ = rest.partition(")")
     return body.split()
+
+
+def test_qt_builds_pin_autogen_pools_to_the_sandbox_budget():
+    """CMake's AUTOGEN_PARALLEL default (AUTO) sizes each AUTOMOC driver's
+    thread pool from the host's core count, which no step can see from inside
+    the Actions cgroup. One such pool per -j slot exhausted the scope's task
+    ceiling and the build died on pthread_create's "Resource temporarily
+    unavailable" (adhoc #1586). Both Qt builds pin the pools to the same job
+    count the compiles are sized from."""
+    for workflow in (WORKFLOW, RELEASE_WORKFLOW):
+        source = workflow.read_text(encoding="utf-8")
+        assert '-DCMAKE_AUTOGEN_PARALLEL="$jobs"' in source, workflow.name
+        # Sizing the pools from $jobs only works if $jobs is already computed.
+        assert source.index("jobs=") < source.index("-DCMAKE_AUTOGEN_PARALLEL")
 
 
 def test_critical_suites_enforce_sub_minute_deadlines():
