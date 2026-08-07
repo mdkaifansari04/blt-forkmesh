@@ -1685,6 +1685,7 @@ QWidget *MainWindow::buildStatusBar()
     // The build number belongs beside the path it identifies. It is also the
     // intentionally-small disclosure control for the diagnostics row below.
     auto *versionButton = new QPushButton(QStringLiteral("v" FORKMESH_VERSION));
+    m_statusVersionButton = versionButton;
     versionButton->setObjectName(QStringLiteral("statusVersionButton"));
     versionButton->setCheckable(true);
     versionButton->setCursor(Qt::PointingHandCursor);
@@ -1798,15 +1799,23 @@ QWidget *MainWindow::buildStatusBar()
     // Beside the button that opens that tail, the checkbox that keeps it
     // running without one (adhoc #1615): while it is ticked a background
     // Wrangler tail feeds every Worker error into the log, where it raises the
-    // same red card as any other failure. Session-only on purpose — it holds a
-    // Cloudflare API token open, which is not a state to restore silently at
-    // launch.
+    // same red card as any other failure. On by default and remembered across
+    // runs now (adhoc #1632) — a Worker failure nobody is watching for is worth
+    // more than the idling tail costs. The tick is set before the signal is
+    // connected so building the window never spawns anything: the tail is
+    // started, once, from startCloudLogMonitorIfConfigured().
     m_cloudLogMonitorCheck = new QCheckBox(QStringLiteral("Monitor"));
     m_cloudLogMonitorCheck->setObjectName(QStringLiteral("cloudLogMonitorCheck"));
     m_cloudLogMonitorCheck->setCursor(Qt::PointingHandCursor);
+    m_cloudLogMonitorCheck->setChecked(
+        QSettings().value(kCloudLogMonitorSetting, true).toBool());
     updateCloudLogMonitorTooltip();
-    connect(m_cloudLogMonitorCheck, &QCheckBox::toggled, this,
-            [this](bool on) { setCloudLogMonitorEnabled(on); });
+    connect(m_cloudLogMonitorCheck, &QCheckBox::toggled, this, [this](bool on) {
+        QSettings().setValue(kCloudLogMonitorSetting, on);
+        if (m_cloudLogMonitorSettingCheck)
+            m_cloudLogMonitorSettingCheck->setChecked(on);
+        setCloudLogMonitorEnabled(on);
+    });
 
     // Third tool: grow the window by a five-line live tail of the log, so the
     // newest lines are readable without opening the footer overlay or the full
@@ -1888,7 +1897,47 @@ QWidget *MainWindow::buildStatusBar()
                     expanded ? QStringLiteral("Hide debug activity and resource use")
                              : QStringLiteral("Show debug activity and resource use"));
             });
+
+    // Startup state, applied once the window is built rather than during it
+    // (adhoc #1632): the bar opens itself for admins, and the cloud monitor's
+    // Wrangler tail starts a few seconds later so launch never waits on npx.
+    QTimer::singleShot(0, this, [this] { applyDebugBarStartupPreference(); });
+    QTimer::singleShot(kCloudLogMonitorStartupDelayMs, this,
+                       [this] { startCloudLogMonitorIfConfigured(); });
     return statusArea;
+}
+
+// The debug bar's opening state (adhoc #1632). An explicit preference decides
+// it outright; with none stored it follows the account — admins get the bar,
+// everybody else gets the quiet footer they had before. Admin status arrives on
+// a heartbeat well after the window is built, so this runs again from there;
+// m_debugBarStartupApplied keeps it a startup decision rather than something
+// that can re-open the bar the user has since closed.
+void MainWindow::applyDebugBarStartupPreference()
+{
+    if (m_debugBarStartupApplied || !m_statusVersionButton)
+        return;
+    QSettings settings;
+    const bool configured = settings.contains(kShowDebugBarOnStartupSetting);
+    const bool show = configured
+                          ? settings.value(kShowDebugBarOnStartupSetting).toBool()
+                          : m_isAdmin;
+    if (!show) {
+        // Only a stored "no" is final. An unset preference on a node that has
+        // not heard back about admin status yet is still waiting for its answer.
+        m_debugBarStartupApplied = configured;
+        return;
+    }
+    m_debugBarStartupApplied = true;
+    // Settings may have been built before the relay answered, in which case its
+    // box is showing the pre-admin default. Correct it without re-storing it.
+    if (!configured && m_debugBarStartupCheck) {
+        const QSignalBlocker blocker(*m_debugBarStartupCheck);
+        m_debugBarStartupCheck->setChecked(true);
+    }
+    // The version button owns the bar's visibility, so this goes through it:
+    // its toggled() handler is what shows the strip and re-words the tooltip.
+    m_statusVersionButton->setChecked(true);
 }
 
 // Five lines of live log below the debug bar. The window grows by exactly that
@@ -9173,6 +9222,53 @@ bool MainWindow::testCloudflareLogAtBottom() const
 // second copy of the log.
 static constexpr int kCloudLogMonitorBacklog = 500;
 
+// Is there a Cloudflare API token to tail with? The monitor is on by default
+// (adhoc #1632), so on a node that never deploys the automatic start has to go
+// quiet instead of greeting every launch with a "needs a token" toast. Reads the
+// same two sources prepareCloudflareTail() does, and copies neither anywhere.
+bool MainWindow::cloudLogMonitorTokenAvailable() const
+{
+    if (m_cloudflareTokenEdit && !m_cloudflareTokenEdit->text().trimmed().isEmpty())
+        return true;
+    QString stored =
+        forkmesh::control::cloudflareApiTokenFromVariables(ActionStore::variables());
+    const bool have = !stored.isEmpty();
+    stored.fill(QChar(u'\0'));
+    return have;
+}
+
+// The stored preference, acted on once the window is up. A node with no token
+// says so in the tooltip and does nothing else: the automatic start neither
+// unticks the box (the preference is still "monitor" — storing a token and
+// relaunching is all it takes) nor writes a line into the log every launch.
+void MainWindow::startCloudLogMonitorIfConfigured()
+{
+    if (m_closingDown || m_cloudLogMonitorProcess || !m_cloudLogMonitorCheck)
+        return;
+    if (!m_cloudLogMonitorCheck->isChecked())
+        return;
+    m_cloudLogMonitorAwaitingToken = !cloudLogMonitorTokenAvailable();
+    if (m_cloudLogMonitorAwaitingToken) {
+        updateCloudLogMonitorTooltip();
+        return;
+    }
+    setCloudLogMonitorEnabled(true);
+}
+
+void MainWindow::stopCloudLogMonitorAfterFailure()
+{
+    if (m_cloudLogMonitorCheck) {
+        const QSignalBlocker blocker(*m_cloudLogMonitorCheck);
+        m_cloudLogMonitorCheck->setChecked(false);
+    }
+    if (m_cloudLogMonitorSettingCheck) {
+        const QSignalBlocker blocker(*m_cloudLogMonitorSettingCheck);
+        m_cloudLogMonitorSettingCheck->setChecked(false);
+    }
+    setCloudLogMonitorEnabled(false);
+    updateCloudLogMonitorTooltip();
+}
+
 // The debug bar's Monitor checkbox. Checked, it holds one Wrangler tail open in
 // the background and turns every Worker failure into an ERROR-badged log line —
 // which is all it takes for alertOnLoggedError() to raise the same red card any
@@ -9233,8 +9329,7 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
     // pops back out.
     if (!prepareCloudflareTail(&token, &workerDirectory, &command, nullptr,
                                false)) {
-        if (m_cloudLogMonitorCheck)
-            m_cloudLogMonitorCheck->setChecked(false);
+        stopCloudLogMonitorAfterFailure();
         return;
     }
 
@@ -9247,6 +9342,7 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
     m_cloudLogMonitorErrors = 0;
     m_cloudLogMonitorEvents = 0;
     m_cloudLogMonitorStopping = false;
+    m_cloudLogMonitorAwaitingToken = false;
     m_cloudLogMonitorProcess = new QProcess(this);
     m_cloudLogMonitorProcess->setWorkingDirectory(workerDirectory);
     m_cloudLogMonitorProcess->setProcessEnvironment(command.environment);
@@ -9261,11 +9357,10 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
                 logSystem(QStringLiteral(
                     "Cloud: could not start the Worker log monitor \xE2\x80\x94 "
                     "Node.js and npx are required."));
-                // Unchecking runs the teardown; the direct call covers a node
-                // with no debug bar to uncheck. Both are idempotent.
-                if (m_cloudLogMonitorCheck)
-                    m_cloudLogMonitorCheck->setChecked(false);
-                setCloudLogMonitorEnabled(false);
+                // Unticks the box and runs the teardown in one, and leaves the
+                // stored preference alone: a missing npx is not a decision to
+                // stop monitoring.
+                stopCloudLogMonitorAfterFailure();
             });
     connect(m_cloudLogMonitorProcess, &QProcess::finished, this,
             [this](int exitCode, QProcess::ExitStatus) {
@@ -9278,9 +9373,7 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
                               "Cloud: the Worker log monitor failed and "
                               "stopped (exit %1).")
                               .arg(exitCode));
-                if (m_cloudLogMonitorCheck)
-                    m_cloudLogMonitorCheck->setChecked(false);
-                setCloudLogMonitorEnabled(false);
+                stopCloudLogMonitorAfterFailure();
             });
     // Logged before start() so the order reads right even when the child fails
     // to launch synchronously.
@@ -9371,6 +9464,11 @@ void MainWindow::updateCloudLogMonitorTooltip()
                       .arg(m_cloudLogMonitorErrors)
                       .arg(m_cloudLogMonitorErrors == 1 ? QString()
                                                         : QStringLiteral("s"))
+        : m_cloudLogMonitorAwaitingToken
+                ? QStringLiteral(
+                      "Ready to watch the deployed Worker's live log and alert "
+                      "on its errors \xC2\xB7 waiting for a Cloudflare API "
+                      "token (Settings > Secrets)")
                 : QStringLiteral(
                       "Watch the deployed Cloudflare Worker's live log and "
                       "alert on every error it reports"));
