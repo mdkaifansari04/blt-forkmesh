@@ -14953,14 +14953,15 @@ void MainWindow::updateQuickAddEnterTarget()
 
 void MainWindow::updateQuickAddTargetAgentLabel()
 {
-    if (!m_quickAddTargetAgentLabel)
+    if (!m_issueQuickAdd)
         return;
+    // The follow-up target used to ride a separate "Agent #123" label pinned to
+    // the box's corner; it now reads inline in the placeholder itself (adhoc
+    // #1621), right next to "enter prompt" rather than off on its own.
     if (!quickAddShouldFollowUpAgent()) {
-        m_quickAddTargetAgentLabel->clear();
-        m_quickAddTargetAgentLabel->hide();
+        m_issueQuickAdd->setPlaceholderText(QStringLiteral("enter prompt"));
         return;
     }
-    m_quickAddTargetAgentLabel->setText(
-        QStringLiteral("Agent #%1").arg(m_selectedAgentSessionId));
-    m_quickAddTargetAgentLabel->show();
+    m_issueQuickAdd->setPlaceholderText(
+        QStringLiteral("enter prompt to agent #%1").arg(m_selectedAgentSessionId));
 }
