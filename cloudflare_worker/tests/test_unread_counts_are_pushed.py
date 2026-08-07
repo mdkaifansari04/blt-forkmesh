@@ -88,6 +88,11 @@ def test_every_write_that_moves_an_unread_count_pushes():
     assert 'notify_account_event(env, recipient, "direct-messages")' in retained
     recipient = _function_source("_chat_direct_message_recipient")
     assert "await blind_index(env, name) != sender_bi" in recipient
+    # Participants are immutable, so the lookup is memoized per isolate — but a
+    # failed read must not be remembered as "nobody to notify".
+    assert "_CHAT_DIRECT_PEER_MEMO" in recipient
+    assert recipient.index("except Exception:") < recipient.index(
+        "_CHAT_DIRECT_PEER_MEMO[memo_key] = peer")
 
 
 # --- the browser's key to that channel ---------------------------------------

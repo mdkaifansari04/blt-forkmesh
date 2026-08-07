@@ -7225,17 +7225,31 @@ async def _chat_direct_message_retained(
     ])
     # That first UPDATE is exactly what raises the other participant's
     # unreadCount, so push them a hint now. Their conversation list is read
-    # once when the chat page opens and never on a timer, and they are by
-    # definition not in this room's socket (the sender's peers got the message
-    # itself), so without this the count would sit stale until a reload.
+    # once when the chat page opens and never on a timer, so a reader who is
+    # not sitting in this particular conversation would otherwise not see the
+    # count move until they reloaded. (A reader who *is* sitting in it already
+    # got the message over this room's socket; the push is then redundant, and
+    # notify_account_event's coalescing window absorbs it.)
     recipient = await _chat_direct_message_recipient(
         env, conversation_id, account_bi)
     if recipient:
         await notify_account_event(env, recipient, "direct-messages")
 
 
+# conversation_id -> {sender account_bi: peer name}. A direct conversation has
+# exactly two participants and they never change, so this is immutable for the
+# life of the row and worth memoizing per isolate: the alternative is a D1 read
+# plus a row decrypt plus two blind indexes on every retained message.
+_CHAT_DIRECT_PEER_MEMO = {}
+CHAT_DIRECT_PEER_MEMO_MAX = 256
+
+
 async def _chat_direct_message_recipient(env, conversation_id, sender_bi):
     """The participant of a direct conversation who is not the sender."""
+    memo_key = str(conversation_id) + "\n" + str(sender_bi)
+    if memo_key in _CHAT_DIRECT_PEER_MEMO:
+        return _CHAT_DIRECT_PEER_MEMO[memo_key]
+    peer = ""
     try:
         row = await d1_first(
             env,
@@ -7252,10 +7266,15 @@ async def _chat_direct_message_recipient(env, conversation_id, sender_bi):
             if not valid_node_name(name):
                 continue
             if await blind_index(env, name) != sender_bi:
-                return name
+                peer = name
+                break
     except Exception:
+        # A transient read failure must not be memoized as "no recipient".
         return ""
-    return ""
+    if len(_CHAT_DIRECT_PEER_MEMO) >= CHAT_DIRECT_PEER_MEMO_MAX:
+        _CHAT_DIRECT_PEER_MEMO.clear()
+    _CHAT_DIRECT_PEER_MEMO[memo_key] = peer
+    return peer
 
 
 def _office_entry_ticket(env, account_bi):
