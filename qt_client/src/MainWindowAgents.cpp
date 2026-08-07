@@ -1961,8 +1961,11 @@ private:
             return;
         adjustSize();
         constexpr int kMargin = 12;
-        move(qMax(kMargin, m_pane->width() - width() - kMargin),
-             qMax(kMargin, m_pane->height() - height() - kMargin));
+        // Top-right, not bottom-right (adhoc #1612): kMargin matches the detail
+        // pane's own top inset (detailLayout's contents margin), so this bar and
+        // the session actions on the other side of the splitter land on the same
+        // line instead of one floating below the other.
+        move(qMax(kMargin, m_pane->width() - width() - kMargin), kMargin);
         raise();
     }
 
@@ -1995,9 +1998,10 @@ QWidget *MainWindow::buildAgentsTab()
     listPane->setObjectName(QStringLiteral("agentsListPane"));
     listPane->setMinimumWidth(260);
     // No heading at all any more (adhoc #224): with the repository band hidden
-    // on this tab (updateRepoActivityRail) and the toolbar moved to the pane's
-    // foot, the session list starts in the page's very top-left corner — the
-    // first row's selection outline begins on the window's left rule. The tab is
+    // on this tab (updateRepoActivityRail) and the toolbar floating over the
+    // pane rather than sitting in its layout, the session list starts in the
+    // page's very top-left corner — the first row's selection outline begins on
+    // the window's left rule. The tab is
     // already named "Agents" in the rail, so a second "Agent sessions" line only
     // pushed the list it labels down and in.
 
@@ -2186,9 +2190,11 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentUpdateAllButton, &QPushButton::clicked, this,
             &MainWindow::updateAllAgentWorktreesFromMain);
 
-    // Keep every fleet action in one floating bar at the bottom-right of the
-    // session-list pane. Queue capacity, bulk controls, and interactive
-    // provider terminals are all available from one place.
+    // Keep every fleet action in one floating bar at the top-right of the
+    // session-list pane (adhoc #1612), level with the session actions atop the
+    // detail pane on the other side of the splitter. Queue capacity, bulk
+    // controls, and interactive provider terminals are all available from one
+    // place.
     auto *agentQueueOverlay = new AgentQueueOverlay(listPane);
     auto *agentQueueLayout = new QHBoxLayout(agentQueueOverlay);
     agentQueueLayout->setContentsMargins(8, 6, 8, 6);
@@ -2323,7 +2329,10 @@ QWidget *MainWindow::buildAgentsTab()
     // Keep the whole title on one line; the detail pane's actual right edge is
     // the only clipping boundary, and widening it reveals the remaining text.
     m_agentTitle = new WrappedTitleLabel(QStringLiteral("Select a session"));
-    m_agentTitle->setObjectName("channelTitle");
+    // Own objectName rather than the shared "channelTitle" (adhoc #1612): the
+    // thin rule under it is specific to this title, not every #channelTitle
+    // label app-wide.
+    m_agentTitle->setObjectName("agentPromptTitle");
     // The session's field list (Agent/Model/Repo/Status/Issue/PR/… plus Branch
     // and Worktree) no longer sits open across the top of the detail pane: it
     // filled a full-width band above the transcript for information that is only

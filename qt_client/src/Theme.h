@@ -812,6 +812,10 @@ QPushButton#quickAddGenieButton:hover {
 }
 #chatHeader QLabel { background: transparent; }
 #channelTitle { font-size: 16px; font-weight: 700; }
+#agentPromptTitle {
+    font-size: 16px; font-weight: 700;
+    padding-bottom: 8px; border-bottom: 1px solid #30363d;
+}
 #encryptionLabel { color: #8b949e; font-size: 12px; }
 
 /* --- Node profile control panel --- */
@@ -2237,6 +2241,10 @@ QPushButton#quickAddGenieButton:hover {
 }
 #chatHeader QLabel { background: transparent; }
 #channelTitle { font-size: 16px; font-weight: 700; }
+#agentPromptTitle {
+    font-size: 16px; font-weight: 700;
+    padding-bottom: 8px; border-bottom: 1px solid #d0d7de;
+}
 #encryptionLabel { color: #656d76; font-size: 12px; }
 
 /* --- Node profile control panel --- */
