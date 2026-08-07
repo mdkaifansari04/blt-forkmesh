@@ -197,18 +197,44 @@ def test_provider_url_parser_is_canonical_and_not_an_ssrf_surface():
             imports.parse_provider_source(value)
 
 
-def test_codeberg_namespace_parser_accepts_only_canonical_profile_urls():
-    assert imports.parse_codeberg_namespace(
-        "https://codeberg.org/m33") == "m33"
-    assert imports.parse_codeberg_namespace("codeberg.org/m33/") == "m33"
+def test_namespace_parser_accepts_only_canonical_organization_urls():
+    assert imports.parse_provider_namespace("https://codeberg.org/m33") == {
+        "provider": "codeberg", "namespace": "m33"}
+    assert imports.parse_provider_namespace("codeberg.org/m33/") == {
+        "provider": "codeberg", "namespace": "m33"}
+    assert imports.parse_provider_namespace("https://gitlab.com/acme") == {
+        "provider": "gitlab", "namespace": "acme"}
+    # A GitLab organization nests subgroups, so a deeper path is a namespace
+    # in its own right rather than an error.
+    assert imports.parse_provider_namespace(
+        "https://gitlab.com/acme/platform/tools") == {
+            "provider": "gitlab", "namespace": "acme/platform/tools"}
     for value in (
             "https://codeberg.org/m33/repository",
             "https://codeberg.org/m33?tab=repositories",
             "https://user:secret@codeberg.org/m33",
+            "https://gitlab.com/acme?tab=projects",
+            "https://gitlab.com/",
             "https://github.com/m33",
             "http://codeberg.org/m33"):
         with pytest.raises(imports.ProviderSourceError):
-            imports.parse_codeberg_namespace(value)
+            imports.parse_provider_namespace(value)
+
+
+def test_gitlab_group_discovery_paths_walk_subgroups_before_users():
+    top = imports.namespace_discovery_paths("gitlab", "acme", 1)
+    assert top == [
+        "/groups/acme/projects?include_subgroups=true&archived=false"
+        "&order_by=path&sort=asc&per_page=50&page=1",
+        "/users/acme/projects?archived=false&order_by=path&sort=asc"
+        "&per_page=50&page=1",
+    ]
+    # A subgroup path can never name a user, so no request is spent probing it.
+    nested = imports.namespace_discovery_paths("gitlab", "acme/platform", 2)
+    assert nested == [
+        "/groups/acme%2Fplatform/projects?include_subgroups=true"
+        "&archived=false&order_by=path&sort=asc&per_page=50&page=2",
+    ]
 
 
 def test_provider_fetch_plan_is_metadata_only():
@@ -1385,6 +1411,135 @@ def test_codeberg_namespace_discovery_paginates_and_filters_provider_urls():
         "/users/m33/repos?limit=50&page=1",
         "/users/m33/repos?limit=50&page=2",
     ]
+
+
+def test_gitlab_group_discovery_includes_subgroups_and_skips_outsiders():
+    harness = ServiceHarness()
+    calls = []
+
+    async def provider_fetch(env, provider, path, token):
+        calls.append((provider, path, token))
+        return {
+            "status": 200,
+            "data": [
+                {
+                    "web_url": "https://gitlab.com/acme/website",
+                    "visibility": "public",
+                },
+                {
+                    "web_url": "https://gitlab.com/acme/platform/runner",
+                    "visibility": "public",
+                },
+                # Shared from another namespace: listed by the group endpoint,
+                # but not part of the organization being imported.
+                {
+                    "web_url": "https://gitlab.com/partner/sdk",
+                    "visibility": "public",
+                },
+                # Untokenized discovery never advertises a non-public project.
+                {
+                    "web_url": "https://gitlab.com/acme/secrets",
+                    "visibility": "internal",
+                },
+            ],
+            "headers": {},
+        }
+
+    harness.service.d["provider_fetch"] = provider_fetch
+    response = harness.call(Request(
+        "POST",
+        {
+            "sourceUrl": "https://gitlab.com/acme",
+            "sessionToken": "alice",
+        },
+        actor="alice",
+    ), "/api/repository-imports/discover")
+    assert response["status"] == 200
+    assert response["data"]["provider"] == "gitlab"
+    assert response["data"]["namespace"] == "acme"
+    assert response["data"]["repositories"] == [
+        "https://gitlab.com/acme/website",
+        "https://gitlab.com/acme/platform/runner",
+    ]
+    assert response["data"]["incomplete"] is False
+    assert [call[1] for call in calls] == [
+        "/groups/acme/projects?include_subgroups=true&archived=false"
+        "&order_by=path&sort=asc&per_page=50&page=1",
+    ]
+
+
+def test_gitlab_discovery_falls_back_to_a_personal_namespace():
+    harness = ServiceHarness()
+    calls = []
+
+    async def provider_fetch(env, provider, path, token):
+        calls.append(path)
+        if path.startswith("/groups/"):
+            return {"status": 404, "data": {"message": "404 Group Not Found"},
+                    "headers": {}}
+        return {
+            "status": 200,
+            "data": [{
+                "web_url": "https://gitlab.com/jo/dotfiles",
+                "visibility": "private",
+            }],
+            "headers": {},
+        }
+
+    harness.service.d["provider_fetch"] = provider_fetch
+    response = harness.call(Request(
+        "POST",
+        {
+            "sourceUrl": "https://gitlab.com/jo",
+            # A supplied token is what made the private project visible at all,
+            # so discovery reports it and the import re-verifies the access.
+            "providerToken": "glpat_one_request_only",
+            "sessionToken": "alice",
+        },
+        actor="alice",
+    ), "/api/repository-imports/discover")
+    assert response["status"] == 200
+    assert response["data"]["repositories"] == [
+        "https://gitlab.com/jo/dotfiles"]
+    assert calls == [
+        "/groups/jo/projects?include_subgroups=true&archived=false"
+        "&order_by=path&sort=asc&per_page=50&page=1",
+        "/users/jo/projects?archived=false&order_by=path&sort=asc"
+        "&per_page=50&page=1",
+    ]
+    assert "glpat_one_request_only" not in json.dumps(
+        harness.repository_imports, sort_keys=True)
+
+
+def test_namespace_discovery_reports_an_exhausted_page_budget():
+    harness = ServiceHarness()
+    pages = []
+
+    async def provider_fetch(env, provider, path, token):
+        pages.append(path)
+        page = int(path.rsplit("page=", 1)[-1])
+        return {
+            "status": 200,
+            "data": [
+                {
+                    "web_url": f"https://gitlab.com/acme/repo-{page}-{index}",
+                    "visibility": "public",
+                }
+                for index in range(50)
+            ],
+            "headers": {},
+        }
+
+    harness.service.d["provider_fetch"] = provider_fetch
+    response = harness.call(Request(
+        "POST",
+        {"sourceUrl": "https://gitlab.com/acme", "sessionToken": "alice"},
+        actor="alice",
+    ), "/api/repository-imports/discover")
+    assert response["status"] == 200
+    assert response["data"]["count"] == imports.MAX_NAMESPACE_REPOSITORIES
+    assert response["data"]["incomplete"] is True
+    assert len(pages) == imports.NAMESPACE_MAX_PAGES
 
 
 def test_service_creates_truthful_stub_lists_it_and_never_persists_token():

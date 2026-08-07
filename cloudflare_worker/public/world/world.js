@@ -6872,6 +6872,14 @@ class ForkMeshWorld extends HTMLElement {
     )
       ? String(options.provider).toLowerCase()
       : "codeberg";
+    // GitLab and Codeberg also accept a bare organization link, which the
+    // submit handler expands into every repository underneath it.
+    const importPlaceholder = (provider) =>
+      provider === "github"
+        ? "https://github.com/owner/repository"
+        : provider === "gitlab"
+          ? "https://gitlab.com/group/repository  ·  https://gitlab.com/group"
+          : "https://codeberg.org/owner/repository  ·  https://codeberg.org/owner";
     const dialog = document.createElement("dialog");
     dialog.dataset.worldCreateRepository = "true";
     dialog.style.cssText = "width:min(620px,calc(100vw - 28px));border:1px solid #77d9ff;border-radius:18px;background:linear-gradient(155deg,#071611,#0b2525);color:#e9fff2;padding:0;box-shadow:0 28px 110px #000c";
@@ -6879,7 +6887,7 @@ class ForkMeshWorld extends HTMLElement {
       <form style="padding:22px;display:grid;gap:16px">
         <header>
           <strong style="font-size:21px">Import repositories into the World</strong>
-          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">Paste one repository link per line, or a Codeberg profile such as codeberg.org/m33. ForkMesh reads provider metadata without storing your token, then portals arrive around the perimeter one at a time.</p>
+          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">Paste one repository link per line, or a whole organization — a GitLab group such as gitlab.com/gitlab-org (subgroups included) or a Codeberg profile such as codeberg.org/m33. ForkMesh reads provider metadata without storing your token, then portals arrive around the perimeter one at a time.</p>
         </header>
         <div role="group" aria-label="Import provider" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
           ${[
@@ -6895,7 +6903,7 @@ class ForkMeshWorld extends HTMLElement {
         </div>
         <input type="hidden" name="provider" value="${initialProvider}" />
         <label style="display:grid;gap:6px;font-size:12px">Repository links
-          <textarea required name="sourceUrls" rows="4" placeholder="https://${initialProvider === "codeberg" ? "codeberg.org" : `${initialProvider}.com`}/owner/repository" style="resize:vertical;padding:11px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit;font:12px/1.5 ui-monospace,monospace"></textarea>
+          <textarea required name="sourceUrls" rows="4" placeholder="${importPlaceholder(initialProvider)}" style="resize:vertical;padding:11px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit;font:12px/1.5 ui-monospace,monospace"></textarea>
         </label>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <label style="display:grid;gap:6px;font-size:12px">Import to
@@ -6942,10 +6950,8 @@ class ForkMeshWorld extends HTMLElement {
               candidate.setAttribute("aria-pressed", String(selected));
               candidate.style.background = selected ? "#77d9ff22" : "#081b18";
             });
-          const host =
-            provider === "codeberg" ? "codeberg.org" : `${provider}.com`;
           form.elements.sourceUrls.placeholder =
-            `https://${host}/owner/repository`;
+            importPlaceholder(provider);
         });
       });
     dialog.querySelector("form")?.addEventListener("submit", async (event) => {
@@ -6983,13 +6989,21 @@ class ForkMeshWorld extends HTMLElement {
             sourceUrl.includes("://") ? sourceUrl : `https://${sourceUrl}`,
           );
         } catch (_) {}
-        const isCodebergNamespace =
+        // A single path segment on a namespace-capable host is an
+        // organization (a GitLab group or a Codeberg profile) rather than a
+        // repository. GitLab subgroups are deliberately not matched here:
+        // gitlab.com/group/thing is ambiguous from the URL alone, and the
+        // group walk already includes every subgroup beneath it.
+        const isNamespace =
           parsed?.protocol === "https:" &&
-          ["codeberg.org", "www.codeberg.org"].includes(
-            parsed.hostname.toLowerCase(),
-          ) &&
+          [
+            "codeberg.org",
+            "www.codeberg.org",
+            "gitlab.com",
+            "www.gitlab.com",
+          ].includes(parsed.hostname.toLowerCase()) &&
           parsed.pathname.split("/").filter(Boolean).length === 1;
-        if (!isCodebergNamespace) {
+        if (!isNamespace) {
           expandedUrls.push(sourceUrl);
           continue;
         }
@@ -7009,7 +7023,11 @@ class ForkMeshWorld extends HTMLElement {
             : [];
           expandedUrls.push(...discovered);
           const item = document.createElement("li");
-          item.textContent = `Found ${discovered.length} public repositories in ${sourceUrl}`;
+          item.textContent =
+            `Found ${discovered.length} repositories in ${sourceUrl}` +
+            (discovery.incomplete
+              ? " (the first page of a larger organization)"
+              : "");
           item.style.color = "#77d9ff";
           results.append(item);
         } catch (error) {
@@ -7024,7 +7042,7 @@ class ForkMeshWorld extends HTMLElement {
       }
       urls = [...new Set(expandedUrls)].slice(0, 200);
       if (!urls.length) {
-        output.textContent = "No public repositories were found.";
+        output.textContent = "No importable repositories were found.";
         submit.disabled = false;
         this.world?.setRepositoryImportState?.({
           active: false,
@@ -7428,7 +7446,15 @@ class ForkMeshWorld extends HTMLElement {
           this.startQaDeckWatch({ refetch }),
         onQaBoardAway: () => this.stopQaDeckWatch(),
         onLobbyLinkKioskNearby: () => void this.loadLobbyLinkBoard(),
-        onLeaderboardWallNearby: () => void this.loadReferralLeaderboard(),
+        onLeaderboardCircleNearby: ({ refetch } = {}) =>
+          this.startLeaderboardCircleWatch({ refetch }),
+        onLeaderboardCircleAway: () => this.stopLeaderboardCircleWatch(),
+        onSocialCircleNearby: ({ refetch } = {}) =>
+          this.startSocialCircleWatch({ refetch }),
+        onSocialCircleAway: () => this.stopSocialCircleWatch(),
+        onWorldBoardsCircleNearby: ({ refetch } = {}) =>
+          this.startWorldBoardsCircleWatch({ refetch }),
+        onWorldBoardsCircleAway: () => this.stopWorldBoardsCircleWatch(),
         onBuildVideoSelect: () =>
           window.open(
             "/assets/video/forkmesh-forever.mp4",
@@ -7591,21 +7617,22 @@ class ForkMeshWorld extends HTMLElement {
       // optional, edge-cached read after the essential World data settles;
       // orbit propagation then stays entirely local for the life of the page.
       void this.loadSatelliteSky();
-      // Populate the Mastodon kiosk billboard on entry; the fetch is public,
-      // credential-free, and cached for ten minutes. When a fresh snapshot
-      // is already cached the load resolves without refetching, so push the
-      // cached profile onto the rebuilt scene explicitly.
-      void this.loadMastodonBoard();
+      // Boot requests nothing for the billboard circles. Any snapshot this
+      // page already holds is pushed onto the rebuilt scene, and the
+      // one-second ticks below only drive the stand clocks — the first fetch
+      // for the kiosk, the feeds, the status board, and the rankings waits
+      // until the visitor walks onto the circle that carries them. A rebuilt
+      // scene therefore starts every circle "away", and its own first
+      // proximity pass is what reports the visitor back onto one.
+      this.leaderboardCircleNear = false;
+      this.socialCircleNear = false;
+      this.worldBoardsCircleNear = false;
       this.syncMastodonKiosk();
       this.startMastodonRefresh();
-      // Same pattern for the Twitter/Reddit/blog banners: push any cached
-      // snapshot onto the rebuilt scene, then keep the ten-minute cadence
-      // (whose one-second tick also drives the stand clocks).
       this.syncSocialBanners();
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
       this.seatFreshArrivalAtCampfire();
-      void this.loadReferralLeaderboard();
       void this.loadLobbyLinkBoard();
       // The repository district starts empty and requests nothing. No catalog,
       // no import list, no flagship tree, and no size maps until a character
@@ -8080,6 +8107,45 @@ class ForkMeshWorld extends HTMLElement {
     this.qaTimer = 0;
   }
 
+  // The three billboard circles follow the same rule as the task boards, and
+  // it is the only rule they follow: nothing standing on a circle is fetched
+  // until a visitor walks onto it. The near flags are what the one-second
+  // stand-clock ticks consult before they are allowed to start a request, so
+  // a page parked anywhere else in the World holds no cadence for these
+  // boards at all. `refetch` is false when the scene judged the last approach
+  // recent enough that re-entering does not justify another read.
+  startLeaderboardCircleWatch({ refetch = true } = {}) {
+    this.leaderboardCircleNear = true;
+    if (refetch) void this.loadReferralLeaderboard();
+  }
+
+  stopLeaderboardCircleWatch() {
+    this.leaderboardCircleNear = false;
+  }
+
+  startSocialCircleWatch({ refetch = true } = {}) {
+    this.socialCircleNear = true;
+    if (refetch) {
+      void this.loadMastodonBoard();
+      void this.loadSocialBanners();
+    }
+    this.syncMastodonCountdown();
+    this.syncSocialBannerTimers();
+  }
+
+  stopSocialCircleWatch() {
+    this.socialCircleNear = false;
+  }
+
+  startWorldBoardsCircleWatch({ refetch = true } = {}) {
+    this.worldBoardsCircleNear = true;
+    if (refetch) void this.refreshSystemStatusBoard().catch(() => {});
+  }
+
+  stopWorldBoardsCircleWatch() {
+    this.worldBoardsCircleNear = false;
+  }
+
   async refreshBuildBoard({ quiet = false } = {}) {
     if (this.buildBoardLoad) return this.buildBoardLoad;
     this.world?.setBuildBoardLoading?.(true);
@@ -8382,6 +8448,7 @@ class ForkMeshWorld extends HTMLElement {
 
   async refreshQaDeck({ afterKey = "", quiet = false } = {}) {
     if (this.qaLoad) return this.qaLoad;
+    this.world?.setBillboardRefreshing?.("qa-board", true);
     this.qaLoad = (async () => {
       try {
         const payload = await this.fetchJSON(WORLD_QA_ENDPOINT, {
@@ -8397,6 +8464,7 @@ class ForkMeshWorld extends HTMLElement {
         return this.qaDeck;
       } finally {
         this.qaLoad = null;
+        this.world?.setBillboardRefreshing?.("qa-board", false);
       }
     })();
     return this.qaLoad;
@@ -14860,7 +14928,8 @@ class ForkMeshWorld extends HTMLElement {
         sinceMs: since,
       },
     });
-    if (!loading && remaining <= 0) {
+    this.world?.setBillboardRefreshing?.("status", loading);
+    if (!loading && remaining <= 0 && this.worldBoardsCircleNear) {
       void this.refreshSystemStatusBoard().catch(() => {});
     }
   }
@@ -16933,16 +17002,17 @@ class ForkMeshWorld extends HTMLElement {
     return this.socialFeedsLoad;
   }
 
-  // Like the Mastodon kiosk, a one-second tick drives both the stand clocks
-  // and the ten-minute reload: when the countdown reaches zero the next tick
-  // starts the fetch, so a repaint from a fresh snapshot restarts the same
+  // Like the Mastodon kiosk, a one-second tick drives the stand clocks and
+  // counts the ten-minute window down. Reaching zero only marks the banners
+  // as due: the tick refetches when — and only when — somebody is standing on
+  // the social circle, and a repaint from a fresh snapshot restarts the same
   // window the boards were counting down.
   startSocialBannersRefresh() {
     window.clearInterval(this.socialFeedsTimer);
     this.socialFeedsTimer = window.setInterval(() => {
       this.syncSocialBannerTimers();
     }, 1000);
-    void this.loadSocialBanners();
+    this.syncSocialBannerTimers();
   }
 
   socialRefreshRemaining() {
@@ -16968,7 +17038,8 @@ class ForkMeshWorld extends HTMLElement {
   syncSocialBannerTimers() {
     const loading = Boolean(this.socialFeedsLoad);
     const remaining = this.socialRefreshRemaining();
-    if (!loading && remaining <= 0) {
+    this.world?.setBillboardRefreshing?.("social", loading);
+    if (!loading && remaining <= 0 && this.socialCircleNear) {
       void this.loadSocialBanners();
       return;
     }
@@ -17136,7 +17207,11 @@ class ForkMeshWorld extends HTMLElement {
   syncMastodonCountdown() {
     const loading = Boolean(this.mastodonLoad);
     const remaining = this.mastodonRefreshRemaining();
-    if (!loading && remaining <= 0) {
+    this.world?.setBillboardRefreshing?.("mastodon", loading);
+    // An elapsed window no longer starts a fetch on its own: it only means the
+    // kiosk is due, and the next visitor to walk onto the social circle is
+    // what actually reloads it.
+    if (!loading && remaining <= 0 && this.socialCircleNear) {
       void this.loadMastodonBoard(true);
       return;
     }
@@ -30974,7 +31049,7 @@ class ForkMeshWorld extends HTMLElement {
             <label style="display:flex;align-items:flex-start;gap:9px;color:#a8cfc0;font-size:13px;line-height:1.45"><input name="consent" type="checkbox" required style="margin-top:3px">I consent to publishing this link, my ForkMesh account name, the estimate, and its potential-traffic range on this public kiosk.</label>
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span data-world-link-kiosk-status role="status" style="color:#8eb8aa;font-size:13px"></span><button type="submit" style="min-height:40px;border:1px solid #9ef7c6;border-radius:9px;background:#9ef7c6;color:#062017;padding:8px 16px;font-weight:900;cursor:pointer">Analyze and submit</button></div>
           </form>` :
-          '<p style="margin:0;padding:14px;border:1px solid #6c5928;border-radius:12px;background:#241d08;color:#f7d98a"><a href="/login" style="color:inherit;font-weight:900">Sign in</a> to submit a link. The public board remains readable.</p>'}
+          `<p style="margin:0;padding:14px;border:1px solid #6c5928;border-radius:12px;background:#241d08;color:#f7d98a"><a href="/login?next=${encodeURIComponent(location.pathname + location.search)}" style="color:inherit;font-weight:900">Sign in</a> to submit a link. The public board remains readable.</p>`}
         <section aria-labelledby="world-link-kiosk-board-title"><h3 id="world-link-kiosk-board-title" style="margin:0 0 10px">Recent public links</h3><div data-world-link-kiosk-links><p style="color:#8eb8aa">Loading links…</p></div></section>
       </div>`;
     document.body.append(dialog);
@@ -31065,8 +31140,10 @@ class ForkMeshWorld extends HTMLElement {
     )}`;
   }
 
-  // One edge-cached snapshot keeps every island sign synchronized with the
-  // website hub. Custom referral faces still retain their richer tap actions.
+  // One edge-cached snapshot keeps every card on the leaderboard circle
+  // synchronized with the website hub. Custom referral faces still retain
+  // their richer tap actions. Every card spins while the read is open, since
+  // the visitor's own approach is what started it.
   async loadReferralLeaderboard() {
     if (
       !this.world?.updateLeaderboards &&
@@ -31075,6 +31152,18 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return;
     }
+    if (this.leaderboardLoad) return this.leaderboardLoad;
+    this.leaderboardLoad = this.fetchLeaderboardSnapshot();
+    this.world?.setBillboardRefreshing?.("leaderboards", true);
+    try {
+      await this.leaderboardLoad;
+    } finally {
+      this.leaderboardLoad = null;
+      this.world?.setBillboardRefreshing?.("leaderboards", false);
+    }
+  }
+
+  async fetchLeaderboardSnapshot() {
     try {
       const snapshot = await this.fetchJSON("/api/leaderboards", {
         auth: false,

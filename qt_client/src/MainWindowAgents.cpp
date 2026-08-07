@@ -8197,6 +8197,13 @@ void MainWindow::showAgentSession(int sessionId)
     // value copy rather than retaining a pointer into that replaceable list.
     const AgentSession sessionSnapshot = *liveSession;
     const AgentSession *session = &sessionSnapshot;
+    // Land the composer on this session's last-used agent/model/mode/speed
+    // (adhoc #1625): switching between two sessions that ran different agents
+    // used to leave the pickers wherever they were last left, so a follow-up
+    // typed right after opening the detail page silently launched under the
+    // wrong provider. The user can still change any of these before sending;
+    // this only sets the default they land on.
+    syncQuickAddControlsToAgentSession(sessionSnapshot);
 
     // Restore a finished/idle Claude Code session's transcript from disk so it
     // survives an app restart — parsed on a worker thread. The first click on a
@@ -8445,6 +8452,34 @@ void MainWindow::showAgentSession(int sessionId)
         }
     }
     updateAgentActionState();
+}
+
+// The reverse of applyComposerSelectionToAgentSession() above: land the
+// composer's agent/model/mode/speed pickers on what this session last ran,
+// rather than leaving them wherever they were left from some other session or
+// launch (adhoc #1625). Purely a UI default — nothing here touches the
+// session record itself, and the user can still change any of these before
+// sending a follow-up.
+void MainWindow::syncQuickAddControlsToAgentSession(const AgentSession &session)
+{
+    if (m_quickAddAgentProvider && !session.provider.isEmpty()) {
+        const int providerIndex = m_quickAddAgentProvider->findData(session.provider);
+        if (providerIndex >= 0)
+            m_quickAddAgentProvider->setCurrentIndex(providerIndex);
+    }
+    if (m_quickAddClaudeModel && !session.model.isEmpty())
+        selectModelComboValue(m_quickAddClaudeModel, session.model);
+    if (m_quickAddModeSelector && !session.mode.isEmpty()) {
+        const int modeIndex = m_quickAddModeSelector->findText(session.mode);
+        if (modeIndex >= 0)
+            m_quickAddModeSelector->setCurrentIndex(modeIndex);
+    }
+    if (!session.strength.trimmed().isEmpty()) {
+        QSettings().setValue(kClaudeEffortSetting,
+                             session.strength.trimmed().toLower());
+        refreshQuickAddSpeedSelector();
+    }
+    refreshQuickAddAgentModelSelector();
 }
 
 void MainWindow::setAgentLogText(int sessionId, const QString &text)
@@ -9535,6 +9570,7 @@ void MainWindow::purgeSessionState(int sessionId)
     m_agentRelaunchAttempts.remove(sessionId);
     m_sessionTokens.remove(sessionId);
     m_lastAssistantText.remove(sessionId);
+    m_agentDoneNotified.remove(sessionId);
     m_scannerStates.remove(sessionId);
     m_agentDiffStats.remove(sessionId);
     m_agentDiffSig.remove(sessionId);
@@ -10827,6 +10863,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                     as->lastError.clear();
                     m_agentStore->saveSession(*as);
                     updateAgentStatusCell(sid);
+                    // Completed here rather than in the drain poll, so this is
+                    // the path that owes the celebration (adhoc #1630).
+                    notifyAgentDone(sid);
                 }
             } else if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
@@ -12830,6 +12869,10 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     // launch carried has demonstrably arrived, so it is no longer owed a retry.
     m_agentRelaunchAttempts.remove(sessionId);
     m_inFlightSteerMessage.remove(sessionId);
+    // A new turn is a new run to celebrate when it lands (adhoc #1630). Cleared
+    // ahead of the already-Running early return below so a session steered while
+    // it is still working also gets a card for the turn that follows.
+    m_agentDoneNotified.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status == AgentStatus::Running)
         return;
@@ -12897,6 +12940,10 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
     if (m_agentStore && !isExternalSession(sessionId))
         m_agentStore->saveSession(*session);
     updateAgentStatusCell(sessionId);
+    // The run is over and its figures are stored: celebrate it (adhoc #1630).
+    // This is where a Claude Code / Codex session lands — the legacy runner pool
+    // reaches the same call from onAgentFinished().
+    notifyAgentDone(sessionId);
 }
 
 // The agent's turn ended (or it needs permission) and it's now waiting on the
@@ -12932,6 +12979,88 @@ void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
     // doesn't have to hunt for it in the agents list (adhoc #189).
     flashMessage(msg, /*error=*/false,
                  QStringLiteral("fm:agent:%1").arg(sessionId));
+}
+
+// The last prose the agent produced — the sign-off it ends a run with, which is
+// the summary worth showing when it finishes. m_lastAssistantText holds it for a
+// session this process watched run; a session restored from disk (or one whose
+// final text arrived before the cache existed) has it only in the event buffer,
+// so fall back to walking that newest-first.
+QString MainWindow::agentClosingSummary(int sessionId) const
+{
+    const QString cached = m_lastAssistantText.value(sessionId).trimmed();
+    if (!cached.isEmpty())
+        return cached;
+    const QList<QJsonObject> events = m_streamEvents.value(sessionId);
+    for (int i = events.size() - 1; i >= 0; --i) {
+        const QJsonObject &ev = events.at(i);
+        const QString type = ev.value(QStringLiteral("type")).toString();
+        // Codex normalizes its final answer onto one event; Claude Code's is the
+        // text blocks of the last assistant message.
+        if (type == QLatin1String("_codex_agent_complete")) {
+            const QString text = ev.value(QStringLiteral("text")).toString().trimmed();
+            if (!text.isEmpty())
+                return text;
+            continue;
+        }
+        if (type != QLatin1String("assistant"))
+            continue;
+        QString text;
+        const QJsonArray content = ev.value(QStringLiteral("message"))
+                                       .toObject()
+                                       .value(QStringLiteral("content"))
+                                       .toArray();
+        for (const QJsonValue &bv : content) {
+            const QJsonObject block = bv.toObject();
+            if (block.value(QStringLiteral("type")).toString() == QLatin1String("text"))
+                text += block.value(QStringLiteral("text")).toString();
+        }
+        if (!text.trimmed().isEmpty())
+            return text.trimmed();
+    }
+    return QString();
+}
+
+// A run reached the end: celebrate it. The card carries the agent's own list
+// icon, a headline naming the run, and the summary it signed off with, and the
+// window edge pulses green so the news lands even when the Agents tab is closed
+// (adhoc #1630). Firing once per run is m_agentDoneNotified's job — completion
+// can be reached more than once (a re-fired signal, a requeue), and
+// markAgentSessionRunning() clears the mark when the next turn starts.
+void MainWindow::notifyAgentDone(int sessionId)
+{
+    if (m_agentDoneNotified.contains(sessionId))
+        return;
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->status != AgentStatus::Success)
+        return;
+    // Watch-only rows mirror another process's CLI: ForkMesh didn't run that
+    // work and surfaces it after the fact, so it has nothing to announce.
+    if (isExternalSession(sessionId))
+        return;
+    m_agentDoneNotified.insert(sessionId);
+
+    QString summary = agentClosingSummary(sessionId).simplified();
+    if (summary.isEmpty())
+        summary = QStringLiteral("Finished with no closing summary.");
+    // Long enough to carry the agent's actual conclusion, short of pasting a
+    // whole final message into the corner of the window.
+    if (summary.size() > kAgentDoneSummaryChars)
+        summary = summary.left(kAgentDoneSummaryChars - 1) +
+                  QString::fromUtf8("\xE2\x80\xA6"); // …
+    // The headline (icon, "Agent #12 is done!", the run's figures) is painted by
+    // renderTopMessage from the session behind this href, so a card that waits
+    // its turn in the queue still shows that agent's final numbers.
+    flashMessage(summary, /*error=*/false,
+                 QStringLiteral("fm:agent:%1").arg(sessionId),
+                 /*durationSeconds=*/0, kAgentDoneToastKind);
+    flashCelebrationBorder();
+    // Runs are long: the window is often behind something else by the time one
+    // lands, which is exactly when an OS notification earns its keep.
+    notifyIfInactive(QStringLiteral("ForkMesh %1 Agent #%2 is done!")
+                         .arg(QString::fromUtf8("\xE2\x80\x94")) // —
+                         .arg(sessionId),
+                     summary);
 }
 
 // Refresh just the Status cell for a session's row, in place — avoids the full
@@ -14777,6 +14906,11 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
             landAgentPullForSession(*session, patch, QString());
     }
     reloadAgents(); // rebuilds m_agentSessions; `session` is dangling after this
+    // The legacy runner pool's half of the completion celebration (adhoc #1630);
+    // stream sessions raise it from completeAgentSessionWhenSubprocessesExit().
+    // Only a run that actually succeeded qualifies — notifyAgentDone() checks the
+    // stored status, so a failed `ok` never reaches a card.
+    notifyAgentDone(sessionId);
     maybeAutoMergeForSession(sessionId); // adhoc #12: YOLO lands it without review
     completeOrgTaskForSession(sessionId); // adhoc #18: close out the org task
     if (sessionId == m_selectedAgentSessionId)

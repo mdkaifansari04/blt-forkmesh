@@ -1790,7 +1790,8 @@ QWidget *MainWindow::buildStatusBar()
     cloudflareButton->setCursor(Qt::PointingHandCursor);
     cloudflareButton->setIconSize(QSize(kRailIconPx, kRailIconPx));
     cloudflareButton->setToolTip(
-        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
+        QStringLiteral("Open the deployed Cloudflare Worker's live logs in a "
+                       "window of their own, with its errors charted over time"));
     connect(cloudflareButton, &QPushButton::clicked, this,
             &MainWindow::showCloudflareWorkerLogs);
 
@@ -2504,8 +2505,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Bottom bar nested inside the prompt frame, below the text area (adhoc
     // #99): paperclip and mic at the bottom-left (opposite the send icons),
     // the Auto/Create-issue toggles, the Agent box centred by the stretches on
-    // either side, then the character count immediately left of the send icons.
-    // No bottom margin (adhoc #111) so the row sits flush against the frame.
+    // either side, then the usage gauges immediately left of the send icons.
+    // The character count moved up to the top strip (adhoc #1625). No bottom
+    // margin (adhoc #111) so the row sits flush against the frame.
     // Everything is bottom-aligned (adhoc #114): the send column is two stacked
     // 28px icons, so without it Qt centres the shorter controls in that extra
     // height and they float above the send icons instead of sitting level.
@@ -2525,7 +2527,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_quickAddSlashButton, 0, Qt::AlignBottom);
     bottomBar->addWidget(agentBox, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
-    bottomBar->addWidget(m_quickAddCharCount, 0, Qt::AlignBottom);
     // The tiny Codex + Claude usage gauges sit immediately left of the send
     // icons (adhoc #47), moved down from the top bar so the current 5h/weekly
     // utilisation is visible right where prompts are launched.
@@ -2578,9 +2579,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     // the whole box is exactly as tall as the stacked buttons.
     // Placement strip along the composer's top edge (adhoc #1536): a corner
     // grip on the left resizes the panel, the centre pill drags it anywhere over
-    // the workspace, and the right-hand button pops it out into a window of its
-    // own. Double-clicking the strip puts it back on the footer anchor. It is
-    // deliberately the thinnest row that still gives each of the three a real
+    // the workspace, and the right side carries the characters-remaining count,
+    // an explicit reset button and the pop-out button (adhoc #1625). Double-
+    // clicking the strip also puts it back on the footer anchor. It is
+    // deliberately the thinnest row that still gives each control a real
     // target, so the four prompt lines below it are untouched.
     auto *promptHandle = new QWidget;
     m_promptDragHandle = promptHandle;
@@ -2616,6 +2618,26 @@ QWidget *MainWindow::buildNetworkLogDock()
     promptDragPill->setAttribute(Qt::WA_TransparentForMouseEvents);
     promptHandleRow->addWidget(promptDragPill, 0, Qt::AlignVCenter);
     promptHandleRow->addStretch(1);
+
+    // The characters-remaining count used to sit in the bottom toolbar, jammed
+    // between the agent picker and the usage gauges. It reads more like a size
+    // limit on the box itself, so it now rides the top strip's right side next
+    // to the resize/reset/pop-out controls it is a sibling of.
+    promptHandleRow->addWidget(m_quickAddCharCount, 0);
+
+    // A small, explicit undo for the drag handle's double-click gesture, which
+    // is not discoverable on its own (adhoc #1625): snaps the panel back to its
+    // default corner-anchored placement and size.
+    m_promptResetButton = new QPushButton;
+    m_promptResetButton->setObjectName(QStringLiteral("promptResetButton"));
+    m_promptResetButton->setCursor(Qt::PointingHandCursor);
+    m_promptResetButton->setFixedSize(16, 16);
+    setOcticon(m_promptResetButton, "sync", 10);
+    m_promptResetButton->setToolTip(
+        QStringLiteral("Reset the prompt back to its default size and position"));
+    connect(m_promptResetButton, &QPushButton::clicked, this,
+            &MainWindow::resetPromptOverlayPlacement);
+    promptHandleRow->addWidget(m_promptResetButton, 0);
 
     // Its own name, not the shared ghostButton one: that rule pads 4px/8px,
     // which would swallow a 10px glyph in a 16px button.
@@ -2883,7 +2905,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Only the top inset contributes to the dock height. Its bottom and the
     // prompt's bottom are flush with the workspace, eliminating the blank band
     // that used to sit below the composer.
-    dock->setFixedHeight(promptWrapper->sizeHint().height() + 8);
+    m_promptAnchoredHeight = promptWrapper->sizeHint().height();
+    dock->setFixedHeight(m_promptAnchoredHeight + 8);
     dock->setAttribute(Qt::WA_StyledBackground, false);
     setLogOverlayExpanded(false);
 
@@ -2959,6 +2982,16 @@ void MainWindow::clampPromptOverlayIntoHost()
         size.setHeight(qBound(kPromptMinHeight, size.height(),
                               qMax(kPromptMinHeight, m_globalOverlayHost->height())));
     }
+    // Keep the panel pinned to the corner it's parked near (adhoc #1625): carry
+    // its position by the same amount the workspace grew or shrank, so the
+    // margin to the right/bottom edges stays put across a window resize instead
+    // of the panel sitting wherever its old absolute position happened to land.
+    const QSize hostSize = m_globalOverlayHost->size();
+    if (m_promptOverlayHostSize.isValid() && m_promptOverlayHostSize != hostSize) {
+        m_promptOverlayPos += QPoint(hostSize.width() - m_promptOverlayHostSize.width(),
+                                     hostSize.height() - m_promptOverlayHostSize.height());
+    }
+    m_promptOverlayHostSize = hostSize;
     const QPoint pos(
         qBound(0, m_promptOverlayPos.x(),
                qMax(0, m_globalOverlayHost->width() - size.width())),
@@ -3048,6 +3081,7 @@ void MainWindow::resetPromptOverlayPlacement()
     m_promptOverlayFloating = false;
     m_promptOverlaySize = QSize();
     m_promptOverlayPos = QPoint();
+    m_promptOverlayHostSize = QSize();
     if (auto *dockRow = m_footerDock
                             ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
                             : nullptr) {
@@ -3133,6 +3167,10 @@ bool MainWindow::handlePromptPlacementEvent(QObject *object, QEvent *event)
             m_promptOverlayPos = topLeft;
             m_promptOverlaySize = m_promptOverlayHost->size();
             m_promptOverlayFloating = true;
+            // Forget the last host size the corner-pin tracked (adhoc #1625): it
+            // may be stale from an earlier floating session, and the panel just
+            // seeded a fresh position above that a stale delta would displace.
+            m_promptOverlayHostSize = QSize();
             if (auto *dockRow =
                     m_footerDock
                         ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
@@ -3244,11 +3282,21 @@ void MainWindow::positionGlobalFooterOverlays()
             m_userAvatarNavButton->setToolTip(
                 QStringLiteral("Show the prompt overlay"));
         } else if (anchoredPrompt) {
+            // Undo the floating branch's unbounded cap (below) so the text area
+            // itself is visually pinned to its compact four-line height again.
+            m_issueQuickAdd->setMaximumHeight(m_issueQuickAdd->minimumHeight());
             m_promptOverlayHost->setMinimumSize(0, 0);
             m_promptOverlayHost->setMaximumSize(
                 dockAgentPrompt ? QWIDGETSIZE_MAX : 560, QWIDGETSIZE_MAX);
-            m_promptOverlayHost->setFixedHeight(
-                m_promptWrapper->sizeHint().height());
+            // The cached construction-time height (adhoc #1625), not a live
+            // m_promptWrapper->sizeHint() re-query: once the composer has been
+            // floated and resized, some Qt-internal layout state QPlainTextEdit's
+            // sizeHint() consults no longer matches its construction-time value,
+            // so a live re-query drifted taller than the footer dock's own fixed
+            // height (computed once, at construction, from the same original
+            // hint) and the docked composer stopped sitting flush with the
+            // dock's bottom edge.
+            m_promptOverlayHost->setFixedHeight(m_promptAnchoredHeight);
             m_promptOverlayHost->setSizePolicy(QSizePolicy::Expanding,
                                                QSizePolicy::Fixed);
             m_userAvatarNavButton->setToolTip(
@@ -3262,6 +3310,14 @@ void MainWindow::positionGlobalFooterOverlays()
             m_promptOverlayHost->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
             m_promptOverlayHost->setSizePolicy(QSizePolicy::Expanding,
                                                QSizePolicy::Expanding);
+            // Querying promptWrapper->sizeHint() during construction (to size the
+            // anchored dock) leaves Qt's layout engine caching a resolved
+            // maximumHeight on the text edit itself, even though its size policy
+            // is Expanding — so a floating/resized panel silently stopped growing
+            // the text area at exactly its four-line minimum (adhoc #1625). Clear
+            // it explicitly whenever the panel is free to take the size it's
+            // given.
+            m_issueQuickAdd->setMaximumHeight(QWIDGETSIZE_MAX);
             m_userAvatarNavButton->setToolTip(
                 m_promptOverlayDetached
                     ? QStringLiteral("The prompt is in its own window")
@@ -8480,6 +8536,539 @@ bool MainWindow::prepareCloudflareTail(
     return true;
 }
 
+// --------------------------------------------------------------------------
+// Cloudflare Worker live logs (adhoc #1626)
+//
+// The tail used to open in a small modal pane holding nothing but a text box.
+// It now opens the way the app's own log does: a window of its own you can park
+// beside the app, an activity rail of Worker errors over time above the stream,
+// and a Pause control so the scrollback holds still while a line is read
+// instead of sliding out from under the pointer.
+// --------------------------------------------------------------------------
+
+namespace {
+// One (timestamp, isError) pair per Worker event, kept for the chart. A busy
+// Worker fills this in well under a day, so the oldest tenth is dropped in one
+// move rather than one element per event.
+constexpr int kCloudLogTimelineTicks = 20000;
+// What the chart's Errors-only view keeps. The other events carry the second
+// category so they still draw when the filter is off.
+QString cloudLogErrorCategory() { return QStringLiteral("error"); }
+QString cloudLogRequestCategory() { return QStringLiteral("request"); }
+} // namespace
+
+// Records a Worker event on the chart's timeline. Ticks accrue whether or not
+// the window is open — the monitor may have been running for hours by the time
+// somebody opens the viewer, and the point of the chart is that history.
+void MainWindow::recordCloudLogEvent(bool isError)
+{
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    m_cloudLogTicks.append(qMakePair(nowMs, isError));
+    if (m_cloudLogTicks.size() > kCloudLogTimelineTicks)
+        m_cloudLogTicks.remove(0, kCloudLogTimelineTicks / 10);
+    if (!m_cloudLogWindowChart)
+        return;
+    // A preset range follows the present as events arrive, but an interval the
+    // reader dragged out is theirs — same rule as the app log's own rail.
+    if (m_cloudLogWindowRangeMinutes > 0 && !m_cloudLogWindowChart->isZoomed()) {
+        m_cloudLogWindowChart->setRange(
+            nowMs - qint64(m_cloudLogWindowRangeMinutes) * 60 * 1000, nowMs);
+    }
+    if (nowMs < m_cloudLogWindowChart->viewFromMs() ||
+        nowMs > m_cloudLogWindowChart->viewToMs())
+        return;
+    LogTimelineEntry entry;
+    entry.timestampMs = nowMs;
+    entry.category =
+        isError ? cloudLogErrorCategory() : cloudLogRequestCategory();
+    m_cloudLogWindowChart->appendEntry(entry);
+}
+
+// Rebuilds the rail from the retained ticks: on open, and whenever the range
+// or the Errors-only toggle changes.
+void MainWindow::refreshCloudLogTimeline()
+{
+    if (!m_cloudLogWindowChart)
+        return;
+    QVector<LogTimelineEntry> entries;
+    entries.reserve(m_cloudLogTicks.size());
+    for (const auto &tick : std::as_const(m_cloudLogTicks)) {
+        LogTimelineEntry entry;
+        entry.timestampMs = tick.first;
+        entry.category = tick.second ? cloudLogErrorCategory()
+                                     : cloudLogRequestCategory();
+        entries.append(entry);
+    }
+    m_cloudLogWindowChart->setEntries(std::move(entries));
+    // Red for the errors-only rail, the log page's blue for all traffic.
+    m_cloudLogWindowChart->setCategoryFilter(
+        m_cloudLogWindowErrorsOnly ? cloudLogErrorCategory() : QString(),
+        QColor(m_cloudLogWindowErrorsOnly ? QStringLiteral("#f85149")
+                                          : QStringLiteral("#58a6ff")));
+    updateCloudLogTimelineSummary();
+}
+
+void MainWindow::setCloudLogTimelineMinutes(int minutes)
+{
+    if (minutes <= 0)
+        return;
+    m_cloudLogWindowRangeMinutes = minutes;
+    if (!m_cloudLogWindowChart)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_cloudLogWindowChart->setRange(now - qint64(minutes) * 60 * 1000, now);
+    refreshCloudLogTimeline();
+}
+
+// "41 errors · Aug 7, 4:12 PM – 5:12 PM" under the rail, plus the Reset zoom
+// button's enabled state.
+void MainWindow::updateCloudLogTimelineSummary()
+{
+    if (!m_cloudLogWindowChart || !m_cloudLogWindowSummary)
+        return;
+    const int count = m_cloudLogWindowChart->visibleEntryCount();
+    const QString noun = m_cloudLogWindowErrorsOnly ? QStringLiteral("error")
+                                                    : QStringLiteral("event");
+    QString text = QStringLiteral("%1 %2%3 · %4 – %5")
+                       .arg(count)
+                       .arg(noun)
+                       .arg(count == 1 ? QString() : QStringLiteral("s"))
+                       .arg(QDateTime::fromMSecsSinceEpoch(
+                                m_cloudLogWindowChart->viewFromMs())
+                                .toString(QStringLiteral("MMM d, h:mm AP")))
+                       .arg(QDateTime::fromMSecsSinceEpoch(
+                                m_cloudLogWindowChart->viewToMs())
+                                .toString(QStringLiteral("MMM d, h:mm AP")));
+    if (m_cloudLogWindowChart->isZoomed())
+        text += QStringLiteral(" · Zoomed");
+    m_cloudLogWindowSummary->setText(text);
+    if (m_cloudLogWindowResetZoom)
+        m_cloudLogWindowResetZoom->setEnabled(m_cloudLogWindowChart->isZoomed());
+}
+
+// Which stream, if any, is feeding the window right now.
+bool MainWindow::cloudLogMonitorRunning() const
+{
+    return m_cloudLogMonitorProcess &&
+           m_cloudLogMonitorProcess->state() != QProcess::NotRunning;
+}
+
+bool MainWindow::cloudLogViewerRunning() const
+{
+    return m_cloudLogViewerProcess &&
+           m_cloudLogViewerProcess->state() != QProcess::NotRunning;
+}
+
+void MainWindow::updateCloudLogWindowNotice()
+{
+    if (!m_cloudLogWindowNotice)
+        return;
+    if (cloudLogMonitorRunning()) {
+        m_cloudLogWindowNotice->setText(QStringLiteral(
+            "Attached to the debug bar's cloud log monitor. Every request "
+            "shows the user agent behind it; Worker errors also raise an "
+            "alert. Unchecking Monitor stops the stream."));
+        return;
+    }
+    if (cloudLogViewerRunning() || m_cloudLogViewerProcess) {
+        m_cloudLogWindowNotice->setText(
+            m_cloudLogViewerStoredToken
+                ? QStringLiteral(
+                      "Read-only live tail for the configured ForkMesh Worker, "
+                      "showing the user agent behind each request, "
+                      "authenticated with the stored CLOUDFLARE_API_TOKEN "
+                      "secret. The token stays in this process's memory only "
+                      "and is erased when this viewer closes.")
+                : QStringLiteral(
+                      "Read-only live tail for the configured ForkMesh Worker, "
+                      "showing the user agent behind each request. The API "
+                      "token stays in this process's memory only and is erased "
+                      "when this viewer closes."));
+        return;
+    }
+    m_cloudLogWindowNotice->setText(QStringLiteral(
+        "Nothing is streaming. Click Cloud in the debug bar again to start a "
+        "fresh tail, or tick Monitor to keep one running in the background."));
+}
+
+// "Monitoring · 114 events · 41 errors · paused · 12 new lines below".
+void MainWindow::updateCloudLogWindowStatus()
+{
+    if (!m_cloudLogWindowStatus)
+        return;
+    const bool monitoring = cloudLogMonitorRunning();
+    // Counts come from the stream that is feeding the pane, and — once both
+    // have stopped — from the one that last did, so switching the Monitor box
+    // off does not blank the totals it just reported.
+    const bool fromMonitor =
+        monitoring || (!cloudLogViewerRunning() && m_cloudLogWindowFromMonitor);
+    const int events =
+        fromMonitor ? m_cloudLogMonitorEvents : m_cloudLogViewerEvents;
+    const int errors =
+        fromMonitor ? m_cloudLogMonitorErrors : m_cloudLogViewerErrors;
+    QString text = m_cloudLogWindowState;
+    if (text.isEmpty())
+        text = monitoring ? QStringLiteral("Monitoring")
+                          : QStringLiteral("Stopped");
+    text += QStringLiteral(" · %1 event%2 · %3 error%4")
+                .arg(events)
+                .arg(events == 1 ? QString() : QStringLiteral("s"))
+                .arg(errors)
+                .arg(errors == 1 ? QString() : QStringLiteral("s"));
+    if (m_cloudLogWindowPaused) {
+        text += m_cloudLogWindowHeld > 0
+                    ? QStringLiteral(" · paused · %1 new line%2 below")
+                          .arg(m_cloudLogWindowHeld)
+                          .arg(m_cloudLogWindowHeld == 1 ? QString()
+                                                         : QStringLiteral("s"))
+                    : QStringLiteral(" · paused");
+    }
+    m_cloudLogWindowStatus->setText(text);
+}
+
+// Follows the tail. Flagged while it runs so the scrollbar handler can tell our
+// own move from the reader scrolling away from the bottom.
+void MainWindow::scrollCloudLogWindowToEnd()
+{
+    if (!m_cloudLogWindowView)
+        return;
+    m_cloudLogWindowScrolling = true;
+    m_cloudLogWindowView->moveCursor(QTextCursor::End);
+    m_cloudLogWindowView->ensureCursorVisible();
+    if (QScrollBar *bar = m_cloudLogWindowView->verticalScrollBar())
+        bar->setValue(bar->maximum());
+    m_cloudLogWindowScrolling = false;
+}
+
+// Stops the pane from following the stream. Lines still arrive and still count
+// — the view simply holds where it is until the reader is done with it.
+void MainWindow::setCloudLogWindowPaused(bool paused)
+{
+    m_cloudLogWindowPaused = paused;
+    if (m_cloudLogWindowPauseButton) {
+        const QSignalBlocker blocker(m_cloudLogWindowPauseButton);
+        m_cloudLogWindowPauseButton->setChecked(paused);
+        m_cloudLogWindowPauseButton->setText(
+            paused ? QStringLiteral("Resume scrolling")
+                   : QStringLiteral("Pause scrolling"));
+        setOcticon(m_cloudLogWindowPauseButton, paused ? "play" : "stop", 14);
+    }
+    if (!paused) {
+        m_cloudLogWindowHeld = 0;
+        scrollCloudLogWindowToEnd();
+    }
+    updateCloudLogWindowStatus();
+}
+
+// Scrolling away from the bottom is itself a pause, and scrolling back to it
+// resumes: the button reports the state rather than fighting the reader for it.
+void MainWindow::onCloudLogWindowScrolled(int value)
+{
+    if (m_cloudLogWindowScrolling || !m_cloudLogWindowView)
+        return;
+    QScrollBar *bar = m_cloudLogWindowView->verticalScrollBar();
+    if (!bar || bar->maximum() <= 0)
+        return;
+    const bool atBottom = value >= bar->maximum() - 4;
+    if (atBottom == !m_cloudLogWindowPaused)
+        return;
+    setCloudLogWindowPaused(!atBottom);
+}
+
+// One rendered line into the open window, from whichever tail produced it.
+void MainWindow::appendCloudLogWindowLine(const QString &line, bool)
+{
+    if (!m_cloudLogWindowView)
+        return;
+    QScrollBar *bar = m_cloudLogWindowView->verticalScrollBar();
+    const int anchor = bar ? bar->value() : 0;
+    QTextCursor cursor(m_cloudLogWindowView->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(line + QLatin1Char('\n'));
+    if (m_cloudLogWindowPaused) {
+        ++m_cloudLogWindowHeld;
+        // Pinned back where the reader left it: a paused pane that still drifts
+        // with the stream is not paused.
+        if (bar && bar->value() != anchor) {
+            const QSignalBlocker blocker(bar);
+            bar->setValue(qMin(anchor, bar->maximum()));
+        }
+    } else {
+        scrollCloudLogWindowToEnd();
+    }
+    updateCloudLogWindowStatus();
+}
+
+// The viewer's own Wrangler tail, for when the debug bar's Monitor box is off.
+// Owned by the window rather than by a modal exec(): the pane is a window you
+// can leave open beside the app, so the process outlives the call that started
+// it and is torn down when the window closes (or the monitor takes over).
+void MainWindow::startCloudflareLogViewerTail(
+    const QString &token, const QString &workerDirectory,
+    const forkmesh::control::CloudflareBootstrapCommand &command)
+{
+    stopCloudflareLogViewerTail();
+    m_cloudLogWindowFromMonitor = false;
+    m_cloudLogViewerToken = token;
+    m_cloudLogViewerEvents = 0;
+    m_cloudLogViewerErrors = 0;
+    m_cloudLogViewerBuffer.clear();
+    m_cloudLogViewerProcess = new QProcess(this);
+    m_cloudLogViewerProcess->setWorkingDirectory(workerDirectory);
+    m_cloudLogViewerProcess->setProcessEnvironment(command.environment);
+    m_cloudLogViewerProcess->setProcessChannelMode(QProcess::MergedChannels);
+    m_cloudLogViewerProcess->setStandardInputFile(QProcess::nullDevice());
+    connect(m_cloudLogViewerProcess, &QProcess::readyReadStandardOutput, this,
+            &MainWindow::readCloudflareLogViewerOutput);
+    connect(m_cloudLogViewerProcess, &QProcess::started, this, [this] {
+        m_cloudLogWindowState =
+            QStringLiteral("Connected · waiting for Worker events");
+        updateCloudLogWindowStatus();
+    });
+    connect(m_cloudLogViewerProcess, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                m_cloudLogWindowState = QStringLiteral(
+                    "Could not start npx. Install Node.js to use live Worker "
+                    "logs.");
+                updateCloudLogWindowStatus();
+                updateCloudLogWindowNotice();
+            });
+    connect(m_cloudLogViewerProcess, &QProcess::finished, this,
+            [this](int exitCode, QProcess::ExitStatus exitStatus) {
+                readCloudflareLogViewerOutput();
+                m_cloudLogWindowState =
+                    exitStatus == QProcess::NormalExit && exitCode == 0
+                        ? QStringLiteral("Log stream ended")
+                        : QStringLiteral("Log stream stopped (exit %1)")
+                              .arg(exitCode);
+                updateCloudLogWindowStatus();
+                updateCloudLogWindowNotice();
+            });
+    m_cloudLogWindowState = QStringLiteral("Connecting…");
+    updateCloudLogWindowStatus();
+    updateCloudLogWindowNotice();
+    m_cloudLogViewerProcess->start(command.program, command.arguments);
+}
+
+void MainWindow::stopCloudflareLogViewerTail()
+{
+    if (!m_cloudLogViewerProcess)
+        return;
+    // Cleared first: terminate() re-enters through finished(), and this path is
+    // a deliberate stop rather than the stream dying on its own.
+    QProcess *process = m_cloudLogViewerProcess;
+    m_cloudLogViewerProcess = nullptr;
+    process->disconnect(this);
+    if (process->state() != QProcess::NotRunning) {
+        process->terminate();
+        if (!process->waitForFinished(1500)) {
+            process->kill();
+            process->waitForFinished(1000);
+        }
+    }
+    // The environment holds the API token, so it goes with the child that
+    // needed it, as does this side's copy.
+    process->setProcessEnvironment(QProcessEnvironment());
+    process->deleteLater();
+    m_cloudLogViewerBuffer.clear();
+    m_cloudLogViewerToken.fill(QChar(u'\0'));
+    m_cloudLogViewerToken.clear();
+    if (m_cloudflareTokenEdit && m_cloudflareTokenEdit->text().isEmpty()) {
+        m_cloudflareTokenEdit->setPlaceholderText(
+            QStringLiteral("session-only Cloudflare API token"));
+    }
+}
+
+// Wrangler pretty-prints its JSON, so one event spans many lines and a read can
+// split it anywhere; takeCloudflareTailRecords() hands back whole events only
+// and keeps the remainder for the next read (adhoc #1623).
+void MainWindow::readCloudflareLogViewerOutput()
+{
+    if (!m_cloudLogViewerProcess)
+        return;
+    m_cloudLogViewerBuffer += m_cloudLogViewerProcess->readAllStandardOutput();
+    const QStringList records =
+        forkmesh::control::takeCloudflareTailRecords(&m_cloudLogViewerBuffer);
+    for (const QString &record : records) {
+        const forkmesh::control::CloudflareTailEvent event =
+            forkmesh::control::parseCloudflareTailLine(record);
+        const QString rendered = forkmesh::control::redactProcessOutput(
+            event.summary, {m_cloudLogViewerToken});
+        if (rendered.isEmpty())
+            continue;
+        if (event.parsed)
+            ++m_cloudLogViewerEvents;
+        if (event.isError)
+            ++m_cloudLogViewerErrors;
+        recordCloudLogEvent(event.isError);
+        // Same route the monitor's lines take, so the window renders one stream
+        // whichever tail is behind it.
+        emit cloudLogLineReceived(rendered, event.isError);
+    }
+}
+
+// The window: chart on top, stream below, and the controls for both.
+void MainWindow::buildCloudflareLogWindow()
+{
+    auto *dialog = new QDialog(this);
+    m_cloudLogWindow = dialog;
+    dialog->setObjectName(QStringLiteral("cloudflareWorkerLogsDialog"));
+    dialog->setWindowTitle(QStringLiteral("Cloudflare Worker live logs"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowFlag(Qt::Window);
+    dialog->resize(1180, 760);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+
+    auto *notice = new QLabel;
+    notice->setObjectName(QStringLiteral("modeHint"));
+    notice->setWordWrap(true);
+    m_cloudLogWindowNotice = notice;
+    layout->addWidget(notice);
+
+    auto *status = new QLabel;
+    status->setObjectName(QStringLiteral("cloudflareWorkerLogsStatus"));
+    m_cloudLogWindowStatus = status;
+    layout->addWidget(status);
+
+    auto *chart = new LogTimelineChart(dialog);
+    chart->setObjectName(QStringLiteral("cloudflareWorkerLogsChart"));
+    chart->setFixedHeight(68);
+    chart->setAccessibleName(QStringLiteral("Worker error activity chart"));
+    m_cloudLogWindowChart = chart;
+    chart->viewChanged = [this] { updateCloudLogTimelineSummary(); };
+
+    auto *summary = new QLabel;
+    summary->setObjectName(QStringLiteral("logTimelineSummary"));
+    summary->setAccessibleName(QStringLiteral("Visible Worker event summary"));
+    m_cloudLogWindowSummary = summary;
+
+    auto *rangeRow = new QHBoxLayout;
+    rangeRow->setContentsMargins(0, 0, 0, 0);
+    rangeRow->setSpacing(6);
+    auto *rangeGroup = new QButtonGroup(dialog);
+    rangeGroup->setExclusive(true);
+    const struct {
+        const char *label;
+        int minutes;
+    } presets[] = {{"15m", 15}, {"1h", 60}, {"24h", 24 * 60}};
+    for (const auto &preset : presets) {
+        auto *button = new QPushButton(QString::fromLatin1(preset.label));
+        button->setObjectName(QStringLiteral("logRangeButton"));
+        button->setCheckable(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(QStringLiteral("Chart the past %1 of Worker events")
+                               .arg(QString::fromLatin1(preset.label)));
+        rangeGroup->addButton(button, preset.minutes);
+        rangeRow->addWidget(button);
+        const int minutes = preset.minutes;
+        connect(button, &QPushButton::clicked, this,
+                [this, minutes] { setCloudLogTimelineMinutes(minutes); });
+        if (minutes == m_cloudLogWindowRangeMinutes)
+            button->setChecked(true);
+    }
+
+    auto *errorsOnly = new QCheckBox(QStringLiteral("Errors only"));
+    errorsOnly->setObjectName(QStringLiteral("cloudflareWorkerLogsErrorsOnly"));
+    errorsOnly->setCursor(Qt::PointingHandCursor);
+    errorsOnly->setToolTip(QStringLiteral(
+        "Chart only the Worker's failures, not every request it served"));
+    errorsOnly->setChecked(m_cloudLogWindowErrorsOnly);
+    connect(errorsOnly, &QCheckBox::toggled, this, [this](bool on) {
+        m_cloudLogWindowErrorsOnly = on;
+        refreshCloudLogTimeline();
+    });
+    rangeRow->addWidget(errorsOnly);
+    rangeRow->addSpacing(8);
+    rangeRow->addWidget(summary);
+    rangeRow->addStretch(1);
+
+    m_cloudLogWindowResetZoom = new QPushButton(QStringLiteral("Reset zoom"));
+    m_cloudLogWindowResetZoom->setObjectName(QStringLiteral("ghostButton"));
+    m_cloudLogWindowResetZoom->setCursor(Qt::PointingHandCursor);
+    m_cloudLogWindowResetZoom->setEnabled(false);
+    setOcticon(m_cloudLogWindowResetZoom, "screen-full", 14);
+    connect(m_cloudLogWindowResetZoom, &QPushButton::clicked, chart,
+            &LogTimelineChart::resetZoom);
+    rangeRow->addWidget(m_cloudLogWindowResetZoom);
+
+    layout->addLayout(rangeRow);
+    layout->addWidget(chart);
+
+    auto *view = new QPlainTextEdit(dialog);
+    view->setObjectName(QStringLiteral("cloudflareWorkerLiveLogs"));
+    view->setReadOnly(true);
+    view->setLineWrapMode(QPlainTextEdit::NoWrap);
+    // A window this size holds far more than the old pane did, and the reader
+    // can now stop the stream to scroll back through it.
+    view->document()->setMaximumBlockCount(5000);
+    view->document()->setUndoRedoEnabled(false);
+    m_cloudLogWindowView = view;
+    connect(view->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            &MainWindow::onCloudLogWindowScrolled);
+    layout->addWidget(view, 1);
+
+    auto *copyButton = new QPushButton(QStringLiteral("Copy all"));
+    copyButton->setObjectName(QStringLiteral("cloudflareWorkerLogsCopy"));
+    copyButton->setCursor(Qt::PointingHandCursor);
+    copyButton->setToolTip(
+        QStringLiteral("Copy every line in this pane as plain text"));
+    connect(copyButton, &QPushButton::clicked, this, [this, copyButton] {
+        if (!m_cloudLogWindowView)
+            return;
+        QApplication::clipboard()->setText(m_cloudLogWindowView->toPlainText());
+        copyButton->setText(QStringLiteral("Copied!"));
+    });
+
+    auto *pauseButton = new QPushButton(QStringLiteral("Pause scrolling"));
+    pauseButton->setObjectName(QStringLiteral("cloudflareWorkerLogsPause"));
+    pauseButton->setCheckable(true);
+    pauseButton->setCursor(Qt::PointingHandCursor);
+    pauseButton->setToolTip(QStringLiteral(
+        "Hold the pane still while lines keep arriving. Scrolling away from "
+        "the bottom does the same; scrolling back resumes."));
+    setOcticon(pauseButton, "stop", 14);
+    m_cloudLogWindowPauseButton = pauseButton;
+    connect(pauseButton, &QPushButton::toggled, this,
+            [this](bool on) { setCloudLogWindowPaused(on); });
+
+    auto *closeButton = new QPushButton(QStringLiteral("Close"));
+    closeButton->setObjectName(QStringLiteral("primaryButton"));
+    closeButton->setCursor(Qt::PointingHandCursor);
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::close);
+
+    auto *buttons = new QHBoxLayout;
+    buttons->addWidget(copyButton);
+    buttons->addStretch(1);
+    buttons->addWidget(pauseButton);
+    buttons->addWidget(closeButton);
+    layout->addLayout(buttons);
+
+    // Every line, whichever tail produced it, arrives here. Bound to the dialog
+    // so the connection dies with the window.
+    connect(this, &MainWindow::cloudLogLineReceived, dialog,
+            [this](const QString &line, bool isError) {
+                appendCloudLogWindowLine(line, isError);
+            });
+    // Closing the window stops the tail it owns; the debug bar's monitor, which
+    // is nobody's window, keeps running.
+    connect(dialog, &QDialog::finished, this,
+            [this] { stopCloudflareLogViewerTail(); });
+
+    m_cloudLogWindowPaused = false;
+    m_cloudLogWindowHeld = 0;
+    setCloudLogTimelineMinutes(m_cloudLogWindowRangeMinutes);
+    updateCloudLogWindowNotice();
+    updateCloudLogWindowStatus();
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
 void MainWindow::showCloudflareWorkerLogs()
 {
     // The debug bar's Monitor toggle already holds a tail open against this
@@ -8487,72 +9076,36 @@ void MainWindow::showCloudflareWorkerLogs()
     // one would double the traffic for the same lines, so the viewer attaches
     // to the running monitor instead: its backlog fills the pane and every new
     // line arrives over cloudLogLineReceived().
-    if (m_cloudLogMonitorProcess &&
-        m_cloudLogMonitorProcess->state() != QProcess::NotRunning) {
-        QDialog monitorDialog(this);
-        monitorDialog.setObjectName(
-            QStringLiteral("cloudflareWorkerLogsDialog"));
-        monitorDialog.setWindowTitle(
-            QStringLiteral("Cloudflare Worker live logs"));
-        monitorDialog.resize(900, 560);
-        auto *monitorLayout = new QVBoxLayout(&monitorDialog);
-        monitorLayout->setContentsMargins(16, 16, 16, 16);
-        monitorLayout->setSpacing(8);
-        auto *monitorNotice = new QLabel(QStringLiteral(
-            "Attached to the debug bar's cloud log monitor. Every request "
-            "shows the user agent behind it; Worker errors also raise an "
-            "alert. Unchecking Monitor stops the stream."));
-        monitorNotice->setObjectName(QStringLiteral("modeHint"));
-        monitorNotice->setWordWrap(true);
-        monitorLayout->addWidget(monitorNotice);
-        auto *monitorStatus = new QLabel;
-        monitorStatus->setObjectName(
-            QStringLiteral("cloudflareWorkerLogsStatus"));
-        monitorLayout->addWidget(monitorStatus);
-        auto *monitorOutput = new QPlainTextEdit;
-        monitorOutput->setObjectName(
-            QStringLiteral("cloudflareWorkerLiveLogs"));
-        monitorOutput->setReadOnly(true);
-        monitorOutput->setLineWrapMode(QPlainTextEdit::NoWrap);
-        monitorOutput->document()->setMaximumBlockCount(2500);
-        // Trailing newline included: live lines append at the end, and without
-        // it the first one would run into the last line of the backlog.
-        monitorOutput->setPlainText(
-            m_cloudLogMonitorRecent.isEmpty()
-                ? QString()
-                : m_cloudLogMonitorRecent.join(QLatin1Char('\n')) +
-                      QLatin1Char('\n'));
-        monitorOutput->moveCursor(QTextCursor::End);
-        monitorLayout->addWidget(monitorOutput, 1);
-        const auto renderStatus = [this, monitorStatus] {
-            monitorStatus->setText(
-                QStringLiteral("Monitoring · %1 event%2 · %3 error%4")
-                    .arg(m_cloudLogMonitorEvents)
-                    .arg(m_cloudLogMonitorEvents == 1 ? QString()
-                                                      : QStringLiteral("s"))
-                    .arg(m_cloudLogMonitorErrors)
-                    .arg(m_cloudLogMonitorErrors == 1 ? QString()
-                                                      : QStringLiteral("s")));
-        };
-        renderStatus();
-        connect(this, &MainWindow::cloudLogLineReceived, &monitorDialog,
-                [monitorOutput, renderStatus](const QString &line, bool) {
-                    monitorOutput->moveCursor(QTextCursor::End);
-                    monitorOutput->insertPlainText(line + QLatin1Char('\n'));
-                    monitorOutput->moveCursor(QTextCursor::End);
-                    monitorOutput->ensureCursorVisible();
-                    renderStatus();
-                });
-        auto *monitorClose = new QPushButton(QStringLiteral("Close"));
-        monitorClose->setObjectName(QStringLiteral("primaryButton"));
-        monitorClose->setCursor(Qt::PointingHandCursor);
-        connect(monitorClose, &QPushButton::clicked, &monitorDialog,
-                &QDialog::accept);
-        auto *monitorButtons = new QHBoxLayout;
-        monitorButtons->addStretch(1);
-        monitorButtons->addWidget(monitorClose);
-        monitorLayout->addLayout(monitorButtons);
-        monitorDialog.exec();
+    const bool attached = cloudLogMonitorRunning();
+    const bool alreadyOpen = !m_cloudLogWindow.isNull();
+
+    if (alreadyOpen) {
+        m_cloudLogWindow->show();
+        m_cloudLogWindow->raise();
+        m_cloudLogWindow->activateWindow();
+        if (attached || cloudLogViewerRunning())
+            return;
+        // Otherwise the window outlived its stream — the monitor was switched
+        // off, or the tail died — and clicking Cloud starts a fresh one into
+        // the window that is already up.
+    }
+
+    if (attached) {
+        if (!alreadyOpen) {
+            buildCloudflareLogWindow();
+            if (!m_cloudLogMonitorRecent.isEmpty() && m_cloudLogWindowView) {
+                // Trailing newline included: live lines append at the end, and
+                // without it the first would run into the last of the backlog.
+                m_cloudLogWindowView->setPlainText(
+                    m_cloudLogMonitorRecent.join(QLatin1Char('\n')) +
+                    QLatin1Char('\n'));
+                scrollCloudLogWindowToEnd();
+            }
+        }
+        m_cloudLogWindowFromMonitor = true;
+        m_cloudLogWindowState = QStringLiteral("Monitoring");
+        updateCloudLogWindowNotice();
+        updateCloudLogWindowStatus();
         return;
     }
 
@@ -8564,131 +9117,53 @@ void MainWindow::showCloudflareWorkerLogs()
                                true)) {
         return;
     }
-
-    QDialog dialog(this);
-    dialog.setObjectName(QStringLiteral("cloudflareWorkerLogsDialog"));
-    dialog.setWindowTitle(QStringLiteral("Cloudflare Worker live logs"));
-    dialog.resize(900, 560);
-    auto *layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(16, 16, 16, 16);
-    layout->setSpacing(8);
-
-    auto *notice = new QLabel(
-        storedToken
-            ? QStringLiteral(
-                  "Read-only live tail for the configured ForkMesh Worker, "
-                  "showing the user agent behind each request, authenticated "
-                  "with the stored CLOUDFLARE_API_TOKEN secret. The token stays "
-                  "in this process's memory only and is erased when this viewer "
-                  "closes.")
-            : QStringLiteral(
-                  "Read-only live tail for the configured ForkMesh Worker, "
-                  "showing the user agent behind each request. The API token "
-                  "stays in this process's memory only and is erased when this "
-                  "viewer closes."));
-    notice->setObjectName(QStringLiteral("modeHint"));
-    notice->setWordWrap(true);
-    layout->addWidget(notice);
-
-    auto *status = new QLabel(QStringLiteral("Connecting…"));
-    status->setObjectName(QStringLiteral("cloudflareWorkerLogsStatus"));
-    layout->addWidget(status);
-
-    auto *output = new QPlainTextEdit;
-    output->setObjectName(QStringLiteral("cloudflareWorkerLiveLogs"));
-    output->setReadOnly(true);
-    output->setLineWrapMode(QPlainTextEdit::NoWrap);
-    output->document()->setMaximumBlockCount(2500);
-    layout->addWidget(output, 1);
-
-    auto *closeButton = new QPushButton(QStringLiteral("Close"));
-    closeButton->setObjectName(QStringLiteral("primaryButton"));
-    closeButton->setCursor(Qt::PointingHandCursor);
-    connect(closeButton, &QPushButton::clicked, &dialog,
-            &QDialog::accept);
-    auto *buttons = new QHBoxLayout;
-    buttons->addStretch(1);
-    buttons->addWidget(closeButton);
-    layout->addLayout(buttons);
-
-    QProcess process(&dialog);
-    process.setWorkingDirectory(workerDirectory);
-    process.setProcessEnvironment(command.environment);
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.setStandardInputFile(QProcess::nullDevice());
-    // Wrangler streams JSON, so the pane renders each event itself: one line per
-    // hit, in Wrangler's own default shape, ending in the user agent that made
-    // it. One event spans many lines of that JSON and a read can split it
-    // anywhere, so takeCloudflareTailRecords() hands back only whole events and
-    // keeps the rest until the next read (adhoc #1623).
-    QByteArray pending;
-    const auto appendOutput = [&process, output, &token, &pending] {
-        pending += process.readAllStandardOutput();
-        QString rendered;
-        const QStringList records =
-            forkmesh::control::takeCloudflareTailRecords(&pending);
-        for (const QString &record : records) {
-            const QString summary =
-                forkmesh::control::parseCloudflareTailLine(record).summary;
-            if (summary.isEmpty())
-                continue;
-            rendered += summary;
-            rendered += QLatin1Char('\n');
-        }
-        if (rendered.isEmpty())
-            return;
-        output->moveCursor(QTextCursor::End);
-        output->insertPlainText(
-            forkmesh::control::redactProcessOutput(rendered, {token}));
-        output->moveCursor(QTextCursor::End);
-        output->ensureCursorVisible();
-    };
-    connect(&process, &QProcess::readyReadStandardOutput, &dialog,
-            appendOutput);
-    connect(&process, &QProcess::started, &dialog, [status] {
-        status->setText(
-            QStringLiteral("Connected · waiting for Worker events"));
-    });
-    connect(
-        &process, &QProcess::errorOccurred, &dialog,
-        [status](QProcess::ProcessError error) {
-            if (error == QProcess::FailedToStart) {
-                status->setText(
-                    QStringLiteral(
-                        "Could not start npx. Install Node.js to use live "
-                        "Worker logs."));
-            }
-        });
-    connect(
-        &process, &QProcess::finished, &dialog,
-        [status, appendOutput](int exitCode,
-                               QProcess::ExitStatus exitStatus) {
-            appendOutput();
-            status->setText(
-                exitStatus == QProcess::NormalExit && exitCode == 0
-                    ? QStringLiteral("Log stream ended")
-                    : QStringLiteral("Log stream stopped (exit %1)")
-                          .arg(exitCode));
-        });
-    process.start(command.program, command.arguments);
-    dialog.exec();
-
-    if (process.state() != QProcess::NotRunning) {
-        process.terminate();
-        if (!process.waitForFinished(1500)) {
-            process.kill();
-            process.waitForFinished(1000);
-        }
-    }
-    process.setProcessEnvironment(QProcessEnvironment());
+    m_cloudLogViewerStoredToken = storedToken;
+    // Re-checked rather than trusting `alreadyOpen`: asking for a token above
+    // runs a modal, and the window can be closed while it is up.
+    if (!m_cloudLogWindow)
+        buildCloudflareLogWindow();
+    startCloudflareLogViewerTail(token, workerDirectory, command);
     token.fill(QChar(u'\0'));
     token.clear();
-    if (m_cloudflareTokenEdit &&
-        m_cloudflareTokenEdit->text().isEmpty()) {
-        m_cloudflareTokenEdit->setPlaceholderText(
-            QStringLiteral("session-only Cloudflare API token"));
-    }
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+QWidget *MainWindow::testCloudflareLogWindow() const
+{
+    return m_cloudLogWindow;
+}
+
+QString MainWindow::testCloudflareLogText() const
+{
+    return m_cloudLogWindowView ? m_cloudLogWindowView->toPlainText()
+                                : QString();
+}
+
+QString MainWindow::testCloudflareLogStatusText() const
+{
+    return m_cloudLogWindowStatus ? m_cloudLogWindowStatus->text() : QString();
+}
+
+QString MainWindow::testCloudflareLogTimelineSummary() const
+{
+    return m_cloudLogWindowSummary ? m_cloudLogWindowSummary->text()
+                                   : QString();
+}
+
+int MainWindow::testCloudflareLogTimelineCount() const
+{
+    return m_cloudLogWindowChart ? m_cloudLogWindowChart->visibleEntryCount()
+                                 : -1;
+}
+
+bool MainWindow::testCloudflareLogAtBottom() const
+{
+    if (!m_cloudLogWindowView)
+        return false;
+    const QScrollBar *bar = m_cloudLogWindowView->verticalScrollBar();
+    return !bar || bar->value() >= bar->maximum() - 4;
+}
+#endif
 
 // How much of the monitor's stream is kept for a viewer opened later. The point
 // of the backlog is context around the error that raised the alert, not a
@@ -8727,6 +9202,13 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
         m_cloudLogMonitorProcess = nullptr;
         m_cloudLogMonitorStopping = false;
         m_cloudLogMonitorBuffer.clear();
+        if (m_cloudLogWindow) {
+            // An open viewer was reading this stream. Say so rather than
+            // leaving it looking live; clicking Cloud again starts its own.
+            m_cloudLogWindowState = QStringLiteral("Monitor stopped");
+            updateCloudLogWindowNotice();
+            updateCloudLogWindowStatus();
+        }
         logSystem(QStringLiteral(
                       "Cloud: stopped monitoring the Worker log (%1 event%2, "
                       "%3 error%4).")
@@ -8752,6 +9234,10 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
             m_cloudLogMonitorCheck->setChecked(false);
         return;
     }
+
+    // One tail per Worker: if the viewer window opened its own, hand it over to
+    // the monitor instead of running a second stream against the same script.
+    stopCloudflareLogViewerTail();
 
     m_cloudLogMonitorBuffer.clear();
     m_cloudLogMonitorRecent.clear();
@@ -8799,6 +9285,12 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
         "Cloud: monitoring the deployed Worker's live log for errors."));
     updateCloudLogMonitorTooltip();
     m_cloudLogMonitorProcess->start(command.program, command.arguments);
+    if (m_cloudLogWindow) {
+        m_cloudLogWindowFromMonitor = true;
+        m_cloudLogWindowState = QStringLiteral("Monitoring");
+        updateCloudLogWindowNotice();
+        updateCloudLogWindowStatus();
+    }
     // The token only ever lived in the child's environment and this local; both
     // copies go now that the process owns its own.
     token.fill(QChar(u'\0'));
@@ -8840,6 +9332,9 @@ void MainWindow::handleCloudLogMonitorLine(const QString &line)
     m_cloudLogMonitorRecent << rendered;
     while (m_cloudLogMonitorRecent.size() > kCloudLogMonitorBacklog)
         m_cloudLogMonitorRecent.removeFirst();
+    // The viewer's chart is fed here rather than from the window, so the rail
+    // already has the monitor's history the first time somebody opens it.
+    recordCloudLogEvent(event.isError);
     emit cloudLogLineReceived(rendered, event.isError);
     if (!event.isError) {
         updateCloudLogMonitorTooltip();
@@ -8855,6 +9350,9 @@ void MainWindow::handleCloudLogMonitorLine(const QString &line)
 
 void MainWindow::updateCloudLogMonitorTooltip()
 {
+    // Called from every point the monitor's counters move, so the open viewer's
+    // status line rides along with the checkbox's tooltip.
+    updateCloudLogWindowStatus();
     if (!m_cloudLogMonitorCheck)
         return;
     const bool running = m_cloudLogMonitorProcess &&
@@ -9220,6 +9718,50 @@ QWidget *MainWindow::buildBreadcrumb()
                                                  QSizePolicy::Minimum);
     m_topMessagePromptStatusLabel->hide();
 
+    // "Agent #12 is done!" headline for a completion celebration (adhoc #1630).
+    // The icon is the very glyph that session wears in the agents list, so the
+    // card is recognisably that agent's rather than a generic green tick, and it
+    // sits on its own row so the summary underneath keeps the full bubble width.
+    m_topMessageAgentRow = new QWidget;
+    m_topMessageAgentRow->setObjectName("topMessageAgentRow");
+    auto *agentHeadlineRow = new QHBoxLayout(m_topMessageAgentRow);
+    agentHeadlineRow->setContentsMargins(0, 0, 0, 0);
+    agentHeadlineRow->setSpacing(6);
+    m_topMessageAgentIcon = new QLabel;
+    m_topMessageAgentIcon->setObjectName("topMessageAgentIcon");
+    m_topMessageAgentIcon->setFocusPolicy(Qt::NoFocus);
+    m_topMessageAgentIcon->setFixedSize(kToastAgentIconPx, kToastAgentIconPx);
+    m_topMessageAgentIcon->setScaledContents(false);
+    m_topMessageAgentIcon->setAlignment(Qt::AlignCenter);
+    m_topMessageAgentHeadline = new QLabel;
+    m_topMessageAgentHeadline->setObjectName("topMessageAgentHeadline");
+    m_topMessageAgentHeadline->setTextFormat(Qt::RichText);
+    m_topMessageAgentHeadline->setWordWrap(true);
+    m_topMessageAgentHeadline->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_topMessageAgentHeadline->setMinimumWidth(1);
+    m_topMessageAgentHeadline->setFocusPolicy(Qt::NoFocus);
+    m_topMessageAgentHeadline->setSizePolicy(QSizePolicy::Preferred,
+                                             QSizePolicy::Minimum);
+    m_topMessageAgentHeadline->setCursor(Qt::PointingHandCursor);
+    // The headline is the celebration's link to the transcript, so it routes
+    // "fm:agent:<id>" exactly as the message label does for a waiting agent.
+    connect(m_topMessageAgentHeadline, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                if (!href.startsWith(QLatin1String("fm:agent:")))
+                    return;
+                bool ok = false;
+                const int sid = href.mid(9).toInt(&ok);
+                if (!ok)
+                    return;
+                switchToAgentsTab(sid);
+                dismissTopMessage();
+            });
+    agentHeadlineRow->addWidget(m_topMessageAgentIcon, 0, Qt::AlignTop);
+    agentHeadlineRow->addWidget(m_topMessageAgentHeadline, 1);
+    m_topMessageAgentRow->setSizePolicy(QSizePolicy::Preferred,
+                                        QSizePolicy::Minimum);
+    m_topMessageAgentRow->hide();
+
     m_topMessagePromptImages = new QWidget;
     m_topMessagePromptImages->setObjectName("topMessagePromptImages");
     auto *promptImagesRow = new QHBoxLayout(m_topMessagePromptImages);
@@ -9347,6 +9889,7 @@ QWidget *MainWindow::buildBreadcrumb()
     topMessageBodyLayout->setContentsMargins(0, 0, 0, 0);
     topMessageBodyLayout->setSpacing(kToastLineSpacing);
     topMessageBodyLayout->addWidget(m_topMessagePromptHeader);
+    topMessageBodyLayout->addWidget(m_topMessageAgentRow);
     topMessageBodyLayout->addWidget(m_topMessagePromptStatusLabel);
     topMessageBodyLayout->addWidget(m_topMessage);
     topMessageBodyLayout->addWidget(m_topMessagePromptImages);
@@ -9386,6 +9929,9 @@ QWidget *MainWindow::buildBreadcrumb()
     for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
                             static_cast<QWidget *>(m_topMessageBody),
                             static_cast<QWidget *>(m_topMessagePromptHeader),
+                            static_cast<QWidget *>(m_topMessageAgentRow),
+                            static_cast<QWidget *>(m_topMessageAgentIcon),
+                            static_cast<QWidget *>(m_topMessageAgentHeadline),
                             static_cast<QWidget *>(m_topMessagePromptStatusLabel),
                             static_cast<QWidget *>(m_topMessagePromptImages),
                             static_cast<QWidget *>(m_topMessageScroll),

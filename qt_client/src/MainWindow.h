@@ -502,6 +502,31 @@ public:
     {
         return m_cloudLogMonitorRecent;
     }
+    // adhoc #1626: the viewer is a window of its own now, with an error chart
+    // over the stream and a Pause control. These drive it with no Wrangler tail
+    // behind it — a line arrives exactly as either tail would deliver it.
+    void testOpenCloudflareLogWindow() { buildCloudflareLogWindow(); }
+    void testCloudflareLogLine(const QString &line, bool isError)
+    {
+        recordCloudLogEvent(isError);
+        emit cloudLogLineReceived(line, isError);
+    }
+    void testSetCloudflareLogPaused(bool paused)
+    {
+        setCloudLogWindowPaused(paused);
+    }
+    bool testCloudflareLogPaused() const { return m_cloudLogWindowPaused; }
+    void testSetCloudflareLogErrorsOnly(bool on)
+    {
+        m_cloudLogWindowErrorsOnly = on;
+        refreshCloudLogTimeline();
+    }
+    QWidget *testCloudflareLogWindow() const;
+    QString testCloudflareLogText() const;
+    QString testCloudflareLogStatusText() const;
+    QString testCloudflareLogTimelineSummary() const;
+    int testCloudflareLogTimelineCount() const;
+    bool testCloudflareLogAtBottom() const;
     QRect testTopMessageRect() { return topMessageBubbleRect(); }
     int testTopMessageQueueDepth() const { return m_topMessageQueue.size(); }
     void testDismissTopMessage() { dismissTopMessage(); }
@@ -511,6 +536,28 @@ public:
     bool testErrorBorderVisible() const
     {
         return m_errorBorderOverlay && m_errorBorderOverlay->isVisible();
+    }
+    // The finished-agent celebration (adhoc #1630), driven without a live CLI:
+    // seed the closing summary the run would have ended on, then raise the card
+    // exactly as a real completion does.
+    void testNotifyAgentDone(int sessionId, const QString &closingSummary)
+    {
+        if (closingSummary.isEmpty())
+            m_lastAssistantText.remove(sessionId);
+        else
+            m_lastAssistantText[sessionId] = closingSummary;
+        notifyAgentDone(sessionId);
+    }
+    // The celebration headline's HTML ("🎉 Agent #12 is done!" plus the run's
+    // figures), empty unless that row is actually part of the visible card, and
+    // whether the row carries the agent's icon rather than an empty placeholder.
+    // Defined in MainWindowSettings.cpp: QLabel is only forward-declared here.
+    QString testTopMessageAgentHeadline() const;
+    bool testTopMessageAgentIconShown() const;
+    bool testCelebrationBorderVisible() const
+    {
+        return m_celebrationBorderOverlay &&
+               m_celebrationBorderOverlay->isVisible();
     }
     // Clears the repeat/burst bookkeeping (and any lit border) so consecutive
     // checks in one run don't de-duplicate against each other.
@@ -1941,6 +1988,29 @@ private:
     void consumeCloudLogMonitorBytes(const QByteArray &chunk);
     void handleCloudLogMonitorLine(const QString &line);
     void updateCloudLogMonitorTooltip();
+    // The Worker log viewer (adhoc #1626): a window of its own, the same shape
+    // as the app's full log screen — an error-activity rail over the stream,
+    // and a Pause control that stops the pane following the tail. Fed by
+    // whichever Wrangler tail is running: the debug bar's monitor, or the one
+    // the window starts and owns itself.
+    void buildCloudflareLogWindow();
+    void startCloudflareLogViewerTail(
+        const QString &token, const QString &workerDirectory,
+        const forkmesh::control::CloudflareBootstrapCommand &command);
+    void stopCloudflareLogViewerTail();
+    void readCloudflareLogViewerOutput();
+    bool cloudLogMonitorRunning() const;
+    bool cloudLogViewerRunning() const;
+    void appendCloudLogWindowLine(const QString &line, bool isError);
+    void recordCloudLogEvent(bool isError);
+    void refreshCloudLogTimeline();
+    void setCloudLogTimelineMinutes(int minutes);
+    void updateCloudLogTimelineSummary();
+    void updateCloudLogWindowNotice();
+    void updateCloudLogWindowStatus();
+    void setCloudLogWindowPaused(bool paused);
+    void onCloudLogWindowScrolled(int value);
+    void scrollCloudLogWindowToEnd();
     // The same log in a window of its own: everything retained, unfiltered.
     void showNetworkLogPopout();
 
@@ -3173,6 +3243,7 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
+    void syncQuickAddControlsToAgentSession(const AgentSession &session);
     // Rebuild only the detail header's meta lines (identity + issue/PR chips +
     // run Stats) and the toolbar's Branch/Worktree buttons, without a transcript
     // rebuild — used by the live token/cost/run-summary update paths and the
@@ -3763,6 +3834,9 @@ private:
     // Flash a red border around the whole window for a moment — the desktop
     // twin of the World's world-admin-error-arrival effect (adhoc #77).
     void flashErrorBorder();
+    // The same effect in green, for the one event worth celebrating: an agent
+    // finishing its run (adhoc #1630). Re-flashing restarts the countdown.
+    void flashCelebrationBorder();
     // While an update/rebuild is preparing to relaunch this process, pulse an
     // amber border at the window edge so the long-running restart is visible
     // even when its originating button or status panel is off-screen.
@@ -5609,6 +5683,11 @@ private:
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
+    // The agent a finished-run celebration belongs to, recovered from its own
+    // "fm:agent:<id>" click target (-1 for every other kind of card), and the
+    // headline row that card paints above the agent's closing summary.
+    int topMessageAgentDoneSessionId() const;
+    QString agentDoneHeadlineHtml(int sessionId);
     // Refresh just the prompt bubble's status line, e.g. as the agent streams
     // (adhoc #1570) — cheaper than a full renderTopMessage() per event.
     void updateTopMessagePromptLiveStatus(const QString &line);
@@ -5770,9 +5849,41 @@ private:
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.
     void importRemoteRepository();
+    // Clone one repository URL; the tail of importRemoteRepository() once the
+    // URL is known to name a single project rather than a whole organization.
+    void importSingleRemoteRepository(const QString &url);
     // Provider-aware "-c http.extraHeader=Authorization: Basic ..." clone args
     // carrying the saved token for the URL's host, or empty when none is set.
     QStringList importAuthGitArgs(const QString &url) const;
+    // Importing an entire GitLab organization. A GitLab organization is a
+    // group, and a group path is indistinguishable from a project path by
+    // inspection (gitlab.com/acme/platform is either), so the API is asked
+    // which one it is before anything is cloned. Only one bulk import runs at
+    // a time — the Import controls stay disabled until the queue drains — so
+    // the in-flight state lives in a single member.
+    struct GitlabGroupImport {
+        QString group;          // full group path, e.g. acme/platform
+        QString parentDir;      // directory each clone lands in
+        QStringList cloneUrls;  // projects still to clone
+        QStringList names;      // repository name chosen for each clone URL
+        int total = 0;
+        int imported = 0;
+        int failed = 0;
+    };
+    GitlabGroupImport m_gitlabGroupImport;
+    // Group path for a canonical gitlab.com organization/subgroup URL, or an
+    // empty string when the URL is not a GitLab namespace at all.
+    QString gitlabGroupPathFor(const QUrl &url) const;
+    // Ask GitLab whether the path is a group; a group starts the bulk import
+    // and anything else falls back to a single-repository clone.
+    void probeGitlabGroup(const QString &url, const QString &groupPath);
+    void fetchGitlabGroupProjects(const QString &groupPath, int page);
+    void cloneNextGitlabGroupProject();
+    void finishGitlabGroupImport();
+    // Shared by both import paths so the single and bulk flows report through
+    // one status line and re-enable the same controls.
+    void setImportStatus(const QString &text, bool error);
+    void setImportControlsEnabled(bool enabled);
     void previewAdvertisedRepo(const QString &ownerName);
     void mirrorAdvertisedRepo(const QString &ownerName);
     void mirrorPreviewRepository(int index);
@@ -6120,6 +6231,12 @@ private:
     QWidget *m_topMessageBody = nullptr;  // scrollable prompt/notification content
     QLabel *m_topMessagePromptHeader = nullptr; // "Prompt sent" line
     QLabel *m_topMessagePromptStatusLabel = nullptr; // agent info on its own line
+    // Headline row of an "agent finished" celebration (adhoc #1630): the agent's
+    // own list icon beside "🎉 Agent #12 is done! · #42 · repo · 2m 04s". The
+    // summary the run signed off with is the message text beneath it.
+    QWidget *m_topMessageAgentRow = nullptr;
+    QLabel *m_topMessageAgentIcon = nullptr;
+    QLabel *m_topMessageAgentHeadline = nullptr;
     QWidget *m_topMessagePromptImages = nullptr; // submitted image thumbnails
     QStringList m_topMessagePromptImagePaths;
     // Queued notifications are visible beneath the active bubble. As new ones
@@ -6179,6 +6296,10 @@ private:
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
     QTimer *m_errorBorderTimer = nullptr;
+    // Its green twin, pulsed when an agent finishes (adhoc #1630) so the good
+    // news is as unmissable across the window as a failure is.
+    QWidget *m_celebrationBorderOverlay = nullptr;
+    QTimer *m_celebrationBorderTimer = nullptr;
     // Set while flashMessage is recording its own text, so the ERROR hook in
     // logSystem flashes the window but leaves the toast to the caller instead
     // of stacking a duplicate card behind it.
@@ -6254,6 +6375,34 @@ private:
     int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
     int m_cloudLogMonitorEvents = 0;     // Worker events seen since then
     bool m_cloudLogMonitorStopping = false; // a deliberate stop, not a crash
+    // The Worker log window and the tail it owns when the Monitor box is off
+    // (adhoc #1626). Guarded pointers: the window is WA_DeleteOnClose, so these
+    // go null on their own when it is closed.
+    QPointer<QDialog> m_cloudLogWindow;
+    QPointer<QLabel> m_cloudLogWindowNotice;
+    QPointer<QLabel> m_cloudLogWindowStatus;
+    QPointer<QLabel> m_cloudLogWindowSummary;
+    QPointer<QPlainTextEdit> m_cloudLogWindowView;
+    QPointer<QPushButton> m_cloudLogWindowPauseButton;
+    QPointer<QPushButton> m_cloudLogWindowResetZoom;
+    QPointer<LogTimelineChart> m_cloudLogWindowChart;
+    QProcess *m_cloudLogViewerProcess = nullptr; // this window's own tail
+    QByteArray m_cloudLogViewerBuffer;   // partial tail record across reads
+    QString m_cloudLogViewerToken;       // redacts the stream; scrubbed on stop
+    bool m_cloudLogViewerStoredToken = false; // came from the deploy secret
+    int m_cloudLogViewerEvents = 0;
+    int m_cloudLogViewerErrors = 0;
+    QString m_cloudLogWindowState;          // "Monitoring", "Log stream ended"…
+    bool m_cloudLogWindowFromMonitor = false; // which tail last fed the pane
+    bool m_cloudLogWindowPaused = false;    // pane held still by the reader
+    bool m_cloudLogWindowScrolling = false; // our tail-follow, not their scroll
+    int m_cloudLogWindowHeld = 0;           // lines arrived while paused
+    bool m_cloudLogWindowErrorsOnly = true; // the chart's default rail
+    int m_cloudLogWindowRangeMinutes = 60;
+    // (timestamp, isError) per Worker event, for the window's activity chart.
+    // Kept whether or not the window is open: the monitor may have been running
+    // for hours before anyone opens the viewer, and that history is the point.
+    QVector<QPair<qint64, bool>> m_cloudLogTicks;
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
@@ -6268,11 +6417,25 @@ private:
     QWidget *m_promptDragHandle = nullptr;
     QWidget *m_promptResizeGrip = nullptr;
     QPushButton *m_promptDetachButton = nullptr;
+    QPushButton *m_promptResetButton = nullptr;
+    // promptWrapper->sizeHint().height() at construction, the same moment the
+    // footer dock's own fixed height is derived from it. Cached rather than
+    // re-queried on every anchored layout pass: once the composer has been
+    // floated and resized, some Qt-internal layout state QPlainTextEdit's
+    // sizeHint() consults no longer matches its construction-time value, so a
+    // live re-query drifted the anchored height out of sync with the dock's
+    // (fixed, never recomputed) height (adhoc #1625).
+    int m_promptAnchoredHeight = 0;
     QWidget *m_promptDetachWindow = nullptr;
     bool m_promptOverlayFloating = false;
     bool m_promptOverlayDetached = false;
     QPoint m_promptOverlayPos;  // top-left within m_globalOverlayHost
     QSize m_promptOverlaySize;  // user-chosen size; invalid means "auto"
+    // m_globalOverlayHost's size the last time the floating composer's position
+    // was clamped into it; invalid means "not tracked yet". Lets a workspace
+    // resize carry the floating panel along with the edge it was parked near
+    // instead of leaving it stranded at its old absolute position.
+    QSize m_promptOverlayHostSize;
     QRect m_promptDetachGeometry;
     // Live drag/resize state. The grab point is global so it stays meaningful
     // while the panel is reparented mid-gesture.
@@ -8608,6 +8771,17 @@ private:
     // failing the same way ever reaches kMaxAgentRelaunchAttempts.
     QHash<int, int> m_agentRelaunchAttempts;
     void notifyAgentWaiting(int sessionId, bool needsPermission);
+    // The counterpart for a run that reached the end: a celebration card
+    // carrying the agent's own icon and the summary it signed off with, plus a
+    // green pulse round the window (adhoc #1630). Every completion path funnels
+    // through here, and m_agentDoneNotified keeps a re-fired signal or a requeue
+    // from celebrating the same run twice.
+    void notifyAgentDone(int sessionId);
+    // The last prose the agent produced this run — the summary at the end of its
+    // transcript. Prefers the live cache and falls back to walking the event
+    // buffer, which is what a session restored from disk has.
+    QString agentClosingSummary(int sessionId) const;
+    QSet<int> m_agentDoneNotified; // sessions already celebrated; cleared on a new turn
     bool applyCliExitWithoutResult(int sessionId, bool codex, int exitCode);
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;

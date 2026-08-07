@@ -100,28 +100,59 @@ def test_world_has_the_full_connected_leaderboard_district():
     assert 'fetchJSON("/api/leaderboards"' in WORLD
     assert "this.world.updateLeaderboards" in WORLD
     assert "const WORLD_LEADERBOARD_BOARD_STUBS" in SCENE
-    assert 'leaderboardSuperPanel.name = "forkmesh-leaderboard-super-panel"' in SCENE
     assert 'continuousCityLand.name = "forkmesh-continuous-city-land"' in SCENE
     assert 'leaderboardConnection.name = "forkmesh-leaderboard-island-connection"' in SCENE
     assert 'leaderboardPromenade.name = "forkmesh-leaderboard-promenade"' in SCENE
-    assert "function leaderboardGridTexture(THREE, state = {})" in SCENE
-    assert '"5 × 5 LIVE GRID · EACH CATEGORY LISTS MEMBERS OR NODES VERTICALLY"' in SCENE
-    assert "new THREE.BoxGeometry(23, 23, 0.45)" in SCENE
-    assert "new THREE.PlaneGeometry(22.4, 22.4)" in SCENE
     assert "new THREE.BoxGeometry(58, 4.2, 0.35)" not in SCENE
-    assert "leaderboardSuperPanel.position.set(-42, 0.22, 0)" in SCENE
-    assert "footing.position.set(x, 0.25, 0)" in SCENE
-    assert 'leaderboardGridFace.userData.interactive = "leaderboard-grid"' in SCENE
     assert '"forkmesh-leaderboard-ring-walk"' not in SCENE
+    # One card per board, on the district's own leaderboard circle.
     physical = SCENE.split(
-        "// One square 5×5 wall preserves", 1
-    )[1].split("let leaderboardGridKey", 1)[0]
-    assert "makeActiveLeaderboardSign" not in physical
-    assert "makeReferralLeaderboardSign" not in physical
-    assert "makeSiteReferrerLeaderboardSign" not in physical
-    assert "makeLeaderboardStatSign" not in physical
+        "// Every public ranking is a card of its own again", 1
+    )[1].split("function repaintActiveLeaderboardCard", 1)[0]
+    assert "makeActiveLeaderboardSign" in physical
+    assert "makeReferralLeaderboardSign" in physical
+    assert "makeSiteReferrerLeaderboardSign" in physical
+    assert "makeLeaderboardStatSign(THREE, board)" in physical
+    assert 'circle: "leaderboards",' in physical
+    assert 'face.userData.interactive = "leaderboard-card"' in physical
+    assert "face.userData.boardId = id" in physical
+    # The 5x5 wall that replaced the cards, and its packed texture, are gone.
+    assert "leaderboardSuperPanel" not in SCENE
+    assert "leaderboardGridTexture" not in SCENE
+    assert "5 × 5 LIVE GRID" not in SCENE
     assert "function updateLeaderboards(boards = [])" in SCENE
     assert "updateLeaderboards," in SCENE
+
+
+def test_the_shared_stat_painter_leaves_the_three_richer_cards_alone():
+    # /api/leaderboards ships activity/referrals/referring-sites too. Those
+    # three faces are painted by their own textures (live world activity, the
+    # viewer's own referral link, redacted referrer URLs), so letting the
+    # shared statistic painter also claim them would make the two repaints
+    # fight over one face on every snapshot.
+    assert "const LEADERBOARD_CARDS_WITH_OWN_PAINTER = new Set([" in SCENE
+    guard = SCENE.split("const LEADERBOARD_CARDS_WITH_OWN_PAINTER = new Set([", 1)[1]
+    guard = guard.split("]);", 1)[0]
+    for board_id in ("active-members", "referrals", "http-referrers"):
+        assert f'"{board_id}",' in guard
+    update = SCENE.split("function updateLeaderboards(boards = [])", 1)[1]
+    update = update.split("function updateReferralLeaderboard", 1)[0]
+    assert "if (LEADERBOARD_CARDS_WITH_OWN_PAINTER.has(id)) return;" in update
+    assert "leaderboardStatTexture(THREE, board)" in update
+
+
+def test_the_leaderboard_circle_only_fetches_when_a_visitor_walks_onto_it():
+    # Nothing on the circle is read at boot; the approach callback is the only
+    # thing that starts a fetch, and each card spins while it is open.
+    assert "void this.loadReferralLeaderboard();\n      void this.loadLobbyLinkBoard();" not in WORLD
+    assert "startLeaderboardCircleWatch({ refetch = true } = {}) {" in WORLD
+    assert "if (refetch) void this.loadReferralLeaderboard();" in WORLD
+    assert 'onLeaderboardCircleNearby: ({ refetch } = {}) =>' in WORLD
+    assert 'this.world?.setBillboardRefreshing?.("leaderboards", true);' in WORLD
+    assert 'this.world?.setBillboardRefreshing?.("leaderboards", false);' in WORLD
+    assert "onEnter: (refetch) => onLeaderboardCircleNearby({ refetch })," in SCENE
+    assert "function setBillboardRefreshing(feed, loading)" in SCENE
+    assert "setBillboardRefreshing," in SCENE
 
 
 def test_qt_has_no_leaderboard_navigation_or_network_fetch():
