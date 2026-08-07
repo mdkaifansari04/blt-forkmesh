@@ -558,6 +558,10 @@ public:
     // What a desktop-measured row publishes to the dots: the newest reply's
     // verdict widened by the recent-failure memory (adhoc #1614).
     QString testDesktopWebsiteRowStatus(const QString &id) const;
+    // Which desktop-side checks a click on one dot re-runs (adhoc #1616). The
+    // relay half of the recheck is a single /api/status read for every row, so
+    // only this routing needs pinning.
+    QStringList testWebsiteRecheckProbes(const QString &statusId) const;
     // Forgets the recent verdicts for every desktop-measured row, so a test can
     // grade a fresh reply without the ones it fed in earlier bleeding through.
     void testClearDesktopProbeHistory() { m_desktopProbeHistory.clear(); }
@@ -1693,6 +1697,11 @@ private:
     // resolved separately because its path is a deployment secret.
     QUrl websiteStatusTargetUrl(const QString &statusId) const;
     void openWebsiteStatusTarget(const QString &statusId);
+    // Clicking a dot is also "check this one again, now" (adhoc #1616): the
+    // checks behind that dot re-run immediately instead of waiting for the next
+    // minute tick, so the verdict beside the page the click just opened is a
+    // fresh one rather than up to a minute old.
+    void recheckWebsiteStatus(const QString &statusId);
     void openAdminErrorConsole();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a

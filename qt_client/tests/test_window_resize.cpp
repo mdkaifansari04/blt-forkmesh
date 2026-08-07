@@ -310,6 +310,24 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("each status dot opens its own page: /status, the "
                              "API host, the flagship repository, the site"));
 
+        // adhoc #1616: the click is also "check this again, now". Every dot
+        // re-reads the relay's status payload, and a dot with a desktop-side
+        // check behind it — its own row, or the relay row that check merged
+        // into — re-measures it from this machine as well.
+        check(window.testWebsiteRecheckProbes(QStringLiteral("website")) ==
+                  QStringList{QStringLiteral("desktop_website")} &&
+                  window.testWebsiteRecheckProbes(
+                      QStringLiteral("desktop_website")) ==
+                      QStringList{QStringLiteral("desktop_website")} &&
+                  window.testWebsiteRecheckProbes(
+                      QStringLiteral("status_page")) ==
+                      QStringList{QStringLiteral("desktop_status_page")} &&
+                  window.testWebsiteRecheckProbes(QStringLiteral("api"))
+                      .isEmpty(),
+              QStringLiteral("clicking a dot re-runs the desktop-side check "
+                             "behind it, whether it has its own row or merged "
+                             "into the relay's"));
+
         // A host with no link of its own reports grey rather than a false
         // outage, so an offline test machine is allowed that verdict here.
         const QString unreachable = window.testApplyDesktopWebsiteProbe(
