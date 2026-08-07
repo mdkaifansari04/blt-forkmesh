@@ -12124,7 +12124,7 @@ static QString hashForEachRefOutput(const QByteArray &out)
 // sha256 over the canonical heads+tags advertisement of a bare mirror (see
 // hashForEachRefOutput). Synchronous; refreshRepoPinBanner runs the same git
 // command asynchronously to avoid blocking the UI thread.
-QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
+QString MainWindow::mirrorStateHash(const QString &mirrorPath)
 {
     if (mirrorPath.trimmed().isEmpty())
         return QString();

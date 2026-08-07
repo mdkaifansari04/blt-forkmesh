@@ -31211,6 +31211,63 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
     return "", ""
 
 
+async def _collaboration_source_online(env, owner, repo):
+    """Return whether the canonical repository device has a fresh endpoint.
+
+    Mirror intake is failover, not a race with the source of truth.  A web
+    submission wakes both kinds of node, and without this preference whichever
+    GET reached D1 first leased and permanently drained the row.  That let one
+    mirror create the authoritative collaboration commit while an online source
+    missed the submission entirely.  Use the same signed endpoint-health facts
+    as public routing; on lookup failure stay available and let a mirror intake.
+
+    Liveness comes from the freshness window, not from trusting the source
+    forever: a wedged or killed node stops renewing its signed health lease, so
+    `checked_at` goes stale within HTTPS_MIRROR_STATUS_FRESH_MS and mirrors
+    resume intake on their own.  That bound is why deferring here cannot strand
+    a submission the way an unbounded "source owns it" rule would.
+    """
+    try:
+        context = await _https_mirror_public_context(env, owner, repo)
+        source_node = clean_string(
+            (context or {}).get("sourceNode", ""), MAX_NODE_NAME
+        ).strip().lower()
+        if not valid_node_name(source_node):
+            return False
+        row = await d1_first(
+            env,
+            "SELECT 1 AS online FROM mirror_https_endpoints "
+            "WHERE lower(node_name)=? AND checked_at>=? AND healthy=1 "
+            "AND integrity='ok' AND abuse_blocked=0 LIMIT 1",
+            source_node,
+            int(Date.now()) - HTTPS_MIRROR_STATUS_FRESH_MS,
+        )
+        return bool(row and row.get("online"))
+    except Exception:
+        return False
+
+
+async def _deferred_mirror_intake(env, owner, repo, signing_key, mirror_node):
+    """Response telling an authorized mirror to stand down, else None.
+
+    Deliberately a 200 with nothing pending rather than a 403: the desktop
+    treats a rejected mirror drain as a misconfiguration, logging "the relay
+    rejected this node's signed mirror issue intake" and slowing retries to
+    hours.  Standing down is the normal, healthy state whenever the source of
+    truth is up, so it must read as an empty queue, not as a refusal.
+    """
+    if not signing_key or not await _collaboration_source_online(
+            env, owner, repo):
+        return None
+    return json_response({
+        "ok": True,
+        "pending": [],
+        "mirrorIntake": True,
+        "mirror": mirror_node,
+        "sourceOnline": True,
+    })
+
+
 async def _claim_issue_inbox(
         env, repo_bi, signing_key, mirror_only=False):
     """Lease every currently available row to one authorized desktop device.
@@ -31679,6 +31736,13 @@ async def issues_handler(env, request, owner, repo):
             signing_key, mirror_node = (
                 await _authorized_mirror_issue_signing_key(
                     env, request, owner, repo))
+            # The canonical host gets first responsibility while it is online.
+            # Mirrors remain the durable failover once its signed health lease
+            # expires, rather than racing it for (and deleting) this queue.
+            deferred = await _deferred_mirror_intake(
+                env, owner, repo, signing_key, mirror_node)
+            if deferred:
+                return deferred
         else:
             signing_key = await _authorized_repo_inbox_signing_key(
                 env, request, owner, repo)
@@ -31900,6 +31964,10 @@ async def pulls_handler(env, request, owner, repo):
             signing_key, mirror_node = (
                 await _authorized_mirror_issue_signing_key(
                     env, request, owner, repo))
+            deferred = await _deferred_mirror_intake(
+                env, owner, repo, signing_key, mirror_node)
+            if deferred:
+                return deferred
             claimant_bi = await _claim_collaboration_inbox_on_mirror(
                 env, "pull_inbox", repo_bi, signing_key)
             if not claimant_bi:
@@ -32037,6 +32105,10 @@ async def discussions_handler(env, request, owner, repo):
             signing_key, mirror_node = (
                 await _authorized_mirror_issue_signing_key(
                     env, request, owner, repo))
+            deferred = await _deferred_mirror_intake(
+                env, owner, repo, signing_key, mirror_node)
+            if deferred:
+                return deferred
             claimant_bi = await _claim_collaboration_inbox_on_mirror(
                 env, "discussion_inbox", repo_bi, signing_key)
             if not claimant_bi:
@@ -39372,6 +39444,14 @@ async def _https_mirror_public_context(env, owner, repo):
         return {
             "owner": canonical_owner,
             "repo": canonical_repo,
+            # The canonical local-node record is the only collaboration writer
+            # while its signed endpoint health is fresh.  Consumers must not
+            # infer this from the first eligible routing node: mirrors can be
+            # fresher than the source and participate in the same cursor ring.
+            "sourceNode": clean_string(
+                canonical.get("machineName") or canonical.get("owner", ""),
+                MAX_NODE_NAME,
+            ).strip().lower(),
             "nodes": allowed,
             # Every node publishing a record in this mirror group, including
             # the ones the state-pin gate currently excludes from serving.
