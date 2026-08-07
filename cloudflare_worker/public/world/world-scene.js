@@ -10756,6 +10756,46 @@ function repositoryFollowerIconTexture(THREE, follower, accent, image = null) {
   });
 }
 
+// How long a freshly risen portal keeps shimmering while its size tree is
+// still being assembled. A map that never arrives fades out instead of leaving
+// a permanent decoration on a repository nothing is happening to.
+const REPOSITORY_SPARKLE_MS = 11_000;
+
+// The motes that orbit a portal while its size map is being built. Seeds are
+// carried on the object so the animation loop can move every mote from one
+// buffer write per frame instead of allocating.
+function makeRepositorySizeMapSparkle(THREE, radius, label) {
+  const count = 26;
+  const positions = new Float32Array(count * 3);
+  const seeds = new Float32Array(count * 3);
+  for (let index = 0; index < count; index += 1) {
+    const angle = (index / count) * Math.PI * 2;
+    // Radius, vertical phase, and angular speed. The staggered radii read as a
+    // shell of dust around the disk rather than a single flat ring.
+    seeds[index * 3] = radius * (1.06 + (index % 5) * 0.16);
+    seeds[index * 3 + 1] = angle;
+    seeds[index * 3 + 2] = 0.9 + (index % 7) * 0.14;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const sparkle = new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
+      color: "#a5f3fc",
+      size: 0.17,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  sparkle.name = `repository-size-map-sparkle:${label}`;
+  sparkle.position.z = 0.14;
+  sparkle.userData.repositorySparkleSeeds = seeds;
+  return sparkle;
+}
+
 function makeRepositoryFollowerIcon(THREE, follower) {
   const seed = repositoryFollowerSeed(follower);
   const accent =
@@ -16332,6 +16372,7 @@ export function createWorldScene({
   onOfficeMovement = () => {},
   onOfficeElevatorSound = () => {},
   onLocationChange = () => {},
+  onRepositoryDistrictEnter = () => {},
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
@@ -23972,6 +24013,17 @@ export function createWorldScene({
   const memberFacts = new Map();
   const repositoryPortals = new Map();
   const repositoryPortalBornAt = new Map();
+  // Sparkle deadline per portal key. A portal that is still waiting for its
+  // size tree shimmers until this timestamp; the map landing rebuilds the
+  // layer without a sparkle, and a map that never arrives simply fades out.
+  const repositorySparkleUntil = new Map();
+  // The repository district loads nothing until a character stands on its
+  // ground circle. The scene reports that arrival once; the shell owns every
+  // request that follows.
+  let repositoryDistrictEntered = false;
+  // Set by the shell the moment it starts the deferred catalog read, so the
+  // first portals to arrive rise out of the ground instead of appearing.
+  let repositoryRevealPending = false;
   const emoteSprites = [];
   const rewardFlights = [];
   const pushSurges = [];
@@ -25014,7 +25066,32 @@ export function createWorldScene({
     return false;
   }
 
+  // The repository catalog, its imports, and every hosted size map are the
+  // heaviest reads in the World, and most visits never walk east at all. None
+  // of them are requested until a character is actually standing on the
+  // repositories ground circle, which is what this reports — exactly once.
+  function updateRepositoryDistrictArrival() {
+    if (repositoryDistrictEntered) return;
+    const distance = Math.hypot(
+      player.position.x - REPOSITORY_ISLAND_CENTER_X,
+      player.position.z,
+    );
+    if (distance > REPOSITORY_GROUND_RADIUS) return;
+    repositoryDistrictEntered = true;
+    onRepositoryDistrictEnter();
+  }
+
+  // Called by the shell when it begins the deferred catalog read, whether the
+  // trigger was the ground circle or the repositories panel. Portals built
+  // after this point rise and shimmer instead of popping into the ring.
+  function beginRepositoryDistrictReveal() {
+    repositoryDistrictEntered = true;
+    repositoryRevealPending = true;
+    return true;
+  }
+
   function nearestLandmark() {
+    updateRepositoryDistrictArrival();
     if (
       !["town-square", "east", "central", "west"].includes(currentSpace)
     ) {
@@ -31615,27 +31692,39 @@ export function createWorldScene({
         Math.sin(angle) * ringRadius,
       );
       node.rotation.y = -angle - Math.PI / 2;
-      if (
-        ["external-import", "hosted-import", "bulk-import"].includes(
-          record.source,
-        ) &&
-        !previousPortalKeys.has(record.key)
-      ) {
-        const importedBefore = records
+      // A portal rises when it is genuinely new to the ring: a fresh import, or
+      // the whole district arriving at once because a character just walked
+      // onto the repositories circle. The district reveal stages tightly so a
+      // full catalog reads as one wave rather than a several-minute queue.
+      const risesOnArrival =
+        !previousPortalKeys.has(record.key) &&
+        (repositoryRevealPending ||
+          ["external-import", "hosted-import", "bulk-import"].includes(
+            record.source,
+          ));
+      if (risesOnArrival) {
+        const risingBefore = records
           .slice(0, index)
           .filter(
             (candidate) =>
-              ["external-import", "hosted-import", "bulk-import"].includes(
-                candidate.source,
-              ) &&
-              !previousPortalKeys.has(candidate.key),
+              !previousPortalKeys.has(candidate.key) &&
+              (repositoryRevealPending ||
+                ["external-import", "hosted-import", "bulk-import"].includes(
+                  candidate.source,
+                )),
           ).length;
-        repositoryPortalBornAt.set(
+        const bornAt =
+          performance.now() +
+          risingBefore * (repositoryRevealPending ? 90 : 320);
+        repositoryPortalBornAt.set(record.key, bornAt);
+        repositorySparkleUntil.set(
           record.key,
-          performance.now() + importedBefore * 320,
+          bornAt + REPOSITORY_SPARKLE_MS,
         );
         node.scale.setScalar(reducedMotion ? 1 : 0.015);
       }
+      // The size tree has landed, so this portal has nothing left to build.
+      if (record.sizeTree) repositorySparkleUntil.delete(record.key);
       const face = new THREE.Group();
       face.name = `repository-portal-face:${record.owner}/${record.name}`;
       face.scale.setScalar(portalDensityScale);
@@ -31692,6 +31781,19 @@ export function createWorldScene({
         expandedProfile.add(ring);
       });
       face.add(expandedProfile);
+      // Still waiting on this repository's size tree. Shimmer while the map is
+      // assembled — the wedges below replace the shimmer the moment it lands.
+      const sparkleUntil = repositorySparkleUntil.get(record.key) || 0;
+      if (!reducedMotion && !record.sizeTree && performance.now() < sparkleUntil) {
+        const sparkle = makeRepositorySizeMapSparkle(
+          THREE,
+          nodeRadius,
+          `${record.owner}/${record.name}`,
+        );
+        sparkle.userData.repositorySparkleUntil = sparkleUntil;
+        face.add(sparkle);
+        node.userData.repositorySparkle = sparkle;
+      }
       if (record.termsFlagged) {
         const policyFlag = new THREE.Group();
         policyFlag.name =
@@ -31957,6 +32059,12 @@ export function createWorldScene({
         key: record.key,
         record,
       });
+    });
+    // The district has now risen once. Later catalog refreshes are ordinary
+    // updates again, so only genuinely new imports get the arrival animation.
+    repositoryRevealPending = false;
+    repositorySparkleUntil.forEach((_, key) => {
+      if (!repositoryPortals.has(key)) repositorySparkleUntil.delete(key);
     });
 
     layer.userData.repositoryCatalogLayer = true;
@@ -35405,6 +35513,48 @@ export function createWorldScene({
           repositoryPortalBornAt.delete(key);
         }
       });
+      // Motes circling a portal whose size tree is still being assembled. They
+      // fade in with the portal, twinkle while the map builds, and fade out on
+      // their own if the map never arrives, so a stalled mirror is never left
+      // wearing a permanent celebration.
+      if (worldElementEnabled("repository-portals")) {
+        repositoryPortals.forEach(({ group, key }) => {
+          const sparkle = group.userData.repositorySparkle;
+          if (!sparkle) return;
+          const seeds = sparkle.userData.repositorySparkleSeeds;
+          const until = sparkle.userData.repositorySparkleUntil || 0;
+          const remaining = until - time;
+          if (remaining <= 0 || !seeds) {
+            if (sparkle.visible) {
+              sparkle.visible = false;
+              sparkle.material.opacity = 0;
+              repositorySparkleUntil.delete(key);
+            }
+            return;
+          }
+          sparkle.visible = true;
+          const born = repositoryPortalBornAt.get(key);
+          const rising = born ? clamp((time - born) / 1050, 0, 1) : 1;
+          // Fade out over the last second so the shimmer never cuts off.
+          sparkle.material.opacity =
+            0.9 * rising * clamp(remaining / 1000, 0, 1);
+          const positions = sparkle.geometry.attributes.position;
+          const array = positions.array;
+          for (let index = 0; index < array.length; index += 3) {
+            const radius = seeds[index];
+            const phase = seeds[index + 1];
+            const speed = seeds[index + 2];
+            const angle = phase + time * 0.0011 * speed;
+            // Breathe the orbit so the motes look like they are still settling
+            // onto a map that has not finished resolving.
+            const breath = 1 + Math.sin(time * 0.0021 + phase) * 0.16;
+            array[index] = Math.cos(angle) * radius * breath;
+            array[index + 1] = Math.sin(angle) * radius * breath;
+            array[index + 2] = Math.sin(time * 0.0035 + phase) * 0.12;
+          }
+          positions.needsUpdate = true;
+        });
+      }
       // Node beacons hold a steady colour and size — no pulse — so a status
       // reads the same in a screenshot as it does live. Only degraded and
       // healing nodes carry a sweep, and it turns rather than fades, so the
@@ -36418,6 +36568,7 @@ export function createWorldScene({
     updateIdentity,
     setInputActive,
     updateRepositoryCatalog,
+    beginRepositoryDistrictReveal,
     updateRepositoryGraph,
     updateRepositoryActivity,
     setRepositoryImportState,
