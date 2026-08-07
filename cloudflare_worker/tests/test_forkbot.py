@@ -373,11 +373,16 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
         "safe_segment": lambda value: str(value or ""),
     }
     if host is not None:
-        runtime["js_fetch"] = host.fetch
+        gateway_fetch = host.fetch
     else:
-        async def offline_fetch(_url):
+        async def gateway_fetch(_url):
             raise RuntimeError("gateway offline")
-        runtime["js_fetch"] = offline_fetch
+    # The gateway read is bounded by a Workers-native AbortSignal rather than
+    # asyncio.wait_for (see tests/test_worker_task_concurrency.py), so the
+    # helper — not the bare fetch — is what forkbot calls.
+    async def js_fetch_with_timeout(url, _init, _timeout_seconds):
+        return await gateway_fetch(url)
+    runtime["js_fetch_with_timeout"] = js_fetch_with_timeout
     ns = _load_forkbot(runtime)
     return _Env(), calls, ns
 
