@@ -7955,6 +7955,7 @@ private:
             {"GIT", "#58a6ff", "git-commit"},
             {"BGTASK", "#8b949e", "gear"},
             {"BGBLOCK", "#f0883e", "stop"},
+            {"BGNOTE", "#6e7681", "note"},
             {"PUBLISH", "#58a6ff", "upload"},
             {"PULL", "#3fb950", "git-pull-request"},
             {"MERGE", "#a371f7", "git-merge"},
@@ -7979,7 +7980,7 @@ private:
 
     // One entry per row of categories() above; the per-lane arrays below and the
     // compact grid are both sized from it.
-    static constexpr int kCategoryCount = 31;
+    static constexpr int kCategoryCount = 32;
     static constexpr int categoryCount() { return kCategoryCount; }
     static constexpr int kCompactRows = 3;
     // Enough columns to hold the whole taxonomy in those rows, so adding a
