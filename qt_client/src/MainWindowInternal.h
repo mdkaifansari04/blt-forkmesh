@@ -3859,6 +3859,18 @@ inline bool agentIsCodexProvider(const QString &provider)
     return provider == kCodexProvider;
 }
 
+// How the two CLI-backed providers are named to the user — the same words the
+// composer's agent dropdown and the transcript's hand-off notices use. Anything
+// else (an API provider, an id from a newer build) reads back as itself.
+inline QString cliProviderLabel(const QString &provider)
+{
+    if (agentIsCodexProvider(provider))
+        return QStringLiteral("Codex");
+    if (provider == QLatin1String("claude-code"))
+        return QStringLiteral("Claude Code");
+    return provider;
+}
+
 inline bool agentUsesOpenAiKey(const QString &provider)
 {
     return provider == QLatin1String("openai");
