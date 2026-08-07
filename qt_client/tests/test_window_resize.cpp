@@ -156,10 +156,10 @@ void checkFooterOverlayGeometry(MainWindow &window)
         QStringLiteral("statusVersionButton"));
     check(dock && log && prompt && lights && header && debugBar && version &&
               !log->isVisible() && !debugBar->isVisible() && lights->isDebug() &&
-              lights->lightCount() == 31 &&
+              lights->lightCount() == 32 &&
               prompt->geometry().center().x() > dock->rect().center().x() &&
               prompt->geometry().bottom() == dock->rect().bottom(),
-          QStringLiteral("all 31 labeled log categories start collapsed in the "
+          QStringLiteral("all 32 labeled log categories start collapsed in the "
                          "version-controlled debug bar"));
     if (version && debugBar) {
         version->click();
@@ -427,7 +427,7 @@ void checkFooterOverlayGeometry(MainWindow &window)
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
     check(log && lights && header && log->isVisible() && lights->isVisible() &&
-              header->isVisible() && header->lightCount() == 31 &&
+              header->isVisible() && header->lightCount() == 32 &&
               log->geometry().center().x() < dock->rect().center().x() &&
               log->geometry().bottom() == dock->rect().bottom() &&
               header->geometry().top() >= log->rect().top(),
@@ -6945,11 +6945,24 @@ int main(int argc, char *argv[])
               QStringLiteral("work that was not backgrounded badges as BGBLOCK, "
                              "its own category"));
 
+        // adhoc #1594: a line that only mentions background work is not a
+        // finished run, and counting it as one is what made the BGTASK tally
+        // untrustworthy. It gets its own dim badge instead.
+        window.testLogSystem(QStringLiteral(
+            "scheduling background issue metadata reload after restore"));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("BGNOTE"),
+              QStringLiteral("a line that merely mentions background work badges "
+                             "as BGNOTE, not BGTASK"));
+
         const QStringList labels = window.testLogFilterChipLabels();
         check(labels.contains(QStringLiteral("BGTASK 1")) &&
-                  labels.contains(QStringLiteral("BGBLOCK 1")),
+                  labels.contains(QStringLiteral("BGBLOCK 1")) &&
+                  labels.contains(QStringLiteral("BGNOTE 1")),
               QStringLiteral("the log filter row counts the backgrounded and "
-                             "not-backgrounded halves separately"));
+                             "not-backgrounded halves separately, and background "
+                             "mentions separately again"));
         window.testResetNetworkLog();
     }
 
