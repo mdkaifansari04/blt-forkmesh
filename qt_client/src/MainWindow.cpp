@@ -3,6 +3,7 @@
 #include "MainWindow.h"
 #include "CrashHandler.h"
 #include "MainWindowInternal.h"
+#include "NetworkReplyError.h"
 #include "StartupSplash.h"
 #include "WorldSpeechBridge.h"
 
@@ -305,29 +306,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                 QString status;
                 if (reply->error() != QNetworkReply::NoError) {
                     // Lead with the HTTP status code when the server answered
-                    // (e.g. "ERR 429 …" for a rate-limit) so the log shows *why*
-                    // a request failed, not just that it did. A pure transport
-                    // failure (offline, DNS) has no code — fall back to the
-                    // Qt error string alone.
-                    const QVariant code = reply->attribute(
-                        QNetworkRequest::HttpStatusCodeAttribute);
-                    status = code.isValid()
-                                 ? QStringLiteral("ERR %1 %2")
-                                       .arg(code.toString(), reply->errorString())
-                                 : QStringLiteral("ERR ") + reply->errorString();
-                    // Qt's errorString() for an HTTP error is generic ("server
-                    // replied: <url>") and omits the payload the server actually
-                    // sent — which for a worker 503 is exactly the explanation a
-                    // user needs. peek() (not read()) the first chunk of the body
-                    // so we surface the server's own words without consuming the
-                    // buffer out from under the real reply consumer (adhoc #68).
-                    const QByteArray body = reply->peek(512);
-                    if (!body.isEmpty()) {
-                        const QString snippet = QString::fromUtf8(body).simplified();
-                        if (!snippet.isEmpty())
-                            status += QStringLiteral(" [body: ") + snippet +
-                                      QStringLiteral("]");
-                    }
+                    // (e.g. "ERR 429 Too Many Requests" for a rate-limit) so the
+                    // log shows *why* a request failed, not just that it did.
+                    // networkFailureText() keeps Qt's URL-repeating boilerplate
+                    // out of the line — see NetworkReplyError.h for what that
+                    // boilerplate did to a relay 503 (adhoc #1613).
+                    status = QStringLiteral("ERR ") +
+                             forkmesh::networkFailureText(reply);
+                    // The status code alone rarely says which of a route's
+                    // failure modes fired — for a worker 503 the body
+                    // ({"error":"mirror_unavailable"}) is exactly the
+                    // explanation a user needs. peek() (not read()) the first
+                    // chunk of it so we surface the server's own words without
+                    // consuming the buffer out from under the real reply
+                    // consumer (adhoc #68).
+                    const QString snippet =
+                        forkmesh::networkResponseSnippet(reply->peek(512), 0);
+                    if (!snippet.isEmpty())
+                        status += QStringLiteral(" [body: ") + snippet +
+                                  QStringLiteral("]");
                 } else {
                     const QVariant code = reply->attribute(
                         QNetworkRequest::HttpStatusCodeAttribute);
@@ -338,15 +335,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                     // this request actually return?" without needing
                     // devtools. peek() (not read()) so the real reply
                     // consumer still gets the full body.
-                    const QByteArray body = reply->peek(512);
-                    if (!body.isEmpty()) {
-                        const QString snippet = QString::fromUtf8(body).simplified();
-                        if (!snippet.isEmpty())
-                            status += QStringLiteral(" [body: ") + snippet +
-                                      QStringLiteral("]");
-                    }
+                    const QString snippet =
+                        forkmesh::networkResponseSnippet(reply->peek(512), 0);
+                    if (!snippet.isEmpty())
+                        status += QStringLiteral(" [body: ") + snippet +
+                                  QStringLiteral("]");
                 }
-                logSystem(QStringLiteral("net %1 %2 %3 \xC2\xB7 %4")
+                // fromUtf8, not QStringLiteral: QStringLiteral concatenates onto
+                // a u"" literal, so each byte of an escaped UTF-8 sequence
+                // becomes its own code point and the separator rendered as the
+                // mojibake "Â·" in the pasted log line (adhoc #1613).
+                logSystem(QString::fromUtf8("net %1 %2 %3 \xC2\xB7 %4")
                               .arg(verb, status, reply->url().toString(),
                                    networkRequestEventFor(reply->url())));
             });

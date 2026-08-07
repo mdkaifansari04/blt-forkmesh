@@ -76,6 +76,7 @@ QString gitTimeoutError(QProcess &process, int waitedMs);
 bool isTransientGitError(const QString &err);
 QString branchDiffErrorHtml(const QString &branch, const QString &err,
                             int attempts);
+QString gitignoreRuleForPath(const QString &relPath);
 }
 } // namespace forkmesh
 
@@ -339,6 +340,63 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   alertsAfterDown,
               QStringLiteral("a degraded or healthy check raises no outage "
                              "alert"));
+
+        // adhoc #1614: the failure this row exists to catch — a Worker
+        // exception behind the edge — throws on a share of requests rather than
+        // all of them, so the once-a-minute probe keeps landing on a good reply
+        // in between. Grading each reply on its own repainted the dot green
+        // seconds after the very same page had failed to load in the app, so a
+        // row that failed inside the remembered window must not go back to
+        // green on the next lucky sample.
+        window.testClearDesktopProbeHistory();
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            500, cloudflareError);
+        check(window.testApplyDesktopWebsiteProbe(
+                  QStringLiteral("desktop_website"), 200, homepage) ==
+                      QStringLiteral("operational") &&
+                  window.testDesktopWebsiteRowStatus(
+                      QStringLiteral("desktop_website")) ==
+                      QStringLiteral("down") &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("down"),
+              QStringLiteral("one page that loads does not clear a site that "
+                             "failed the check a minute ago: the dot stays red "
+                             "while half the recent checks are failures"));
+
+        // …and it does not stay red for ever either. As the good replies pile
+        // up the row steps down to amber ("answering, but not reliably") and
+        // only returns to green once the failure has aged out of the window.
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            200, homepage);
+        const QString whileFlapping = window.testDesktopWebsiteRowStatus(
+            QStringLiteral("desktop_website"));
+        for (int i = 0; i < 8; ++i) {
+            window.testApplyDesktopWebsiteProbe(
+                QStringLiteral("desktop_website"), 200, homepage);
+        }
+        check(whileFlapping == QStringLiteral("degraded") &&
+                  window.testDesktopWebsiteRowStatus(
+                      QStringLiteral("desktop_website")) ==
+                      QStringLiteral("operational") &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("operational"),
+              QStringLiteral("a recovering site fades red to amber to green as "
+                             "the remembered failure ages out"));
+
+        // A desktop that cannot look at all reports nothing either way, so it
+        // must not count as a clean check that dilutes a remembered failure.
+        window.testClearDesktopProbeHistory();
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            500, cloudflareError);
+        for (int i = 0; i < 8; ++i) {
+            window.testApplyDesktopWebsiteProbe(
+                QStringLiteral("desktop_website"), 0, QByteArray(),
+                QStringLiteral("This desktop's own firewall blocked the check"));
+        }
+        check(window.testDesktopWebsiteRowStatus(
+                  QStringLiteral("desktop_website")) == QStringLiteral("down"),
+              QStringLiteral("checks this desktop could not run do not age a "
+                             "real failure out of the window"));
 
         // Rebuild+restart came down from the window-chrome line and Resize came
         // out of the navigation rail: both now sit in the debug bar's own tool
@@ -3606,6 +3664,8 @@ int main(int argc, char *argv[])
             QStringLiteral("agentStartAllButton"));
         QPushButton *stopAll = window.findChild<QPushButton *>(
             QStringLiteral("agentStopAllButton"));
+        QPushButton *updateAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentUpdateAllButton"));
         QPushButton *deleteMerged = window.findChild<QPushButton *>(
             QStringLiteral("agentDeleteMergedButton"));
         QPushButton *hideDetail = window.findChild<QPushButton *>(
@@ -3619,7 +3679,8 @@ int main(int argc, char *argv[])
         QWidget *queueOverlay = window.findChild<QWidget *>(
             QStringLiteral("agentQueueOverlay"));
         check(queueStatus && decrease && increase && startAll && stopAll &&
-                  deleteMerged && hideDetail && claudeTerminal && codexTerminal &&
+                  updateAll && deleteMerged && hideDetail && claudeTerminal &&
+                  codexTerminal &&
                   settingsLimit &&
                   queueOverlay &&
                   queueOverlay->parentWidget() &&
@@ -3627,6 +3688,7 @@ int main(int argc, char *argv[])
                       QStringLiteral("agentsListPane") &&
                   startAll->parentWidget() == queueOverlay &&
                   stopAll->parentWidget() == queueOverlay &&
+                  updateAll->parentWidget() == queueOverlay &&
                   deleteMerged->parentWidget() == queueOverlay &&
                   hideDetail->parentWidget() == queueOverlay &&
                   claudeTerminal->parentWidget() == queueOverlay &&
@@ -3751,6 +3813,44 @@ int main(int argc, char *argv[])
               QStringLiteral("a Queued session missing from the in-memory queue "
                              "is requeued rather than left stuck"));
         window.testRemoveAgentSession(stuckQueued.id);
+    }
+    // Continuing a past session whose CLI cannot start today — the conversation
+    // its resume names has been pruned, the login expired — used to spin
+    // forever: the "has it ever launched?" guard reads the whole transcript, so
+    // the ids left by last week's successful turns kept sending it back to the
+    // queue on every exit. Nothing ever failed and nothing ever ran, which from
+    // the detail page read as Continue/"add" doing nothing at all. Retries are
+    // bounded now, and the CLI's own announcement resets the budget so a real
+    // crash mid-turn still gets its full set of attempts.
+    {
+        AgentSession pastRun;
+        pastRun.id = 133896;
+        pastRun.owner = QStringLiteral("me");
+        pastRun.name = QStringLiteral("r");
+        pastRun.provider = QStringLiteral("claude-code");
+        pastRun.prompt = QStringLiteral("Unresumable past session fixture");
+        pastRun.status = AgentStatus::Failed;
+        window.testAddAgentSession(pastRun);
+        window.testSeedResumeConversationId(
+            pastRun.id, QStringLiteral("11111111-2222-3333-4444-555555555555"),
+            /*codex=*/false);
+        // Two exits are still worth another go; the CLI announcing itself in
+        // between hands back a full budget, and the third exit after that is
+        // where it gives up. Without the reset this second run would open with
+        // a failure instead.
+        const QString spent =
+            window.testReplayCliExitsWithoutResult(pastRun.id, /*codex=*/false, 2);
+        window.testMarkAgentSessionRunning(pastRun.id);
+        const QString afterAnnounce =
+            window.testReplayCliExitsWithoutResult(pastRun.id, /*codex=*/false, 3);
+        const QString reason = window.testAgentSessionLastError(pastRun.id);
+        check(spent == QStringLiteral("qq") &&
+                  afterAnnounce == QStringLiteral("qqf") &&
+                  reason.contains(QStringLiteral("without starting a turn")) &&
+                  reason.contains(QStringLiteral("branch still holds the work")),
+              QStringLiteral("a session whose CLI keeps exiting without a turn "
+                             "fails with a reason instead of requeuing forever"));
+        window.testRemoveAgentSession(pastRun.id);
     }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
@@ -5080,6 +5180,28 @@ int main(int argc, char *argv[])
                   QString("the failure pane shows git's terminal output and a "
                           "Retry link (adhoc #1384, html = %1)")
                       .arg(failHtml.left(120).simplified()));
+        }
+
+        // adhoc #1594: right-clicking a file in the changes panel offers "Add to
+        // .gitignore". The rule it writes has to name that one file — anchored at
+        // the repository root, with glob metacharacters in the name escaped —
+        // rather than quietly becoming a pattern that hides unrelated files too.
+        {
+            check(forkmesh::ui::gitignoreRuleForPath(
+                      QStringLiteral("docs/notes.txt")) ==
+                      QStringLiteral("/docs/notes.txt"),
+                  QStringLiteral("an ignore rule is anchored at the repository "
+                                 "root, so it can't match a same-named file in "
+                                 "another directory (adhoc #1594)"));
+            const QString globbed =
+                forkmesh::ui::gitignoreRuleForPath(QStringLiteral("build/a[1]*.o"));
+            check(globbed == QStringLiteral("/build/a\\[1\\]\\*.o"),
+                  QString("glob characters in a filename are escaped, not left to "
+                          "widen the rule (adhoc #1594, rule = %1)").arg(globbed));
+            check(forkmesh::ui::gitignoreRuleForPath(QStringLiteral("odd name ")) ==
+                      QStringLiteral("/odd name\\ "),
+                  QStringLiteral("a trailing space is escaped so git doesn't strip "
+                                 "it off the pattern (adhoc #1594)"));
         }
 
         // Leave the fixture as the branch/merge tests below expect it.
@@ -7126,7 +7248,7 @@ int main(int argc, char *argv[])
     // that really failed still is, including a 200 carrying {"ok":false,…}.
     {
         window.testResetNetworkLog();
-        window.testLogSystem(QStringLiteral(
+        window.testLogSystem(QString::fromUtf8(
             "net GET 200 [body: {\"ok\":true,\"notifications\":[{\"kind\":"
             "\"operational_alert\",\"title\":\"Mirror node - mirror10 "
             "recovered\",\"body\":\"Down for under a minute. Last failure: "
@@ -7140,7 +7262,7 @@ int main(int argc, char *argv[])
                              "outage is not badged ERROR"));
 
         window.testResetNetworkLog();
-        window.testLogSystem(QStringLiteral(
+        window.testLogSystem(QString::fromUtf8(
             "net POST 200 [body: {\"ok\":false,\"error\":\"forbidden\"}] "
             "https://forkmesh.com/api/notifications \xC2\xB7 ping inbox"));
         stored = window.testNetworkLog();
@@ -7149,7 +7271,7 @@ int main(int argc, char *argv[])
               QStringLiteral("a 200 whose body reports ok:false is still ERROR"));
 
         window.testResetNetworkLog();
-        window.testLogSystem(QStringLiteral(
+        window.testLogSystem(QString::fromUtf8(
             "net GET ERR 503 Service Unavailable [body: {\"ok\":false,"
             "\"error\":\"mirror_unavailable\"}] "
             "https://forkmesh.com/api/repo/jett/forkmesh \xC2\xB7 repo fetch"));
@@ -7158,6 +7280,51 @@ int main(int argc, char *argv[])
                   window.testLogBadgeFor(stored.last()) == QStringLiteral("ERROR"),
               QStringLiteral("a failed reply is still classified from the body "
                              "that explains it"));
+
+        // adhoc #1613: the relay sends no reason phrase and this route's
+        // consumer streams the reply, so a release-blob 503 reaches the log with
+        // neither. What is left is the "ERR" marker — red has to come from that
+        // and not from words that happened to be in Qt's boilerplate.
+        window.testResetNetworkLog();
+        window.testLogSystem(QString::fromUtf8(
+            "net GET ERR 503 https://forkmesh.com/api/repo/forkmesh/forkmesh"
+            "/releases/blob/sha256/c832d0e0 \xC2\xB7 release fetch"));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("ERROR"),
+              QStringLiteral("a failed reply with no reason phrase and no body "
+                             "is still badged ERROR"));
+
+        // …and the marker must be the request's own, read from the status slot
+        // of this line, not quoted out of a successful reply's payload.
+        window.testResetNetworkLog();
+        window.testLogSystem(QString::fromUtf8(
+            "net GET 200 [body: {\"lastSeen\":\"net GET ERR 503\"}] "
+            "https://forkmesh.com/api/repo/jett/forkmesh/mirrors "
+            "\xC2\xB7 mirror sync"));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) != QStringLiteral("ERROR"),
+              QStringLiteral("an ERR marker quoted inside a 200's body does not "
+                             "make the line a failure"));
+        window.testResetNetworkLog();
+    }
+
+    // adhoc #1613: the separator between a verbose net line's URL and the event
+    // that drove it is a real middle dot. Built with QStringLiteral it was not:
+    // that macro concatenates onto a u"" literal, so each byte of the escaped
+    // UTF-8 sequence became its own code point and the pasted log line read
+    // "… Â· release fetch".
+    {
+        window.testResetNetworkLog();
+        window.testLogSystem(QString::fromUtf8(
+            "net GET ERR 503 https://forkmesh.com/api/repo/forkmesh/forkmesh"
+            "/releases/blob/sha256/c832d0e0 \xC2\xB7 release fetch"));
+        const QStringList stored = window.testNetworkLog();
+        check(!stored.isEmpty() && stored.last().contains(QChar(0x00B7)) &&
+                  !stored.last().contains(QChar(0x00C2)),
+              QStringLiteral("the verbose net line separates URL from event "
+                             "with a middle dot, not mojibake"));
         window.testResetNetworkLog();
     }
 
@@ -7337,6 +7504,92 @@ int main(int argc, char *argv[])
                                  "instead of opening the full Log"));
         }
         window.testResetNetworkLog();
+    }
+
+    // adhoc #1611: main reaches an agent's branch only when the fleet toolbar's
+    // "Update all" is pressed. The coalesced diff/worktree refresh behind the
+    // Agents list reports how far behind each branch is and must not merge
+    // anything itself, which it used to do for every idle, clean worktree.
+    QTemporaryDir fleetRepo;
+    if (initGitRepo(fleetRepo)) {
+        const QString fleetBranch = QStringLiteral("agent/adhoc-1611-behind");
+        runGitChecked(fleetRepo.path(), {"branch", fleetBranch});
+        const QString fleetWt = fleetRepo.path() + QStringLiteral("/wt-1611");
+        runGitChecked(fleetRepo.path(), {"worktree", "add", fleetWt, fleetBranch});
+        // A commit of its own, so the branch has to be merged rather than
+        // fast-forwarded, plus a later commit on main to leave it behind by one.
+        {
+            QFile agentFile(fleetWt + QStringLiteral("/agent-work.txt"));
+            agentFile.open(QIODevice::WriteOnly);
+            agentFile.write("agent work\n");
+            agentFile.close();
+        }
+        runGitChecked(fleetWt, {"add", "agent-work.txt"});
+        runGitChecked(fleetWt, {"commit", "-m", "agent work"});
+        {
+            QFile mainFile(fleetRepo.path() + QStringLiteral("/main-work.txt"));
+            mainFile.open(QIODevice::WriteOnly);
+            mainFile.write("main work\n");
+            mainFile.close();
+        }
+        runGitChecked(fleetRepo.path(), {"add", "main-work.txt"});
+        runGitChecked(fleetRepo.path(), {"commit", "-m", "main work"});
+        // An uncommitted edit in the agent's worktree — the normal state of a
+        // session that is mid-task. The batch must protect it, not refuse over it.
+        {
+            QFile pending(fleetWt + QStringLiteral("/agent-work.txt"));
+            pending.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            pending.write("agent work in progress\n");
+            pending.close();
+        }
+        const int fleetIdx = window.testAddLocalRepository(
+            QStringLiteral("me"), QStringLiteral("fleetrepo"), fleetRepo.path());
+        window.testOpenRepository(fleetIdx);
+        QApplication::processEvents();
+        AgentSession behind;
+        behind.id = 161101;
+        behind.owner = QStringLiteral("me");
+        behind.name = QStringLiteral("fleetrepo");
+        behind.prompt = QStringLiteral("Update all fixture");
+        behind.status = AgentStatus::Stopped;
+        behind.branchName = fleetBranch;
+        behind.baseBranch = QStringLiteral("main");
+        window.testAddAgentSession(behind);
+
+        const QString beforeRefresh =
+            gitOutput(fleetWt, {"rev-parse", "HEAD"}).trimmed();
+        window.testRefreshAgentDiffStats();
+        QElapsedTimer refreshSettle;
+        refreshSettle.start();
+        while (refreshSettle.elapsed() < 3000)
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        check(gitOutput(fleetWt, {"rev-parse", "HEAD"}).trimmed() == beforeRefresh,
+              QStringLiteral("the Agents refresh measures how far behind a branch "
+                             "is without merging main into it (adhoc #1611)"));
+
+        QPushButton *updateAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentUpdateAllButton"));
+        window.testUpdateAgentActionState();
+        const bool updateAllEnabled = updateAll && updateAll->isEnabled();
+        if (updateAll)
+            updateAll->click();
+        QApplication::processEvents();
+        const QString mergedCounts =
+            gitOutput(fleetRepo.path(),
+                      {"rev-list", "--left-right", "--count",
+                       QStringLiteral("main...") + fleetBranch});
+        QFile restored(fleetWt + QStringLiteral("/agent-work.txt"));
+        restored.open(QIODevice::ReadOnly);
+        const QByteArray restoredText = restored.readAll();
+        check(updateAllEnabled && mergedCounts.startsWith(QLatin1Char('0')) &&
+                  restoredText.contains("agent work in progress") &&
+                  gitOutput(fleetWt, {"stash", "list"}).isEmpty(),
+              QString("\"Update all\" merges each agent's base into its worktree "
+                      "branch and restores its uncommitted work (enabled=%1 "
+                      "counts=%2 stash=%3)")
+                  .arg(updateAllEnabled)
+                  .arg(mergedCounts, gitOutput(fleetWt, {"stash", "list"})));
+        window.testRemoveAgentSession(behind.id);
     }
 
     // "Merge & clean up" must leave nothing of the run behind: the branch's work

@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
+#include "NetworkReplyError.h"
 
 #include <QFileInfo>
 #include <QVersionNumber>
@@ -3471,18 +3472,45 @@ void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
                     .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
                          QString::fromUtf8(QUrl::toPercentEncoding(name)), hash));
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::readyRead, this, [reply, tmp, hasher]() {
-        const QByteArray chunk = reply->readAll();
+    // When no node is currently seeding this hash the relay answers the blob
+    // route with a short JSON explanation under a 5xx
+    // ({"error":"mirror_unavailable"}), not with artifact bytes. Streaming that
+    // into the CAS temp file would both corrupt the running hash and throw away
+    // the only text that says why the download failed — and because this
+    // consumer drains the reply as it arrives, the shared verbose-network
+    // logger's peek() finds nothing left to quote either. Keep an error body
+    // aside instead, bounded, and report it below (adhoc #1613).
+    auto errorBody = std::make_shared<QByteArray>();
+    auto consume = [reply, tmp, hasher, errorBody](const QByteArray &chunk) {
+        if (chunk.isEmpty())
+            return;
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status >= 400) {
+            const int room = 512 - int(errorBody->size());
+            if (room > 0)
+                errorBody->append(chunk.left(room));
+            return;
+        }
         tmp->write(chunk);
         hasher->addData(chunk);
+    };
+    connect(reply, &QNetworkReply::readyRead, this, [reply, consume]() {
+        consume(reply->readAll());
     });
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, tmp, hasher, index, mirrorPath, hash, blobPath, pending]() {
-                const QByteArray rest = reply->readAll();
-                tmp->write(rest);
-                hasher->addData(rest);
+            [this, reply, tmp, hasher, consume, errorBody, index, mirrorPath,
+             hash, blobPath, pending]() {
+                consume(reply->readAll());
                 const bool ok = reply->error() == QNetworkReply::NoError;
-                const QString netError = reply->errorString();
+                QString netError;
+                if (!ok) {
+                    netError = forkmesh::networkFailureText(reply);
+                    const QString served =
+                        forkmesh::networkResponseSnippet(*errorBody);
+                    if (!served.isEmpty())
+                        netError += QStringLiteral(": ") + served;
+                }
                 reply->deleteLater();
                 tmp->close();
                 const QString partPath = tmp->fileName();

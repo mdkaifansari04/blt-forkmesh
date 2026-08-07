@@ -9361,10 +9361,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   background: #3fb950;
 }
 
-/* Nine traces for the nine health dots, three across so the grid reads in the
-   same order as the orb beside it, with the memory trace spanning the last row
-   because no dot owns it. Each cell is short enough that all ten still fit the
-   collapsed pill's width without a second breakpoint. */
+/* Nine traces for the nine health dots, three across so the first three rows
+   read in the same order as the 3x3 orb beside them, then two rows of renderer
+   detail no dot owns, with the memory trace spanning the last row. Each cell is
+   short enough that all sixteen still fit the collapsed pill's width without a
+   second breakpoint. */
 .world-diagnostics-chart {
   display: grid;
   min-width: 0;
@@ -9456,6 +9457,14 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
      Opening DEBUG still takes the full available width because CHAT closes. */
   .world-diagnostics:not(.world-chat-terminal) {
     width: min(310px, calc(100vw - 92px));
+  }
+
+  /* Two extra rows of traces would take a phone's whole lower screen, so the
+     closed pill keeps the nine dot traces plus memory here; opening DEBUG
+     brings the renderer detail traces back. */
+  .world-diagnostics:not([open])
+    .world-diagnostics-chart-metric[data-world-diagnostics-chart-detail] {
+    display: none;
   }
 }
 
