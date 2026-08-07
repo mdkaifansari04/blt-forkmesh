@@ -23,8 +23,11 @@ def test_all_six_model_symbols_are_world_assets():
 
 
 def test_task_sync_carries_model_effort_and_live_qt_status_into_world():
-    assert 'QStringLiteral("/agent-status")' in QT_AGENTS
-    assert 'kOrgTaskAgentStatusProof' in QT_AGENTS
+    # One batched write for the whole fleet, not one request per session: the
+    # per-session burst on restart was rate-limited by the relay (adhoc #1618).
+    assert 'QStringLiteral("/api/tasks/agent-status")' in QT_AGENTS
+    assert 'kOrgTaskAgentStatusBatchProof' in QT_AGENTS
+    assert 'QStringLiteral("statuses"), statuses' in QT_AGENTS
     assert '{QStringLiteral("status"), session.status}' in QT_AGENTS
     assert 'world.updateDesktopAgentBots?.(' in TASKS
     assert 'async refreshDesktopAgentBots()' in APP

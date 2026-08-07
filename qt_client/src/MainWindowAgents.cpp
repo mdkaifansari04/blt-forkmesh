@@ -14168,31 +14168,101 @@ void MainWindow::syncOrgTaskAgentStatus(int sessionId)
         return;
     if (m_orgTaskAgentStatusSent.value(sessionId) == status)
         return;
+    // Claim the state now so a second reload in the same turn doesn't queue the
+    // row twice; the flush puts it back if the relay refuses the write.
+    m_orgTaskAgentStatusSent.insert(sessionId, status);
+    m_orgTaskAgentStatusPending.insert(sessionId, status);
+    // reloadAgents() walks every session, so the first reload after launch lands
+    // here once per session — seventeen signed POSTs in the same millisecond,
+    // most of which the relay answered 429 to (adhoc #1618). Coalesce the burst
+    // into the single batched write below on the next event-loop turn.
+    if (m_orgTaskAgentStatusFlushQueued)
+        return;
+    m_orgTaskAgentStatusFlushQueued = true;
+    QTimer::singleShot(0, this, &MainWindow::flushOrgTaskAgentStatus);
+}
+
+void MainWindow::flushOrgTaskAgentStatus()
+{
+    m_orgTaskAgentStatusFlushQueued = false;
+    const QHash<int, QString> pending = m_orgTaskAgentStatusPending;
+    m_orgTaskAgentStatusPending.clear();
+    if (pending.isEmpty() || !m_networkAccess)
+        return;
+
+    // Re-resolve each session: queuing happened turns ago and m_agentSessions
+    // may have been rebuilt since (the git-pump UAF family, adhoc #106/#119).
+    QJsonArray statuses;
+    QList<QPair<int, QString>> sent;
+    for (auto it = pending.cbegin(); it != pending.cend(); ++it) {
+        const AgentSession *session = findAgentSession(it.key());
+        if (!session || session->orgTaskId.isEmpty() ||
+            isExternalSession(it.key())) {
+            // Nothing to report against: forget the claim rather than leave a
+            // status recorded as published.
+            if (m_orgTaskAgentStatusSent.value(it.key()) == it.value())
+                m_orgTaskAgentStatusSent.remove(it.key());
+            continue;
+        }
+        statuses.append(QJsonObject{
+            {QStringLiteral("task"), session->orgTaskId},
+            {QStringLiteral("status"), it.value()},
+        });
+        sent.append({it.key(), it.value()});
+    }
+    if (statuses.isEmpty())
+        return;
 
     QUrl url = catalogApiUrl();
-    url.setPath(QStringLiteral("/api/tasks/") + session->orgTaskId +
-                QStringLiteral("/agent-status"));
+    url.setPath(QStringLiteral("/api/tasks/agent-status"));
     url.setQuery(QString());
     url.setFragment(QString());
     QNetworkRequest request;
-    if (!authenticateOrgTaskRequest(url, request, kOrgTaskAgentStatusProof,
-                                    session->orgTaskId))
+    // The batch proof names no task: the ids ride in the body and the relay
+    // re-checks ownership for each one exactly as it does for a single write.
+    if (!authenticateOrgTaskRequest(url, request, kOrgTaskAgentStatusBatchProof,
+                                    QString())) {
+        for (const QPair<int, QString> &entry : std::as_const(sent))
+            if (m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
+                m_orgTaskAgentStatusSent.remove(entry.first);
         return;
-    m_orgTaskAgentStatusSent.insert(sessionId, status);
+    }
     QNetworkReply *reply = m_networkAccess->post(
         request,
-        QJsonDocument(QJsonObject{{QStringLiteral("status"), status}})
+        QJsonDocument(QJsonObject{{QStringLiteral("statuses"), statuses}})
             .toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, sessionId, status] {
-                const int response =
-                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
-                        .toInt();
-                reply->deleteLater();
-                if ((response < 200 || response >= 300) &&
-                    m_orgTaskAgentStatusSent.value(sessionId) == status)
-                    m_orgTaskAgentStatusSent.remove(sessionId);
-            });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, sent] {
+        const int response =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray payload = reply->readAll();
+        reply->deleteLater();
+        if (response >= 200 && response < 300) {
+            // Per-entry outcomes: a task the relay refused (row deleted, no
+            // longer agent work) is dropped from the cache so a later status
+            // change is still attempted.
+            QHash<QString, bool> ok;
+            for (const QJsonValue &value :
+                 QJsonDocument::fromJson(payload)
+                     .object()
+                     .value(QStringLiteral("results"))
+                     .toArray())
+                ok.insert(value.toObject().value(QStringLiteral("task")).toString(),
+                          value.toObject().value(QStringLiteral("ok")).toBool());
+            for (const QPair<int, QString> &entry : std::as_const(sent)) {
+                const AgentSession *session = findAgentSession(entry.first);
+                if (session && !ok.value(session->orgTaskId, true) &&
+                    m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
+                    m_orgTaskAgentStatusSent.remove(entry.first);
+            }
+            return;
+        }
+        // Rate limit, offline, signed-out, or a relay too old to know the batch
+        // path: let the next reload re-queue them. A retry is still one request
+        // for the whole fleet, never one per session.
+        for (const QPair<int, QString> &entry : std::as_const(sent))
+            if (m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
+                m_orgTaskAgentStatusSent.remove(entry.first);
+    });
 }
 
 void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followUp)

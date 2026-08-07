@@ -35,10 +35,12 @@ CONSTANTS = {
     "ORG_TASK_OPEN_PROOF",
     "ORG_TASK_COMPLETE_PROOF",
     "ORG_TASK_AGENT_STATUS_PROOF",
+    "ORG_TASK_AGENT_STATUS_BATCH_PROOF",
     "ORG_TASK_LIST_PROOF",
     "ORG_TASK_DELETE_PROOF",
     "ORG_TASK_COMPLETE_RE",
     "ORG_TASK_AGENT_STATUS_RE",
+    "ORG_TASK_AGENT_STATUS_BATCH_RE",
     "ORG_TASK_COLLECTION_RE",
     "ORG_TASK_ITEM_RE",
 }
@@ -188,6 +190,40 @@ def test_open_and_complete_proofs_authorize_their_own_operation():
             "ORG_TASK_COMPLETE_PROOF", resource=TASK_ID))))
     assert account_bi == "bi:alice"
     assert record["name"] == "alice"
+
+
+def test_agent_status_batch_proof_authorizes_only_the_fleet_write():
+    """adhoc #1618: one signed write reports every run, and nothing else."""
+
+    namespace, env = _harness({"alice": _user()})
+    resolve = namespace["_org_task_signed_session"]
+    batch_path = "/api/tasks/agent-status"
+
+    account_bi, record = asyncio.run(resolve(env, _Request(
+        url=_signed_url(
+            namespace, batch_path, "ORG_TASK_AGENT_STATUS_BATCH_PROOF"))))
+    assert account_bi == "bi:alice"
+    assert record["name"] == "alice"
+
+    # The batch proof opens no task, closes none, deletes none, and reads
+    # nothing — and no other proof stands in for it.
+    for path, proof in (
+        ("/api/tasks", "ORG_TASK_AGENT_STATUS_BATCH_PROOF"),
+        ("/api/tasks/%s/complete" % TASK_ID, "ORG_TASK_AGENT_STATUS_BATCH_PROOF"),
+        (batch_path, "ORG_TASK_OPEN_PROOF"),
+        (batch_path, "ORG_TASK_AGENT_STATUS_PROOF"),
+        (batch_path, "ORG_TASK_LIST_PROOF"),
+    ):
+        assert asyncio.run(resolve(env, _Request(
+            url=_signed_url(namespace, path, proof)))) == ("", None), (path, proof)
+
+    # Nor is the batch path readable or deletable with any signature.
+    for method in ("GET", "DELETE"):
+        assert asyncio.run(resolve(env, _Request(
+            method=method,
+            url=_signed_url(
+                namespace, batch_path,
+                "ORG_TASK_AGENT_STATUS_BATCH_PROOF")))) == ("", None), method
 
 
 def test_completion_proof_is_bound_to_the_task_it_names():
@@ -433,7 +469,8 @@ def test_desktop_and_worker_agree_on_the_canonical_proof_strings():
         ENTRY.parents[2] / "qt_client" / "src" / "MainWindowInternal.h"
     ).read_text(encoding="utf-8")
     for proof in ("forkmesh-org-task-open-v1", "forkmesh-org-task-complete-v1",
-                  "forkmesh-org-task-list-v1", "forkmesh-org-task-delete-v1"):
+                  "forkmesh-org-task-list-v1", "forkmesh-org-task-delete-v1",
+                  "forkmesh-org-task-agent-status-batch-v1"):
         assert '"%s"' % proof in ENTRY_TEXT
         assert '"%s"' % proof in qt
 
