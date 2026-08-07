@@ -780,6 +780,27 @@ verify_split_site_workers() {
     echo "Verified: forkmesh-www serves the marketing documents, forkmesh-world serves the World, and the relay keeps /, auth, RSS, dashboard and APIs."
 }
 
+# Cloudflare's Worker script-settings endpoint — the one `secret bulk` PATCHes —
+# intermittently answers HTTP 500 with "[code: 10013] An unknown error has
+# occurred" after ~30 seconds. Seen live: the GET of that same settings object
+# returned 200 milliseconds earlier and the byte-identical payload published
+# fine on the next run, so this is a server-side blip, not a rejected payload.
+# Wrangler never retries a PATCH, so recognise the transient shapes here and let
+# push_secrets re-send the WHOLE atomic update (still one Worker version per
+# successful attempt — never a per-secret `secret put` fan-out).
+_secret_bulk_error_is_transient() {
+    case "$1" in
+        *"code: 10013"*|\
+        *"Internal Server Error"*|*"Bad Gateway"*|*"Service Unavailable"*|\
+        *"Gateway Time-out"*|*"Gateway Timeout"*|\
+        *"fetch failed"*|*"socket hang up"*|*"ECONNRESET"*|*"ETIMEDOUT"*|\
+        *"EAI_AGAIN"*|*"Client network socket disconnected"*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 # Push every KEY=VALUE in .env.production to the deployed Worker as a SECRET.
 # Idempotent (re-running updates values) and persists across redeploys. Requires
 # the Worker to already exist, so run it after `pywrangler deploy`. Send the
@@ -943,9 +964,48 @@ PYEOF
         # SPLIT_SECRET_WORKER retargets the same bulk update at a split
         # Worker (forkmesh-api) that shares this application and its secret
         # set; unset, it addresses the relay from wrangler.toml as always.
-        pywrangler secret bulk --env "" ${SPLIT_SECRET_WORKER:+--name "$SPLIT_SECRET_WORKER"} "$secret_bulk_file"
+        #
+        # Re-send the identical payload when Cloudflare returns one of the
+        # transient failures above: the update is a single atomic PATCH, so a
+        # retry is idempotent and still publishes exactly one Worker version.
+        # A payload/auth/permission rejection is NOT retried — it would fail
+        # the same way four times and only delay the real error.
+        attempts="${FORKMESH_SECRET_BULK_ATTEMPTS:-4}"
+        backoff="${FORKMESH_SECRET_BULK_BACKOFF:-5}"
+        attempt=1
+        while :; do
+            if bulk_output="$(pywrangler secret bulk --env "" ${SPLIT_SECRET_WORKER:+--name "$SPLIT_SECRET_WORKER"} "$secret_bulk_file" 2>&1)"; then
+                if [ -n "$bulk_output" ]; then
+                    printf '%s\n' "$bulk_output"
+                fi
+                if [ "$attempt" -gt 1 ]; then
+                    echo "Bulk secret update succeeded on attempt $attempt/$attempts."
+                fi
+                exit 0
+            fi
+            if [ -n "$bulk_output" ]; then
+                printf '%s\n' "$bulk_output" >&2
+            fi
+            if ! _secret_bulk_error_is_transient "$bulk_output"; then
+                exit 1
+            fi
+            if [ "$attempt" -ge "$attempts" ]; then
+                echo "  hit a transient Cloudflare API error on all $attempts attempts." >&2
+                exit 1
+            fi
+            echo "  attempt $attempt/$attempts hit a transient Cloudflare API error (the" >&2
+            echo "  Worker settings endpoint 5xx'd); re-sending the same bulk update in ${backoff}s..." >&2
+            sleep "$backoff"
+            attempt=$((attempt + 1))
+            backoff=$((backoff * 3))
+        done
     ); then
         echo "ERROR: bulk secret update failed; no per-secret retry was attempted." >&2
+        echo "       (Per-secret 'secret put' is deliberately never used: it publishes one" >&2
+        echo "       Worker version per secret, restarting Durable Objects mid-deploy.)" >&2
+        echo "       If the error above is Cloudflare's '[code: 10013] An unknown error has" >&2
+        echo "       occurred', the settings endpoint is having a bad minute and every" >&2
+        echo "       secret still holds its previous value — re-run './deploy.sh secrets'." >&2
         return 1
     fi
     echo "Pushed $count secret(s) from $ENV_FILE in one bulk update."
