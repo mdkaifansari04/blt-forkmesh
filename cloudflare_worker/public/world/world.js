@@ -6872,6 +6872,14 @@ class ForkMeshWorld extends HTMLElement {
     )
       ? String(options.provider).toLowerCase()
       : "codeberg";
+    // GitLab and Codeberg also accept a bare organization link, which the
+    // submit handler expands into every repository underneath it.
+    const importPlaceholder = (provider) =>
+      provider === "github"
+        ? "https://github.com/owner/repository"
+        : provider === "gitlab"
+          ? "https://gitlab.com/group/repository  ·  https://gitlab.com/group"
+          : "https://codeberg.org/owner/repository  ·  https://codeberg.org/owner";
     const dialog = document.createElement("dialog");
     dialog.dataset.worldCreateRepository = "true";
     dialog.style.cssText = "width:min(620px,calc(100vw - 28px));border:1px solid #77d9ff;border-radius:18px;background:linear-gradient(155deg,#071611,#0b2525);color:#e9fff2;padding:0;box-shadow:0 28px 110px #000c";
@@ -6879,7 +6887,7 @@ class ForkMeshWorld extends HTMLElement {
       <form style="padding:22px;display:grid;gap:16px">
         <header>
           <strong style="font-size:21px">Import repositories into the World</strong>
-          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">Paste one repository link per line, or a Codeberg profile such as codeberg.org/m33. ForkMesh reads provider metadata without storing your token, then portals arrive around the perimeter one at a time.</p>
+          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">Paste one repository link per line, or a whole organization — a GitLab group such as gitlab.com/gitlab-org (subgroups included) or a Codeberg profile such as codeberg.org/m33. ForkMesh reads provider metadata without storing your token, then portals arrive around the perimeter one at a time.</p>
         </header>
         <div role="group" aria-label="Import provider" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
           ${[
@@ -6895,7 +6903,7 @@ class ForkMeshWorld extends HTMLElement {
         </div>
         <input type="hidden" name="provider" value="${initialProvider}" />
         <label style="display:grid;gap:6px;font-size:12px">Repository links
-          <textarea required name="sourceUrls" rows="4" placeholder="https://${initialProvider === "codeberg" ? "codeberg.org" : `${initialProvider}.com`}/owner/repository" style="resize:vertical;padding:11px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit;font:12px/1.5 ui-monospace,monospace"></textarea>
+          <textarea required name="sourceUrls" rows="4" placeholder="${importPlaceholder(initialProvider)}" style="resize:vertical;padding:11px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit;font:12px/1.5 ui-monospace,monospace"></textarea>
         </label>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <label style="display:grid;gap:6px;font-size:12px">Import to
@@ -6942,10 +6950,8 @@ class ForkMeshWorld extends HTMLElement {
               candidate.setAttribute("aria-pressed", String(selected));
               candidate.style.background = selected ? "#77d9ff22" : "#081b18";
             });
-          const host =
-            provider === "codeberg" ? "codeberg.org" : `${provider}.com`;
           form.elements.sourceUrls.placeholder =
-            `https://${host}/owner/repository`;
+            importPlaceholder(provider);
         });
       });
     dialog.querySelector("form")?.addEventListener("submit", async (event) => {
@@ -6983,13 +6989,21 @@ class ForkMeshWorld extends HTMLElement {
             sourceUrl.includes("://") ? sourceUrl : `https://${sourceUrl}`,
           );
         } catch (_) {}
-        const isCodebergNamespace =
+        // A single path segment on a namespace-capable host is an
+        // organization (a GitLab group or a Codeberg profile) rather than a
+        // repository. GitLab subgroups are deliberately not matched here:
+        // gitlab.com/group/thing is ambiguous from the URL alone, and the
+        // group walk already includes every subgroup beneath it.
+        const isNamespace =
           parsed?.protocol === "https:" &&
-          ["codeberg.org", "www.codeberg.org"].includes(
-            parsed.hostname.toLowerCase(),
-          ) &&
+          [
+            "codeberg.org",
+            "www.codeberg.org",
+            "gitlab.com",
+            "www.gitlab.com",
+          ].includes(parsed.hostname.toLowerCase()) &&
           parsed.pathname.split("/").filter(Boolean).length === 1;
-        if (!isCodebergNamespace) {
+        if (!isNamespace) {
           expandedUrls.push(sourceUrl);
           continue;
         }
@@ -7009,7 +7023,11 @@ class ForkMeshWorld extends HTMLElement {
             : [];
           expandedUrls.push(...discovered);
           const item = document.createElement("li");
-          item.textContent = `Found ${discovered.length} public repositories in ${sourceUrl}`;
+          item.textContent =
+            `Found ${discovered.length} repositories in ${sourceUrl}` +
+            (discovery.incomplete
+              ? " (the first page of a larger organization)"
+              : "");
           item.style.color = "#77d9ff";
           results.append(item);
         } catch (error) {
@@ -7024,7 +7042,7 @@ class ForkMeshWorld extends HTMLElement {
       }
       urls = [...new Set(expandedUrls)].slice(0, 200);
       if (!urls.length) {
-        output.textContent = "No public repositories were found.";
+        output.textContent = "No importable repositories were found.";
         submit.disabled = false;
         this.world?.setRepositoryImportState?.({
           active: false,

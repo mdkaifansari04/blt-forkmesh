@@ -7096,8 +7096,8 @@
       if (value) value.placeholder = "/home/you/code/my-project";
       if (hint) hint.textContent = "The desktop node reads this local repo directly — the path never leaves your machine.";
     } else if (provider) {
-      if (value) value.placeholder = "https://github.com/owner/repo, https://gitlab.com/group/repo, or https://codeberg.org/owner/repo";
-      if (hint) hint.textContent = "ForkMesh reads bounded metadata from the provider. Importing does not claim ownership or create a mirror.";
+      if (value) value.placeholder = "https://gitlab.com/group/repo, https://gitlab.com/group, or https://github.com/owner/repo";
+      if (hint) hint.textContent = "ForkMesh reads bounded metadata from the provider. A GitLab group or Codeberg profile link imports the whole organization, subgroups included. Importing does not claim ownership or create a mirror.";
     } else {
       if (value) value.placeholder = "https://github.com/owner/repo.git";
       if (hint) hint.textContent = "ForkMesh clones this URL into a bare mirror you then keep in sync.";
@@ -7133,6 +7133,37 @@
     window.lucide?.createIcons();
   }
 
+  // A bare organization link — a GitLab group or a Codeberg profile — imports
+  // every repository underneath it. GitHub is absent because the relay has no
+  // organization walk for it, and a GitLab subgroup path is not matched because
+  // group/thing is indistinguishable from a repository URL; the group walk
+  // covers subgroups anyway.
+  function providerNamespaceUrl(value) {
+    let parsed;
+    try {
+      parsed = new URL(value.includes("://") ? value : `https://${value}`);
+    } catch (_) {
+      return "";
+    }
+    const namespaceHosts = ["gitlab.com", "www.gitlab.com", "codeberg.org", "www.codeberg.org"];
+    if (parsed.protocol !== "https:" || !namespaceHosts.includes(parsed.hostname.toLowerCase())) return "";
+    return parsed.pathname.split("/").filter(Boolean).length === 1 ? parsed.toString() : "";
+  }
+
+  async function discoverNamespaceRepositories(sourceUrl, providerToken) {
+    const response = await fetch("/api/repository-imports/discover", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ sourceUrl, providerToken, sessionToken: state.session.sessionToken }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    return {
+      repositories: Array.isArray(body.repositories) ? body.repositories : [],
+      incomplete: Boolean(body.incomplete),
+    };
+  }
+
   async function handleNewRepoSubmit() {
     const source = newRepoSource();
     const sourceValue = String($("[data-new-repo-source-value]")?.value || "").trim();
@@ -7151,22 +7182,54 @@
       const mode = $("[data-new-repo-import-mode]")?.value === "stub" ? "stub" : "import";
       const submit = $("[data-new-repo-submit]");
       if (submit) submit.disabled = true;
-      setNewRepoHint("Reading provider metadata…");
+      const namespaceUrl = providerNamespaceUrl(sourceValue);
+      setNewRepoHint(namespaceUrl ? "Listing the organization…" : "Reading provider metadata…");
       try {
-        const response = await fetch("/api/repository-imports", {
-          method: "POST",
-          headers: { "content-type": "application/json", accept: "application/json" },
-          body: JSON.stringify({
-            sourceUrl: sourceValue,
-            providerToken,
-            mode,
-            sessionToken: state.session.sessionToken,
-          }),
-        });
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        let sourceUrls = [sourceValue];
+        let incomplete = false;
+        if (namespaceUrl) {
+          const discovery = await discoverNamespaceRepositories(namespaceUrl, providerToken);
+          sourceUrls = discovery.repositories;
+          incomplete = discovery.incomplete;
+          if (!sourceUrls.length) throw new Error("empty_namespace");
+        }
+        // Imported one at a time so a single unreachable repository reports
+        // itself instead of failing the whole organization.
+        let imported = 0;
+        let failed = 0;
+        let lastLabel = "";
+        for (const [index, sourceUrl] of sourceUrls.entries()) {
+          if (namespaceUrl) {
+            setNewRepoHint(`Importing ${index + 1} of ${sourceUrls.length} — ${sourceUrl}…`);
+          }
+          const response = await fetch("/api/repository-imports", {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json" },
+            body: JSON.stringify({
+              sourceUrl,
+              providerToken,
+              mode,
+              sessionToken: state.session.sessionToken,
+            }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            // A lone URL keeps the precise provider error; inside an
+            // organization walk one refusal must not discard the rest.
+            if (!namespaceUrl) throw new Error(body.error || `HTTP ${response.status}`);
+            failed += 1;
+            continue;
+          }
+          imported += 1;
+          lastLabel = body.repository?.statusLabel || lastLabel;
+        }
+        if (!imported) throw new Error("namespace_import_failed");
         setNewRepoHint(
-          `${body.repository?.statusLabel || "External repository"} created. It remains separate from live mirrors.`,
+          namespaceUrl
+            ? `Imported ${imported} of ${sourceUrls.length} repositories${failed ? ` (${failed} could not be read)` : ""}.`
+              + `${incomplete ? " The organization holds more repositories than one listing returns, so the rest were not reached; import them by their own links or subgroup links." : ""}`
+              + " They remain separate from live mirrors."
+            : `${lastLabel || "External repository"} created. It remains separate from live mirrors.`,
           "good",
         );
         await loadExternalRepositories({ fresh: true });
@@ -7176,6 +7239,9 @@
           code === "provider_rate_limited" ? "The provider rate limit was reached. Try again after its reset time."
             : code.includes("authorization") ? "The provider rejected access. Private repositories require a valid scoped token."
             : code === "unsupported_provider" ? "Use a github.com, gitlab.com, or codeberg.org repository URL."
+            : code === "empty_namespace" ? "That organization listed no importable repositories. A private group needs a token with read access."
+            : code === "namespace_import_failed" ? "None of that organization's repositories could be read."
+            : code === "provider_request_failed" ? "The provider did not recognise that organization. Check the group path, or add a token if it is private."
             : "Could not import provider metadata.",
           "bad",
         );

@@ -68,6 +68,12 @@ MAX_SUGGESTIONS_PER_REPOSITORY = 50
 MAX_PENDING_LOGO_SUGGESTIONS_PER_PROPOSER = 5
 MAX_INVITATIONS_PER_REPOSITORY = 500
 MAX_NAMESPACE_REPOSITORIES = 200
+# Bulk discovery is one request per page, so the page budget is what bounds a
+# namespace walk's cost on the relay's free plan. Four full pages already reach
+# MAX_NAMESPACE_REPOSITORIES; anything beyond that is reported as incomplete
+# rather than silently truncated.
+NAMESPACE_PAGE_SIZE = 50
+NAMESPACE_MAX_PAGES = 4
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _IMPORT_ID_RE = re.compile(r"^ext_[0-9a-f]{24}$")
@@ -232,8 +238,16 @@ def parse_provider_source(value):
     raise ProviderSourceError("unsupported_provider")
 
 
-def parse_codeberg_namespace(value):
-    """Return a safe Codeberg user/organization name from a profile URL."""
+def parse_provider_namespace(value):
+    """Parse an organization/group URL into a bulk-import namespace.
+
+    A GitLab organization is a group, and a group may nest subgroups, so its
+    namespace is a slash-joined path and discovery starts at whichever level
+    was given.  A Codeberg organization (or user) is a single-segment profile
+    path.  The host, scheme, credential, port, query, and segment rules match
+    ``parse_provider_source`` so bulk import cannot become an SSRF proxy
+    either.
+    """
     raw = str(value or "").strip()
     if not raw or len(raw) > 2048:
         raise ProviderSourceError("source_url_required")
@@ -247,16 +261,82 @@ def parse_codeberg_namespace(value):
         port = parsed.port
     except ValueError as exc:
         raise ProviderSourceError("invalid_provider_url") from exc
-    if (
-            host not in ("codeberg.org", "www.codeberg.org")
-            or port not in (None, 443)
-            or parsed.query or parsed.fragment):
-        raise ProviderSourceError("invalid_codeberg_namespace_url")
+    if port not in (None, 443) or parsed.query or parsed.fragment:
+        raise ProviderSourceError("invalid_provider_url")
     parts = [_safe_segment(part) for part in parsed.path.strip("/").split("/")
              if part]
-    if len(parts) != 1 or not parts[0]:
-        raise ProviderSourceError("codeberg_namespace_required")
-    return parts[0]
+    if host in ("codeberg.org", "www.codeberg.org"):
+        if len(parts) != 1 or not parts[0]:
+            raise ProviderSourceError("codeberg_namespace_required")
+        return {"provider": "codeberg", "namespace": parts[0]}
+    if host in ("gitlab.com", "www.gitlab.com"):
+        if not parts or len(parts) > 20 or any(not part for part in parts):
+            raise ProviderSourceError("gitlab_group_required")
+        return {"provider": "gitlab", "namespace": "/".join(parts)}
+    raise ProviderSourceError("unsupported_namespace_provider")
+
+
+def namespace_discovery_paths(provider, namespace, page):
+    """List endpoints that enumerate one namespace's repositories, in order.
+
+    GitLab needs two candidates because a namespace segment names a group for
+    an organization but a user for a personal account, and the two live on
+    different collections; the first that answers is reused for later pages.
+    ``include_subgroups`` is what makes a group import cover the *entire*
+    organization rather than only the projects sitting at its top level.
+    """
+    encoded = quote(namespace, safe="")
+    if provider == "codeberg":
+        return ["/users/%s/repos?limit=%d&page=%d"
+                % (encoded, NAMESPACE_PAGE_SIZE, page)]
+    if provider == "gitlab":
+        paths = [
+            "/groups/%s/projects?include_subgroups=true&archived=false"
+            "&order_by=path&sort=asc&per_page=%d&page=%d"
+            % (encoded, NAMESPACE_PAGE_SIZE, page),
+        ]
+        if "/" not in namespace:
+            # Only a top-level segment can name a user; a subgroup path never
+            # resolves on the user collection, so do not spend a request on it.
+            paths.append(
+                "/users/%s/projects?archived=false&order_by=path&sort=asc"
+                "&per_page=%d&page=%d" % (encoded, NAMESPACE_PAGE_SIZE, page))
+        return paths
+    raise ProviderSourceError("unsupported_namespace_provider")
+
+
+def namespace_repository_url(provider, row, token_present=False):
+    """Return the canonical web URL for one row of a namespace listing.
+
+    Non-public entries are skipped unless a token was supplied: without a
+    credential the provider only lists public repositories anyway, and with one
+    the caller has already proven it may see the rest (the import itself
+    re-verifies that access before recording a private repository).
+    """
+    if not isinstance(row, dict):
+        return ""
+    if provider == "gitlab":
+        public = str(row.get("visibility") or "").lower() == "public"
+        candidate = row.get("web_url") or row.get("http_url_to_repo")
+    else:
+        public = not row.get("private")
+        candidate = row.get("html_url") or row.get("clone_url")
+    if not public and not token_present:
+        return ""
+    return candidate if isinstance(candidate, str) else ""
+
+
+def namespace_contains(namespace, owner):
+    """True when a discovered repository really sits under the namespace.
+
+    Provider listings can include entries from elsewhere (forks, shared
+    projects), and a GitLab subgroup project reports the full subgroup path as
+    its owner, so a prefix match is required rather than equality.
+    """
+    namespace = str(namespace or "").casefold()
+    owner = str(owner or "").casefold()
+    return bool(namespace) and (
+        owner == namespace or owner.startswith(namespace + "/"))
 
 
 def provider_api_origin(provider):
@@ -1716,21 +1796,31 @@ class RepositoryImportService:
         if not actor:
             return self._json({"error": "invalid_session"}, status=401)
         try:
-            namespace = parse_codeberg_namespace(data.get("sourceUrl"))
+            target = parse_provider_namespace(data.get("sourceUrl"))
             token = clean_provider_token(data.get("providerToken"))
         except ProviderSourceError as exc:
             return self._json({"error": str(exc)}, status=400)
+        provider = target["provider"]
+        namespace = target["namespace"]
         urls = []
         seen = set()
         incomplete = False
-        for page in range(1, 5):
-            result = await self.d["provider_fetch"](
-                env, "codeberg",
-                "/users/%s/repos?limit=50&page=%d"
-                % (quote(namespace, safe=""), page),
-                token,
-            )
-            status = int((result or {}).get("status") or 0)
+        # Resolved from the first page that answers and then reused: probing
+        # every candidate collection on every page would double the request
+        # cost of walking a large organization.
+        endpoint = None
+        for page in range(1, NAMESPACE_MAX_PAGES + 1):
+            options = namespace_discovery_paths(provider, namespace, page)
+            result = None
+            status = 0
+            for index in ([endpoint] if endpoint is not None
+                          else range(len(options))):
+                result = await self.d["provider_fetch"](
+                    env, provider, options[index], token)
+                status = int((result or {}).get("status") or 0)
+                if status == 200:
+                    endpoint = index
+                    break
             if status != 200:
                 if not urls:
                     return self._json(
@@ -1744,16 +1834,17 @@ class RepositoryImportService:
                 return self._json(
                     {"error": "invalid_provider_response"}, status=502)
             for row in rows:
-                if not isinstance(row, dict) or row.get("private"):
+                candidate = namespace_repository_url(
+                    provider, row, bool(token))
+                if not candidate:
                     continue
-                candidate = row.get("html_url") or row.get("clone_url")
                 try:
                     source = parse_provider_source(candidate)
                 except ProviderSourceError:
                     continue
                 if (
-                        source["provider"] != "codeberg"
-                        or source["owner"].casefold() != namespace.casefold()
+                        source["provider"] != provider
+                        or not namespace_contains(namespace, source["owner"])
                         or source["canonicalUrl"] in seen):
                     continue
                 seen.add(source["canonicalUrl"])
@@ -1761,11 +1852,16 @@ class RepositoryImportService:
                 if len(urls) >= MAX_NAMESPACE_REPOSITORIES:
                     incomplete = True
                     break
-            if len(urls) >= MAX_NAMESPACE_REPOSITORIES or len(rows) < 50:
+            if (len(urls) >= MAX_NAMESPACE_REPOSITORIES
+                    or len(rows) < NAMESPACE_PAGE_SIZE):
                 break
+        else:
+            # The page budget ran out on a full page, so the organization has
+            # more repositories than this walk reported.
+            incomplete = True
         return self._json({
             "ok": True,
-            "provider": "codeberg",
+            "provider": provider,
             "namespace": namespace,
             "repositories": urls,
             "count": len(urls),
