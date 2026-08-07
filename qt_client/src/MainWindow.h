@@ -534,11 +534,18 @@ public:
         return websiteStatusTargetUrl(statusId);
     }
     // Hands one desktop-side edge probe the answer it would have received and
-    // returns the graded state, so Cloudflare-error grading is exercised
-    // without a live network.
+    // returns how that single reply graded, so Cloudflare-error grading is
+    // exercised without a live network. The dot may show worse than this — see
+    // testDesktopWebsiteRowStatus for what the row actually publishes.
     QString testApplyDesktopWebsiteProbe(const QString &id, int httpStatus,
                                          const QByteArray &body,
                                          const QString &transportError = QString());
+    // What a desktop-measured row publishes to the dots: the newest reply's
+    // verdict widened by the recent-failure memory (adhoc #1614).
+    QString testDesktopWebsiteRowStatus(const QString &id) const;
+    // Forgets the recent verdicts for every desktop-measured row, so a test can
+    // grade a fresh reply without the ones it fed in earlier bleeding through.
+    void testClearDesktopProbeHistory() { m_desktopProbeHistory.clear(); }
     // How many filed pings carry this text in their title — the observable end
     // of the outage alert a failing desktop-side check raises every minute.
     int testNotificationsTitled(const QString &needle) const
@@ -6075,10 +6082,27 @@ private:
         QString reason;
         qint64 minuteTs = 0;
         bool local = false; // measured here rather than reported by the relay
+        // Desktop-measured rows only: how the newest reply graded on its own,
+        // before the recent-failure memory below is folded in. `status` can be
+        // worse than this; the outage alert follows this one, so a lasting
+        // outage still pings exactly once per failing check.
+        QString sampleStatus;
     };
     QList<FooterStatusRow> m_footerRelayStatuses;
     QList<FooterStatusRow> m_footerDesktopStatuses;
     QSet<QString> m_desktopProbesInFlight;
+    // Recent verdicts per desktop-measured row, oldest first (adhoc #1614). An
+    // edge that throws on a large share of requests rather than all of them —
+    // the Cloudflare 1101 the Worker cannot report about itself — still serves
+    // plenty of good responses, so a once-a-minute probe regularly lands on a
+    // healthy one. Grading each reply in isolation repainted the dot green
+    // seconds after the very same page had failed to load, which is what this
+    // memory exists to stop.
+    struct DesktopProbeSample {
+        qint64 ts = 0;
+        QString status;
+    };
+    QHash<QString, QList<DesktopProbeSample>> m_desktopProbeHistory;
     // One outstanding "where is my admin console" lookup at a time, so a
     // double-click on the errors dot does not ask the relay twice.
     bool m_adminConsoleUrlInFlight = false;
