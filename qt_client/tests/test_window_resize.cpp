@@ -550,6 +550,13 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   prompt->height() > dragged.height(),
               QStringLiteral("the corner grip resizes the floating prompt"));
 
+        // The text area itself has to absorb the extra height, not just leave
+        // blank space above the toolbar (adhoc #1625).
+        auto *promptText =
+            window.findChild<QPlainTextEdit *>(QStringLiteral("issueQuickAdd"));
+        check(promptText && promptText->height() > promptText->minimumHeight(),
+              QStringLiteral("resizing the prompt taller grows the text input itself"));
+
         promptDetach->click();
         QApplication::processEvents();
         auto *detachWindow =
@@ -567,6 +574,30 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("pressing detach again brings the prompt back "
                              "inside the app"));
 
+        // The panel is still floating/resized from the drag+grip gestures above
+        // (adhoc #1625): the explicit reset button is a discoverable alternative
+        // to the handle's double-click gesture and should snap it back the same
+        // way.
+        auto *promptReset =
+            window.findChild<QPushButton *>(QStringLiteral("promptResetButton"));
+        check(promptReset != nullptr,
+              QStringLiteral("the prompt has an explicit reset-placement button"));
+        if (promptReset) {
+            promptReset->click();
+            QApplication::processEvents();
+            check(prompt->parentWidget() == dock &&
+                      prompt->geometry().bottom() == dock->rect().bottom(),
+                  QStringLiteral("the reset button snaps the prompt back to the "
+                                 "footer anchor"));
+        }
+
+        // Re-float it once more so the handle's own double-click gesture (the
+        // longer-standing affordance) is still exercised too.
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-80, -100));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease, grabAt + QPoint(-80, -100));
+        QApplication::processEvents();
+
         QMouseEvent snapBack(QEvent::MouseButtonDblClick,
                              QPointF(promptHandle->width() / 2.0,
                                      promptHandle->height() / 2.0),
@@ -578,6 +609,46 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   prompt->geometry().bottom() == dock->rect().bottom(),
               QStringLiteral("double-clicking the handle snaps the prompt back "
                              "to the footer anchor"));
+
+        // Growing the main window should carry a floating composer along with
+        // the corner it's parked near, not leave it stranded at its old
+        // absolute position (adhoc #1625). Re-float it once more for this
+        // check, done last so it can't perturb the pixel-exact anchor checks
+        // above with any offscreen-platform resize rounding.
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-120, -160));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease, grabAt + QPoint(-120, -160));
+        QApplication::processEvents();
+        if (auto *overlayHost = prompt->parentWidget(); overlayHost != dock) {
+            const QSize originalWindowSize = window.size();
+            const int marginRightBefore =
+                overlayHost->width() - (prompt->x() + prompt->width());
+            const int marginBottomBefore =
+                overlayHost->height() - (prompt->y() + prompt->height());
+            window.resize(window.width() + 160, window.height() + 140);
+            QApplication::processEvents();
+            const int marginRightAfter =
+                overlayHost->width() - (prompt->x() + prompt->width());
+            const int marginBottomAfter =
+                overlayHost->height() - (prompt->y() + prompt->height());
+            check(marginRightAfter == marginRightBefore &&
+                      marginBottomAfter == marginBottomBefore,
+                  QString("growing the window keeps the floating prompt pinned "
+                          "to the same corner (right margin %1 -> %2, bottom "
+                          "margin %3 -> %4)")
+                      .arg(marginRightBefore)
+                      .arg(marginRightAfter)
+                      .arg(marginBottomBefore)
+                      .arg(marginBottomAfter));
+            // Restore the window to its prior size: later checks in this suite
+            // assume the standard test window dimensions.
+            window.resize(originalWindowSize);
+            QApplication::processEvents();
+        }
+        if (promptReset) {
+            promptReset->click();
+            QApplication::processEvents();
+        }
     }
 
     window.testSetLogOverlayExpanded(true);

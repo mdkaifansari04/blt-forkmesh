@@ -2505,8 +2505,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Bottom bar nested inside the prompt frame, below the text area (adhoc
     // #99): paperclip and mic at the bottom-left (opposite the send icons),
     // the Auto/Create-issue toggles, the Agent box centred by the stretches on
-    // either side, then the character count immediately left of the send icons.
-    // No bottom margin (adhoc #111) so the row sits flush against the frame.
+    // either side, then the usage gauges immediately left of the send icons.
+    // The character count moved up to the top strip (adhoc #1625). No bottom
+    // margin (adhoc #111) so the row sits flush against the frame.
     // Everything is bottom-aligned (adhoc #114): the send column is two stacked
     // 28px icons, so without it Qt centres the shorter controls in that extra
     // height and they float above the send icons instead of sitting level.
@@ -2526,7 +2527,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_quickAddSlashButton, 0, Qt::AlignBottom);
     bottomBar->addWidget(agentBox, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
-    bottomBar->addWidget(m_quickAddCharCount, 0, Qt::AlignBottom);
     // The tiny Codex + Claude usage gauges sit immediately left of the send
     // icons (adhoc #47), moved down from the top bar so the current 5h/weekly
     // utilisation is visible right where prompts are launched.
@@ -2579,9 +2579,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     // the whole box is exactly as tall as the stacked buttons.
     // Placement strip along the composer's top edge (adhoc #1536): a corner
     // grip on the left resizes the panel, the centre pill drags it anywhere over
-    // the workspace, and the right-hand button pops it out into a window of its
-    // own. Double-clicking the strip puts it back on the footer anchor. It is
-    // deliberately the thinnest row that still gives each of the three a real
+    // the workspace, and the right side carries the characters-remaining count,
+    // an explicit reset button and the pop-out button (adhoc #1625). Double-
+    // clicking the strip also puts it back on the footer anchor. It is
+    // deliberately the thinnest row that still gives each control a real
     // target, so the four prompt lines below it are untouched.
     auto *promptHandle = new QWidget;
     m_promptDragHandle = promptHandle;
@@ -2617,6 +2618,26 @@ QWidget *MainWindow::buildNetworkLogDock()
     promptDragPill->setAttribute(Qt::WA_TransparentForMouseEvents);
     promptHandleRow->addWidget(promptDragPill, 0, Qt::AlignVCenter);
     promptHandleRow->addStretch(1);
+
+    // The characters-remaining count used to sit in the bottom toolbar, jammed
+    // between the agent picker and the usage gauges. It reads more like a size
+    // limit on the box itself, so it now rides the top strip's right side next
+    // to the resize/reset/pop-out controls it is a sibling of.
+    promptHandleRow->addWidget(m_quickAddCharCount, 0);
+
+    // A small, explicit undo for the drag handle's double-click gesture, which
+    // is not discoverable on its own (adhoc #1625): snaps the panel back to its
+    // default corner-anchored placement and size.
+    m_promptResetButton = new QPushButton;
+    m_promptResetButton->setObjectName(QStringLiteral("promptResetButton"));
+    m_promptResetButton->setCursor(Qt::PointingHandCursor);
+    m_promptResetButton->setFixedSize(16, 16);
+    setOcticon(m_promptResetButton, "sync", 10);
+    m_promptResetButton->setToolTip(
+        QStringLiteral("Reset the prompt back to its default size and position"));
+    connect(m_promptResetButton, &QPushButton::clicked, this,
+            &MainWindow::resetPromptOverlayPlacement);
+    promptHandleRow->addWidget(m_promptResetButton, 0);
 
     // Its own name, not the shared ghostButton one: that rule pads 4px/8px,
     // which would swallow a 10px glyph in a 16px button.
@@ -2884,7 +2905,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Only the top inset contributes to the dock height. Its bottom and the
     // prompt's bottom are flush with the workspace, eliminating the blank band
     // that used to sit below the composer.
-    dock->setFixedHeight(promptWrapper->sizeHint().height() + 8);
+    m_promptAnchoredHeight = promptWrapper->sizeHint().height();
+    dock->setFixedHeight(m_promptAnchoredHeight + 8);
     dock->setAttribute(Qt::WA_StyledBackground, false);
     setLogOverlayExpanded(false);
 
@@ -2960,6 +2982,16 @@ void MainWindow::clampPromptOverlayIntoHost()
         size.setHeight(qBound(kPromptMinHeight, size.height(),
                               qMax(kPromptMinHeight, m_globalOverlayHost->height())));
     }
+    // Keep the panel pinned to the corner it's parked near (adhoc #1625): carry
+    // its position by the same amount the workspace grew or shrank, so the
+    // margin to the right/bottom edges stays put across a window resize instead
+    // of the panel sitting wherever its old absolute position happened to land.
+    const QSize hostSize = m_globalOverlayHost->size();
+    if (m_promptOverlayHostSize.isValid() && m_promptOverlayHostSize != hostSize) {
+        m_promptOverlayPos += QPoint(hostSize.width() - m_promptOverlayHostSize.width(),
+                                     hostSize.height() - m_promptOverlayHostSize.height());
+    }
+    m_promptOverlayHostSize = hostSize;
     const QPoint pos(
         qBound(0, m_promptOverlayPos.x(),
                qMax(0, m_globalOverlayHost->width() - size.width())),
@@ -3049,6 +3081,7 @@ void MainWindow::resetPromptOverlayPlacement()
     m_promptOverlayFloating = false;
     m_promptOverlaySize = QSize();
     m_promptOverlayPos = QPoint();
+    m_promptOverlayHostSize = QSize();
     if (auto *dockRow = m_footerDock
                             ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
                             : nullptr) {
@@ -3134,6 +3167,10 @@ bool MainWindow::handlePromptPlacementEvent(QObject *object, QEvent *event)
             m_promptOverlayPos = topLeft;
             m_promptOverlaySize = m_promptOverlayHost->size();
             m_promptOverlayFloating = true;
+            // Forget the last host size the corner-pin tracked (adhoc #1625): it
+            // may be stale from an earlier floating session, and the panel just
+            // seeded a fresh position above that a stale delta would displace.
+            m_promptOverlayHostSize = QSize();
             if (auto *dockRow =
                     m_footerDock
                         ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
@@ -3245,11 +3282,21 @@ void MainWindow::positionGlobalFooterOverlays()
             m_userAvatarNavButton->setToolTip(
                 QStringLiteral("Show the prompt overlay"));
         } else if (anchoredPrompt) {
+            // Undo the floating branch's unbounded cap (below) so the text area
+            // itself is visually pinned to its compact four-line height again.
+            m_issueQuickAdd->setMaximumHeight(m_issueQuickAdd->minimumHeight());
             m_promptOverlayHost->setMinimumSize(0, 0);
             m_promptOverlayHost->setMaximumSize(
                 dockAgentPrompt ? QWIDGETSIZE_MAX : 560, QWIDGETSIZE_MAX);
-            m_promptOverlayHost->setFixedHeight(
-                m_promptWrapper->sizeHint().height());
+            // The cached construction-time height (adhoc #1625), not a live
+            // m_promptWrapper->sizeHint() re-query: once the composer has been
+            // floated and resized, some Qt-internal layout state QPlainTextEdit's
+            // sizeHint() consults no longer matches its construction-time value,
+            // so a live re-query drifted taller than the footer dock's own fixed
+            // height (computed once, at construction, from the same original
+            // hint) and the docked composer stopped sitting flush with the
+            // dock's bottom edge.
+            m_promptOverlayHost->setFixedHeight(m_promptAnchoredHeight);
             m_promptOverlayHost->setSizePolicy(QSizePolicy::Expanding,
                                                QSizePolicy::Fixed);
             m_userAvatarNavButton->setToolTip(
@@ -3263,6 +3310,14 @@ void MainWindow::positionGlobalFooterOverlays()
             m_promptOverlayHost->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
             m_promptOverlayHost->setSizePolicy(QSizePolicy::Expanding,
                                                QSizePolicy::Expanding);
+            // Querying promptWrapper->sizeHint() during construction (to size the
+            // anchored dock) leaves Qt's layout engine caching a resolved
+            // maximumHeight on the text edit itself, even though its size policy
+            // is Expanding — so a floating/resized panel silently stopped growing
+            // the text area at exactly its four-line minimum (adhoc #1625). Clear
+            // it explicitly whenever the panel is free to take the size it's
+            // given.
+            m_issueQuickAdd->setMaximumHeight(QWIDGETSIZE_MAX);
             m_userAvatarNavButton->setToolTip(
                 m_promptOverlayDetached
                     ? QStringLiteral("The prompt is in its own window")

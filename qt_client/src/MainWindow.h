@@ -3243,6 +3243,7 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
+    void syncQuickAddControlsToAgentSession(const AgentSession &session);
     // Rebuild only the detail header's meta lines (identity + issue/PR chips +
     // run Stats) and the toolbar's Branch/Worktree buttons, without a transcript
     // rebuild — used by the live token/cost/run-summary update paths and the
@@ -6384,11 +6385,25 @@ private:
     QWidget *m_promptDragHandle = nullptr;
     QWidget *m_promptResizeGrip = nullptr;
     QPushButton *m_promptDetachButton = nullptr;
+    QPushButton *m_promptResetButton = nullptr;
+    // promptWrapper->sizeHint().height() at construction, the same moment the
+    // footer dock's own fixed height is derived from it. Cached rather than
+    // re-queried on every anchored layout pass: once the composer has been
+    // floated and resized, some Qt-internal layout state QPlainTextEdit's
+    // sizeHint() consults no longer matches its construction-time value, so a
+    // live re-query drifted the anchored height out of sync with the dock's
+    // (fixed, never recomputed) height (adhoc #1625).
+    int m_promptAnchoredHeight = 0;
     QWidget *m_promptDetachWindow = nullptr;
     bool m_promptOverlayFloating = false;
     bool m_promptOverlayDetached = false;
     QPoint m_promptOverlayPos;  // top-left within m_globalOverlayHost
     QSize m_promptOverlaySize;  // user-chosen size; invalid means "auto"
+    // m_globalOverlayHost's size the last time the floating composer's position
+    // was clamped into it; invalid means "not tracked yet". Lets a workspace
+    // resize carry the floating panel along with the edge it was parked near
+    // instead of leaving it stranded at its old absolute position.
+    QSize m_promptOverlayHostSize;
     QRect m_promptDetachGeometry;
     // Live drag/resize state. The grab point is global so it stays meaningful
     // while the panel is reparented mid-gesture.

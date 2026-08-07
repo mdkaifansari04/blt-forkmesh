@@ -8197,6 +8197,13 @@ void MainWindow::showAgentSession(int sessionId)
     // value copy rather than retaining a pointer into that replaceable list.
     const AgentSession sessionSnapshot = *liveSession;
     const AgentSession *session = &sessionSnapshot;
+    // Land the composer on this session's last-used agent/model/mode/speed
+    // (adhoc #1625): switching between two sessions that ran different agents
+    // used to leave the pickers wherever they were last left, so a follow-up
+    // typed right after opening the detail page silently launched under the
+    // wrong provider. The user can still change any of these before sending;
+    // this only sets the default they land on.
+    syncQuickAddControlsToAgentSession(sessionSnapshot);
 
     // Restore a finished/idle Claude Code session's transcript from disk so it
     // survives an app restart — parsed on a worker thread. The first click on a
@@ -8445,6 +8452,34 @@ void MainWindow::showAgentSession(int sessionId)
         }
     }
     updateAgentActionState();
+}
+
+// The reverse of applyComposerSelectionToAgentSession() above: land the
+// composer's agent/model/mode/speed pickers on what this session last ran,
+// rather than leaving them wherever they were left from some other session or
+// launch (adhoc #1625). Purely a UI default — nothing here touches the
+// session record itself, and the user can still change any of these before
+// sending a follow-up.
+void MainWindow::syncQuickAddControlsToAgentSession(const AgentSession &session)
+{
+    if (m_quickAddAgentProvider && !session.provider.isEmpty()) {
+        const int providerIndex = m_quickAddAgentProvider->findData(session.provider);
+        if (providerIndex >= 0)
+            m_quickAddAgentProvider->setCurrentIndex(providerIndex);
+    }
+    if (m_quickAddClaudeModel && !session.model.isEmpty())
+        selectModelComboValue(m_quickAddClaudeModel, session.model);
+    if (m_quickAddModeSelector && !session.mode.isEmpty()) {
+        const int modeIndex = m_quickAddModeSelector->findText(session.mode);
+        if (modeIndex >= 0)
+            m_quickAddModeSelector->setCurrentIndex(modeIndex);
+    }
+    if (!session.strength.trimmed().isEmpty()) {
+        QSettings().setValue(kClaudeEffortSetting,
+                             session.strength.trimmed().toLower());
+        refreshQuickAddSpeedSelector();
+    }
+    refreshQuickAddAgentModelSelector();
 }
 
 void MainWindow::setAgentLogText(int sessionId, const QString &text)
