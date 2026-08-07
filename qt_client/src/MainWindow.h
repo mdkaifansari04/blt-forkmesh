@@ -510,6 +510,10 @@ public:
     {
         return m_cloudLogMonitorRecent;
     }
+    // Is a Wrangler tail actually running? The Monitor box being ticked no
+    // longer implies one (adhoc #1632): the box is on by default and its tail
+    // starts later, only where there is a token to start it with.
+    bool testCloudLogMonitorRunning() const { return cloudLogMonitorRunning(); }
     // adhoc #1626: the viewer is a window of its own now, with an error chart
     // over the stream and a Pause control. These drive it with no Wrangler tail
     // behind it — a line arrives exactly as either tail would deliver it.
@@ -658,6 +662,8 @@ public:
     {
         m_isAdmin = admin;
         updateAdminCrownBadge();
+        // Same pair the heartbeat runs when the flag flips.
+        applyDebugBarStartupPreference();
     }
     bool testUsersNavButtonVisible() const;
     void testShowUsersSection() { showSection(kUsersSectionIndex); }
@@ -1855,7 +1861,9 @@ private:
     // mirror, byte-for-byte identical to the worker's advertised_refs_canonical().
     // The owner signs this on publish and the relay pins it. Empty when the mirror
     // path is unset/unreadable.
-    QString mirrorStateHash(const QString &mirrorPath) const;
+    // Static and free of member state so the mirror-advert worker thread can
+    // fingerprint a mirror without capturing `this`.
+    static QString mirrorStateHash(const QString &mirrorPath);
     // Signed catalog-list URL (adds our viewer token so the relay also returns our
     // own private repos). Shared by fetchCatalogRepos() and refreshRepoPinBanner().
     QUrl catalogListUrl();
@@ -1997,6 +2005,19 @@ private:
     // background and route every Worker error into the log, where the existing
     // ERROR alert raises the same card any other failure gets (adhoc #1615).
     void setCloudLogMonitorEnabled(bool enabled);
+    // Whether a Cloudflare API token is already on hand. The monitor is on by
+    // default (adhoc #1632), so the automatic start has to be able to stay quiet
+    // on a node that has no token rather than greeting every launch with a toast.
+    bool cloudLogMonitorTokenAvailable() const;
+    void startCloudLogMonitorIfConfigured();
+    // Take the monitor down after a failed start or a tail that died, without
+    // recording the climb-down as the user's preference — the stored choice is
+    // still "monitor", so the next launch tries again.
+    void stopCloudLogMonitorAfterFailure();
+    // Open the footer's debug bar at startup when this account asks for it, or
+    // when the preference is unset and the relay says this node is an admin
+    // (adhoc #1632). Idempotent: it acts once per run.
+    void applyDebugBarStartupPreference();
     void readCloudLogMonitorOutput();
     void consumeCloudLogMonitorBytes(const QByteArray &chunk);
     void handleCloudLogMonitorLine(const QString &line);
@@ -5627,8 +5648,9 @@ private:
     QString logBadgeFor(const QString &storedLine) const; // category of a line
     QString logAccentFor(const QString &storedLine) const; // badge colour of a line
     void rebuildLogFilterButtons(); // (re)build the category chip row
-    // "GIT 42" — chip text for a category, count included once it has one.
-    QString logFilterChipLabel(const QString &name, const QString &category) const;
+    // Buffered events in a category (empty category = the whole log), shown on
+    // the chip's corner badge.
+    int logFilterChipCount(const QString &category) const;
     void updateLogFilterChipCounts(); // refresh the counts without rebuilding
     void refreshLogTimelineChart();
     void appendLogTimelineEntry(const QString &storedLine);
@@ -5963,14 +5985,19 @@ private:
     void autoSyncMirrorsIfRelayHealthy();
     // Re-arm the mirror sync timer after interval updates from Settings.
     void restartMirrorSyncTimer();
-    // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
-    // pull it immediately instead of waiting for the next auto-sync tick.
+    // Roster-driven catch-up: when a peer advertises a ref-set fingerprint (or,
+    // for older peers, a HEAD commit) our mirror lacks, pull immediately.
     void syncMirrorsBehindRoster();
     // `git cat-file -e` probe with memoized positive answers, so the roster
     // reconcile doesn't re-spawn git for the same converged tip on every peer
     // hello (adhoc #82).
     bool mirrorHasCommit(const QString &mirrorPath, const QString &commit);
     QSet<QString> m_mirrorCommitsPresent; // "<mirrorPath>\x1f<commit>" seen present
+    // "<repo>\x1f<peer>" -> the last ref fingerprint we already reconciled for
+    // that peer. Ref-set equality is symmetric, so a node that is AHEAD of a
+    // peer differs from it forever; without this, every peer hello would
+    // re-trigger a sync that can never make the two match.
+    QHash<QString, QString> m_mirrorRefsFingerprintActed;
     // Source-of-truth catch-up: online mirrors merge (and drain) web-submitted
     // issues/PRs/discussions directly into the branches they serve, so when a
     // peer advertises commits this node's OWN repo lacks, fast-forward the
@@ -5983,7 +6010,9 @@ private:
     // for the safety sync, so counts and content converge right away.
     void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
-    // mirror the same repo. `commit` is the new HEAD it advanced to.
+    // mirror the same repo. `commit` is its primary HEAD for status display;
+    // the wake-up still fetches all refs because collaboration branches may be
+    // the only refs that changed.
     void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName,
                              const QString &commit);
     // A peer reported it finished pulling "owner/name" up to `commit` — the
@@ -6397,6 +6426,16 @@ private:
     // Version-controlled strip below the one-line status bar. It owns the live
     // resource chart, labeled log counters and newest website minute states.
     QWidget *m_debugBar = nullptr;
+    // The footer's version button is the bar's disclosure control, so showing
+    // the bar at startup means checking it (adhoc #1632). m_debugBarStartupApplied
+    // keeps that a once-per-run decision: an unset preference waits for the
+    // heartbeat that reports admin status, but never re-opens the bar after.
+    QPushButton *m_statusVersionButton = nullptr;
+    bool m_debugBarStartupApplied = false;
+    // Settings' box for that preference. It shows the admin default while
+    // nothing is stored, so it is re-ticked if admin status arrives after the
+    // page was built.
+    QCheckBox *m_debugBarStartupCheck = nullptr;
     // Optional five-line live log tail below the debug bar, and the bar's tool
     // that reveals it. Showing it grows the window by the strip's height rather
     // than taking those lines out of the workspace.
@@ -6409,12 +6448,19 @@ private:
     // as an ERROR line, which raises the same toast as any other failure. The
     // token lives in the child environment only, never in argv or QSettings.
     QCheckBox *m_cloudLogMonitorCheck = nullptr;
+    // Settings' mirror of that box, so the monitor can still be switched off on
+    // a node that keeps the debug bar closed. The two stay in step.
+    QCheckBox *m_cloudLogMonitorSettingCheck = nullptr;
     QProcess *m_cloudLogMonitorProcess = nullptr;
     QByteArray m_cloudLogMonitorBuffer; // partial tail record across reads
     QStringList m_cloudLogMonitorRecent; // rendered backlog for the viewer
     int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
     int m_cloudLogMonitorEvents = 0;     // Worker events seen since then
     bool m_cloudLogMonitorStopping = false; // a deliberate stop, not a crash
+    // Ticked, but with no Cloudflare token to tail with (adhoc #1632). The
+    // automatic start says so in the tooltip rather than unticking the box or
+    // writing a line into the log on every launch of a node that never deploys.
+    bool m_cloudLogMonitorAwaitingToken = false;
     // The Worker log window and the tail it owns when the Monitor box is off
     // (adhoc #1626). Guarded pointers: the window is WA_DeleteOnClose, so these
     // go null on their own when it is closed.

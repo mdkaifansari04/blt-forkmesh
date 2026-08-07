@@ -3255,6 +3255,19 @@ const QString kSolanaLastBalanceSettingPrefix =
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 // Opt-in: show a small rebuild+restart button in the top nav (off by default).
 const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton");
+// Reveal the footer's debug bar at launch instead of waiting for a click on the
+// version button (adhoc #1632). Unset means "follow this account": admins get
+// the bar, everybody else does not, and either can say otherwise in Settings.
+const QString kShowDebugBarOnStartupSetting =
+    QStringLiteral("ui/showDebugBarOnStartup");
+// On by default: the debug bar's Monitor checkbox holds a background Wrangler
+// tail open so a deployed-Worker failure raises its red card without anybody
+// switching it on first (adhoc #1632). Stored, so switching it off sticks.
+const QString kCloudLogMonitorSetting =
+    QStringLiteral("diagnostics/cloudLogMonitor");
+// Launch is busy enough without npx: the monitor's tail starts this long after
+// the window is built rather than during construction.
+constexpr int kCloudLogMonitorStartupDelayMs = 5000;
 // Opt-in: log every HTTP request that flows through the shared network manager
 // to the network log (method + status + URL). Off by default; a diagnostic aid
 // for spotting chatty background traffic (adhoc #74).
@@ -10010,6 +10023,20 @@ public:
         update();
     }
 
+    // Paint this tile in a category colour instead of the rail's neutral grey.
+    // The log's quick-filter row is the log's own legend (adhoc #1633): each
+    // tile has to carry the accent its badge uses in the log body, or the row
+    // reads as an undifferentiated grey wall. An invalid colour — the default —
+    // keeps the plain rail behaviour every other tile in the app has.
+    void setAccentColor(const QColor &accent)
+    {
+        if (m_accent == accent)
+            return;
+        m_accent = accent;
+        update();
+    }
+    QColor accentColor() const { return m_accent; }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -10028,6 +10055,14 @@ protected:
                       : QColor(isChecked() || hovered ? "#1f2328" : "#656d76");
         if (!isEnabled())
             fg = QColor("#6e7681");
+        // An accented tile keeps its category colour at rest (that is what makes
+        // the row a legend); the caption stays in the rail's grey until the tile
+        // is checked or hovered, so the colour reads as "which category" rather
+        // than "which one is selected".
+        const bool accented = m_accent.isValid() && isEnabled();
+        const QColor glyphColor = accented ? m_accent : fg;
+        const QColor captionColor =
+            accented && (isChecked() || hovered) ? m_accent : fg;
 
         if (m_form == Action) {
             // No resting fill or border: the repo header's actions read as
@@ -10041,7 +10076,8 @@ protected:
             }
         } else if (m_form == Tab && isChecked()) {
             p.fillRect(QRect(0, height() - 2, width(), 2),
-                       QColor(dark ? "#2ea043" : "#1f883d"));
+                       accented ? m_accent
+                                : QColor(dark ? "#2ea043" : "#1f883d"));
         }
 
         const QRect iconRect((width() - kIconPx) / 2, 6, kIconPx, kIconPx);
@@ -10050,13 +10086,13 @@ protected:
                          isEnabled() ? QIcon::Normal : QIcon::Disabled);
         else
             p.drawPixmap(iconRect.topLeft(),
-                         tintedOcticonPixmap(m_iconName, fg, kIconPx));
+                         tintedOcticonPixmap(m_iconName, glyphColor, kIconPx));
 
         QFont f = font();
         f.setPixelSize(10);
         f.setWeight(QFont::DemiBold);
         p.setFont(f);
-        p.setPen(fg);
+        p.setPen(captionColor);
         p.drawText(QRect(2, iconRect.bottom() + 2, width() - 4, 14),
                    Qt::AlignHCenter | Qt::AlignTop,
                    QFontMetrics(f).elidedText(text(), Qt::ElideRight,
@@ -10083,11 +10119,15 @@ protected:
             p.setPen(Qt::NoPen);
             p.setBrush(fill);
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
-            p.setPen(QColor("#ffffff"));
+            // The accents a filter tile can carry include pale ambers and
+            // yellows, on which the badge's usual white digits vanish. Pick the
+            // legible ink for whatever fill this badge actually got.
+            p.setPen(fill.lightness() > 155 ? QColor("#0d1117")
+                                            : QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, badgeText);
             rightEdge = badge.left() - 2;
         };
-        paintBadge(m_badge, QColor("#1f6feb"));
+        paintBadge(m_badge, accented ? m_accent : QColor("#1f6feb"));
         paintBadge(m_alertBadge, QColor(dark ? "#da3633" : "#cf222e"));
     }
 
@@ -10119,6 +10159,7 @@ private:
     qint64 m_badge = 0;
     qint64 m_alertBadge = 0;
     QString m_iconName; // empty: paint the QIcon set by setOcticon instead
+    QColor m_accent;    // invalid: the rail's neutral grey/hover colours
 };
 
 // The repository Ratchet toggle at the right end of the mode row (adhoc #421).

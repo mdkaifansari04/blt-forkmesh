@@ -1106,6 +1106,55 @@ QWidget *MainWindow::buildSettingsSection()
         updateNavRebuildButton();
     });
 
+    // The footer's debug bar normally waits for a click on the version button.
+    // This opens it at launch instead (adhoc #1632). With nothing stored the box
+    // shows the account's default — ticked for admins, who are the ones watching
+    // the resource chart and Worker status dots — and ticking or unticking it
+    // both records the choice and applies it to the window right away.
+    auto *debugBarStartupCheck =
+        new QCheckBox("Show the debug bar at startup");
+    m_debugBarStartupCheck = debugBarStartupCheck;
+    debugBarStartupCheck->setObjectName(QStringLiteral("debugBarStartupCheck"));
+    debugBarStartupCheck->setChecked(
+        QSettings().value(kShowDebugBarOnStartupSetting, m_isAdmin).toBool());
+    debugBarStartupCheck->setToolTip(
+        "Open the debug bar under the status line as soon as the app starts, "
+        "with its resource chart, log activity lights and Worker tools. On by "
+        "default for admins; the version button in the footer toggles it at any "
+        "time.");
+    connect(debugBarStartupCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+                QSettings().setValue(kShowDebugBarOnStartupSetting, enabled);
+                // An explicit choice retires the admin default for this run.
+                m_debugBarStartupApplied = true;
+                if (m_statusVersionButton)
+                    m_statusVersionButton->setChecked(enabled);
+            });
+
+    // The cloud monitor's off switch for nodes that keep the debug bar closed:
+    // it is on by default (adhoc #1632), so it must be reachable from Settings
+    // and not only from the bar's own Monitor box. The two mirror each other.
+    m_cloudLogMonitorSettingCheck =
+        new QCheckBox("Monitor the deployed Worker's log for errors");
+    m_cloudLogMonitorSettingCheck->setObjectName(
+        QStringLiteral("cloudLogMonitorSettingCheck"));
+    m_cloudLogMonitorSettingCheck->setChecked(
+        QSettings().value(kCloudLogMonitorSetting, true).toBool());
+    m_cloudLogMonitorSettingCheck->setToolTip(
+        "Keep a background tail of the deployed Worker's live log running, so "
+        "its exceptions and 5xx responses raise the same alert as any other "
+        "error. Needs a stored Cloudflare API token; on by default.");
+    connect(m_cloudLogMonitorSettingCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+                if (m_cloudLogMonitorCheck) {
+                    // The debug bar's box owns the preference and the tail.
+                    m_cloudLogMonitorCheck->setChecked(enabled);
+                    return;
+                }
+                QSettings().setValue(kCloudLogMonitorSetting, enabled);
+                setCloudLogMonitorEnabled(enabled);
+            });
+
     // Diagnostic: mirror every HTTP request the app makes into the network log
     // (verb + status + URL). Off by default; handy for confirming what the
     // background traffic actually is (adhoc #74).
@@ -2105,6 +2154,8 @@ QWidget *MainWindow::buildSettingsSection()
     appearanceGroup->addLayout(settingsHeading(appearanceLabel, "sun"));
     appearanceGroup->addWidget(m_themeCombo, 0, Qt::AlignLeft);
     appearanceGroup->addWidget(rebuildButtonCheck);
+    appearanceGroup->addWidget(debugBarStartupCheck);
+    appearanceGroup->addWidget(m_cloudLogMonitorSettingCheck);
     appearanceGroup->addWidget(verboseNetLogCheck);
 
     auto *startupGroup = generalTab->addSection();
@@ -4899,7 +4950,13 @@ void MainWindow::rebuildLogFilterButtons()
 
     auto addChip = [this](const QString &label, const QString &category,
                           const QString &tip = QString()) {
-        auto *chip = new QPushButton(logFilterChipLabel(label, category));
+        // The same icon-over-caption tile the repo tabs and the activity rail
+        // use, with the count on its corner badge (adhoc #1633): the row used to
+        // be wide text pills that only a fraction of the taxonomy fit into, and
+        // the app already has one shape for "glyph, small word under it, how
+        // many". Tab form so the selected filter carries the checked underline.
+        auto *chip = new forkmesh::ui::VerticalIconButton(
+            label, forkmesh::ui::VerticalIconButton::Tab);
         chip->setObjectName("logFilterChip");
         // The same glyph the debug strip flies for this category (adhoc #1559),
         // so the two rows read as one legend instead of two vocabularies.
@@ -4909,13 +4966,11 @@ void MainWindow::rebuildLogFilterButtons()
             category.isEmpty()
                 ? QStringLiteral("list-unordered")
                 : forkmesh::ui::LogActivityLights::iconForBadge(category);
-        // Remembered so updateLogFilterChipCounts() can refresh just the number
+        // Remembered so updateLogFilterChipCounts() can refresh just the badge
         // on each chip instead of tearing the whole row down per log line.
-        chip->setProperty("logChipName", label);
         chip->setProperty("logChipCategory", category);
         chip->setCheckable(true);
         chip->setChecked(m_logFilter == category);
-        chip->setCursor(Qt::PointingHandCursor);
         chip->setToolTip(!tip.isEmpty() ? tip
                          : category.isEmpty()
                              ? QStringLiteral("Show every event")
@@ -4928,18 +4983,9 @@ void MainWindow::rebuildLogFilterButtons()
             !seen ? QStringLiteral("#6e7681")
                   : category.isEmpty() ? QStringLiteral("#8b949e")
                                        : accentForBadge(category);
-        const QColor accentColor(accent);
-        chip->setIcon(QIcon(tintedOcticonPixmap(glyph, accentColor, 14)));
-        chip->setIconSize(QSize(14, 14));
-        const QString checkedBg = QStringLiteral("rgba(%1, %2, %3, 0.18)")
-                                       .arg(accentColor.red())
-                                       .arg(accentColor.green())
-                                       .arg(accentColor.blue());
-        chip->setStyleSheet(QStringLiteral(
-                                 "QPushButton#logFilterChip { color: %1; border-color: %1; }"
-                                 "QPushButton#logFilterChip:checked "
-                                 "{ background-color: %2; color: %1; border-color: %1; }")
-                                 .arg(accent, checkedBg));
+        chip->setOcticonName(glyph);
+        chip->setAccentColor(QColor(accent));
+        chip->setBadgeCount(logFilterChipCount(category));
         m_logFilterGroup->addButton(chip);
         m_logFilterRow->addWidget(chip);
         connect(chip, &QPushButton::clicked, this, [this, category] {
@@ -4986,16 +5032,14 @@ void MainWindow::rebuildLogFilterButtons()
     m_logFilterRow->addStretch();
 }
 
-// How many buffered events a chip covers, appended to its name (adhoc #64) so
-// the row doubles as a tally of what the log actually contains. A count of zero
-// — the pinned STALL chip on a healthy session — shows the bare name rather
-// than a "0", which would read as a broken counter.
-QString MainWindow::logFilterChipLabel(const QString &name,
-                                       const QString &category) const
+// How many buffered events a chip covers (adhoc #64) so the row doubles as a
+// tally of what the log actually contains. Zero — the pinned STALL chip on a
+// healthy session — hides the badge rather than showing a "0", which would read
+// as a broken counter.
+int MainWindow::logFilterChipCount(const QString &category) const
 {
-    const int count = category.isEmpty() ? m_networkLog.size()
-                                         : m_logFilterCounts.value(category);
-    return count > 0 ? QStringLiteral("%1 %2").arg(name).arg(count) : name;
+    return category.isEmpty() ? m_networkLog.size()
+                              : m_logFilterCounts.value(category);
 }
 
 // Repaint the counts in place. logSystem() runs on every network event, so a
@@ -5007,11 +5051,16 @@ void MainWindow::updateLogFilterChipCounts()
         return;
     for (int i = 0; i < m_logFilterRow->count(); ++i) {
         QLayoutItem *item = m_logFilterRow->itemAt(i);
-        auto *chip = item ? qobject_cast<QPushButton *>(item->widget()) : nullptr;
+        // dynamic_cast, not qobject_cast: VerticalIconButton is a header-only
+        // widget with no Q_OBJECT, so qobject_cast would happily "succeed" on
+        // any QPushButton.
+        auto *chip = item ? dynamic_cast<forkmesh::ui::VerticalIconButton *>(
+                                item->widget())
+                          : nullptr;
         if (!chip)
             continue;
-        chip->setText(logFilterChipLabel(chip->property("logChipName").toString(),
-                                         chip->property("logChipCategory").toString()));
+        chip->setBadgeCount(
+            logFilterChipCount(chip->property("logChipCategory").toString()));
     }
 }
 
@@ -5022,8 +5071,18 @@ QStringList MainWindow::testLogFilterChipLabels() const
     if (!m_logFilterRow)
         return labels;
     for (int i = 0; i < m_logFilterRow->count(); ++i) {
-        if (auto *chip = qobject_cast<QPushButton *>(m_logFilterRow->itemAt(i)->widget()))
-            labels << chip->text();
+        auto *chip = dynamic_cast<forkmesh::ui::VerticalIconButton *>(
+            m_logFilterRow->itemAt(i)->widget());
+        if (!chip)
+            continue;
+        // The count moved off the caption and onto the tile's corner badge
+        // (adhoc #1633). Read both back so these assertions still describe the
+        // whole of what a chip shows.
+        labels << (chip->badgeCount() > 0
+                       ? QStringLiteral("%1 %2")
+                             .arg(chip->text())
+                             .arg(chip->badgeCount())
+                       : chip->text());
     }
     return labels;
 }

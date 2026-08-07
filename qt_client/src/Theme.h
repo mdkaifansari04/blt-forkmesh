@@ -182,14 +182,11 @@ QPushButton#ghostButton:hover { color: #e6edf3; }
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
+/* The chips are custom-painted icon-over-caption tiles (adhoc #1633), so this
+   only has to keep the QSS box out of their way — a max-height here would
+   squash the stacked layout. */
 QPushButton#logFilterChip {
-    background: transparent; border: 1px solid #30363d; color: #8b949e;
-    font-weight: 600; font-size: 12px; padding: 4px 12px; border-radius: 13px;
-    min-height: 24px; max-height: 28px;
-}
-QPushButton#logFilterChip:hover { color: #e6edf3; border-color: #6e7681; }
-QPushButton#logFilterChip:checked {
-    background-color: #21262d; color: #e6edf3; border-color: #2ea043;
+    background: transparent; border: none; padding: 0;
 }
 
 /* --- Quick-add bar extras: social + donate buttons --- */
@@ -1690,14 +1687,9 @@ QPushButton#ghostButton:hover { color: #1f2328; }
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
+/* Custom-painted tiles — see the dark theme's note above. */
 QPushButton#logFilterChip {
-    background: transparent; border: 1px solid #d0d7de; color: #656d76;
-    font-weight: 600; font-size: 12px; padding: 4px 12px; border-radius: 13px;
-    min-height: 24px; max-height: 28px;
-}
-QPushButton#logFilterChip:hover { color: #1f2328; border-color: #afb8c1; }
-QPushButton#logFilterChip:checked {
-    background-color: #eaeef2; color: #1f2328; border-color: #1f883d;
+    background: transparent; border: none; padding: 0;
 }
 
 /* --- Nav rail --- */

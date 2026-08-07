@@ -28,6 +28,8 @@
 using namespace forkmesh::ui;
 
 namespace {
+QString mirrorRefsDigest(const QString &mirrorPath);
+
 constexpr qint64 kCatalogPublishDebounceMs = 1000;
 constexpr qint64 kCatalogPublishMinIntervalMs = 30LL * 1000;
 // An unchanged record is still re-published this often so its catalog row
@@ -1415,6 +1417,15 @@ void MainWindow::refreshMirrorAdverts()
             advert.commit = primaryTip.commit;
             if (advert.commit.isEmpty())
                 continue;
+            // The same heads+tags hash the relay pins, so a forkmesh/pulls
+            // advance changes this advert even though HEAD does not. It covers
+            // only refs/heads and refs/tags — the refs propagation actually
+            // transports — so local refs/pr/ materializations cannot make two
+            // converged peers look permanently different.
+            // Called qualified because this runs on the advert worker thread,
+            // which captures no `this`; mirrorStateHash is static for that.
+            advert.refsFingerprint =
+                MainWindow::mirrorStateHash(repo.mirrorPath);
             advert.commitIdentity = mirrorCommitIdentity(
                 repo.mirrorPath, repo.localPath, advert.commit);
             advert.updatedMs = repo.lastSyncMs;
@@ -5684,7 +5695,11 @@ void MainWindow::syncMirrorsBehindRoster()
     // already current.
     const QString selfAccount = accountOwner().trimmed().toLower();
     for (int i = 0; i < m_repositories.size(); ++i) {
-        const RepositoryRecord &repo = m_repositories.at(i);
+        // By value: mirrorArtifactCount/mirrorStateHash/mirrorHasCommit below
+        // all pump the GUI event loop, and m_repositories can be reallocated
+        // while they do — a reference here would dangle (the git-pump UAF
+        // family, adhoc #106/#119/#124/#149).
+        const RepositoryRecord repo = m_repositories.at(i);
         if (repo.previewOnly || m_syncingRepos.contains(i))
             continue;
         // Holding the source of truth used to end the story here ("nothing
@@ -5711,6 +5726,11 @@ void MainWindow::syncMirrorsBehindRoster()
                                "/" + repoSegment(repo.name, QStringLiteral("repository"));
         const QString legacy = repo.owner + "/" + repo.name;
         const int localArtifactCount = mirrorArtifactCount(repo.mirrorPath);
+        // Computed on first use only: this runs on every peer hello, and
+        // hashing every repo's refs up front would spawn a git process per
+        // repo per tick even when no peer advertises a fingerprint to compare.
+        QString localRefsFingerprint;
+        bool localRefsFingerprintDone = false;
         bool behind = false;
         bool artifactsBehind = false;
         for (const MemberInfo &node : std::as_const(m_homeRoster)) {
@@ -5720,10 +5740,36 @@ void MainWindow::syncMirrorsBehindRoster()
                 if (m.source != source && m.ownerName != canonical &&
                     m.ownerName != legacy)
                     continue;
-                // A peer advertises a commit our mirror lacks → we are behind.
-                if (!m.commit.isEmpty() &&
-                    !mirrorHasCommit(repo.mirrorPath, m.commit))
+                // A peer advertises transported refs our mirror lacks → behind.
+                // HEAD does not move when forkmesh/pulls changes. New peers
+                // advertise all refs as one fingerprint so a PR/review wakes
+                // every node even when each already has the advertised HEAD.
+                // Retain the commit probe as compatibility for older peers.
+                if (!m.refsFingerprint.isEmpty()) {
+                    if (!localRefsFingerprintDone) {
+                        localRefsFingerprint = mirrorStateHash(repo.mirrorPath);
+                        localRefsFingerprintDone = true;
+                    }
+                    // React once per distinct advertised value, not once per
+                    // hello. A mismatch only proves the two ref sets differ —
+                    // it does not prove we are the stale side — so a node that
+                    // is ahead of this peer would otherwise re-sync forever
+                    // against a difference no fetch can close.
+                    if (m.refsFingerprint != localRefsFingerprint) {
+                        const QString peerKey =
+                            canonical + QLatin1Char('\x1f') +
+                            (node.nodeName.isEmpty() ? node.id : node.nodeName);
+                        if (m_mirrorRefsFingerprintActed.value(peerKey) !=
+                            m.refsFingerprint) {
+                            m_mirrorRefsFingerprintActed.insert(
+                                peerKey, m.refsFingerprint);
+                            behind = true;
+                        }
+                    }
+                } else if (!m.commit.isEmpty() &&
+                           !mirrorHasCommit(repo.mirrorPath, m.commit)) {
                     behind = true;
+                }
                 if (m.artifactCount > localArtifactCount)
                     artifactsBehind = true;
                 break; // one advert per node for this repo
@@ -5927,18 +5973,15 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     // of waiting for its next hello (the source of the >30s lag).
     applyPeerMirrorCommit(ownerName, peerName, commit);
 
-    // The signal named the exact new commit. If our mirror already holds it we
-    // are already converged — close the round trip instantly by reporting back
-    // that we are up to date, with no redundant fetch.
-    const QString target = commit.trimmed();
     const RepositoryRecord &matched = m_repositories.at(matchIndex);
-    if (!target.isEmpty() && !matched.mirrorPath.trimmed().isEmpty() &&
-        mirrorHasCommit(matched.mirrorPath, target)) {
-        if (m_backend)
-            m_backend->notifyMirrorSynced(ownerName, target);
-        return;
-    }
 
+    // This used to return early when our mirror already contained `commit`.
+    // That skipped the fetch for exactly the case this signal exists to carry:
+    // `commit` is only the peer's primary HEAD, and a pull request advances
+    // forkmesh/pulls while leaving HEAD untouched. Every peer therefore "already
+    // had" the named commit and none of them fetched, so the PR stayed on the
+    // one node that took it in. An announcement now always schedules the fetch.
+    //
     // Converge promptly: pull the peer's advance into our own mirror now instead
     // of waiting for the next safety sync. This fetches
     // refs/heads/* and refs/tags/*, so issues and pull requests (which live on
@@ -7977,8 +8020,9 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // Tell connected peers that also mirror this repo that it
                         // advanced from its source of truth. Only for real mirrors
                         // that already existed (an actual update, not a first clone).
-                        // Carry the new HEAD so peers see exactly which commit is
-                        // different and can confirm once they reach it.
+                        // Carry the primary HEAD for status compatibility. The
+                        // update itself means the served ref set changed, so
+                        // peers fetch even when that primary commit is unchanged.
                         const QString mirrorId =
                             catalogOwner(repo) + "/" +
                             repoSegment(repo.name, QStringLiteral("repository"));

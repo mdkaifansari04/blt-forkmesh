@@ -173,18 +173,20 @@ void checkFooterOverlayGeometry(MainWindow &window)
                              "and the enlarged four-resource chart"));
 
         // The cloud log's Monitor toggle rides beside the Cloud button that
-        // opens the same tail (adhoc #1615). Off at startup: it holds a
-        // Cloudflare API token open, so it is never restored silently.
+        // opens the same tail (adhoc #1615). Ticked at startup (adhoc #1632),
+        // but the tail itself is deferred, so building the window must not have
+        // spawned one.
         auto *cloudButton = window.findChild<QPushButton *>(
             QStringLiteral("cloudflareWorkerLogsButton"));
         auto *cloudMonitor = window.findChild<QCheckBox *>(
             QStringLiteral("cloudLogMonitorCheck"));
         check(cloudButton && cloudMonitor &&
                   cloudMonitor->isVisibleTo(debugBar) &&
-                  !cloudMonitor->isChecked() &&
+                  cloudMonitor->isChecked() &&
+                  !window.testCloudLogMonitorRunning() &&
                   cloudMonitor->toolTip().contains(QStringLiteral("alert")),
-              QStringLiteral("the debug bar offers an unchecked cloud log "
-                             "monitor beside the Cloud viewer"));
+              QStringLiteral("the debug bar's cloud log monitor is on by "
+                             "default, with its tail deferred past startup"));
 
         const quint64 gitCountBefore = lights->countFor(QStringLiteral("GIT"));
         lights->pulse(QStringLiteral("GIT"));
@@ -2697,7 +2699,76 @@ int main(int argc, char *argv[])
                   QLatin1String("perPr"),
           QStringLiteral("legacy Worker-held PR bounty preference migrates to a "
                          "disabled non-custodial placeholder"));
+
     window.show();
+    QApplication::processEvents();
+
+    // adhoc #1632: the footer's debug bar can open itself at launch. The box
+    // shows the account's default with nothing stored — off here, because this
+    // window is not an admin — and toggling it both records the choice and
+    // applies it to the window on the spot.
+    {
+        auto *startupCheck = window.findChild<QCheckBox *>(
+            QStringLiteral("debugBarStartupCheck"));
+        auto *strip = window.findChild<QWidget *>(QStringLiteral("debugBar"));
+        auto *versionToggle = window.findChild<QPushButton *>(
+            QStringLiteral("statusVersionButton"));
+        // The open bar widens the window's minimum, which a later laptop-width
+        // check measures — so put its state back exactly as it was found.
+        const bool barWasOpen = versionToggle && versionToggle->isChecked();
+        check(startupCheck && strip && versionToggle &&
+                  !startupCheck->isChecked() &&
+                  !QSettings().contains(
+                      QStringLiteral("ui/showDebugBarOnStartup")),
+              QStringLiteral("the debug-bar-at-startup box is off for a "
+                             "non-admin with no preference stored"));
+        if (startupCheck && strip && versionToggle) {
+            startupCheck->setChecked(true);
+            QApplication::processEvents();
+            const bool opened =
+                strip->isVisible() && versionToggle->isChecked() &&
+                QSettings()
+                    .value(QStringLiteral("ui/showDebugBarOnStartup"))
+                    .toBool();
+            startupCheck->setChecked(false);
+            QApplication::processEvents();
+            check(opened && !strip->isVisible() &&
+                      !QSettings()
+                           .value(QStringLiteral("ui/showDebugBarOnStartup"))
+                           .toBool(),
+                  QStringLiteral("toggling the startup box opens and closes "
+                                 "the debug bar and stores the choice"));
+            QSettings().remove(QStringLiteral("ui/showDebugBarOnStartup"));
+            versionToggle->setChecked(barWasOpen);
+            QApplication::processEvents();
+        }
+
+        // The cloud monitor runs by default now, so its off switch has to be
+        // reachable without opening the debug bar. Settings mirrors the bar's
+        // own Monitor box, and unticking either one is what gets remembered.
+        auto *monitorSetting = window.findChild<QCheckBox *>(
+            QStringLiteral("cloudLogMonitorSettingCheck"));
+        auto *barMonitor = window.findChild<QCheckBox *>(
+            QStringLiteral("cloudLogMonitorCheck"));
+        check(monitorSetting && barMonitor && monitorSetting->isChecked() &&
+                  barMonitor->isChecked(),
+              QStringLiteral("Settings mirrors the on-by-default cloud log "
+                             "monitor"));
+        if (monitorSetting && barMonitor) {
+            monitorSetting->setChecked(false);
+            QApplication::processEvents();
+            check(!barMonitor->isChecked() &&
+                      !window.testCloudLogMonitorRunning() &&
+                      !QSettings()
+                           .value(QStringLiteral("diagnostics/cloudLogMonitor"),
+                                  true)
+                           .toBool(),
+                  QStringLiteral("unticking the Settings copy switches the "
+                                 "debug bar's monitor off and remembers it"));
+            QSettings().remove(QStringLiteral("diagnostics/cloudLogMonitor"));
+        }
+    }
+
     QApplication::processEvents();
 
     // A rebuild/restart can continue in the background while the initiating
