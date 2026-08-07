@@ -354,22 +354,27 @@ void AgentRunner::stop()
     complete(false, AgentStatus::Stopped, QStringLiteral("Stopped."));
 }
 
-void AgentRunner::steer(const QString &prompt)
+bool AgentRunner::steer(const QString &prompt)
 {
     const QString trimmed = prompt.trimmed();
-    if (trimmed.isEmpty() || !m_busy)
-        return;
+    if (trimmed.isEmpty())
+        return true;
+    if (!m_busy)
+        return false;
     m_session.promptTokens += estimateTokens(trimmed);
     refreshUsage();
     m_store->saveSession(m_session);
     emitLog(QStringLiteral("\n==> User steering prompt\n%1").arg(trimmed));
-    if (m_process && m_process->state() == QProcess::Running) {
+    if (m_process && m_process->state() == QProcess::Running &&
+        m_process->isWritable()) {
         const QString text =
             QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(trimmed);
-        m_process->write(text.toUtf8());
-    } else {
-        emitLog(QStringLiteral("==> Agent process is not accepting input right now."));
+        if (m_process->write(text.toUtf8()) >= 0)
+            return true;
     }
+    emitLog(QStringLiteral("==> Agent process is not accepting input right now; "
+                           "the message is held for the next run."));
+    return false;
 }
 
 void AgentRunner::launch(Phase phase, const QString &program,

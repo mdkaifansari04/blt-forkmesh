@@ -6104,7 +6104,7 @@ void MainWindow::fixCurrentPullConflictsWithOriginatingAgent()
         QStringLiteral("Merge `%1` into your branch and resolve all merge conflicts. "
                        "Make sure the build and tests still pass, then commit.")
             .arg(base.isEmpty() ? QStringLiteral("main") : base);
-    m_pendingSteerMessage.insert(sessionId, prompt);
+    queueAgentSteerMessage(sessionId, prompt);
     if (provider == QLatin1String("claude-code"))
         applyTranscriptEvent(
             sessionId,
