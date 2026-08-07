@@ -288,6 +288,24 @@ def test_shared_account_event_channel_has_no_fallback_poll():
     assert "const KEEPALIVE_MS = 4 * 60 * 1000;" in CHANNEL
 
 
+def test_shared_channel_module_revalidates_with_the_world_module_graph():
+    # /world/* is no-store so a refresh can never pin an older module graph.
+    # This module is part of that graph but lives outside the tree, so without
+    # its own rule it would fall to the default and could be served stale
+    # against a freshly deployed world.js — the same trap /chat-moderation.js
+    # already has a rule for.
+    headers = (ROOT / "public" / "_headers").read_text(encoding="utf-8")
+    rule = headers[headers.index("/account-events.js"):]
+    rule = rule[:rule.index("\n\n")]
+    assert "Cache-Control: no-store" in rule
+    # It must stay outside public/world/, or the world Worker would serve a
+    # second copy and the byte-for-byte deploy check would compare two trees.
+    assert not (ROOT / "public" / "world" / "account-events.js").exists()
+    staging = (ROOT / "tools" / "build_split_assets.py").read_text(
+        encoding="utf-8")
+    assert 'WORLD_TREES = ["world"]' in staging
+
+
 def test_chat_page_stops_polling_conversations_and_activity():
     # The 30s conversation re-read and its constant are gone.
     assert "PRIVATE_CHANNEL_REFRESH_MS" not in CHAT
