@@ -76,6 +76,7 @@ QString gitTimeoutError(QProcess &process, int waitedMs);
 bool isTransientGitError(const QString &err);
 QString branchDiffErrorHtml(const QString &branch, const QString &err,
                             int attempts);
+QString gitignoreRuleForPath(const QString &relPath);
 }
 } // namespace forkmesh
 
@@ -5179,6 +5180,28 @@ int main(int argc, char *argv[])
                   QString("the failure pane shows git's terminal output and a "
                           "Retry link (adhoc #1384, html = %1)")
                       .arg(failHtml.left(120).simplified()));
+        }
+
+        // adhoc #1594: right-clicking a file in the changes panel offers "Add to
+        // .gitignore". The rule it writes has to name that one file — anchored at
+        // the repository root, with glob metacharacters in the name escaped —
+        // rather than quietly becoming a pattern that hides unrelated files too.
+        {
+            check(forkmesh::ui::gitignoreRuleForPath(
+                      QStringLiteral("docs/notes.txt")) ==
+                      QStringLiteral("/docs/notes.txt"),
+                  QStringLiteral("an ignore rule is anchored at the repository "
+                                 "root, so it can't match a same-named file in "
+                                 "another directory (adhoc #1594)"));
+            const QString globbed =
+                forkmesh::ui::gitignoreRuleForPath(QStringLiteral("build/a[1]*.o"));
+            check(globbed == QStringLiteral("/build/a\\[1\\]\\*.o"),
+                  QString("glob characters in a filename are escaped, not left to "
+                          "widen the rule (adhoc #1594, rule = %1)").arg(globbed));
+            check(forkmesh::ui::gitignoreRuleForPath(QStringLiteral("odd name ")) ==
+                      QStringLiteral("/odd name\\ "),
+                  QStringLiteral("a trailing space is escaped so git doesn't strip "
+                                 "it off the pattern (adhoc #1594)"));
         }
 
         // Leave the fixture as the branch/merge tests below expect it.

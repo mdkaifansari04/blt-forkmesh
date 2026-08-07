@@ -3823,6 +3823,15 @@ private:
     // refresh the open repo, and rebuild the explorer tree in place.
     void finishRepoFileOp(const QString &base);
     void openRepoFile(const QString &path);
+    // Open a file's *on-disk* bytes from a working tree (dir + repo-relative
+    // path) in an editable tab whose save writes straight back to that file.
+    // openRepoFile() above reads the current git ref instead, which is the wrong
+    // text for anything the changes panel lists and cannot be saved over a dirty
+    // tree at all (adhoc #1594).
+    void openWorkingTreeFile(const QString &dir, const QString &relPath);
+    // Write an edited working-tree tab back to disk. Returns false (with a notice)
+    // when the file could not be written.
+    bool saveWorkingTreeFileEdit(const QString &absPath, const QString &content);
     void openRepoReadme(); // open the repo's README in a file tab (default view)
     void updateRepoFileSaveActions();
     void saveCurrentRepoFile(bool createPull);
@@ -4573,6 +4582,14 @@ private:
     void scmStagePath(const QString &path);
     void scmUnstagePath(const QString &path);
     void scmDiscardPath(const QString &path, bool untracked);
+    // Right-click menu over the CHANGES tree — the working-tree groups and the
+    // "Changes against <base>" range list alike (adhoc #1594).
+    void showScmFileMenu(const QPoint &pos);
+    // Append a rule for this file to the checkout's .gitignore, offering to drop
+    // it from the index too (a tracked file ignores nothing until it does).
+    void scmIgnorePath(const QString &path);
+    // Remove a changed file from the working tree.
+    void scmDeletePath(const QString &path);
     void scmStageAll();
     void scmUnstageAll();
     void scmDiscardAll();
@@ -7644,11 +7661,17 @@ private:
     QTabWidget *m_repoFileTabs = nullptr;
     QPushButton *m_repoFileCommitButton = nullptr;
     QPushButton *m_repoFilePullButton = nullptr;
+    // Replaces the two git-backed buttons above while a working-tree tab is open
+    // (see openWorkingTreeFile): that tab saves straight to disk, so neither
+    // "Commit direct" nor "Save as PR" applies to it.
+    QPushButton *m_repoFileSaveButton = nullptr;
     QPushButton *m_repoFileHistoryButton = nullptr;
     QPushButton *m_repoFilePreviewButton = nullptr; // toggle markdown source/render
     // Editor tab keys are repo-relative for a tracked file and absolute for a
-    // file the filesystem explorer opened from outside the repository; the two
-    // forms cannot collide, so one map serves both.
+    // file the filesystem explorer opened from outside the repository; a
+    // working-tree tab (openWorkingTreeFile) takes the absolute path behind the
+    // worktreeTabKey() marker, since it shows the same file as an explorer tab
+    // but editable. No two forms collide, so one map serves all three.
     QHash<QString, QWidget *> m_openFileTabs;
     // Files section (kFilesSectionIndex): both explorers over one column of
     // editor tabs. The filesystem tree is lazily expanded and its root is
