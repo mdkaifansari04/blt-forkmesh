@@ -3756,6 +3756,44 @@ int main(int argc, char *argv[])
                              "is requeued rather than left stuck"));
         window.testRemoveAgentSession(stuckQueued.id);
     }
+    // Continuing a past session whose CLI cannot start today — the conversation
+    // its resume names has been pruned, the login expired — used to spin
+    // forever: the "has it ever launched?" guard reads the whole transcript, so
+    // the ids left by last week's successful turns kept sending it back to the
+    // queue on every exit. Nothing ever failed and nothing ever ran, which from
+    // the detail page read as Continue/"add" doing nothing at all. Retries are
+    // bounded now, and the CLI's own announcement resets the budget so a real
+    // crash mid-turn still gets its full set of attempts.
+    {
+        AgentSession pastRun;
+        pastRun.id = 133896;
+        pastRun.owner = QStringLiteral("me");
+        pastRun.name = QStringLiteral("r");
+        pastRun.provider = QStringLiteral("claude-code");
+        pastRun.prompt = QStringLiteral("Unresumable past session fixture");
+        pastRun.status = AgentStatus::Failed;
+        window.testAddAgentSession(pastRun);
+        window.testSeedResumeConversationId(
+            pastRun.id, QStringLiteral("11111111-2222-3333-4444-555555555555"),
+            /*codex=*/false);
+        // Two exits are still worth another go; the CLI announcing itself in
+        // between hands back a full budget, and the third exit after that is
+        // where it gives up. Without the reset this second run would open with
+        // a failure instead.
+        const QString spent =
+            window.testReplayCliExitsWithoutResult(pastRun.id, /*codex=*/false, 2);
+        window.testMarkAgentSessionRunning(pastRun.id);
+        const QString afterAnnounce =
+            window.testReplayCliExitsWithoutResult(pastRun.id, /*codex=*/false, 3);
+        const QString reason = window.testAgentSessionLastError(pastRun.id);
+        check(spent == QStringLiteral("qq") &&
+                  afterAnnounce == QStringLiteral("qqf") &&
+                  reason.contains(QStringLiteral("without starting a turn")) &&
+                  reason.contains(QStringLiteral("branch still holds the work")),
+              QStringLiteral("a session whose CLI keeps exiting without a turn "
+                             "fails with a reason instead of requeuing forever"));
+        window.testRemoveAgentSession(pastRun.id);
+    }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
     // own "Updated" column) and the title, which is the column that flexes — so
