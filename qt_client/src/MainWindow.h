@@ -8423,6 +8423,12 @@ private:
     // reloadAgents() is intentionally chatty; this cache turns unchanged rows
     // into no-ops while still republishing once after an app restart.
     QHash<int, QString> m_orgTaskAgentStatusSent;
+    // Statuses waiting to go out in the next batched write, and whether that
+    // flush is already queued. A restart has a state to publish for every
+    // session at once; sending them one request at a time is what made the
+    // relay rate-limit this desktop (adhoc #1618).
+    QHash<int, QString> m_orgTaskAgentStatusPending;
+    bool m_orgTaskAgentStatusFlushQueued = false;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
@@ -8714,7 +8720,12 @@ private:
     // POST /api/tasks for a freshly created session and record the id it gets
     // back on the session. No-op unless session.orgTask is set.
     void openOrgTaskForSession(const AgentSession &session);
+    // Queue one session's live state for the board. The write itself is
+    // batched: POST /api/tasks/agent-status carries every queued session in a
+    // single signed request, so a restart publishes the whole fleet at once
+    // instead of one request per session (adhoc #1618).
     void syncOrgTaskAgentStatus(int sessionId);
+    void flushOrgTaskAgentStatus();
     // POST /api/tasks/<id>/complete once the run reaches a terminal status,
     // stamping the finishing bot. No-op without an org task, while the run is
     // still going, or once finishedByBot is already set.

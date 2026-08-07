@@ -10938,6 +10938,13 @@ async def _chat_channel_signed_session(env, request):
 ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
 ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
 ORG_TASK_AGENT_STATUS_PROOF = "forkmesh-org-task-agent-status-v1"
+# The same reporting right, exercised for the whole fleet at once. A desktop
+# that restarts has a live state to publish for every session it owns, and one
+# signed POST per session made the relay rate-limit its own client (adhoc
+# #1618). This proof names no task because the batch carries them in its body;
+# each entry still passes the per-task ownership gate inside the task API, so a
+# batched write reaches exactly the rows a task-bound one could.
+ORG_TASK_AGENT_STATUS_BATCH_PROOF = "forkmesh-org-task-agent-status-batch-v1"
 # The same key, reading the board it can already write to. Without this the
 # desktop Tasks tab was empty for every operator who launched normally instead
 # of typing a password, because it had no session token to present (adhoc #52).
@@ -10958,6 +10965,8 @@ ORG_TASK_COMPLETE_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/complete/?$")
 ORG_TASK_AGENT_STATUS_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/agent-status/?$")
+ORG_TASK_AGENT_STATUS_BATCH_RE = re.compile(
+    r"^/api/tasks/agent-status/?$")
 ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
 ORG_TASK_ITEM_RE = re.compile(r"^/api/tasks/([a-f0-9]{32})/?$")
 
@@ -10991,6 +11000,7 @@ async def _org_task_signed_session(env, request):
         return "", None
     complete = ORG_TASK_COMPLETE_RE.match(url.path)
     agent_status = ORG_TASK_AGENT_STATUS_RE.match(url.path)
+    agent_status_batch = ORG_TASK_AGENT_STATUS_BATCH_RE.match(url.path)
     collection = ORG_TASK_COLLECTION_RE.match(url.path)
     if method == "GET":
         # Reads have no write proof to reuse: a GET signed with the open proof
@@ -11019,6 +11029,10 @@ async def _org_task_signed_session(env, request):
         canonical = (
             ORG_TASK_AGENT_STATUS_PROOF + "\n" + node + "\n"
             + agent_status.group(1) + "\n" + str(ts)
+        ).encode()
+    elif agent_status_batch:
+        canonical = (
+            ORG_TASK_AGENT_STATUS_BATCH_PROOF + "\n" + node + "\n" + str(ts)
         ).encode()
     elif collection:
         canonical = (

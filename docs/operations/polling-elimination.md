@@ -31,6 +31,19 @@ for the rest:
 | Qt desktop office chat backlog (`OfficeChannelMirror`) | `GET /api/chat/channels` + a `/history?since=` per mirrored room every 30s — the client asking "any unread messages?" on a beat | Timer deleted. One channel-list + backlog pass per run seeds each room (and its key); the room's ticketed WebSocket is then held open, so later messages — the ones that light the chat unread badge — arrive as pushes. Reconnect is unconditional with bounded backoff and fires one catch-up history read; the channel list re-lists only on a user action (opening Chat, 10s floor) or an account switch. Live sockets are budgeted to the first 16 rooms; the rest still load on open/send, and the cap is logged. |
 | Go mirror node git sync (`daemon.go` `syncLoop`) | upstream fetch + catalog publish every 30s | Push-driven: the relay fans a `commits` event to mirrors when a source publishes a moved public head (catalog publish path, `source == "local-node"` only, so mirror republishes cannot loop); the daemon fetches on that push, on reconnect catch-ups, and after each intake-worker exit. The `syncInterval` ticker survives only for third-party upstreams the relay cannot push for (or with the catalog disabled). The 4m heartbeat republish/lease-renewal cycle reads only local refs — liveness, exempt. |
 
+## Related: startup bursts (not polls, same symptom)
+
+A client that makes one request per *row* instead of one per *topic* produces
+the same relay load a poll does, just all at once. The desktop's organization
+task board is push/action-driven and reads `GET /api/tasks` exactly once per
+launch — but until adhoc #1618 it then published each agent session's live run
+state as its own signed `POST /api/tasks/<id>/agent-status`, so a node with a
+fleet of sessions opened seventeen writes in the same millisecond and the relay
+rate-limited (HTTP 429) most of them, its own account lookup included. The
+states now coalesce into one `POST /api/tasks/agent-status` carrying every
+changed run. When auditing a client path, count requests per *event*, not just
+timers per minute.
+
 ## Inventory: still polling (relay-facing)
 
 ### Qt desktop client

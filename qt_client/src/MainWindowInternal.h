@@ -3775,8 +3775,14 @@ const QString kOrganizationTaskOpenCountSetting =
 const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
 const QString kOrgTaskCompleteProof =
     QStringLiteral("forkmesh-org-task-complete-v1");
-const QString kOrgTaskAgentStatusProof =
-    QStringLiteral("forkmesh-org-task-agent-status-v1");
+// Live run state for every session at once. The first reload after launch has a
+// state to publish for each session, and the task-bound proof meant one signed
+// POST per session — a burst the relay answered 429 to (adhoc #1618). The relay
+// still accepts the per-task write for older desktops; this one signs the whole
+// fleet's batch. Must stay byte-identical to ORG_TASK_AGENT_STATUS_BATCH_PROOF
+// in entry.py.
+const QString kOrgTaskAgentStatusBatchProof =
+    QStringLiteral("forkmesh-org-task-agent-status-batch-v1");
 // Same key, reading the board. Without it the Tasks tab was empty for every
 // operator who launched normally instead of typing a password (adhoc #52).
 // Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
