@@ -9663,6 +9663,50 @@ QWidget *MainWindow::buildBreadcrumb()
                                                  QSizePolicy::Minimum);
     m_topMessagePromptStatusLabel->hide();
 
+    // "Agent #12 is done!" headline for a completion celebration (adhoc #1630).
+    // The icon is the very glyph that session wears in the agents list, so the
+    // card is recognisably that agent's rather than a generic green tick, and it
+    // sits on its own row so the summary underneath keeps the full bubble width.
+    m_topMessageAgentRow = new QWidget;
+    m_topMessageAgentRow->setObjectName("topMessageAgentRow");
+    auto *agentHeadlineRow = new QHBoxLayout(m_topMessageAgentRow);
+    agentHeadlineRow->setContentsMargins(0, 0, 0, 0);
+    agentHeadlineRow->setSpacing(6);
+    m_topMessageAgentIcon = new QLabel;
+    m_topMessageAgentIcon->setObjectName("topMessageAgentIcon");
+    m_topMessageAgentIcon->setFocusPolicy(Qt::NoFocus);
+    m_topMessageAgentIcon->setFixedSize(kToastAgentIconPx, kToastAgentIconPx);
+    m_topMessageAgentIcon->setScaledContents(false);
+    m_topMessageAgentIcon->setAlignment(Qt::AlignCenter);
+    m_topMessageAgentHeadline = new QLabel;
+    m_topMessageAgentHeadline->setObjectName("topMessageAgentHeadline");
+    m_topMessageAgentHeadline->setTextFormat(Qt::RichText);
+    m_topMessageAgentHeadline->setWordWrap(true);
+    m_topMessageAgentHeadline->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_topMessageAgentHeadline->setMinimumWidth(1);
+    m_topMessageAgentHeadline->setFocusPolicy(Qt::NoFocus);
+    m_topMessageAgentHeadline->setSizePolicy(QSizePolicy::Preferred,
+                                             QSizePolicy::Minimum);
+    m_topMessageAgentHeadline->setCursor(Qt::PointingHandCursor);
+    // The headline is the celebration's link to the transcript, so it routes
+    // "fm:agent:<id>" exactly as the message label does for a waiting agent.
+    connect(m_topMessageAgentHeadline, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                if (!href.startsWith(QLatin1String("fm:agent:")))
+                    return;
+                bool ok = false;
+                const int sid = href.mid(9).toInt(&ok);
+                if (!ok)
+                    return;
+                switchToAgentsTab(sid);
+                dismissTopMessage();
+            });
+    agentHeadlineRow->addWidget(m_topMessageAgentIcon, 0, Qt::AlignTop);
+    agentHeadlineRow->addWidget(m_topMessageAgentHeadline, 1);
+    m_topMessageAgentRow->setSizePolicy(QSizePolicy::Preferred,
+                                        QSizePolicy::Minimum);
+    m_topMessageAgentRow->hide();
+
     m_topMessagePromptImages = new QWidget;
     m_topMessagePromptImages->setObjectName("topMessagePromptImages");
     auto *promptImagesRow = new QHBoxLayout(m_topMessagePromptImages);
@@ -9790,6 +9834,7 @@ QWidget *MainWindow::buildBreadcrumb()
     topMessageBodyLayout->setContentsMargins(0, 0, 0, 0);
     topMessageBodyLayout->setSpacing(kToastLineSpacing);
     topMessageBodyLayout->addWidget(m_topMessagePromptHeader);
+    topMessageBodyLayout->addWidget(m_topMessageAgentRow);
     topMessageBodyLayout->addWidget(m_topMessagePromptStatusLabel);
     topMessageBodyLayout->addWidget(m_topMessage);
     topMessageBodyLayout->addWidget(m_topMessagePromptImages);
@@ -9829,6 +9874,9 @@ QWidget *MainWindow::buildBreadcrumb()
     for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
                             static_cast<QWidget *>(m_topMessageBody),
                             static_cast<QWidget *>(m_topMessagePromptHeader),
+                            static_cast<QWidget *>(m_topMessageAgentRow),
+                            static_cast<QWidget *>(m_topMessageAgentIcon),
+                            static_cast<QWidget *>(m_topMessageAgentHeadline),
                             static_cast<QWidget *>(m_topMessagePromptStatusLabel),
                             static_cast<QWidget *>(m_topMessagePromptImages),
                             static_cast<QWidget *>(m_topMessageScroll),
