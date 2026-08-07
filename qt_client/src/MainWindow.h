@@ -489,6 +489,13 @@ public:
     {
         handleCloudLogMonitorLine(line);
     }
+    // adhoc #1623: the same, one step earlier — raw bytes exactly as Wrangler
+    // writes them, so a test can prove a pretty-printed event split across a
+    // read boundary still lands as one alerting line.
+    void testCloudLogMonitorChunk(const QByteArray &chunk)
+    {
+        consumeCloudLogMonitorBytes(chunk);
+    }
     int testCloudLogMonitorErrors() const { return m_cloudLogMonitorErrors; }
     int testCloudLogMonitorEvents() const { return m_cloudLogMonitorEvents; }
     QStringList testCloudLogMonitorRecent() const
@@ -1931,6 +1938,7 @@ private:
     // ERROR alert raises the same card any other failure gets (adhoc #1615).
     void setCloudLogMonitorEnabled(bool enabled);
     void readCloudLogMonitorOutput();
+    void consumeCloudLogMonitorBytes(const QByteArray &chunk);
     void handleCloudLogMonitorLine(const QString &line);
     void updateCloudLogMonitorTooltip();
     // The same log in a window of its own: everything retained, unfiltered.
@@ -6241,7 +6249,7 @@ private:
     // token lives in the child environment only, never in argv or QSettings.
     QCheckBox *m_cloudLogMonitorCheck = nullptr;
     QProcess *m_cloudLogMonitorProcess = nullptr;
-    QByteArray m_cloudLogMonitorBuffer; // partial NDJSON line across reads
+    QByteArray m_cloudLogMonitorBuffer; // partial tail record across reads
     QStringList m_cloudLogMonitorRecent; // rendered backlog for the viewer
     int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
     int m_cloudLogMonitorEvents = 0;     // Worker events seen since then

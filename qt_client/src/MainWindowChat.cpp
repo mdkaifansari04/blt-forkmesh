@@ -8616,28 +8616,25 @@ void MainWindow::showCloudflareWorkerLogs()
     process.setProcessEnvironment(command.environment);
     process.setProcessChannelMode(QProcess::MergedChannels);
     process.setStandardInputFile(QProcess::nullDevice());
-    // Wrangler streams NDJSON now, so the pane renders each event itself: one
-    // line per hit, ending in the user agent that made it. A read can split a
-    // line in half, so whatever follows the last newline is held back until the
-    // rest of it arrives.
+    // Wrangler streams JSON, so the pane renders each event itself: one line per
+    // hit, in Wrangler's own default shape, ending in the user agent that made
+    // it. One event spans many lines of that JSON and a read can split it
+    // anywhere, so takeCloudflareTailRecords() hands back only whole events and
+    // keeps the rest until the next read (adhoc #1623).
     QByteArray pending;
     const auto appendOutput = [&process, output, &token, &pending] {
         pending += process.readAllStandardOutput();
-        int newline = -1;
         QString rendered;
-        while ((newline = pending.indexOf('\n')) >= 0) {
-            const QString line =
-                QString::fromUtf8(pending.left(newline)).trimmed();
-            pending.remove(0, newline + 1);
-            if (line.isEmpty())
+        const QStringList records =
+            forkmesh::control::takeCloudflareTailRecords(&pending);
+        for (const QString &record : records) {
+            const QString summary =
+                forkmesh::control::parseCloudflareTailLine(record).summary;
+            if (summary.isEmpty())
                 continue;
-            rendered += forkmesh::control::parseCloudflareTailLine(line).summary;
+            rendered += summary;
             rendered += QLatin1Char('\n');
         }
-        // A stalled half-line must not grow without bound if the child ever
-        // emits a stream with no newline in it at all.
-        if (pending.size() > 1024 * 1024)
-            pending.clear();
         if (rendered.isEmpty())
             return;
         output->moveCursor(QTextCursor::End);
@@ -8812,19 +8809,22 @@ void MainWindow::readCloudLogMonitorOutput()
 {
     if (!m_cloudLogMonitorProcess)
         return;
-    m_cloudLogMonitorBuffer += m_cloudLogMonitorProcess->readAllStandardOutput();
-    int newline = -1;
-    while ((newline = m_cloudLogMonitorBuffer.indexOf('\n')) >= 0) {
-        const QString line =
-            QString::fromUtf8(m_cloudLogMonitorBuffer.left(newline)).trimmed();
-        m_cloudLogMonitorBuffer.remove(0, newline + 1);
-        if (!line.isEmpty())
-            handleCloudLogMonitorLine(line);
-    }
-    // Same bound as the viewer: a stream with no newline in it can't grow into
-    // the heap unchecked.
-    if (m_cloudLogMonitorBuffer.size() > 1024 * 1024)
-        m_cloudLogMonitorBuffer.clear();
+    consumeCloudLogMonitorBytes(
+        m_cloudLogMonitorProcess->readAllStandardOutput());
+}
+
+// Wrangler's `--format json` is pretty-printed, so one Worker event arrives as
+// ~30 indented lines and a read can cut through the middle of any of them.
+// Splitting per line used to hand parseCloudflareTailLine() fragments that never
+// decoded: the expanded JSON went straight to the viewer and no failure ever set
+// isError, so the Monitor box raised no alerts at all (adhoc #1623).
+void MainWindow::consumeCloudLogMonitorBytes(const QByteArray &chunk)
+{
+    m_cloudLogMonitorBuffer += chunk;
+    const QStringList records =
+        forkmesh::control::takeCloudflareTailRecords(&m_cloudLogMonitorBuffer);
+    for (const QString &record : records)
+        handleCloudLogMonitorLine(record);
 }
 
 void MainWindow::handleCloudLogMonitorLine(const QString &line)
