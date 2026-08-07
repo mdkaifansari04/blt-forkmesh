@@ -1766,7 +1766,9 @@ private:
     // mirror, byte-for-byte identical to the worker's advertised_refs_canonical().
     // The owner signs this on publish and the relay pins it. Empty when the mirror
     // path is unset/unreadable.
-    QString mirrorStateHash(const QString &mirrorPath) const;
+    // Static and free of member state so the mirror-advert worker thread can
+    // fingerprint a mirror without capturing `this`.
+    static QString mirrorStateHash(const QString &mirrorPath);
     // Signed catalog-list URL (adds our viewer token so the relay also returns our
     // own private repos). Shared by fetchCatalogRepos() and refreshRepoPinBanner().
     QUrl catalogListUrl();
@@ -5773,6 +5775,11 @@ private:
     // hello (adhoc #82).
     bool mirrorHasCommit(const QString &mirrorPath, const QString &commit);
     QSet<QString> m_mirrorCommitsPresent; // "<mirrorPath>\x1f<commit>" seen present
+    // "<repo>\x1f<peer>" -> the last ref fingerprint we already reconciled for
+    // that peer. Ref-set equality is symmetric, so a node that is AHEAD of a
+    // peer differs from it forever; without this, every peer hello would
+    // re-trigger a sync that can never make the two match.
+    QHash<QString, QString> m_mirrorRefsFingerprintActed;
     // Source-of-truth catch-up: online mirrors merge (and drain) web-submitted
     // issues/PRs/discussions directly into the branches they serve, so when a
     // peer advertises commits this node's OWN repo lacks, fast-forward the
