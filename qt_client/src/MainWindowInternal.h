@@ -7810,7 +7810,7 @@ protected:
                                  Qt::AlignLeft | Qt::AlignTop, count);
 
                 QFont labelFont = painter.font();
-                labelFont.setPixelSize(5);
+                labelFont.setPixelSize(6);
                 labelFont.setBold(false);
                 painter.setFont(labelFont);
                 painter.setPen(unseen);
@@ -7833,7 +7833,7 @@ protected:
                 painter.drawEllipse(dotRect);
                 if (m_presentation == Debug) {
                     QFont labelFont = painter.font();
-                    labelFont.setPixelSize(6);
+                    labelFont.setPixelSize(7);
                     labelFont.setBold(false);
                     painter.setFont(labelFont);
                     painter.setPen(unseen);
