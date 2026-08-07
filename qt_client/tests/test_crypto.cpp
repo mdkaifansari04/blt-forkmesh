@@ -3,6 +3,7 @@
 #include "../src/AccountCapability.h"
 #include "../src/AgentJail.h"
 #include "../src/AgentStore.h"
+#include "../src/AgentWorktree.h"
 #include "../src/BackgroundActivity.h"
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
@@ -6389,6 +6390,76 @@ int main(int argc, char *argv[])
         check(AgentJail::sessionJailDir(7).endsWith(
                   QStringLiteral("/forkmesh-agent-jails/s7")),
               "stream sessions get a per-session jail dir under temp");
+    }
+
+    // Agent worktrees live in the project now (adhoc #1624): a run works in
+    // <checkout>/.worktrees/agent-<id>-<desc> instead of a /tmp path, the
+    // directory hides itself from the project's git, and a bare mirror — which
+    // has no working tree to nest one in — still falls back to temp.
+    {
+        using namespace forkmesh::agentwt;
+
+        check(dirName(1624, QStringLiteral(
+                                "lets have agents start worktrees in the "
+                                "project's folder")) ==
+                  QStringLiteral("agent-1624-agents-start-worktrees-project"),
+              "a worktree is named agent-<id>-<short description of the task>");
+        check(dirName(9, QStringLiteral("  ")) == QStringLiteral("agent-9"),
+              "a session with no usable title still gets a unique directory");
+        check(dirName(9, QStringLiteral("Fix the ../etc/passwd loader!")) ==
+                  QStringLiteral("agent-9-fix-etc-passwd-loader"),
+              "punctuation in a title cannot escape the worktree directory");
+
+        QTemporaryDir worktreeRepo;
+        check(worktreeRepo.isValid(), "agent worktree test repository is valid");
+        const QString repo = worktreeRepo.path();
+        check(root(repo).endsWith(QStringLiteral("/forkmesh-worktrees")),
+              "a directory that is not a checkout keeps the temp worktree root");
+        bool ready =
+            runTestGit(repo, {QStringLiteral("init"), QStringLiteral("-q"),
+                              QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(repo, {QStringLiteral("config"), QStringLiteral("user.name"),
+                              QStringLiteral("Agent Runner")}) &&
+            runTestGit(repo, {QStringLiteral("config"), QStringLiteral("user.email"),
+                              QStringLiteral("agent@example.test")}) &&
+            writeTestFile(repo + QStringLiteral("/README.md"), "hello") &&
+            commitTestTree(repo, QStringLiteral("first"),
+                           QStringLiteral("2026-08-07T10:00:00Z"),
+                           QStringLiteral("Agent Runner"),
+                           QStringLiteral("agent@example.test"));
+        check(ready, "agent worktree test repository has a commit");
+        check(root(repo) == repo + QStringLiteral("/.worktrees"),
+              "a checkout hosts its agents' worktrees inside the project");
+
+        const QString wtRoot = root(repo);
+        ensureRoot(wtRoot);
+        const QString wtPath = QDir(wtRoot).filePath(
+            dirName(3, QStringLiteral("teach the relay to back off")));
+        check(runTestGit(repo, {QStringLiteral("worktree"), QStringLiteral("add"),
+                                QStringLiteral("-q"), QStringLiteral("-B"),
+                                QStringLiteral("agent/adhoc-3-teach-relay-back-off"),
+                                wtPath, QStringLiteral("HEAD")}) &&
+                  QFileInfo::exists(wtPath + QStringLiteral("/README.md")),
+              "git creates the agent worktree inside the project");
+        QByteArray status;
+        check(runTestGit(repo,
+                         {QStringLiteral("status"), QStringLiteral("--porcelain")},
+                         &status) &&
+                  QString::fromUtf8(status).trimmed().isEmpty(),
+              "a full worktree checked out in the project leaves it clean");
+        check(writeTestFile(wtPath + QStringLiteral("/agent-note.md"), "wip"),
+              "the agent can write inside its own worktree");
+        QByteArray inner;
+        check(runTestGit(wtPath,
+                         {QStringLiteral("status"), QStringLiteral("--porcelain")},
+                         &inner) &&
+                  QString::fromUtf8(inner).contains(
+                      QStringLiteral("agent-note.md")),
+              "the root's ignore rule does not reach into the worktree itself");
+
+        check(shellQuote(QStringLiteral("/home/dev/o'brien/repo")) ==
+                  QStringLiteral("'/home/dev/o'\\''brien/repo'"),
+              "a quote in the project path cannot break out of the git command");
     }
 
     // AgentStore persists a Claude Code session's stream-json transcript so it

@@ -12000,8 +12000,8 @@ inline bool worktreeTrackedClean(const QString &workTree)
 }
 
 // Drop any other worktree currently holding `branch` checked out so this working
-// tree can switch to it. Agent sessions run in a temp worktree under
-// /tmp/forkmesh-worktrees/…; one left behind (an app restart skips its cleanup)
+// tree can switch to it. Agent sessions run in their own worktree under
+// <checkout>/.worktrees/…; one left behind (an app restart skips its cleanup)
 // keeps the branch reserved, so `git checkout <branch>` here fails with "is
 // already used by worktree at …". Removing the worktree frees the branch while
 // keeping its ref intact. Returns true if it released something so the caller
