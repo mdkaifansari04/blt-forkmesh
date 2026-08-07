@@ -381,3 +381,13 @@ export function sanitizePresenceText(value, fallback, max = 28) {
     .slice(0, max);
   return clean || fallback;
 }
+
+// Shared by the seated pose and the presence frame so other visitors can render
+// a bench sitter sitting rather than standing on the plank. The shell must keep
+// it out of the landmark-proximity activity label, and reads it before the
+// renderer loads, so it lives with the data both sides already import.
+export const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
+// Shared by the swing-set ride and the presence frame for the same reason: the
+// shell keeps it out of the landmark-proximity activity label while a visitor
+// is riding one of the town swings.
+export const SWING_RIDING_ACTIVITY = "swinging on the town swing set";

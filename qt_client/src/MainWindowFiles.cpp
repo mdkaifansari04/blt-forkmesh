@@ -306,12 +306,16 @@ QWidget *MainWindow::buildFilesSection()
         // from the file list (or switching tabs) is a step (adhoc #50).
         scheduleNavRecord();
     });
-    // Ctrl+S saves the current tab: commit direct when this node owns a working
-    // tree, otherwise fall back to opening a PR (the only save path on a mirror).
+    // Ctrl+S saves the current tab: straight to disk for a working-tree tab, else
+    // commit direct when this node owns a working tree, otherwise fall back to
+    // opening a PR (the only save path on a mirror). Every branch is picked from
+    // what is *enabled*, which updateRepoFileSaveActions keeps exclusive.
     auto *saveShortcut = new QShortcut(QKeySequence::Save, m_repoFileTabs);
     saveShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(saveShortcut, &QShortcut::activated, this, [this] {
-        if (m_repoFileCommitButton && m_repoFileCommitButton->isEnabled())
+        if (m_repoFileSaveButton && m_repoFileSaveButton->isEnabled())
+            saveCurrentRepoFile(false);
+        else if (m_repoFileCommitButton && m_repoFileCommitButton->isEnabled())
             saveCurrentRepoFile(false);
         else if (m_repoFilePullButton && m_repoFilePullButton->isEnabled())
             saveCurrentRepoFile(true);
@@ -407,10 +411,24 @@ QLayout *MainWindow::buildFilesEditorBar()
     connect(m_repoFilePullButton, &QPushButton::clicked, this,
             [this] { saveCurrentRepoFile(true); });
 
+    // Takes the place of the pair above for a file opened from the changes panel
+    // (openWorkingTreeFile): that edit belongs in the working tree, where the
+    // commit controls at the other end of this row can then record it.
+    m_repoFileSaveButton = new QPushButton(QStringLiteral("Save"));
+    m_repoFileSaveButton->setObjectName(QStringLiteral("primaryButton"));
+    m_repoFileSaveButton->setCursor(Qt::PointingHandCursor);
+    m_repoFileSaveButton->setToolTip(
+        QStringLiteral("Write this file back to the working tree"));
+    setOcticon(m_repoFileSaveButton, "check", 16);
+    m_repoFileSaveButton->hide();
+    connect(m_repoFileSaveButton, &QPushButton::clicked, this,
+            [this] { saveCurrentRepoFile(false); });
+
     row->addWidget(m_repoFilePreviewButton);
     row->addWidget(m_repoFileHistoryButton);
     row->addWidget(m_repoFileCommitButton);
     row->addWidget(m_repoFilePullButton);
+    row->addWidget(m_repoFileSaveButton);
     row->addStretch(1);
 
     // Working-tree commit + push. This stages everything and commits it, which

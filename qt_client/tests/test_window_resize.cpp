@@ -76,6 +76,7 @@ QString gitTimeoutError(QProcess &process, int waitedMs);
 bool isTransientGitError(const QString &err);
 QString branchDiffErrorHtml(const QString &branch, const QString &err,
                             int attempts);
+QString gitignoreRuleForPath(const QString &relPath);
 }
 } // namespace forkmesh
 
@@ -339,6 +340,63 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   alertsAfterDown,
               QStringLiteral("a degraded or healthy check raises no outage "
                              "alert"));
+
+        // adhoc #1614: the failure this row exists to catch — a Worker
+        // exception behind the edge — throws on a share of requests rather than
+        // all of them, so the once-a-minute probe keeps landing on a good reply
+        // in between. Grading each reply on its own repainted the dot green
+        // seconds after the very same page had failed to load in the app, so a
+        // row that failed inside the remembered window must not go back to
+        // green on the next lucky sample.
+        window.testClearDesktopProbeHistory();
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            500, cloudflareError);
+        check(window.testApplyDesktopWebsiteProbe(
+                  QStringLiteral("desktop_website"), 200, homepage) ==
+                      QStringLiteral("operational") &&
+                  window.testDesktopWebsiteRowStatus(
+                      QStringLiteral("desktop_website")) ==
+                      QStringLiteral("down") &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("down"),
+              QStringLiteral("one page that loads does not clear a site that "
+                             "failed the check a minute ago: the dot stays red "
+                             "while half the recent checks are failures"));
+
+        // …and it does not stay red for ever either. As the good replies pile
+        // up the row steps down to amber ("answering, but not reliably") and
+        // only returns to green once the failure has aged out of the window.
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            200, homepage);
+        const QString whileFlapping = window.testDesktopWebsiteRowStatus(
+            QStringLiteral("desktop_website"));
+        for (int i = 0; i < 8; ++i) {
+            window.testApplyDesktopWebsiteProbe(
+                QStringLiteral("desktop_website"), 200, homepage);
+        }
+        check(whileFlapping == QStringLiteral("degraded") &&
+                  window.testDesktopWebsiteRowStatus(
+                      QStringLiteral("desktop_website")) ==
+                      QStringLiteral("operational") &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("operational"),
+              QStringLiteral("a recovering site fades red to amber to green as "
+                             "the remembered failure ages out"));
+
+        // A desktop that cannot look at all reports nothing either way, so it
+        // must not count as a clean check that dilutes a remembered failure.
+        window.testClearDesktopProbeHistory();
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            500, cloudflareError);
+        for (int i = 0; i < 8; ++i) {
+            window.testApplyDesktopWebsiteProbe(
+                QStringLiteral("desktop_website"), 0, QByteArray(),
+                QStringLiteral("This desktop's own firewall blocked the check"));
+        }
+        check(window.testDesktopWebsiteRowStatus(
+                  QStringLiteral("desktop_website")) == QStringLiteral("down"),
+              QStringLiteral("checks this desktop could not run do not age a "
+                             "real failure out of the window"));
 
         // Rebuild+restart came down from the window-chrome line and Resize came
         // out of the navigation rail: both now sit in the debug bar's own tool
@@ -5124,6 +5182,28 @@ int main(int argc, char *argv[])
                       .arg(failHtml.left(120).simplified()));
         }
 
+        // adhoc #1594: right-clicking a file in the changes panel offers "Add to
+        // .gitignore". The rule it writes has to name that one file — anchored at
+        // the repository root, with glob metacharacters in the name escaped —
+        // rather than quietly becoming a pattern that hides unrelated files too.
+        {
+            check(forkmesh::ui::gitignoreRuleForPath(
+                      QStringLiteral("docs/notes.txt")) ==
+                      QStringLiteral("/docs/notes.txt"),
+                  QStringLiteral("an ignore rule is anchored at the repository "
+                                 "root, so it can't match a same-named file in "
+                                 "another directory (adhoc #1594)"));
+            const QString globbed =
+                forkmesh::ui::gitignoreRuleForPath(QStringLiteral("build/a[1]*.o"));
+            check(globbed == QStringLiteral("/build/a\\[1\\]\\*.o"),
+                  QString("glob characters in a filename are escaped, not left to "
+                          "widen the rule (adhoc #1594, rule = %1)").arg(globbed));
+            check(forkmesh::ui::gitignoreRuleForPath(QStringLiteral("odd name ")) ==
+                      QStringLiteral("/odd name\\ "),
+                  QStringLiteral("a trailing space is escaped so git doesn't strip "
+                                 "it off the pattern (adhoc #1594)"));
+        }
+
         // Leave the fixture as the branch/merge tests below expect it.
         runGitChecked(wtRepo.path(),
                       {"worktree", "remove", "--force", swapPath});
@@ -7168,7 +7248,7 @@ int main(int argc, char *argv[])
     // that really failed still is, including a 200 carrying {"ok":false,…}.
     {
         window.testResetNetworkLog();
-        window.testLogSystem(QStringLiteral(
+        window.testLogSystem(QString::fromUtf8(
             "net GET 200 [body: {\"ok\":true,\"notifications\":[{\"kind\":"
             "\"operational_alert\",\"title\":\"Mirror node - mirror10 "
             "recovered\",\"body\":\"Down for under a minute. Last failure: "
@@ -7182,7 +7262,7 @@ int main(int argc, char *argv[])
                              "outage is not badged ERROR"));
 
         window.testResetNetworkLog();
-        window.testLogSystem(QStringLiteral(
+        window.testLogSystem(QString::fromUtf8(
             "net POST 200 [body: {\"ok\":false,\"error\":\"forbidden\"}] "
             "https://forkmesh.com/api/notifications \xC2\xB7 ping inbox"));
         stored = window.testNetworkLog();
@@ -7191,7 +7271,7 @@ int main(int argc, char *argv[])
               QStringLiteral("a 200 whose body reports ok:false is still ERROR"));
 
         window.testResetNetworkLog();
-        window.testLogSystem(QStringLiteral(
+        window.testLogSystem(QString::fromUtf8(
             "net GET ERR 503 Service Unavailable [body: {\"ok\":false,"
             "\"error\":\"mirror_unavailable\"}] "
             "https://forkmesh.com/api/repo/jett/forkmesh \xC2\xB7 repo fetch"));
@@ -7200,6 +7280,51 @@ int main(int argc, char *argv[])
                   window.testLogBadgeFor(stored.last()) == QStringLiteral("ERROR"),
               QStringLiteral("a failed reply is still classified from the body "
                              "that explains it"));
+
+        // adhoc #1613: the relay sends no reason phrase and this route's
+        // consumer streams the reply, so a release-blob 503 reaches the log with
+        // neither. What is left is the "ERR" marker — red has to come from that
+        // and not from words that happened to be in Qt's boilerplate.
+        window.testResetNetworkLog();
+        window.testLogSystem(QString::fromUtf8(
+            "net GET ERR 503 https://forkmesh.com/api/repo/forkmesh/forkmesh"
+            "/releases/blob/sha256/c832d0e0 \xC2\xB7 release fetch"));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("ERROR"),
+              QStringLiteral("a failed reply with no reason phrase and no body "
+                             "is still badged ERROR"));
+
+        // …and the marker must be the request's own, read from the status slot
+        // of this line, not quoted out of a successful reply's payload.
+        window.testResetNetworkLog();
+        window.testLogSystem(QString::fromUtf8(
+            "net GET 200 [body: {\"lastSeen\":\"net GET ERR 503\"}] "
+            "https://forkmesh.com/api/repo/jett/forkmesh/mirrors "
+            "\xC2\xB7 mirror sync"));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) != QStringLiteral("ERROR"),
+              QStringLiteral("an ERR marker quoted inside a 200's body does not "
+                             "make the line a failure"));
+        window.testResetNetworkLog();
+    }
+
+    // adhoc #1613: the separator between a verbose net line's URL and the event
+    // that drove it is a real middle dot. Built with QStringLiteral it was not:
+    // that macro concatenates onto a u"" literal, so each byte of the escaped
+    // UTF-8 sequence became its own code point and the pasted log line read
+    // "… Â· release fetch".
+    {
+        window.testResetNetworkLog();
+        window.testLogSystem(QString::fromUtf8(
+            "net GET ERR 503 https://forkmesh.com/api/repo/forkmesh/forkmesh"
+            "/releases/blob/sha256/c832d0e0 \xC2\xB7 release fetch"));
+        const QStringList stored = window.testNetworkLog();
+        check(!stored.isEmpty() && stored.last().contains(QChar(0x00B7)) &&
+                  !stored.last().contains(QChar(0x00C2)),
+              QStringLiteral("the verbose net line separates URL from event "
+                             "with a middle dot, not mojibake"));
         window.testResetNetworkLog();
     }
 
