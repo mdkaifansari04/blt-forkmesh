@@ -4885,14 +4885,17 @@ int main(int argc, char *argv[])
               QString("Forward reopens the commit's diff (commit = %1)")
                   .arg(window.testOpenCommitHash()));
 
+        // adhoc #1590: opening a file leaves the Code page for the rail's Files
+        // destination, which is the only editor now — so the place the trail
+        // records is that section, with the file it has open.
         window.testOpenRepoFile(QStringLiteral("base-delete.txt"));
         QApplication::processEvents();
-        check(window.testFilesStackPage() == 1 &&
+        check(window.testFilesSectionShowing() &&
                   window.testOpenRepoFilePath() ==
                       QStringLiteral("base-delete.txt"),
-              QString("opening a file shows it in the Code editor (page = %1, "
+              QString("opening a file shows it in the Files editor (files = %1, "
                       "file = %2)")
-                  .arg(window.testFilesStackPage())
+                  .arg(window.testFilesSectionShowing())
                   .arg(window.testOpenRepoFilePath()));
         check(window.testNavBackToolTip().contains(navCommit.left(7)),
               QString("Back from an open file returns to the commit it was "
@@ -4900,20 +4903,20 @@ int main(int argc, char *argv[])
                   .arg(window.testNavBackToolTip()));
         window.testNavigateBack();
         QApplication::processEvents();
-        check(window.testFilesStackPage() == 0 &&
+        check(!window.testFilesSectionShowing() &&
                   window.testOpenCommitHash() == navCommit,
               QString("Back leaves the file editor for the previous place "
-                      "(page = %1, commit = %2)")
-                  .arg(window.testFilesStackPage())
+                      "(files = %1, commit = %2)")
+                  .arg(window.testFilesSectionShowing())
                   .arg(window.testOpenCommitHash()));
         window.testNavigateForward();
         QApplication::processEvents();
-        check(window.testFilesStackPage() == 1 &&
+        check(window.testFilesSectionShowing() &&
                   window.testOpenRepoFilePath() ==
                       QStringLiteral("base-delete.txt"),
-              QString("Forward reopens the file that was on screen (page = %1, "
+              QString("Forward reopens the file that was on screen (files = %1, "
                       "file = %2)")
-                  .arg(window.testFilesStackPage())
+                  .arg(window.testFilesSectionShowing())
                   .arg(window.testOpenRepoFilePath()));
         QFile::remove(livePath);
         // And the refresh it kicked off still lands, leaving that branch selected.
@@ -6265,6 +6268,70 @@ int main(int argc, char *argv[])
                   QStringLiteral("visit https://example.com/MainWindow.h")) ==
                   QStringLiteral("visit https://example.com/MainWindow.h"),
               QStringLiteral("agent transcript leaves web URLs intact"));
+    }
+
+    // adhoc #1588: the "session started" divider names the provider login the
+    // run is signed in as. With several accounts in rotation — the usual reason
+    // being that the one which was running hit its usage limit — the transcript
+    // otherwise never says which of them is spending the tokens.
+    {
+        const QJsonObject init{
+            {QStringLiteral("type"), QStringLiteral("system")},
+            {QStringLiteral("subtype"), QStringLiteral("init")},
+            {QStringLiteral("model"), QStringLiteral("claude-opus-5")},
+            {QStringLiteral("cwd"), QStringLiteral("/tmp/forkmesh-worktrees/x")}};
+        const auto dividerOf = [](ClaudeTranscriptView &view) {
+            for (QLabel *label : view.findChildren<QLabel *>())
+                if (label->text().contains(QStringLiteral("session started")))
+                    return label->text();
+            return QString();
+        };
+
+        ClaudeTranscriptView named;
+        named.setSessionContext(QStringLiteral("agent/adhoc-1588"),
+                                QStringLiteral("Auto"), QStringLiteral("high"),
+                                QStringLiteral("work laptop"));
+        named.handleEvent(init);
+        QString line = dividerOf(named);
+        check(line.contains(QStringLiteral("account work laptop")),
+              QString("the session-started divider names the login the run is "
+                      "signed in as (got \"%1\")")
+                  .arg(line));
+        check(line.contains(QStringLiteral("high thinking")) &&
+                  line.contains(QStringLiteral("Auto")),
+              QString("the account joins the rest of the run context rather "
+                      "than replacing it (got \"%1\")")
+                  .arg(line));
+        // Named once. Two branches added an account to this divider (the other
+        // named the signed-in ForkMesh account, not the provider login), and the
+        // merge of the two left the run announcing its account twice.
+        check(line.count(QStringLiteral("account work laptop")) == 1,
+              QString("the login is named once on the divider (got \"%1\")")
+                  .arg(line));
+
+        // A login whose own name already says "account" isn't announced twice.
+        ClaudeTranscriptView labelled;
+        labelled.setSessionContext(QString(), QString(), QString(),
+                                   QStringLiteral("Default account"));
+        labelled.handleEvent(init);
+        line = dividerOf(labelled);
+        check(line.contains(QStringLiteral("Default account")) &&
+                  !line.contains(QStringLiteral("account Default account")),
+              QString("a login named \"…account\" is not prefixed with the "
+                      "word again (got \"%1\")")
+                  .arg(line));
+
+        // No account to name — an external session, or a provider that has no
+        // login of its own — leaves the divider exactly as it was.
+        ClaudeTranscriptView bare;
+        bare.setSessionContext(QStringLiteral("agent/adhoc-1588"),
+                               QStringLiteral("Auto"), QStringLiteral("high"));
+        bare.handleEvent(init);
+        line = dividerOf(bare);
+        check(!line.isEmpty() && !line.contains(QStringLiteral("account")),
+              QString("an unknown login adds nothing to the divider (got "
+                      "\"%1\")")
+                  .arg(line));
     }
 
     // issue #195: a commit SHA mentioned in a commit message body becomes a

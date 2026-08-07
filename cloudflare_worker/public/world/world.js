@@ -444,6 +444,72 @@ function diagnosticStateLevel(state) {
     : "high";
 }
 
+// Some health dots grade a state rather than a measurement — connected or
+// not, build known or not, world running or paused. Charting those means
+// charting the dot's own verdict once per second: a flat line along the top
+// reads as "green for the whole minute" and any dip marks exactly when it
+// turned. Their charts pass ceiling 1 so a steady "watch" sits mid-height
+// instead of being auto-scaled back up to a healthy-looking top line.
+const WORLD_DIAGNOSTIC_HEALTH_SCORES = { good: 1, caution: 0.5, high: 0 };
+
+function diagnosticHealthScore(level) {
+  const score = WORLD_DIAGNOSTIC_HEALTH_SCORES[level];
+  return Number.isFinite(score) ? score : 0;
+}
+
+// The nine health dots, graded from one snapshot. The dots, the nine charts
+// drawn under them, and the per-second history those charts are built from all
+// call this, so a dot can never disagree with its own trace about a second.
+function diagnosticDotLevels(snapshot) {
+  const renderer = snapshot?.renderer;
+  const connection = snapshot?.connection || {};
+  const traffic = snapshot?.traffic || {};
+  const queues = snapshot?.queues || {};
+  const build = snapshot?.build || {};
+  const worstLevel = (...levels) =>
+    levels.includes("high")
+      ? "high"
+      : levels.includes("caution")
+        ? "caution"
+        : "good";
+  return {
+    fps: renderer ? diagnosticLevel("fps", renderer.fps) : "high",
+    frame: renderer
+      ? worstLevel(
+          diagnosticLevel("longFrames", renderer.longFrames),
+          diagnosticLevel("longestFrameMs", renderer.longestFrameMs),
+        )
+      : "high",
+    draw: renderer
+      ? worstLevel(
+          diagnosticLevel("calls", renderer.calls),
+          diagnosticLevel("triangles", renderer.triangles),
+        )
+      : "high",
+    input: renderer
+      ? worstLevel(
+          diagnosticLevel("movementInputMs", renderer.inputResponseMs),
+          diagnosticLevel("pointerGapMs", renderer.pointerWorstGapMs),
+        )
+      : "high",
+    network: diagnosticStateLevel(connection.state),
+    traffic: worstLevel(
+      diagnosticLevel("frameRate", traffic.inboundRate),
+      diagnosticLevel("frameRate", traffic.outboundRate),
+    ),
+    queue: worstLevel(
+      diagnosticLevel(
+        "coalesced",
+        (Number(queues.movementCoalesced) || 0) +
+          (Number(queues.profileCoalesced) || 0),
+      ),
+      diagnosticLevel("backpressure", queues.backpressureEvents),
+    ),
+    build: build.version && build.revision ? "good" : "caution",
+    world: renderer?.paused ? "caution" : renderer ? "good" : "high",
+  };
+}
+
 function compactCountLabel(value) {
   const count = Math.max(0, Number(value) || 0);
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}m`;
@@ -522,10 +588,18 @@ function frameHistorySparkline(history) {
 // right. Relative charts use their own visible range so small changes do not
 // look artificially flat. A small vertical inset keeps flat or extreme traces
 // clear of the SVG edge, where they would otherwise look like a missing chart.
+// Seconds with no reading — a renderer metric while the scene is paused — are
+// skipped rather than plotted as zero, so the trace shows an honest gap.
 function diagnosticsChartPoints(
   history,
   key,
-  { width = 72, height = 16, zeroBased = true, verticalInset = 1.5 } = {},
+  {
+    width = 72,
+    height = 16,
+    zeroBased = true,
+    verticalInset = 1.5,
+    ceiling = NaN,
+  } = {},
 ) {
   const samples = (Array.isArray(history) ? history : [])
     .slice(-60)
@@ -540,6 +614,9 @@ function diagnosticsChartPoints(
     low = Math.max(0, low - padding);
     high += padding;
   }
+  // A fixed ceiling keeps bounded scores on an absolute scale, so a reading
+  // that never leaves half height is not auto-scaled up to look like a full one.
+  if (Number.isFinite(ceiling)) high = Math.max(high, ceiling);
   if (high <= low) high = low + Math.max(1, high * 0.05);
   const retainedCount = (Array.isArray(history) ? history : []).slice(
     -60,
@@ -4686,19 +4763,61 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <span
               class="world-diagnostics-chart"
               data-world-diagnostics-chart
-              title="Live performance · one sample per second · newest at right"
+              title="One chart per health dot · one sample per second · newest at right"
               aria-hidden="true"
             >
-              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="fps">
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="fps" title="Frames per second">
                 <span><b>FPS</b><output data-world-diagnostics-chart-value="fps">—</output></span>
                 <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
                   <polyline data-world-diagnostics-chart-line="fps" points=""></polyline>
                 </svg>
               </span>
-              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="triangles">
-                <span><b>VISIBLE △</b><output data-world-diagnostics-chart-value="triangles">—</output></span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="frame" title="Worst single frame in each second">
+                <span><b>FRAME</b><output data-world-diagnostics-chart-value="frame">—</output></span>
                 <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
-                  <polyline data-world-diagnostics-chart-line="triangles" points=""></polyline>
+                  <polyline data-world-diagnostics-chart-line="frame" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="draw" title="Triangles drawn per frame">
+                <span><b>DRAW △</b><output data-world-diagnostics-chart-value="draw">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="draw" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="input" title="Movement input response time">
+                <span><b>INPUT</b><output data-world-diagnostics-chart-value="input">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="input" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="network" title="Connection health each second; the value is the peer count">
+                <span><b>NET</b><output data-world-diagnostics-chart-value="network">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="network" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="traffic" title="Socket frames per second, inbound plus outbound">
+                <span><b>IO</b><output data-world-diagnostics-chart-value="traffic">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="traffic" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="queue" title="Coalesced and backpressure events each second">
+                <span><b>QUEUE</b><output data-world-diagnostics-chart-value="queue">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="queue" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="build" title="Build health each second; the value is the running version">
+                <span><b>BUILD</b><output data-world-diagnostics-chart-value="build">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="build" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="world" title="World health each second; paused counts as watch">
+                <span><b>WORLD</b><output data-world-diagnostics-chart-value="world">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="world" points=""></polyline>
                 </svg>
               </span>
               <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="memory" title="JS heap; ~ means estimated renderer assets">
@@ -5941,6 +6060,9 @@ class ForkMeshWorld extends HTMLElement {
     // tab's frame-history sparkline, and the heap-growth trend. All stay small
     // and device-local.
     this.diagnosticsFrameHistory = [];
+    // Previous total of the cumulative queue counters, so each history sample
+    // can record the events from that one second rather than the running sum.
+    this.diagnosticsQueueTotal = NaN;
     this.diagnosticsHeapHistory = [];
     this.rendererRecoveryTimer = 0;
     this.rendererRecoveryReloadTimer = 0;
@@ -27569,19 +27691,42 @@ class ForkMeshWorld extends HTMLElement {
       },
       build: { ...this.buildDiagnostics },
     };
-    // Sixty seconds of one-second renderer samples back both live charts.
-    if (snapshot.renderer && !snapshot.renderer.paused) {
-      this.diagnosticsFrameHistory.push({
-        fps: snapshot.renderer.fps,
-        triangles: snapshot.renderer.triangles,
-        memoryMB: snapshot.memory.chartUsedMB,
-        frameTimeMs: snapshot.renderer.frameTimeMs,
-        longestFrameMs: snapshot.renderer.longestFrameMs,
-        longFrames: snapshot.renderer.longFrames,
-      });
-      if (this.diagnosticsFrameHistory.length > 60) {
-        this.diagnosticsFrameHistory.shift();
-      }
+    // Sixty seconds of one-second samples back every live chart — one reading
+    // per health dot. The socket, queue, build and world readings arrive even
+    // while the scene is paused, so the sample is always recorded; the
+    // renderer-derived readings go in as NaN for those seconds and
+    // diagnosticsChartPoints skips them, leaving a gap rather than a dip that
+    // never happened.
+    const liveRenderer =
+      snapshot.renderer && !snapshot.renderer.paused ? snapshot.renderer : null;
+    const dotLevels = diagnosticDotLevels(snapshot);
+    // Coalescing and backpressure counters only ever climb, so the raw totals
+    // would draw a ramp that says nothing about now. Chart the per-second rise
+    // instead: idle stays flat and each stall shows up as its own spike.
+    const queueTotal =
+      snapshot.queues.movementCoalesced +
+      snapshot.queues.profileCoalesced +
+      snapshot.queues.backpressureEvents;
+    const previousQueueTotal = Number.isFinite(this.diagnosticsQueueTotal)
+      ? this.diagnosticsQueueTotal
+      : queueTotal;
+    this.diagnosticsQueueTotal = queueTotal;
+    this.diagnosticsFrameHistory.push({
+      fps: liveRenderer ? liveRenderer.fps : NaN,
+      triangles: liveRenderer ? liveRenderer.triangles : NaN,
+      memoryMB: snapshot.memory.chartUsedMB,
+      frameTimeMs: liveRenderer ? liveRenderer.frameTimeMs : NaN,
+      longestFrameMs: liveRenderer ? liveRenderer.longestFrameMs : NaN,
+      longFrames: liveRenderer ? liveRenderer.longFrames : NaN,
+      inputResponseMs: liveRenderer ? liveRenderer.inputResponseMs : NaN,
+      networkHealth: diagnosticHealthScore(dotLevels.network),
+      trafficRate: snapshot.traffic.inboundRate + snapshot.traffic.outboundRate,
+      queueEvents: Math.max(0, queueTotal - previousQueueTotal),
+      buildHealth: diagnosticHealthScore(dotLevels.build),
+      worldHealth: diagnosticHealthScore(dotLevels.world),
+    });
+    if (this.diagnosticsFrameHistory.length > 60) {
+      this.diagnosticsFrameHistory.shift();
     }
     snapshot.history = [...this.diagnosticsFrameHistory];
     this.noteRendererDiagnosticsHighWater(snapshot);
@@ -27723,47 +27868,7 @@ class ForkMeshWorld extends HTMLElement {
         minuteRefreshProgress.toFixed(4),
       );
     }
-    const worstLevel = (...levels) =>
-      levels.includes("high")
-        ? "high"
-        : levels.includes("caution")
-          ? "caution"
-          : "good";
-    const dotLevels = {
-      fps: renderer ? diagnosticLevel("fps", renderer.fps) : "high",
-      frame: renderer
-        ? worstLevel(
-            diagnosticLevel("longFrames", renderer.longFrames),
-            diagnosticLevel("longestFrameMs", renderer.longestFrameMs),
-          )
-        : "high",
-      draw: renderer
-        ? worstLevel(
-            diagnosticLevel("calls", renderer.calls),
-            diagnosticLevel("triangles", renderer.triangles),
-          )
-        : "high",
-      input: renderer
-        ? worstLevel(
-            diagnosticLevel("movementInputMs", renderer.inputResponseMs),
-            diagnosticLevel("pointerGapMs", renderer.pointerWorstGapMs),
-          )
-        : "high",
-      network: diagnosticStateLevel(connection.state),
-      traffic: worstLevel(
-        diagnosticLevel("frameRate", traffic.inboundRate),
-        diagnosticLevel("frameRate", traffic.outboundRate),
-      ),
-      queue: worstLevel(
-        diagnosticLevel(
-          "coalesced",
-          queues.movementCoalesced + queues.profileCoalesced,
-        ),
-        diagnosticLevel("backpressure", queues.backpressureEvents),
-      ),
-      build: build.version && build.revision ? "good" : "caution",
-      world: renderer?.paused ? "caution" : renderer ? "good" : "high",
-    };
+    const dotLevels = diagnosticDotLevels(snapshot);
     for (const [metric, level] of Object.entries(dotLevels)) {
       const dot = this.$(`[data-diagnostic-dot="${metric}"]`);
       if (!dot) continue;
@@ -27792,19 +27897,35 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  // One chart per health dot, in the dots' own order, plus the memory trace no
+  // dot owns. Each chart takes its colour from the same grading the dot above
+  // it uses, so the strip is the nine dots' last sixty seconds rather than a
+  // second, unrelated view of the same scene.
   renderDiagnosticsChart(snapshot) {
     const chart = this.$("[data-world-diagnostics-chart]");
     if (!chart) return;
     const renderer = snapshot?.renderer;
+    const liveRenderer = renderer && !renderer.paused ? renderer : null;
+    const connection = snapshot?.connection || {};
+    const traffic = snapshot?.traffic || {};
+    const queues = snapshot?.queues || {};
+    const build = snapshot?.build || {};
     const memoryMB = Number(snapshot?.memory?.chartUsedMB);
     const estimatedMemory = snapshot?.memory?.chartSource === "estimated renderer";
     const history = Array.isArray(snapshot?.history) ? snapshot.history : [];
+    const levels = diagnosticDotLevels(snapshot);
     const compactCount = (value) => {
       const count = Math.max(0, Number(value) || 0);
       if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}m`;
       if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
       return `${Math.round(count)}`;
     };
+    const millis = (value) =>
+      Number.isFinite(Number(value)) ? `${Math.round(Number(value))}ms` : "—";
+    // The state dots have no measurement to plot, so they chart their own
+    // verdict on a fixed 0…1 scale — see diagnosticHealthScore.
+    const healthChart = (key) =>
+      diagnosticsChartPoints(history, key, { ceiling: 1 });
     const metrics = {
       fps: {
         value: renderer?.paused
@@ -27813,16 +27934,58 @@ class ForkMeshWorld extends HTMLElement {
             ? renderer.fps.toFixed(0)
             : "—",
         points: diagnosticsChartPoints(history, "fps"),
-        level: renderer ? diagnosticLevel("fps", renderer.fps) : "high",
+        level: levels.fps,
       },
-      triangles: {
+      frame: {
+        value: liveRenderer ? millis(liveRenderer.longestFrameMs) : "—",
+        points: diagnosticsChartPoints(history, "longestFrameMs"),
+        level: levels.frame,
+      },
+      draw: {
         value: renderer ? compactCount(renderer.triangles) : "—",
         points: diagnosticsChartPoints(history, "triangles", {
           zeroBased: false,
         }),
-        level: renderer
-          ? diagnosticLevel("triangles", renderer.triangles)
-          : "high",
+        level: levels.draw,
+      },
+      input: {
+        value: liveRenderer ? millis(liveRenderer.inputResponseMs) : "—",
+        points: diagnosticsChartPoints(history, "inputResponseMs"),
+        level: levels.input,
+      },
+      network: {
+        value: `${Math.max(0, Math.round(Number(connection.peers) || 0))}p`,
+        points: healthChart("networkHealth"),
+        level: levels.network,
+      },
+      traffic: {
+        value: `${(
+          (Number(traffic.inboundRate) || 0) +
+          (Number(traffic.outboundRate) || 0)
+        ).toFixed(0)}/s`,
+        points: diagnosticsChartPoints(history, "trafficRate"),
+        level: levels.traffic,
+      },
+      queue: {
+        value: compactCount(
+          (Number(queues.movementCoalesced) || 0) +
+            (Number(queues.profileCoalesced) || 0) +
+            (Number(queues.backpressureEvents) || 0),
+        ),
+        points: diagnosticsChartPoints(history, "queueEvents"),
+        level: levels.queue,
+      },
+      build: {
+        value: build.version
+          ? String(build.version).replace(/^v/i, "").slice(0, 8)
+          : "—",
+        points: healthChart("buildHealth"),
+        level: levels.build,
+      },
+      world: {
+        value: renderer ? (renderer.paused ? "PAUSED" : "LIVE") : "—",
+        points: healthChart("worldHealth"),
+        level: levels.world,
       },
       memory: {
         value: Number.isFinite(memoryMB)
@@ -27873,7 +28036,12 @@ class ForkMeshWorld extends HTMLElement {
     const version = build.version
       ? `${/^v/i.test(build.version) ? "" : "v"}${build.version}`
       : "build pending";
-    const samples = Array.isArray(history) ? history : [];
+    // History now also carries the seconds the scene sat paused, so the socket
+    // and queue traces stay continuous. Frame health only speaks for seconds
+    // that were actually rendered, so it reads past the paused ones.
+    const samples = (Array.isArray(history) ? history : []).filter((sample) =>
+      Number.isFinite(sample?.frameTimeMs),
+    );
     const spikeSeconds = samples.filter(
       (sample) => sample.longFrames > 0,
     ).length;

@@ -2266,8 +2266,8 @@ void MainWindow::fetchRoomPassphrase()
 void MainWindow::startOfficeChannelMirror()
 {
     // A service-managed mirror keeps this Qt compatibility process only for
-    // repository inbox leases. Office/chat polling is user-facing desktop work
-    // and returned a predictable 401 every 30 seconds for node-only accounts.
+    // repository inbox leases. Office/chat mirroring is user-facing desktop
+    // work and returned a predictable 401 for node-only accounts.
     if (m_headless && qEnvironmentVariableIsSet(
                           "FORKMESH_EXTERNAL_MIRROR_NODE"))
         return;
@@ -2325,7 +2325,9 @@ void MainWindow::startOfficeChannelMirror()
     m_officeChannelMirror->setApiBase(catalogApiUrl());
     m_officeChannelMirror->setIdentity(node, m_profileIdentity.publicKey(),
                                        chatDisplayName());
-    m_officeChannelMirror->start(); // no-op once polling
+    // One channel-list + backlog pass per run; office messages arrive on each
+    // room's socket afterwards, so this heartbeat call is a no-op from here on.
+    m_officeChannelMirror->start();
 }
 
 void MainWindow::showAdminVerifyDialog()
