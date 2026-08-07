@@ -550,6 +550,13 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   prompt->height() > dragged.height(),
               QStringLiteral("the corner grip resizes the floating prompt"));
 
+        // The text area itself has to absorb the extra height, not just leave
+        // blank space above the toolbar (adhoc #1625).
+        auto *promptText =
+            window.findChild<QPlainTextEdit *>(QStringLiteral("issueQuickAdd"));
+        check(promptText && promptText->height() > promptText->minimumHeight(),
+              QStringLiteral("resizing the prompt taller grows the text input itself"));
+
         promptDetach->click();
         QApplication::processEvents();
         auto *detachWindow =
@@ -567,6 +574,30 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("pressing detach again brings the prompt back "
                              "inside the app"));
 
+        // The panel is still floating/resized from the drag+grip gestures above
+        // (adhoc #1625): the explicit reset button is a discoverable alternative
+        // to the handle's double-click gesture and should snap it back the same
+        // way.
+        auto *promptReset =
+            window.findChild<QPushButton *>(QStringLiteral("promptResetButton"));
+        check(promptReset != nullptr,
+              QStringLiteral("the prompt has an explicit reset-placement button"));
+        if (promptReset) {
+            promptReset->click();
+            QApplication::processEvents();
+            check(prompt->parentWidget() == dock &&
+                      prompt->geometry().bottom() == dock->rect().bottom(),
+                  QStringLiteral("the reset button snaps the prompt back to the "
+                                 "footer anchor"));
+        }
+
+        // Re-float it once more so the handle's own double-click gesture (the
+        // longer-standing affordance) is still exercised too.
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-80, -100));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease, grabAt + QPoint(-80, -100));
+        QApplication::processEvents();
+
         QMouseEvent snapBack(QEvent::MouseButtonDblClick,
                              QPointF(promptHandle->width() / 2.0,
                                      promptHandle->height() / 2.0),
@@ -578,6 +609,46 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   prompt->geometry().bottom() == dock->rect().bottom(),
               QStringLiteral("double-clicking the handle snaps the prompt back "
                              "to the footer anchor"));
+
+        // Growing the main window should carry a floating composer along with
+        // the corner it's parked near, not leave it stranded at its old
+        // absolute position (adhoc #1625). Re-float it once more for this
+        // check, done last so it can't perturb the pixel-exact anchor checks
+        // above with any offscreen-platform resize rounding.
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-120, -160));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease, grabAt + QPoint(-120, -160));
+        QApplication::processEvents();
+        if (auto *overlayHost = prompt->parentWidget(); overlayHost != dock) {
+            const QSize originalWindowSize = window.size();
+            const int marginRightBefore =
+                overlayHost->width() - (prompt->x() + prompt->width());
+            const int marginBottomBefore =
+                overlayHost->height() - (prompt->y() + prompt->height());
+            window.resize(window.width() + 160, window.height() + 140);
+            QApplication::processEvents();
+            const int marginRightAfter =
+                overlayHost->width() - (prompt->x() + prompt->width());
+            const int marginBottomAfter =
+                overlayHost->height() - (prompt->y() + prompt->height());
+            check(marginRightAfter == marginRightBefore &&
+                      marginBottomAfter == marginBottomBefore,
+                  QString("growing the window keeps the floating prompt pinned "
+                          "to the same corner (right margin %1 -> %2, bottom "
+                          "margin %3 -> %4)")
+                      .arg(marginRightBefore)
+                      .arg(marginRightAfter)
+                      .arg(marginBottomBefore)
+                      .arg(marginBottomAfter));
+            // Restore the window to its prior size: later checks in this suite
+            // assume the standard test window dimensions.
+            window.resize(originalWindowSize);
+            QApplication::processEvents();
+        }
+        if (promptReset) {
+            promptReset->click();
+            QApplication::processEvents();
+        }
     }
 
     window.testSetLogOverlayExpanded(true);
@@ -709,6 +780,61 @@ void checkFiledPingSyncState(MainWindow &window)
     window.testDismissTopMessage();
     window.testResetNetworkLog();
     window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
+// adhoc #1630: a run finishing is the result the user has been waiting on, and
+// it used to land in silence. It now raises its own card — the agent's icon, a
+// headline naming the run, and the summary the agent signed off with — and
+// pulses the window green, once per run however many times completion fires.
+void checkAgentDoneCelebration(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    AgentSession finished;
+    finished.id = 133894;
+    finished.owner = QStringLiteral("me");
+    finished.name = QStringLiteral("forkmesh");
+    finished.issueNumber = 4242;
+    finished.provider = QStringLiteral("claude-code");
+    finished.prompt = QStringLiteral("Agent-done fixture");
+    finished.status = AgentStatus::Success;
+    finished.startedAtMs = 1'000'000;
+    finished.finishedAtMs = 1'125'000; // 2m 05s
+    finished.costUsd = 0.42;
+    window.testAddAgentSession(finished);
+
+    const QString summary =
+        QStringLiteral("Fixed the login redirect and added a regression test.");
+    window.testNotifyAgentDone(finished.id, summary);
+    QApplication::processEvents();
+
+    const QString headline = window.testTopMessageAgentHeadline();
+    check(window.testTopMessageRaw() == summary &&
+              headline.contains(QStringLiteral("Agent #133894 is done!")) &&
+              headline.contains(QStringLiteral("#4242")) &&
+              headline.contains(QStringLiteral("forkmesh")) &&
+              headline.contains(QStringLiteral("2m 05s")) &&
+              headline.contains(QStringLiteral("$0.42")) &&
+              window.testTopMessageAgentIconShown() &&
+              window.testCelebrationBorderVisible(),
+          QStringLiteral("a finished agent celebrates with its icon, the run's "
+                         "figures and the summary it signed off with"));
+
+    // Completion can be reached more than once for the same run (a re-fired
+    // signal, a requeue); the card must not pile up behind itself.
+    const int queuedAfterFirst = window.testTopMessageQueueDepth();
+    window.testNotifyAgentDone(finished.id, summary);
+    QApplication::processEvents();
+    check(window.testTopMessageQueueDepth() == queuedAfterFirst,
+          QStringLiteral("a completion reported twice celebrates once"));
+
+    window.testRemoveAgentSession(finished.id);
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
     QApplication::processEvents();
 }
 
@@ -2605,6 +2731,7 @@ int main(int argc, char *argv[])
 
     checkLoggedErrorAlert(window);
     checkFiledPingSyncState(window);
+    checkAgentDoneCelebration(window);
     checkCloudLogMonitorAlert(window);
     checkCloudflareLogWindow(window);
 

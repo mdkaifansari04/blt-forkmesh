@@ -2107,27 +2107,58 @@ QStringList MainWindow::importAuthGitArgs(const QString &url) const
                 QString::fromLatin1(basic)};
 }
 
+void MainWindow::setImportStatus(const QString &text, bool error)
+{
+    if (!m_importStatus)
+        return;
+    m_importStatus->setText(text);
+    m_importStatus->setStyleSheet(error ? QStringLiteral("color:#f85149;")
+                                        : QString());
+    m_importStatus->setVisible(!text.isEmpty());
+}
+
+void MainWindow::setImportControlsEnabled(bool enabled)
+{
+    if (m_importButton)
+        m_importButton->setEnabled(enabled);
+    if (m_importUrlEdit)
+        m_importUrlEdit->setEnabled(enabled);
+}
+
 void MainWindow::importRemoteRepository()
 {
     if (!m_importUrlEdit || !m_importButton)
         return;
     const QString url = m_importUrlEdit->text().trimmed();
-    auto setStatus = [this](const QString &text, bool error) {
-        if (!m_importStatus)
-            return;
-        m_importStatus->setText(text);
-        m_importStatus->setStyleSheet(error ? QStringLiteral("color:#f85149;")
-                                            : QString());
-        m_importStatus->setVisible(!text.isEmpty());
-    };
 
     const QUrl parsed(url);
     if (url.isEmpty() || !parsed.isValid() ||
         (parsed.scheme() != QLatin1String("https") &&
          parsed.scheme() != QLatin1String("http"))) {
-        setStatus("Enter an https URL to a GitHub or GitLab repository.", true);
+        setImportStatus(
+            "Enter an https URL to a GitHub or GitLab repository, or a GitLab "
+            "group to import the whole organization.", true);
         return;
     }
+
+    // A GitLab group path and a project path look identical, so ask GitLab
+    // which it is before choosing between importing one repository and
+    // importing the entire organization.
+    const QString groupPath = gitlabGroupPathFor(parsed);
+    if (!groupPath.isEmpty()) {
+        probeGitlabGroup(url, groupPath);
+        return;
+    }
+    importSingleRemoteRepository(url);
+}
+
+void MainWindow::importSingleRemoteRepository(const QString &url)
+{
+    if (!m_importUrlEdit || !m_importButton)
+        return;
+    auto setStatus = [this](const QString &text, bool error) {
+        setImportStatus(text, error);
+    };
 
     const QString name = repoNameFromUrl(url);
     if (repoIndexFor(accountOwner(), name) >= 0) {
@@ -2219,6 +2250,375 @@ void MainWindow::importRemoteRepository()
     trackProcessActivity(process, QStringLiteral("clone"),
                          QStringLiteral("Cloning %1").arg(url));
     process->start();
+}
+
+namespace {
+// Same shape the relay's importer accepts: a path segment that cannot smuggle
+// a traversal, a query, or another host into the GitLab API request built from
+// it. Rejecting here keeps the desktop's API calls as narrow as the Worker's.
+bool safeGitlabSegment(const QString &segment)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^[A-Za-z0-9_.-]{1,100}$"));
+    return pattern.match(segment).hasMatch();
+}
+
+// GitLab's own reserved first segments. Without this, "gitlab.com/explore" or
+// "gitlab.com/help" would be probed as if they named an organization.
+bool reservedGitlabRoot(const QString &segment)
+{
+    static const QStringList reserved{
+        QStringLiteral("explore"),   QStringLiteral("help"),
+        QStringLiteral("dashboard"), QStringLiteral("projects"),
+        QStringLiteral("groups"),    QStringLiteral("users"),
+        QStringLiteral("admin"),     QStringLiteral("search"),
+        QStringLiteral("api"),       QStringLiteral("-"),
+    };
+    return reserved.contains(segment, Qt::CaseInsensitive);
+}
+} // namespace
+
+QString MainWindow::gitlabGroupPathFor(const QUrl &url) const
+{
+    if (url.scheme() != QLatin1String("https"))
+        return {};
+    const QString host = url.host().toLower();
+    if (host != QLatin1String("gitlab.com") &&
+        host != QLatin1String("www.gitlab.com"))
+        return {};
+    if (url.port(443) != 443 || url.hasQuery() || url.hasFragment() ||
+        !url.userInfo().isEmpty())
+        return {};
+    QString path = url.path();
+    if (path.endsWith(QLatin1String(".git")))
+        path.chop(4);
+    const QStringList parts =
+        path.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    // A group may nest subgroups, so any depth can name one; the probe decides
+    // whether this particular path is a group or a project.
+    if (parts.isEmpty() || parts.size() > 20 ||
+        reservedGitlabRoot(parts.first()))
+        return {};
+    for (const QString &part : parts) {
+        if (!safeGitlabSegment(part))
+            return {};
+    }
+    return parts.join(QLatin1Char('/'));
+}
+
+void MainWindow::probeGitlabGroup(const QString &url, const QString &groupPath)
+{
+    if (!m_networkAccess) {
+        // Without a network stack the group question cannot be answered; a
+        // single-repository clone is the honest fallback and still works.
+        importSingleRemoteRepository(url);
+        return;
+    }
+    setImportControlsEnabled(false);
+    setImportStatus(QStringLiteral("Checking whether %1 is a GitLab group…")
+                        .arg(groupPath),
+                    false);
+
+    QUrl api(QStringLiteral("https://gitlab.com/api/v4/groups/") +
+             QString::fromUtf8(QUrl::toPercentEncoding(groupPath)));
+    QNetworkRequest request(api);
+    request.setTransferTimeout(15000);
+    request.setRawHeader(QByteArrayLiteral("Accept"),
+                         QByteArrayLiteral("application/json"));
+    const QString token =
+        QSettings().value(kGitlabTokenSetting).toString().trimmed();
+    if (!token.isEmpty())
+        request.setRawHeader(QByteArrayLiteral("PRIVATE-TOKEN"),
+                             token.toUtf8());
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, url, groupPath] {
+                reply->deleteLater();
+                const int status =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                const bool isGroup =
+                    reply->error() == QNetworkReply::NoError && status == 200;
+                if (!isGroup) {
+                    setImportControlsEnabled(true);
+                    setImportStatus(QString(), false);
+                    importSingleRemoteRepository(url);
+                    return;
+                }
+                logSystem("Import: " + groupPath +
+                          " is a GitLab group; listing its projects.");
+                m_gitlabGroupImport = GitlabGroupImport{};
+                m_gitlabGroupImport.group = groupPath;
+                fetchGitlabGroupProjects(groupPath, 1);
+            });
+}
+
+void MainWindow::fetchGitlabGroupProjects(const QString &groupPath, int page)
+{
+    if (!m_networkAccess) {
+        finishGitlabGroupImport();
+        return;
+    }
+    // One page per request, bounded: an organization larger than this is
+    // reported rather than silently truncated, and the node never spends an
+    // unbounded number of requests on a single button press.
+    constexpr int kPerPage = 100;
+    constexpr int kMaxPages = 10;
+    setImportStatus(
+        QStringLiteral("Listing %1 — %2 projects found so far…")
+            .arg(groupPath)
+            .arg(m_gitlabGroupImport.cloneUrls.size()),
+        false);
+
+    QUrl api(QStringLiteral("https://gitlab.com/api/v4/groups/") +
+             QString::fromUtf8(QUrl::toPercentEncoding(groupPath)) +
+             QStringLiteral("/projects"));
+    QUrlQuery query;
+    // include_subgroups is what makes this the *entire* organization rather
+    // than only the projects sitting at the group's top level.
+    query.addQueryItem(QStringLiteral("include_subgroups"),
+                       QStringLiteral("true"));
+    query.addQueryItem(QStringLiteral("archived"), QStringLiteral("false"));
+    query.addQueryItem(QStringLiteral("order_by"), QStringLiteral("path"));
+    query.addQueryItem(QStringLiteral("sort"), QStringLiteral("asc"));
+    query.addQueryItem(QStringLiteral("per_page"), QString::number(kPerPage));
+    query.addQueryItem(QStringLiteral("page"), QString::number(page));
+    api.setQuery(query);
+
+    QNetworkRequest request(api);
+    request.setTransferTimeout(20000);
+    request.setRawHeader(QByteArrayLiteral("Accept"),
+                         QByteArrayLiteral("application/json"));
+    const QString token =
+        QSettings().value(kGitlabTokenSetting).toString().trimmed();
+    if (!token.isEmpty())
+        request.setRawHeader(QByteArrayLiteral("PRIVATE-TOKEN"),
+                             token.toUtf8());
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, groupPath, page] {
+                reply->deleteLater();
+                const QByteArray raw = reply->readAll();
+                const int status =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                if (reply->error() != QNetworkReply::NoError || status != 200) {
+                    if (m_gitlabGroupImport.cloneUrls.isEmpty()) {
+                        setImportControlsEnabled(true);
+                        setImportStatus(
+                            QStringLiteral("Could not list %1 (HTTP %2). A "
+                                           "private group needs a GitLab token "
+                                           "in Settings.")
+                                .arg(groupPath)
+                                .arg(status),
+                            true);
+                        logSystem("Import: listing " + groupPath +
+                                  " failed with HTTP " +
+                                  QString::number(status) + ".");
+                        return;
+                    }
+                    // Some pages already landed: import them rather than
+                    // discarding an organization over one bad page.
+                    logSystem("Import: listing " + groupPath +
+                              " stopped early at page " +
+                              QString::number(page) + ".");
+                    cloneNextGitlabGroupProject();
+                    return;
+                }
+                const QJsonArray rows =
+                    QJsonDocument::fromJson(raw).array();
+                for (const QJsonValue &value : rows) {
+                    const QJsonObject project = value.toObject();
+                    const QString cloneUrl =
+                        project.value(QStringLiteral("http_url_to_repo"))
+                            .toString()
+                            .trimmed();
+                    if (cloneUrl.isEmpty() ||
+                        !cloneUrl.startsWith(QLatin1String("https://")))
+                        continue;
+                    // Subgroups can hold same-named projects, so a colliding
+                    // leaf name falls back to its full path within the group.
+                    const QString fullPath =
+                        project.value(QStringLiteral("path_with_namespace"))
+                            .toString();
+                    QString name = repoNameFromUrl(cloneUrl);
+                    if (name.isEmpty())
+                        continue;
+                    const bool taken =
+                        repoIndexFor(accountOwner(), name) >= 0 ||
+                        m_gitlabGroupImport.names.contains(name);
+                    if (taken && !fullPath.isEmpty()) {
+                        QString flattened = fullPath;
+                        flattened.replace(QLatin1Char('/'), QLatin1Char('-'));
+                        name = repoSegment(flattened,
+                                           QStringLiteral("repository"));
+                    }
+                    if (repoIndexFor(accountOwner(), name) >= 0 ||
+                        m_gitlabGroupImport.names.contains(name)) {
+                        logSystem("Import: skipping " + cloneUrl +
+                                  " — a repository named \"" + name +
+                                  "\" already exists.");
+                        m_gitlabGroupImport.failed += 1;
+                        continue;
+                    }
+                    m_gitlabGroupImport.cloneUrls.append(cloneUrl);
+                    m_gitlabGroupImport.names.append(name);
+                }
+                if (rows.size() == kPerPage && page < kMaxPages) {
+                    fetchGitlabGroupProjects(groupPath, page + 1);
+                    return;
+                }
+                if (rows.size() == kPerPage)
+                    logSystem("Import: " + groupPath + " has more than " +
+                              QString::number(kPerPage * kMaxPages) +
+                              " projects; importing the first pages only.");
+                if (m_gitlabGroupImport.cloneUrls.isEmpty()) {
+                    setImportControlsEnabled(true);
+                    setImportStatus(
+                        QStringLiteral("%1 has no new projects to import.")
+                            .arg(groupPath),
+                        true);
+                    return;
+                }
+                // The destination is chosen once for the whole organization;
+                // each project becomes a folder inside it.
+                const QString parent = QFileDialog::getExistingDirectory(
+                    this,
+                    QStringLiteral("Choose where to clone the %1 group (%2 "
+                                   "repositories)")
+                        .arg(groupPath)
+                        .arg(m_gitlabGroupImport.cloneUrls.size()),
+                    QDir::homePath());
+                if (parent.isEmpty()) {
+                    m_gitlabGroupImport = GitlabGroupImport{};
+                    setImportControlsEnabled(true);
+                    setImportStatus(QString(), false);
+                    return;
+                }
+                m_gitlabGroupImport.parentDir = parent;
+                m_gitlabGroupImport.total =
+                    m_gitlabGroupImport.cloneUrls.size();
+                logSystem("Import: cloning " +
+                          QString::number(m_gitlabGroupImport.total) +
+                          " projects from the GitLab group " + groupPath +
+                          " into " + parent + ".");
+                cloneNextGitlabGroupProject();
+            });
+}
+
+void MainWindow::cloneNextGitlabGroupProject()
+{
+    if (m_gitlabGroupImport.cloneUrls.isEmpty() ||
+        m_gitlabGroupImport.parentDir.isEmpty()) {
+        finishGitlabGroupImport();
+        return;
+    }
+    const QString url = m_gitlabGroupImport.cloneUrls.takeFirst();
+    const QString name = m_gitlabGroupImport.names.takeFirst();
+    const QString dest = QDir(m_gitlabGroupImport.parentDir).filePath(name);
+    // Derived from what is left in the queue, not from the imported/failed
+    // tallies: those also count projects skipped while listing, before the
+    // queue existed.
+    const int position =
+        m_gitlabGroupImport.total - m_gitlabGroupImport.cloneUrls.size();
+    setImportStatus(QStringLiteral("Cloning %1 (%2 of %3)…")
+                        .arg(name)
+                        .arg(position)
+                        .arg(m_gitlabGroupImport.total),
+                    false);
+
+    if (QDir(dest).exists() && !QDir(dest).isEmpty()) {
+        logSystem("Import: skipping " + url + " — " + dest +
+                  " already exists and is not empty.");
+        m_gitlabGroupImport.failed += 1;
+        // Continue on the event loop rather than recursing: a large group
+        // whose folders all exist would otherwise nest hundreds of frames.
+        QTimer::singleShot(0, this,
+                           [this] { cloneNextGitlabGroupProject(); });
+        return;
+    }
+
+    const QStringList args =
+        importAuthGitArgs(url) + QStringList{"clone", url, dest};
+    auto *process = new QProcess(this);
+    process->setProgram(QStringLiteral("git"));
+    process->setArguments(args);
+    connect(process, &QProcess::finished, this,
+            [this, process, dest, name, url](int exitCode, QProcess::ExitStatus) {
+                const QString errors =
+                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                process->deleteLater();
+                if (exitCode != 0) {
+                    m_gitlabGroupImport.failed += 1;
+                    logSystem("Import: clone failed for " + url + ": " +
+                              errors.right(300));
+                    cloneNextGitlabGroupProject();
+                    return;
+                }
+
+                RepositoryRecord repo;
+                repo.localPath = dest;
+                repo.name = name;
+                repo.owner = accountOwner();
+                repo.solanaAddress = savedSolanaAddress();
+                repo.publishToNetwork = true;
+                repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+                repo.mirrorPath =
+                    repositoryMirrorRoot() + "/" +
+                    repoSegment(repo.owner, QStringLiteral("owner")) + "-" +
+                    repoSegment(repo.name, QStringLiteral("repository")) + ".git";
+
+                m_repositories.append(repo);
+                saveRepositories();
+                refreshRepositoryList();
+                if (m_backend)
+                    m_backend->addChannel(repositoryChannel(repo));
+                publishRepositoryAfterMirrorRefresh(m_repositories.size() - 1,
+                                                    false);
+                m_gitlabGroupImport.imported += 1;
+                logSystem("Import: cloned " + url + " as " + repo.owner + "/" +
+                          repo.name + ".");
+                cloneNextGitlabGroupProject();
+            });
+    trackProcessActivity(process, QStringLiteral("clone"),
+                         QStringLiteral("Cloning %1").arg(url));
+    process->start();
+}
+
+void MainWindow::finishGitlabGroupImport()
+{
+    const GitlabGroupImport summary = m_gitlabGroupImport;
+    m_gitlabGroupImport = GitlabGroupImport{};
+    setImportControlsEnabled(true);
+    if (summary.group.isEmpty())
+        return;
+    if (!summary.imported) {
+        setImportStatus(QStringLiteral("No repositories were imported from %1.")
+                            .arg(summary.group),
+                        true);
+    } else {
+        setImportStatus(
+            QStringLiteral("Imported %1 of %2 repositories from %3%4 — "
+                           "mirroring and publishing now.")
+                .arg(summary.imported)
+                .arg(summary.total ? summary.total : summary.imported)
+                .arg(summary.group,
+                     summary.failed
+                         ? QStringLiteral(" (%1 skipped)").arg(summary.failed)
+                         : QString()),
+            false);
+        if (m_importUrlEdit)
+            m_importUrlEdit->clear();
+    }
+    logSystem(QStringLiteral(
+                  "Import: GitLab group %1 finished — %2 imported, %3 skipped.")
+                  .arg(summary.group)
+                  .arg(summary.imported)
+                  .arg(summary.failed));
+    if (summary.imported)
+        flashMessage(QStringLiteral("Imported %1 repositories from %2.")
+                         .arg(summary.imported)
+                         .arg(summary.group));
 }
 
 QString MainWindow::repositoryWebUrl(const QString &owner,

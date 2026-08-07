@@ -1327,6 +1327,7 @@ def test_fresh_healthy_ok_https_endpoint_hydrates_mirror_online():
         "_LIVE_HOST_PROBE_MEMO": {},
         "LIVE_HOST_PROBE_MEMO_TTL_MS": 30_000,
         "HYDRATE_PROBE_MAX": 8,
+        "HYDRATE_PROBE_BUDGET_MS": 1_500,
         "safe_segment": lambda value: str(value or ""),
         "ensure_schema": ensure_schema,
         "d1_first": d1_first,
@@ -1464,12 +1465,14 @@ def test_reachability_probe_asks_every_group_mirror_before_judging_it():
         "repository_proof_failed") < classifier.index("endpoint_stale")
 
 
-def test_hydrate_live_host_probes_capped_concurrent_and_memoized():
-    # adhoc #167: hydrate used to await one DO probe per stale group member
-    # SEQUENTIALLY (up to HOST_COUNT_TIMEOUT_MS each) on every public
-    # info/refs. A group full of dead mirrors (fleet die-off) hung the request
-    # until the Workers runtime canceled it ("Cannot enter into task").
-    # Probes must be capped per request and memoized across calls so repeated
+def test_hydrate_live_host_probes_capped_budgeted_and_memoized():
+    # adhoc #167: hydrate used to await one DO probe per stale group member on
+    # every public info/refs, unbounded. A group full of dead mirrors (fleet
+    # die-off) hung the request until the Workers runtime canceled it ("Cannot
+    # enter into task"). Gathering them instead traded that for a worse
+    # failure -- concurrent Pyodide tasks wedge the isolate outright -- so the
+    # probes are sequential again, but now capped, wall-clock budgeted, and
+    # memoized across calls so repeated
     # requests walk a large group instead of re-probing all of it every time.
     probed = []
 
@@ -1479,9 +1482,11 @@ def test_hydrate_live_host_probes_capped_concurrent_and_memoized():
 
     namespace = {
         "asyncio": asyncio,
+        "Date": _Clock,  # frozen, so the budget below never trips in this test
         "_LIVE_HOST_PROBE_MEMO": {},
         "LIVE_HOST_PROBE_MEMO_TTL_MS": 30_000,
         "HYDRATE_PROBE_MAX": 8,
+        "HYDRATE_PROBE_BUDGET_MS": 1_500,
         "repo_live_host_count": repo_live_host_count,
     }
     hydrate, _ = _load(
@@ -1520,9 +1525,16 @@ def test_hydrate_live_host_probes_capped_concurrent_and_memoized():
     # Presence reflects the ground truth gathered across the calls.
     assert "live" in presence
     assert not any(key.startswith("dead") for key in presence)
-    # The probes themselves must run concurrently (one timeout for the whole
-    # batch, not one per mirror) -- the sequential await is what hung info/refs.
+    # The probes run one at a time. Gathering them put a fan-out of Durable
+    # Object subrequests in flight as concurrent Pyodide tasks, which the
+    # Workers Python runtime can re-enter -- and a re-entered task wedges the
+    # isolate into answering 1101 for every later request (see
+    # tests/test_worker_task_concurrency.py). Sequentially, the count cap is no
+    # longer a latency bound on its own, so the pass also carries a wall-clock
+    # budget and leaves the rest to the memo.
     src = _WORKER_SRC[_WORKER_SRC.index(
         "async def hydrate_repo_group_live_hosts"):]
     src = src[:src.index("\nasync def ", 10)]
-    assert "asyncio.gather" in src
+    assert "asyncio.gather" not in src
+    assert "hosts = await repo_live_host_count(" in src
+    assert "HYDRATE_PROBE_BUDGET_MS" in src

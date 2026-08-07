@@ -4,7 +4,9 @@
 // injects the deferred, same-origin SGP4 engine only after that snapshot is
 // valid. This module initializes each compact OMM record once, then propagates
 // it locally between refreshes. Stars, planets, and satellites use three total
-// draw calls: one Points object and two InstancedMesh objects.
+// draw calls: one Points object and two InstancedMesh objects, and all three
+// are gated on a night sky being looked at — the daytime or horizon-level view
+// draws only the sun, the moon, and their shared glow ring.
 
 export const WORLD_SKY_SEED = 0x464d534b;
 export const WORLD_SKY_MAX_STARS = 1600;
@@ -14,6 +16,16 @@ export const WORLD_SKY_RADIUS = 760;
 export const WORLD_SKY_SATELLITE_RADIUS = 690;
 export const WORLD_SKY_TICK_MS = 1000;
 export const WORLD_SKY_MAX_PROPAGATION_DAYS = 14;
+// Deep-sky detail (stars, planets, satellites) is only worth its triangles and
+// its SGP4 propagation while the view is actually tilted upward. The enter and
+// exit thresholds are the sine of the view pitch, and the gap between them
+// keeps a camera resting near the horizon from flickering the layer on and off.
+export const WORLD_SKY_LOOK_UP_ENTER = 0.14;
+export const WORLD_SKY_LOOK_UP_EXIT = 0.045;
+// Above this daylight strength the sky is simply blue: the deep-sky layer is
+// hidden and only the sun (and the moon, which is below the horizon anyway)
+// keeps its instance.
+export const WORLD_SKY_NIGHT_DAYLIGHT_MAX = 0.35;
 
 const TAU = Math.PI * 2;
 const DAY_MS = 86_400_000;
@@ -158,6 +170,25 @@ export function generateWorldStarField(
     }
   }
   return { count, positions, colors };
+}
+
+/**
+ * Decide whether a view direction counts as "looking up", with hysteresis so a
+ * camera hovering on the threshold does not toggle the deep-sky layer every
+ * frame. A malformed or zero-length direction keeps the previous answer.
+ */
+export function worldSkyLookingUp(direction, previous = false) {
+  const wasLookingUp = previous === true;
+  const x = finiteNumber(direction?.x);
+  const y = finiteNumber(direction?.y);
+  const z = finiteNumber(direction?.z);
+  if (x === null || y === null || z === null) return wasLookingUp;
+  const length = Math.hypot(x, y, z);
+  if (!(length > 0)) return wasLookingUp;
+  const rise = y / length;
+  return wasLookingUp
+    ? rise > WORLD_SKY_LOOK_UP_EXIT
+    : rise > WORLD_SKY_LOOK_UP_ENTER;
 }
 
 /**
@@ -360,7 +391,10 @@ function disposeMaterial(material) {
  *
  * API:
  *   update(snapshot, sgp4Engine)     accept a bounded OMM response
- *   tick(epochMs, cameraPosition)    move sky origin and advance satellites
+ *   tick(epochMs, cameraPosition, viewDirection)
+ *                                    move sky origin, gate the deep-sky layer
+ *                                    on the view, and advance satellites
+ *   setViewDirection(direction)      gate the deep-sky layer on its own
  *   dispose()                        remove and release GPU resources
  */
 export function createWorldSky({
@@ -449,13 +483,17 @@ export function createWorldSky({
     fog: false,
   });
   // The sun and moon share the existing planet draw call. They move with
-  // local civil time, but do not add two more meshes to every frame.
-  const sunInstanceIndex = WORLD_SKY_PLANETS.length;
-  const moonInstanceIndex = sunInstanceIndex + 1;
+  // local civil time, but do not add two more meshes to every frame. They take
+  // the first two instance slots so the daytime sky can drop the planets by
+  // shortening `count` instead of paying for six invisible spheres.
+  const sunInstanceIndex = 0;
+  const moonInstanceIndex = 1;
+  const planetInstanceOffset = moonInstanceIndex + 1;
+  const planetInstanceCount = planetInstanceOffset + WORLD_SKY_PLANETS.length;
   const planets = new THREE.InstancedMesh(
     planetGeometry,
     planetMaterial,
-    WORLD_SKY_PLANETS.length + 2,
+    planetInstanceCount,
   );
   planets.name = "forkmesh-world-planets";
   planets.frustumCulled = false;
@@ -475,9 +513,9 @@ export function createWorldSky({
     );
     transform.scale.setScalar(planet.size);
     transform.updateMatrix();
-    planets.setMatrixAt(index, transform.matrix);
+    planets.setMatrixAt(planetInstanceOffset + index, transform.matrix);
     color.set(planet.color);
-    planets.setColorAt(index, color);
+    planets.setColorAt(planetInstanceOffset + index, color);
   });
   planets.instanceMatrix.needsUpdate = true;
   if (planets.instanceColor) planets.instanceColor.needsUpdate = true;
@@ -509,6 +547,30 @@ export function createWorldSky({
   celestialGlows.frustumCulled = false;
   celestialGlows.renderOrder = -19;
   group.add(celestialGlows);
+
+  // Until a caller passes a view direction the sky behaves as it always did.
+  let lookingUp = true;
+  let nightStrength = 0;
+  // Matches the freshly constructed Three.js objects; the construction-time
+  // setDaylightMinute() call below reconciles them with the real time of day.
+  let deepSkyVisible = true;
+  let deepSkyStale = true;
+
+  // Stars, planets, and satellites are the expensive half of this layer, and
+  // they are only legible at night with the view tilted upward. Gate all three
+  // on that so the daytime and horizon-level World pays for the sun, the moon,
+  // and their shared glow ring — nothing else.
+  function applyDeepSkyVisibility() {
+    const visible = lookingUp && nightStrength > 0;
+    if (visible === deepSkyVisible) return;
+    deepSkyVisible = visible;
+    stars.visible = visible;
+    satellites.visible = visible;
+    planets.count = visible ? planetInstanceCount : planetInstanceOffset;
+    // Orbits kept moving while nothing was propagating them, so the first tick
+    // after the layer returns re-propagates instead of showing a stale frame.
+    if (visible) deepSkyStale = true;
+  }
 
   function setDaylightMinute(value, daylightStrength = null) {
     const minute = (
@@ -561,7 +623,15 @@ export function createWorldSky({
       0,
       1,
     );
-    starMaterial.opacity = 0.08 + (1 - visibleDaylight) * 0.86;
+    // Fade the stars out exactly as dawn reaches the cutoff that hides them, so
+    // the layer switching off is never a visible pop.
+    nightStrength = clamp(
+      1 - visibleDaylight / WORLD_SKY_NIGHT_DAYLIGHT_MAX,
+      0,
+      1,
+    );
+    starMaterial.opacity = nightStrength * 0.94;
+    applyDeepSkyVisibility();
     planets.instanceMatrix.needsUpdate = true;
     if (planets.instanceColor) planets.instanceColor.needsUpdate = true;
     celestialGlows.instanceMatrix.needsUpdate = true;
@@ -570,7 +640,6 @@ export function createWorldSky({
     }
     return minute;
   }
-  setDaylightMinute(12 * 60, 1);
 
   const satelliteGeometry = new THREE.OctahedronGeometry(
     compact ? 0.72 : 0.9,
@@ -592,6 +661,10 @@ export function createWorldSky({
   satellites.renderOrder = -10;
   satellites.instanceMatrix.setUsage?.(THREE.DynamicDrawUsage);
   group.add(satellites);
+
+  // Runs only now that every gated object exists, so the very first frame is
+  // already in the correct day/night state instead of flashing a full sky.
+  setDaylightMinute(12 * 60, 1);
 
   if (parent?.add) parent.add(group);
 
@@ -620,8 +693,20 @@ export function createWorldSky({
     return records.length;
   }
 
-  function tick(timestampMs = Date.now(), cameraPosition = null) {
+  function setViewDirection(direction) {
+    if (disposed) return lookingUp;
+    lookingUp = worldSkyLookingUp(direction, lookingUp);
+    applyDeepSkyVisibility();
+    return lookingUp;
+  }
+
+  function tick(
+    timestampMs = Date.now(),
+    cameraPosition = null,
+    viewDirection = null,
+  ) {
     if (disposed) return false;
+    if (viewDirection) setViewDirection(viewDirection);
     if (
       cameraPosition &&
       Number.isFinite(cameraPosition.x) &&
@@ -635,12 +720,16 @@ export function createWorldSky({
       );
     }
     const now = finiteNumber(timestampMs);
+    // A hidden satellite layer costs nothing: SGP4 runs again on the first tick
+    // after it becomes visible, not while nobody can see the result.
     if (
       now === null ||
-      now - lastSatelliteTick < safeTickInterval
+      !deepSkyVisible ||
+      (!deepSkyStale && now - lastSatelliteTick < safeTickInterval)
     ) {
       return false;
     }
+    deepSkyStale = false;
     lastSatelliteTick = now;
     for (let index = 0; index < records.length; index += 1) {
       const valid = propagateWorldSatelliteOmm(
@@ -687,7 +776,15 @@ export function createWorldSky({
       sourceEpoch,
       disposed,
       sunAndMoon: 2,
-      drawCalls: 4,
+      lookingUp,
+      night: nightStrength > 0,
+      deepSkyVisible,
+      // The sun, the moon, and their glow ring are always drawn. Stars and
+      // satellites only join them while the night sky is being looked at.
+      drawCalls:
+        2 +
+        (deepSkyVisible ? 1 : 0) +
+        (deepSkyVisible && records.length ? 1 : 0),
     };
   }
 
@@ -715,6 +812,7 @@ export function createWorldSky({
     celestialGlows,
     satellites,
     setDaylightMinute,
+    setViewDirection,
     update,
     tick,
     dispose,
