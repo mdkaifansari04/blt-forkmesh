@@ -96,6 +96,11 @@ def main(argv: list[str]) -> int:
         if path.is_dir() or path.name.startswith("."):
             continue
         relative = path.relative_to(SOURCE)
+        # Byte-for-byte staging (below) would otherwise attach every .pyc
+        # pytest left in src/__pycache__ — 3.7MB of duplicate modules the
+        # runtime never imports, straight onto the 10021 startup budget.
+        if "__pycache__" in relative.parts:
+            continue
         raw = path.read_bytes()
         before += len(raw)
         if path.suffix != ".py":

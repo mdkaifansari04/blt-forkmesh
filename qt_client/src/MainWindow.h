@@ -1848,7 +1848,9 @@ private:
     // mirror, byte-for-byte identical to the worker's advertised_refs_canonical().
     // The owner signs this on publish and the relay pins it. Empty when the mirror
     // path is unset/unreadable.
-    QString mirrorStateHash(const QString &mirrorPath) const;
+    // Static and free of member state so the mirror-advert worker thread can
+    // fingerprint a mirror without capturing `this`.
+    static QString mirrorStateHash(const QString &mirrorPath);
     // Signed catalog-list URL (adds our viewer token so the relay also returns our
     // own private repos). Shared by fetchCatalogRepos() and refreshRepoPinBanner().
     QUrl catalogListUrl();
@@ -5610,8 +5612,9 @@ private:
     QString logBadgeFor(const QString &storedLine) const; // category of a line
     QString logAccentFor(const QString &storedLine) const; // badge colour of a line
     void rebuildLogFilterButtons(); // (re)build the category chip row
-    // "GIT 42" — chip text for a category, count included once it has one.
-    QString logFilterChipLabel(const QString &name, const QString &category) const;
+    // Buffered events in a category (empty category = the whole log), shown on
+    // the chip's corner badge.
+    int logFilterChipCount(const QString &category) const;
     void updateLogFilterChipCounts(); // refresh the counts without rebuilding
     void refreshLogTimelineChart();
     void appendLogTimelineEntry(const QString &storedLine);
@@ -5942,14 +5945,19 @@ private:
     void autoSyncMirrorsIfRelayHealthy();
     // Re-arm the mirror sync timer after interval updates from Settings.
     void restartMirrorSyncTimer();
-    // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
-    // pull it immediately instead of waiting for the next auto-sync tick.
+    // Roster-driven catch-up: when a peer advertises a ref-set fingerprint (or,
+    // for older peers, a HEAD commit) our mirror lacks, pull immediately.
     void syncMirrorsBehindRoster();
     // `git cat-file -e` probe with memoized positive answers, so the roster
     // reconcile doesn't re-spawn git for the same converged tip on every peer
     // hello (adhoc #82).
     bool mirrorHasCommit(const QString &mirrorPath, const QString &commit);
     QSet<QString> m_mirrorCommitsPresent; // "<mirrorPath>\x1f<commit>" seen present
+    // "<repo>\x1f<peer>" -> the last ref fingerprint we already reconciled for
+    // that peer. Ref-set equality is symmetric, so a node that is AHEAD of a
+    // peer differs from it forever; without this, every peer hello would
+    // re-trigger a sync that can never make the two match.
+    QHash<QString, QString> m_mirrorRefsFingerprintActed;
     // Source-of-truth catch-up: online mirrors merge (and drain) web-submitted
     // issues/PRs/discussions directly into the branches they serve, so when a
     // peer advertises commits this node's OWN repo lacks, fast-forward the
@@ -5962,7 +5970,9 @@ private:
     // for the safety sync, so counts and content converge right away.
     void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
-    // mirror the same repo. `commit` is the new HEAD it advanced to.
+    // mirror the same repo. `commit` is its primary HEAD for status display;
+    // the wake-up still fetches all refs because collaboration branches may be
+    // the only refs that changed.
     void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName,
                              const QString &commit);
     // A peer reported it finished pulling "owner/name" up to `commit` — the

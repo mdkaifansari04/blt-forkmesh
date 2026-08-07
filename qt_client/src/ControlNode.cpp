@@ -1626,7 +1626,7 @@ CloudflareBootstrapCommand buildCloudflareTailCommand(
     // log. parseCloudflareTailLine() renders the line instead (adhoc #1615).
     command.arguments = {
         QStringLiteral("--yes"),
-        QStringLiteral("wrangler@4.42.1"),
+        QStringLiteral("wrangler@4.120.0"),
         QStringLiteral("tail"),
         QStringLiteral("--format"),
         QStringLiteral("json"),
