@@ -19,9 +19,18 @@ def _wallet_leaderboard_body():
 
 def test_shared_public_endpoint_exposes_every_board():
     assert '"/api/leaderboards"' in ENTRY
-    assert "await asyncio.gather(" in ENTRY.split(
+    overview = ENTRY.split(
         "async def leaderboards_overview", 1
     )[1].split("async def prune_site_referrers", 1)[0]
+    # One source at a time. Gathering the five put five Pyodide tasks in
+    # flight inside one request, and a re-entered task wedges the isolate into
+    # answering 1101 for every later request (see
+    # tests/test_worker_task_concurrency.py). Each source keeps its own cache,
+    # so the endpoint stays cheap despite the sequential reads.
+    assert "asyncio.gather(" not in overview
+    assert "result = await source()" in overview
+    # A single failing board still must not take the hub down (adhoc #225).
+    assert "degraded.append(name)" in overview
     for board_id in (
         "activity",
         "uptime",

@@ -64,7 +64,11 @@ def test_account_event_push_targets_the_owner_node_durable_object():
     assert "repo=" not in source
     # Best-effort: a push must never fail the write that triggered it.
     assert "except Exception:" in source
-    assert "asyncio.wait_for(" in source
+    # Awaited directly. Wrapping a JS-backed await in asyncio.wait_for leaves
+    # the cancelled Pyodide task pending forever and wedges the isolate for
+    # every later request — see tests/test_worker_task_concurrency.py.
+    assert "await node_object.fetch(" in source
+    assert "await asyncio.wait_for(" not in source
 
 
 def test_account_event_push_coalesces_a_burst_for_one_account():
