@@ -906,6 +906,26 @@ bool MainWindow::testClickSourceControlPath(const QString &path)
     return false;
 }
 
+QString MainWindow::testArrowOnSourceControl(bool down)
+{
+    if (!m_scmTree)
+        return QString();
+    m_scmTree->setFocus();
+    const Qt::Key key = down ? Qt::Key_Down : Qt::Key_Up;
+    QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+    QApplication::sendEvent(m_scmTree, &press);
+    QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+    QApplication::sendEvent(m_scmTree, &release);
+    QApplication::processEvents();
+    QTreeWidgetItem *item = m_scmTree->currentItem();
+    return item ? item->data(0, Qt::UserRole).toString() : QString();
+}
+
+QString MainWindow::testBranchStickyHeaderText() const
+{
+    return m_branchStickyPath ? m_branchStickyPath->text() : QString();
+}
+
 QString MainWindow::testArrowOnWorktrees(bool down)
 {
     if (!m_worktreesTable)

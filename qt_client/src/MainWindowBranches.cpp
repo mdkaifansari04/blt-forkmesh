@@ -4746,6 +4746,7 @@ void MainWindow::beginBranchDiffTransition(QString branch)
     // through the switch and leave a phantom entry in the Back/Forward trail.
     m_branchDiffFilePaths.clear();
     m_branchDiffFileAnchors.clear();
+    m_branchStickyLabelHtml.clear();
     clearRangeFilesInSourceControl();
     setDiffHtml(m_branchDiffView,
                 QString::fromUtf8("<p style='color:#8b949e'>Reading changes on "
@@ -5066,11 +5067,13 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
                                         anchorFile, notes, viewed);
     m_branchDiffFilePaths.clear();
     m_branchDiffFileAnchors.clear();
+    m_branchStickyLabelHtml.clear();
     QStringList rangeStatuses;
     for (const DiffFileEntry &f : files) {
         m_branchDiffFilePaths.append(f.path);
         m_branchDiffFileAnchors.append(f.anchor);
         rangeStatuses.append(f.status);
+        m_branchStickyLabelHtml.insert(f.path, diffStickyLabelHtml(f));
     }
     showRangeFilesInSourceControl(m_branchDiffFilePaths, rangeStatuses);
 
@@ -6412,8 +6415,14 @@ void MainWindow::updateBranchDiffSticky()
     const bool isViewed = loadDiffViewed(viewedContext).contains(cur);
     if (cur != m_branchStickyFile) {
         m_branchStickyFile = cur;
-        if (m_branchStickyPath)
-            m_branchStickyPath->setText(diffStickyPathHtml(cur));
+        if (m_branchStickyPath) {
+            // Prefer the labelled form (status word + octicon + +/- counts); the
+            // bare path is the fallback for a span whose entry did not survive a
+            // re-render.
+            const QString label = m_branchStickyLabelHtml.value(cur);
+            m_branchStickyPath->setText(label.isEmpty() ? diffStickyPathHtml(cur)
+                                                        : label);
+        }
     }
     if (m_branchStickyViewed)
         m_branchStickyViewed->setText(isViewed

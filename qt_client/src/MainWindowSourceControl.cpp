@@ -279,7 +279,7 @@ QString MainWindow::sourceControlGitDir() const
     return repoGitDir();
 }
 
-void MainWindow::scrollBranchDiffToFile(const QString &path)
+void MainWindow::scrollBranchDiffToFile(const QString &path, bool moveFocus)
 {
     if (!m_branchDiffView || path.isEmpty())
         return;
@@ -288,7 +288,46 @@ void MainWindow::scrollBranchDiffToFile(const QString &path)
         return;
     m_lastSourceControlDiffPath = path;
     scrollDiffToAnchor(m_branchDiffView, m_branchDiffFileAnchors.at(index));
-    m_branchDiffView->setFocus();
+    if (moveFocus)
+        m_branchDiffView->setFocus();
+}
+
+// Up/Down in the CHANGES tree walks files, not rows: the group headers ("Changes
+// against main", "Staged", ...) carry no path, so landing on one would leave the
+// diff showing the previous file with nothing selected. Flattening the tree here
+// also lets Down cross from the end of one group into the head of the next.
+bool MainWindow::stepScmTreeFile(int delta)
+{
+    if (!m_scmTree || delta == 0)
+        return false;
+    QList<QTreeWidgetItem *> rows;
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+        // A collapsed group's children are unreachable by mouse; keep the
+        // keyboard consistent with what is on screen.
+        if (!group->isExpanded())
+            continue;
+        for (int c = 0; c < group->childCount(); ++c) {
+            QTreeWidgetItem *item = group->child(c);
+            if (!item->isHidden() &&
+                !item->data(0, Qt::UserRole).toString().isEmpty())
+                rows.append(item);
+        }
+    }
+    if (rows.isEmpty())
+        return false;
+
+    // From a group header (or no selection at all) the first step lands on the
+    // nearest file in the direction of travel rather than being swallowed.
+    int index = rows.indexOf(m_scmTree->currentItem());
+    if (index < 0)
+        index = delta > 0 ? -1 : rows.size();
+    const int next = index + delta;
+    if (next < 0 || next >= rows.size())
+        return false;
+    m_scmTree->setCurrentItem(rows.at(next));
+    m_scmTree->scrollToItem(rows.at(next));
+    return true;
 }
 
 QWidget *MainWindow::buildSourceControlPanel()
@@ -665,6 +704,11 @@ QWidget *MainWindow::buildSourceControlPanel()
     // splitter's own minimum.
     m_scmTree->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
     m_scmTree->setMinimumHeight(0);
+    // Arrow keys step file-to-file here (see the m_scmTree branch of
+    // eventFilter). Rows are drawn by ScmFileRow widgets set on the items, so
+    // the tree needs click focus of its own for that to survive a mouse pick.
+    m_scmTree->setFocusPolicy(Qt::StrongFocus);
+    m_scmTree->installEventFilter(this);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *item, QTreeWidgetItem *previous) {
                 if (previous) {
@@ -681,7 +725,9 @@ QWidget *MainWindow::buildSourceControlPanel()
                 if (path.isEmpty())
                     return; // group header
                 if (item->data(0, Qt::UserRole + 3).toBool()) {
-                    scrollBranchDiffToFile(path);
+                    // Selection-driven: the tree keeps the keyboard so Up/Down
+                    // can carry on to the next file.
+                    scrollBranchDiffToFile(path, /*moveFocus=*/false);
                     return;
                 }
                 showScmDiff(path, item->data(0, Qt::UserRole + 1).toBool(),
@@ -833,8 +879,12 @@ void MainWindow::showRangeFilesInSourceControl(const QStringList &paths,
             layout->addWidget(actions);
             row->setActionsWidget(actions);
             row->onClicked = [this, item, path] {
+                // Re-clicking the current row emits no currentItemChanged, so
+                // the scroll stays explicit. Focus stays on the tree so the
+                // arrow keys pressed next go on walking the file list.
                 m_scmTree->setCurrentItem(item);
-                scrollBranchDiffToFile(path);
+                scrollBranchDiffToFile(path, /*moveFocus=*/false);
+                m_scmTree->setFocus(Qt::MouseFocusReason);
             };
             m_scmTree->setItemWidget(item, 0, row);
         }
@@ -1272,6 +1322,9 @@ void MainWindow::refreshSourceControl(bool force)
             w->onClicked = [this, item, path, staged, untracked] {
                 m_scmTree->setCurrentItem(item);
                 showScmDiff(path, staged, untracked);
+                // The row widget itself takes no focus; make the tree's claim on
+                // the keyboard explicit so Up/Down keeps stepping through files.
+                m_scmTree->setFocus(Qt::MouseFocusReason);
             };
             m_scmTree->setItemWidget(item, 0, w);
         }

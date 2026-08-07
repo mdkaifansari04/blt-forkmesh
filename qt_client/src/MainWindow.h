@@ -956,6 +956,16 @@ public:
     // Select a CHANGES row and report whether the right-hand diff navigation
     // targeted that exact file.
     bool testClickSourceControlPath(const QString &path);
+    // Send one Up/Down to the CHANGES tree and report the file that ends up
+    // selected, so the arrow-key review walk can be asserted end to end.
+    QString testArrowOnSourceControl(bool down);
+    // The file the CHANGES tree's sticky diff header currently names.
+    QString testBranchStickyHeaderText() const;
+    // The file the right-hand diff was last navigated to from CHANGES.
+    QString testLastSourceControlDiffPath() const
+    {
+        return m_lastSourceControlDiffPath;
+    }
     // The working-tree viewer reaches every edge of its right-hand surface — no
     // inherited layout or document gutter remains around the diff.
     bool testScmDiffUsesFullSurface() const;
@@ -4097,7 +4107,14 @@ private:
     void clearRangeFilesInSourceControl();
     bool sourceControlShowsRange() const;
     QString sourceControlGitDir() const;
-    void scrollBranchDiffToFile(const QString &path);
+    // `moveFocus` hands the keyboard to the diff view once the jump lands, which
+    // is what an explicit "open this file" action wants. Navigation driven from
+    // the CHANGES tree passes false: stealing focus there ends arrow-key file
+    // navigation after the very first file.
+    void scrollBranchDiffToFile(const QString &path, bool moveFocus = true);
+    // Move the CHANGES tree's selection to the previous/next file row, skipping
+    // the group headers. Returns false when there is nothing further that way.
+    bool stepScmTreeFile(int delta);
     // Detached `git status` that only updates the activity rail's Git badge, so
     // the uncommitted-file count is right on every repo tab (and right after a
     // repo opens), not just while the changes panel is the visible view.
@@ -6511,6 +6528,10 @@ private:
     // the file still being read.
     QStringList m_branchDiffFilePaths;
     QStringList m_branchDiffFileAnchors;
+    // path -> sticky-bar label, built at render time while the parsed
+    // DiffFileEntry (status, +/- counts) is still to hand, exactly as the PR
+    // viewer and the working-tree diff do.
+    QHash<QString, QString> m_branchStickyLabelHtml;
     // Last file a CHANGES-row action navigated to in either the branch-range or
     // working-tree diff. Also gives the window tests a stable assertion that
     // does not depend on viewport height or font metrics.

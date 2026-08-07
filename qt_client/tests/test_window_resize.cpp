@@ -902,6 +902,17 @@ int main(int argc, char *argv[])
               footerHtml.endsWith(
                   QStringLiteral("<div class='diffend'>END OF DIFF</div>")),
           QStringLiteral("diffs have bottom review space and an explicit end bar"));
+    // Every caller reads an empty render as "nothing to show" and substitutes
+    // its own notice, so an empty patch must stay empty rather than becoming a
+    // terminator bar under a diff that never began.
+    QList<forkmesh::ui::DiffFileEntry> emptyFooterFiles;
+    check(forkmesh::ui::renderDiffHtmlSplit(
+              false, QString(), emptyFooterFiles, QString(),
+              QStringLiteral("main"), QStringLiteral("feature"), QString(), {},
+              {})
+              .isEmpty(),
+          QStringLiteral("an empty diff renders no end bar, so the caller's "
+                         "own empty-state notice still shows"));
 
     // The changed-file list owns keyboard focus after a click: Up/Down must
     // select the adjacent file, scroll its diff section into place, and update
@@ -929,10 +940,20 @@ int main(int argc, char *argv[])
         for (int i = 0; i < 80; ++i)
             navHtml += QStringLiteral("<div>line %1</div>").arg(i);
         navHtml += QStringLiteral("<a name=\"file-1\"></a><div>two.cpp</div>");
+        // The renderer leaves a scroll runway past the last file (see the end-bar
+        // check above). Without it the jump to the final file only reaches the
+        // scrollbar's maximum, leaving the *previous* file at the top edge — so
+        // the fixture has to carry the same trailing room the real diff does.
+        for (int i = 0; i < 20; ++i)
+            navHtml += QStringLiteral("<div>&nbsp;</div>");
         navDiff.setHtml(navHtml);
         forkmesh::ui::DiffFileNavigator navigator(
             &navDiff, &navList, Qt::UserRole, &navDiff);
         navigator.rebuild(navFiles, 12);
+        // The sticky header is a child of the diff's viewport, so it only ever
+        // reports itself visible once that top-level widget is shown.
+        navDiff.show();
+        QApplication::processEvents();
         navList.setCurrentRow(0);
         navList.setFocus();
         QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
@@ -942,7 +963,19 @@ int main(int argc, char *argv[])
             QStringLiteral("diffStickyHeader"));
         check(navList.currentRow() == 1 && sticky && sticky->isVisible() &&
                   sticky->text().contains(QStringLiteral("two.cpp")),
-              QStringLiteral("file-list Down selects the next file and updates its header"));
+              QString("file-list Down selects the next file and updates its "
+                      "header (row=%1, sticky=%2, scroll=%3, names=%4)")
+                  .arg(navList.currentRow())
+                  .arg(!sticky ? QStringLiteral("missing")
+                               : sticky->isVisible() ? QStringLiteral("visible")
+                                                     : QStringLiteral("hidden"))
+                  .arg(navDiff.verticalScrollBar()->value())
+                  .arg(!sticky ? QStringLiteral("-")
+                               : QStringLiteral("one=%1 two=%2")
+                                     .arg(sticky->text().contains(
+                                         QStringLiteral("one.cpp")))
+                                     .arg(sticky->text().contains(
+                                         QStringLiteral("two.cpp")))));
     }
     const QString startupLog = startupMessages.join(QLatin1Char('\n'));
     const int detailedStartupSteps =
@@ -3821,6 +3854,47 @@ int main(int argc, char *argv[])
                   window.testCommitWorkspacePage() == 2,
               QStringLiteral("clicking a branch file in CHANGES scrolls the "
                              "right-hand range diff to that file"));
+        // Having clicked a file, Up/Down must keep reviewing from the tree: the
+        // click may not hand the keyboard to the diff pane, and the arrows step
+        // over the "Changes against main" group header rather than stalling on
+        // it. The sticky diff header names whichever file the walk lands on.
+        {
+            const QStringList reviewFiles = window.testSourceControlPaths();
+            check(reviewFiles.size() >= 2,
+                  QString("the branch range lists enough files to review with "
+                          "the keyboard (files = %1)")
+                      .arg(reviewFiles.join(QStringLiteral(", "))));
+            if (reviewFiles.size() >= 2) {
+                // Walk to the top of the list, then down through every file.
+                for (int i = 0; i < reviewFiles.size(); ++i)
+                    window.testArrowOnSourceControl(/*down=*/false);
+                const QString first = window.testArrowOnSourceControl(false);
+                check(first == reviewFiles.first(),
+                      QString("Up stops on the first changed file instead of "
+                              "selecting the group header (landed on \"%1\")")
+                          .arg(first.isEmpty() ? QStringLiteral("<none>") : first));
+                QStringList walked;
+                for (int i = 1; i < reviewFiles.size(); ++i)
+                    walked << window.testArrowOnSourceControl(/*down=*/true);
+                check(walked == reviewFiles.mid(1),
+                      QString("Down walks the branch review file by file "
+                              "(walked = %1, expected = %2)")
+                          .arg(walked.join(QStringLiteral(", ")),
+                               reviewFiles.mid(1).join(QStringLiteral(", "))));
+                check(window.testLastSourceControlDiffPath() == reviewFiles.last(),
+                      QString("each arrow step scrolls the range diff to the "
+                              "newly selected file (diff at \"%1\", tree at "
+                              "\"%2\")")
+                          .arg(window.testLastSourceControlDiffPath(),
+                               reviewFiles.last()));
+                // One more Down at the end must not wrap or clear the review.
+                const QString past = window.testArrowOnSourceControl(true);
+                check(past == reviewFiles.last(),
+                      QString("Down past the last file keeps it selected "
+                              "(landed on \"%1\")")
+                          .arg(past.isEmpty() ? QStringLiteral("<none>") : past));
+            }
+        }
         // Every diff keeps the same universal source-control composer and
         // changes tree above the branch's commit graph. The global prompt stays
         // visible below it, so an agent can be launched directly from Git.
