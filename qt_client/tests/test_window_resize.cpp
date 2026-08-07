@@ -3969,6 +3969,59 @@ int main(int argc, char *argv[])
                              "fails with a reason instead of requeuing forever"));
         window.testRemoveAgentSession(pastRun.id);
     }
+    // Everything the composer parks for a session that has no process must still
+    // be there when one finally starts (adhoc #1618). Two things used to lose it.
+    // The park itself was a plain overwrite, so typing a second instruction while
+    // the first was still waiting simply erased it. And a launch that consumed
+    // the parked message and then died before starting a turn took the message
+    // with it: the automatic retry resumed with a bare "Continue where you left
+    // off." and whatever the user actually asked for was gone. Pressing add
+    // repeatedly — which is what a person does when nothing appears to happen —
+    // therefore delivered at most one of those prompts, and often none.
+    {
+        AgentSession parked;
+        parked.id = 133897;
+        parked.owner = QStringLiteral("me");
+        parked.name = QStringLiteral("r");
+        parked.provider = QStringLiteral("claude-code");
+        parked.prompt = QStringLiteral("Queued follow-up fixture");
+        parked.status = AgentStatus::Failed;
+        window.testAddAgentSession(parked);
+        window.testSeedResumeConversationId(
+            parked.id, QStringLiteral("22222222-3333-4444-5555-666666666666"),
+            /*codex=*/false);
+        window.testQueueAgentSteerMessage(parked.id,
+                                          QStringLiteral("Continue where you left off."));
+        window.testQueueAgentSteerMessage(parked.id,
+                                          QStringLiteral("Continue where you left off."));
+        window.testQueueAgentSteerMessage(parked.id,
+                                          QStringLiteral("also fix the migration"));
+        const QString parkedText = window.testPendingSteerMessage(parked.id);
+        const bool bothKept =
+            parkedText.contains(QStringLiteral("Continue where you left off.")) &&
+            parkedText.contains(QStringLiteral("also fix the migration")) &&
+            parkedText.count(QStringLiteral("Continue where you left off.")) == 1;
+        // The run starts, takes the message, and dies before starting a turn.
+        const QString handedToLaunch = window.testTakeSteerMessageForLaunch(parked.id);
+        const bool consumed = window.testPendingSteerMessage(parked.id).isEmpty();
+        const QString outcome =
+            window.testReplayCliExitsWithoutResult(parked.id, /*codex=*/false, 1);
+        const bool restored =
+            window.testPendingSteerMessage(parked.id) == handedToLaunch;
+        // A launch that gets as far as the CLI's announcement did deliver it, so
+        // it is not owed back — otherwise the next restart would repeat an
+        // instruction the agent has already been given.
+        window.testTakeSteerMessageForLaunch(parked.id);
+        window.testMarkAgentSessionRunning(parked.id);
+        window.testReplayCliExitsWithoutResult(parked.id, /*codex=*/false, 1);
+        const bool notRepeated = window.testPendingSteerMessage(parked.id).isEmpty();
+        check(bothKept && !handedToLaunch.isEmpty() && consumed &&
+                  outcome == QStringLiteral("q") && restored && notRepeated,
+              QStringLiteral("follow-up prompts accumulate while a session is "
+                             "down and survive a launch that dies before the "
+                             "agent reads them"));
+        window.testRemoveAgentSession(parked.id);
+    }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
     // own "Updated" column) and the title, which is the column that flexes — so

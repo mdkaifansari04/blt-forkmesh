@@ -3144,6 +3144,32 @@ bool MainWindow::agentSessionHasLiveTransport(int sessionId) const
            runnerForSession(sessionId) != nullptr;
 }
 
+// Drop a transport whose process is still alive but can no longer be given a
+// turn — its stdin has gone, so every follow-up written to it disappears. Qt has
+// not called it finished yet, and until it does agentSessionHasLiveTransport()
+// reports the session as live, which is what left Continue and "add" answering
+// "this agent is already running" about a process that would never reply again
+// (adhoc #1618). Returns true when something was dropped.
+bool MainWindow::discardWedgedAgentTransport(int sessionId)
+{
+    bool dropped = false;
+    if (ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
+        claude && claude->running() && !claude->acceptsInput()) {
+        m_streamSessions.remove(sessionId);
+        claude->stop();
+        claude->deleteLater();
+        dropped = true;
+    }
+    if (CodexAppServerSession *codex = m_codexStreams.value(sessionId);
+        codex && codex->running() && !codex->acceptsInput()) {
+        m_codexStreams.remove(sessionId);
+        codex->stop();
+        codex->deleteLater();
+        dropped = true;
+    }
+    return dropped;
+}
+
 // The composer's model dropdown is the user's live choice for what runs
 // next; without this the session kept coasting on whatever model it
 // happened to launch with, so switching the dropdown before following up
@@ -3265,73 +3291,146 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
     // its row can show the square (adhoc #222).
     if (prompt.contains(QLatin1String("Attached image:")))
         m_agentImageScanPending = true;
+    // Hand it to whatever is actually running first; everything else here is the
+    // restart path.
+    if (deliverPromptToLiveAgentTransport(sessionId, prompt))
+        return;
+    AgentSession *session = findAgentSession(sessionId);
+    if (!session)
+        return;
+    // No live process — the session is stopped, waiting, failed or done — or one
+    // that claimed to be live could not take the turn. Restart it and fold this
+    // message into the resumed run as a steering instruction so the queued
+    // message actually takes effect (adhoc #177).
+    const int sid = session->id;
+    queueAgentSteerMessage(sid, prompt);
+    if (session->provider == QLatin1String("claude-code") ||
+        agentIsCodexProvider(session->provider))
+        applyTranscriptEvent(
+            sid, QJsonObject{
+                     {QStringLiteral("type"), QStringLiteral("_local_user")},
+                     {QStringLiteral("text"), prompt}});
+    else if (m_agentStore)
+        m_agentStore->appendLog(
+            *session,
+            QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
+                .arg(prompt));
+    continueAgentSession(sid);
+}
+
+// Try to hand `prompt` to the process this session is running right now.
+// Returns false when there is nothing live to take it — including a transport
+// that still reports itself as running but refuses the write, which is what a
+// crashed CLI looks like for the moment before its exit is noticed. That case
+// used to swallow the message: the send "succeeded", the status was flipped back
+// to Running, and the user watched a transcript full of their own prompts with
+// nothing answering them (adhoc #1618). Failing here instead routes the prompt
+// through the restart path, which is what they were asking for by pressing add.
+bool MainWindow::deliverPromptToLiveAgentTransport(int sessionId,
+                                                   const QString &prompt)
+{
+    auto restarting = [this, sessionId] {
+        noteAgentSessionNotice(
+            sessionId,
+            QStringLiteral("The agent's process was no longer accepting input, "
+                           "so ForkMesh is restarting the session with your "
+                           "message."),
+            /*error=*/false);
+        return false;
+    };
+    // A process that is alive but has closed its stdin will never see this turn;
+    // clear it out of the way and let the restart path take the prompt.
+    if (discardWedgedAgentTransport(sessionId))
+        return restarting();
     ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
     CodexAppServerSession *codex = m_codexStreams.value(sessionId);
-    if ((claude && claude->running()) || (codex && codex->running())) {
-        // Steer the live Claude Code transcript session: record the turn in
-        // this session's buffer so it survives view switches, then send it.
-        const int sid = sessionId;
-        QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
-                         {QStringLiteral("text"), prompt}};
-        applyTranscriptEvent(sid, turn);
-        if (codex && codex->running()) {
-            if (const AgentSession *session = findAgentSession(sid)) {
-                const QString effort =
-                    QSettings()
-                        .value(kClaudeEffortSetting, QStringLiteral("high"))
-                        .toString();
-                // Only a Codex model may ride into turn/start; the app-server
-                // fails the whole turn on anything else, which silently ate the
-                // follow-up. A session record can still name a Claude model here
-                // — one was written onto it by an older build before the
-                // composer stash learned to leave a live session alone — so pass
-                // nothing rather than a foreign id and let the running thread
-                // keep the model it started with.
-                QString model = session->model.trimmed();
-                if (!model.isEmpty())
-                    model = codexChatGptModelId(model);
-                if (!agentModelMatchesProvider(kCodexProvider, model))
-                    model.clear();
-                codex->setTurnOptions(model, session->mode, effort);
-            }
-            codex->sendUserText(prompt);
-        } else {
-            claude->sendUserText(prompt);
-        }
-        // Replying puts the agent back to work — clear "Waiting", or the
-        // Failed left by an error result whose process stayed alive, so the
-        // list shows the session running again.
-        if (AgentSession *as = findAgentSession(sid);
-            as && as->status != AgentStatus::Running) {
-            as->status = AgentStatus::Running;
-            as->finishedAtMs = 0;
-            as->lastError.clear();
-            as->mergeCandidateHead.clear();
-            if (m_agentStore)
-                m_agentStore->saveSession(*as);
-            updateAgentStatusCell(sid);
-        }
-    } else if (AgentRunner *runner = runnerForSession(sessionId)) {
-        runner->steer(prompt);
-    } else if (AgentSession *session = findAgentSession(sessionId)) {
-        // No live process: the session is stopped, waiting, failed or done.
-        // Restart it and fold this message into the resumed run as a steering
-        // instruction so the queued message actually takes effect (adhoc #177).
-        const int sid = session->id;
-        m_pendingSteerMessage.insert(sid, prompt);
-        if (session->provider == QLatin1String("claude-code") ||
-            agentIsCodexProvider(session->provider))
-            applyTranscriptEvent(
-                sid, QJsonObject{
-                         {QStringLiteral("type"), QStringLiteral("_local_user")},
-                         {QStringLiteral("text"), prompt}});
-        else
-            m_agentStore->appendLog(
-                *session,
-                QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
-                    .arg(prompt));
-        continueAgentSession(sid);
+    const bool claudeLive = claude && claude->running();
+    const bool codexLive = codex && codex->running();
+    if (!claudeLive && !codexLive) {
+        if (AgentRunner *runner = runnerForSession(sessionId))
+            return runner->steer(prompt);
+        return false;
     }
+    bool sent = false;
+    if (codexLive) {
+        if (const AgentSession *session = findAgentSession(sessionId)) {
+            const QString effort =
+                QSettings()
+                    .value(kClaudeEffortSetting, QStringLiteral("high"))
+                    .toString();
+            // Only a Codex model may ride into turn/start; the app-server
+            // fails the whole turn on anything else, which silently ate the
+            // follow-up. A session record can still name a Claude model here
+            // — one was written onto it by an older build before the
+            // composer stash learned to leave a live session alone — so pass
+            // nothing rather than a foreign id and let the running thread
+            // keep the model it started with.
+            QString model = session->model.trimmed();
+            if (!model.isEmpty())
+                model = codexChatGptModelId(model);
+            if (!agentModelMatchesProvider(kCodexProvider, model))
+                model.clear();
+            codex->setTurnOptions(model, session->mode, effort);
+        }
+        sent = codex->sendUserText(prompt);
+    } else {
+        sent = claude->sendUserText(prompt);
+    }
+    if (!sent) {
+        // The transport is finished even if it has not said so yet. Drop it so
+        // agentSessionHasLiveTransport() stops reporting a live session and the
+        // restart gate lets this session start again.
+        if (ClaudeStreamSession *dead = m_streamSessions.take(sessionId)) {
+            dead->stop();
+            dead->deleteLater();
+        }
+        if (CodexAppServerSession *dead = m_codexStreams.take(sessionId)) {
+            dead->stop();
+            dead->deleteLater();
+        }
+        return restarting();
+    }
+    // Record the turn in this session's buffer so it survives view switches.
+    applyTranscriptEvent(
+        sessionId, QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                               {QStringLiteral("text"), prompt}});
+    // Replying puts the agent back to work — clear "Waiting", or the
+    // Failed left by an error result whose process stayed alive, so the
+    // list shows the session running again.
+    if (AgentSession *as = findAgentSession(sessionId);
+        as && as->status != AgentStatus::Running) {
+        as->status = AgentStatus::Running;
+        as->finishedAtMs = 0;
+        as->lastError.clear();
+        as->mergeCandidateHead.clear();
+        if (m_agentStore)
+            m_agentStore->saveSession(*as);
+        updateAgentStatusCell(sessionId);
+    }
+    return true;
+}
+
+// Park a message for the session's next start. Prompts accumulate rather than
+// replacing one another: pressing add three times while a session is restarting
+// used to keep only the last one, so two of the three instructions were never
+// sent to anybody (adhoc #1618).
+void MainWindow::queueAgentSteerMessage(int sessionId, const QString &prompt)
+{
+    const QString trimmed = prompt.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    QString &pending = m_pendingSteerMessage[sessionId];
+    if (pending.trimmed().isEmpty()) {
+        pending = trimmed;
+        return;
+    }
+    // Pressing the same button twice on a session that has not restarted yet is
+    // one instruction, not two — the repeat is impatience, and repeating it back
+    // to the agent only wastes its turn.
+    if (pending == trimmed ||
+        pending.endsWith(QStringLiteral("\n\n") + trimmed))
+        return;
+    pending += QStringLiteral("\n\n") + trimmed;
 }
 
 // Re-sends the full title + description + comment thread of the issue linked
@@ -9180,6 +9279,7 @@ void MainWindow::continueSelectedAgentSession()
             "watch it \xE2\x80\x94 start a new agent instead."));
         return;
     }
+    discardWedgedAgentTransport(sid);
     if (agentSessionHasLiveTransport(sid)) {
         flashMessage(QStringLiteral(
             "This agent is already running \xE2\x80\x94 type a message and it goes "
@@ -9189,6 +9289,7 @@ void MainWindow::continueSelectedAgentSession()
     if (const AgentSession *session = findAgentSession(sid);
         session && session->status == AgentStatus::Queued &&
         m_agentQueue.contains(sid)) {
+        scheduleAgentQueuePump();
         flashMessage(QStringLiteral(
             "This agent is queued and starts as soon as a run slot frees up."));
         return;
@@ -9227,9 +9328,19 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
     // with nothing behind it: leaving it alone strands the session, and strands
     // the follow-up prompt the caller just parked in m_pendingSteerMessage. Fall
     // through and re-queue instead.
-    if (session->status == AgentStatus::Queued && m_agentQueue.contains(session->id))
+    if (session->status == AgentStatus::Queued && m_agentQueue.contains(session->id)) {
+        // Still make sure something is coming for it. The pump is driven by
+        // status/reload hooks, and a pass that was skipped while the fleet was at
+        // its cap leaves a genuinely queued session sitting there — from the
+        // composer that is indistinguishable from add doing nothing (adhoc #1618).
+        scheduleAgentQueuePump();
         return;
+    }
 
+    // A person asking for this run again gets the full retry budget. Without the
+    // reset, a session that had already spent its attempts on an earlier failure
+    // could be failed on the very first exit of the run the user just asked for.
+    m_agentRelaunchAttempts.remove(sessionId);
     session->status = AgentStatus::Queued;
     session->lastError.clear();
     session->finishedAtMs = 0;
@@ -9282,7 +9393,7 @@ void MainWindow::fixAgentConflictsWithAgent(int sessionId)
                        "Make sure the build and tests still pass, then commit.")
             .arg(base);
     const int sid = s->id;
-    m_pendingSteerMessage.insert(sid, prompt);
+    queueAgentSteerMessage(sid, prompt);
     if (s->provider == QLatin1String("claude-code") ||
         agentIsCodexProvider(s->provider))
         applyTranscriptEvent(
@@ -9818,6 +9929,50 @@ void MainWindow::refreshAgentQueueControls()
         m_maxRunningAgentsEdit->setText(QString::number(limit));
 }
 
+// Tell the user what just happened to their session, in the two places they
+// might be reading: the transcript on screen and the session's own run log
+// (which is also what the website shows). The transcript half is skipped when
+// this session's events are not in memory — inserting into m_streamEvents there
+// would stand in for the persisted history the next load is supposed to bring
+// back — and nothing is lost by that, since a transcript nobody has opened is
+// not being read either. Added for adhoc #1618.
+void MainWindow::noteAgentSessionNotice(int sessionId, const QString &text,
+                                        bool error)
+{
+    if (text.trimmed().isEmpty())
+        return;
+    if (m_streamEvents.contains(sessionId))
+        applyTranscriptEvent(
+            sessionId,
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_notice")},
+                        {QStringLiteral("level"), error ? QStringLiteral("error")
+                                                        : QStringLiteral("warning")},
+                        {QStringLiteral("text"), text}});
+    if (m_agentStore)
+        if (const AgentSession *session = findAgentSession(sessionId))
+            m_agentStore->appendLog(
+                *session, QStringLiteral("\n==> %1\n").arg(text));
+}
+
+// A queued session that cannot be started at all. Stamping the reason on the
+// record alone left it wherever the user was not looking: they pressed add, the
+// prompt they typed went into the transcript, and the session dropped straight
+// back to Failed with the explanation available only as a tooltip in the list.
+// Put it where the question was asked (adhoc #1618).
+void MainWindow::failQueuedAgentSession(AgentSession &session,
+                                        const QString &reason)
+{
+    const int sid = session.id;
+    session.status = AgentStatus::Failed;
+    session.lastError = reason;
+    session.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+    if (m_agentStore)
+        m_agentStore->saveSession(session);
+    noteAgentSessionNotice(
+        sid, QStringLiteral("This session could not be started: %1").arg(reason),
+        /*error=*/true);
+}
+
 void MainWindow::processAgentQueue()
 {
     if (!m_agentStore)
@@ -9844,9 +9999,7 @@ void MainWindow::processAgentQueue()
             continue;
         const int repoIndex = repoIndexFor(session->owner, session->name);
         if (repoIndex < 0) {
-            session->status = AgentStatus::Failed;
-            session->lastError = QStringLiteral("Repository not found.");
-            m_agentStore->saveSession(*session);
+            failQueuedAgentSession(*session, QStringLiteral("Repository not found."));
             changed = true;
             continue;
         }
@@ -9857,9 +10010,8 @@ void MainWindow::processAgentQueue()
         // are all built off this; the agent never edits it in place.
         const QString agentGitDir = repoAgentGitDir(repo);
         if (agentGitDir.isEmpty()) {
-            session->status = AgentStatus::Failed;
-            session->lastError = QStringLiteral("No local checkout is configured.");
-            m_agentStore->saveSession(*session);
+            failQueuedAgentSession(
+                *session, QStringLiteral("No local checkout is configured."));
             changed = true;
             continue;
         }
@@ -9880,9 +10032,8 @@ void MainWindow::processAgentQueue()
                     break;
                 }
             if (!found) {
-                session->status = AgentStatus::Failed;
-                session->lastError = QStringLiteral("Issue not found.");
-                m_agentStore->saveSession(*session);
+                failQueuedAgentSession(*session,
+                                       QStringLiteral("Issue not found."));
                 changed = true;
                 continue;
             }
@@ -10523,6 +10674,13 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // full-prompt replay when there's no recoverable session id (e.g. a legacy
     // transcript or a fresh run), so those still resume the way they used to.
     const QString steer = m_pendingSteerMessage.take(sid);
+    // Held until the CLI announces itself: a launch that dies on the way there
+    // never delivered this, and the automatic retry must carry it rather than
+    // resume with a bare "Continue where you left off." (adhoc #1618).
+    if (steer.isEmpty())
+        m_inFlightSteerMessage.remove(sid);
+    else
+        m_inFlightSteerMessage.insert(sid, steer);
     const QString resumeId =
         resuming ? (codex ? lastCodexThreadId(sid) : lastClaudeSessionId(sid))
                  : QString();
@@ -12664,8 +12822,29 @@ bool MainWindow::applyCliExitWithoutResult(int sessionId, bool codex, int exitCo
         if (!m_agentQueue.contains(sessionId))
             m_agentQueue.append(sessionId);
     }
+    // This launch consumed the user's queued instruction and then died without
+    // ever starting a turn, so nobody has read it. Put it back: a retry that
+    // resumes with "Continue where you left off." instead of what the user
+    // actually typed is how a message pressed into the composer disappeared
+    // (adhoc #1618). On give-up it waits for the next Continue.
+    if (const QString unsent = m_inFlightSteerMessage.take(sessionId);
+        !unsent.isEmpty())
+        queueAgentSteerMessage(sessionId, unsent);
     if (m_agentStore)
         m_agentStore->saveSession(*session);
+    // Say so in the transcript. Both endings were silent, which is what made a
+    // session that could not restart look like a button that did nothing: the
+    // prompts stacked up on screen and the only account of what happened to them
+    // was a status word in the list and a tooltip (adhoc #1618). Copied out
+    // first — applyTranscriptEvent can reload the sessions this points into.
+    const QString notice =
+        giveUp ? session->lastError
+               : QStringLiteral("%1 exited (exit %2) before answering. "
+                                "Restarting the session\xE2\x80\xA6")
+                     .arg(codex ? QStringLiteral("Codex app-server")
+                                : QStringLiteral("Claude Code"))
+                     .arg(exitCode);
+    noteAgentSessionNotice(sessionId, notice, /*error=*/giveUp);
     scheduleAgentSessionsPush(); // adhoc #182
     return !giveUp;
 }
@@ -12685,8 +12864,10 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     m_agentCompletionPollCounts.remove(sessionId);
     // Getting here means a launch reached the CLI's own announcement, so the
     // relaunch budget starts over: a later crash mid-turn is a new problem, not
-    // a continuation of a launch that could never work.
+    // a continuation of a launch that could never work. The steering message this
+    // launch carried has demonstrably arrived, so it is no longer owed a retry.
     m_agentRelaunchAttempts.remove(sessionId);
+    m_inFlightSteerMessage.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status == AgentStatus::Running)
         return;

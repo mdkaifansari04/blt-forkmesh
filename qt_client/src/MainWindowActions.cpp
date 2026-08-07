@@ -4326,7 +4326,7 @@ void MainWindow::maybeAutoFixFailedRun(const ActionRun &run)
                  run.ref, logTail);
     const QString workflowName = run.workflowName;
 
-    m_pendingSteerMessage.insert(sessionId, prompt);
+    queueAgentSteerMessage(sessionId, prompt);
     if (sessionProvider == QLatin1String("claude-code") ||
         agentIsCodexProvider(sessionProvider))
         applyTranscriptEvent(
