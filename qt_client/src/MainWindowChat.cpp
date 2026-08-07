@@ -11367,13 +11367,8 @@ void MainWindow::pushCurrentRepoUpstream()
                     clearRepoSyncActivity(index);
                     refreshRepoSyncIndicators();
                     openRepoDetail(index);
-                    // Switch to the Code tab (index 0) so the highlighted line is
-                    // visible; openRepoFileAtLine alone only touches the (currently
-                    // hidden) files panel.
-                    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-                        m_repoDetailTabs->button(0)->setChecked(true);
-                    if (m_repoDetailStack)
-                        m_repoDetailStack->setCurrentIndex(0);
+                    // openRepoFileAtLine opens the Files section itself
+                    // (adhoc #1590), which is where the highlighted line shows.
                     openRepoFileAtLine(path, line);
                     return;
                 }
