@@ -50,6 +50,19 @@ CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
   -o forkmesh-mirror-node ./cmd/forkmesh-mirror-node
 ```
 
+## Desktop companion
+
+Vultr/host deploys upload the deploying desktop's own local
+`forkmesh-mirror-node`, looked up in `PATH`, beside the running executable,
+beside the installed client (`~/.local/bin/forkmesh`), then in the source
+checkout. The desktop installer (`qt_client/install.sh`), the public release
+installer, and both in-app update flows (the source rebuild and the prebuilt
+auto-update) install or refresh the companion beside the client. A desktop
+whose Vultr install fails with "The Go mirror-node package is incomplete
+(forkmesh-mirror-node is missing)" therefore heals by running Update & restart
+(with a Go toolchain available for source installs) or by reinstalling a
+release that publishes the `forkmesh-mirror-node-<os>-<arch>` asset.
+
 Use `packaging/systemd/mirror-node.json.example` as the configuration template.
 Every upstream list may contain multiple URLs; the daemon tries them in order,
 and the public ForkMesh URL itself routes across the currently healthy mirror

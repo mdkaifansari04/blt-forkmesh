@@ -124,6 +124,7 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
+class BusySpinner;
 class NodeDotMatrix;
 class RelaySpeedDot;
 class ActionRunStrip;
@@ -133,6 +134,7 @@ class ElidingStatusLabel;
 using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
+using forkmesh::ui::BusySpinner;
 using forkmesh::ui::ElidingStatusLabel;
 using forkmesh::ui::NodeDotMatrix;
 using forkmesh::ui::RelaySpeedDot;
@@ -526,12 +528,24 @@ public:
     {
         applyFooterWebsiteStatusFailure(httpStatus);
     }
+    // Where a footer status dot leads when it is clicked (adhoc #1602).
+    QUrl testWebsiteStatusTargetUrl(const QString &statusId) const
+    {
+        return websiteStatusTargetUrl(statusId);
+    }
     // Hands one desktop-side edge probe the answer it would have received and
-    // returns the graded state, so Cloudflare-error grading is exercised
-    // without a live network.
+    // returns how that single reply graded, so Cloudflare-error grading is
+    // exercised without a live network. The dot may show worse than this — see
+    // testDesktopWebsiteRowStatus for what the row actually publishes.
     QString testApplyDesktopWebsiteProbe(const QString &id, int httpStatus,
                                          const QByteArray &body,
                                          const QString &transportError = QString());
+    // What a desktop-measured row publishes to the dots: the newest reply's
+    // verdict widened by the recent-failure memory (adhoc #1614).
+    QString testDesktopWebsiteRowStatus(const QString &id) const;
+    // Forgets the recent verdicts for every desktop-measured row, so a test can
+    // grade a fresh reply without the ones it fed in earlier bleeding through.
+    void testClearDesktopProbeHistory() { m_desktopProbeHistory.clear(); }
     // How many filed pings carry this text in their title — the observable end
     // of the outage alert a failing desktop-side check raises every minute.
     int testNotificationsTitled(const QString &needle) const
@@ -951,6 +965,17 @@ public:
         m_agentSessions.append(session);
     }
     void testRefreshAgentQueueControls() { refreshAgentQueueControls(); }
+    // Re-run the pass that enables/disables the fleet and detail buttons, so a
+    // test can click one the way a user does once its precondition holds.
+    void testUpdateAgentActionState() { updateAgentActionState(); }
+    // Force the coalesced diff/worktree worker to run now, the way arriving on
+    // the tab does. It reports each branch's behind/conflict state and must not
+    // move any branch itself (adhoc #1611).
+    void testRefreshAgentDiffStats()
+    {
+        m_agentDiffRefreshPending = true;
+        refreshAgentTable();
+    }
     int testAgentSessionForPullId(int prNumber, const QString &headBranch) const
     {
         const AgentSession *session = agentSessionForPull(prNumber, headBranch);
@@ -985,6 +1010,45 @@ public:
     // A transport can disappear while the persisted session is still marked
     // Running.  Queue it without launching a real CLI so the UI test can prove
     // that Continue (and a follow-up prompt) recovers this detached state.
+    // Give a session the conversation id an earlier successful run would have
+    // left behind, so a test can stand in for "this session has run before".
+    void testSeedResumeConversationId(int sessionId, const QString &conversationId,
+                                      bool codex)
+    {
+        m_streamEvents[sessionId].append(QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("system")},
+            {QStringLiteral("subtype"), QStringLiteral("init")},
+            {codex ? QStringLiteral("thread_id") : QStringLiteral("session_id"),
+             conversationId}});
+    }
+    // Replay "the CLI exited without finishing a turn" for a session that has
+    // already produced a conversation id, so a test can prove the retries are
+    // bounded rather than spinning queued -> exit -> queued forever. Returns one
+    // 'q' (re-queued) or 'f' (failed) per exit, oldest first.
+    QString testReplayCliExitsWithoutResult(int sessionId, bool codex, int times)
+    {
+        QString outcomes;
+        for (int i = 0; i < times; ++i) {
+            if (AgentSession *session = findAgentSession(sessionId))
+                session->status = AgentStatus::Running;
+            outcomes += applyCliExitWithoutResult(sessionId, codex, /*exitCode=*/1)
+                            ? QLatin1Char('q')
+                            : QLatin1Char('f');
+            m_agentQueue.removeAll(sessionId);
+        }
+        return outcomes;
+    }
+    QString testAgentSessionLastError(int sessionId)
+    {
+        const AgentSession *session = findAgentSession(sessionId);
+        return session ? session->lastError : QString();
+    }
+    // The CLI's own announcement clears the retry budget, so a session that
+    // crashes again later gets a fresh set of attempts.
+    void testMarkAgentSessionRunning(int sessionId)
+    {
+        markAgentSessionRunning(sessionId);
+    }
     bool testQueueDetachedRunningAgentSession(int sessionId)
     {
         continueAgentSession(sessionId, /*deferRefresh=*/true);
@@ -1494,10 +1558,30 @@ private:
                                const QString &tagCommit);
     void installPrebuiltAndRelaunch(const QString &artifactPath,
                                     const QString &tag);
+    // Host deploys upload this desktop's local forkmesh-mirror-node, so a
+    // prebuilt client update must also refresh (or first produce) the Go
+    // companion the release publishes beside the client asset — otherwise a
+    // node missing it can never self-heal and every Vultr install fails with
+    // "forkmesh-mirror-node is missing". Verifies by SHA-256 from the release
+    // manifest (local mirror CAS first, else the relay blob route), installs
+    // beside the running client, then hands off to installPrebuiltAndRelaunch.
+    // Best-effort: a companion failure never blocks the client update.
+    void installMirrorCompanionThenRelaunch(const QString &artifactPath,
+                                            const QString &tag,
+                                            const QString &owner,
+                                            const QString &name,
+                                            const QString &companionHash);
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
                           const QString &relaunchPath = QString(),
                           const QString &buildType = QStringLiteral("Release"));
+    // Source-rebuild counterpart of the companion refresh: build
+    // mirror_node/cmd/forkmesh-mirror-node with the local Go toolchain into the
+    // client build directory so installAndRelaunch can place it beside the
+    // installed client. Skips (with a log line) when Go or the module source is
+    // unavailable; a build failure is logged and never blocks the client update.
+    void buildMirrorNodeCompanion(const QString &clientDir, const QString &buildDir,
+                                  std::function<void()> onDone);
     void installAndRelaunch(const QString &built, const QString &appPath);
     // When onFailure is set it is invoked instead of the default "Update failed"
     // handling if the step exits non-zero, letting callers recover (e.g. re-clone
@@ -1579,8 +1663,16 @@ private:
     // check for as long as it keeps failing (adhoc #1596).
     struct FooterStatusRow; // defined with the rest of the footer state below
     void alertOnDesktopEdgeOutage(const FooterStatusRow &row);
-    // Relay-graded rows first, desktop-measured ones after, onto both dot rows.
+    // Relay-graded rows, each with the desktop-measured check for the same
+    // subject folded into it, onto both dot rows (adhoc #1602).
     void publishFooterWebsiteStatuses();
+    // Clicking a dot opens the surface that dot is about: the site, /status,
+    // the API host, the flagship repository page, or the admin error console
+    // (adhoc #1602). An invalid URL means only the admin console, which is
+    // resolved separately because its path is a deployment secret.
+    QUrl websiteStatusTargetUrl(const QString &statusId) const;
+    void openWebsiteStatusTarget(const QString &statusId);
+    void openAdminErrorConsole();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
@@ -2023,6 +2115,9 @@ private:
     QWidget *buildSiteDeployCard();
     void runSiteDeploy();
     void cancelSiteDeploy();
+    // Spinner on the page + blinking light on the Control rail tile while the
+    // deploy runs (adhoc #1606).
+    void setSiteDeployRunning(bool running);
     void appendSiteDeployOutput(const QString &text);
     void connectToDeployedRelay(const QString &hostname);
     void deploySavedHostsFromControl();
@@ -3337,6 +3432,12 @@ private:
     QList<int> startableAgentSessionIds() const;
     // Queue every session above for a resume; the run limit drains the queue.
     void startAllStoppedAgents();
+    // The sessions "Update all" acts on: ours, unmerged, still holding a feature
+    // worktree on disk that isn't already the base branch, across all repos.
+    QList<int> updatableAgentSessionIds() const;
+    // Merge each of those sessions' base branch into its worktree branch, in one
+    // click. Never automatic: it only runs when the button is pressed.
+    void updateAllAgentWorktreesFromMain();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
@@ -4139,6 +4240,26 @@ private:
     QString diffViewedScope(const QString &context) const;
     QSet<QString> loadDiffViewed(const QString &context) const;
     void setDiffViewed(const QString &context, const QString &path, bool viewed);
+    // What merging a base branch into the linked worktree that owns another
+    // branch did. Shared by "Pull main" on one branch and the Agents toolbar's
+    // "Update all", so both report and protect a worktree identically.
+    struct WorktreeMergeReport
+    {
+        enum Status {
+            Merged,     // base is in; any local edits were restored on top
+            Busy,       // a merge or unresolved files were already in the way
+            Conflicted, // refused or rolled back; the branch is untouched
+            Failed,     // couldn't be attempted at all
+        };
+        Status status = Failed;
+        QString message; // ready to show, naming the branch and the base
+    };
+    // Merge `base` into `branch` inside the worktree that has it checked out,
+    // autostashing local edits and rolling the whole thing back if they can't be
+    // restored cleanly. The only path that moves an agent branch forward.
+    WorktreeMergeReport mergeBaseIntoLinkedWorktree(const QString &worktree,
+                                                    const QString &branch,
+                                                    const QString &base);
     // Merge the default branch into `branch` so it catches up with main.
     void updateBranchFromBase(const QString &branch);
     // Bring `branch` up to date with base via the interactive merge editor,
@@ -6054,10 +6175,30 @@ private:
         QString reason;
         qint64 minuteTs = 0;
         bool local = false; // measured here rather than reported by the relay
+        // Desktop-measured rows only: how the newest reply graded on its own,
+        // before the recent-failure memory below is folded in. `status` can be
+        // worse than this; the outage alert follows this one, so a lasting
+        // outage still pings exactly once per failing check.
+        QString sampleStatus;
     };
     QList<FooterStatusRow> m_footerRelayStatuses;
     QList<FooterStatusRow> m_footerDesktopStatuses;
     QSet<QString> m_desktopProbesInFlight;
+    // Recent verdicts per desktop-measured row, oldest first (adhoc #1614). An
+    // edge that throws on a large share of requests rather than all of them —
+    // the Cloudflare 1101 the Worker cannot report about itself — still serves
+    // plenty of good responses, so a once-a-minute probe regularly lands on a
+    // healthy one. Grading each reply in isolation repainted the dot green
+    // seconds after the very same page had failed to load, which is what this
+    // memory exists to stop.
+    struct DesktopProbeSample {
+        qint64 ts = 0;
+        QString status;
+    };
+    QHash<QString, QList<DesktopProbeSample>> m_desktopProbeHistory;
+    // One outstanding "where is my admin console" lookup at a time, so a
+    // double-click on the errors dot does not ask the relay twice.
+    bool m_adminConsoleUrlInFlight = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
     // live log and the prompt). One chip per open *kind* of work, not per ticket:
@@ -6221,6 +6362,7 @@ private:
     QPushButton *m_siteDeployButton = nullptr;
     QPushButton *m_siteDeployCancelButton = nullptr;
     QLabel *m_siteDeployStatus = nullptr;
+    BusySpinner *m_siteDeploySpinner = nullptr;
     QPlainTextEdit *m_siteDeployOutput = nullptr;
     QProcess *m_siteDeployProcess = nullptr;
     QProcess *m_cloudflareBootstrapProcess = nullptr;
@@ -8334,7 +8476,13 @@ private:
     // spent waiting on a non-empty process tree — used to escalate a stuck
     // wait to a kill, then to giving up on the tree entirely (adhoc #1583).
     QHash<int, int> m_agentCompletionPollCounts;
+    // Consecutive times a session's CLI exited without finishing a turn and was
+    // put back on the queue. Cleared the moment a launch reaches the CLI's
+    // system/init line (markAgentSessionRunning), so only a launch that keeps
+    // failing the same way ever reaches kMaxAgentRelaunchAttempts.
+    QHash<int, int> m_agentRelaunchAttempts;
     void notifyAgentWaiting(int sessionId, bool needsPermission);
+    bool applyCliExitWithoutResult(int sessionId, bool codex, int exitCode);
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
@@ -8650,6 +8798,10 @@ private:
     // (adhoc #136).
     QPushButton *m_agentStopAllButton = nullptr;
     QPushButton *m_agentStartAllButton = nullptr;
+    // Beside them: merge each session's base branch into its own worktree branch.
+    // A button rather than a background sweep — pulling main in is only ever done
+    // on request.
+    QPushButton *m_agentUpdateAllButton = nullptr;
     // Beside Start all: queued sessions / concurrent run limit, with direct
     // one-click controls for that limit.
     QLabel *m_agentQueueStatusLabel = nullptr;

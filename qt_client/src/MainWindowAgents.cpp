@@ -322,6 +322,13 @@ QString agentStatusPillText(const AgentSession &session)
 // than as another toolbar glyph.
 constexpr int kAgentStatusPillIconPx = 44;
 
+// How many times a CLI that dies without finishing a turn is put back on the
+// queue before the session is failed with a reason. A crash mid-turn is worth
+// retrying; a launch that cannot work today (its saved conversation is gone,
+// the login expired, the CLI is broken) fails identically every pass, and
+// retrying it forever is indistinguishable from a button that does nothing.
+constexpr int kMaxAgentRelaunchAttempts = 2;
+
 QIcon agentStatusPillIcon(const AgentSession &session)
 {
     if (session.merged || session.status == AgentStatus::Success)
@@ -493,10 +500,9 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                                 const AgentSession &session,
                                 const QString &gitDir, const QString &base,
                                 const QString &worktree,
-                                bool probeConflict, bool autoSyncCompleted)
+                                bool probeConflict, bool idleSession)
 {
     AgentDiffStat stat;
-    bool trackedDirty = false;
     // forkmesh/pulls is the shared signed PR ledger, not an agent-authored code
     // branch. Comparing its historical storage tree to main produces a bogus
     // 99+ file badge and can trigger an equally bogus behind/conflict state.
@@ -515,12 +521,6 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
             const QString lines = QString::fromUtf8(dirtyOut).trimmed();
             stat.dirty =
                 lines.isEmpty() ? 0 : lines.count(QLatin1Char('\n')) + 1;
-            for (const QString &line : lines.split(QLatin1Char('\n'))) {
-                if (!line.isEmpty() && !line.startsWith(QLatin1String("??"))) {
-                    trackedDirty = true;
-                    break;
-                }
-            }
         }
     }
     if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
@@ -580,55 +580,20 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                 stat.ahead = parts.at(1).toInt();
             }
         }
-        // A merge into main advances the base for every surviving agent branch.
-        // Keep completed, clean worktrees current as part of the same background
-        // refresh instead of painting every row as newly unhealthy until the
-        // user opens it one by one. Never touch an active or dirty worktree, and
-        // preflight the merge tree so a genuine conflict stays completely
-        // unchanged and visible for manual resolution.
-        if (autoSyncCompleted && stat.behind > 0 && !trackedDirty &&
-            !stat.worktree.isEmpty()) {
-            const bool canMerge =
-                runGitCapture(gitDir,
-                              {QStringLiteral("merge-tree"),
-                               QStringLiteral("--write-tree"),
-                               session.branchName, base},
-                              nullptr, nullptr);
-            if (canMerge) {
-                const QStringList mergeArgs =
-                    stat.ahead == 0
-                        ? QStringList{QStringLiteral("merge"),
-                                      QStringLiteral("--ff-only"), base}
-                        : QStringList{QStringLiteral("merge"),
-                                      QStringLiteral("--no-edit"), base};
-                if (runGitCapture(stat.worktree, mergeArgs, nullptr, nullptr)) {
-                    QByteArray refreshedCounts;
-                    if (runGitCapture(
-                            gitDir,
-                            {QStringLiteral("rev-list"),
-                             QStringLiteral("--left-right"),
-                             QStringLiteral("--count"),
-                             base + QStringLiteral("...") + session.branchName},
-                            &refreshedCounts, nullptr)) {
-                        const QStringList refreshed =
-                            QString::fromUtf8(refreshedCounts)
-                                .trimmed()
-                                .split(QRegularExpression(QStringLiteral("\\s+")));
-                        if (refreshed.size() >= 2) {
-                            stat.behind = refreshed.at(0).toInt();
-                            stat.ahead = refreshed.at(1).toInt();
-                        }
-                    }
-                }
-            } else {
-                stat.conflicted = true;
-            }
-        }
-        // merge-tree is materially slower than the ref/status reads above. The
-        // selected row gets an exact verdict; all other rows publish their
-        // counts immediately and the branch detail performs its own cached
+        // This refresh reports on branches; it never moves them. A merge into
+        // main advances the base for every surviving agent branch, and the
+        // refresh used to quietly merge it back into each idle, clean worktree
+        // so the rows didn't all turn "behind" at once. That automatic pull is
+        // gone (adhoc #1611): main goes into an agent branch only when asked
+        // for, from the Agents toolbar's "Update all" or one session's "Update".
+        //
+        // merge-tree is materially slower than the ref/status reads above, so
+        // the exact verdict is confined to the rows where a wrong one is worth
+        // the cost: the selected one, and the idle ones (an active session's
+        // branch tip moves under the probe anyway). Everything else publishes
+        // its counts immediately, and the branch detail performs its own cached
         // conflict probe when opened.
-        if (probeConflict && stat.behind > 0 && !session.merged &&
+        if ((probeConflict || idleSession) && stat.behind > 0 && !session.merged &&
             !runGitCapture(gitDir,
                            {QStringLiteral("merge-tree"),
                             QStringLiteral("--write-tree"), session.branchName,
@@ -2208,6 +2173,19 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
+    // "Update all" is the detail page's per-session "Update" run over the whole
+    // fleet: merge each session's base branch into its own worktree branch. It is
+    // deliberately a button and nothing else — ForkMesh never pulls main into a
+    // branch on its own, so branches only catch up when this is pressed.
+    m_agentUpdateAllButton = railActionButton(
+        QStringLiteral("sync"), QStringLiteral("Update all"),
+        "Merge each agent's base branch into its own worktree branch. Uncommitted "
+        "work is stashed and restored on top; a branch that can't merge cleanly "
+        "is left exactly as it was.");
+    m_agentUpdateAllButton->setObjectName("agentUpdateAllButton");
+    connect(m_agentUpdateAllButton, &QPushButton::clicked, this,
+            &MainWindow::updateAllAgentWorktreesFromMain);
+
     // Keep every fleet action in one floating bar at the bottom-right of the
     // session-list pane. Queue capacity, bulk controls, and interactive
     // provider terminals are all available from one place.
@@ -2328,6 +2306,7 @@ QWidget *MainWindow::buildAgentsTab()
     });
     agentQueueLayout->addWidget(m_agentStartAllButton);
     agentQueueLayout->addWidget(m_agentStopAllButton);
+    agentQueueLayout->addWidget(m_agentUpdateAllButton);
     agentQueueLayout->addWidget(m_agentDeleteMergedButton);
     agentQueueLayout->addWidget(m_agentHideDetailButton);
     agentQueueLayout->addWidget(claudeTerminalButton);
@@ -7403,10 +7382,11 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
         return false;
     // Every successful merge advances the comparison base for every surviving
     // agent branch, even when the merged PR did not originate from an agent.
-    // Arm the coalesced worker now: completed clean worktrees are updated there,
-    // active/dirty ones are retried by the reload that follows their completion.
-    // This is intentionally independent of whether the merged PR matches a
-    // session below.
+    // Arm the coalesced worker now so those rows re-read their behind/conflict
+    // counts against the new base — it only measures them; catching a branch up
+    // is "Update all" in the Agents toolbar and nothing else (adhoc #1611). This
+    // is intentionally independent of whether the merged PR matches a session
+    // below.
     m_agentDiffRefreshPending = true;
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     bool changed = false;
@@ -9171,9 +9151,40 @@ QString MainWindow::saveNewAgentPromptImage(const QImage &image)
     return AgentPromptImages::save(image);
 }
 
+// The user-driven route into continueAgentSession: the detail page's Continue
+// button and the composer's "add" with nothing typed. continueAgentSession() is
+// also a background path (a website-queued resume, "Start all", the restart
+// recovery) so it returns quietly on the states it will not act on — which from
+// this side is exactly what a dead button looks like. Name the reason here,
+// where a person is waiting for one.
 void MainWindow::continueSelectedAgentSession()
 {
-    continueAgentSession(m_selectedAgentSessionId);
+    const int sid = m_selectedAgentSessionId;
+    if (sid <= 0 || !findAgentSession(sid)) {
+        logSystem(QStringLiteral(
+            "No agent open above to continue \xE2\x80\x94 open one first."));
+        return;
+    }
+    if (isExternalSession(sid)) {
+        logSystem(QStringLiteral(
+            "This session belongs to another process, so ForkMesh can only "
+            "watch it \xE2\x80\x94 start a new agent instead."));
+        return;
+    }
+    if (agentSessionHasLiveTransport(sid)) {
+        flashMessage(QStringLiteral(
+            "This agent is already running \xE2\x80\x94 type a message and it goes "
+            "straight to it."));
+        return;
+    }
+    if (const AgentSession *session = findAgentSession(sid);
+        session && session->status == AgentStatus::Queued &&
+        m_agentQueue.contains(sid)) {
+        flashMessage(QStringLiteral(
+            "This agent is queued and starts as soon as a run slot frees up."));
+        return;
+    }
+    continueAgentSession(sid);
 }
 
 // Same as continueSelectedAgentSession, but for an arbitrary session id
@@ -9461,6 +9472,7 @@ void MainWindow::purgeSessionState(int sessionId)
     m_streamAccountId.remove(sessionId);
     m_sessionWorkdirCache.remove(sessionId);
     m_pendingSteerMessage.remove(sessionId);
+    m_agentRelaunchAttempts.remove(sessionId);
     m_sessionTokens.remove(sessionId);
     m_lastAssistantText.remove(sessionId);
     m_scannerStates.remove(sessionId);
@@ -10608,14 +10620,22 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
         }
     }
-    QString codexResumeFallbackPrompt;
-    if (codex && !resumeId.isEmpty()) {
-        codexResumeFallbackPrompt =
+    // Both CLIs keep their conversations in their own config root and prune them,
+    // so a session picked back up days later can have nothing left to resume.
+    // Neither is allowed to fail on that: the branch still holds the work and is
+    // still the point, so hand the run a full-context turn to fall back on. This
+    // is what lets "add" restart *any* past session rather than only the ones
+    // whose conversation the CLI still happens to hold.
+    QString resumeFallbackPrompt;
+    if (!resumeId.isEmpty()) {
+        resumeFallbackPrompt =
             QStringLiteral(
-                "The previous Codex thread could not be resumed. Continue the "
+                "The previous %1 conversation could not be resumed. Continue the "
                 "same work from the current branch and repository state.\n\n"
-                "Original task:\n%1\n\nLatest user instruction:\n%2")
-                .arg(originalTaskPrompt,
+                "Original task:\n%2\n\nLatest user instruction:\n%3")
+                .arg(codex ? QStringLiteral("Codex thread")
+                           : QStringLiteral("Claude Code session"),
+                     originalTaskPrompt,
                      steer.isEmpty() ? QStringLiteral("Continue where you left off.")
                                      : steer);
     }
@@ -10703,34 +10723,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 }
             } else if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
-                // Only re-queue a process that actually got somewhere (crash mid-turn);
-                // one that never produced a session id at all (bad install, expired
-                // login) would otherwise cycle Queued -> Running -> exit forever via
-                // processAgentQueue(), each pass reporting "Running" to
-                // anyAgentRunning() and leaving Rebuild & restart stuck on "Waiting
-                // for running actions to finish" with no real work in flight (adhoc
-                // #116). Codex already guarded this; extend the same check to Claude
-                // Code.
-                const bool launchFailed = codex ? lastCodexThreadId(sid).isEmpty()
-                                                 : lastClaudeSessionId(sid).isEmpty();
-                if (launchFailed) {
-                    as->status = AgentStatus::Failed;
-                    as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
-                    as->lastError =
-                        codex ? QStringLiteral("Codex app-server exited before "
-                                               "starting a thread (exit %1).")
-                                    .arg(exitCode)
-                              : QStringLiteral("Claude Code exited before starting "
-                                               "a session (exit %1).")
-                                    .arg(exitCode);
-                } else {
-                    as->status = AgentStatus::Queued;
-                    as->lastError.clear();
-                    if (!m_agentQueue.contains(sid))
-                        m_agentQueue.append(sid);
-                }
-                m_agentStore->saveSession(*as);
-                scheduleAgentSessionsPush(); // adhoc #182
+                applyCliExitWithoutResult(sid, codex, exitCode);
             }
         }
         // Pull requests are user-driven now (adhoc #2 follow-up: "I don't want
@@ -10907,7 +10900,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
-    auto launch = [this, sid, prompt, codexResumeFallbackPrompt, autoMode,
+    auto launch = [this, sid, prompt, resumeFallbackPrompt, autoMode,
                    branchName, resumeId, selectedModel, routeTask, codex,
                    sessionMode, sessionStrength,
                    runAccountEnv](const QString &workdir) {
@@ -10955,7 +10948,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 codexEnv << AgentJail::envEntries(jailDir);
             }
             live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
-                        effort, jailMb, codexResumeFallbackPrompt);
+                        effort, jailMb, resumeFallbackPrompt);
             return;
         }
 
@@ -10983,8 +10976,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // runs the router (adhoc #91), which is asynchronous — so `begin`
         // re-checks that this stream is still the session's live one (the user
         // may have stopped or restarted it while the triage ran).
-        auto begin = [this, sid, live, workdir, env, prompt, autoMode,
-                      resumeId, sessionMode, sessionStrength](const QString &chosenModel) {
+        auto begin = [this, sid, live, workdir, env, prompt, autoMode, resumeId,
+                      resumeFallbackPrompt, sessionMode,
+                      sessionStrength](const QString &chosenModel) {
             if (m_streamSessions.value(sid) != live)
                 return;
             // Footer slash-actions menu (adhoc #116): effort and model-fallback
@@ -11022,7 +11016,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                  QStringLiteral("claude-code"), chosenModel,
                                  sessionMode, effort)));
             live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
-                        resumeId, chosenModel, effort, fallback, jailMb);
+                        resumeId, chosenModel, effort, fallback, jailMb,
+                        resumeFallbackPrompt);
         };
         if (selectedModel == kClaudeAutoModelId)
             resolveAutoClaudeModel(sid, routeTask, workdir, live, std::move(begin));
@@ -11524,6 +11519,144 @@ void MainWindow::startAllStoppedAgents()
     flashMessage(QStringLiteral("Started %1 agent session%2.")
                      .arg(ids.size())
                      .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
+}
+
+// The branches "Update all" would merge into: our own unfinished work, in any
+// repository, that still has a branch of its own to catch up. Merged sessions
+// are landed, external (watch-only) rows and association-only PR records own no
+// worktree, and a session sitting on its own base has nothing to pull in.
+// Deliberately cheap — no git here — because updateAgentActionState() calls this
+// on every selection change; the batch below is where paths are resolved.
+QList<int> MainWindow::updatableAgentSessionIds() const
+{
+    QList<int> ids;
+    QSet<QString> seen;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.merged || session.associationOnly ||
+            isExternalSession(session.id))
+            continue;
+        if (session.branchName.isEmpty() ||
+            session.branchName == agentMergeBase(session))
+            continue;
+        const int repoIndex = repoIndexFor(session.owner, session.name);
+        if (repoIndex < 0 || m_repositories.at(repoIndex).localPath.isEmpty())
+            continue;
+        // One entry per branch: a follow-up run shares its predecessor's branch,
+        // and the second merge of the same base would be an empty no-op counted
+        // as a second update.
+        const QString key = m_repositories.at(repoIndex).localPath +
+                            QLatin1Char('\n') + session.branchName;
+        if (seen.contains(key))
+            continue;
+        seen.insert(key);
+        ids << session.id;
+    }
+    return ids;
+}
+
+// "Update all" (adhoc #1611): the detail page's per-session "Update" over the
+// whole fleet — merge each session's own base branch into its own worktree
+// branch. Nothing else in the app pulls main into an agent branch any more; the
+// background diff refresh used to do it silently for every idle worktree, and
+// now only measures how far behind each one is. Pressing this is the whole
+// mechanism.
+//
+// Every merge goes through mergeBaseIntoLinkedWorktree(), the same
+// autostash-protected, transactional path "Pull main" uses on one branch: an
+// agent's uncommitted edits are set aside and restored on top, and a merge that
+// can't complete cleanly leaves its branch exactly as it was, wearing the row's
+// conflict alert that hands it to an agent.
+void MainWindow::updateAllAgentWorktreesFromMain()
+{
+    // Snapshot the ids up front: the refreshes at the end rebuild m_agentSessions.
+    const QList<int> ids = updatableAgentSessionIds();
+    if (ids.isEmpty()) {
+        flashMessage(QStringLiteral("No agent branches to update."));
+        return;
+    }
+    int updated = 0;    // merged base in
+    int current = 0;    // already contained it
+    int busy = 0;       // a merge or unresolved files were already in the way
+    int conflicted = 0; // merge refused or rolled back; branch left alone
+    int skipped = 0;    // no worktree of its own, or no such base branch
+    for (const int sessionId : std::as_const(ids)) {
+        const AgentSession *session = findAgentSession(sessionId);
+        const int repoIndex =
+            session ? repoIndexFor(session->owner, session->name) : -1;
+        if (repoIndex < 0) {
+            ++skipped;
+            continue;
+        }
+        const QString branch = session->branchName;
+        const QString base = agentMergeBase(*session);
+        const QString worktree = worktreePathForBranch(
+            m_repositories.at(repoIndex).localPath, branch);
+        // No checkout of its own (deleted, or never created): there is nothing to
+        // merge into. Merging in the repo's main checkout would move whatever
+        // unrelated branch is sitting there.
+        if (worktree.isEmpty() || !QDir(worktree).exists()) {
+            ++skipped;
+            continue;
+        }
+        // A base recorded by the session but no longer present locally would make
+        // `git merge` fail as if the branch conflicted, so name it for what it is.
+        if (!runGitCapture(worktree,
+                           {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                            QStringLiteral("--quiet"),
+                            QStringLiteral("refs/heads/%1").arg(base)},
+                           nullptr, nullptr)) {
+            ++skipped;
+            continue;
+        }
+        // Already has base in its history: merging again would only build an
+        // empty commit, and counting it as "updated" would overstate the batch.
+        if (runGitCapture(worktree,
+                          {QStringLiteral("merge-base"),
+                           QStringLiteral("--is-ancestor"), base,
+                           QStringLiteral("HEAD")},
+                          nullptr, nullptr)) {
+            ++current;
+            continue;
+        }
+        switch (mergeBaseIntoLinkedWorktree(worktree, branch, base).status) {
+        case WorktreeMergeReport::Merged:
+            ++updated;
+            break;
+        case WorktreeMergeReport::Busy:
+            ++busy;
+            break;
+        case WorktreeMergeReport::Conflicted:
+        case WorktreeMergeReport::Failed:
+            ++conflicted;
+            break;
+        }
+    }
+    QStringList notes;
+    if (current > 0)
+        notes << QStringLiteral("%1 already current").arg(current);
+    if (busy > 0)
+        notes << QStringLiteral("%1 mid-merge").arg(busy);
+    if (conflicted > 0)
+        notes << QStringLiteral("%1 conflicting").arg(conflicted);
+    if (skipped > 0)
+        notes << QStringLiteral("%1 without a worktree").arg(skipped);
+    flashMessage(
+        QStringLiteral("Updated %1 agent branch%2%3.")
+            .arg(updated)
+            .arg(updated == 1 ? QString() : QStringLiteral("es"),
+                 notes.isEmpty() ? QString()
+                                 : QStringLiteral(" (%1 skipped: %2)")
+                                       .arg(ids.size() - updated)
+                                       .arg(notes.join(QStringLiteral(", ")))),
+        /*isError=*/conflicted > 0);
+    // The merges moved branch tips: re-read the behind/conflict badges, the open
+    // session's Files-changed diff, and the Worktrees table if it is built.
+    m_agentDiffRefreshPending = true;
+    reloadAgents();
+    if (m_selectedAgentSessionId > 0)
+        refreshAgentFilesPanel(m_selectedAgentSessionId);
+    loadWorktreesPanel();
+    updateAgentActionState();
 }
 
 // ---- External Claude Code sessions ----------------------------------------
@@ -12467,6 +12600,67 @@ void MainWindow::popOutAgentSessionToTerminal(int sessionId)
                          : QStringLiteral("%1.").arg(what));
 }
 
+// A CLI exited while its session was still Running/Waiting, i.e. without ever
+// finishing a turn. Decide between another go and giving up, and stamp the
+// session accordingly; returns true when it was re-queued.
+//
+// Only re-queue a process that actually got somewhere (a crash mid-turn); one
+// that never produced a session id at all (bad install, expired login) would
+// otherwise cycle Queued -> Running -> exit forever via processAgentQueue(),
+// each pass reporting "Running" to anyAgentRunning() and leaving Rebuild &
+// restart stuck on "Waiting for running actions to finish" with no real work in
+// flight (adhoc #116).
+//
+// That id check reads the whole persisted transcript, though, so it only catches
+// a session that has NEVER launched. One that ran fine last week and cannot
+// start today — the conversation its resume names has been pruned, the login
+// expired, the CLI is broken — still shows an id from those older turns, so it
+// took the re-queue branch on every pass and span there: queued, exit, queued,
+// with a perpetual spinner and no error anywhere. Pressing Continue or the
+// composer's "add" on such a past session was indistinguishable from a dead
+// button. Bound the retries and fail with a reason instead.
+bool MainWindow::applyCliExitWithoutResult(int sessionId, bool codex, int exitCode)
+{
+    AgentSession *session = findAgentSession(sessionId);
+    if (!session)
+        return false;
+    const bool neverLaunched = codex ? lastCodexThreadId(sessionId).isEmpty()
+                                     : lastClaudeSessionId(sessionId).isEmpty();
+    const int attempts = m_agentRelaunchAttempts.value(sessionId) + 1;
+    m_agentRelaunchAttempts.insert(sessionId, attempts);
+    const bool giveUp = neverLaunched || attempts > kMaxAgentRelaunchAttempts;
+    if (giveUp) {
+        m_agentRelaunchAttempts.remove(sessionId);
+        session->status = AgentStatus::Failed;
+        session->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+        const QString cli = codex ? QStringLiteral("Codex app-server")
+                                  : QStringLiteral("Claude Code");
+        session->lastError =
+            neverLaunched
+                ? QStringLiteral("%1 exited before starting a %2 (exit %3).")
+                      .arg(cli,
+                           codex ? QStringLiteral("thread")
+                                 : QStringLiteral("session"))
+                      .arg(exitCode)
+                : QStringLiteral("%1 exited without starting a turn on %2 "
+                                 "attempts (exit %3). The branch still holds the "
+                                 "work \xE2\x80\x94 check the CLI is installed and "
+                                 "logged in, then continue this session again.")
+                      .arg(cli)
+                      .arg(attempts)
+                      .arg(exitCode);
+    } else {
+        session->status = AgentStatus::Queued;
+        session->lastError.clear();
+        if (!m_agentQueue.contains(sessionId))
+            m_agentQueue.append(sessionId);
+    }
+    if (m_agentStore)
+        m_agentStore->saveSession(*session);
+    scheduleAgentSessionsPush(); // adhoc #182
+    return !giveUp;
+}
+
 // The session started working again — a resumed CLI announced itself, or a new
 // user turn was steered into a live one. Whatever terminal state the previous
 // turn left (Waiting, Failed, Success), the list must show it Running now (adhoc
@@ -12480,6 +12674,10 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     // result; that old poll must never turn this new turn into Done.
     m_agentCompletionChecks.remove(sessionId);
     m_agentCompletionPollCounts.remove(sessionId);
+    // Getting here means a launch reached the CLI's own announcement, so the
+    // relaunch budget starts over: a later crash mid-turn is a new problem, not
+    // a continuation of a launch that could never work.
+    m_agentRelaunchAttempts.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status == AgentStatus::Running)
         return;
@@ -14421,6 +14619,10 @@ void MainWindow::updateAgentActionState()
     // session is sitting there resumable, selection or not.
     if (m_agentStartAllButton)
         m_agentStartAllButton->setEnabled(!startableAgentSessionIds().isEmpty());
+    // And for "Update all" (adhoc #1611): live whenever any unmerged session still
+    // holds a branch of its own that main could be merged into, selection or not.
+    if (m_agentUpdateAllButton)
+        m_agentUpdateAllButton->setEnabled(!updatableAgentSessionIds().isEmpty());
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
     // Block deleting the session whose working-tree git-am the in-flight AI fix is

@@ -255,6 +255,14 @@
         async function render() {
           if (isRendering) return;
           isRendering = true;
+          try {
+            await renderOnce();
+          } finally {
+            isRendering = false;
+          }
+        }
+
+        async function renderOnce() {
           let data;
           let rateLimited = false;
           let failedResponse = null;
@@ -703,9 +711,6 @@
 
             list.appendChild(row);
           });
-          } finally {
-            isRendering = false;
-          }
         }
 
         window.setInterval(() => {

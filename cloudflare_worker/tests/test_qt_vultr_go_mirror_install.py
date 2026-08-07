@@ -5,6 +5,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CHAT = (ROOT / "qt_client/src/MainWindowChat.cpp").read_text(encoding="utf-8")
+SETUP = (ROOT / "qt_client/src/MainWindowSetup.cpp").read_text(encoding="utf-8")
+MIRROR = (ROOT / "qt_client/src/MainWindowMirrorNode.cpp").read_text(
+    encoding="utf-8"
+)
 DEPLOY = (ROOT / "cloudflare_worker/deploy.sh").read_text(encoding="utf-8")
 INSTALLER = (ROOT / "cloudflare_worker/public/install.sh").read_text(
     encoding="utf-8"
@@ -42,6 +46,33 @@ def test_native_payload_is_checksummed_linked_and_health_checked():
         "http://127.0.0.1:8791/healthz",
         "https://"):
         assert contract in builder
+
+
+def test_update_flows_refresh_the_go_companion():
+    # "Click Update to retry" must be able to heal a desktop that is missing
+    # forkmesh-mirror-node: the source rebuild builds the companion with the
+    # local Go toolchain and installs it beside the client, and the prebuilt
+    # auto-update fetches the published companion asset by SHA-256.
+    assert "buildMirrorNodeCompanion" in SETUP
+    assert "./cmd/forkmesh-mirror-node" in SETUP
+    assert "installMirrorNodeCompanionFile" in SETUP
+    assert "installMirrorCompanionThenRelaunch" in SETUP
+    # The companion asset shares the client asset's os/arch, so the auto-update
+    # client slot must select by name and never install the companion as the
+    # client binary.
+    assert 'name.startsWith(QStringLiteral("forkmesh-mirror-node"))' in SETUP
+
+
+def test_companion_lookup_includes_the_installed_bin_directory():
+    # GUI launches often lack ~/.local/bin in PATH, so both companion lookups
+    # must also check the installer-owned directory beside the installed client.
+    builder = CHAT.split(
+        "bool MainWindow::buildVultrMirrorNodeInstallCommand(", 1
+    )[1].split("\nbool MainWindow::buildHostInstallCommand(", 1)[0]
+    assert "runningClientExecutable()" in builder
+    assert "runningClientExecutable()" in MIRROR.split(
+        "QString managedMirrorNodeBinary()", 1
+    )[1]
 
 
 def test_signed_release_publishes_and_installs_the_go_companion():
