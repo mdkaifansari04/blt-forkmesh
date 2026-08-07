@@ -1065,6 +1065,11 @@ QPixmap agentLeadGlyphPixmap(const AgentSession &session,
         const QIcon icon = themedOcticon(statusIcon, agentStatusIconColor(session),
                                          kAgentStatusGlyphPx);
         if (running) {
+            // The status glyph is a rasterized octicon pixmap, and this is a
+            // freehand rotation (not a multiple of 90 degrees) driven by
+            // activityAngle every tick — without SmoothPixmapTransform, Qt
+            // resamples it nearest-neighbour and the spin reads as jagged.
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
             p.save();
             p.translate(statusRect.center());
             p.rotate(activityAngle);
