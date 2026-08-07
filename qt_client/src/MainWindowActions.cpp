@@ -1745,6 +1745,9 @@ void MainWindow::notifyActionEvent(const QString &title, const QString &body,
     const QString mode = actionAlertMode();
     if (mode == QLatin1String("none"))
         return;
+    if (title == QLatin1String("Action started") &&
+        !QSettings().value(kActionAlertStartedSetting, false).toBool())
+        return;
     if (mode == QLatin1String("failed") && !warning)
         return;
     const QString icon = warning ? QStringLiteral("dialog-error")
