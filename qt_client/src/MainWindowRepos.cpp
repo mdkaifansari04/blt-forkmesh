@@ -3689,8 +3689,25 @@ void MainWindow::startNodeEventSocket()
     });
     connect(m_nodeEventSocket, &NodeEventSocket::eventReceived, this,
             [this](const QString &topic, const QString &repo) {
-                Q_UNUSED(topic);
                 Q_UNUSED(repo);
+                // This DO is per ACCOUNT, so it now carries account-scoped
+                // topics alongside the repo ones — and the browser tabs of the
+                // same person share the channel. Those topics answer a
+                // different question than the repo sync does, so handle them
+                // here and return rather than letting a direct message drag a
+                // signed /api/sync along behind it.
+                if (topic == QLatin1String("pings")) {
+                    // The only thing that moves the bell's unread count, which
+                    // is why that inbox is read once at launch, never on a
+                    // timer.
+                    refreshWebAlerts(true);
+                    return;
+                }
+                if (topic == QLatin1String("direct-messages")) {
+                    // Web-only for now: the desktop's own chat unread comes
+                    // from its room sockets, so there is nothing to refresh.
+                    return;
+                }
                 // New inbox work also outdates the cached /pending tallies
                 // behind the toolbar badges; zeroing clientFetchedAt lets the
                 // badge refresh refetch them (fetchMirrorPendingCounts is
@@ -3706,9 +3723,13 @@ void MainWindow::startNodeEventSocket()
                 // One catch-up sync per (re)connect drains anything queued
                 // while the channel was down. That catch-up is the whole
                 // missed-event story: there is no fallback poll behind the
-                // socket (docs/operations/polling-elimination.md).
-                if (connected)
+                // socket (docs/operations/polling-elimination.md). The ping
+                // inbox rides the same catch-up, since a ping raised while the
+                // channel was down pushed its frame into the void.
+                if (connected) {
                     scheduleRelaySync();
+                    refreshWebAlerts(true);
+                }
             });
     connect(m_nodeEventSocket, &NodeEventSocket::systemMessage, this,
             [this](const QString &text) { logSystem(text); });

@@ -12684,7 +12684,9 @@ void MainWindow::showSection(int index)
     } else if (index == 3) {
         // Opening Pings is the moment the website inbox has to be current
         // (adhoc #59); refreshWebAlerts() repaints the table when it lands.
-        refreshWebAlerts();
+        // Forced, because the unforced read is a one-shot seed at launch — a
+        // user action is exactly the case that outranks it.
+        refreshWebAlerts(true);
         refreshNotificationsTable();
     } else if (index == 4 && m_settingsLog) {
         // First visit renders the persisted history that buildLogSection()

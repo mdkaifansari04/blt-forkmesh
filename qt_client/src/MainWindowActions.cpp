@@ -2753,10 +2753,16 @@ void MainWindow::refreshWebAlerts(bool force)
     if (node.isEmpty())
         return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    // The heartbeat calls this every minute; one read per five minutes is
-    // plenty for an inbox and keeps the relay's request budget intact.
-    if (!force && m_webAlertsFetchedAtMs > 0 &&
-        now - m_webAlertsFetchedAtMs < 300000)
+    // Not a poll: the ping inbox is read ONCE per run and is push-driven from
+    // then on. The relay fans a payload-free "pings" event frame to this
+    // account's node event socket the moment a ping is written
+    // (notify_account_event), and that frame — plus the socket's reconnect
+    // catch-up and explicit user actions — is what passes `force`. The
+    // heartbeat still calls this unforced, which after the first success is a
+    // no-op; it only matters as the retry that re-seeds a failed first read
+    // (docs/operations/polling-elimination.md).
+    if (m_webAlertsFetchedAtMs > 0 &&
+        (!force || now - m_webAlertsFetchedAtMs < kWebAlertPushFloorMs))
         return;
 
     QUrl url = catalogApiUrl();
@@ -2783,8 +2789,13 @@ void MainWindow::refreshWebAlerts(bool force)
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError || status < 200 ||
-            status >= 300)
+            status >= 300) {
+            // The one read of this run just failed, so there is nothing to sit
+            // on. Clearing the stamp lets the next heartbeat re-seed it (and
+            // only until one read succeeds).
+            m_webAlertsFetchedAtMs = 0;
             return;
+        }
         const QJsonObject payload =
             QJsonDocument::fromJson(reply->readAll()).object();
         m_webAlerts = payload.value(QStringLiteral("notifications")).toArray();

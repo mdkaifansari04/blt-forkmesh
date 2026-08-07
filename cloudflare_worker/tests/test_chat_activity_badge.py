@@ -161,8 +161,13 @@ def test_own_messages_advance_the_header_baseline():
     # adhoc #426: the badge is a delta against the stored baseline, so a line
     # this browser contributed to #general showed up as unread on every other
     # page of the site. Sending advances the baseline by one instead.
-    assert "function noteOwnChatActivity()" in CHAT
-    assert "noteOwnChatActivity();" in CHAT
+    assert "function noteSeenChatActivity()" in CHAT
+    assert "noteSeenChatActivity();" in CHAT
+    # Same baseline bump for a line that ARRIVES while the page is open — that
+    # is what let the 60s re-read of /api/chat/activity go away. Replayed
+    # history is excluded: the read at page open already counted it.
+    assert 'type !== "history" &&' in CHAT
+    assert "DURABLE_TYPES.has(type) &&" in CHAT
     # Only retained public-world frames reach the counter the badge reads; a
     # private channel, a DM, or an unretained oversized file frame must not
     # move the baseline.
