@@ -3690,12 +3690,22 @@ void MainWindow::startNodeEventSocket()
     connect(m_nodeEventSocket, &NodeEventSocket::eventReceived, this,
             [this](const QString &topic, const QString &repo) {
                 Q_UNUSED(repo);
-                // Account-scoped topics answer a different question than the
-                // repo sync does. "pings" is the only thing that moves the
-                // bell's unread count, which is why that inbox is read once at
-                // launch and never on a timer.
+                // This DO is per ACCOUNT, so it now carries account-scoped
+                // topics alongside the repo ones — and the browser tabs of the
+                // same person share the channel. Those topics answer a
+                // different question than the repo sync does, so handle them
+                // here and return rather than letting a direct message drag a
+                // signed /api/sync along behind it.
                 if (topic == QLatin1String("pings")) {
+                    // The only thing that moves the bell's unread count, which
+                    // is why that inbox is read once at launch, never on a
+                    // timer.
                     refreshWebAlerts(true);
+                    return;
+                }
+                if (topic == QLatin1String("direct-messages")) {
+                    // Web-only for now: the desktop's own chat unread comes
+                    // from its room sockets, so there is nothing to refresh.
                     return;
                 }
                 // New inbox work also outdates the cached /pending tallies

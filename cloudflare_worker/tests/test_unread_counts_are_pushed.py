@@ -218,6 +218,12 @@ def test_desktop_reads_the_ping_inbox_once_per_run():
 def test_desktop_refreshes_pings_on_push_and_on_reconnect_catch_up():
     assert 'if (topic == QLatin1String("pings")) {' in QT_REPOS
     assert "refreshWebAlerts(true);" in QT_REPOS
+    # The DO is per account, so it now also carries the web-only topic. Letting
+    # that fall through would drag a signed /api/sync behind every direct
+    # message the user receives.
+    assert 'if (topic == QLatin1String("direct-messages")) {' in QT_REPOS
+    assert QT_REPOS.index('QLatin1String("direct-messages")') < QT_REPOS.index(
+        "scheduleRelaySync();")
     # No fallback poll sits behind the socket, so the (re)connect catch-up is
     # what covers a ping raised while the channel was down.
     assert (
@@ -266,6 +272,8 @@ def test_chat_page_stops_polling_conversations_and_activity():
     assert "PRIVATE_CHANNEL_REFRESH_MS" not in CHAT
     assert "startAccountEventChannel();" in CHAT
     assert 'if (topic !== "direct-messages") return;' in CHAT
+    # The first connect needs no catch-up: the caller just read both lists.
+    assert "if (!accountEventsConnectedOnce) {" in CHAT
     # The remaining interval is the (edge-cached) registered-user directory,
     # which is not an unread count and has no push behind it yet. The activity
     # counters must not ride along on it any more.

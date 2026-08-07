@@ -1340,6 +1340,7 @@ function loadMoreDirectMessages() {
 // the conversation list: an unread count only ever changes because somebody
 // wrote to this account, and the relay says so the moment it happens.
 let accountEvents = null;
+let accountEventsConnectedOnce = false;
 
 function startAccountEventChannel() {
   // Guests have no conversations to be unread, and no session to trade for a
@@ -1355,10 +1356,15 @@ function startAccountEventChannel() {
       if (topic !== "direct-messages") return;
       refreshDirectMessages({ preserve: true, selectSaved: false });
     },
-    // One catch-up per (re)connect: a DM that arrived while the channel was
+    // One catch-up per RE-connect: a DM that arrived while the channel was
     // down pushed its frame into the void, and there is no fallback poll
-    // behind this socket (docs/operations/polling-elimination.md).
+    // behind this socket (docs/operations/polling-elimination.md). The first
+    // connect needs no catch-up — the caller has just read both lists.
     onConnected: () => {
+      if (!accountEventsConnectedOnce) {
+        accountEventsConnectedOnce = true;
+        return;
+      }
       refreshPrivateChannels();
       refreshDirectMessages({ preserve: true, selectSaved: false });
     },
