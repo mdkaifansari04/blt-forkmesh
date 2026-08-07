@@ -1494,10 +1494,30 @@ private:
                                const QString &tagCommit);
     void installPrebuiltAndRelaunch(const QString &artifactPath,
                                     const QString &tag);
+    // Host deploys upload this desktop's local forkmesh-mirror-node, so a
+    // prebuilt client update must also refresh (or first produce) the Go
+    // companion the release publishes beside the client asset — otherwise a
+    // node missing it can never self-heal and every Vultr install fails with
+    // "forkmesh-mirror-node is missing". Verifies by SHA-256 from the release
+    // manifest (local mirror CAS first, else the relay blob route), installs
+    // beside the running client, then hands off to installPrebuiltAndRelaunch.
+    // Best-effort: a companion failure never blocks the client update.
+    void installMirrorCompanionThenRelaunch(const QString &artifactPath,
+                                            const QString &tag,
+                                            const QString &owner,
+                                            const QString &name,
+                                            const QString &companionHash);
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
                           const QString &relaunchPath = QString(),
                           const QString &buildType = QStringLiteral("Release"));
+    // Source-rebuild counterpart of the companion refresh: build
+    // mirror_node/cmd/forkmesh-mirror-node with the local Go toolchain into the
+    // client build directory so installAndRelaunch can place it beside the
+    // installed client. Skips (with a log line) when Go or the module source is
+    // unavailable; a build failure is logged and never blocks the client update.
+    void buildMirrorNodeCompanion(const QString &clientDir, const QString &buildDir,
+                                  std::function<void()> onDone);
     void installAndRelaunch(const QString &built, const QString &appPath);
     // When onFailure is set it is invoked instead of the default "Update failed"
     // handling if the step exits non-zero, letting callers recover (e.g. re-clone
