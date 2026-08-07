@@ -8175,9 +8175,9 @@ QWidget *MainWindow::buildLogSection()
     filterScroll->setFrameShape(QFrame::NoFrame);
     filterScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     filterScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Tall enough for the bigger, icon-bearing chips (adhoc #1559) plus the
+    // Tall enough for a full icon-over-caption tile (adhoc #1633) plus the
     // horizontal scrollbar the full taxonomy needs on a laptop-width window.
-    filterScroll->setFixedHeight(44);
+    filterScroll->setFixedHeight(62);
 
     // Discover which categories the buffered history contains and build the
     // chips now, but leave rendering the history itself (the newest
@@ -8228,9 +8228,12 @@ QWidget *MainWindow::buildLogSection()
     layout->setContentsMargins(18, 14, 18, 14);
     layout->setSpacing(8);
     layout->addLayout(headerRow);
+    // The category tiles sit directly under the title, above the time range and
+    // the chart (adhoc #1633): "which kind of event" is the first choice made on
+    // this page, and buried below the chart the row was easy to miss entirely.
+    layout->addWidget(filterScroll);
     layout->addLayout(rangeRow);
     layout->addWidget(m_logTimelineChart);
-    layout->addWidget(filterScroll);
     setLogTimelinePresetHours(24);
     layout->addWidget(m_settingsLog, 1);
     return page;
