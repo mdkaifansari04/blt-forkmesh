@@ -1895,6 +1895,60 @@ void MainWindow::flashErrorBorder()
     m_errorBorderTimer->start(1500); // world-admin-error-arrival's 1.5s
 }
 
+// The good-news twin of flashErrorBorder: a green edge pulse when an agent
+// finishes (adhoc #1630), so a run that lands while the user is reading a diff
+// or another repo announces itself across the whole window rather than only in
+// the corner. Held a shade longer than the error flash — this one is meant to be
+// enjoyed, not just noticed — and re-flashing restarts the countdown.
+void MainWindow::flashCelebrationBorder()
+{
+    if (!m_celebrationBorderOverlay) {
+        class CelebrationBorderWidget : public QWidget
+        {
+        public:
+            explicit CelebrationBorderWidget(QWidget *parent) : QWidget(parent)
+            {
+                setAttribute(Qt::WA_TransparentForMouseEvents);
+                setAttribute(Qt::WA_NoSystemBackground);
+                setAttribute(Qt::WA_TranslucentBackground);
+                setObjectName(QStringLiteral("celebrationBorderOverlay"));
+            }
+
+        protected:
+            void paintEvent(QPaintEvent *) override
+            {
+                QPainter painter(this);
+                painter.setRenderHint(QPainter::Antialiasing, false);
+                // The same success green the Agents list and the toast use, so
+                // the pulse reads as "that finished" rather than a new colour.
+                QPen pen(QColor(63, 185, 80, 190), 3);
+                pen.setJoinStyle(Qt::MiterJoin);
+                painter.setPen(pen);
+                painter.drawRect(rect().adjusted(1, 1, -2, -2));
+                for (int step = 1; step <= 6; ++step) {
+                    const int inset = 2 + step * 3;
+                    QPen glow(QColor(63, 185, 80, 58 - step * 8), 3);
+                    glow.setJoinStyle(Qt::MiterJoin);
+                    painter.setPen(glow);
+                    painter.drawRect(
+                        rect().adjusted(inset, inset, -inset - 1, -inset - 1));
+                }
+            }
+        };
+        m_celebrationBorderOverlay = new CelebrationBorderWidget(this);
+        m_celebrationBorderTimer = new QTimer(this);
+        m_celebrationBorderTimer->setSingleShot(true);
+        connect(m_celebrationBorderTimer, &QTimer::timeout, this, [this] {
+            if (m_celebrationBorderOverlay)
+                m_celebrationBorderOverlay->hide();
+        });
+    }
+    m_celebrationBorderOverlay->setGeometry(rect());
+    m_celebrationBorderOverlay->show();
+    m_celebrationBorderOverlay->raise();
+    m_celebrationBorderTimer->start(2000);
+}
+
 // A restart can spend a while fetching or compiling while the relevant control
 // is hidden in another section.  Pulse the full app edge in the theme's amber
 // caution colour for that entire interval, without intercepting any input.

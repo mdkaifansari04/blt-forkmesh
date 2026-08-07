@@ -537,6 +537,28 @@ public:
     {
         return m_errorBorderOverlay && m_errorBorderOverlay->isVisible();
     }
+    // The finished-agent celebration (adhoc #1630), driven without a live CLI:
+    // seed the closing summary the run would have ended on, then raise the card
+    // exactly as a real completion does.
+    void testNotifyAgentDone(int sessionId, const QString &closingSummary)
+    {
+        if (closingSummary.isEmpty())
+            m_lastAssistantText.remove(sessionId);
+        else
+            m_lastAssistantText[sessionId] = closingSummary;
+        notifyAgentDone(sessionId);
+    }
+    // The celebration headline's HTML ("🎉 Agent #12 is done!" plus the run's
+    // figures), empty unless that row is actually part of the visible card, and
+    // whether the row carries the agent's icon rather than an empty placeholder.
+    // Defined in MainWindowSettings.cpp: QLabel is only forward-declared here.
+    QString testTopMessageAgentHeadline() const;
+    bool testTopMessageAgentIconShown() const;
+    bool testCelebrationBorderVisible() const
+    {
+        return m_celebrationBorderOverlay &&
+               m_celebrationBorderOverlay->isVisible();
+    }
     // Clears the repeat/burst bookkeeping (and any lit border) so consecutive
     // checks in one run don't de-duplicate against each other.
     void testResetLoggedErrorAlerts()
@@ -3811,6 +3833,9 @@ private:
     // Flash a red border around the whole window for a moment — the desktop
     // twin of the World's world-admin-error-arrival effect (adhoc #77).
     void flashErrorBorder();
+    // The same effect in green, for the one event worth celebrating: an agent
+    // finishing its run (adhoc #1630). Re-flashing restarts the countdown.
+    void flashCelebrationBorder();
     // While an update/rebuild is preparing to relaunch this process, pulse an
     // amber border at the window edge so the long-running restart is visible
     // even when its originating button or status panel is off-screen.
@@ -5657,6 +5682,11 @@ private:
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
+    // The agent a finished-run celebration belongs to, recovered from its own
+    // "fm:agent:<id>" click target (-1 for every other kind of card), and the
+    // headline row that card paints above the agent's closing summary.
+    int topMessageAgentDoneSessionId() const;
+    QString agentDoneHeadlineHtml(int sessionId);
     // Refresh just the prompt bubble's status line, e.g. as the agent streams
     // (adhoc #1570) — cheaper than a full renderTopMessage() per event.
     void updateTopMessagePromptLiveStatus(const QString &line);
@@ -6168,6 +6198,12 @@ private:
     QWidget *m_topMessageBody = nullptr;  // scrollable prompt/notification content
     QLabel *m_topMessagePromptHeader = nullptr; // "Prompt sent" line
     QLabel *m_topMessagePromptStatusLabel = nullptr; // agent info on its own line
+    // Headline row of an "agent finished" celebration (adhoc #1630): the agent's
+    // own list icon beside "🎉 Agent #12 is done! · #42 · repo · 2m 04s". The
+    // summary the run signed off with is the message text beneath it.
+    QWidget *m_topMessageAgentRow = nullptr;
+    QLabel *m_topMessageAgentIcon = nullptr;
+    QLabel *m_topMessageAgentHeadline = nullptr;
     QWidget *m_topMessagePromptImages = nullptr; // submitted image thumbnails
     QStringList m_topMessagePromptImagePaths;
     // Queued notifications are visible beneath the active bubble. As new ones
@@ -6227,6 +6263,10 @@ private:
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
     QTimer *m_errorBorderTimer = nullptr;
+    // Its green twin, pulsed when an agent finishes (adhoc #1630) so the good
+    // news is as unmissable across the window as a failure is.
+    QWidget *m_celebrationBorderOverlay = nullptr;
+    QTimer *m_celebrationBorderTimer = nullptr;
     // Set while flashMessage is recording its own text, so the ERROR hook in
     // logSystem flashes the window but leaves the toast to the caller instead
     // of stacking a duplicate card behind it.
@@ -8684,6 +8724,17 @@ private:
     // failing the same way ever reaches kMaxAgentRelaunchAttempts.
     QHash<int, int> m_agentRelaunchAttempts;
     void notifyAgentWaiting(int sessionId, bool needsPermission);
+    // The counterpart for a run that reached the end: a celebration card
+    // carrying the agent's own icon and the summary it signed off with, plus a
+    // green pulse round the window (adhoc #1630). Every completion path funnels
+    // through here, and m_agentDoneNotified keeps a re-fired signal or a requeue
+    // from celebrating the same run twice.
+    void notifyAgentDone(int sessionId);
+    // The last prose the agent produced this run — the summary at the end of its
+    // transcript. Prefers the live cache and falls back to walking the event
+    // buffer, which is what a session restored from disk has.
+    QString agentClosingSummary(int sessionId) const;
+    QSet<int> m_agentDoneNotified; // sessions already celebrated; cleared on a new turn
     bool applyCliExitWithoutResult(int sessionId, bool codex, int exitCode);
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
