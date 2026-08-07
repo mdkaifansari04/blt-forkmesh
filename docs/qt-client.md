@@ -139,9 +139,12 @@ starts syncing the ForkMesh project. The main areas are:
 
 Under **Network → Hosts → Create a Vultr mirror**, the desired healthy mirror
 count can be set before opting in to automatic fleet sizing. While enabled, the
-client checks the public ForkMesh catalog every 30 seconds. It creates one
-managed Vultr mirror at a time until the target is healthy, and permanently
-destroys one excess managed instance at a time when the target is lowered.
+client checks the public ForkMesh catalog every five minutes, counting down to
+the next check beside the checkbox. It creates one managed Vultr mirror at a
+time until the target is healthy, and permanently destroys one excess managed
+instance at a time when the target is lowered. A check that cannot reach the
+catalog — the shared relay answers HTTP 429 under a faster cadence — makes no
+fleet change and is simply retried on the next countdown.
 Only Vultr instances created and tracked by this client participate; manually
 added hosts and other providers are never destroyed by this setting. A mirror
 counts as healthy only when its public catalog row is online, fresh,

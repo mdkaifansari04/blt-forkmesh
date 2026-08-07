@@ -3072,6 +3072,13 @@ const QString kMirrorFleetEnabledSetting =
     QStringLiteral("hosts/healthyMirrorFleet/enabled");
 const QString kMirrorFleetDesiredSetting =
     QStringLiteral("hosts/healthyMirrorFleet/desired");
+// Cadence of the automatic healthy-node check. The check reads the public
+// mirror catalog through the shared relay, which answers HTTP 429 long before
+// the 30-second saved-host probe cadence this loop used to ride on — and a
+// rate-limited check makes no fleet change at all, so short capacity was never
+// restored. Five minutes is slow enough to stay under the limit and is the
+// interval the countdown next to the checkbox counts down to.
+constexpr int kMirrorFleetCheckIntervalMs = 5 * 60 * 1000;
 const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
 const QString kServerUrlSetting = QStringLiteral("server/url");
