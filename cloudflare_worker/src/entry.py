@@ -1776,7 +1776,11 @@ async def notify_account_event(env, owner, topic):
 
     Best-effort, like every other push on this channel: a failure here must
     never fail the write that triggered it, and the worst case is that a badge
-    waits until the reader opens the page it lives on.
+    waits until the reader opens the page it lives on (or the channel
+    reconnects). That is also the safety valve for a wide fan-out — one comment
+    on a heavily-subscribed thread calls this once per subscriber, and if that
+    exhausts the invocation's subrequest budget the remaining pushes fail
+    quietly instead of failing the comment.
     """
     owner = safe_segment(owner)
     topic = clean_string(topic or "", 40)

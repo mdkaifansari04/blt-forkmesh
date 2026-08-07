@@ -1808,10 +1808,23 @@ async function refreshUsersDirectory() {
 // Record the current activity counters as "seen" so the chat icon in the site
 // header (site-header.js reads the same key) shows no badge for what's on
 // screen right now.
+//
+// This read is ABSOLUTE — it takes the server's counters rather than nudging
+// the stored ones — which is what makes it the correction for any drift the
+// incremental bumps below accumulate (two chat tabs each advance the one shared
+// localStorage baseline for the same message). It used to run every 60s for
+// that reason; it now runs when the page opens and when the reader leaves it,
+// which is exactly when the baseline has to be right.
+let chatActivitySeenAtMs = 0;
+
 async function markChatActivitySeen() {
+  chatActivitySeenAtMs = Date.now();
   try {
     const res = await fetch(CHAT_ACTIVITY_ENDPOINT, {
       headers: { accept: "application/json" },
+      // The read on the way out races the page unload; keepalive is what lets
+      // it (and the localStorage write below) still land.
+      keepalive: true,
     });
     if (!res.ok) return;
     const data = await res.json().catch(() => null);
@@ -1843,6 +1856,22 @@ function noteSeenChatActivity() {
       at: Date.now(),
     }));
   } catch (_) {}
+}
+
+// Leaving the chat page is the moment the header badge starts mattering again,
+// so re-baseline absolutely on the way out. Not a timer: it fires on the
+// reader's own navigation or tab switch, with a floor so flicking between tabs
+// cannot turn it into one.
+const CHAT_ACTIVITY_REBASELINE_FLOOR_MS = 5000;
+
+function rebaselineChatActivityOnLeave(event) {
+  // visibilitychange fires on the way in as well; pagehide only ever fires on
+  // the way out, and does so while the document is still visible.
+  if (event?.type === "visibilitychange" && !document.hidden) return;
+  if (Date.now() - chatActivitySeenAtMs < CHAT_ACTIVITY_REBASELINE_FLOOR_MS) {
+    return;
+  }
+  markChatActivitySeen();
 }
 
 function renderPeople() {
@@ -4096,11 +4125,14 @@ async function initChat() {
   // to announce them, so this one stays on its edge-cached tick).
   refreshUsersDirectory();
   loadForkbotModels();
-  // Once per visit. The counters only move when a message is retained, and
-  // every retained line that crosses this page now advances the baseline
-  // locally off the socket (noteSeenChatActivity) — so there is nothing left
-  // for a timer to discover.
+  // Once on open, then again when the reader leaves. In between, every
+  // retained line that crosses this page advances the baseline locally off the
+  // socket (noteSeenChatActivity), which keeps the header badge at zero while
+  // chat is the page in front of you; the read on the way out is what corrects
+  // the drift two open tabs would otherwise accumulate.
   markChatActivitySeen();
+  document.addEventListener("visibilitychange", rebaselineChatActivityOnLeave);
+  window.addEventListener("pagehide", rebaselineChatActivityOnLeave);
   setInterval(refreshUsersDirectory, USERS_DIRECTORY_REFRESH_MS);
   // Conversations and their unread counts were read once above; from here they
   // are push-driven. A DM that lands in a conversation this browser is not

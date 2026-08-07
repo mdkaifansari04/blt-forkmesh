@@ -304,8 +304,19 @@ def test_chat_page_stops_polling_conversations_and_activity():
     # counters must not ride along on it any more.
     assert "setInterval(refreshUsersDirectory, USERS_DIRECTORY_REFRESH_MS);" in (
         CHAT)
-    assert "markChatActivitySeen();\n  setInterval" in CHAT
-    assert CHAT.count("markChatActivitySeen()") == 2  # definition + one call
+    assert "setInterval" not in _js_slice(CHAT, "async function markChatActivitySeen()")
+    # The incremental bumps keep the on-page badge at zero, but two open tabs
+    # share one localStorage baseline and would each advance it for the same
+    # message. The absolute re-read on the way out is the drift correction that
+    # the 60s timer used to provide — event-driven, with a floor so flicking
+    # between tabs cannot turn it back into a poll.
+    assert "rebaselineChatActivityOnLeave" in CHAT
+    assert 'document.addEventListener("visibilitychange", ' \
+        "rebaselineChatActivityOnLeave)" in CHAT
+    assert 'window.addEventListener("pagehide", ' \
+        "rebaselineChatActivityOnLeave)" in CHAT
+    assert "CHAT_ACTIVITY_REBASELINE_FLOOR_MS = 5000" in CHAT
+    assert "keepalive: true," in CHAT
 
 
 def test_world_stops_polling_personal_pings():
