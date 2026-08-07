@@ -3606,6 +3606,8 @@ int main(int argc, char *argv[])
             QStringLiteral("agentStartAllButton"));
         QPushButton *stopAll = window.findChild<QPushButton *>(
             QStringLiteral("agentStopAllButton"));
+        QPushButton *updateAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentUpdateAllButton"));
         QPushButton *deleteMerged = window.findChild<QPushButton *>(
             QStringLiteral("agentDeleteMergedButton"));
         QPushButton *hideDetail = window.findChild<QPushButton *>(
@@ -3619,7 +3621,8 @@ int main(int argc, char *argv[])
         QWidget *queueOverlay = window.findChild<QWidget *>(
             QStringLiteral("agentQueueOverlay"));
         check(queueStatus && decrease && increase && startAll && stopAll &&
-                  deleteMerged && hideDetail && claudeTerminal && codexTerminal &&
+                  updateAll && deleteMerged && hideDetail && claudeTerminal &&
+                  codexTerminal &&
                   settingsLimit &&
                   queueOverlay &&
                   queueOverlay->parentWidget() &&
@@ -3627,6 +3630,7 @@ int main(int argc, char *argv[])
                       QStringLiteral("agentsListPane") &&
                   startAll->parentWidget() == queueOverlay &&
                   stopAll->parentWidget() == queueOverlay &&
+                  updateAll->parentWidget() == queueOverlay &&
                   deleteMerged->parentWidget() == queueOverlay &&
                   hideDetail->parentWidget() == queueOverlay &&
                   claudeTerminal->parentWidget() == queueOverlay &&
@@ -7337,6 +7341,92 @@ int main(int argc, char *argv[])
                                  "instead of opening the full Log"));
         }
         window.testResetNetworkLog();
+    }
+
+    // adhoc #1611: main reaches an agent's branch only when the fleet toolbar's
+    // "Update all" is pressed. The coalesced diff/worktree refresh behind the
+    // Agents list reports how far behind each branch is and must not merge
+    // anything itself, which it used to do for every idle, clean worktree.
+    QTemporaryDir fleetRepo;
+    if (initGitRepo(fleetRepo)) {
+        const QString fleetBranch = QStringLiteral("agent/adhoc-1611-behind");
+        runGitChecked(fleetRepo.path(), {"branch", fleetBranch});
+        const QString fleetWt = fleetRepo.path() + QStringLiteral("/wt-1611");
+        runGitChecked(fleetRepo.path(), {"worktree", "add", fleetWt, fleetBranch});
+        // A commit of its own, so the branch has to be merged rather than
+        // fast-forwarded, plus a later commit on main to leave it behind by one.
+        {
+            QFile agentFile(fleetWt + QStringLiteral("/agent-work.txt"));
+            agentFile.open(QIODevice::WriteOnly);
+            agentFile.write("agent work\n");
+            agentFile.close();
+        }
+        runGitChecked(fleetWt, {"add", "agent-work.txt"});
+        runGitChecked(fleetWt, {"commit", "-m", "agent work"});
+        {
+            QFile mainFile(fleetRepo.path() + QStringLiteral("/main-work.txt"));
+            mainFile.open(QIODevice::WriteOnly);
+            mainFile.write("main work\n");
+            mainFile.close();
+        }
+        runGitChecked(fleetRepo.path(), {"add", "main-work.txt"});
+        runGitChecked(fleetRepo.path(), {"commit", "-m", "main work"});
+        // An uncommitted edit in the agent's worktree — the normal state of a
+        // session that is mid-task. The batch must protect it, not refuse over it.
+        {
+            QFile pending(fleetWt + QStringLiteral("/agent-work.txt"));
+            pending.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            pending.write("agent work in progress\n");
+            pending.close();
+        }
+        const int fleetIdx = window.testAddLocalRepository(
+            QStringLiteral("me"), QStringLiteral("fleetrepo"), fleetRepo.path());
+        window.testOpenRepository(fleetIdx);
+        QApplication::processEvents();
+        AgentSession behind;
+        behind.id = 161101;
+        behind.owner = QStringLiteral("me");
+        behind.name = QStringLiteral("fleetrepo");
+        behind.prompt = QStringLiteral("Update all fixture");
+        behind.status = AgentStatus::Stopped;
+        behind.branchName = fleetBranch;
+        behind.baseBranch = QStringLiteral("main");
+        window.testAddAgentSession(behind);
+
+        const QString beforeRefresh =
+            gitOutput(fleetWt, {"rev-parse", "HEAD"}).trimmed();
+        window.testRefreshAgentDiffStats();
+        QElapsedTimer refreshSettle;
+        refreshSettle.start();
+        while (refreshSettle.elapsed() < 3000)
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        check(gitOutput(fleetWt, {"rev-parse", "HEAD"}).trimmed() == beforeRefresh,
+              QStringLiteral("the Agents refresh measures how far behind a branch "
+                             "is without merging main into it (adhoc #1611)"));
+
+        QPushButton *updateAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentUpdateAllButton"));
+        window.testUpdateAgentActionState();
+        const bool updateAllEnabled = updateAll && updateAll->isEnabled();
+        if (updateAll)
+            updateAll->click();
+        QApplication::processEvents();
+        const QString mergedCounts =
+            gitOutput(fleetRepo.path(),
+                      {"rev-list", "--left-right", "--count",
+                       QStringLiteral("main...") + fleetBranch});
+        QFile restored(fleetWt + QStringLiteral("/agent-work.txt"));
+        restored.open(QIODevice::ReadOnly);
+        const QByteArray restoredText = restored.readAll();
+        check(updateAllEnabled && mergedCounts.startsWith(QLatin1Char('0')) &&
+                  restoredText.contains("agent work in progress") &&
+                  gitOutput(fleetWt, {"stash", "list"}).isEmpty(),
+              QString("\"Update all\" merges each agent's base into its worktree "
+                      "branch and restores its uncommitted work (enabled=%1 "
+                      "counts=%2 stash=%3)")
+                  .arg(updateAllEnabled)
+                  .arg(mergedCounts, gitOutput(fleetWt, {"stash", "list"})));
+        window.testRemoveAgentSession(behind.id);
     }
 
     // "Merge & clean up" must leave nothing of the run behind: the branch's work
