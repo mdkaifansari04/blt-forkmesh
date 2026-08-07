@@ -1,10 +1,12 @@
 import {
   ACTIVITY_OPTIONS,
   AVAILABILITY_OPTIONS,
+  CAMPFIRE_SEATED_ACTIVITY,
   FORKMESH_SONG,
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
   OUTFIT_STYLE_OPTIONS,
+  SWING_RIDING_ACTIVITY,
   THEME_OPTIONS,
   TOUR_STEPS,
   WORLD_EMOJI_CATEGORIES,
@@ -47,13 +49,7 @@ import {
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { officeFloorsForTeam } from "./world-office-tower.js";
 import { createWorldSocketRecoveryTimers } from "./world-socket-recovery.js";
-import {
-  CAMPFIRE_SEATED_ACTIVITY,
-  QR_MODULE_READY,
-  SWING_RIDING_ACTIVITY,
-  createWorldScene,
-  proceduralAvatarFaceDataURL,
-} from "./world-scene.js";
+import { proceduralAvatarFaceDataURL } from "./world-avatar-face.js";
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
@@ -66,6 +62,14 @@ const SATELLITE_SGP4_MODULE_URL =
 // keeps a CDN failure from surfacing as an unhandled rejection before then.
 const THREE_MODULE = import(THREE_MODULE_URL);
 THREE_MODULE.catch(() => {});
+// The scene builder cannot run before three.js resolves, so it does not belong
+// in the shell's static graph: the first visit would parse a megabyte of
+// geometry before the loading curtain could paint. index.html modulepreloads
+// it during HTML parse, so this import is served from that preload rather than
+// opening a new request, and it streams beside the three.js CDN fetch that
+// bootstrap() has to wait for anyway.
+const WORLD_SCENE_MODULE = import("./world-scene.js");
+WORLD_SCENE_MODULE.catch(() => {});
 let satelliteSgp4ModulePromise = null;
 
 function loadSatelliteSgp4Module() {
@@ -240,6 +244,11 @@ const ADMIN_ERROR_ANNOUNCE_GAP_MS = 60_000;
 // device (never in account preferences) so a perf experiment on one machine
 // cannot dim the world on every other signed-in device.
 const DISABLED_ELEMENTS_KEY = "forkmesh.world.disabledElements.v1";
+// Individual pieces deleted by right-clicking them in the world. Stored the
+// same way and for the same reason as the element switches above: a local
+// render experiment, addressed by element id and index path.
+const DELETED_OBJECTS_KEY = "forkmesh.world.deletedObjects.v1";
+const DELETED_OBJECT_KEY_RE = /^[a-z0-9-]+:\d+(?:\.\d+)*$/;
 // Per-object triangle table in the Debug tab. Sorting is numeric for the
 // count columns and alphabetical for the rest, and only the leading rows of
 // the current sort are painted so a busy scene cannot stall the panel.
@@ -1179,6 +1188,19 @@ function storedDisabledWorldElements() {
     .map((id) => String(id || "").slice(0, 64))
     .filter((id) => /^[a-z0-9-]+$/.test(id))
     .slice(0, 200);
+}
+
+// A stored deletion carries the label it was deleted under so the restore list
+// can name it before — or without — the element that owns it being rebuilt.
+function storedDeletedWorldObjects() {
+  const stored = readJSON(localStorage, DELETED_OBJECTS_KEY, []);
+  return (Array.isArray(stored) ? stored : [])
+    .map((entry) => ({
+      key: String(entry?.key || "").slice(0, 160),
+      label: String(entry?.label || "").slice(0, 120),
+    }))
+    .filter((entry) => DELETED_OBJECT_KEY_RE.test(entry.key))
+    .slice(0, 400);
 }
 
 function positionIdentityToken(value) {
@@ -4167,6 +4189,9 @@ const LOCAL_LIVE_LANDMARKS = new Set([
   "broadcast",
 ]);
 
+// Landmarks whose backing read only runs when a visitor reaches them.
+const DEFERRED_LANDMARKS = new Set(["repositories"]);
+
 const LANDMARK_CONSTRUCTION_REASONS = Object.freeze({
   fountain:
     "A configured public Solana reward-pool address has not been verified in this session.",
@@ -4188,6 +4213,11 @@ function initialLandmarkCapabilities() {
       landmark.id,
       {
         live: LOCAL_LIVE_LANDMARKS.has(landmark.id),
+        // A landmark whose backing read is deferred until a visitor arrives
+        // has not failed a check — nothing has been asked yet. Claiming it is
+        // under construction would be as untrue as claiming it is live, so the
+        // marker stays off until the deferred read actually answers.
+        deferred: DEFERRED_LANDMARKS.has(landmark.id),
         reason:
           LANDMARK_CONSTRUCTION_REASONS[landmark.id] ||
           "This integration has not been verified in this session.",
@@ -4223,7 +4253,7 @@ function hasCompletedSecurityScan(scan) {
 }
 
 function constructionMarkerHTML(id, capability, className = "") {
-  const live = capability?.live === true;
+  const live = capability?.live === true || capability?.deferred === true;
   const reason =
     String(capability?.reason || "").trim() ||
     "This integration has not been verified in this session.";
@@ -4461,6 +4491,17 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         <button type="button" data-world-update-refresh>Refresh World</button>
       </div>
       <div class="world-label-layer" data-world-label-layer></div>
+      <!--
+        Right-click deletion, for administrators and anyone running the debug
+        panel: aim at a thing, remove it from the render, put it back whenever.
+      -->
+      <div
+        class="world-object-menu"
+        data-world-object-menu
+        role="menu"
+        aria-label="Delete what is under the pointer"
+        hidden
+      ></div>
 
       <div class="world-hud" data-world-hud data-hud-expanded="false">
         <header class="world-topbar">
@@ -5636,6 +5677,24 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               </div>
               <p class="world-office-panel-status" data-world-element-status role="status" aria-live="polite"></p>
             </fieldset>
+            <fieldset class="world-setting-group" data-world-deleted-group hidden>
+              <legend>Deleted pieces · this device only</legend>
+              <p class="world-setting-note">
+                Right-click anything in the world to delete just that piece.
+                Everything you have deleted is listed here and comes back with
+                one click, and deletions are remembered on this browser until
+                you restore them.
+              </p>
+              <div
+                class="world-deleted-list"
+                data-world-deleted-list
+                role="list"
+                aria-label="Deleted world pieces"
+              ></div>
+              <div class="world-element-master">
+                <button type="button" data-world-object-restore-all>Restore everything</button>
+              </div>
+            </fieldset>
           </div>
 
           <div class="world-settings-pane" data-world-settings-pane="view">
@@ -5869,7 +5928,14 @@ class ForkMeshWorld extends HTMLElement {
     this.rawNativeRepositories = [];
     this.repositoryAliasSignature = null;
     this.externalRepositories = [];
-    this.repositoryCatalogState = "loading";
+    // The repository district is the heaviest read in the World and most
+    // visits never walk east at all, so nothing about it is requested at boot.
+    // The catalog, the import list, the flagship tree, and every hosted size
+    // map wait until a character stands on the repositories circle (or opens
+    // the repositories panel, which is the same request by another door).
+    this.repositoryCatalogState = "deferred";
+    this.repositoryCatalogRequest = null;
+    this.repositoryDistrictVisited = false;
     this.flagshipPortalRetries = 0;
     this.network = {};
     this.mirrorCatalogs = [];
@@ -6106,6 +6172,10 @@ class ForkMeshWorld extends HTMLElement {
     // Element ids switched off on this device. Applied to
     // the scene at construction and edited live from the Elements tab.
     this.disabledWorldElements = storedDisabledWorldElements();
+    // Individual pieces deleted with a right-click, and the menu that deletes
+    // them. Both live on this device only.
+    this.deletedWorldObjects = storedDeletedWorldObjects();
+    this.worldObjectMenuPick = null;
     this.worldElementSort = "drawables";
     this.worldElementSortAscending = false;
     // Expanded rows in the Elements tab, keyed by element id plus the child
@@ -7117,9 +7187,11 @@ class ForkMeshWorld extends HTMLElement {
         return this.trackBootStep("data", this.loadWorldData());
       });
       this.setLoadingProgress(28, "Starting the live renderer…");
-      const THREE = await this.trackBootStep(
+      // Both halves of the renderer have been streaming since page load, and
+      // neither is usable without the other, so the engine row covers the pair.
+      const [THREE, scene] = await this.trackBootStep(
         "engine",
-        THREE_MODULE,
+        Promise.all([THREE_MODULE, WORLD_SCENE_MODULE]),
         "three.js r184 · streaming since page load",
       );
       if (this.destroyed) return;
@@ -7134,9 +7206,9 @@ class ForkMeshWorld extends HTMLElement {
       // starts when world-scene evaluates; wait here so a valid wallet gets
       // its QR code on the first scene render without adding the encoder to
       // the initial static module graph.
-      await QR_MODULE_READY;
+      await scene.QR_MODULE_READY;
       if (this.destroyed) return;
-      this.world = createWorldScene({
+      this.world = scene.createWorldScene({
         THREE,
         container: this.$("[data-world-canvas-wrap]"),
         labelLayer: this.$("[data-world-label-layer]"),
@@ -7149,6 +7221,11 @@ class ForkMeshWorld extends HTMLElement {
         // Applied before the account ticket resolves, and kept local to this
         // browser so one visitor's performance experiment stays personal.
         initialDisabledElements: this.disabledWorldElements,
+        // Pieces deleted by right-clicking them come out again as each owning
+        // element is built, so the world opens the way it was left.
+        initialDeletedObjects: this.deletedWorldObjects.map(
+          (entry) => entry.key,
+        ),
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
         // After a detected crash the same GPU or memory pressure would likely
         // kill this reload too; boot the low-memory compact renderer instead.
@@ -7298,8 +7375,14 @@ class ForkMeshWorld extends HTMLElement {
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
           this.setInfrastructureConsoleEnabled(enabled),
-        onBuildBoardNearby: () =>
-          void this.refreshBuildBoard({ quiet: true }),
+        onBuildBoardNearby: ({ refetch } = {}) =>
+          this.startBuildBoardWatch({ refetch }),
+        onBuildBoardAway: () => this.stopBuildBoardWatch(),
+        onQaBoardNearby: ({ refetch } = {}) =>
+          this.startQaDeckWatch({ refetch }),
+        onQaBoardAway: () => this.stopQaDeckWatch(),
+        onLobbyLinkKioskNearby: () => void this.loadLobbyLinkBoard(),
+        onLeaderboardWallNearby: () => void this.loadReferralLeaderboard(),
         onBuildVideoSelect: () =>
           window.open(
             "/assets/video/forkmesh-forever.mp4",
@@ -7372,6 +7455,8 @@ class ForkMeshWorld extends HTMLElement {
           this.playOfficeElevatorSound(stage, trip);
         },
         onLocationChange: (label, id) => this.updateLocation(label, id),
+        onRepositoryDistrictEnter: () =>
+          void this.loadRepositoryCatalog({ reason: "arrival" }),
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
@@ -7404,18 +7489,11 @@ class ForkMeshWorld extends HTMLElement {
       this.finishBootStep("scene");
       this.setLoadingProgress(68, "World is live · syncing nearby activity…");
       this.syncWorldCameraModeButton();
-      void this.refreshBuildBoard();
-      void this.refreshQaDeck();
       void this.refreshStoreLibrary();
-      this.buildBoardTimer = window.setInterval(
-        () => void this.refreshBuildBoard({ quiet: true }),
-        WORLD_BUILD_BOARD_POLL_MS,
-      );
-      this.qaTimer = window.setInterval(() => {
-        if (!this.destroyed && !document.hidden) {
-          void this.refreshQaDeck({ quiet: true });
-        }
-      }, WORLD_QA_POLL_MS);
+      // The build board and the QA deck are read from arm's length, so both
+      // load on approach and poll only while the visitor stays at them. See
+      // onBuildBoardNearby / onQaBoardNearby above; an entry that never walks
+      // over there costs no requests at all.
       void this.refreshOrgAgentBots();
       void this.refreshDesktopAgentBots();
       this.orgAgentTimer = window.setInterval(
@@ -7436,9 +7514,12 @@ class ForkMeshWorld extends HTMLElement {
       this.world.setMovementTuning?.(this.movementTuning());
       await Promise.allSettled([contextPromise, dataPromise]);
       this.setLoadingProgress(86, "Adding mirrors, members, and boards…");
+      // Repositories are deliberately absent from this count: boot does not
+      // read the catalog, so reporting "0 repositories" here would describe a
+      // request that was never made as an empty answer.
       this.startBootStep(
         "populate",
-        `${this.repositories.length} repositories · ${this.federatedInstances.length} instances`,
+        `${this.federatedInstances.length} instances`,
       );
       await this.nextBootPaint();
       if (this.destroyed) return;
@@ -7480,21 +7561,12 @@ class ForkMeshWorld extends HTMLElement {
       this.seatFreshArrivalAtCampfire();
       void this.loadReferralLeaderboard();
       void this.loadLobbyLinkBoard();
+      // The repository district starts empty and requests nothing. No catalog,
+      // no import list, no flagship tree, and no size maps until a character
+      // walks onto the repositories circle — the portal's construction
+      // geometry is decorative, so an empty ring leaves nothing that looks
+      // selectable behind. loadRepositoryCatalog() takes it from there.
       this.syncRepositoryScene();
-      void this.hydrateHostedRepositorySizeMaps();
-      // Do not fan out a star request for every perimeter portal at startup.
-      // The active repository hydrates its exact count below; inactive portals
-      // retain any catalog-provided count until the visitor selects them.
-      if (this.repositories.length) {
-        // The scene and authenticated live catalog are both ready. Populate
-        // the repository district from the canonical flagship route without
-        // delaying entry into the rest of the World.
-        void this.autoLoadFlagshipRepositoryMap();
-      } else {
-        // The portal's construction geometry is decorative, but an empty or
-        // failed live catalog must not leave file icons that look selectable.
-        this.syncRepositoryScene();
-      }
       this.finishBootStep("populate");
       this.startBootStep(
         "spawn",
@@ -7551,7 +7623,8 @@ class ForkMeshWorld extends HTMLElement {
       this.startStatusBoardPolling();
       this.startMirrorPolling();
       this.startMirrorActionsPolling();
-      this.startRepositoryImportPolling();
+      // Import polling belongs to the repository district; it starts with the
+      // deferred catalog read rather than watching a district nobody visited.
       this.startInstanceDirectoryPolling();
       this.startEventPolling();
       this.startNotificationPolling();
@@ -7924,6 +7997,41 @@ class ForkMeshWorld extends HTMLElement {
         );
       return this.buildBoardRepositoryIssues;
     }
+  }
+
+  // Proximity-scoped polling for the two boards that carry live task state.
+  // The timer starts when the visitor arrives and is cleared when they leave,
+  // so an idle tab parked elsewhere in the World holds no cadence at all.
+  // `refetch` is false when the scene says the board was already loaded
+  // recently enough that a re-approach does not justify another request.
+  startBuildBoardWatch({ refetch = true } = {}) {
+    if (refetch) void this.refreshBuildBoard({ quiet: true });
+    if (this.buildBoardTimer) return;
+    this.buildBoardTimer = window.setInterval(() => {
+      if (!this.destroyed && !document.hidden) {
+        void this.refreshBuildBoard({ quiet: true });
+      }
+    }, WORLD_BUILD_BOARD_POLL_MS);
+  }
+
+  stopBuildBoardWatch() {
+    window.clearInterval(this.buildBoardTimer);
+    this.buildBoardTimer = 0;
+  }
+
+  startQaDeckWatch({ refetch = true } = {}) {
+    if (refetch) void this.refreshQaDeck({ quiet: true });
+    if (this.qaTimer) return;
+    this.qaTimer = window.setInterval(() => {
+      if (!this.destroyed && !document.hidden) {
+        void this.refreshQaDeck({ quiet: true });
+      }
+    }, WORLD_QA_POLL_MS);
+  }
+
+  stopQaDeckWatch() {
+    window.clearInterval(this.qaTimer);
+    this.qaTimer = 0;
   }
 
   async refreshBuildBoard({ quiet = false } = {}) {
@@ -9783,8 +9891,6 @@ class ForkMeshWorld extends HTMLElement {
       networkResult,
       mirrorResult,
       instancesResult,
-      reposResult,
-      externalReposResult,
       versionResult,
       rewardResult,
       orgResult,
@@ -9812,12 +9918,9 @@ class ForkMeshWorld extends HTMLElement {
           timeout: 5000,
           cache: "no-store",
         }),
-        this.fetchJSON("/api/repositories", { auth: hasSession }),
-        this.fetchJSON("/api/repository-imports", {
-          auth: hasSession,
-          timeout: 12000,
-          cache: "no-store",
-        }),
+        // /api/repositories and /api/repository-imports are deliberately
+        // absent: loadRepositoryCatalog() issues them when a character
+        // reaches the repository district.
         this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
         this.fetchJSON("/api/accounts/central-fund", {
           auth: false,
@@ -9932,22 +10035,10 @@ class ForkMeshWorld extends HTMLElement {
         : [];
     this.renderCommunityPlacement();
     this.renderFediverseActivity();
-    this.externalRepositories =
-      externalReposResult.status === "fulfilled"
-        ? cleanExternalRepositories(externalReposResult.value)
-        : [];
-    this.rawNativeRepositories =
-      reposResult.status === "fulfilled"
-        ? cleanRepositories(reposResult.value)
-        : [];
+    // A mirror snapshot arriving before the district has been visited still
+    // re-derives the (empty) alias catalog; it stays empty until a character
+    // walks onto the repositories circle and loadRepositoryCatalog() runs.
     this.reconcileRepositoryAliasCatalog();
-    if (reposResult.status === "fulfilled") {
-      this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
-    } else {
-      this.repositoryCatalogState = this.repositories.length
-        ? "ready"
-        : "unavailable";
-    }
     if (eventsResult.status === "fulfilled") {
       this.events = normalizeCommunityEvents(eventsResult.value);
       this.eventsState = this.events.length ? "ready" : "empty";
@@ -10113,12 +10204,9 @@ class ForkMeshWorld extends HTMLElement {
         /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rewardAddress),
       reason: LANDMARK_CONSTRUCTION_REASONS.fountain,
     };
-    this.landmarkCapabilities.repositories = {
-      live:
-        reposResult.status === "fulfilled" &&
-        hasRepositoryCatalogSchema(reposResult.value),
-      reason: LANDMARK_CONSTRUCTION_REASONS.repositories,
-    };
+    // The repository landmark stays unverified until the deferred catalog read
+    // actually runs. It is not claimed live on the strength of a boot request
+    // this build no longer makes.
     this.landmarkCapabilities.organizations = {
       live:
         orgResult.status === "fulfilled" &&
@@ -11288,6 +11376,14 @@ class ForkMeshWorld extends HTMLElement {
     this.restoreQuickComposerChannel();
     this.scheduleQuickComposerIdle();
     this.addEventListener("click", (event) => {
+      // The delete menu is a pointer gesture: the next click anywhere but
+      // inside it puts it away, including the click that walks the avatar.
+      if (
+        this.$("[data-world-object-menu]")?.dataset.open === "true" &&
+        !event.target.closest("[data-world-object-menu]")
+      ) {
+        this.closeWorldObjectMenu();
+      }
       if (
         chatTerminal?.open &&
         !event.target.closest("[data-world-chat-terminal]")
@@ -11611,6 +11707,40 @@ class ForkMeshWorld extends HTMLElement {
       const settingsTab = event.target.closest("[data-world-settings-tab]");
       if (settingsTab) {
         this.selectSettingsTab(settingsTab.dataset.worldSettingsTab);
+        return;
+      }
+      const objectDelete = event.target.closest("[data-world-object-delete]");
+      if (objectDelete) {
+        this.deleteWorldObject(
+          objectDelete.dataset.worldObjectDelete,
+          objectDelete.dataset.worldObjectLabel,
+        );
+        return;
+      }
+      const elementDelete = event.target.closest(
+        "[data-world-object-delete-element]",
+      );
+      if (elementDelete) {
+        // The Elements pane carries its own status line, but the visitor is
+        // out in the world with the panel closed, so say it out here too.
+        const label = this.worldObjectMenuPick?.elementLabel || "";
+        this.closeWorldObjectMenu();
+        this.setWorldElementEnabled(
+          elementDelete.dataset.worldObjectDeleteElement,
+          false,
+        );
+        if (label) {
+          this.toast(`${label} removed — restore it from Settings › Elements.`);
+        }
+        return;
+      }
+      const objectRestore = event.target.closest("[data-world-object-restore]");
+      if (objectRestore) {
+        this.restoreWorldObject(objectRestore.dataset.worldObjectRestore);
+        return;
+      }
+      if (event.target.closest("[data-world-object-restore-all]")) {
+        this.restoreAllWorldObjects();
         return;
       }
       const elementMaster = event.target.closest(
@@ -12500,10 +12630,19 @@ class ForkMeshWorld extends HTMLElement {
       );
     });
 
+    // Right-click over the canvas only: the HUD, chat, and every link keep the
+    // browser's own context menu.
+    this.$("[data-world-canvas-wrap]")?.addEventListener(
+      "contextmenu",
+      (event) => this.handleWorldContextMenu(event),
+    );
+
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat-terminal]")?.open) return;
-      if (this.$("[data-world-brand-menu]")?.dataset.open === "true") {
+      if (this.$("[data-world-object-menu]")?.dataset.open === "true") {
+        this.closeWorldObjectMenu();
+      } else if (this.$("[data-world-brand-menu]")?.dataset.open === "true") {
         this.setBrandNavOpen(false);
         this.$("[data-world-logo-menu]")?.focus();
       } else if (this.$("[data-world-online-menu]")?.dataset.open === "true") {
@@ -14903,10 +15042,14 @@ class ForkMeshWorld extends HTMLElement {
         reason: "This integration has not been verified in this session.",
       };
       const reason = String(capability.reason || "");
+      // Verified live and not-yet-asked both leave the marker off. Only a read
+      // that actually ran and failed puts a landmark under construction.
+      const unverified =
+        capability.live !== true && capability.deferred !== true;
       this.$$(
         `[data-world-construction-marker="${landmarkId}"]`,
       ).forEach((marker) => {
-        marker.hidden = capability.live === true;
+        marker.hidden = !unverified;
         marker.setAttribute(
           "aria-label",
           `Under construction: ${reason}`,
@@ -14914,9 +15057,7 @@ class ForkMeshWorld extends HTMLElement {
         marker.setAttribute("title", `Under construction: ${reason}`);
       });
       this.$$(`[data-world-landmark="${landmarkId}"]`).forEach((button) => {
-        button.dataset.worldUnderConstruction = String(
-          capability.live !== true,
-        );
+        button.dataset.worldUnderConstruction = String(unverified);
       });
     });
   }
@@ -15005,6 +15146,12 @@ class ForkMeshWorld extends HTMLElement {
             secondary: null,
           }
         : landmarkById(id);
+    // Opening this panel is a deliberate request for the repository catalog,
+    // so it wakes the deferred district exactly like walking onto its circle.
+    // refreshOpenRepositoryPanel() fills the panel in when the records land.
+    if (landmark.id === "repositories") {
+      void this.loadRepositoryCatalog({ reason: "panel" });
+    }
     const capability = this.landmarkCapabilities[landmark.id] || {
       live: false,
       reason: "This integration has not been verified in this session.",
@@ -17679,6 +17826,7 @@ class ForkMeshWorld extends HTMLElement {
     const repos = this.repositories;
     const catalogEmpty = this.repositoryCatalogState === "empty";
     const catalogUnavailable = this.repositoryCatalogState === "unavailable";
+    const catalogDeferred = this.repositoryCatalogState === "deferred";
     return `
       <div class="world-repositories-panel" aria-label="Repository portals">
         ${
@@ -17744,14 +17892,18 @@ class ForkMeshWorld extends HTMLElement {
                     ? "Repository catalog unavailable"
                     : catalogEmpty
                       ? "No authorized repositories listed"
-                      : "Repository catalog loading"
+                      : catalogDeferred
+                        ? "Repository district asleep"
+                        : "Repository catalog loading"
                 }</strong>
                 <span>${
                   catalogUnavailable
                     ? "The live catalog request failed. ForkMesh does not substitute demo repositories or imply that a mirror is online."
                     : catalogEmpty
                       ? "The catalog returned no public or account-authorized repositories. No repository can be opened or analyzed from this panel."
-                      : "Waiting for the live repository catalog."
+                      : catalogDeferred
+                        ? "Nothing has been requested yet. Walk onto the repositories circle to raise the portals."
+                        : "Waiting for the live repository catalog."
                 }</span>
               </div>`
         }
@@ -20840,6 +20992,94 @@ class ForkMeshWorld extends HTMLElement {
       this.externalRepositories,
     );
     return true;
+  }
+
+  // The one door into the repository district's data. Nothing above this line
+  // fetches a repository: the boot fan-out skips the catalog entirely, and
+  // this runs when a character reaches the repositories circle (or opens the
+  // repositories panel, which is the same request by another door). It is
+  // idempotent — concurrent callers share the in-flight promise, and a
+  // completed district never refetches from here.
+  async loadRepositoryCatalog({ reason = "arrival" } = {}) {
+    if (this.destroyed) return false;
+    if (this.repositoryCatalogRequest) return this.repositoryCatalogRequest;
+    if (this.repositoryDistrictVisited) return this.repositories.length > 0;
+    this.repositoryDistrictVisited = true;
+    this.repositoryCatalogState = "loading";
+    this.refreshOpenRepositoryPanel();
+    // Tell the scene the district is waking before the requests go out, so the
+    // portals that land rise out of the ring and shimmer while their size maps
+    // are still being assembled instead of blinking into place.
+    this.world?.beginRepositoryDistrictReveal?.(reason);
+    this.repositoryCatalogRequest = (async () => {
+      const hasSession =
+        this.sessionAuthenticated && Boolean(validWorldSession());
+      const [reposResult, externalReposResult] = await Promise.allSettled([
+        this.fetchJSON("/api/repositories", { auth: hasSession }),
+        this.fetchJSON("/api/repository-imports", {
+          auth: hasSession,
+          timeout: 12000,
+          cache: "no-store",
+        }),
+      ]);
+      if (this.destroyed) return false;
+      this.externalRepositories =
+        externalReposResult.status === "fulfilled"
+          ? cleanExternalRepositories(externalReposResult.value)
+          : [];
+      this.rawNativeRepositories =
+        reposResult.status === "fulfilled"
+          ? cleanRepositories(reposResult.value)
+          : [];
+      // The boot path already reconciled an empty catalog against the mirror
+      // snapshot, so the cached signature has to be dropped for the real
+      // records to reach the scene.
+      this.repositoryAliasSignature = null;
+      this.reconcileRepositoryAliasCatalog();
+      if (reposResult.status === "fulfilled") {
+        this.repositoryCatalogState = this.repositories.length
+          ? "ready"
+          : "empty";
+      } else {
+        this.repositoryCatalogState = this.repositories.length
+          ? "ready"
+          : "unavailable";
+      }
+      this.setLandmarkCapability(
+        "repositories",
+        reposResult.status === "fulfilled" &&
+          hasRepositoryCatalogSchema(reposResult.value),
+      );
+      this.syncRepositoryScene();
+      this.refreshOpenRepositoryPanel();
+      this.startRepositoryImportPolling();
+      // Do not fan out a star request for every perimeter portal. The flagship
+      // hydrates its exact count; inactive portals retain the catalog count
+      // until the visitor selects them.
+      if (this.repositories.length) {
+        void this.autoLoadFlagshipRepositoryMap();
+      }
+      // Each size map that lands replaces one portal's shimmer with its real
+      // file wedges, so the district finishes building in front of the visitor.
+      void this.hydrateHostedRepositorySizeMaps();
+      return this.repositories.length > 0;
+    })();
+    try {
+      return await this.repositoryCatalogRequest;
+    } finally {
+      this.repositoryCatalogRequest = null;
+    }
+  }
+
+  // The repositories panel is rendered once when it opens. Re-render just its
+  // body when the deferred catalog lands underneath an already-open panel.
+  refreshOpenRepositoryPanel() {
+    const detail = this.$("[data-world-detail]");
+    if (detail?.dataset.openLandmark !== "repositories") return;
+    const panel = detail.querySelector(".world-repositories-panel");
+    if (!panel) return;
+    panel.outerHTML = this.repositoryPanelHTML();
+    this.updateRepositoryReviewMode();
   }
 
   // Keep working toward the default open portal after entry. The catalog read
@@ -24123,7 +24363,9 @@ class ForkMeshWorld extends HTMLElement {
           ? `${this.repositories.length} authorized repository portals are mapped. Choose one in this panel.`
           : this.repositoryCatalogState === "unavailable"
             ? "The live catalog is unavailable. No substitute portal is shown or treated as mirrored."
-            : "The live catalog contains no public or account-authorized repository portal.",
+            : ["deferred", "loading"].includes(this.repositoryCatalogState)
+              ? "The repository district is waking up. Its portals rise as the live catalog lands."
+              : "The live catalog contains no public or account-authorized repository portal.",
       );
       return;
     }
@@ -24599,6 +24841,227 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  // Deleting a single thing out of the world is a diagnostic tool rather than
+  // a moderation one — it changes nothing for anyone else — so it is offered
+  // to administrators and to anyone who has turned the debug panel on for
+  // themselves.
+  worldObjectDeletionAvailable() {
+    return this.identity?.isAdmin === true || this.settings?.debugPanel === true;
+  }
+
+  // Right-click in the world: name what is under the pointer and offer to take
+  // it out. Everywhere else — the HUD, chat, links — keeps the browser's own
+  // menu, and so does every visitor without the tool switched on.
+  handleWorldContextMenu(event) {
+    if (!this.worldObjectDeletionAvailable()) return;
+    if (event.target?.closest?.("[data-world-object-menu]")) return;
+    const pick = this.world?.pickWorldObject?.({
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    if (!pick?.targets?.length) {
+      this.closeWorldObjectMenu();
+      return;
+    }
+    event.preventDefault();
+    this.openWorldObjectMenu(pick, event.clientX, event.clientY);
+  }
+
+  openWorldObjectMenu(pick, clientX, clientY) {
+    const menu = this.$("[data-world-object-menu]");
+    if (!menu) return;
+    this.worldObjectMenuPick = pick;
+    const deleted = this.deletedWorldObjects;
+    const last = deleted[deleted.length - 1];
+    const detail = (target) =>
+      [
+        target.type,
+        `${compactCountLabel(target.triangles)} tri`,
+        `${compactCountLabel(target.objects)} object${target.objects === 1 ? "" : "s"}`,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    menu.innerHTML = `
+      <p class="world-object-menu-head">
+        <strong>${escapeHTML(pick.elementLabel)}</strong>
+        <span>${escapeHTML(
+          [pick.elementCategory, `${pick.distance}m away`]
+            .filter(Boolean)
+            .join(" · "),
+        )}</span>
+      </p>
+      ${pick.targets
+        .map(
+          (target) => `
+        <button
+          type="button"
+          role="menuitem"
+          data-world-object-delete="${escapeHTML(target.key)}"
+          data-world-object-label="${escapeHTML(target.label)}"
+        >
+          <span>Delete ${escapeHTML(
+            target.scope === "group" ? `the whole ${target.label}` : target.label,
+          )}</span>
+          <small>${escapeHTML(detail(target))}</small>
+        </button>`,
+        )
+        .join("")}
+      ${
+        pick.elementId && pick.elementEnabled
+          ? `
+        <button
+          type="button"
+          role="menuitem"
+          data-world-object-delete-element="${escapeHTML(pick.elementId)}"
+        >
+          <span>Delete every ${escapeHTML(pick.elementLabel)}</span>
+          <small>Switches the whole element off in the Elements tab</small>
+        </button>`
+          : ""
+      }
+      ${
+        last
+          ? `
+        <button type="button" role="menuitem" data-world-object-restore="${escapeHTML(last.key)}">
+          <span>Undo the last delete</span>
+          <small>${escapeHTML(last.label)}</small>
+        </button>`
+          : ""
+      }
+      ${
+        pick.persistent
+          ? ""
+          : `<p class="world-object-menu-note">Nothing owns this piece, so deleting it lasts until the page reloads.</p>`
+      }`;
+    menu.hidden = false;
+    menu.dataset.open = "true";
+    this.positionWorldObjectMenu(menu, clientX, clientY);
+    menu.querySelector("button")?.focus({ preventScroll: true });
+  }
+
+  // The menu is placed inside the world element, so a right-click near the
+  // right or bottom edge folds it back over the pointer instead of off screen.
+  positionWorldObjectMenu(menu, clientX, clientY) {
+    // The menu is absolutely positioned inside .fm-world, so clamp against
+    // that box rather than the host element.
+    const frame = menu.offsetParent || menu.parentElement || this;
+    const host = frame.getBoundingClientRect();
+    const rect = menu.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(clientX - host.left, 8),
+      Math.max(8, host.width - rect.width - 8),
+    );
+    const top = Math.min(
+      Math.max(clientY - host.top, 8),
+      Math.max(8, host.height - rect.height - 8),
+    );
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+  }
+
+  closeWorldObjectMenu() {
+    this.worldObjectMenuPick = null;
+    const menu = this.$("[data-world-object-menu]");
+    if (!menu || menu.hidden) return;
+    menu.hidden = true;
+    menu.dataset.open = "false";
+    menu.innerHTML = "";
+  }
+
+  persistDeletedWorldObjects() {
+    writeJSON(
+      localStorage,
+      DELETED_OBJECTS_KEY,
+      // A piece no element claims cannot be addressed again after a reload,
+      // so it is remembered for this session only. The tail is what a reload
+      // reads back, so write the same bound it reads.
+      this.deletedWorldObjects
+        .filter((entry) => DELETED_OBJECT_KEY_RE.test(entry.key))
+        .slice(-400),
+    );
+  }
+
+  deleteWorldObject(key, label = "") {
+    const objectKey = String(key || "");
+    if (!this.world?.deleteWorldObject?.(objectKey)) {
+      this.closeWorldObjectMenu();
+      this.toast("That piece is already out of the world.");
+      return;
+    }
+    const name = String(label || objectKey).slice(0, 120);
+    this.deletedWorldObjects = [
+      ...this.deletedWorldObjects.filter((entry) => entry.key !== objectKey),
+      { key: objectKey, label: name },
+    ];
+    this.persistDeletedWorldObjects();
+    this.closeWorldObjectMenu();
+    this.toast(`${name} deleted — restore it from Settings › Elements.`);
+    this.renderWorldElementsPane();
+  }
+
+  restoreWorldObject(key) {
+    const objectKey = String(key || "");
+    const entry = this.deletedWorldObjects.find(
+      (deleted) => deleted.key === objectKey,
+    );
+    this.world?.restoreWorldObject?.(objectKey);
+    this.deletedWorldObjects = this.deletedWorldObjects.filter(
+      (deleted) => deleted.key !== objectKey,
+    );
+    this.persistDeletedWorldObjects();
+    this.closeWorldObjectMenu();
+    this.renderWorldElementsPane(
+      entry ? `${entry.label} is back in the world.` : "",
+    );
+  }
+
+  restoreAllWorldObjects() {
+    const count = this.deletedWorldObjects.length;
+    this.world?.restoreAllWorldObjects?.();
+    this.deletedWorldObjects = [];
+    this.persistDeletedWorldObjects();
+    this.closeWorldObjectMenu();
+    this.renderWorldElementsPane(
+      count
+        ? `Restored ${count.toLocaleString()} deleted piece${count === 1 ? "" : "s"}.`
+        : "",
+    );
+  }
+
+  // Everything right-clicked away, newest first, each with the one click that
+  // brings it back.
+  renderDeletedWorldObjects() {
+    const list = this.$("[data-world-deleted-list]");
+    const group = this.$("[data-world-deleted-group]");
+    if (!list || !group) return;
+    const deleted = this.deletedWorldObjects;
+    group.hidden = deleted.length === 0;
+    // A deletion whose element has not been built in this session — an office
+    // fitting before the office loads — is still on the books, so say so
+    // rather than listing it as if it were out of a world that never had it.
+    const pending = new Set(
+      (this.world?.listDeletedWorldObjects?.() || [])
+        .filter((entry) => entry.pending)
+        .map((entry) => entry.key),
+    );
+    list.innerHTML = [...deleted]
+      .reverse()
+      .map(
+        (entry) => `
+        <div class="world-deleted-row" role="listitem">
+          <span class="world-deleted-name">
+            <strong>${escapeHTML(entry.label)}</strong>
+            ${pending.has(entry.key) ? "<small>waiting for its element to load</small>" : ""}
+          </span>
+          <button
+            type="button"
+            data-world-object-restore="${escapeHTML(entry.key)}"
+          >Restore</button>
+        </div>`,
+      )
+      .join("");
+  }
+
   // One card per purchasable element. An owned element shows its parameter
   // form; an unowned one shows its price and the endpoints it would read.
   renderWorldStorePane(statusMessage = "") {
@@ -24751,6 +25214,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   renderWorldElementsPane(statusMessage = "") {
+    this.renderDeletedWorldObjects();
     const list = this.$("[data-world-element-list]");
     if (!list) return;
     const status = this.$("[data-world-element-status]");

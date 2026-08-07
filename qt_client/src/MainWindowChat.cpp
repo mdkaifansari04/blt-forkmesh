@@ -3386,6 +3386,12 @@ struct DesktopEdgeVerdict {
     QString reason;
 };
 
+// How much recent history one desktop-measured dot keeps: ten samples at the
+// minute cadence, and nothing older than ten minutes, so a laptop that slept
+// through an outage does not wake up still painting it.
+constexpr int kDesktopProbeHistoryMax = 10;
+constexpr qint64 kDesktopProbeHistoryMs = 10 * 60 * 1000;
+
 // Severity of one verdict, used when the relay's own grade and this desktop's
 // grade for the same system are merged into a single dot. "unknown" ranks below
 // every real answer: nobody being able to look is not evidence of health, but
@@ -3407,6 +3413,39 @@ QString worseWebsiteStatus(const QString &left, const QString &right)
 {
     return websiteStatusSeverity(right) > websiteStatusSeverity(left) ? right
                                                                      : left;
+}
+
+// What a desktop-measured dot publishes, given how the newest reply graded and
+// how the last few minutes went (adhoc #1614). An edge that throws on a large
+// share of requests still answers plenty of them correctly, so "the last reply
+// was fine" is not the same as "the site is working" — the page the operator
+// just failed to load and the page this probe just loaded are the same site,
+// one minute apart. A row that failed anywhere inside the remembered window
+// therefore never paints green, and one that failed at least half of those
+// checks stays red outright rather than flickering with the dice.
+DesktopEdgeVerdict mergeDesktopEdgeHistory(const DesktopEdgeVerdict &sample,
+                                           const QString &what, int downs,
+                                           int samples, qint64 lastDownTs)
+{
+    if (downs <= 0 || samples <= 0 || sample.status == QLatin1String("down"))
+        return sample;
+    const QString tally =
+        QStringLiteral("%1 failed %2 of the last %3 checks from this desktop "
+                       "(most recently at %4).")
+            .arg(what)
+            .arg(downs)
+            .arg(samples)
+            .arg(QDateTime::fromMSecsSinceEpoch(lastDownTs)
+                     .toLocalTime()
+                     .toString(QStringLiteral("HH:mm")));
+    if (downs * 2 >= samples) {
+        return {QStringLiteral("down"),
+                tally + QStringLiteral(" A page that happens to load does not "
+                                       "make it reachable.")};
+    }
+    return {QStringLiteral("degraded"),
+            tally + QStringLiteral(" This check answered, but the site is not "
+                                   "serving reliably.")};
 }
 
 // The public API answers on its own hostname (api.forkmesh.com in production),
@@ -3919,15 +3958,40 @@ void MainWindow::applyDesktopWebsiteProbe(const QString &id, int httpStatus,
                            netInfo->reachability() ==
                                QNetworkInformation::Reachability::Disconnected;
     const QString host = catalogApiUrl().host();
-    const DesktopEdgeVerdict verdict = gradeDesktopEdgeProbe(
+    const DesktopEdgeVerdict sample = gradeDesktopEdgeProbe(
         *probe, host, httpStatus, body, transportError, osOffline);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    // Remember how this reply graded, then let the last few minutes widen the
+    // verdict (adhoc #1614). "unknown" is this desktop being unable to look —
+    // no evidence either way — so it is never recorded: it must neither count
+    // as a healthy check that dilutes a real failure nor as a failure itself.
+    QList<DesktopProbeSample> &history = m_desktopProbeHistory[id];
+    if (sample.status != QLatin1String("unknown"))
+        history.append({now, sample.status});
+    while (!history.isEmpty() &&
+           (history.size() > kDesktopProbeHistoryMax ||
+            now - history.first().ts > kDesktopProbeHistoryMs))
+        history.removeFirst();
+    int downs = 0;
+    qint64 lastDownTs = 0;
+    for (const DesktopProbeSample &past : history) {
+        if (past.status != QLatin1String("down"))
+            continue;
+        ++downs;
+        lastDownTs = past.ts;
+    }
+    const DesktopEdgeVerdict verdict = mergeDesktopEdgeHistory(
+        sample, QString::fromLatin1(probe->what), downs, history.size(),
+        lastDownTs);
 
     FooterStatusRow row;
     row.id = id;
     row.label = QString::fromLatin1(probe->label);
     row.status = verdict.status;
+    row.sampleStatus = sample.status;
     row.reason = verdict.reason;
-    row.minuteTs = QDateTime::currentMSecsSinceEpoch();
+    row.minuteTs = now;
     row.local = true;
 
     bool replaced = false;
@@ -3965,7 +4029,11 @@ void MainWindow::applyDesktopWebsiteProbe(const QString &id, int httpStatus,
 // that is merely asleep on a train.
 void MainWindow::alertOnDesktopEdgeOutage(const FooterStatusRow &row)
 {
-    if (row.status != QLatin1String("down"))
+    // Keyed on the reply this run actually got, not on the history-widened dot
+    // (adhoc #1614): a row held red because the site failed half of the last
+    // ten checks would otherwise keep pinging on the minutes it did load, long
+    // after the reply that earned the alert.
+    if (row.sampleStatus != QLatin1String("down"))
         return;
     const DesktopEdgeProbe *probe = desktopEdgeProbe(row.id);
     if (!probe)
@@ -3995,6 +4063,15 @@ QString MainWindow::testApplyDesktopWebsiteProbe(const QString &id,
                                                  const QString &transportError)
 {
     applyDesktopWebsiteProbe(id, httpStatus, body, transportError);
+    for (const FooterStatusRow &row : m_footerDesktopStatuses) {
+        if (row.id == id)
+            return row.sampleStatus;
+    }
+    return QString();
+}
+
+QString MainWindow::testDesktopWebsiteRowStatus(const QString &id) const
+{
     for (const FooterStatusRow &row : m_footerDesktopStatuses) {
         if (row.id == id)
             return row.status;
