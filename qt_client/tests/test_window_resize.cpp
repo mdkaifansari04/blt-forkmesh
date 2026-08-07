@@ -171,6 +171,20 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("clicking the footer version reveals debug activity "
                              "and the enlarged four-resource chart"));
 
+        // The cloud log's Monitor toggle rides beside the Cloud button that
+        // opens the same tail (adhoc #1615). Off at startup: it holds a
+        // Cloudflare API token open, so it is never restored silently.
+        auto *cloudButton = window.findChild<QPushButton *>(
+            QStringLiteral("cloudflareWorkerLogsButton"));
+        auto *cloudMonitor = window.findChild<QCheckBox *>(
+            QStringLiteral("cloudLogMonitorCheck"));
+        check(cloudButton && cloudMonitor &&
+                  cloudMonitor->isVisibleTo(debugBar) &&
+                  !cloudMonitor->isChecked() &&
+                  cloudMonitor->toolTip().contains(QStringLiteral("alert")),
+              QStringLiteral("the debug bar offers an unchecked cloud log "
+                             "monitor beside the Cloud viewer"));
+
         const quint64 gitCountBefore = lights->countFor(QStringLiteral("GIT"));
         lights->pulse(QStringLiteral("GIT"));
         lights->pulse(QStringLiteral("GIT"));
@@ -621,6 +635,54 @@ void checkLoggedErrorAlert(MainWindow &window)
               window.testTopMessageRaw().contains(QStringLiteral("Clone failed")),
           QStringLiteral("a reported failure flashes the window and is shown "
                          "exactly once"));
+
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
+// adhoc #1615: with the debug bar's Monitor box ticked, a Worker failure has to
+// reach the same red card as any other failure — and the healthy traffic around
+// it must not, or the app's own log would drown in Worker hits. Lines are fed in
+// as the tail's process would deliver them.
+void checkCloudLogMonitorAlert(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    window.testCloudLogMonitorLine(QStringLiteral(
+        "{\"outcome\":\"ok\",\"eventTimestamp\":1000,\"event\":{\"request\":{"
+        "\"method\":\"GET\",\"url\":\"https://forkmesh.com/api/status\","
+        "\"headers\":{\"user-agent\":\"Mozilla/5.0 (X11; Linux) Chrome/126\"}},"
+        "\"response\":{\"status\":200}}}"));
+    QApplication::processEvents();
+    check(!window.testErrorBorderVisible() &&
+              window.testNetworkLog().isEmpty() &&
+              window.testCloudLogMonitorEvents() == 1 &&
+              window.testCloudLogMonitorRecent().size() == 1 &&
+              window.testCloudLogMonitorRecent().constFirst().contains(
+                  QStringLiteral("UA Mozilla/5.0 (X11; Linux) Chrome/126")),
+          QStringLiteral("a healthy Worker hit is kept with its user agent and "
+                         "stays out of the app's own log"));
+
+    window.testCloudLogMonitorLine(QStringLiteral(
+        "{\"outcome\":\"exception\",\"eventTimestamp\":2000,\"event\":{"
+        "\"request\":{\"method\":\"POST\",\"url\":\"https://forkmesh.com/api/"
+        "sync\",\"headers\":{\"user-agent\":\"ForkMesh/0.6.3\"}}},"
+        "\"exceptions\":[{\"name\":\"TypeError\",\"message\":\"x is not a "
+        "function\"}]}"));
+    QApplication::processEvents();
+    check(window.testErrorBorderVisible() &&
+              window.testCloudLogMonitorErrors() == 1 &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("TypeError: x is not a function")) &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("UA ForkMesh/0.6.3")),
+          QStringLiteral("a Worker exception raises the same alert as any other "
+                         "error, naming the agent that hit it"));
 
     window.testDismissTopMessage();
     window.testResetNetworkLog();
@@ -1415,6 +1477,7 @@ int main(int argc, char *argv[])
         window.show();
         QApplication::processEvents();
         checkLoggedErrorAlert(window);
+        checkCloudLogMonitorAlert(window);
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
@@ -2328,6 +2391,7 @@ int main(int argc, char *argv[])
     runLogTimelineChecks(window);
 
     checkLoggedErrorAlert(window);
+    checkCloudLogMonitorAlert(window);
 
     // adhoc #1389: notification actions are caption-height controls, not the
     // full-height buttons shown in the reference screenshot. The queued cards

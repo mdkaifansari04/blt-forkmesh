@@ -1160,6 +1160,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // spawning the replacement process so the app never pops back up after the
     // user has already chosen to close it (adhoc #1530).
     m_closingDown = true;
+    // Take the cloud log monitor's Wrangler tail down deliberately (adhoc
+    // #1615), while there is still an event loop to wait on it, rather than
+    // leaving ~QProcess to kill it during teardown.
+    setCloudLogMonitorEnabled(false);
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
     // Where the composer was left — free position, dragged size, or the geometry
     // of its popped-out window (adhoc #1536).

@@ -600,7 +600,7 @@ int main(int argc, char **argv)
                                QStringLiteral("wrangler@4.42.1"),
                                QStringLiteral("tail"),
                                QStringLiteral("--format"),
-                               QStringLiteral("pretty")}),
+                               QStringLiteral("json")}),
           "Cloudflare tail uses a direct pinned Wrangler invocation");
     check(!tailCommand.arguments.join(QChar(u'\0')).contains(tailToken) &&
               tailCommand.environment.value(
@@ -613,6 +613,73 @@ int main(int argc, char **argv)
               tailToken, QStringLiteral("invalid account!"),
               QStringLiteral("/usr/bin/npx")).program.isEmpty(),
           "Cloudflare tail rejects malformed account IDs");
+
+    // --- Tail rendering (adhoc #1615): the viewer parses Wrangler's JSON so it
+    // can show the user agent behind each hit and tell a failure from a hit.
+    const auto okTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral(
+            "{\"outcome\":\"ok\",\"eventTimestamp\":1000,"
+            "\"event\":{\"request\":{\"method\":\"GET\","
+            "\"url\":\"https://forkmesh.com/api/status\","
+            "\"headers\":{\"User-Agent\":\"Mozilla/5.0 ForkMeshBot\"}},"
+            "\"response\":{\"status\":200}},"
+            "\"logs\":[{\"level\":\"log\",\"message\":[\"served\",7]}],"
+            "\"exceptions\":[]}"));
+    check(okTail.parsed && !okTail.isError &&
+              okTail.userAgent == QStringLiteral("Mozilla/5.0 ForkMeshBot") &&
+              okTail.method == QStringLiteral("GET") &&
+              okTail.status == 200 &&
+              okTail.messages == QStringList({QStringLiteral("served 7")}),
+          "a healthy Worker request decodes with its user agent");
+    check(okTail.summary.contains(QStringLiteral("UA Mozilla/5.0 ForkMeshBot")) &&
+              okTail.summary.contains(QStringLiteral("GET")) &&
+              okTail.summary.contains(QStringLiteral("200")) &&
+              okTail.summary.contains(
+                  QStringLiteral("https://forkmesh.com/api/status")),
+          "the rendered tail line carries the agent beside the request");
+
+    const auto exceptionTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral(
+            "{\"outcome\":\"exception\",\"eventTimestamp\":2000,"
+            "\"event\":{\"request\":{\"method\":\"POST\","
+            "\"url\":\"https://forkmesh.com/api/sync\",\"headers\":{}}},"
+            "\"exceptions\":[{\"name\":\"Error\",\"message\":\"boom\"}],"
+            "\"logs\":[]}"));
+    check(exceptionTail.parsed && exceptionTail.isError &&
+              exceptionTail.userAgent.isEmpty() &&
+              exceptionTail.summary.contains(QStringLiteral("Error: boom")) &&
+              exceptionTail.summary.contains(QStringLiteral("UA (none)")),
+          "a Worker exception is flagged as an error worth alerting on");
+    check(forkmesh::control::parseCloudflareTailLine(
+              QStringLiteral(
+                  "{\"outcome\":\"ok\",\"event\":{\"request\":{\"method\":"
+                  "\"GET\",\"url\":\"https://forkmesh.com/\",\"headers\":{}},"
+                  "\"response\":{\"status\":503}}}"))
+              .isError,
+          "a 5xx reply is an error even when the outcome reads ok");
+    check(!forkmesh::control::parseCloudflareTailLine(
+               QStringLiteral(
+                   "{\"outcome\":\"canceled\",\"event\":{\"request\":{"
+                   "\"method\":\"GET\",\"url\":\"https://forkmesh.com/\","
+                   "\"headers\":{}},\"response\":{\"status\":200}}}"))
+               .isError,
+          "a client hanging up mid-request is not a Worker failure");
+    check(forkmesh::control::parseCloudflareTailLine(
+              QStringLiteral(
+                  "{\"outcome\":\"ok\",\"event\":{},\"logs\":[{\"level\":"
+                  "\"error\",\"message\":[\"db unreachable\"]}]}"))
+              .isError,
+          "an error-level console log is an error");
+    const auto bannerTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral("  Connected to forkmesh-relay, waiting for logs...  "));
+    check(!bannerTail.parsed && !bannerTail.isError &&
+              bannerTail.summary ==
+                  QStringLiteral("Connected to forkmesh-relay, waiting for "
+                                 "logs..."),
+          "Wrangler's own banner lines pass through untouched");
+    check(!forkmesh::control::parseCloudflareTailLine(
+               QStringLiteral("{\"hello\":\"world\"}")).parsed,
+          "JSON that is not a tail event is not treated as one");
 
     const QMap<QString, QString> storedVariables = {
         {QStringLiteral("cloudflare_api_token"), QStringLiteral("  cf-stored  ")},
