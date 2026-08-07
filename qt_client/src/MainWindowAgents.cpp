@@ -30,6 +30,31 @@
 
 using namespace forkmesh::ui;
 
+namespace {
+
+QIcon agentDoneImageIcon(int sidePx)
+{
+    static const QString kAgentDoneImageFile = QStringLiteral("paste-IxNUZi.png");
+    static const QString kLegacyAgentDoneImagePath =
+        QStringLiteral("/home/f/.local/share/ForkMesh/ForkMesh/agent-images/"
+                       "paste-IxNUZi.png");
+    static QHash<int, QIcon> cache;
+    const int side = qMax(1, sidePx);
+    if (const auto it = cache.constFind(side); it != cache.constEnd())
+        return *it;
+
+    QIcon icon;
+    QPixmap source(AgentPromptImages::directory() + QLatin1Char('/') + kAgentDoneImageFile);
+    if (source.isNull())
+        source = QPixmap(kLegacyAgentDoneImagePath);
+    if (!source.isNull())
+        icon.addPixmap(roundedRectPixmap(source, side, 4.0));
+    cache.insert(side, icon);
+    return icon;
+}
+
+} // namespace
+
 // ---- Agents ---------------------------------------------------------------
 
 QString MainWindow::agentProviderName(const QString &provider) const
@@ -332,9 +357,13 @@ constexpr int kMaxAgentRelaunchAttempts = 2;
 
 QIcon agentStatusPillIcon(const AgentSession &session)
 {
-    if (session.merged || session.status == AgentStatus::Success)
+    if (session.merged || session.status == AgentStatus::Success) {
+        const QIcon done = agentDoneImageIcon(kAgentStatusPillIconPx);
+        if (!done.isNull())
+            return done;
         return themedOcticon("check-circle", QColor("#3fb950"),
                              kAgentStatusPillIconPx);
+    }
     return agentControlIcon(agentStatusModelIconIndex(session));
 }
 
@@ -1063,22 +1092,35 @@ QPixmap agentLeadGlyphPixmap(const AgentSession &session,
         const QRect statusRect(kAgentIdentityCirclePx + kAgentLeadGlyphGapPx,
                                (kAgentIdentityCirclePx - kAgentStatusGlyphPx) / 2,
                                kAgentStatusGlyphPx, kAgentStatusGlyphPx);
-        const QIcon icon = themedOcticon(statusIcon, agentStatusIconColor(session),
-                                         kAgentStatusGlyphPx);
-        if (running) {
-            // The status glyph is a rasterized octicon pixmap, and this is a
-            // freehand rotation (not a multiple of 90 degrees) driven by
-            // activityAngle every tick — without SmoothPixmapTransform, Qt
-            // resamples it nearest-neighbour and the spin reads as jagged.
-            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-            p.save();
-            p.translate(statusRect.center());
-            p.rotate(activityAngle);
-            p.translate(-statusRect.center());
-            icon.paint(&p, statusRect);
-            p.restore();
+        if (session.status == AgentStatus::Success) {
+            const QIcon doneIcon = agentDoneImageIcon(kAgentStatusGlyphPx);
+            if (!doneIcon.isNull())
+                doneIcon.paint(&p, statusRect);
+            else {
+                const QIcon icon = themedOcticon(statusIcon,
+                                                 agentStatusIconColor(session),
+                                                 kAgentStatusGlyphPx);
+                icon.paint(&p, statusRect);
+            }
         } else {
-            icon.paint(&p, statusRect);
+            const QIcon icon = themedOcticon(statusIcon,
+                                             agentStatusIconColor(session),
+                                             kAgentStatusGlyphPx);
+            if (running) {
+                // The status glyph is a rasterized octicon pixmap, and this is a
+                // freehand rotation (not a multiple of 90 degrees) driven by
+                // activityAngle every tick — without SmoothPixmapTransform, Qt
+                // resamples it nearest-neighbour and the spin reads as jagged.
+                p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                p.save();
+                p.translate(statusRect.center());
+                p.rotate(activityAngle);
+                p.translate(-statusRect.center());
+                icon.paint(&p, statusRect);
+                p.restore();
+            } else {
+                icon.paint(&p, statusRect);
+            }
         }
     }
     p.end();
