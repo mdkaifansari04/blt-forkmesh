@@ -1284,6 +1284,8 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
             QStringList parts{ev.value(QStringLiteral("model")).toString().trimmed(),
                               ev.value(QStringLiteral("cwd")).toString().trimmed()};
             QStringList context;
+            if (!m_ctxAccount.isEmpty())
+                context << QStringLiteral("account %1").arg(m_ctxAccount);
             if (!m_ctxBranch.isEmpty())
                 context << QStringLiteral("branch %1").arg(m_ctxBranch);
             const QString mode =
