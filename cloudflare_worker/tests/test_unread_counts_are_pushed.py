@@ -281,9 +281,17 @@ def test_shared_account_event_channel_has_no_fallback_poll():
     assert "const MAX_RECONNECT_MS = 30000;" in CHANNEL
     assert "onConnected()" in CHANNEL
     # Signed out, the channel goes dark instead of retrying the ticket forever
-    # (which would just be a poll of the ticket endpoint).
+    # (which would just be a poll of the ticket endpoint) — including the case
+    # that matters most, a stale token still sitting in localStorage, which the
+    # relay answers 200 + authenticated:false rather than 401.
     assert "if (!sessionToken()) {\n      started = false;\n      return;" in (
         CHANNEL)
+    assert "if (data.authenticated === false) return { signedOut: true };" in (
+        CHANNEL)
+    assert "if (signedOut) {\n      // The stored session proves nobody." in (
+        CHANNEL)
+    # A transient relay failure is the opposite case and must keep retrying.
+    assert "if (!ticket) {\n      scheduleReconnect();" in CHANNEL
     # Keepalive stays inside the Durable Object's staleness reaper.
     assert "const KEEPALIVE_MS = 4 * 60 * 1000;" in CHANNEL
 

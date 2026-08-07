@@ -77,6 +77,11 @@ export function createAccountEventChannel({
     } catch (_) {}
   }
 
+  // Resolves to {ticket} on success, {signedOut: true} when the relay says
+  // this session proves nobody, and {} for a transient failure. The three have
+  // to stay distinguishable: retrying a stale token left in localStorage would
+  // be a poll of the ticket endpoint, and going dark on a relay hiccup would
+  // silently turn the page back into a reload-only one.
   async function requestTicket() {
     let response;
     try {
@@ -88,11 +93,17 @@ export function createAccountEventChannel({
         cache: "no-store",
       });
     } catch (_) {
-      return "";
+      return {};
     }
-    if (!response.ok) return "";
+    if (response.status === 401 || response.status === 403) {
+      return { signedOut: true };
+    }
+    if (!response.ok) return {};
     const data = await response.json().catch(() => null);
-    return String(data?.ticket || "");
+    if (!data) return {};
+    if (data.authenticated === false) return { signedOut: true };
+    const ticket = String(data.ticket || "");
+    return ticket ? { ticket } : { signedOut: true };
   }
 
   async function connect() {
@@ -105,15 +116,18 @@ export function createAccountEventChannel({
       return;
     }
     const attempt = ++generation;
-    const ticket = await requestTicket();
-    if (!ticket) {
-      // A session that could not be exchanged is a transient relay failure
-      // (or a session that just expired, in which case the next attempt sees
-      // no token and stops). Back off and try again.
-      if (attempt === generation && started) scheduleReconnect();
+    const { ticket, signedOut } = await requestTicket();
+    if (attempt !== generation || disposed || !started) return;
+    if (signedOut) {
+      // The stored session proves nobody. Retrying it would just be a poll;
+      // restart() brings the channel up after a real sign-in.
+      started = false;
       return;
     }
-    if (disposed || !started || attempt !== generation) return;
+    if (!ticket) {
+      scheduleReconnect();
+      return;
+    }
     const scheme = locationLike.protocol === "https:" ? "wss:" : "ws:";
     const url = new URL(
       "/api/nodes/events",
