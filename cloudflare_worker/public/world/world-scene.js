@@ -16288,6 +16288,7 @@ export function createWorldScene({
   identity,
   initialSpawn = null,
   initialDisabledElements = [],
+  initialDeletedObjects = [],
   reducedMotion = false,
   forceCompactRenderer = false,
   onLandmarkSelect = () => {},
@@ -16653,6 +16654,9 @@ export function createWorldScene({
         if (typeof live === "function") element.liveness.set(root, live);
         if (disabledWorldElements.has(id)) detachElementRoot(element, root);
       });
+    // A piece an administrator deleted before the last reload comes out again
+    // as soon as the element that owns it exists.
+    applyStoredObjectDeletions(element);
     return element;
   }
 
@@ -16666,6 +16670,10 @@ export function createWorldScene({
 
   function pruneDeadElementRoots(element) {
     element.roots.forEach((root) => {
+      // A root an administrator right-click deleted is parentless on purpose
+      // and must keep its registration, or restoring it would hand back a
+      // root no element owns any more.
+      if (deletedWorldObjectNodes.has(root)) return;
       const live = element.liveness.get(root);
       const detachedHere = element.detached.has(root);
       // Externally removed (a despawned avatar) or reported dead: forget it.
@@ -16947,6 +16955,315 @@ export function createWorldScene({
           describeElementPart(node, index, steps, interactiveSet),
         ),
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Right-click deletion. An administrator (or anyone running the debug panel)
+  // can aim at any single thing in the world and pull it straight out of the
+  // game instead of hunting for its row in the Elements tree. A pick resolves
+  // whatever sits under the cursor to the element that owns it and to an index
+  // path inside that element — the exact addressing the Elements panel already
+  // uses — so a deletion survives a reload and can always be undone. This is
+  // local render state: nothing is sent anywhere and no other visitor's world
+  // changes.
+  const deletedWorldObjects = new Map();
+  const deletedWorldObjectNodes = new Set();
+  // Keys picked in this session, so a menu action deletes the node the visitor
+  // actually pointed at rather than re-walking indices that a sibling deletion
+  // may have shifted underneath it.
+  const pickedWorldObjects = new Map();
+  const storedObjectDeletions = new Set(
+    (Array.isArray(initialDeletedObjects) ? initialDeletedObjects : [])
+      .map((key) => String(key || "").slice(0, 160))
+      .filter(Boolean),
+  );
+
+  function worldObjectKey(elementId, path) {
+    return `${elementId}:${path.join(".")}`;
+  }
+
+  function parseWorldObjectKey(key) {
+    const raw = String(key || "");
+    const separator = raw.lastIndexOf(":");
+    if (separator <= 0) return null;
+    const elementId = raw.slice(0, separator);
+    const path = raw
+      .slice(separator + 1)
+      .split(".")
+      .map((step) => Number(step))
+      .filter((step) => Number.isInteger(step) && step >= 0);
+    if (!elementId || !path.length) return null;
+    return { elementId, path };
+  }
+
+  // listWorldElementParts answers "what is inside this node"; deletion needs
+  // the node itself, addressed by the same path.
+  function elementPartNode(element, path) {
+    let nodes = elementPartRoots(element);
+    let node = null;
+    for (const index of path) {
+      node = nodes[index];
+      if (!node) return null;
+      nodes = node.children || [];
+    }
+    return node;
+  }
+
+  // The reverse walk: from a raycast hit back up to the element part root that
+  // contains it, recording the child index at every step.
+  function elementPartPathFor(element, object) {
+    const partRoots = elementPartRoots(element);
+    const descent = [];
+    let current = object;
+    while (current) {
+      const index = partRoots.indexOf(current);
+      if (index >= 0) {
+        const path = [index];
+        let parent = current;
+        for (const node of descent) {
+          const at = (parent.children || []).indexOf(node);
+          if (at < 0) return null;
+          path.push(at);
+          parent = node;
+        }
+        return path;
+      }
+      descent.unshift(current);
+      current = current.parent;
+    }
+    return null;
+  }
+
+  function elementOwning(object) {
+    const owners = new Map();
+    worldElements.forEach((element) => {
+      element.roots.forEach((root) => {
+        if (!owners.has(root)) owners.set(root, element);
+      });
+    });
+    let current = object;
+    while (current) {
+      const element = owners.get(current);
+      if (element) return element;
+      current = current.parent;
+    }
+    return null;
+  }
+
+  function detachSceneNode(node) {
+    const parent = node?.parent || null;
+    if (!parent) return null;
+    const index = parent.children.indexOf(node);
+    const interactives = [];
+    node.traverse?.((child) => {
+      let at = interactive.indexOf(child);
+      while (at >= 0) {
+        interactives.push(child);
+        interactive.splice(at, 1);
+        at = interactive.indexOf(child);
+      }
+    });
+    parent.remove(node);
+    return { parent, index, interactives };
+  }
+
+  function attachSceneNode(node, record) {
+    const parent = record?.parent;
+    if (!parent || !node) return false;
+    parent.add(node);
+    // Index paths address every part of the world, so a restored node goes
+    // back where it was rather than onto the end of its parent's children.
+    const children = parent.children;
+    const at = children.indexOf(node);
+    if (at >= 0 && record.index >= 0 && record.index < children.length) {
+      children.splice(at, 1);
+      children.splice(record.index, 0, node);
+    }
+    record.interactives?.forEach((child) => {
+      if (!interactive.includes(child)) interactive.push(child);
+    });
+    return true;
+  }
+
+  function deleteResolvedWorldObject(key, element, node) {
+    if (!key || !node || deletedWorldObjects.has(key)) return false;
+    const label = sceneObjectLabel(node);
+    const record = detachSceneNode(node);
+    if (!record) return false;
+    deletedWorldObjectNodes.add(node);
+    deletedWorldObjects.set(key, {
+      ...record,
+      key,
+      node,
+      label,
+      elementId: element?.id || "",
+      elementLabel: element?.label || "Unregistered",
+    });
+    // Same reason the Elements toggle rebuilds it: a deleted caster must not
+    // leave its shadow painted on the ground.
+    if (renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true;
+    return true;
+  }
+
+  // Deletions restored from storage are resolved against the element as it was
+  // just built — every path first, then every detach — so two deletions inside
+  // one element cannot shift each other's indices.
+  function applyStoredObjectDeletions(element) {
+    if (!storedObjectDeletions.size) return;
+    const resolved = [];
+    storedObjectDeletions.forEach((key) => {
+      const parsed = parseWorldObjectKey(key);
+      if (!parsed || parsed.elementId !== element.id) return;
+      const node = elementPartNode(element, parsed.path);
+      if (node) resolved.push({ key, node });
+    });
+    resolved.forEach(({ key, node }) => {
+      storedObjectDeletions.delete(key);
+      deleteResolvedWorldObject(key, element, node);
+    });
+  }
+
+  function describeDeletionTarget(scope, key, node, path, interactiveSet) {
+    const index = path.length ? path[path.length - 1] : 0;
+    return {
+      ...describeElementPart(node, index, path.slice(0, -1), interactiveSet),
+      scope,
+      key,
+      label: sceneObjectLabel(node),
+    };
+  }
+
+  // What is under the cursor, offered at two levels: the exact object that was
+  // hit, and the whole named piece it belongs to — a single plank is rarely
+  // what someone means by "delete that bench".
+  function pickWorldObject({ clientX, clientY } = {}) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+    pointerCoordinates({ clientX, clientY });
+    raycaster.setFromCamera(pointer, camera);
+    const hit = raycaster
+      .intersectObject(scene, true)
+      .find(
+        ({ object }) =>
+          object &&
+          object.userData?.raycastProxy !== true &&
+          objectIsEffectivelyVisible(object),
+      );
+    if (!hit) return null;
+    pickedWorldObjects.clear();
+    const element = elementOwning(hit.object);
+    const interactiveSet = new Set(interactive);
+    const targets = [];
+    const remember = (target, node) => {
+      pickedWorldObjects.set(target.key, { node, element });
+      targets.push(target);
+    };
+    const path = element ? elementPartPathFor(element, hit.object) : null;
+    if (element && path) {
+      remember(
+        describeDeletionTarget(
+          "object",
+          worldObjectKey(element.id, path),
+          hit.object,
+          path,
+          interactiveSet,
+        ),
+        hit.object,
+      );
+      if (path.length > 1) {
+        const groupPath = path.slice(0, 1);
+        const groupNode = elementPartNode(element, groupPath);
+        if (groupNode) {
+          remember(
+            describeDeletionTarget(
+              "group",
+              worldObjectKey(element.id, groupPath),
+              groupNode,
+              groupPath,
+              interactiveSet,
+            ),
+            groupNode,
+          );
+        }
+      }
+    } else {
+      // Scenery no element claims — the store plugin sandbox, a stray helper.
+      // It can still be deleted for this session; only element-addressed
+      // deletions can be written down and replayed after a reload.
+      remember(
+        describeDeletionTarget(
+          "object",
+          `scene:${hit.object.uuid}`,
+          hit.object,
+          [0],
+          interactiveSet,
+        ),
+        hit.object,
+      );
+    }
+    return {
+      elementId: element?.id || "",
+      elementLabel: element?.label || "Unregistered",
+      elementCategory: element?.category || "",
+      elementEnabled: element ? worldElementEnabled(element.id) : false,
+      elementSystem: element?.systemOnly === true,
+      persistent: Boolean(element && path),
+      distance: Math.round((Number(hit.distance) || 0) * 10) / 10,
+      targets,
+    };
+  }
+
+  function deleteWorldObject(key) {
+    const id = String(key || "");
+    if (!id || deletedWorldObjects.has(id)) return false;
+    const picked = pickedWorldObjects.get(id);
+    let node = picked?.node || null;
+    let element = picked?.element || null;
+    if (!node) {
+      const parsed = parseWorldObjectKey(id);
+      element = parsed ? worldElements.get(parsed.elementId) || null : null;
+      node = element ? elementPartNode(element, parsed.path) : null;
+    }
+    return deleteResolvedWorldObject(id, element, node);
+  }
+
+  function restoreWorldObject(key) {
+    const id = String(key || "");
+    const record = deletedWorldObjects.get(id);
+    if (!record) {
+      // Never resolved this session (its element has not been built yet):
+      // dropping the stored key is still a restore.
+      return storedObjectDeletions.delete(id);
+    }
+    deletedWorldObjects.delete(id);
+    deletedWorldObjectNodes.delete(record.node);
+    attachSceneNode(record.node, record);
+    if (renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true;
+    return true;
+  }
+
+  function restoreAllWorldObjects() {
+    const keys = [...deletedWorldObjects.keys(), ...storedObjectDeletions];
+    keys.forEach((key) => restoreWorldObject(key));
+    return keys.length;
+  }
+
+  function listDeletedWorldObjects() {
+    return [
+      ...[...deletedWorldObjects.values()].map((record) => ({
+        key: record.key,
+        label: record.label,
+        elementId: record.elementId,
+        elementLabel: record.elementLabel,
+        pending: false,
+      })),
+      ...[...storedObjectDeletions].map((key) => ({
+        key,
+        label: key,
+        elementId: parseWorldObjectKey(key)?.elementId || "",
+        elementLabel: "",
+        pending: true,
+      })),
+    ];
   }
 
   // Unnamed meshes are the norm, so fall back to the nearest named ancestor
@@ -35880,6 +36197,10 @@ export function createWorldScene({
     keys.clear();
     touchKeys.clear();
     touchMovement.set(0, 0);
+    // Put deleted pieces back before the sweep below: a detached subtree is
+    // not reachable from the scene, and its GPU buffers would outlive the
+    // renderer that allocated them.
+    [...deletedWorldObjects.keys()].forEach((key) => restoreWorldObject(key));
     scene.traverse((child) => {
       disposeOwnedGeometry(child.geometry);
       if (Array.isArray(child.material)) {
@@ -36093,6 +36414,11 @@ export function createWorldScene({
     setWorldElementEnabled,
     listSceneObjects,
     listWorldElementParts,
+    pickWorldObject,
+    deleteWorldObject,
+    restoreWorldObject,
+    restoreAllWorldObjects,
+    listDeletedWorldObjects,
     installStoreElement,
     removeStoreElement,
     getEnvironmentState: () => ({
