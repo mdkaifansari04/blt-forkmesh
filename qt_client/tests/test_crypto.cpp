@@ -3,11 +3,13 @@
 #include "../src/AccountCapability.h"
 #include "../src/AgentJail.h"
 #include "../src/AgentStore.h"
+#include "../src/AgentWorktree.h"
 #include "../src/BackgroundActivity.h"
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
 #include "../src/ChatVisitorPresence.h"
 #include "../src/ClientErrorReports.h"
+#include "../src/PingSyncState.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
 #include "../src/DirectorySizeScan.h"
@@ -6391,6 +6393,76 @@ int main(int argc, char *argv[])
               "stream sessions get a per-session jail dir under temp");
     }
 
+    // Agent worktrees live in the project now (adhoc #1624): a run works in
+    // <checkout>/.worktrees/agent-<id>-<desc> instead of a /tmp path, the
+    // directory hides itself from the project's git, and a bare mirror — which
+    // has no working tree to nest one in — still falls back to temp.
+    {
+        using namespace forkmesh::agentwt;
+
+        check(dirName(1624, QStringLiteral(
+                                "lets have agents start worktrees in the "
+                                "project's folder")) ==
+                  QStringLiteral("agent-1624-agents-start-worktrees-project"),
+              "a worktree is named agent-<id>-<short description of the task>");
+        check(dirName(9, QStringLiteral("  ")) == QStringLiteral("agent-9"),
+              "a session with no usable title still gets a unique directory");
+        check(dirName(9, QStringLiteral("Fix the ../etc/passwd loader!")) ==
+                  QStringLiteral("agent-9-fix-etc-passwd-loader"),
+              "punctuation in a title cannot escape the worktree directory");
+
+        QTemporaryDir worktreeRepo;
+        check(worktreeRepo.isValid(), "agent worktree test repository is valid");
+        const QString repo = worktreeRepo.path();
+        check(root(repo).endsWith(QStringLiteral("/forkmesh-worktrees")),
+              "a directory that is not a checkout keeps the temp worktree root");
+        bool ready =
+            runTestGit(repo, {QStringLiteral("init"), QStringLiteral("-q"),
+                              QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(repo, {QStringLiteral("config"), QStringLiteral("user.name"),
+                              QStringLiteral("Agent Runner")}) &&
+            runTestGit(repo, {QStringLiteral("config"), QStringLiteral("user.email"),
+                              QStringLiteral("agent@example.test")}) &&
+            writeTestFile(repo + QStringLiteral("/README.md"), "hello") &&
+            commitTestTree(repo, QStringLiteral("first"),
+                           QStringLiteral("2026-08-07T10:00:00Z"),
+                           QStringLiteral("Agent Runner"),
+                           QStringLiteral("agent@example.test"));
+        check(ready, "agent worktree test repository has a commit");
+        check(root(repo) == repo + QStringLiteral("/.worktrees"),
+              "a checkout hosts its agents' worktrees inside the project");
+
+        const QString wtRoot = root(repo);
+        ensureRoot(wtRoot);
+        const QString wtPath = QDir(wtRoot).filePath(
+            dirName(3, QStringLiteral("teach the relay to back off")));
+        check(runTestGit(repo, {QStringLiteral("worktree"), QStringLiteral("add"),
+                                QStringLiteral("-q"), QStringLiteral("-B"),
+                                QStringLiteral("agent/adhoc-3-teach-relay-back-off"),
+                                wtPath, QStringLiteral("HEAD")}) &&
+                  QFileInfo::exists(wtPath + QStringLiteral("/README.md")),
+              "git creates the agent worktree inside the project");
+        QByteArray status;
+        check(runTestGit(repo,
+                         {QStringLiteral("status"), QStringLiteral("--porcelain")},
+                         &status) &&
+                  QString::fromUtf8(status).trimmed().isEmpty(),
+              "a full worktree checked out in the project leaves it clean");
+        check(writeTestFile(wtPath + QStringLiteral("/agent-note.md"), "wip"),
+              "the agent can write inside its own worktree");
+        QByteArray inner;
+        check(runTestGit(wtPath,
+                         {QStringLiteral("status"), QStringLiteral("--porcelain")},
+                         &inner) &&
+                  QString::fromUtf8(inner).contains(
+                      QStringLiteral("agent-note.md")),
+              "the root's ignore rule does not reach into the worktree itself");
+
+        check(shellQuote(QStringLiteral("/home/dev/o'brien/repo")) ==
+                  QStringLiteral("'/home/dev/o'\\''brien/repo'"),
+              "a quote in the project path cannot break out of the git command");
+    }
+
     // AgentStore persists a Claude Code session's stream-json transcript so it
     // survives an app restart (issue #41): events append one per line, reload in
     // order, and clearEvents starts a fresh run.
@@ -8462,6 +8534,91 @@ int main(int argc, char *argv[])
                   && body.value(QStringLiteral("message")).toString()
                          == relayText,
               "the posted body carries exactly the four fields the relay reads");
+
+        // The Pings row a report came from rides along so its Status column can
+        // follow the report's fate, but it is local bookkeeping only: it never
+        // goes on the wire, and two sightings of one failure still dedupe to a
+        // single report (adhoc #1629).
+        ClientErrorReports::Report filed = ClientErrorReports::build(
+            QStringLiteral("dialog"), QString(), QStringLiteral("Sync inbox"),
+            relayText, t0);
+        filed.pingId = 42;
+        check(!ClientErrorReports::payload(filed).contains(
+                  QStringLiteral("pingId")),
+              "the ping row id stays on the machine");
+        ClientErrorReports rows;
+        check(rows.accept(filed), "the first sighting is reported");
+        ClientErrorReports::Report second = filed;
+        second.pingId = 43;
+        check(!rows.accept(second),
+              "a second sighting filed as its own ping is still one report");
+
+        // A report parked past the deferral window is never sent, so the page
+        // row waiting on it has to be told — takeDeferred hands the expired ones
+        // back instead of dropping them silently.
+        ClientErrorReports abandoned;
+        abandoned.defer(filed);
+        QList<ClientErrorReports::Report> expired;
+        check(abandoned
+                  .takeDeferred(t0 + ClientErrorReports::kMaxDeferralMs + 1,
+                                &expired)
+                  .isEmpty()
+                  && expired.size() == 1 && expired.first().pingId == 42,
+              "a report dropped for age is handed back with the row it belongs to");
+    }
+
+    {
+        // --- Where a filed ping stands with the cloud (adhoc #1629) ---------
+        // Every alert the desktop raises is filed on the Pings page, and the
+        // page has to be honest about which of those rows exist anywhere else:
+        // one raised while the node was offline never left the machine, and one
+        // that should have synced and didn't must not read like one that did.
+        using forkmesh::PingSync;
+
+        check(forkmesh::pingSyncLabel(PingSync::Offline)
+                      == QStringLiteral("Offline")
+                  && forkmesh::pingSyncLabel(PingSync::Failed)
+                         == QStringLiteral("Not synced")
+                  && forkmesh::pingSyncLabel(PingSync::Synced)
+                         == QStringLiteral("Synced"),
+              "the Status column names each state the operator can act on");
+        check(forkmesh::pingSyncLabel(PingSync::Offline)
+                  != forkmesh::pingSyncLabel(PingSync::Failed),
+              "\"nothing was sent\" and \"it was refused\" are different rows");
+
+        for (PingSync state :
+             {PingSync::LocalOnly, PingSync::Offline, PingSync::Pending,
+              PingSync::Synced, PingSync::Failed}) {
+            check(forkmesh::pingSyncFromToken(forkmesh::pingSyncToken(state))
+                      == state,
+                  "a ping's cloud state survives the on-disk journal");
+            check(!forkmesh::pingSyncDescription(state).isEmpty(),
+                  "every state explains itself on hover");
+        }
+        check(forkmesh::pingSyncFromToken(QStringLiteral("nonsense"))
+                      == PingSync::LocalOnly
+                  && forkmesh::pingSyncFromToken(QString())
+                         == PingSync::LocalOnly,
+              "an unreadable journal entry claims the least, not the most");
+
+        check(forkmesh::pingSyncIsUnsynced(PingSync::Offline)
+                  && forkmesh::pingSyncIsUnsynced(PingSync::Failed)
+                  && forkmesh::pingSyncIsUnsynced(PingSync::Pending)
+                  && !forkmesh::pingSyncIsUnsynced(PingSync::Synced),
+              "the rows the mesh does not have are the unsynced ones");
+
+        // Nothing re-queues a report that only ever existed in memory, so a row
+        // still in flight at shutdown is resolved on load rather than left
+        // counting down forever.
+        check(forkmesh::pingSyncAfterRestart(PingSync::Pending)
+                      == PingSync::Failed
+                  && !forkmesh::pingSyncRestartReason().isEmpty(),
+              "a ping still syncing when the app closed comes back \"not synced\"");
+        check(forkmesh::pingSyncAfterRestart(PingSync::Offline)
+                      == PingSync::Offline
+                  && forkmesh::pingSyncAfterRestart(PingSync::Synced)
+                         == PingSync::Synced,
+              "a settled ping is not re-judged by a restart");
     }
 #if defined(Q_OS_LINUX)
     {

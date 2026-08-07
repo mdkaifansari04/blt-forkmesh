@@ -341,8 +341,12 @@ def test_worker_exposes_public_user_directory_for_chat_without_private_fields():
     assert 'out.sort(key=lambda user: user.get("createdAt", 0))' in body
     assert "last_touch_at" not in body
     assert "FROM accounts" not in body
-    assert '_account_kind(rec) != "user"' in body
-    assert 'rec.get("status") != "active"' in body
+    # The user/active/non-private roster predicate is shared with the chat
+    # badge's member count (adhoc #1617), so it lives in one place rather
+    # than being inlined here.
+    assert "_is_public_roster_member(rec)" in body
+    assert '_account_kind(rec) == "user"' in ENTRY_TEXT
+    assert 'rec.get("status") == "active"' in ENTRY_TEXT
     assert '"avatarPng": rec.get("avatar_png", "")' in body
     assert '"nodes": _owned_nodes(rec)' in body
     assert 'solana = (rec.get("solana") or "").strip()' in body

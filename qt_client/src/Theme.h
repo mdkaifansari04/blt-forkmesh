@@ -182,14 +182,11 @@ QPushButton#ghostButton:hover { color: #e6edf3; }
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
+/* The chips are custom-painted icon-over-caption tiles (adhoc #1633), so this
+   only has to keep the QSS box out of their way — a max-height here would
+   squash the stacked layout. */
 QPushButton#logFilterChip {
-    background: transparent; border: 1px solid #30363d; color: #8b949e;
-    font-weight: 600; font-size: 12px; padding: 4px 12px; border-radius: 13px;
-    min-height: 24px; max-height: 28px;
-}
-QPushButton#logFilterChip:hover { color: #e6edf3; border-color: #6e7681; }
-QPushButton#logFilterChip:checked {
-    background-color: #21262d; color: #e6edf3; border-color: #2ea043;
+    background: transparent; border: none; padding: 0;
 }
 
 /* --- Quick-add bar extras: social + donate buttons --- */
@@ -230,6 +227,12 @@ QPushButton#socialIconButton:hover { border-color: #6e7681; }
 /* Right-hand tool cluster (Restart / Resize / Log). The items paint themselves
    like every other rail entry, so the host only holds them off the edge. */
 #debugBarTools { background: transparent; }
+/* "Monitor" (adhoc #1615) sits in that cluster beside the Cloud button it
+   belongs to. It is the one plain checkbox in the strip, so it carries the
+   caption size the rail items paint and turns the Cloud blue when armed. */
+#cloudLogMonitorCheck { color: #8b949e; font-size: 11px; spacing: 4px; }
+#cloudLogMonitorCheck:hover { color: #58a6ff; }
+#cloudLogMonitorCheck:checked { color: #58a6ff; }
 #debugLogTail {
     background-color: #0d1117; border-top: 1px solid #30363d;
     color: #8b949e; padding: 2px 8px;
@@ -510,6 +513,13 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
 #topMessagePromptStatus { font-weight: 500; font-size: 11px; }
+/* "🎉 Agent #12 is done!" — the headline of a finished run's celebration
+   (adhoc #1630). A step up from the ordinary message so the good news reads as
+   an event rather than another line of status. */
+#topMessageAgentRow, #topMessageAgentIcon { background: transparent; border: none; }
+#topMessageAgentHeadline {
+    background: transparent; border: none; font-size: 13px; font-weight: 700;
+}
 #topMessagePromptImage {
     background: rgba(48,54,61,0.35); border: 1px solid #30363d;
     border-radius: 5px; padding: 3px;
@@ -677,7 +687,8 @@ QPushButton#memberDeleteButton:hover {
 }
 #promptWrapper:focus-within { border-color: #39d353; }
 /* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
-   button pops the prompt out into its own window. */
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
 #promptDragHandle { background: transparent; border: none; }
 #promptDragPill {
     background-color: rgba(139,148,158,0.55); border: none; border-radius: 1px;
@@ -686,7 +697,7 @@ QPushButton#memberDeleteButton:hover {
     background-color: rgba(139,148,158,0.5); border: none; border-radius: 2px;
 }
 #promptResizeGrip:hover { background-color: rgba(57,211,83,0.65); }
-QPushButton#promptDetachButton {
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
     background: transparent; border: none; padding: 0;
 }
 #promptDetachWindow { background-color: #010409; }
@@ -1116,7 +1127,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
 }
 #promptWrapper:focus-within { border-color: #39d353; }
 /* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
-   button pops the prompt out into its own window. */
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
 #promptDragHandle { background: transparent; border: none; }
 #promptDragPill {
     background-color: rgba(139,148,158,0.55); border: none; border-radius: 1px;
@@ -1125,7 +1137,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     background-color: rgba(139,148,158,0.5); border: none; border-radius: 2px;
 }
 #promptResizeGrip:hover { background-color: rgba(57,211,83,0.65); }
-QPushButton#promptDetachButton {
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
     background: transparent; border: none; padding: 0;
 }
 #promptDetachWindow { background-color: #010409; }
@@ -1675,14 +1687,9 @@ QPushButton#ghostButton:hover { color: #1f2328; }
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
+/* Custom-painted tiles — see the dark theme's note above. */
 QPushButton#logFilterChip {
-    background: transparent; border: 1px solid #d0d7de; color: #656d76;
-    font-weight: 600; font-size: 12px; padding: 4px 12px; border-radius: 13px;
-    min-height: 24px; max-height: 28px;
-}
-QPushButton#logFilterChip:hover { color: #1f2328; border-color: #afb8c1; }
-QPushButton#logFilterChip:checked {
-    background-color: #eaeef2; color: #1f2328; border-color: #1f883d;
+    background: transparent; border: none; padding: 0;
 }
 
 /* --- Nav rail --- */
@@ -1968,6 +1975,11 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
 #topMessagePromptStatus { font-weight: 500; font-size: 11px; }
+/* See the dark rules: a finished agent's celebration headline. */
+#topMessageAgentRow, #topMessageAgentIcon { background: transparent; border: none; }
+#topMessageAgentHeadline {
+    background: transparent; border: none; font-size: 13px; font-weight: 700;
+}
 #topMessagePromptImage {
     background: #f6f8fa; border: 1px solid #d0d7de;
     border-radius: 5px; padding: 3px;
@@ -2128,7 +2140,8 @@ QPushButton#memberDeleteButton:hover {
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
 /* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
-   button pops the prompt out into its own window. */
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
 #promptDragHandle { background: transparent; border: none; }
 #promptDragPill {
     background-color: rgba(87,96,106,0.55); border: none; border-radius: 1px;
@@ -2137,7 +2150,7 @@ QPushButton#memberDeleteButton:hover {
     background-color: rgba(87,96,106,0.5); border: none; border-radius: 2px;
 }
 #promptResizeGrip:hover { background-color: rgba(26,127,55,0.65); }
-QPushButton#promptDetachButton {
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
     background: transparent; border: none; padding: 0;
 }
 #promptDetachWindow { background-color: #f6f8fa; }
@@ -2402,6 +2415,10 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #debugBarScroll QScrollBar:horizontal { height: 7px; }
 /* See the dark rule: the tool items are painted, the host is just a layout. */
 #debugBarTools { background: transparent; }
+/* See the dark rule: the cloud log monitor toggle beside the Cloud button. */
+#cloudLogMonitorCheck { color: #57606a; font-size: 11px; spacing: 4px; }
+#cloudLogMonitorCheck:hover { color: #0969da; }
+#cloudLogMonitorCheck:checked { color: #0969da; }
 #debugLogTail {
     background-color: #ffffff; border-top: 1px solid #d0d7de;
     color: #57606a; padding: 2px 8px;
@@ -2569,7 +2586,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
 /* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
-   button pops the prompt out into its own window. */
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
 #promptDragHandle { background: transparent; border: none; }
 #promptDragPill {
     background-color: rgba(87,96,106,0.55); border: none; border-radius: 1px;
@@ -2578,7 +2596,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     background-color: rgba(87,96,106,0.5); border: none; border-radius: 2px;
 }
 #promptResizeGrip:hover { background-color: rgba(26,127,55,0.65); }
-QPushButton#promptDetachButton {
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
     background: transparent; border: none; padding: 0;
 }
 #promptDetachWindow { background-color: #f6f8fa; }

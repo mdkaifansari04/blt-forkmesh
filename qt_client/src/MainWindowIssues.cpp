@@ -5341,6 +5341,8 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         obj == m_topMessageContainer || obj == m_topMessage ||
         obj == m_topMessageScroll || obj == m_topMessageActions ||
         obj == m_topMessageMeta || obj == m_topMessageTypeBadge ||
+        obj == m_topMessageAgentRow || obj == m_topMessageAgentIcon ||
+        obj == m_topMessageAgentHeadline ||
         obj == m_topMessageActionOutput ||
         obj == m_topMessageCopy ||
         obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
@@ -5382,14 +5384,33 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                 (box->standardButtons()
                  & ~(QMessageBox::Ok | QMessageBox::Close))
                 == QMessageBox::NoButton;
-            if (informational
-                && (icon == QMessageBox::Warning
-                    || icon == QMessageBox::Critical)) {
+            if (informational) {
                 QString text = box->text();
                 if (!box->informativeText().isEmpty())
                     text += QLatin1Char(' ') + box->informativeText();
-                reportUserVisibleError(QStringLiteral("dialog"),
-                                       box->windowTitle(), text);
+                const bool failure = icon == QMessageBox::Warning
+                                     || icon == QMessageBox::Critical;
+                // Every popup this app shows is filed on the Pings page, so a
+                // dialog that was clicked away is still an event with a record
+                // (adhoc #1629). Quiet: the modal is already in front of the
+                // operator, and a toast repeating it would be noise.
+                AppNotification item;
+                item.title = box->windowTitle().isEmpty()
+                                 ? QStringLiteral("Desktop alert")
+                                 : box->windowTitle();
+                item.body = text.simplified();
+                item.warning = failure;
+                item.kind = QStringLiteral("dialog");
+                item.quiet = true;
+                const qint64 pingId = recordNotification(item);
+                // …and a failure is also reported to the relay, so a modal on a
+                // machine nobody is watching still reaches somebody (#1538).
+                // The ping id rides along: whether that report lands is what the
+                // row's Status column ends up showing.
+                if (failure)
+                    reportUserVisibleError(QStringLiteral("dialog"),
+                                           box->windowTitle(), text, QString(),
+                                           pingId);
             }
         }
     }

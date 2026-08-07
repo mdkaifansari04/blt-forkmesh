@@ -604,12 +604,15 @@ async def _forkbot_repo_gateway_json(env, owner, repo, action_query):
         return None
     try:
         origin = _public_base_url(env).rstrip("/")
-        response = await asyncio.wait_for(
-            js_fetch(
-                "%s/api/repo/%s/%s/%s"
-                % (origin, quote(owner), quote(repo), action)
-            ),
-            timeout=FORKBOT_GATEWAY_TIMEOUT_MS / 1000,
+        # Native AbortSignal timeout rather than asyncio.wait_for: cancelling
+        # a JS-backed await leaves the Pyodide task pending forever and wedges
+        # the isolate for every later request (see the no-concurrent-tasks
+        # rule at the top of entry.py).
+        response = await js_fetch_with_timeout(
+            "%s/api/repo/%s/%s/%s"
+            % (origin, quote(owner), quote(repo), action),
+            {"method": "GET"},
+            FORKBOT_GATEWAY_TIMEOUT_MS / 1000,
         )
         if int(getattr(response, "status", 0) or 0) != 200:
             return None

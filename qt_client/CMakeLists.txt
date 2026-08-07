@@ -201,6 +201,8 @@ set(FORKMESH_APP_SOURCES
     src/ChatBackend.h
     src/ClientErrorReports.h
     src/ClientErrorReports.cpp
+    src/PingSyncState.h
+    src/PingSyncState.cpp
     src/MainnodeRoom.h
     src/RoomCrypto.h
     src/RoomCrypto.cpp
@@ -285,6 +287,7 @@ set(FORKMESH_APP_SOURCES
     src/AgentStore.h
     src/AgentStore.cpp
     src/AgentJail.h
+    src/AgentWorktree.h
     src/VirtualMachineRuntime.h
     src/VirtualMachineRuntime.cpp
     src/AgentPromptImages.h
@@ -622,6 +625,7 @@ if(FORKMESH_BUILD_TESTS)
         src/GlobalSearchMatch.cpp
         src/AgentStore.h
         src/AgentStore.cpp
+        src/AgentWorktree.h
         src/UsageLimitCalendar.h
         src/UsageLimitCalendar.cpp
         src/ActionStore.h
@@ -644,6 +648,8 @@ if(FORKMESH_BUILD_TESTS)
         src/NodeDiagnostics.cpp
         src/ClientErrorReports.h
         src/ClientErrorReports.cpp
+        src/PingSyncState.h
+        src/PingSyncState.cpp
     )
     # Qt6::Concurrent: DirectorySizeScan scans top-level trees in parallel.
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent OpenSSL::Crypto)
@@ -795,7 +801,9 @@ if(FORKMESH_BUILD_TESTS)
     # hook denial still reads as a failure), against real local git repos.
     qt_add_executable(forkmesh-ssh-mirror-push-tests
         tests/test_ssh_mirror_push.cpp
+        src/MirrorGatewayHealth.h
         src/MirrorPushOutcome.h
+        src/NetworkBackoff.h
     )
     target_include_directories(forkmesh-ssh-mirror-push-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -864,6 +872,23 @@ if(FORKMESH_BUILD_TESTS)
     target_link_libraries(forkmesh-codex-tests PRIVATE Qt6::Core)
     if(APPLE)
         set_target_properties(forkmesh-codex-tests PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
+    # The Claude Code stream transport's start/exit contract: a launch that never
+    # starts still has to end, and a turn that cannot be written has to be
+    # reported as undelivered (adhoc #1618).
+    qt_add_executable(forkmesh-agent-transport-tests
+        tests/test_agent_transport.cpp
+        src/AgentJail.h
+        src/ClaudeStreamSession.h
+        src/ClaudeStreamSession.cpp
+        src/VirtualMachineRuntime.h
+        src/VirtualMachineRuntime.cpp
+    )
+    target_link_libraries(forkmesh-agent-transport-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-agent-transport-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
     endif()
 
     # Boot-scoped Lima/QEMU command construction and host/guest boundary tests.
@@ -998,7 +1023,8 @@ if(FORKMESH_BUILD_TESTS)
     # FORKMESH_BUILD_TESTS=OFF anyway.
     set_target_properties(
         forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
-        forkmesh-codex-tests forkmesh-vm-runtime-tests
+        forkmesh-codex-tests forkmesh-agent-transport-tests
+        forkmesh-vm-runtime-tests
         forkmesh-control-tests forkmesh-chat-transport-tests
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
@@ -1031,6 +1057,8 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-world-speech-tests
              COMMAND forkmesh-world-speech-tests)
     add_test(NAME forkmesh-codex-tests COMMAND forkmesh-codex-tests)
+    add_test(NAME forkmesh-agent-transport-tests
+        COMMAND forkmesh-agent-transport-tests)
     add_test(NAME forkmesh-vm-runtime-tests COMMAND forkmesh-vm-runtime-tests)
     add_test(NAME forkmesh-control-tests COMMAND forkmesh-control-tests)
     add_test(NAME forkmesh-chat-transport-tests
@@ -1082,6 +1110,7 @@ if(FORKMESH_BUILD_TESTS)
         USES_TERMINAL)
     add_dependencies(check forkmesh-tests forkmesh-ide-tests
         forkmesh-world-speech-tests forkmesh-codex-tests
+        forkmesh-agent-transport-tests
         forkmesh-vm-runtime-tests
         forkmesh-control-tests forkmesh-chat-transport-tests
         forkmesh-action-security-tests

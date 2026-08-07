@@ -3,6 +3,7 @@
 
 #include "ChatBackend.h"
 #include "ClientErrorReports.h"
+#include "PingSyncState.h"
 // FORKMESH_LOG_SOURCE_FILE/LINE: logSystem()'s default arguments, which expand
 // at each call site so every entry records where it was logged from.
 #include "LogSource.h"
@@ -25,6 +26,7 @@
 #include "RepoSecurity.h"
 #include "RepoContributionSnapshot.h"
 #include "MirrorCrypto.h"
+#include "MirrorGatewayHealth.h"
 #include "GuiPump.h"
 
 namespace forkmesh::ui { class LogActivityLights; }
@@ -205,6 +207,7 @@ class PublicMirrorMaterialization;
 namespace forkmesh::control {
 struct MirrorActionsConfigurationRequest;
 struct AgentCliCredentials;
+struct CloudflareBootstrapCommand;
 }
 namespace forkmesh::ui {
 class DiffFileNavigator;  // file-list <-> diff-view sync
@@ -469,6 +472,13 @@ public:
     {
         flashMessage(text, error);
     }
+    // Files one event exactly as a feature would, so the ping funnel's "one
+    // event, one row" contract can be measured (adhoc #1629).
+    void testAddNotification(const QString &title, const QString &body,
+                             bool warning = false)
+    {
+        addNotification(title, body, warning);
+    }
     void testSetRestartCautionFlash(bool active)
     {
         if (active)
@@ -480,6 +490,55 @@ public:
     {
         showPromptBubble(prompt, -1, status);
     }
+    // adhoc #1615: feed the cloud log monitor one line of Wrangler's tail, as
+    // its process would, and read back what it counted. The alert itself is
+    // checked through the log, since that is the route the monitor takes.
+    void testCloudLogMonitorLine(const QString &line)
+    {
+        handleCloudLogMonitorLine(line);
+    }
+    // adhoc #1623: the same, one step earlier — raw bytes exactly as Wrangler
+    // writes them, so a test can prove a pretty-printed event split across a
+    // read boundary still lands as one alerting line.
+    void testCloudLogMonitorChunk(const QByteArray &chunk)
+    {
+        consumeCloudLogMonitorBytes(chunk);
+    }
+    int testCloudLogMonitorErrors() const { return m_cloudLogMonitorErrors; }
+    int testCloudLogMonitorEvents() const { return m_cloudLogMonitorEvents; }
+    QStringList testCloudLogMonitorRecent() const
+    {
+        return m_cloudLogMonitorRecent;
+    }
+    // Is a Wrangler tail actually running? The Monitor box being ticked no
+    // longer implies one (adhoc #1632): the box is on by default and its tail
+    // starts later, only where there is a token to start it with.
+    bool testCloudLogMonitorRunning() const { return cloudLogMonitorRunning(); }
+    // adhoc #1626: the viewer is a window of its own now, with an error chart
+    // over the stream and a Pause control. These drive it with no Wrangler tail
+    // behind it — a line arrives exactly as either tail would deliver it.
+    void testOpenCloudflareLogWindow() { buildCloudflareLogWindow(); }
+    void testCloudflareLogLine(const QString &line, bool isError)
+    {
+        recordCloudLogEvent(isError);
+        emit cloudLogLineReceived(line, isError);
+    }
+    void testSetCloudflareLogPaused(bool paused)
+    {
+        setCloudLogWindowPaused(paused);
+    }
+    bool testCloudflareLogPaused() const { return m_cloudLogWindowPaused; }
+    void testSetCloudflareLogErrorsOnly(bool on)
+    {
+        m_cloudLogWindowErrorsOnly = on;
+        refreshCloudLogTimeline();
+    }
+    QWidget *testCloudflareLogWindow() const;
+    QString testCloudflareLogText() const;
+    QString testCloudflareLogStatusText() const;
+    QString testCloudflareLogTimelineSummary() const;
+    int testCloudflareLogTimelineCount() const;
+    bool testCloudflareLogAtBottom() const;
     QRect testTopMessageRect() { return topMessageBubbleRect(); }
     int testTopMessageQueueDepth() const { return m_topMessageQueue.size(); }
     void testDismissTopMessage() { dismissTopMessage(); }
@@ -489,6 +548,28 @@ public:
     bool testErrorBorderVisible() const
     {
         return m_errorBorderOverlay && m_errorBorderOverlay->isVisible();
+    }
+    // The finished-agent celebration (adhoc #1630), driven without a live CLI:
+    // seed the closing summary the run would have ended on, then raise the card
+    // exactly as a real completion does.
+    void testNotifyAgentDone(int sessionId, const QString &closingSummary)
+    {
+        if (closingSummary.isEmpty())
+            m_lastAssistantText.remove(sessionId);
+        else
+            m_lastAssistantText[sessionId] = closingSummary;
+        notifyAgentDone(sessionId);
+    }
+    // The celebration headline's HTML ("🎉 Agent #12 is done!" plus the run's
+    // figures), empty unless that row is actually part of the visible card, and
+    // whether the row carries the agent's icon rather than an empty placeholder.
+    // Defined in MainWindowSettings.cpp: QLabel is only forward-declared here.
+    QString testTopMessageAgentHeadline() const;
+    bool testTopMessageAgentIconShown() const;
+    bool testCelebrationBorderVisible() const
+    {
+        return m_celebrationBorderOverlay &&
+               m_celebrationBorderOverlay->isVisible();
     }
     // Clears the repeat/burst bookkeeping (and any lit border) so consecutive
     // checks in one run don't de-duplicate against each other.
@@ -543,6 +624,10 @@ public:
     // What a desktop-measured row publishes to the dots: the newest reply's
     // verdict widened by the recent-failure memory (adhoc #1614).
     QString testDesktopWebsiteRowStatus(const QString &id) const;
+    // Which desktop-side checks a click on one dot re-runs (adhoc #1616). The
+    // relay half of the recheck is a single /api/status read for every row, so
+    // only this routing needs pinning.
+    QStringList testWebsiteRecheckProbes(const QString &statusId) const;
     // Forgets the recent verdicts for every desktop-measured row, so a test can
     // grade a fresh reply without the ones it fed in earlier bleeding through.
     void testClearDesktopProbeHistory() { m_desktopProbeHistory.clear(); }
@@ -557,6 +642,11 @@ public:
         }
         return count;
     }
+    // What the Pings page's Status column says about the newest filed ping
+    // whose title carries this text — the observable end of the cloud-sync
+    // state every desktop alert now records (adhoc #1629). Read from the built
+    // table when there is one, so the column binding is exercised too.
+    QString testPingStatusFor(const QString &needle);
     // Streams one line through the live-log fan-out (footer strip, category
     // lights and the debug bar's five-line tail) without a real event.
     void testSetFooterUpdateLine(const QString &line)
@@ -572,6 +662,8 @@ public:
     {
         m_isAdmin = admin;
         updateAdminCrownBadge();
+        // Same pair the heartbeat runs when the flag flips.
+        applyDebugBarStartupPreference();
     }
     bool testUsersNavButtonVisible() const;
     void testShowUsersSection() { showSection(kUsersSectionIndex); }
@@ -1038,6 +1130,28 @@ public:
         }
         return outcomes;
     }
+    // Park a follow-up for a session that has no process, exactly as the
+    // composer's "add" does when it cannot deliver one.
+    void testQueueAgentSteerMessage(int sessionId, const QString &prompt)
+    {
+        queueAgentSteerMessage(sessionId, prompt);
+    }
+    QString testPendingSteerMessage(int sessionId) const
+    {
+        return m_pendingSteerMessage.value(sessionId);
+    }
+    // What startCliTranscript does with the parked message when a run starts:
+    // it takes it, and holds it until the CLI announces itself. Returns what the
+    // launch was given.
+    QString testTakeSteerMessageForLaunch(int sessionId)
+    {
+        const QString steer = m_pendingSteerMessage.take(sessionId);
+        if (steer.isEmpty())
+            m_inFlightSteerMessage.remove(sessionId);
+        else
+            m_inFlightSteerMessage.insert(sessionId, steer);
+        return steer;
+    }
     QString testAgentSessionLastError(int sessionId)
     {
         const AgentSession *session = findAgentSession(sessionId);
@@ -1333,6 +1447,12 @@ signals:
     // Emitted whenever a backend is (re)created and wired up, so a headless
     // console can attach its live event feed to the new ChatBackend.
     void backendAttached(ChatBackend *backend);
+
+    // One rendered line of the Cloudflare Worker's live tail, as produced by
+    // the debug bar's Monitor toggle. The live-log viewer listens for this so
+    // an already-running monitor feeds it instead of opening a second tail
+    // against the same Worker (adhoc #1615).
+    void cloudLogLineReceived(const QString &line, bool isError);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -1672,6 +1792,11 @@ private:
     // resolved separately because its path is a deployment secret.
     QUrl websiteStatusTargetUrl(const QString &statusId) const;
     void openWebsiteStatusTarget(const QString &statusId);
+    // Clicking a dot is also "check this one again, now" (adhoc #1616): the
+    // checks behind that dot re-run immediately instead of waiting for the next
+    // minute tick, so the verdict beside the page the click just opened is a
+    // fresh one rather than up to a minute old.
+    void recheckWebsiteStatus(const QString &statusId);
     void openAdminErrorConsole();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
@@ -1736,7 +1861,9 @@ private:
     // mirror, byte-for-byte identical to the worker's advertised_refs_canonical().
     // The owner signs this on publish and the relay pins it. Empty when the mirror
     // path is unset/unreadable.
-    QString mirrorStateHash(const QString &mirrorPath) const;
+    // Static and free of member state so the mirror-advert worker thread can
+    // fingerprint a mirror without capturing `this`.
+    static QString mirrorStateHash(const QString &mirrorPath);
     // Signed catalog-list URL (adds our viewer token so the relay also returns our
     // own private repos). Shared by fetchCatalogRepos() and refreshRepoPinBanner().
     QUrl catalogListUrl();
@@ -1865,6 +1992,59 @@ private:
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
     void showCloudflareWorkerLogs();
+    // Resolve everything a Wrangler tail needs: the Worker bundle directory,
+    // npx, the account, and the API token (from the settings field, the stored
+    // deploy secret, or — only when `allowPrompt` — the user). Returns false
+    // after explaining why in a toast. The token is returned to the caller so
+    // it can be scrubbed from memory once the tail ends.
+    bool prepareCloudflareTail(QString *token, QString *workerDirectory,
+                               forkmesh::control::CloudflareBootstrapCommand
+                                   *command,
+                               bool *fromStoredSecret, bool allowPrompt);
+    // Debug-bar "Monitor" checkbox: keep a Wrangler tail running in the
+    // background and route every Worker error into the log, where the existing
+    // ERROR alert raises the same card any other failure gets (adhoc #1615).
+    void setCloudLogMonitorEnabled(bool enabled);
+    // Whether a Cloudflare API token is already on hand. The monitor is on by
+    // default (adhoc #1632), so the automatic start has to be able to stay quiet
+    // on a node that has no token rather than greeting every launch with a toast.
+    bool cloudLogMonitorTokenAvailable() const;
+    void startCloudLogMonitorIfConfigured();
+    // Take the monitor down after a failed start or a tail that died, without
+    // recording the climb-down as the user's preference — the stored choice is
+    // still "monitor", so the next launch tries again.
+    void stopCloudLogMonitorAfterFailure();
+    // Open the footer's debug bar at startup when this account asks for it, or
+    // when the preference is unset and the relay says this node is an admin
+    // (adhoc #1632). Idempotent: it acts once per run.
+    void applyDebugBarStartupPreference();
+    void readCloudLogMonitorOutput();
+    void consumeCloudLogMonitorBytes(const QByteArray &chunk);
+    void handleCloudLogMonitorLine(const QString &line);
+    void updateCloudLogMonitorTooltip();
+    // The Worker log viewer (adhoc #1626): a window of its own, the same shape
+    // as the app's full log screen — an error-activity rail over the stream,
+    // and a Pause control that stops the pane following the tail. Fed by
+    // whichever Wrangler tail is running: the debug bar's monitor, or the one
+    // the window starts and owns itself.
+    void buildCloudflareLogWindow();
+    void startCloudflareLogViewerTail(
+        const QString &token, const QString &workerDirectory,
+        const forkmesh::control::CloudflareBootstrapCommand &command);
+    void stopCloudflareLogViewerTail();
+    void readCloudflareLogViewerOutput();
+    bool cloudLogMonitorRunning() const;
+    bool cloudLogViewerRunning() const;
+    void appendCloudLogWindowLine(const QString &line, bool isError);
+    void recordCloudLogEvent(bool isError);
+    void refreshCloudLogTimeline();
+    void setCloudLogTimelineMinutes(int minutes);
+    void updateCloudLogTimelineSummary();
+    void updateCloudLogWindowNotice();
+    void updateCloudLogWindowStatus();
+    void setCloudLogWindowPaused(bool paused);
+    void onCloudLogWindowScrolled(int value);
+    void scrollCloudLogWindowToEnd();
     // The same log in a window of its own: everything retained, unfiltered.
     void showNetworkLogPopout();
 
@@ -3097,6 +3277,7 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
+    void syncQuickAddControlsToAgentSession(const AgentSession &session);
     // Rebuild only the detail header's meta lines (identity + issue/PR chips +
     // run Stats) and the toolbar's Branch/Worktree buttons, without a transcript
     // rebuild — used by the live token/cost/run-summary update paths and the
@@ -3232,6 +3413,23 @@ private:
     // Same as sendPromptToSelectedAgent, but for an arbitrary session id
     // (adhoc #182: an authenticated owner-sealed prompt names its session).
     void sendPromptToAgentSession(int sessionId, const QString &prompt);
+    // Hand a prompt to the process a session is running right now; false when
+    // nothing live took it, which is the caller's cue to restart the session with
+    // the prompt held for the resumed run (adhoc #1618).
+    bool deliverPromptToLiveAgentTransport(int sessionId, const QString &prompt);
+    // Park a prompt for a session's next start, accumulating rather than
+    // replacing what is already waiting (adhoc #1618).
+    void queueAgentSteerMessage(int sessionId, const QString &prompt);
+    // Drop a transport that is running but can no longer take a turn, so the
+    // restart gate stops calling this session live (adhoc #1618).
+    bool discardWedgedAgentTransport(int sessionId);
+    // Report what happened to a session in its transcript and its run log, so a
+    // restart that could not happen is not silent (adhoc #1618).
+    void noteAgentSessionNotice(int sessionId, const QString &text,
+                                bool error = false);
+    // Stamp a queued session that cannot start with its reason, and say so where
+    // the user is looking (adhoc #1618).
+    void failQueuedAgentSession(AgentSession &session, const QString &reason);
     // Full issue title + description + every comment, formatted for an agent
     // prompt. Shared by the initial issue-assignment prompt and the "Send
     // issue context" resend action, so a run that missed the context the
@@ -3661,8 +3859,31 @@ private:
                          const QString &actor);
     // The single funnel every in-app event goes through: it files the event on
     // the Pings page and raises it in the message area above the footer log
-    // (adhoc #77).
-    void recordNotification(AppNotification item);
+    // (adhoc #77). Returns the filed row's id, so the caller can follow what
+    // happens to it afterwards (the cloud sync below).
+    qint64 recordNotification(AppNotification item);
+    // Where a freshly raised ping stands with the cloud before anything has been
+    // attempted (adhoc #1629): an informational event has no cloud destination
+    // at all, and an alert raised while this node can't reach the relay — or has
+    // no account to sign a report with — is local-only by definition.
+    forkmesh::PingSync initialPingSync(const AppNotification &item,
+                                       QString *reasonOut) const;
+    // Hold the filed list to its cap, dropping the oldest ordinary row before
+    // any alert that never made it to the cloud (adhoc #1629).
+    void trimLocalPings();
+    // Move one filed ping to a new cloud state as its report succeeds, is
+    // parked, or fails. Silently ignores an id that has already aged out of the
+    // list — the reporter answers long after the row may have gone.
+    void setPingSync(qint64 pingId, forkmesh::PingSync state,
+                     const QString &reason = QString());
+    // The Pings page is the only copy of everything that never reached the
+    // cloud, so it outlives the process: the local rows are journalled to disk
+    // and restored at startup (adhoc #1629).
+    QString notificationJournalPath() const;
+    void loadNotificationJournal();
+    void saveNotificationJournal();
+    // Coalesces the writes a burst of pings would otherwise each trigger.
+    void scheduleNotificationJournalSave();
     // Raise one ping in the toast pill that sits above the footer's mini-log,
     // so new events are visible without opening a page. An error ping shows
     // immediately (preempting a routine toast) and flashes the red app border.
@@ -3670,6 +3891,9 @@ private:
     // Flash a red border around the whole window for a moment — the desktop
     // twin of the World's world-admin-error-arrival effect (adhoc #77).
     void flashErrorBorder();
+    // The same effect in green, for the one event worth celebrating: an agent
+    // finishing its run (adhoc #1630). Re-flashing restarts the countdown.
+    void flashCelebrationBorder();
     // While an update/rebuild is preparing to relaunch this process, pulse an
     // amber border at the window edge so the long-running restart is visible
     // even when its originating button or status panel is off-screen.
@@ -5424,8 +5648,9 @@ private:
     QString logBadgeFor(const QString &storedLine) const; // category of a line
     QString logAccentFor(const QString &storedLine) const; // badge colour of a line
     void rebuildLogFilterButtons(); // (re)build the category chip row
-    // "GIT 42" — chip text for a category, count included once it has one.
-    QString logFilterChipLabel(const QString &name, const QString &category) const;
+    // Buffered events in a category (empty category = the whole log), shown on
+    // the chip's corner badge.
+    int logFilterChipCount(const QString &category) const;
     void updateLogFilterChipCounts(); // refresh the counts without rebuilding
     void refreshLogTimelineChart();
     void appendLogTimelineEntry(const QString &storedLine);
@@ -5481,9 +5706,13 @@ private:
     // watching, is ever seen. Signed by this node's account; QSettings
     // kReportUserVisibleErrorsSetting = false turns it off. See
     // ClientErrorReports.h for the redaction, dedupe and deferral bounds.
+    // `pingId` is the Pings row this failure was filed as, so the report's fate
+    // (sent / parked / refused) lands back on that row (adhoc #1629). 0 means
+    // "not filed", e.g. a report raised before the page existed.
     void reportUserVisibleError(const QString &kind, const QString &title,
                                 const QString &message,
-                                const QString &surface = QString());
+                                const QString &surface = QString(),
+                                qint64 pingId = 0);
     void sendUserVisibleErrorReport(
         const forkmesh::ClientErrorReports::Report &report);
     void flushDeferredErrorReports();
@@ -5516,6 +5745,11 @@ private:
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
+    // The agent a finished-run celebration belongs to, recovered from its own
+    // "fm:agent:<id>" click target (-1 for every other kind of card), and the
+    // headline row that card paints above the agent's closing summary.
+    int topMessageAgentDoneSessionId() const;
+    QString agentDoneHeadlineHtml(int sessionId);
     // Refresh just the prompt bubble's status line, e.g. as the agent streams
     // (adhoc #1570) — cheaper than a full renderTopMessage() per event.
     void updateTopMessagePromptLiveStatus(const QString &line);
@@ -5677,9 +5911,41 @@ private:
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.
     void importRemoteRepository();
+    // Clone one repository URL; the tail of importRemoteRepository() once the
+    // URL is known to name a single project rather than a whole organization.
+    void importSingleRemoteRepository(const QString &url);
     // Provider-aware "-c http.extraHeader=Authorization: Basic ..." clone args
     // carrying the saved token for the URL's host, or empty when none is set.
     QStringList importAuthGitArgs(const QString &url) const;
+    // Importing an entire GitLab organization. A GitLab organization is a
+    // group, and a group path is indistinguishable from a project path by
+    // inspection (gitlab.com/acme/platform is either), so the API is asked
+    // which one it is before anything is cloned. Only one bulk import runs at
+    // a time — the Import controls stay disabled until the queue drains — so
+    // the in-flight state lives in a single member.
+    struct GitlabGroupImport {
+        QString group;          // full group path, e.g. acme/platform
+        QString parentDir;      // directory each clone lands in
+        QStringList cloneUrls;  // projects still to clone
+        QStringList names;      // repository name chosen for each clone URL
+        int total = 0;
+        int imported = 0;
+        int failed = 0;
+    };
+    GitlabGroupImport m_gitlabGroupImport;
+    // Group path for a canonical gitlab.com organization/subgroup URL, or an
+    // empty string when the URL is not a GitLab namespace at all.
+    QString gitlabGroupPathFor(const QUrl &url) const;
+    // Ask GitLab whether the path is a group; a group starts the bulk import
+    // and anything else falls back to a single-repository clone.
+    void probeGitlabGroup(const QString &url, const QString &groupPath);
+    void fetchGitlabGroupProjects(const QString &groupPath, int page);
+    void cloneNextGitlabGroupProject();
+    void finishGitlabGroupImport();
+    // Shared by both import paths so the single and bulk flows report through
+    // one status line and re-enable the same controls.
+    void setImportStatus(const QString &text, bool error);
+    void setImportControlsEnabled(bool enabled);
     void previewAdvertisedRepo(const QString &ownerName);
     void mirrorAdvertisedRepo(const QString &ownerName);
     void mirrorPreviewRepository(int index);
@@ -5719,14 +5985,19 @@ private:
     void autoSyncMirrorsIfRelayHealthy();
     // Re-arm the mirror sync timer after interval updates from Settings.
     void restartMirrorSyncTimer();
-    // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
-    // pull it immediately instead of waiting for the next auto-sync tick.
+    // Roster-driven catch-up: when a peer advertises a ref-set fingerprint (or,
+    // for older peers, a HEAD commit) our mirror lacks, pull immediately.
     void syncMirrorsBehindRoster();
     // `git cat-file -e` probe with memoized positive answers, so the roster
     // reconcile doesn't re-spawn git for the same converged tip on every peer
     // hello (adhoc #82).
     bool mirrorHasCommit(const QString &mirrorPath, const QString &commit);
     QSet<QString> m_mirrorCommitsPresent; // "<mirrorPath>\x1f<commit>" seen present
+    // "<repo>\x1f<peer>" -> the last ref fingerprint we already reconciled for
+    // that peer. Ref-set equality is symmetric, so a node that is AHEAD of a
+    // peer differs from it forever; without this, every peer hello would
+    // re-trigger a sync that can never make the two match.
+    QHash<QString, QString> m_mirrorRefsFingerprintActed;
     // Source-of-truth catch-up: online mirrors merge (and drain) web-submitted
     // issues/PRs/discussions directly into the branches they serve, so when a
     // peer advertises commits this node's OWN repo lacks, fast-forward the
@@ -5739,7 +6010,9 @@ private:
     // for the safety sync, so counts and content converge right away.
     void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
-    // mirror the same repo. `commit` is the new HEAD it advanced to.
+    // mirror the same repo. `commit` is its primary HEAD for status display;
+    // the wake-up still fetches all refs because collaboration branches may be
+    // the only refs that changed.
     void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName,
                              const QString &commit);
     // A peer reported it finished pulling "owner/name" up to `commit` — the
@@ -6027,6 +6300,12 @@ private:
     QWidget *m_topMessageBody = nullptr;  // scrollable prompt/notification content
     QLabel *m_topMessagePromptHeader = nullptr; // "Prompt sent" line
     QLabel *m_topMessagePromptStatusLabel = nullptr; // agent info on its own line
+    // Headline row of an "agent finished" celebration (adhoc #1630): the agent's
+    // own list icon beside "🎉 Agent #12 is done! · #42 · repo · 2m 04s". The
+    // summary the run signed off with is the message text beneath it.
+    QWidget *m_topMessageAgentRow = nullptr;
+    QLabel *m_topMessageAgentIcon = nullptr;
+    QLabel *m_topMessageAgentHeadline = nullptr;
     QWidget *m_topMessagePromptImages = nullptr; // submitted image thumbnails
     QStringList m_topMessagePromptImagePaths;
     // Queued notifications are visible beneath the active bubble. As new ones
@@ -6086,6 +6365,10 @@ private:
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
     QTimer *m_errorBorderTimer = nullptr;
+    // Its green twin, pulsed when an agent finishes (adhoc #1630) so the good
+    // news is as unmissable across the window as a failure is.
+    QWidget *m_celebrationBorderOverlay = nullptr;
+    QTimer *m_celebrationBorderTimer = nullptr;
     // Set while flashMessage is recording its own text, so the ERROR hook in
     // logSystem flashes the window but leaves the toast to the caller instead
     // of stacking a duplicate card behind it.
@@ -6143,6 +6426,16 @@ private:
     // Version-controlled strip below the one-line status bar. It owns the live
     // resource chart, labeled log counters and newest website minute states.
     QWidget *m_debugBar = nullptr;
+    // The footer's version button is the bar's disclosure control, so showing
+    // the bar at startup means checking it (adhoc #1632). m_debugBarStartupApplied
+    // keeps that a once-per-run decision: an unset preference waits for the
+    // heartbeat that reports admin status, but never re-opens the bar after.
+    QPushButton *m_statusVersionButton = nullptr;
+    bool m_debugBarStartupApplied = false;
+    // Settings' box for that preference. It shows the admin default while
+    // nothing is stored, so it is re-ticked if admin status arrives after the
+    // page was built.
+    QCheckBox *m_debugBarStartupCheck = nullptr;
     // Optional five-line live log tail below the debug bar, and the bar's tool
     // that reveals it. Showing it grows the window by the strip's height rather
     // than taking those lines out of the workspace.
@@ -6150,6 +6443,52 @@ private:
     QPushButton *m_debugLogTailButton = nullptr;
     int m_debugLogTailHeight = 0; // the strip the window grows by, in pixels
     bool m_debugLogTailShown = false;
+    // Debug bar's "Monitor" checkbox and the background Wrangler tail it owns
+    // (adhoc #1615). While it runs, every Worker exception/5xx reaches the log
+    // as an ERROR line, which raises the same toast as any other failure. The
+    // token lives in the child environment only, never in argv or QSettings.
+    QCheckBox *m_cloudLogMonitorCheck = nullptr;
+    // Settings' mirror of that box, so the monitor can still be switched off on
+    // a node that keeps the debug bar closed. The two stay in step.
+    QCheckBox *m_cloudLogMonitorSettingCheck = nullptr;
+    QProcess *m_cloudLogMonitorProcess = nullptr;
+    QByteArray m_cloudLogMonitorBuffer; // partial tail record across reads
+    QStringList m_cloudLogMonitorRecent; // rendered backlog for the viewer
+    int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
+    int m_cloudLogMonitorEvents = 0;     // Worker events seen since then
+    bool m_cloudLogMonitorStopping = false; // a deliberate stop, not a crash
+    // Ticked, but with no Cloudflare token to tail with (adhoc #1632). The
+    // automatic start says so in the tooltip rather than unticking the box or
+    // writing a line into the log on every launch of a node that never deploys.
+    bool m_cloudLogMonitorAwaitingToken = false;
+    // The Worker log window and the tail it owns when the Monitor box is off
+    // (adhoc #1626). Guarded pointers: the window is WA_DeleteOnClose, so these
+    // go null on their own when it is closed.
+    QPointer<QDialog> m_cloudLogWindow;
+    QPointer<QLabel> m_cloudLogWindowNotice;
+    QPointer<QLabel> m_cloudLogWindowStatus;
+    QPointer<QLabel> m_cloudLogWindowSummary;
+    QPointer<QPlainTextEdit> m_cloudLogWindowView;
+    QPointer<QPushButton> m_cloudLogWindowPauseButton;
+    QPointer<QPushButton> m_cloudLogWindowResetZoom;
+    QPointer<LogTimelineChart> m_cloudLogWindowChart;
+    QProcess *m_cloudLogViewerProcess = nullptr; // this window's own tail
+    QByteArray m_cloudLogViewerBuffer;   // partial tail record across reads
+    QString m_cloudLogViewerToken;       // redacts the stream; scrubbed on stop
+    bool m_cloudLogViewerStoredToken = false; // came from the deploy secret
+    int m_cloudLogViewerEvents = 0;
+    int m_cloudLogViewerErrors = 0;
+    QString m_cloudLogWindowState;          // "Monitoring", "Log stream ended"…
+    bool m_cloudLogWindowFromMonitor = false; // which tail last fed the pane
+    bool m_cloudLogWindowPaused = false;    // pane held still by the reader
+    bool m_cloudLogWindowScrolling = false; // our tail-follow, not their scroll
+    int m_cloudLogWindowHeld = 0;           // lines arrived while paused
+    bool m_cloudLogWindowErrorsOnly = true; // the chart's default rail
+    int m_cloudLogWindowRangeMinutes = 60;
+    // (timestamp, isError) per Worker event, for the window's activity chart.
+    // Kept whether or not the window is open: the monitor may have been running
+    // for hours before anyone opens the viewer, and that history is the point.
+    QVector<QPair<qint64, bool>> m_cloudLogTicks;
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
@@ -6164,11 +6503,25 @@ private:
     QWidget *m_promptDragHandle = nullptr;
     QWidget *m_promptResizeGrip = nullptr;
     QPushButton *m_promptDetachButton = nullptr;
+    QPushButton *m_promptResetButton = nullptr;
+    // promptWrapper->sizeHint().height() at construction, the same moment the
+    // footer dock's own fixed height is derived from it. Cached rather than
+    // re-queried on every anchored layout pass: once the composer has been
+    // floated and resized, some Qt-internal layout state QPlainTextEdit's
+    // sizeHint() consults no longer matches its construction-time value, so a
+    // live re-query drifted the anchored height out of sync with the dock's
+    // (fixed, never recomputed) height (adhoc #1625).
+    int m_promptAnchoredHeight = 0;
     QWidget *m_promptDetachWindow = nullptr;
     bool m_promptOverlayFloating = false;
     bool m_promptOverlayDetached = false;
     QPoint m_promptOverlayPos;  // top-left within m_globalOverlayHost
     QSize m_promptOverlaySize;  // user-chosen size; invalid means "auto"
+    // m_globalOverlayHost's size the last time the floating composer's position
+    // was clamped into it; invalid means "not tracked yet". Lets a workspace
+    // resize carry the floating panel along with the edge it was parked near
+    // instead of leaving it stranded at its old absolute position.
+    QSize m_promptOverlayHostSize;
     QRect m_promptDetachGeometry;
     // Live drag/resize state. The grab point is global so it stays meaningful
     // while the panel is reparented mid-gesture.
@@ -6807,7 +7160,6 @@ private:
     // line, so a typed prompt actually shows on two lines. Enter sends,
     // Shift+Enter inserts a newline; Up/Down still walk the prompt history.
     QPlainTextEdit *m_issueQuickAdd = nullptr;
-    QLabel *m_quickAddTargetAgentLabel = nullptr;
     QFrame *m_promptWrapper = nullptr; // geometry anchor for notification/prompt bubbles
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     // Canonical provider state behind the combined visible picker. It also
@@ -8001,6 +8353,21 @@ private:
         QString actor;  // who caused it, when known
         QString repo;   // "owner/name", when it is about a repository
         qint64 id = 0;  // stable row identity, so one row can be deleted
+        // Where this ping stands with the cloud (adhoc #1629). One raised while
+        // this node was offline never leaves the machine, so this page is its
+        // only record; one that should have synced and didn't says so rather
+        // than reading like one that landed. See PingSyncState.h.
+        forkmesh::PingSync sync = forkmesh::PingSync::LocalOnly;
+        QString syncReason; // the specific "why", e.g. "signed out"
+        // Set when the caller already knows this ping's cloud state and
+        // recordNotification must not guess one — e.g. a logged failure that is
+        // never reported from here, which would otherwise sit at "Syncing…"
+        // waiting for a report nobody is going to send.
+        bool syncDecided = false;
+        // The event already put itself on screen (a modal the operator is
+        // reading, an OS notification): file it, but don't raise an in-app card
+        // repeating what is already in front of them.
+        bool quiet = false;
     };
     ActionStore *m_actionStore = nullptr;
     // A pool of runners so independent workflows (e.g. the Android build, the CI
@@ -8034,6 +8401,12 @@ private:
     qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
     qint64 m_nextNotificationId = 1; // row identity for delete (adhoc #77)
+    // The ping currently being raised as a toast. flashMessage files every toast
+    // it is *given* on the Pings page; when the toast is the one a filed ping
+    // asked for, this says which row it belongs to so the same event is not
+    // filed twice (adhoc #1629).
+    qint64 m_pingToastId = 0;
+    QTimer *m_notificationJournalTimer = nullptr; // debounced journal write
     // Website ping ids already surfaced as immediate error pings, so a poll
     // that returns the same inbox again never re-flashes them (adhoc #77).
     QSet<QString> m_flashedWebAlertIds;
@@ -8505,6 +8878,17 @@ private:
     // failing the same way ever reaches kMaxAgentRelaunchAttempts.
     QHash<int, int> m_agentRelaunchAttempts;
     void notifyAgentWaiting(int sessionId, bool needsPermission);
+    // The counterpart for a run that reached the end: a celebration card
+    // carrying the agent's own icon and the summary it signed off with, plus a
+    // green pulse round the window (adhoc #1630). Every completion path funnels
+    // through here, and m_agentDoneNotified keeps a re-fired signal or a requeue
+    // from celebrating the same run twice.
+    void notifyAgentDone(int sessionId);
+    // The last prose the agent produced this run — the summary at the end of its
+    // transcript. Prefers the live cache and falls back to walking the event
+    // buffer, which is what a session restored from disk has.
+    QString agentClosingSummary(int sessionId) const;
+    QSet<int> m_agentDoneNotified; // sessions already celebrated; cleared on a new turn
     bool applyCliExitWithoutResult(int sessionId, bool codex, int exitCode);
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
@@ -8529,6 +8913,12 @@ private:
     // it restarts the session and this is folded into the resumed run's prompt as
     // a steering instruction (the composer is always typeable — adhoc #177).
     QHash<int, QString> m_pendingSteerMessage;
+    // The steering message the CLI launch currently in flight was given. A launch
+    // that dies without ever starting a turn never delivered it, so the automatic
+    // re-queue puts it back on m_pendingSteerMessage instead of resuming with the
+    // user's instruction lost (adhoc #1618). Cleared once the CLI announces
+    // itself, which is where the message has demonstrably arrived.
+    QHash<int, QString> m_inFlightSteerMessage;
     // Snapshot of each live stream session, captured at launch so transcript
     // events can be persisted to disk without depending on m_agentSessions
     // (which doesn't yet hold a freshly created ad-hoc session). Issue #41.
@@ -9306,6 +9696,11 @@ private:
     // Remember it instead of dropping it: once every gateway attempt finishes,
     // push the newest served snapshot again so moving refs converge exactly.
     QSet<QString> m_sshMirrorPushPending;
+    // Per-gateway host reachability for that fan-out. A gateway that stops
+    // answering (a retired node, a dead route) rotates out of the automatic
+    // pass for a growing cooldown instead of costing a connect timeout and a
+    // red log line every five seconds; see MirrorGatewayHealth.h.
+    MirrorGatewayHealth m_sshMirrorHealth;
     // "owner/name" of repos whose @mention scan is running on a worker thread, so
     // a second sync/inbox drain doesn't kick a duplicate scan (and double-notify)
     // while the first is still loading issues/PRs off the UI thread.

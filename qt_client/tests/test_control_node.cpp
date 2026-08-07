@@ -597,10 +597,10 @@ int main(int argc, char **argv)
     check(tailCommand.program == QStringLiteral("/usr/bin/npx") &&
               tailCommand.arguments ==
                   QStringList({QStringLiteral("--yes"),
-                               QStringLiteral("wrangler@4.42.1"),
+                               QStringLiteral("wrangler@4.120.0"),
                                QStringLiteral("tail"),
                                QStringLiteral("--format"),
-                               QStringLiteral("pretty")}),
+                               QStringLiteral("json")}),
           "Cloudflare tail uses a direct pinned Wrangler invocation");
     check(!tailCommand.arguments.join(QChar(u'\0')).contains(tailToken) &&
               tailCommand.environment.value(
@@ -613,6 +613,161 @@ int main(int argc, char **argv)
               tailToken, QStringLiteral("invalid account!"),
               QStringLiteral("/usr/bin/npx")).program.isEmpty(),
           "Cloudflare tail rejects malformed account IDs");
+
+    // --- Tail rendering (adhoc #1615): the viewer parses Wrangler's JSON so it
+    // can show the user agent behind each hit and tell a failure from a hit.
+    const auto okTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral(
+            "{\"outcome\":\"ok\",\"eventTimestamp\":1000,"
+            "\"event\":{\"request\":{\"method\":\"GET\","
+            "\"url\":\"https://forkmesh.com/api/status\","
+            "\"headers\":{\"User-Agent\":\"Mozilla/5.0 ForkMeshBot\"}},"
+            "\"response\":{\"status\":200}},"
+            "\"logs\":[{\"level\":\"log\",\"message\":[\"served\",7]}],"
+            "\"exceptions\":[]}"));
+    check(okTail.parsed && !okTail.isError &&
+              okTail.userAgent == QStringLiteral("Mozilla/5.0 ForkMeshBot") &&
+              okTail.method == QStringLiteral("GET") &&
+              okTail.status == 200 &&
+              okTail.messages == QStringList({QStringLiteral("served 7")}),
+          "a healthy Worker request decodes with its user agent");
+    check(okTail.summary.contains(QStringLiteral("UA Mozilla/5.0 ForkMeshBot")) &&
+              okTail.summary.contains(QStringLiteral("GET")) &&
+              okTail.summary.contains(QStringLiteral("200")) &&
+              okTail.summary.contains(
+                  QStringLiteral("https://forkmesh.com/api/status")),
+          "the rendered tail line carries the agent beside the request");
+
+    const auto exceptionTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral(
+            "{\"outcome\":\"exception\",\"eventTimestamp\":2000,"
+            "\"event\":{\"request\":{\"method\":\"POST\","
+            "\"url\":\"https://forkmesh.com/api/sync\",\"headers\":{}}},"
+            "\"exceptions\":[{\"name\":\"Error\",\"message\":\"boom\"}],"
+            "\"logs\":[]}"));
+    check(exceptionTail.parsed && exceptionTail.isError &&
+              exceptionTail.userAgent.isEmpty() &&
+              exceptionTail.summary.contains(QStringLiteral("Error: boom")) &&
+              exceptionTail.summary.contains(QStringLiteral("UA (none)")),
+          "a Worker exception is flagged as an error worth alerting on");
+    check(forkmesh::control::parseCloudflareTailLine(
+              QStringLiteral(
+                  "{\"outcome\":\"ok\",\"event\":{\"request\":{\"method\":"
+                  "\"GET\",\"url\":\"https://forkmesh.com/\",\"headers\":{}},"
+                  "\"response\":{\"status\":503}}}"))
+              .isError,
+          "a 5xx reply is an error even when the outcome reads ok");
+    check(!forkmesh::control::parseCloudflareTailLine(
+               QStringLiteral(
+                   "{\"outcome\":\"canceled\",\"event\":{\"request\":{"
+                   "\"method\":\"GET\",\"url\":\"https://forkmesh.com/\","
+                   "\"headers\":{}},\"response\":{\"status\":200}}}"))
+               .isError,
+          "a client hanging up mid-request is not a Worker failure");
+    check(forkmesh::control::parseCloudflareTailLine(
+              QStringLiteral(
+                  "{\"outcome\":\"ok\",\"event\":{},\"logs\":[{\"level\":"
+                  "\"error\",\"message\":[\"db unreachable\"]}]}"))
+              .isError,
+          "an error-level console log is an error");
+    const auto bannerTail = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral("  Connected to forkmesh-relay, waiting for logs...  "));
+    check(!bannerTail.parsed && !bannerTail.isError &&
+              bannerTail.summary ==
+                  QStringLiteral("Connected to forkmesh-relay, waiting for "
+                                 "logs..."),
+          "Wrangler's own banner lines pass through untouched");
+    check(!forkmesh::control::parseCloudflareTailLine(
+               QStringLiteral("{\"hello\":\"world\"}")).parsed,
+          "JSON that is not a tail event is not treated as one");
+    check(okTail.summary.startsWith(
+              QStringLiteral("GET https://forkmesh.com/api/status - 200 Ok @")),
+          "the tail line opens in Wrangler's own default shape");
+    const auto unknownJson = forkmesh::control::parseCloudflareTailLine(
+        QStringLiteral("{\n    \"hello\": \"world\",\n    \"n\": 1\n}"));
+    check(!unknownJson.parsed &&
+              !unknownJson.summary.contains(QLatin1Char('\n')) &&
+              unknownJson.summary == QStringLiteral("{ \"hello\": \"world\", "
+                                                    "\"n\": 1 }"),
+          "JSON nobody understands is still collapsed to a single log line");
+
+    // --- Record framing (adhoc #1623): Wrangler's --format json is NOT NDJSON.
+    // It pretty-prints each event over many lines, so the stream is cut on brace
+    // balance, not on newlines — the per-line split showed the raw expanded JSON
+    // and never decoded an error.
+    QByteArray tailStream =
+        "Connected to forkmesh-relay, waiting for logs...\n"
+        "{\n"
+        "    \"outcome\": \"ok\",\n"
+        "    \"eventTimestamp\": 1000,\n"
+        "    \"event\": {\n"
+        "        \"request\": {\n"
+        "            \"method\": \"GET\",\n"
+        "            \"url\": \"https://forkmesh.com/a{b}\",\n"
+        "            \"headers\": {\n"
+        "                \"user-agent\": \"Mozilla/5.0 {curly}\"\n"
+        "            }\n"
+        "        },\n"
+        "        \"response\": {\n"
+        "            \"status\": 200\n"
+        "        }\n"
+        "    },\n"
+        "    \"logs\": [],\n"
+        "    \"exceptions\": []\n"
+        "}\n";
+    QStringList tailRecords =
+        forkmesh::control::takeCloudflareTailRecords(&tailStream);
+    check(tailRecords.size() == 2 && tailStream.isEmpty() &&
+              tailRecords.constFirst() ==
+                  QStringLiteral("Connected to forkmesh-relay, waiting for "
+                                 "logs...") &&
+              tailRecords.constLast().startsWith(QLatin1Char('{')) &&
+              tailRecords.constLast().endsWith(QLatin1Char('}')),
+          "a pretty-printed event is framed as one record beside plain lines");
+    const auto prettyTail =
+        forkmesh::control::parseCloudflareTailLine(tailRecords.constLast());
+    check(prettyTail.parsed && !prettyTail.isError && prettyTail.status == 200 &&
+              prettyTail.userAgent == QStringLiteral("Mozilla/5.0 {curly}") &&
+              prettyTail.summary.contains(
+                  QStringLiteral("UA Mozilla/5.0 {curly}")),
+          "the framed record decodes, braces inside strings and all");
+
+    // A read can land anywhere: the half-arrived record waits in the buffer
+    // rather than reaching the parser as fragments.
+    QByteArray split = "{\n    \"outcome\": \"exce";
+    check(forkmesh::control::takeCloudflareTailRecords(&split).isEmpty() &&
+              !split.isEmpty(),
+          "an event split across reads is held back until it closes");
+    split += "ption\",\n    \"event\": {},\n    \"exceptions\": [\n"
+             "        {\n            \"name\": \"TypeError\",\n"
+             "            \"message\": \"boom\"\n        }\n    ]\n}\n"
+             "{\"outcome\":\"ok\",\"event\":{}}\n";
+    const QStringList resumed =
+        forkmesh::control::takeCloudflareTailRecords(&split);
+    check(resumed.size() == 2 && split.isEmpty() &&
+              forkmesh::control::parseCloudflareTailLine(resumed.constFirst())
+                  .isError &&
+              forkmesh::control::parseCloudflareTailLine(resumed.constFirst())
+                  .summary.contains(QStringLiteral("TypeError: boom")),
+          "the rest of a split event completes it, compact events still work");
+    // stderr is merged into this stream, so a warning carrying a stray brace
+    // must not swallow the events behind it.
+    QByteArray interleaved =
+        "{ WARNING: unbalanced {\n"
+        "{\"outcome\":\"ok\",\"event\":{\"request\":{\"method\":\"GET\","
+        "\"url\":\"https://forkmesh.com/\",\"headers\":{}}}}\n";
+    const QStringList resynced =
+        forkmesh::control::takeCloudflareTailRecords(&interleaved);
+    check(resynced.size() == 2 && interleaved.isEmpty() &&
+              resynced.constFirst() == QStringLiteral("{ WARNING: unbalanced {") &&
+              forkmesh::control::parseCloudflareTailLine(resynced.constLast())
+                  .parsed,
+          "a stray brace on stderr cannot swallow the events behind it");
+    QByteArray runaway(3 * 1024 * 1024, '{');
+    runaway += '\n';
+    check(forkmesh::control::takeCloudflareTailRecords(&runaway).isEmpty() &&
+              runaway.isEmpty(),
+          "a record that never closes cannot grow the buffer without bound");
 
     const QMap<QString, QString> storedVariables = {
         {QStringLiteral("cloudflare_api_token"), QStringLiteral("  cf-stored  ")},

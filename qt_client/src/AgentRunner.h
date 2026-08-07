@@ -60,7 +60,11 @@ public:
     void start(const AgentSession &session, const Issue &issue,
                const QString &repoPath, const Config &config);
     void stop();
-    void steer(const QString &prompt);
+    // False when the prompt could not be handed to the run — this runner is idle,
+    // or its current phase's process is not taking input. The caller then keeps
+    // the message for the next start rather than letting it disappear into a log
+    // line nobody reads (adhoc #1618).
+    bool steer(const QString &prompt);
 
 signals:
     void logLine(int sessionId, const QString &text);

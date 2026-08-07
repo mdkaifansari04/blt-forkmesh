@@ -1927,9 +1927,13 @@ void MainWindow::sendNodeHeartbeat()
         const bool wasAdmin = m_isAdmin;
         m_isAdmin = resp.value("isAdmin").toBool();
         // Admin status is learned after the initial nav render, so refresh the
-        // avatar crown badge once when it flips.
-        if (m_isAdmin != wasAdmin)
+        // avatar crown badge once when it flips — and give the debug bar, whose
+        // unset startup preference follows this same flag, its answer too
+        // (adhoc #1632).
+        if (m_isAdmin != wasAdmin) {
             updateAdminCrownBadge();
+            applyDebugBarStartupPreference();
+        }
         // A freshly launched instance's request to join rides the same signed
         // heartbeat reply for admins (adhoc #97): light the red dot over the
         // relay favicon and show the Approve button beside it.
@@ -1942,9 +1946,11 @@ void MainWindow::sendNodeHeartbeat()
         // Bring the World virtual office's channel conversations into the chat
         // sidebar (adhoc #412). Idempotent, so the heartbeat can just call it.
         startOfficeChannelMirror();
-        // Keep the bell's badge honest about alerts raised on the website
-        // (adhoc #59). Throttled inside, so this 60s beat costs one read per
-        // five minutes rather than one per beat.
+        // Seed the bell's badge with what the website already had waiting
+        // (adhoc #59). This is the first beat's job only: refreshWebAlerts()
+        // reads the inbox once per run and then goes quiet, leaving later
+        // pings to the relay's "pings" event frame. Every subsequent beat is a
+        // no-op unless that one read failed.
         refreshWebAlerts();
         if (m_isAdmin) {
             if (!m_adminPollTimer) {

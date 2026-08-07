@@ -39,6 +39,7 @@ class FakeRuntime:
         self.admins = {"admin"}
         self.accounts = {"admin", "alice", "bob"}
         self.audits = []
+        self.account_events = []
         self.revoked_rooms = []
         self.ids = 0
         self.fail_batch_at = None
@@ -110,6 +111,10 @@ class FakeRuntime:
 
     async def open(self, value):
         return json.loads(value)
+
+    async def notify_account(self, owner, topic):
+        # Payload-free push to one account's clients (adhoc #1604).
+        self.account_events.append((owner, topic))
 
     async def audit(self, actor, action, target_type="", target="",
                     outcome="success", details=None):
@@ -243,6 +248,13 @@ async def test_admin_creates_private_channel_with_initial_registered_members():
     assert sorted(json.loads(row["data"])["username"] for row in rows) == [
         "alice",
         "bob",
+    ]
+    # Each invitee's channel list changed for somebody else's reason, and the
+    # chat page reads that list once when it opens rather than on a timer, so
+    # they are told (adhoc #1604). "admin" created it and is not notified.
+    assert sorted(runtime.account_events) == [
+        ("alice", "private-channels"),
+        ("bob", "private-channels"),
     ]
 
 

@@ -20,7 +20,7 @@
 # removes its routes and the relay's custom-domain catch-all resumes serving
 # /world byte-identically.
 name = "forkmesh-world"
-compatibility_date = "2026-07-23"
+compatibility_date = "2026-08-03"
 
 [build]
 command = "python3 tools/build_split_assets.py world"

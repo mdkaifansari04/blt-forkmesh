@@ -650,6 +650,28 @@ QWidget *MainWindow::buildSettingsSection()
     connect(errorLogAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kErrorLogAlertSetting, enabled);
     });
+    auto *systemAlertCheck =
+        new QCheckBox("Show a card for ForkMesh system alerts");
+    systemAlertCheck->setChecked(
+        QSettings().value(kSystemAlertSetting, true).toBool());
+    systemAlertCheck->setToolTip(
+        "Pop up a card (naming the specific system, e.g. \"Relay needs "
+        "attention\") when a mesh system goes down or recovers. The Pings "
+        "page keeps logging these either way.");
+    connect(systemAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kSystemAlertSetting, enabled);
+    });
+    auto *agentDoneAlertCheck =
+        new QCheckBox("Show a desktop notification when an agent finishes");
+    agentDoneAlertCheck->setChecked(
+        QSettings().value(kAgentDoneAlertSetting, true).toBool());
+    agentDoneAlertCheck->setToolTip(
+        "Pop up a native OS notification (naming the agent, e.g. \"Agent #12 "
+        "is done!\") when a run finishes while ForkMesh isn't the active "
+        "window. The in-app celebration card always shows either way.");
+    connect(agentDoneAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAgentDoneAlertSetting, enabled);
+    });
     auto *pushAlertCheck =
         new QCheckBox("Show a system ping when a push reaches a mirror");
     pushAlertCheck->setChecked(
@@ -1083,6 +1105,55 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kShowRebuildButtonSetting, enabled);
         updateNavRebuildButton();
     });
+
+    // The footer's debug bar normally waits for a click on the version button.
+    // This opens it at launch instead (adhoc #1632). With nothing stored the box
+    // shows the account's default — ticked for admins, who are the ones watching
+    // the resource chart and Worker status dots — and ticking or unticking it
+    // both records the choice and applies it to the window right away.
+    auto *debugBarStartupCheck =
+        new QCheckBox("Show the debug bar at startup");
+    m_debugBarStartupCheck = debugBarStartupCheck;
+    debugBarStartupCheck->setObjectName(QStringLiteral("debugBarStartupCheck"));
+    debugBarStartupCheck->setChecked(
+        QSettings().value(kShowDebugBarOnStartupSetting, m_isAdmin).toBool());
+    debugBarStartupCheck->setToolTip(
+        "Open the debug bar under the status line as soon as the app starts, "
+        "with its resource chart, log activity lights and Worker tools. On by "
+        "default for admins; the version button in the footer toggles it at any "
+        "time.");
+    connect(debugBarStartupCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+                QSettings().setValue(kShowDebugBarOnStartupSetting, enabled);
+                // An explicit choice retires the admin default for this run.
+                m_debugBarStartupApplied = true;
+                if (m_statusVersionButton)
+                    m_statusVersionButton->setChecked(enabled);
+            });
+
+    // The cloud monitor's off switch for nodes that keep the debug bar closed:
+    // it is on by default (adhoc #1632), so it must be reachable from Settings
+    // and not only from the bar's own Monitor box. The two mirror each other.
+    m_cloudLogMonitorSettingCheck =
+        new QCheckBox("Monitor the deployed Worker's log for errors");
+    m_cloudLogMonitorSettingCheck->setObjectName(
+        QStringLiteral("cloudLogMonitorSettingCheck"));
+    m_cloudLogMonitorSettingCheck->setChecked(
+        QSettings().value(kCloudLogMonitorSetting, true).toBool());
+    m_cloudLogMonitorSettingCheck->setToolTip(
+        "Keep a background tail of the deployed Worker's live log running, so "
+        "its exceptions and 5xx responses raise the same alert as any other "
+        "error. Needs a stored Cloudflare API token; on by default.");
+    connect(m_cloudLogMonitorSettingCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+                if (m_cloudLogMonitorCheck) {
+                    // The debug bar's box owns the preference and the tail.
+                    m_cloudLogMonitorCheck->setChecked(enabled);
+                    return;
+                }
+                QSettings().setValue(kCloudLogMonitorSetting, enabled);
+                setCloudLogMonitorEnabled(enabled);
+            });
 
     // Diagnostic: mirror every HTTP request the app makes into the network log
     // (verb + status + URL). Off by default; handy for confirming what the
@@ -1823,14 +1894,17 @@ QWidget *MainWindow::buildSettingsSection()
     importLabel->setObjectName("sectionLabel");
     auto *importHint = new QLabel(
         "Clone a GitHub or GitLab repository into a local folder, then mirror "
-        "and publish it under your node. Add an access token to avoid "
-        "unauthenticated rate limits — tokens are stored locally only.");
+        "and publish it under your node. Paste a GitLab group instead of a "
+        "project to import the entire organization, subgroups included. Add an "
+        "access token to avoid unauthenticated rate limits (and to reach "
+        "private groups) — tokens are stored locally only.");
     importHint->setObjectName("statusLine");
     importHint->setWordWrap(true);
 
     m_importUrlEdit = new QLineEdit;
     m_importUrlEdit->setPlaceholderText(
-        "https://github.com/owner/repo  or  https://gitlab.com/group/repo");
+        "https://github.com/owner/repo  ·  https://gitlab.com/group/repo  ·  "
+        "https://gitlab.com/group");
     m_importButton = new QPushButton("Import");
     m_importButton->setObjectName("primaryButton");
     m_importButton->setCursor(Qt::PointingHandCursor);
@@ -2080,6 +2154,8 @@ QWidget *MainWindow::buildSettingsSection()
     appearanceGroup->addLayout(settingsHeading(appearanceLabel, "sun"));
     appearanceGroup->addWidget(m_themeCombo, 0, Qt::AlignLeft);
     appearanceGroup->addWidget(rebuildButtonCheck);
+    appearanceGroup->addWidget(debugBarStartupCheck);
+    appearanceGroup->addWidget(m_cloudLogMonitorSettingCheck);
     appearanceGroup->addWidget(verboseNetLogCheck);
 
     auto *startupGroup = generalTab->addSection();
@@ -2174,6 +2250,8 @@ QWidget *MainWindow::buildSettingsSection()
     pingsGroup->addWidget(inAppPingsCheck);
     pingsGroup->addWidget(inAppPingDuration, 0, Qt::AlignLeft);
     pingsGroup->addWidget(errorLogAlertCheck);
+    pingsGroup->addWidget(systemAlertCheck);
+    pingsGroup->addWidget(agentDoneAlertCheck);
     pingsGroup->addWidget(pushAlertCheck);
     pingsGroup->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
     pingsGroup->addWidget(actionAlertStartedCheck, 0, Qt::AlignLeft);
@@ -4292,6 +4370,15 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
     // "failed"/"unable" and would otherwise mis-badge the stall as ERROR.
     if (lower.contains(QLatin1String("ui stalled")))
         return {QString::fromLatin1(kStallAccent), QString::fromLatin1(kStallBadge)};
+    // A successful "Git: merged <base> into <branch> in its linked worktree."
+    // line embeds the branch name verbatim, and agent branches are slugged
+    // from issue titles — so a branch like "…-am-unable-continue-agent" trips
+    // the "unable" error keyword below and mis-badges a successful merge as
+    // ERROR (adhoc #1620). Checked ahead of the error precedence, same as the
+    // stall case above.
+    if (lower.startsWith(QLatin1String("git: merged ")) &&
+        lower.contains(QLatin1String(" in its linked worktree")))
+        return {QStringLiteral("#a371f7"), QStringLiteral("MERGE")};
     // Category should reflect *what drove the request*, not the payload the
     // server happened to return. The verbose "net" log line embeds a peeked
     // response snippet as "[body: …]", and a repository object always carries
@@ -4863,7 +4950,13 @@ void MainWindow::rebuildLogFilterButtons()
 
     auto addChip = [this](const QString &label, const QString &category,
                           const QString &tip = QString()) {
-        auto *chip = new QPushButton(logFilterChipLabel(label, category));
+        // The same icon-over-caption tile the repo tabs and the activity rail
+        // use, with the count on its corner badge (adhoc #1633): the row used to
+        // be wide text pills that only a fraction of the taxonomy fit into, and
+        // the app already has one shape for "glyph, small word under it, how
+        // many". Tab form so the selected filter carries the checked underline.
+        auto *chip = new forkmesh::ui::VerticalIconButton(
+            label, forkmesh::ui::VerticalIconButton::Tab);
         chip->setObjectName("logFilterChip");
         // The same glyph the debug strip flies for this category (adhoc #1559),
         // so the two rows read as one legend instead of two vocabularies.
@@ -4873,13 +4966,11 @@ void MainWindow::rebuildLogFilterButtons()
             category.isEmpty()
                 ? QStringLiteral("list-unordered")
                 : forkmesh::ui::LogActivityLights::iconForBadge(category);
-        // Remembered so updateLogFilterChipCounts() can refresh just the number
+        // Remembered so updateLogFilterChipCounts() can refresh just the badge
         // on each chip instead of tearing the whole row down per log line.
-        chip->setProperty("logChipName", label);
         chip->setProperty("logChipCategory", category);
         chip->setCheckable(true);
         chip->setChecked(m_logFilter == category);
-        chip->setCursor(Qt::PointingHandCursor);
         chip->setToolTip(!tip.isEmpty() ? tip
                          : category.isEmpty()
                              ? QStringLiteral("Show every event")
@@ -4892,18 +4983,9 @@ void MainWindow::rebuildLogFilterButtons()
             !seen ? QStringLiteral("#6e7681")
                   : category.isEmpty() ? QStringLiteral("#8b949e")
                                        : accentForBadge(category);
-        const QColor accentColor(accent);
-        chip->setIcon(QIcon(tintedOcticonPixmap(glyph, accentColor, 14)));
-        chip->setIconSize(QSize(14, 14));
-        const QString checkedBg = QStringLiteral("rgba(%1, %2, %3, 0.18)")
-                                       .arg(accentColor.red())
-                                       .arg(accentColor.green())
-                                       .arg(accentColor.blue());
-        chip->setStyleSheet(QStringLiteral(
-                                 "QPushButton#logFilterChip { color: %1; border-color: %1; }"
-                                 "QPushButton#logFilterChip:checked "
-                                 "{ background-color: %2; color: %1; border-color: %1; }")
-                                 .arg(accent, checkedBg));
+        chip->setOcticonName(glyph);
+        chip->setAccentColor(QColor(accent));
+        chip->setBadgeCount(logFilterChipCount(category));
         m_logFilterGroup->addButton(chip);
         m_logFilterRow->addWidget(chip);
         connect(chip, &QPushButton::clicked, this, [this, category] {
@@ -4950,16 +5032,14 @@ void MainWindow::rebuildLogFilterButtons()
     m_logFilterRow->addStretch();
 }
 
-// How many buffered events a chip covers, appended to its name (adhoc #64) so
-// the row doubles as a tally of what the log actually contains. A count of zero
-// — the pinned STALL chip on a healthy session — shows the bare name rather
-// than a "0", which would read as a broken counter.
-QString MainWindow::logFilterChipLabel(const QString &name,
-                                       const QString &category) const
+// How many buffered events a chip covers (adhoc #64) so the row doubles as a
+// tally of what the log actually contains. Zero — the pinned STALL chip on a
+// healthy session — hides the badge rather than showing a "0", which would read
+// as a broken counter.
+int MainWindow::logFilterChipCount(const QString &category) const
 {
-    const int count = category.isEmpty() ? m_networkLog.size()
-                                         : m_logFilterCounts.value(category);
-    return count > 0 ? QStringLiteral("%1 %2").arg(name).arg(count) : name;
+    return category.isEmpty() ? m_networkLog.size()
+                              : m_logFilterCounts.value(category);
 }
 
 // Repaint the counts in place. logSystem() runs on every network event, so a
@@ -4971,11 +5051,16 @@ void MainWindow::updateLogFilterChipCounts()
         return;
     for (int i = 0; i < m_logFilterRow->count(); ++i) {
         QLayoutItem *item = m_logFilterRow->itemAt(i);
-        auto *chip = item ? qobject_cast<QPushButton *>(item->widget()) : nullptr;
+        // dynamic_cast, not qobject_cast: VerticalIconButton is a header-only
+        // widget with no Q_OBJECT, so qobject_cast would happily "succeed" on
+        // any QPushButton.
+        auto *chip = item ? dynamic_cast<forkmesh::ui::VerticalIconButton *>(
+                                item->widget())
+                          : nullptr;
         if (!chip)
             continue;
-        chip->setText(logFilterChipLabel(chip->property("logChipName").toString(),
-                                         chip->property("logChipCategory").toString()));
+        chip->setBadgeCount(
+            logFilterChipCount(chip->property("logChipCategory").toString()));
     }
 }
 
@@ -4986,8 +5071,18 @@ QStringList MainWindow::testLogFilterChipLabels() const
     if (!m_logFilterRow)
         return labels;
     for (int i = 0; i < m_logFilterRow->count(); ++i) {
-        if (auto *chip = qobject_cast<QPushButton *>(m_logFilterRow->itemAt(i)->widget()))
-            labels << chip->text();
+        auto *chip = dynamic_cast<forkmesh::ui::VerticalIconButton *>(
+            m_logFilterRow->itemAt(i)->widget());
+        if (!chip)
+            continue;
+        // The count moved off the caption and onto the tile's corner badge
+        // (adhoc #1633). Read both back so these assertions still describe the
+        // whole of what a chip shows.
+        labels << (chip->badgeCount() > 0
+                       ? QStringLiteral("%1 %2")
+                             .arg(chip->text())
+                             .arg(chip->badgeCount())
+                       : chip->text());
     }
     return labels;
 }
@@ -5292,6 +5387,28 @@ void MainWindow::logSystemFrom(const QString &text, const QString &sourcePath,
         alertOnLoggedError(plain);
 }
 
+// A toast is one blob of text; the Pings page has a Title column and a Detail
+// column beside it (adhoc #1629). Split the blob at its first line break — a
+// git failure's first line is its summary and the rest is the transcript — and,
+// failing that, at the last word before the title stops reading as a heading.
+static constexpr int kPingTitleChars = 90;
+
+static QPair<QString, QString> splitAlertForPing(const QString &text)
+{
+    const int newline = text.indexOf(QLatin1Char('\n'));
+    QString head = (newline >= 0 ? text.left(newline) : text).simplified();
+    QString rest = (newline >= 0 ? text.mid(newline + 1) : QString()).simplified();
+    if (head.size() > kPingTitleChars) {
+        const int space = head.lastIndexOf(QLatin1Char(' '), kPingTitleChars);
+        const int cut = space > kPingTitleChars / 2 ? space : kPingTitleChars;
+        const QString tail = head.mid(cut).simplified();
+        rest = rest.isEmpty() ? tail
+                              : tail + QLatin1Char(' ') + rest;
+        head = head.left(cut).trimmed() + QString::fromUtf8("\xE2\x80\xA6");
+    }
+    return {head, rest};
+}
+
 // Identical error text repeating inside this window alerts once. A retry loop
 // hammering the same failure should flash the window once, not once per
 // attempt; the log itself still records every occurrence.
@@ -5352,6 +5469,25 @@ void MainWindow::alertOnLoggedError(const QString &message)
             burst ? QStringLiteral("Errors are arriving faster than they can be "
                                    "shown. Open the Log for the full list.")
                   : message;
+        // This card bypasses flashMessage (the line is already in the log), so
+        // file its ping here — an error the operator was shown belongs on the
+        // Pings page like any other (adhoc #1629). Its cloud state is decided
+        // rather than computed: a logged failure is not reported from here, so
+        // it would otherwise sit at "Syncing…" waiting for a report that is
+        // never sent.
+        const QPair<QString, QString> split = splitAlertForPing(text);
+        AppNotification item;
+        item.title = split.first;
+        item.body = split.second;
+        item.warning = true;
+        item.kind = QStringLiteral("error");
+        item.quiet = true; // the card below is the toast for it
+        item.syncDecided = true;
+        item.sync = forkmesh::PingSync::LocalOnly;
+        item.syncReason =
+            QStringLiteral("a logged failure — the record is this page and the "
+                           "Log, not the cloud");
+        recordNotification(item);
         showTopMessage(text, true, QStringLiteral("fm:log:errors"), 0,
                        QStringLiteral("error"));
     }
@@ -5366,6 +5502,10 @@ void MainWindow::alertOnLoggedError(const QString &message)
 static constexpr int kToastSuccessSeconds = 5;
 static constexpr int kToastErrorSeconds = 20;
 static constexpr int kPromptBubbleSeconds = 8;
+// A finished agent is the result the user has been waiting on, and its summary
+// is a paragraph rather than a line — it holds the screen for as long as an
+// error does so there is time to read it and click through to the transcript.
+static constexpr int kAgentDoneToastSeconds = 20;
 
 // How long the bubble takes to glide off the right edge once its countdown
 // finishes. It stays fully opaque throughout — the exit is the motion, not a fade
@@ -5425,10 +5565,21 @@ QString topMessageKindLabel(const QString &kind)
         {QStringLiteral("pull"), QStringLiteral("Pull request")},
         {QStringLiteral("prompt"), QStringLiteral("Prompt")},
         {QStringLiteral("repo"), QStringLiteral("Repository")},
+        {kAgentDoneToastKind, QStringLiteral("Agent done")},
     };
     return labels.value(kind, kind.trimmed().isEmpty()
                                   ? QStringLiteral("System")
                                   : kind.simplified());
+}
+
+// How long a card holds the screen when the caller doesn't say. Shared by the
+// active toast and the queue so a celebration parked behind another card keeps
+// its longer reading window when its turn comes.
+static int topMessageSecondsFor(const QString &kind, bool error)
+{
+    if (kind == kAgentDoneToastKind)
+        return kAgentDoneToastSeconds;
+    return error ? kToastErrorSeconds : kToastSuccessSeconds;
 }
 
 void setTopMessageAction(QPushButton *button, int agentSessionId)
@@ -5460,8 +5611,7 @@ void MainWindow::queueTopMessage(const QString &text, bool error,
         return;
     const int entryDuration = durationSeconds > 0
                                   ? durationSeconds
-                                  : (error ? kToastErrorSeconds
-                                           : kToastSuccessSeconds);
+                                  : topMessageSecondsFor(kind, error);
     m_topMessageQueue.append(
         {m_nextTopMessageQueueId++, trimmed, error, clickHref, entryDuration,
          kind, actionRunId});
@@ -5626,6 +5776,80 @@ bool MainWindow::topMessageBusy() const
             m_topMessageSlidingOut || m_topMessageEntering);
 }
 
+// The session an "agent finished" card belongs to, read back from its own click
+// target. Carrying it in the href rather than in a member is what lets the card
+// survive the queue: a celebration parked behind another toast is replayed
+// through showTopMessage() with nothing but its text, kind and href, and this
+// recovers the agent from that alone.
+int MainWindow::topMessageAgentDoneSessionId() const
+{
+    if (m_topMessageKind != kAgentDoneToastKind)
+        return -1;
+    const QString prefix = QStringLiteral("fm:agent:");
+    if (!m_topMessageHref.startsWith(prefix))
+        return -1;
+    bool ok = false;
+    const int id = m_topMessageHref.mid(prefix.size()).toInt(&ok);
+    return ok ? id : -1;
+}
+
+// The headline over a finished run's summary: whose run it was, and the figures
+// worth knowing at a glance (issue, run time, spend). Composed here rather than
+// baked into the toast text so a card that waited in the queue still shows the
+// session's final numbers.
+QString MainWindow::agentDoneHeadlineHtml(int sessionId)
+{
+    const AgentSession *session = findAgentSession(sessionId);
+    const QString party = QString::fromUtf8("\xF0\x9F\x8E\x89");   // 🎉
+    const QString sparkle = QString::fromUtf8("\xE2\x9C\xA8");     // ✨
+    const QString dot = QString::fromUtf8(" \xC2\xB7 ");           // ·
+    QStringList facts;
+    if (session) {
+        if (session->issueNumber > 0)
+            facts << QStringLiteral("#%1").arg(session->issueNumber);
+        if (!session->name.isEmpty())
+            facts << session->name.toHtmlEscaped();
+        const qint64 ran = session->finishedAtMs > session->startedAtMs &&
+                                   session->startedAtMs > 0
+                               ? session->finishedAtMs - session->startedAtMs
+                               : session->durationMs;
+        if (ran > 0)
+            facts << formatDuration(ran);
+        if (session->costUsd > 0)
+            facts << QStringLiteral("$%1").arg(session->costUsd, 0, 'f', 2);
+    }
+    // The headline itself is the link to the transcript, so the summary below it
+    // stays plain, readable prose instead of a paragraph of underlined blue.
+    const QString heading =
+        QStringLiteral("%1 <a href='fm:agent:%2' "
+                       "style='color:#3fb950;text-decoration:none'>"
+                       "<b>Agent #%2 is done!</b></a> %3")
+            .arg(party)
+            .arg(sessionId)
+            .arg(sparkle);
+    if (facts.isEmpty())
+        return QStringLiteral("<span style='color:#3fb950'>%1</span>").arg(heading);
+    return QStringLiteral("<span style='color:#3fb950'>%1</span>"
+                          "<span style='color:#8b949e'>%2%3</span>")
+        .arg(heading, dot, facts.join(dot));
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+// Out of line because MainWindow.h only forward-declares QLabel.
+QString MainWindow::testTopMessageAgentHeadline() const
+{
+    if (!m_topMessageAgentRow || !m_topMessageAgentHeadline || !m_topMessageBody ||
+        !m_topMessageAgentRow->isVisibleTo(m_topMessageBody))
+        return QString();
+    return m_topMessageAgentHeadline->text();
+}
+
+bool MainWindow::testTopMessageAgentIconShown() const
+{
+    return m_topMessageAgentIcon && !m_topMessageAgentIcon->pixmap().isNull();
+}
+#endif
+
 // (Re)paint the prompt-anchored bubble from m_topMessageRaw. Every message is
 // shown whole — it wraps across the bubble's full width and the bubble grows to
 // fit, so no notification is ever cut off behind an ellipsis.
@@ -5637,6 +5861,25 @@ void MainWindow::renderTopMessage()
     const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
     const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
                                             : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    // A finished agent gets the celebration treatment: its own list icon and a
+    // headline naming the run, with the summary it signed off with underneath.
+    const int doneSessionId = topMessageAgentDoneSessionId();
+    if (m_topMessageAgentRow) {
+        const bool celebrating = doneSessionId > 0;
+        if (celebrating && m_topMessageAgentIcon && m_topMessageAgentHeadline) {
+            // The very glyph this session wears in the agents list, so the card
+            // is unmistakably that agent's rather than a generic green tick.
+            const AgentSession *session = findAgentSession(doneSessionId);
+            const QIcon icon =
+                session ? agentStatusOcticon(*session, kToastAgentIconPx)
+                        : themedOcticon(QStringLiteral("check-circle"),
+                                        QColor("#3fb950"), kToastAgentIconPx);
+            m_topMessageAgentIcon->setPixmap(
+                icon.pixmap(kToastAgentIconPx, kToastAgentIconPx));
+            m_topMessageAgentHeadline->setText(agentDoneHeadlineHtml(doneSessionId));
+        }
+        m_topMessageAgentRow->setVisible(celebrating);
+    }
     // When a click target is set, the message text itself becomes a link so e.g.
     // an "agent is waiting for you" bubble jumps straight to that agent.
     QString visiblePrompt = promptTextWithoutImages(m_topMessageRaw);
@@ -5646,7 +5889,10 @@ void MainWindow::renderTopMessage()
     QString body = (m_topMessageIsPromptBubble ? visiblePrompt : m_topMessageRaw)
                        .toHtmlEscaped();
     body.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
-    if (!m_topMessageHref.isEmpty())
+    // A celebration's link lives on its headline instead (see
+    // agentDoneHeadlineHtml) — the summary underneath is a paragraph of the
+    // agent's own prose and reads far better left unlinked.
+    if (!m_topMessageHref.isEmpty() && doneSessionId <= 0)
         body = QStringLiteral(
                    "<a href='%1' style='color:%2;text-decoration:underline'>%3</a>")
                    .arg(m_topMessageHref.toHtmlEscaped(), fg, body);
@@ -5660,6 +5906,15 @@ void MainWindow::renderTopMessage()
         updateTopMessagePromptLiveStatus(m_topMessagePromptStatus);
         m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2</span>")
                                    .arg(fg, body);
+    } else if (doneSessionId > 0) {
+        if (m_topMessagePromptHeader)
+            m_topMessagePromptHeader->hide();
+        if (m_topMessagePromptStatusLabel)
+            m_topMessagePromptStatusLabel->hide();
+        // No status glyph: the headline row above already carries the agent's
+        // icon, and the summary keeps the ordinary text colour so several lines
+        // of prose stay comfortable to read.
+        m_topMessageBaseHtml = body;
     } else {
         if (m_topMessagePromptHeader)
             m_topMessagePromptHeader->hide();
@@ -6078,6 +6333,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     // The notification and restart borders hug the window edges.
     if (m_errorBorderOverlay && m_errorBorderOverlay->isVisible())
         m_errorBorderOverlay->setGeometry(rect());
+    if (m_celebrationBorderOverlay && m_celebrationBorderOverlay->isVisible())
+        m_celebrationBorderOverlay->setGeometry(rect());
     if (m_restartCautionBorderOverlay &&
         m_restartCautionBorderOverlay->isVisible())
         m_restartCautionBorderOverlay->setGeometry(rect());
@@ -6098,6 +6355,26 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // The toast's caller, not this line: see the declaration.
     logSystem(text, sourceFile, sourceLine);
     m_topMessageOwnsLoggedError = false;
+    // Every toast is an alert this app raised, so every toast is filed on the
+    // Pings page — a card that slid off screen after five seconds used to be the
+    // whole record of it (adhoc #1629). m_pingToastId is set when this toast is
+    // the one a ping already filed asked for (recordNotification →
+    // flashNotification → here), so the same event is never filed twice.
+    qint64 pingId = m_pingToastId;
+    // An empty text is a dismissal (flashMessage("") clears the bubble), not an
+    // event: there is nothing to file.
+    if (pingId == 0 && !text.simplified().isEmpty()) {
+        const QPair<QString, QString> split = splitAlertForPing(text);
+        AppNotification item;
+        item.title = split.first;
+        item.body = split.second;
+        item.warning = error;
+        item.kind = kind.isEmpty() ? QStringLiteral("desktop") : kind;
+        item.runId = actionRunId;
+        // The toast is already on screen; filing it must not raise a second one.
+        item.quiet = true;
+        pingId = recordNotification(item);
+    }
     // An error toast is the whole record of the failure on this machine; report
     // it so it also becomes an operational record and a ping (adhoc #1538).
     // Here rather than in showTopMessage: a headless node has no toast widget at
@@ -6105,7 +6382,8 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // that paints its own cards through showTopMessage must not report a line
     // that was already reported from wherever it originally failed.
     if (error)
-        reportUserVisibleError(QStringLiteral("toast"), QString(), text);
+        reportUserVisibleError(QStringLiteral("toast"), QString(), text,
+                               QString(), pingId);
     showTopMessage(text, error, clickHref, durationSeconds, kind, actionRunId);
 }
 
@@ -6134,7 +6412,10 @@ void MainWindow::showTopMessage(const QString &text, bool error,
     // an ordinary toast is never left clickable from a previous message.
     m_topMessageHref = clickHref;
     m_topMessageKind = kind;
-    m_topMessageAgentSessionId = -1;
+    // An "agent finished" card names its session in that href, which is what
+    // turns the action row's button into "View agent" — including for a card
+    // replayed out of the queue, where the href is all that survives.
+    m_topMessageAgentSessionId = topMessageAgentDoneSessionId();
     m_topMessageActionRunId = actionRunId;
     m_topMessageError = error;
     m_topMessageIsPromptBubble = false;
@@ -6172,8 +6453,7 @@ void MainWindow::showTopMessage(const QString &text, bool error,
     // but otherwise behave exactly like a regular notification.
     m_topMessageSecondsLeft = durationSeconds > 0
                                   ? durationSeconds
-                                  : (error ? kToastErrorSeconds
-                                           : kToastSuccessSeconds);
+                                  : topMessageSecondsFor(kind, error);
     if (m_topMessageCopy)
         m_topMessageCopy->show();
     if (m_topMessageActionOutput) {
@@ -6182,7 +6462,7 @@ void MainWindow::showTopMessage(const QString &text, bool error,
         m_topMessageActionOutput->setVisible(canOpenOutput);
     }
     if (m_topMessageSendToPrompt) {
-        setTopMessageAction(m_topMessageSendToPrompt, -1);
+        setTopMessageAction(m_topMessageSendToPrompt, m_topMessageAgentSessionId);
         m_topMessageSendToPrompt->show();
     }
     if (m_topMessageClose)
@@ -6236,6 +6516,8 @@ void MainWindow::dismissTopMessage()
         m_topMessagePromptHeader->hide();
     if (m_topMessagePromptStatusLabel)
         m_topMessagePromptStatusLabel->hide();
+    if (m_topMessageAgentRow)
+        m_topMessageAgentRow->hide();
     renderTopMessagePromptImages();
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     m_topMessageKind.clear();

@@ -332,9 +332,9 @@ def test_web_and_world_surfaces_show_the_board_and_share_link():
     assert "/r/" in REFERRALS_JS
     assert '"/api/leaderboards"' in WORLD
     assert "copyReferralLink" in WORLD
-    assert 'title: "REFERRALS"' in SCENE
-    assert "leaderboardGridState.referralRows" in SCENE
-    assert 'board?.id === "referrals"' in SCENE
+    assert 'addLeaderboardCard("referrals"' in SCENE
+    assert "leaderboardCardState.referralRows" in SCENE
+    assert 'boardId === "referrals"' in SCENE
     assert "updateReferralLeaderboard" in SCENE
 
 

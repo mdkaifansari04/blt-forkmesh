@@ -5548,7 +5548,7 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     if (ahead == 0 && !isCurrent) {
         // `isCurrent` only reflects *this* checkout's HEAD. The branch can still be
         // checked out in a separate agent worktree (e.g. an issue session under
-        // /tmp/forkmesh-worktrees/...), and git flatly refuses to fetch into a ref
+        // <checkout>/.worktrees/...), and git flatly refuses to fetch into a ref
         // that's live in another worktree — surfacing a cryptic
         // "fatal: refusing to fetch into branch '...' checked out at '...'".
         // Explain what's actually happening instead of dumping the raw error, so

@@ -39,6 +39,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSemaphore>
 #include <QSet>
 #include <QThread>
@@ -171,6 +172,22 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("clicking the footer version reveals debug activity "
                              "and the enlarged four-resource chart"));
 
+        // The cloud log's Monitor toggle rides beside the Cloud button that
+        // opens the same tail (adhoc #1615). Ticked at startup (adhoc #1632),
+        // but the tail itself is deferred, so building the window must not have
+        // spawned one.
+        auto *cloudButton = window.findChild<QPushButton *>(
+            QStringLiteral("cloudflareWorkerLogsButton"));
+        auto *cloudMonitor = window.findChild<QCheckBox *>(
+            QStringLiteral("cloudLogMonitorCheck"));
+        check(cloudButton && cloudMonitor &&
+                  cloudMonitor->isVisibleTo(debugBar) &&
+                  cloudMonitor->isChecked() &&
+                  !window.testCloudLogMonitorRunning() &&
+                  cloudMonitor->toolTip().contains(QStringLiteral("alert")),
+              QStringLiteral("the debug bar's cloud log monitor is on by "
+                             "default, with its tail deferred past startup"));
+
         const quint64 gitCountBefore = lights->countFor(QStringLiteral("GIT"));
         lights->pulse(QStringLiteral("GIT"));
         lights->pulse(QStringLiteral("GIT"));
@@ -295,6 +312,24 @@ void checkFooterOverlayGeometry(MainWindow &window)
                         .isValid()),
               QStringLiteral("each status dot opens its own page: /status, the "
                              "API host, the flagship repository, the site"));
+
+        // adhoc #1616: the click is also "check this again, now". Every dot
+        // re-reads the relay's status payload, and a dot with a desktop-side
+        // check behind it — its own row, or the relay row that check merged
+        // into — re-measures it from this machine as well.
+        check(window.testWebsiteRecheckProbes(QStringLiteral("website")) ==
+                  QStringList{QStringLiteral("desktop_website")} &&
+                  window.testWebsiteRecheckProbes(
+                      QStringLiteral("desktop_website")) ==
+                      QStringList{QStringLiteral("desktop_website")} &&
+                  window.testWebsiteRecheckProbes(
+                      QStringLiteral("status_page")) ==
+                      QStringList{QStringLiteral("desktop_status_page")} &&
+                  window.testWebsiteRecheckProbes(QStringLiteral("api"))
+                      .isEmpty(),
+              QStringLiteral("clicking a dot re-runs the desktop-side check "
+                             "behind it, whether it has its own row or merged "
+                             "into the relay's"));
 
         // A host with no link of its own reports grey rather than a false
         // outage, so an offline test machine is allowed that verdict here.
@@ -517,6 +552,13 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   prompt->height() > dragged.height(),
               QStringLiteral("the corner grip resizes the floating prompt"));
 
+        // The text area itself has to absorb the extra height, not just leave
+        // blank space above the toolbar (adhoc #1625).
+        auto *promptText =
+            window.findChild<QPlainTextEdit *>(QStringLiteral("issueQuickAdd"));
+        check(promptText && promptText->height() > promptText->minimumHeight(),
+              QStringLiteral("resizing the prompt taller grows the text input itself"));
+
         promptDetach->click();
         QApplication::processEvents();
         auto *detachWindow =
@@ -534,6 +576,30 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("pressing detach again brings the prompt back "
                              "inside the app"));
 
+        // The panel is still floating/resized from the drag+grip gestures above
+        // (adhoc #1625): the explicit reset button is a discoverable alternative
+        // to the handle's double-click gesture and should snap it back the same
+        // way.
+        auto *promptReset =
+            window.findChild<QPushButton *>(QStringLiteral("promptResetButton"));
+        check(promptReset != nullptr,
+              QStringLiteral("the prompt has an explicit reset-placement button"));
+        if (promptReset) {
+            promptReset->click();
+            QApplication::processEvents();
+            check(prompt->parentWidget() == dock &&
+                      prompt->geometry().bottom() == dock->rect().bottom(),
+                  QStringLiteral("the reset button snaps the prompt back to the "
+                                 "footer anchor"));
+        }
+
+        // Re-float it once more so the handle's own double-click gesture (the
+        // longer-standing affordance) is still exercised too.
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-80, -100));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease, grabAt + QPoint(-80, -100));
+        QApplication::processEvents();
+
         QMouseEvent snapBack(QEvent::MouseButtonDblClick,
                              QPointF(promptHandle->width() / 2.0,
                                      promptHandle->height() / 2.0),
@@ -545,6 +611,46 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   prompt->geometry().bottom() == dock->rect().bottom(),
               QStringLiteral("double-clicking the handle snaps the prompt back "
                              "to the footer anchor"));
+
+        // Growing the main window should carry a floating composer along with
+        // the corner it's parked near, not leave it stranded at its old
+        // absolute position (adhoc #1625). Re-float it once more for this
+        // check, done last so it can't perturb the pixel-exact anchor checks
+        // above with any offscreen-platform resize rounding.
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-120, -160));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease, grabAt + QPoint(-120, -160));
+        QApplication::processEvents();
+        if (auto *overlayHost = prompt->parentWidget(); overlayHost != dock) {
+            const QSize originalWindowSize = window.size();
+            const int marginRightBefore =
+                overlayHost->width() - (prompt->x() + prompt->width());
+            const int marginBottomBefore =
+                overlayHost->height() - (prompt->y() + prompt->height());
+            window.resize(window.width() + 160, window.height() + 140);
+            QApplication::processEvents();
+            const int marginRightAfter =
+                overlayHost->width() - (prompt->x() + prompt->width());
+            const int marginBottomAfter =
+                overlayHost->height() - (prompt->y() + prompt->height());
+            check(marginRightAfter == marginRightBefore &&
+                      marginBottomAfter == marginBottomBefore,
+                  QString("growing the window keeps the floating prompt pinned "
+                          "to the same corner (right margin %1 -> %2, bottom "
+                          "margin %3 -> %4)")
+                      .arg(marginRightBefore)
+                      .arg(marginRightAfter)
+                      .arg(marginBottomBefore)
+                      .arg(marginBottomAfter));
+            // Restore the window to its prior size: later checks in this suite
+            // assume the standard test window dimensions.
+            window.resize(originalWindowSize);
+            QApplication::processEvents();
+        }
+        if (promptReset) {
+            promptReset->click();
+            QApplication::processEvents();
+        }
     }
 
     window.testSetLogOverlayExpanded(true);
@@ -626,6 +732,301 @@ void checkLoggedErrorAlert(MainWindow &window)
     window.testResetNetworkLog();
     window.testResetLoggedErrorAlerts();
     QApplication::processEvents();
+}
+
+// adhoc #1629: a card that slides off screen after five seconds used to be the
+// whole record of an alert. Every popup this app raises — toast, modal, OS
+// notification — is now filed on the Pings page, and each row says where it
+// stands with the cloud: an alert raised with nothing to reach the relay with
+// is "Offline" and never sent, while a routine confirmation is "Local only"
+// because it was never going anywhere. This window is signed out, which is
+// exactly the case the offline marking exists for.
+void checkFiledPingSyncState(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    window.testFlashMessage(
+        QStringLiteral("Mirror push rejected by the gateway"), true);
+    QApplication::processEvents();
+    check(window.testNotificationsTitled(
+              QStringLiteral("Mirror push rejected")) == 1,
+          QStringLiteral("an error toast is filed on the Pings page, not just "
+                         "shown for a few seconds"));
+    check(window.testPingStatusFor(QStringLiteral("Mirror push rejected"))
+                  == QStringLiteral("Offline"),
+          QStringLiteral("an alert this node could not report is marked offline, "
+                         "so the page is visibly its only record"));
+
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    window.testFlashMessage(QStringLiteral("Copied the clone address"), false);
+    QApplication::processEvents();
+    check(window.testPingStatusFor(QStringLiteral("Copied the clone address"))
+                  == QStringLiteral("Local only"),
+          QStringLiteral("a routine confirmation is filed as local-only, not as "
+                         "something that failed to sync"));
+
+    // The toast a filed ping raises for itself must not come back through the
+    // funnel as a second row.
+    const int before = window.testNotificationsTitled(
+        QStringLiteral("Ping funnel check"));
+    window.testAddNotification(QStringLiteral("Ping funnel check"),
+                               QStringLiteral("one event, one row"), false);
+    QApplication::processEvents();
+    check(window.testNotificationsTitled(QStringLiteral("Ping funnel check"))
+                  == before + 1,
+          QStringLiteral("a ping and the toast it raises are one row"));
+
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
+// adhoc #1630: a run finishing is the result the user has been waiting on, and
+// it used to land in silence. It now raises its own card — the agent's icon, a
+// headline naming the run, and the summary the agent signed off with — and
+// pulses the window green, once per run however many times completion fires.
+void checkAgentDoneCelebration(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    AgentSession finished;
+    finished.id = 133894;
+    finished.owner = QStringLiteral("me");
+    finished.name = QStringLiteral("forkmesh");
+    finished.issueNumber = 4242;
+    finished.provider = QStringLiteral("claude-code");
+    finished.prompt = QStringLiteral("Agent-done fixture");
+    finished.status = AgentStatus::Success;
+    finished.startedAtMs = 1'000'000;
+    finished.finishedAtMs = 1'125'000; // 2m 05s
+    finished.costUsd = 0.42;
+    window.testAddAgentSession(finished);
+
+    const QString summary =
+        QStringLiteral("Fixed the login redirect and added a regression test.");
+    window.testNotifyAgentDone(finished.id, summary);
+    QApplication::processEvents();
+
+    const QString headline = window.testTopMessageAgentHeadline();
+    check(window.testTopMessageRaw() == summary &&
+              headline.contains(QStringLiteral("Agent #133894 is done!")) &&
+              headline.contains(QStringLiteral("#4242")) &&
+              headline.contains(QStringLiteral("forkmesh")) &&
+              headline.contains(QStringLiteral("2m 05s")) &&
+              headline.contains(QStringLiteral("$0.42")) &&
+              window.testTopMessageAgentIconShown() &&
+              window.testCelebrationBorderVisible(),
+          QStringLiteral("a finished agent celebrates with its icon, the run's "
+                         "figures and the summary it signed off with"));
+
+    // Completion can be reached more than once for the same run (a re-fired
+    // signal, a requeue); the card must not pile up behind itself.
+    const int queuedAfterFirst = window.testTopMessageQueueDepth();
+    window.testNotifyAgentDone(finished.id, summary);
+    QApplication::processEvents();
+    check(window.testTopMessageQueueDepth() == queuedAfterFirst,
+          QStringLiteral("a completion reported twice celebrates once"));
+
+    window.testRemoveAgentSession(finished.id);
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    QApplication::processEvents();
+}
+
+// adhoc #1615: with the debug bar's Monitor box ticked, a Worker failure has to
+// reach the same red card as any other failure — and the healthy traffic around
+// it must not, or the app's own log would drown in Worker hits. Lines are fed in
+// as the tail's process would deliver them.
+void checkCloudLogMonitorAlert(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    window.testCloudLogMonitorLine(QStringLiteral(
+        "{\"outcome\":\"ok\",\"eventTimestamp\":1000,\"event\":{\"request\":{"
+        "\"method\":\"GET\",\"url\":\"https://forkmesh.com/api/status\","
+        "\"headers\":{\"user-agent\":\"Mozilla/5.0 (X11; Linux) Chrome/126\"}},"
+        "\"response\":{\"status\":200}}}"));
+    QApplication::processEvents();
+    check(!window.testErrorBorderVisible() &&
+              window.testNetworkLog().isEmpty() &&
+              window.testCloudLogMonitorEvents() == 1 &&
+              window.testCloudLogMonitorRecent().size() == 1 &&
+              window.testCloudLogMonitorRecent().constFirst().contains(
+                  QStringLiteral("UA Mozilla/5.0 (X11; Linux) Chrome/126")),
+          QStringLiteral("a healthy Worker hit is kept with its user agent and "
+                         "stays out of the app's own log"));
+
+    window.testCloudLogMonitorLine(QStringLiteral(
+        "{\"outcome\":\"exception\",\"eventTimestamp\":2000,\"event\":{"
+        "\"request\":{\"method\":\"POST\",\"url\":\"https://forkmesh.com/api/"
+        "sync\",\"headers\":{\"user-agent\":\"ForkMesh/0.6.3\"}}},"
+        "\"exceptions\":[{\"name\":\"TypeError\",\"message\":\"x is not a "
+        "function\"}]}"));
+    QApplication::processEvents();
+    check(window.testErrorBorderVisible() &&
+              window.testCloudLogMonitorErrors() == 1 &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("TypeError: x is not a function")) &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("UA ForkMesh/0.6.3")),
+          QStringLiteral("a Worker exception raises the same alert as any other "
+                         "error, naming the agent that hit it"));
+
+    // adhoc #1623: the real stream is not one event per line. Wrangler
+    // pretty-prints it, and a read boundary can fall mid-event — which is what
+    // dropped the whole expanded object into the viewer and left the Monitor box
+    // raising nothing. Fed here exactly as the process delivers it.
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+    const int errorsBefore = window.testCloudLogMonitorErrors();
+    const int eventsBefore = window.testCloudLogMonitorEvents();
+    window.testCloudLogMonitorChunk(QByteArray(
+        "{\n"
+        "    \"outcome\": \"exception\",\n"
+        "    \"eventTimestamp\": 3000,\n"
+        "    \"event\": {\n"
+        "        \"request\": {\n"
+        "            \"method\": \"GET\",\n"
+        "            \"url\": \"https://forkmesh.com/api/repos\",\n"
+        "            \"headers\": {\n"
+        "                \"user-agent\": \"curl/8.5.0\"\n"));
+    QApplication::processEvents();
+    check(window.testCloudLogMonitorEvents() == eventsBefore &&
+              window.testCloudLogMonitorErrors() == errorsBefore &&
+              !window.testErrorBorderVisible(),
+          QStringLiteral("half an event is not rendered or alerted on"));
+    window.testCloudLogMonitorChunk(QByteArray(
+        "            }\n"
+        "        }\n"
+        "    },\n"
+        "    \"logs\": [],\n"
+        "    \"exceptions\": [\n"
+        "        {\n"
+        "            \"name\": \"RangeError\",\n"
+        "            \"message\": \"stack overflow\"\n"
+        "        }\n"
+        "    ]\n"
+        "}\n"));
+    QApplication::processEvents();
+    check(window.testCloudLogMonitorEvents() == eventsBefore + 1 &&
+              window.testCloudLogMonitorErrors() == errorsBefore + 1 &&
+              window.testErrorBorderVisible() &&
+              window.testCloudLogMonitorRecent().constLast().contains(
+                  QStringLiteral("UA curl/8.5.0")) &&
+              !window.testCloudLogMonitorRecent().constLast().contains(
+                  QStringLiteral("\"outcome\"")) &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("RangeError: stack overflow")),
+          QStringLiteral("a pretty-printed Worker exception spanning two reads "
+                         "renders as one line and raises the alert"));
+
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
+// adhoc #1626: the cloud icon used to open a small modal box of text. The Worker
+// tail now reads like the app's own full log screen — its own window, an
+// activity chart of the errors over time above the stream, and a Pause control,
+// because a log that scrolls out from under the pointer cannot be read.
+void checkCloudflareLogWindow(MainWindow &window)
+{
+    window.testOpenCloudflareLogWindow();
+    QApplication::processEvents();
+
+    QWidget *viewer = window.testCloudflareLogWindow();
+    QWidget *chart =
+        viewer ? viewer->findChild<QWidget *>(
+                     QStringLiteral("cloudflareWorkerLogsChart"))
+               : nullptr;
+    auto *pane = viewer ? viewer->findChild<QPlainTextEdit *>(
+                              QStringLiteral("cloudflareWorkerLiveLogs"))
+                        : nullptr;
+    auto *pause = viewer ? viewer->findChild<QPushButton *>(
+                               QStringLiteral("cloudflareWorkerLogsPause"))
+                         : nullptr;
+    check(viewer && viewer->isWindow() && chart && pane && pause,
+          QStringLiteral("the Worker log viewer opens as a window of its own, "
+                         "with an activity chart and a pause control"));
+    if (!viewer || !pane || !pause)
+        return;
+
+    // Counts are read as deltas: the monitor checks above have already put a
+    // few events on the same timeline.
+    const int errorsBefore = window.testCloudflareLogTimelineCount();
+    window.testSetCloudflareLogErrorsOnly(false);
+    const int eventsBefore = window.testCloudflareLogTimelineCount();
+    window.testSetCloudflareLogErrorsOnly(true);
+
+    constexpr int kLines = 240;
+    for (int index = 0; index < kLines; ++index) {
+        window.testCloudflareLogLine(
+            QStringLiteral("GET https://forkmesh.com/api/status - %1 @ line %2")
+                .arg(index % 6 == 0 ? QStringLiteral("500 Exception Thrown")
+                                    : QStringLiteral("200 Ok"))
+                .arg(index),
+            index % 6 == 0);
+    }
+    QApplication::processEvents();
+    check(window.testCloudflareLogText().contains(QStringLiteral("line 239")) &&
+              window.testCloudflareLogAtBottom(),
+          QStringLiteral("the live stream renders into the pane and follows the "
+                         "tail while nobody has stopped it"));
+    check(window.testCloudflareLogTimelineCount() - errorsBefore == kLines / 6,
+          QStringLiteral("the chart plots the Worker's errors over time, not "
+                         "every request it served"));
+    window.testSetCloudflareLogErrorsOnly(false);
+    check(window.testCloudflareLogTimelineCount() - eventsBefore == kLines &&
+              window.testCloudflareLogTimelineSummary().contains(
+                  QStringLiteral("event")),
+          QStringLiteral("unticking Errors only charts every Worker event"));
+    window.testSetCloudflareLogErrorsOnly(true);
+
+    pause->click();
+    QApplication::processEvents();
+    const int held = pane->verticalScrollBar()->value();
+    for (int index = 0; index < 40; ++index) {
+        window.testCloudflareLogLine(
+            QStringLiteral("GET https://forkmesh.com/api/sync - 200 Ok @ held %1")
+                .arg(index),
+            false);
+    }
+    QApplication::processEvents();
+    check(window.testCloudflareLogPaused() &&
+              pane->verticalScrollBar()->value() == held &&
+              !window.testCloudflareLogAtBottom() &&
+              window.testCloudflareLogText().contains(
+                  QStringLiteral("held 39")) &&
+              window.testCloudflareLogStatusText().contains(
+                  QStringLiteral("paused")),
+          QStringLiteral("pausing stops the pane scrolling while the lines "
+                         "themselves keep arriving"));
+
+    pause->click();
+    QApplication::processEvents();
+    check(!window.testCloudflareLogPaused() &&
+              window.testCloudflareLogAtBottom() &&
+              !window.testCloudflareLogStatusText().contains(
+                  QStringLiteral("paused")),
+          QStringLiteral("resuming jumps back to the tail"));
+
+    viewer->close();
+    QApplication::processEvents();
+    check(!window.testCloudflareLogWindow(),
+          QStringLiteral("closing the viewer takes its window with it"));
 }
 
 // adhoc #1444: the alert stack has to hug its own content and read as one evenly
@@ -1415,6 +1816,9 @@ int main(int argc, char *argv[])
         window.show();
         QApplication::processEvents();
         checkLoggedErrorAlert(window);
+        checkFiledPingSyncState(window);
+        checkCloudLogMonitorAlert(window);
+        checkCloudflareLogWindow(window);
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
@@ -2295,7 +2699,76 @@ int main(int argc, char *argv[])
                   QLatin1String("perPr"),
           QStringLiteral("legacy Worker-held PR bounty preference migrates to a "
                          "disabled non-custodial placeholder"));
+
     window.show();
+    QApplication::processEvents();
+
+    // adhoc #1632: the footer's debug bar can open itself at launch. The box
+    // shows the account's default with nothing stored — off here, because this
+    // window is not an admin — and toggling it both records the choice and
+    // applies it to the window on the spot.
+    {
+        auto *startupCheck = window.findChild<QCheckBox *>(
+            QStringLiteral("debugBarStartupCheck"));
+        auto *strip = window.findChild<QWidget *>(QStringLiteral("debugBar"));
+        auto *versionToggle = window.findChild<QPushButton *>(
+            QStringLiteral("statusVersionButton"));
+        // The open bar widens the window's minimum, which a later laptop-width
+        // check measures — so put its state back exactly as it was found.
+        const bool barWasOpen = versionToggle && versionToggle->isChecked();
+        check(startupCheck && strip && versionToggle &&
+                  !startupCheck->isChecked() &&
+                  !QSettings().contains(
+                      QStringLiteral("ui/showDebugBarOnStartup")),
+              QStringLiteral("the debug-bar-at-startup box is off for a "
+                             "non-admin with no preference stored"));
+        if (startupCheck && strip && versionToggle) {
+            startupCheck->setChecked(true);
+            QApplication::processEvents();
+            const bool opened =
+                strip->isVisible() && versionToggle->isChecked() &&
+                QSettings()
+                    .value(QStringLiteral("ui/showDebugBarOnStartup"))
+                    .toBool();
+            startupCheck->setChecked(false);
+            QApplication::processEvents();
+            check(opened && !strip->isVisible() &&
+                      !QSettings()
+                           .value(QStringLiteral("ui/showDebugBarOnStartup"))
+                           .toBool(),
+                  QStringLiteral("toggling the startup box opens and closes "
+                                 "the debug bar and stores the choice"));
+            QSettings().remove(QStringLiteral("ui/showDebugBarOnStartup"));
+            versionToggle->setChecked(barWasOpen);
+            QApplication::processEvents();
+        }
+
+        // The cloud monitor runs by default now, so its off switch has to be
+        // reachable without opening the debug bar. Settings mirrors the bar's
+        // own Monitor box, and unticking either one is what gets remembered.
+        auto *monitorSetting = window.findChild<QCheckBox *>(
+            QStringLiteral("cloudLogMonitorSettingCheck"));
+        auto *barMonitor = window.findChild<QCheckBox *>(
+            QStringLiteral("cloudLogMonitorCheck"));
+        check(monitorSetting && barMonitor && monitorSetting->isChecked() &&
+                  barMonitor->isChecked(),
+              QStringLiteral("Settings mirrors the on-by-default cloud log "
+                             "monitor"));
+        if (monitorSetting && barMonitor) {
+            monitorSetting->setChecked(false);
+            QApplication::processEvents();
+            check(!barMonitor->isChecked() &&
+                      !window.testCloudLogMonitorRunning() &&
+                      !QSettings()
+                           .value(QStringLiteral("diagnostics/cloudLogMonitor"),
+                                  true)
+                           .toBool(),
+                  QStringLiteral("unticking the Settings copy switches the "
+                                 "debug bar's monitor off and remembers it"));
+            QSettings().remove(QStringLiteral("diagnostics/cloudLogMonitor"));
+        }
+    }
+
     QApplication::processEvents();
 
     // A rebuild/restart can continue in the background while the initiating
@@ -2328,6 +2801,10 @@ int main(int argc, char *argv[])
     runLogTimelineChecks(window);
 
     checkLoggedErrorAlert(window);
+    checkFiledPingSyncState(window);
+    checkAgentDoneCelebration(window);
+    checkCloudLogMonitorAlert(window);
+    checkCloudflareLogWindow(window);
 
     // adhoc #1389: notification actions are caption-height controls, not the
     // full-height buttons shown in the reference screenshot. The queued cards
@@ -3886,6 +4363,59 @@ int main(int argc, char *argv[])
               QStringLiteral("a session whose CLI keeps exiting without a turn "
                              "fails with a reason instead of requeuing forever"));
         window.testRemoveAgentSession(pastRun.id);
+    }
+    // Everything the composer parks for a session that has no process must still
+    // be there when one finally starts (adhoc #1618). Two things used to lose it.
+    // The park itself was a plain overwrite, so typing a second instruction while
+    // the first was still waiting simply erased it. And a launch that consumed
+    // the parked message and then died before starting a turn took the message
+    // with it: the automatic retry resumed with a bare "Continue where you left
+    // off." and whatever the user actually asked for was gone. Pressing add
+    // repeatedly — which is what a person does when nothing appears to happen —
+    // therefore delivered at most one of those prompts, and often none.
+    {
+        AgentSession parked;
+        parked.id = 133897;
+        parked.owner = QStringLiteral("me");
+        parked.name = QStringLiteral("r");
+        parked.provider = QStringLiteral("claude-code");
+        parked.prompt = QStringLiteral("Queued follow-up fixture");
+        parked.status = AgentStatus::Failed;
+        window.testAddAgentSession(parked);
+        window.testSeedResumeConversationId(
+            parked.id, QStringLiteral("22222222-3333-4444-5555-666666666666"),
+            /*codex=*/false);
+        window.testQueueAgentSteerMessage(parked.id,
+                                          QStringLiteral("Continue where you left off."));
+        window.testQueueAgentSteerMessage(parked.id,
+                                          QStringLiteral("Continue where you left off."));
+        window.testQueueAgentSteerMessage(parked.id,
+                                          QStringLiteral("also fix the migration"));
+        const QString parkedText = window.testPendingSteerMessage(parked.id);
+        const bool bothKept =
+            parkedText.contains(QStringLiteral("Continue where you left off.")) &&
+            parkedText.contains(QStringLiteral("also fix the migration")) &&
+            parkedText.count(QStringLiteral("Continue where you left off.")) == 1;
+        // The run starts, takes the message, and dies before starting a turn.
+        const QString handedToLaunch = window.testTakeSteerMessageForLaunch(parked.id);
+        const bool consumed = window.testPendingSteerMessage(parked.id).isEmpty();
+        const QString outcome =
+            window.testReplayCliExitsWithoutResult(parked.id, /*codex=*/false, 1);
+        const bool restored =
+            window.testPendingSteerMessage(parked.id) == handedToLaunch;
+        // A launch that gets as far as the CLI's announcement did deliver it, so
+        // it is not owed back — otherwise the next restart would repeat an
+        // instruction the agent has already been given.
+        window.testTakeSteerMessageForLaunch(parked.id);
+        window.testMarkAgentSessionRunning(parked.id);
+        window.testReplayCliExitsWithoutResult(parked.id, /*codex=*/false, 1);
+        const bool notRepeated = window.testPendingSteerMessage(parked.id).isEmpty();
+        check(bothKept && !handedToLaunch.isEmpty() && consumed &&
+                  outcome == QStringLiteral("q") && restored && notRepeated,
+              QStringLiteral("follow-up prompts accumulate while a session is "
+                             "down and survive a launch that dies before the "
+                             "agent reads them"));
+        window.testRemoveAgentSession(parked.id);
     }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
