@@ -30974,7 +30974,7 @@ class ForkMeshWorld extends HTMLElement {
             <label style="display:flex;align-items:flex-start;gap:9px;color:#a8cfc0;font-size:13px;line-height:1.45"><input name="consent" type="checkbox" required style="margin-top:3px">I consent to publishing this link, my ForkMesh account name, the estimate, and its potential-traffic range on this public kiosk.</label>
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span data-world-link-kiosk-status role="status" style="color:#8eb8aa;font-size:13px"></span><button type="submit" style="min-height:40px;border:1px solid #9ef7c6;border-radius:9px;background:#9ef7c6;color:#062017;padding:8px 16px;font-weight:900;cursor:pointer">Analyze and submit</button></div>
           </form>` :
-          '<p style="margin:0;padding:14px;border:1px solid #6c5928;border-radius:12px;background:#241d08;color:#f7d98a"><a href="/login" style="color:inherit;font-weight:900">Sign in</a> to submit a link. The public board remains readable.</p>'}
+          `<p style="margin:0;padding:14px;border:1px solid #6c5928;border-radius:12px;background:#241d08;color:#f7d98a"><a href="/login?next=${encodeURIComponent(location.pathname + location.search)}" style="color:inherit;font-weight:900">Sign in</a> to submit a link. The public board remains readable.</p>`}
         <section aria-labelledby="world-link-kiosk-board-title"><h3 id="world-link-kiosk-board-title" style="margin:0 0 10px">Recent public links</h3><div data-world-link-kiosk-links><p style="color:#8eb8aa">Loading links…</p></div></section>
       </div>`;
     document.body.append(dialog);
