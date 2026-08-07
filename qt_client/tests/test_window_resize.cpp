@@ -6164,6 +6164,64 @@ int main(int argc, char *argv[])
               QStringLiteral("agent transcript leaves web URLs intact"));
     }
 
+    // adhoc #1588: the "session started" divider names the provider login the
+    // run is signed in as. With several accounts in rotation — the usual reason
+    // being that the one which was running hit its usage limit — the transcript
+    // otherwise never says which of them is spending the tokens.
+    {
+        const QJsonObject init{
+            {QStringLiteral("type"), QStringLiteral("system")},
+            {QStringLiteral("subtype"), QStringLiteral("init")},
+            {QStringLiteral("model"), QStringLiteral("claude-opus-5")},
+            {QStringLiteral("cwd"), QStringLiteral("/tmp/forkmesh-worktrees/x")}};
+        const auto dividerOf = [](ClaudeTranscriptView &view) {
+            for (QLabel *label : view.findChildren<QLabel *>())
+                if (label->text().contains(QStringLiteral("session started")))
+                    return label->text();
+            return QString();
+        };
+
+        ClaudeTranscriptView named;
+        named.setSessionContext(QStringLiteral("agent/adhoc-1588"),
+                                QStringLiteral("Auto"), QStringLiteral("high"),
+                                QStringLiteral("work laptop"));
+        named.handleEvent(init);
+        QString line = dividerOf(named);
+        check(line.contains(QStringLiteral("account work laptop")),
+              QString("the session-started divider names the login the run is "
+                      "signed in as (got \"%1\")")
+                  .arg(line));
+        check(line.contains(QStringLiteral("high thinking")) &&
+                  line.contains(QStringLiteral("Auto")),
+              QString("the account joins the rest of the run context rather "
+                      "than replacing it (got \"%1\")")
+                  .arg(line));
+
+        // A login whose own name already says "account" isn't announced twice.
+        ClaudeTranscriptView labelled;
+        labelled.setSessionContext(QString(), QString(), QString(),
+                                   QStringLiteral("Default account"));
+        labelled.handleEvent(init);
+        line = dividerOf(labelled);
+        check(line.contains(QStringLiteral("Default account")) &&
+                  !line.contains(QStringLiteral("account Default account")),
+              QString("a login named \"…account\" is not prefixed with the "
+                      "word again (got \"%1\")")
+                  .arg(line));
+
+        // No account to name — an external session, or a provider that has no
+        // login of its own — leaves the divider exactly as it was.
+        ClaudeTranscriptView bare;
+        bare.setSessionContext(QStringLiteral("agent/adhoc-1588"),
+                               QStringLiteral("Auto"), QStringLiteral("high"));
+        bare.handleEvent(init);
+        line = dividerOf(bare);
+        check(!line.isEmpty() && !line.contains(QStringLiteral("account")),
+              QString("an unknown login adds nothing to the divider (got "
+                      "\"%1\")")
+                  .arg(line));
+    }
+
     // issue #195: a commit SHA mentioned in a commit message body becomes a
     // commit: link the detail view navigates to via showCommit, so clicking a
     // commit hash brings you to that commit. "#123" still resolves to issue/PR.

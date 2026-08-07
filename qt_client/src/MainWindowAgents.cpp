@@ -709,6 +709,19 @@ QStringList localProviderCredentialValues()
     return values;
 }
 
+// The name the user gave the provider login with this id, or empty when the id
+// names no configured account any more (a profile that has since been removed)
+// or when there is no id to look up at all.
+QString agentAccountLabelFor(const QString &provider, const QString &accountId)
+{
+    if (accountId.isEmpty())
+        return QString();
+    for (const AgentAccountProfile &profile : agentAccountProfiles(provider))
+        if (profile.id == accountId)
+            return profile.label.trimmed();
+    return QString();
+}
+
 QJsonObject localCliAvailability(const QString &provider)
 {
     const bool codex = agentIsCodexProvider(provider);
@@ -8044,10 +8057,11 @@ void MainWindow::showAgentSession(int sessionId)
     }
     // Feed the transcript's "session started" divider the run context the CLI
     // itself never reports — branch, permission mode, reasoning strength (adhoc
-    // #9). Set before any rebuild below so the divider renders with it; external
-    // sessions keep whatever their own init event says.
+    // #9) and the provider login it runs as (adhoc #1588). Set before any
+    // rebuild below so the divider renders with it; external sessions keep
+    // whatever their own init event says.
     if (m_agentTranscript) {
-        QString ctxMode, ctxStrength;
+        QString ctxMode, ctxStrength, ctxAccount;
         // Only the CLI providers run under a permission mode; the API ones have
         // no such notion (the same rule the detail meta table uses).
         if (!external && (session->provider == QLatin1String("claude-code") ||
@@ -8060,11 +8074,28 @@ void MainWindow::showAgentSession(int sessionId)
                                          ? kClaudeAutoModeLabel
                                          : kAgentAskModeLabel)
                               .toString();
+            // Accounts are a CLI notion too: each is its own config root, and
+            // the login that is signed in there is what the run spends. A live
+            // run knows the account it launched under; a stored one is read off
+            // the conversation its transcript carries (showAgentSession runs
+            // again once those events finish loading, so an unloaded transcript
+            // is not stuck with the fallback). Nothing to read means the
+            // session resumes as the selected account — the same rule
+            // AgentResumeIdentity.h applies to an unstamped conversation.
+            QString accountId = m_streamAccountId.value(sessionId);
+            if (accountId.isEmpty())
+                accountId = forkmesh::agents::resumeConversationAccountId(
+                    m_streamEvents.value(sessionId),
+                    agentIsCodexProvider(session->provider));
+            ctxAccount = agentAccountLabelFor(session->provider, accountId);
+            if (ctxAccount.isEmpty())
+                ctxAccount = activeAgentAccount(session->provider).label.trimmed();
         }
         if (!external)
             ctxStrength = session->strength.isEmpty() ? composerAgentStrength()
                                                       : session->strength;
-        m_agentTranscript->setSessionContext(session->branchName, ctxMode, ctxStrength);
+        m_agentTranscript->setSessionContext(session->branchName, ctxMode,
+                                             ctxStrength, ctxAccount);
         // Render a Codex run in Codex's own idiom ("Ran …", "Explored", exit=)
         // rather than Claude Code's tool cards (adhoc #34). Set before the
         // rebuild below so the rows are built in the right dialect.
@@ -10316,15 +10347,10 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         const QString ownerId =
             forkmesh::agents::resumeConversationAccountId(events, codex);
         if (!ownerId.isEmpty() && ownerId != runAccount.id) {
-            handoffAccount = QStringLiteral("another account");
-            for (const AgentAccountProfile &profile :
-                 agentAccountProfiles(session.provider)) {
-                if (profile.id != ownerId)
-                    continue;
-                if (!profile.label.trimmed().isEmpty())
-                    handoffAccount = profile.label.trimmed();
-                break;
-            }
+            const QString label =
+                agentAccountLabelFor(session.provider, ownerId);
+            handoffAccount =
+                label.isEmpty() ? QStringLiteral("another account") : label;
         }
     }
     // Second: continuing under the *other* CLI (the composer's agent dropdown
