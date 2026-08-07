@@ -25,6 +25,7 @@
 #include "RepoSecurity.h"
 #include "RepoContributionSnapshot.h"
 #include "MirrorCrypto.h"
+#include "MirrorGatewayHealth.h"
 #include "GuiPump.h"
 
 namespace forkmesh::ui { class LogActivityLights; }
@@ -9306,6 +9307,11 @@ private:
     // Remember it instead of dropping it: once every gateway attempt finishes,
     // push the newest served snapshot again so moving refs converge exactly.
     QSet<QString> m_sshMirrorPushPending;
+    // Per-gateway host reachability for that fan-out. A gateway that stops
+    // answering (a retired node, a dead route) rotates out of the automatic
+    // pass for a growing cooldown instead of costing a connect timeout and a
+    // red log line every five seconds; see MirrorGatewayHealth.h.
+    MirrorGatewayHealth m_sshMirrorHealth;
     // "owner/name" of repos whose @mention scan is running on a worker thread, so
     // a second sync/inbox drain doesn't kick a duplicate scan (and double-notify)
     // while the first is still loading issues/PRs off the UI thread.
