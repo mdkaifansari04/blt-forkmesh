@@ -441,6 +441,7 @@ verify_public_assets() {
     local world_checks=(
         "/world/world.js|public/world/world.js"
         "/world/world-data.js|public/world/world-data.js"
+        "/world/world-avatar-face.js|public/world/world-avatar-face.js"
         "/world/world-scene.js|public/world/world-scene.js"
         "/world/world-mirror-nodes.js|public/world/world-mirror-nodes.js"
         "/world/world-mastodon.js|public/world/world-mastodon.js"
