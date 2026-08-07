@@ -506,6 +506,10 @@ constexpr int kToastStackGap = 6;
 // inside that gap and no frame of the motion can cover the composer.
 constexpr int kToastEntryRise = 14;
 constexpr int kToastEntryMs = 180;
+// The agent glyph on an "agent finished" card's headline row (adhoc #1630).
+// Larger than the 16px list icon: this card is the celebration, and the icon is
+// what identifies whose run just landed.
+constexpr int kToastAgentIconPx = 20;
 // How long the whole column takes to glide to its new anchor when a card
 // arrives or leaves. Short enough to feel immediate, long enough to read as
 // the stack sliding up rather than jumping.
@@ -3194,6 +3198,10 @@ const QString kInAppNotificationDurationSetting =
 // Every ERROR-badged log line flashes the window border and shows itself as a
 // card. On by default: a failure nobody sees is the thing this exists to stop.
 const QString kErrorLogAlertSetting = QStringLiteral("notifications/errorLogFlash");
+// The "System alert" ping (kind operational_alert: a mesh system going down or
+// recovering, per webPingKindLabel). On by default like kErrorLogAlertSetting —
+// this only gates the toast/border flash, the Pings page logs it regardless.
+const QString kSystemAlertSetting = QStringLiteral("notifications/systemAlert");
 const QString kEmailNotifyMentionSetting = QStringLiteral("notifications/email/mention");
 const QString kEmailNotifySubscribedSetting = QStringLiteral("notifications/email/subscribed");
 const QString kEmailNotifyPullSubmittedSetting = QStringLiteral("notifications/email/pullSubmitted");
@@ -3824,6 +3832,11 @@ const QString kAccountAlertDeleteProof =
 // in entry.py.
 const QString kAccountAlertClearProof =
     QStringLiteral("forkmesh-account-alert-clear-v1");
+// The ping inbox is read once per run and thereafter only when the relay
+// pushes a "pings" event frame. A write path can raise several pings in one
+// go (a mention plus a thread subscription), so coalesce the resulting burst
+// of pushes into one read rather than one read per frame.
+constexpr qint64 kWebAlertPushFloorMs = 5000;
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
@@ -3857,6 +3870,23 @@ constexpr int kFooterLogSeedLines = 300;
 constexpr int kDebugLogTailLines = 5;
 
 const QString kCodexProvider = QStringLiteral("codex");
+
+// Toast `kind` carried by the celebration a finished agent raises (adhoc
+// #1630). It rides the ordinary notification path — so the card queues, logs
+// and badges like any other — and renderTopMessage() keys the headline row,
+// the agent's icon and the brighter styling off exactly this value. The click
+// target is "fm:agent:<id>", which is also where the renderer reads the
+// session back from once a queued card reaches the front.
+const QString kAgentDoneToastKind = QStringLiteral("agent-done");
+// How much of the agent's closing summary that card shows. Enough for a real
+// conclusion (a few sentences), short of pasting an entire final message into
+// the corner of the window — the whole thing is a click away in the transcript.
+constexpr int kAgentDoneSummaryChars = 400;
+// Gates the native OS notification (tray/notify-send) notifyAgentDone() raises
+// when the window is inactive. On by default, matching the always-on behavior
+// this had before the toggle existed; the in-app celebration card above is
+// unaffected and always shows.
+const QString kAgentDoneAlertSetting = QStringLiteral("notifications/agentDone");
 
 // Provider family helpers. The Anthropic-backed "Claude API" script (plus the
 // legacy "claude"/"claude-code" values) shares usage windows, spend tracking and
@@ -12000,8 +12030,8 @@ inline bool worktreeTrackedClean(const QString &workTree)
 }
 
 // Drop any other worktree currently holding `branch` checked out so this working
-// tree can switch to it. Agent sessions run in a temp worktree under
-// /tmp/forkmesh-worktrees/…; one left behind (an app restart skips its cleanup)
+// tree can switch to it. Agent sessions run in their own worktree under
+// <checkout>/.worktrees/…; one left behind (an app restart skips its cleanup)
 // keeps the branch reserved, so `git checkout <branch>` here fails with "is
 // already used by worktree at …". Removing the worktree frees the branch while
 // keeping its ref intact. Returns true if it released something so the caller

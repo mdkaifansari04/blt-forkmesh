@@ -83,7 +83,7 @@ def test_disabling_an_element_removes_it_from_scene_raycast_and_frame_work():
         'if (worldElementEnabled("agent-npcs")) updateAgentBots(delta, time);',
         'if (worldElementEnabled("animations")) {',
         'if (worldElementEnabled("weather")) {',
-        'if (worldElementEnabled("sky")) worldSky.tick(Date.now(), camera.position);',
+        'if (worldElementEnabled("sky")) {\n      worldSky.tick(',
         'if (worldElementEnabled("node-cabinets")) {',
         'if (worldElementEnabled("directory-bots")) {',
         'if (worldElementEnabled("repository-portals")) {',

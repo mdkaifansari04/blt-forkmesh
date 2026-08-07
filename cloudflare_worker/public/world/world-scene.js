@@ -84,6 +84,54 @@ const REPOSITORY_CONNECTION_MAX_X = 103;
 const LEADERBOARD_ISLAND_CENTER_X = -130;
 const LEADERBOARD_CONNECTION_MIN_X = -103;
 const LEADERBOARD_CONNECTION_MAX_X = -78;
+// The island's boards used to share one 43-unit perimeter, which mixed public
+// rankings, social feeds, and operational boards into a single ring nobody
+// could read as a group. Each family now stands on a smaller circle of its
+// own, and the district apron grew to carry all three.
+const LEADERBOARD_DISTRICT_GROUND_RADIUS = 56;
+const BILLBOARD_CIRCLE_SPECS = Object.freeze({
+  // Nearest the causeway: the boards that are neither a ranking nor a feed.
+  hub: Object.freeze({
+    id: "hub",
+    label: "World boards circle",
+    x: 28,
+    z: 0,
+    minRing: 13,
+    groundMargin: 5,
+    // Three discs cut from one apron colour read as a single plaza from the
+    // air, so each circle carries its own tint and an accent rim.
+    color: "#8f96a8",
+    accent: "#77d9ff",
+  }),
+  social: Object.freeze({
+    id: "social",
+    label: "Social circle",
+    x: -14,
+    z: -28,
+    minRing: 11,
+    groundMargin: 5,
+    color: "#9a8ba6",
+    accent: "#b39bf0",
+  }),
+  leaderboards: Object.freeze({
+    id: "leaderboards",
+    label: "Leaderboard circle",
+    x: -14,
+    z: 28,
+    minRing: 11,
+    groundMargin: 5,
+    color: "#86a094",
+    accent: "#9ef7c6",
+  }),
+});
+// Width of the accent band drawn around each circle's rim.
+const BILLBOARD_CIRCLE_RIM_WIDTH = 0.7;
+// Boards sit on their circle's apron, which is itself lifted clear of the
+// district ground so the two concrete discs cannot z-fight.
+const BILLBOARD_CIRCLE_GROUND_Y = 0.05;
+const BILLBOARD_CIRCLE_SURFACE_Y = BILLBOARD_CIRCLE_GROUND_Y + 0.07;
+// Tangential clearance between neighbouring boards on a circle.
+const BILLBOARD_CIRCLE_GAP = 3;
 const MEMBER_ISLAND_CENTER_Z = 130;
 // Carry the south promenade beneath the Members Circle instead of stopping at
 // its edge. The slightly raised dirt disk hides the final stretch, so visitors
@@ -2548,6 +2596,17 @@ const WORLD_LEADERBOARD_BOARD_STUBS = Object.freeze([
   },
 ]);
 
+// /api/leaderboards also ships "activity", "referrals", and "referring-sites".
+// Those three cards are painted by their own richer textures — live world
+// activity, the viewer's own referral link, redacted referrer URLs — so the
+// shared statistic painter must leave them alone or the two repaints fight
+// over the same face on every snapshot.
+const LEADERBOARD_CARDS_WITH_OWN_PAINTER = new Set([
+  "active-members",
+  "referrals",
+  "http-referrers",
+]);
+
 function leaderboardStatCompactNumber(value) {
   return Math.max(0, Number(value) || 0).toLocaleString("en-US");
 }
@@ -2591,209 +2650,6 @@ function leaderboardStatValue(board = {}, row = {}) {
     return `${sol.toFixed(sol >= 1 ? 2 : 4)} SOL`;
   }
   return String(row.value ?? "—").slice(0, 18).toUpperCase();
-}
-
-function leaderboardRowIsSpecial(board = {}, row = {}, index = -1) {
-  const role = String(row?.role || row?.permission || "").toLowerCase();
-  const status = String(
-    row?.status || row?.health || row?.state || "",
-  ).toLowerCase();
-  const boardId = String(board?.id || "").toLowerCase();
-  return (
-    row?.special === true ||
-    row?.featured === true ||
-    row?.verified === true ||
-    row?.isAdmin === true ||
-    row?.is_admin === true ||
-    ["owner", "admin", "maintainer"].includes(role) ||
-    ((boardId.includes("node") || boardId === "uptime") &&
-      ["online", "live", "healthy", "serving"].includes(status)) ||
-    index === 0
-  );
-}
-
-function leaderboardGridBoardDescriptors(state = {}) {
-  const boardById =
-    state.boards instanceof Map ? state.boards : new Map();
-  const active = rankedActiveLeaderboardMembers(state.members).slice(0, 5);
-  const referrals = rankedReferralRows(state.referralRows).slice(0, 5);
-  const referrers = rankedSiteReferrerRows(state.siteRows).slice(0, 5);
-  const descriptors = [
-    {
-      id: "active-members",
-      title: "ACTIVE MEMBERS",
-      subtitle: "TOTAL ACTIVE TIME",
-      accent: "#77d9ff",
-      entries: active.map((member) => ({
-        name: String(member.name || "member"),
-        value: activeDurationLabel(member.totalActiveMs ?? member.activeMs),
-        source: member,
-      })),
-    },
-    {
-      id: "referrals",
-      title: "REFERRALS",
-      subtitle: "SIGNUPS · CLICKS",
-      accent: "#9ef7c6",
-      entries: referrals.map((row) => ({
-        name: String(row.name || "member"),
-        value: `${Number(row.signups) || 0} JOIN · ${Number(row.clicks) || 0} CLICK`,
-        source: row,
-      })),
-    },
-    {
-      id: "http-referrers",
-      title: "HTTP REFERRERS",
-      subtitle: "OBSERVED VISITS",
-      accent: "#77d9ff",
-      entries: referrers.map((row) => ({
-        name: String(row.host || "site"),
-        value: `${Number(row.visits) || 0} VISITS`,
-        source: row,
-      })),
-    },
-  ];
-  const seen = new Set(descriptors.map((board) => board.id));
-  [
-    ...WORLD_LEADERBOARD_BOARD_STUBS,
-    ...boardById.values(),
-  ].forEach((fallback) => {
-    const id = String(fallback?.id || "").trim();
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    const board = boardById.get(id) || fallback;
-    descriptors.push({
-      id,
-      title: String(board.title || id).toUpperCase(),
-      subtitle: String(board.subtitle || "LIVE PUBLIC RANKINGS").toUpperCase(),
-      accent:
-        id.includes("funds") || id.includes("wallet") || id === "largest"
-          ? "#f7c96b"
-          : "#9ef7c6",
-      entries: (Array.isArray(board.rows) ? board.rows : [])
-        .slice(0, 5)
-        .map((row) => ({
-          name: String(row?.name || row?.host || "participant"),
-          value: leaderboardStatValue(board, row),
-          source: row,
-        })),
-      source: board,
-    });
-  });
-  return descriptors.slice(0, 25);
-}
-
-function leaderboardGridTexture(THREE, state = {}) {
-  const boards = leaderboardGridBoardDescriptors(state);
-  return canvasTexture(THREE, 2048, 2048, (context) => {
-    const width = 2048;
-    const height = 2048;
-    context.clearRect(0, 0, width, height);
-    roundedRect(context, 7, 7, width - 14, height - 14, 28);
-    context.fillStyle = "rgba(6,17,14,0.98)";
-    context.fill();
-    context.strokeStyle = "#9ef7c6";
-    context.lineWidth = 10;
-    context.stroke();
-    context.textBaseline = "middle";
-    context.fillStyle = "#f1fff6";
-    context.font = '800 62px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText("FORKMESH LEADERBOARDS", 48, 62);
-    context.fillStyle = "#77d9ff";
-    context.font = '600 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      "5 × 5 LIVE GRID · EACH CATEGORY LISTS MEMBERS OR NODES VERTICALLY",
-      50,
-      116,
-    );
-    context.fillStyle = "#f7c96b";
-    context.textAlign = "right";
-    context.fillText("★ SPECIAL USER / LIVE NODE", width - 48, 116);
-    context.textAlign = "left";
-    const gridLeft = 38;
-    const gridTop = 154;
-    const gridWidth = width - gridLeft * 2;
-    const gridHeight = height - gridTop - 38;
-    const cellWidth = gridWidth / 5;
-    const cellHeight = gridHeight / 5;
-    for (let index = 0; index < 25; index += 1) {
-      const column = index % 5;
-      const row = Math.floor(index / 5);
-      const x = gridLeft + column * cellWidth;
-      const y = gridTop + row * cellHeight;
-      const board = boards[index];
-      context.fillStyle =
-        (column + row) % 2 === 0
-          ? "rgba(21,58,48,0.45)"
-          : "rgba(10,31,26,0.72)";
-      context.fillRect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
-      context.strokeStyle = board?.accent || "rgba(99,125,113,0.45)";
-      context.lineWidth = board ? 4 : 2;
-      context.strokeRect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
-      if (!board) {
-        context.fillStyle = "#60756b";
-        context.font = '650 20px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText("OPEN CATEGORY", x + 22, y + 38);
-        continue;
-      }
-      context.fillStyle = board.accent;
-      context.fillRect(x + 4, y + 4, 8, cellHeight - 8);
-      context.fillStyle = "#f1fff6";
-      context.font = '800 24px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(
-        String(board.title).slice(0, 25),
-        x + 24,
-        y + 34,
-        cellWidth - 44,
-      );
-      context.fillStyle = board.accent;
-      context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(
-        String(board.subtitle).slice(0, 34),
-        x + 24,
-        y + 66,
-        cellWidth - 44,
-      );
-      const entries = board.entries.length
-        ? board.entries
-        : [{ name: "waiting for public data", value: "—", source: {} }];
-      entries.slice(0, 5).forEach((entry, entryIndex) => {
-        const entryY = y + 106 + entryIndex * 47;
-        const special = leaderboardRowIsSpecial(
-          board.source || board,
-          entry.source,
-          entryIndex,
-        );
-        if (special) {
-          context.fillStyle = "rgba(247,201,107,0.13)";
-          context.fillRect(
-            x + 18,
-            entryY - 20,
-            cellWidth - 38,
-            40,
-          );
-        }
-        context.fillStyle = special ? "#f7c96b" : "#d9ffea";
-        context.font = '750 17px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(
-          `${special ? "★" : entryIndex + 1 + "."} ${String(entry.name).slice(0, 16)}`,
-          x + 24,
-          entryY,
-          cellWidth * 0.55,
-        );
-        context.fillStyle = special ? "#ffe29b" : "#86a99c";
-        context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
-        context.textAlign = "right";
-        context.fillText(
-          String(entry.value || "—").toUpperCase().slice(0, 18),
-          x + cellWidth - 20,
-          entryY,
-          cellWidth * 0.4,
-        );
-        context.textAlign = "left";
-      });
-    }
-  });
 }
 
 function leaderboardStatTexture(THREE, board = {}) {
@@ -3475,7 +3331,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:admin-record-detail", task: "Admin database record detail pages", detail: "Every visible database row opens a read-only page that lists the complete redacted record vertically, with a clear route back to its table.", estimate: "implemented · focused QA", done: true },
   { key: "task:member-verification-admin-link", task: "Member verification + admin detail", detail: "Member panels show a red X for every non-guest account without a verified email, and the privileged admin-detail action opens safely in a new tab.", estimate: "implemented · focused QA", done: true },
   { key: "task:engineering-debug-panel", task: "Engineering live debug control panel", detail: "A full in-room panel samples FPS, longest frame, draw calls, triangles, geometries, textures, GPU programs, animation callbacks, interactive targets, members, heap, and pixel ratio with green, orange, or red optimization states.", estimate: "implemented · focused QA", done: true },
-  { key: "task:leaderboard-grid", task: "One raised square 5×5 leaderboard", detail: "Every public leaderboard and statistic occupies its own cell in one square wall; the center marker and separate physical boards are gone, and every footing, post, frame, face, and label clears the terrain.", estimate: "verified · ready for QA", done: true },
+  { key: "task:billboard-circles", task: "Three billboard circles + leaderboard cards", detail: "The island's single perimeter is split into a social circle, a leaderboard circle, and a world-boards circle. Every public ranking is a physical card again instead of one 5×5 wall, and nothing on any circle is fetched until a visitor walks onto it — the ring above a board spins only while that approach's request is open.", estimate: "implemented · focused QA", done: true },
   { key: "task:reward-node-download", task: "Front SOL sign + start-node action", detail: "The treasury QR now sits at the front midpoint of the first node ring, with a small Start a node control that opens the desktop download page in a new window.", estimate: "verified · ready for QA", done: true },
   { key: "task:world-member-path", task: "One path to the Members Circle", detail: "The overlapping south path and member promenade are one concrete-brick route that runs beneath the dirt; the entrance sign is gone and the START HERE map faces inward from the far side.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-office-path", task: "One path to the Office", detail: "The north town route, elevated bridge, and Office approach now meet edge-to-edge at one width; the stacked land promenade and doubled slabs are removed.", estimate: "implemented · focused QA", done: true },
@@ -3513,7 +3369,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:world-roof-and-seating", task: "Parachute roof jump and universal seating", detail: "Space exits the roof with checkout; a mini parachute deploys on descent, caps fall speed, and collapses after landing, while every marked chair and park bench accepts a sitter.", estimate: "verified · ready for QA", done: true },
   { key: "task:world-beach-road", task: "Driveable road and beach", detail: "A connected road, usable car, local horizon, water, sand, and beach seating now extend the city.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-bike-perimeter", task: "Clear perimeter bike route", detail: "The continuous bike loop now runs outside activity areas and retains two usable bicycles.", estimate: "ready for deploy · in QA", done: true },
-  { key: "task:world-panel-layout", task: "Aligned boards and leaderboard", detail: "Public billboards now form one clean circle with the obsolete center marker removed.", estimate: "ready for deploy · in QA", done: true },
+  { key: "task:world-panel-layout", task: "Aligned boards and leaderboard", detail: "Public billboards form clean circles with the obsolete center marker removed.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-github-theme", task: "GitHub interface design system", detail: "World overlays now share GitHub-dark surfaces, borders, spacing, controls, and focus treatment.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-time-stars-textures", task: "Daylight, stars, time, textures", detail: "Local daylight, chest time, organization stars, and preloaded optimized textures now render together.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-node-delete-regression", task: "Reliable node delete and effect", detail: "Visible machine and node aliases resolve to one canonical deletion target with a cabinet removal effect.", estimate: "ready for deploy · in QA", done: true },
@@ -16243,7 +16099,12 @@ export function createWorldScene({
   onQaBoardNearby = () => {},
   onQaBoardAway = () => {},
   onLobbyLinkKioskNearby = () => {},
-  onLeaderboardWallNearby = () => {},
+  onLeaderboardCircleNearby = () => {},
+  onLeaderboardCircleAway = () => {},
+  onSocialCircleNearby = () => {},
+  onSocialCircleAway = () => {},
+  onWorldBoardsCircleNearby = () => {},
+  onWorldBoardsCircleAway = () => {},
   onBuildVideoSelect = () => {},
   onBuildBoardReorder = () => {},
   onBuildIssueAssign = () => {},
@@ -18226,7 +18087,11 @@ export function createWorldScene({
   leaderboardInterior.name = "forkmesh-leaderboard-interior";
   leaderboardInterior.userData.leaderboardInterior = true;
   leaderboardInterior.add(
-    createDistrictGroundCircle(THREE, "leaderboards"),
+    createDistrictGroundCircle(
+      THREE,
+      "leaderboards",
+      LEADERBOARD_DISTRICT_GROUND_RADIUS,
+    ),
   );
   leaderboardDistrict.add(leaderboardInterior);
   leaderboardDistrict.userData.leaderboardInterior = leaderboardInterior;
@@ -18264,40 +18129,168 @@ export function createWorldScene({
     "leaderboard-district", "Leaderboard district", "Districts",
     leaderboardDistrict,
   );
-  const billboardIslandObjects = [];
+  const billboardCircles = new Map();
   const billboardIslandBounds = new THREE.Box3();
-  const relayoutBillboardCircle = () => {
-    const count = billboardIslandObjects.length;
-    billboardIslandObjects.forEach(({ object }, index) => {
-      const angle =
-        -Math.PI / 2 + (index / Math.max(1, count)) * Math.PI * 2;
-      const radius = 43;
+  const billboardCircleOrigin = new THREE.Vector3();
+  // A board only fetches once somebody walks up to its circle, so each one
+  // carries the ring that says a refresh is in flight. They are keyed by feed
+  // because several boards (the three social banners) share one request.
+  const billboardFeedRecords = new Map();
+  const billboardSpinners = [];
+  function billboardCircle(id) {
+    const spec =
+      BILLBOARD_CIRCLE_SPECS[id] || BILLBOARD_CIRCLE_SPECS.hub;
+    let circle = billboardCircles.get(spec.id);
+    if (circle) return circle;
+    const group = new THREE.Group();
+    group.name = `forkmesh-${spec.id}-billboard-circle`;
+    group.position.set(spec.x, 0, spec.z);
+    const groundMaterial = districtGroundMaterial(THREE, "leaderboards");
+    groundMaterial.color = new THREE.Color(spec.color);
+    const ground = new THREE.Mesh(
+      new THREE.CircleGeometry(spec.minRing + spec.groundMargin, 96),
+      groundMaterial,
+    );
+    ground.name = `forkmesh-${spec.id}-circle-ground`;
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = BILLBOARD_CIRCLE_GROUND_Y;
+    ground.receiveShadow = true;
+    ground.userData.ground = true;
+    group.add(ground);
+    const rim = new THREE.Mesh(
+      new THREE.RingGeometry(
+        spec.minRing + spec.groundMargin - BILLBOARD_CIRCLE_RIM_WIDTH,
+        spec.minRing + spec.groundMargin,
+        96,
+      ),
+      new THREE.MeshBasicMaterial({ color: spec.accent, toneMapped: false }),
+    );
+    rim.name = `forkmesh-${spec.id}-circle-rim`;
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.y = BILLBOARD_CIRCLE_GROUND_Y + 0.01;
+    group.add(rim);
+    leaderboardInterior.add(group);
+    circle = { spec, group, ground, rim, objects: [], radius: spec.minRing };
+    billboardCircles.set(spec.id, circle);
+    return circle;
+  }
+  // Boards are laid out by the arc each one actually needs rather than by an
+  // even split, so a wide assembly grows its circle instead of overlapping the
+  // board beside it, and a circle of narrow leaderboard cards stays compact.
+  const relayoutBillboardCircle = (circle) => {
+    const objects = circle.objects;
+    if (!objects.length) return;
+    let widest = 0;
+    let span = 0;
+    for (const record of objects) {
+      widest = Math.max(widest, record.width);
+      span += record.width + BILLBOARD_CIRCLE_GAP;
+    }
+    // A single board also has to fit inside its own circle. The widest board
+    // is flat, so its ends reach sqrt(r² + (w/2)²) from the centre; holding the
+    // radius at 0.75w keeps those corners inside the apron's margin even when
+    // one wide assembly is the only thing on the circle.
+    const radius = Math.max(
+      circle.spec.minRing,
+      span / (Math.PI * 2),
+      widest * 0.75,
+    );
+    circle.radius = radius;
+    const groundRadius = radius + circle.spec.groundMargin;
+    circle.ground.geometry.dispose();
+    circle.ground.geometry = new THREE.CircleGeometry(groundRadius, 96);
+    // Scaling would widen the band as well as move it, so the rim follows the
+    // apron by rebuilding — the same cheap 96-segment rebuild the apron does.
+    circle.rim.geometry.dispose();
+    circle.rim.geometry = new THREE.RingGeometry(
+      groundRadius - BILLBOARD_CIRCLE_RIM_WIDTH,
+      groundRadius,
+      96,
+    );
+    let cursor = 0;
+    objects.forEach((record) => {
+      const object = record.object;
+      const slice = record.width + BILLBOARD_CIRCLE_GAP;
+      const angle = -Math.PI / 2 + ((cursor + slice / 2) / span) * Math.PI * 2;
+      cursor += slice;
       object.position.set(
         Math.cos(angle) * radius,
         0,
         Math.sin(angle) * radius,
       );
       object.rotation.y = Math.atan2(-object.position.x, -object.position.z);
-      object.updateMatrixWorld(true);
-      billboardIslandBounds.setFromObject(object);
       // Board authors use different local origins (some at their center,
       // others at their footings). Normalize from actual geometry so no
       // frame, post, label, or base can be buried by the shared terrain.
-      if (Number.isFinite(billboardIslandBounds.min.y)) {
-        object.position.y += 0.12 - billboardIslandBounds.min.y;
-      }
+      object.position.y = BILLBOARD_CIRCLE_SURFACE_Y - record.baseY;
     });
   };
-  function placeBillboardOnIsland(object) {
-    if (!object) return;
+  function placeBillboardOnIsland(object, options = {}) {
+    if (!object) return null;
+    const circle = billboardCircle(String(options.circle || "hub"));
     object.parent?.remove(object);
-    leaderboardInterior.add(object);
-    billboardIslandObjects.push({ object });
-    relayoutBillboardCircle();
+    circle.group.add(object);
+    // Measure the board square-on and unplaced: the circle owns its position
+    // and heading from here, and the local extents drive both the arc it is
+    // given and the height its spinner floats at.
+    object.position.set(0, 0, 0);
+    object.rotation.y = 0;
+    object.updateMatrixWorld(true);
+    billboardIslandBounds.setFromObject(object);
+    circle.group.getWorldPosition(billboardCircleOrigin);
+    const record = {
+      object,
+      circle: circle.spec.id,
+      feed: String(options.feed || ""),
+      width: Math.max(
+        1,
+        billboardIslandBounds.max.x - billboardIslandBounds.min.x,
+      ),
+      baseY: billboardIslandBounds.min.y - billboardCircleOrigin.y,
+      topY: billboardIslandBounds.max.y - billboardCircleOrigin.y,
+    };
+    circle.objects.push(record);
+    if (record.feed) {
+      // Only a board that has a request of its own gets a ring. It rides just
+      // above the board's own top edge, in the board's local frame, so it
+      // stays put when the circle re-levels the board onto the apron.
+      const spinner = new THREE.Mesh(
+        new THREE.TorusGeometry(0.42, 0.1, 10, 30, Math.PI * 1.55),
+        new THREE.MeshBasicMaterial({ color: "#8ff1c3", toneMapped: false }),
+      );
+      spinner.name = `forkmesh-billboard-refresh-spinner-${record.feed}-${circle.objects.length}`;
+      spinner.position.set(0, record.topY + 1.1, 0.4);
+      spinner.visible = false;
+      spinner.renderOrder = 46;
+      object.add(spinner);
+      record.spinner = spinner;
+      billboardSpinners.push(spinner);
+      const shared = billboardFeedRecords.get(record.feed) || [];
+      shared.push(record);
+      billboardFeedRecords.set(record.feed, shared);
+    }
+    relayoutBillboardCircle(circle);
+    return record;
   }
-  placeBillboardOnIsland(worldBulletin);
-  placeBillboardOnIsland(worldGeneralChatBoard);
-  placeBillboardOnIsland(worldDiscordBoard);
+  animated.push((time) => {
+    for (const spinner of billboardSpinners) {
+      if (spinner.visible) spinner.rotation.z = -time * 0.006;
+    }
+  });
+  // Called by the shell whenever a board's request starts or settles. Nothing
+  // else makes a spinner visible, so a spinning ring always means a live fetch
+  // that the visitor's own approach started.
+  function setBillboardRefreshing(feed, loading) {
+    for (const record of billboardFeedRecords.get(String(feed || "")) || []) {
+      record.spinner.visible = loading === true;
+    }
+  }
+  // The bulletin, the general-chat board, and the Discord board carry no
+  // request of their own — they are painted from data the page already holds —
+  // so they take a circle but no feed, and never show a spinner.
+  placeBillboardOnIsland(worldBulletin, { circle: "hub" });
+  placeBillboardOnIsland(worldGeneralChatBoard, { circle: "hub" });
+  placeBillboardOnIsland(worldDiscordBoard, { circle: "social" });
 
   // Registered members and their named campfire benches have a dedicated
   // southern garden. It is the fourth cardinal district, leaving the live
@@ -18649,13 +18642,17 @@ export function createWorldScene({
     "social-banners", "Social & status banners", "Boards & kiosks",
     [twitterBanner, redditBanner, blogBanner, statusBanner],
   );
-  [
-    mastodonKiosk,
-    twitterBanner,
-    redditBanner,
-    blogBanner,
-    statusBanner,
-  ].forEach((board) => placeBillboardOnIsland(board));
+  // Mastodon, X, Reddit, and the blog are one family and share the social
+  // circle. Status is an operational readout, not a feed, so it belongs with
+  // the other world boards on the hub circle.
+  placeBillboardOnIsland(mastodonKiosk, {
+    circle: "social",
+    feed: "mastodon",
+  });
+  [twitterBanner, redditBanner, blogBanner].forEach((board) =>
+    placeBillboardOnIsland(board, { circle: "social", feed: "social" }),
+  );
+  placeBillboardOnIsland(statusBanner, { circle: "hub", feed: "status" });
   const statusBannerRecord = {
     group: statusBanner,
     options: STATUS_BANNER_OPTIONS,
@@ -19579,13 +19576,11 @@ export function createWorldScene({
   world.add(gym);
   registerWorldElement("gym", "Outdoor gym", "Recreation", gym);
 
-  // One square 5×5 wall preserves the whole leaderboard catalog without
-  // duplicate physical boards. Lift the complete assembly above the terrain.
-  const leaderboardSuperPanel = new THREE.Group();
-  leaderboardSuperPanel.name = "forkmesh-leaderboard-super-panel";
-  leaderboardSuperPanel.position.set(-42, 0.22, 0);
-  leaderboardSuperPanel.rotation.y = Math.PI / 2;
-  const leaderboardGridState = {
+  // Every public ranking is a card of its own again, standing on the
+  // leaderboard circle. The single 5×5 wall packed the whole catalog into one
+  // 2048² texture, so a change to any board repainted all of them and there
+  // was one object to walk up to instead of fifteen.
+  const leaderboardCardState = {
     members: [],
     referralRows: [],
     viewerLink: "",
@@ -19595,64 +19590,43 @@ export function createWorldScene({
       WORLD_LEADERBOARD_BOARD_STUBS.map((board) => [board.id, board]),
     ),
   };
-  const leaderboardSuperBacking = new THREE.Mesh(
-    new THREE.BoxGeometry(23, 23, 0.45),
-    makeMaterial(THREE, "#102b27", {
-      metalness: 0.24,
-      roughness: 0.52,
-    }),
-  );
-  leaderboardSuperBacking.position.set(0, 12, 0);
-  leaderboardSuperPanel.add(leaderboardSuperBacking);
-  for (const x of [-10.3, 10.3]) {
-    const footing = new THREE.Mesh(
-      new THREE.BoxGeometry(1.4, 0.5, 1.45),
-      makeMaterial(THREE, "#173136", { roughness: 0.78 }),
-    );
-    footing.position.set(x, 0.25, 0);
-    leaderboardSuperPanel.add(footing);
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.42, 23, 0.42),
-      makeMaterial(THREE, "#29645e", {
-        metalness: 0.28,
-        roughness: 0.48,
-      }),
-    );
-    post.position.set(x, 11.5, 0);
-    leaderboardSuperPanel.add(post);
-  }
-  const leaderboardGridFace = new THREE.Mesh(
-    new THREE.PlaneGeometry(22.4, 22.4),
-    new THREE.MeshBasicMaterial({
-      map: leaderboardGridTexture(THREE, leaderboardGridState),
-      transparent: true,
-    }),
-  );
-  leaderboardGridFace.position.set(0, 12, 0.24);
-  leaderboardGridFace.userData.interactive = "leaderboard-grid";
-  leaderboardGridFace.userData.leaderboardPanelTile = true;
-  leaderboardSuperPanel.add(leaderboardGridFace);
-  interactive.push(leaderboardGridFace);
-  leaderboardInterior.add(leaderboardSuperPanel);
-
-  let leaderboardGridKey = "";
-  function repaintLeaderboardGrid() {
-    const key = JSON.stringify({
-      members: rankedActiveLeaderboardMembers(leaderboardGridState.members),
-      referrals: rankedReferralRows(leaderboardGridState.referralRows),
-      viewerLink: leaderboardGridState.viewerLink,
-      sites: rankedSiteReferrerRows(leaderboardGridState.siteRows),
-      totals: leaderboardGridState.siteTotals,
-      boards: Array.from(leaderboardGridState.boards.entries()),
+  const leaderboardCards = new Map();
+  function addLeaderboardCard(id, sign) {
+    const face = sign.userData.face;
+    if (face) {
+      face.userData.interactive = "leaderboard-card";
+      face.userData.boardId = id;
+      face.userData.leaderboardPanelTile = true;
+      interactive.push(face);
+    }
+    leaderboardCards.set(id, { id, sign, face, key: "" });
+    placeBillboardOnIsland(sign, {
+      circle: "leaderboards",
+      feed: "leaderboards",
     });
-    if (leaderboardGridKey === key) return;
-    leaderboardGridFace.material.map?.dispose?.();
-    leaderboardGridFace.material.map = leaderboardGridTexture(
-      THREE,
-      leaderboardGridState,
+  }
+  // Each card keys its own repaint, so a snapshot that only moved one board
+  // rebuilds one 768² canvas rather than the whole circle.
+  function repaintLeaderboardCard(id, key, paint) {
+    const card = leaderboardCards.get(id);
+    if (!card?.face?.material || card.key === key) return;
+    card.key = key;
+    card.face.material.map?.dispose?.();
+    card.face.material.map = paint();
+    card.face.material.needsUpdate = true;
+  }
+  addLeaderboardCard("active-members", makeActiveLeaderboardSign(THREE));
+  addLeaderboardCard("referrals", makeReferralLeaderboardSign(THREE));
+  addLeaderboardCard("http-referrers", makeSiteReferrerLeaderboardSign(THREE));
+  for (const board of WORLD_LEADERBOARD_BOARD_STUBS) {
+    addLeaderboardCard(board.id, makeLeaderboardStatSign(THREE, board));
+  }
+
+  function repaintActiveLeaderboardCard() {
+    const rows = rankedActiveLeaderboardMembers(leaderboardCardState.members);
+    repaintLeaderboardCard("active-members", JSON.stringify(rows), () =>
+      activeLeaderboardTexture(THREE, leaderboardCardState.members),
     );
-    leaderboardGridFace.material.needsUpdate = true;
-    leaderboardGridKey = key;
   }
 
   function updateLeaderboards(boards = []) {
@@ -19660,22 +19634,49 @@ export function createWorldScene({
       .filter((board) => board && typeof board === "object")
       .forEach((board) => {
         const id = String(board.id || "");
-        if (!id) return;
-        leaderboardGridState.boards.set(id, board);
+        if (!id || !leaderboardCards.has(id)) return;
+        if (LEADERBOARD_CARDS_WITH_OWN_PAINTER.has(id)) return;
+        leaderboardCardState.boards.set(id, board);
+        repaintLeaderboardCard(id, JSON.stringify(board), () =>
+          leaderboardStatTexture(THREE, board),
+        );
       });
-    repaintLeaderboardGrid();
   }
 
   function updateReferralLeaderboard(rows = [], viewerLink = "") {
-    leaderboardGridState.referralRows = Array.isArray(rows) ? rows : [];
-    leaderboardGridState.viewerLink = String(viewerLink || "");
-    repaintLeaderboardGrid();
+    leaderboardCardState.referralRows = Array.isArray(rows) ? rows : [];
+    leaderboardCardState.viewerLink = String(viewerLink || "");
+    repaintLeaderboardCard(
+      "referrals",
+      JSON.stringify([
+        rankedReferralRows(leaderboardCardState.referralRows),
+        leaderboardCardState.viewerLink,
+      ]),
+      () =>
+        referralLeaderboardTexture(
+          THREE,
+          leaderboardCardState.referralRows,
+          leaderboardCardState.viewerLink,
+        ),
+    );
   }
   function updateSiteReferrerLeaderboard(rows = [], totals = {}) {
-    leaderboardGridState.siteRows = rankedSiteReferrerRows(rows);
-    leaderboardGridState.siteTotals =
+    leaderboardCardState.siteRows = rankedSiteReferrerRows(rows);
+    leaderboardCardState.siteTotals =
       totals && typeof totals === "object" ? totals : {};
-    repaintLeaderboardGrid();
+    repaintLeaderboardCard(
+      "http-referrers",
+      JSON.stringify([
+        leaderboardCardState.siteRows,
+        leaderboardCardState.siteTotals,
+      ]),
+      () =>
+        siteReferrerLeaderboardTexture(
+          THREE,
+          leaderboardCardState.siteRows,
+          leaderboardCardState.siteTotals,
+        ),
+    );
   }
   const nodeDistrict = new THREE.Group();
   nodeDistrict.name = "forkmesh-node-district";
@@ -22761,6 +22762,9 @@ export function createWorldScene({
 
   function setBuildBoardLoading(loading) {
     buildBoardSpinner.visible = loading === true;
+    // The board's own inset spinner is only legible from directly in front of
+    // it; the circle spinner above it reads from anywhere on the hub circle.
+    setBillboardRefreshing("build-board", loading);
   }
 
   function repaintBuildBoards() {
@@ -22898,7 +22902,10 @@ export function createWorldScene({
     "office-task-bulletin", "Office task bulletin", "Boards & kiosks",
     officeTaskBulletin,
   );
-  placeBillboardOnIsland(officeTaskBulletin);
+  placeBillboardOnIsland(officeTaskBulletin, {
+    circle: "hub",
+    feed: "build-board",
+  });
 
   const worldQaBoard = new THREE.Group();
   worldQaBoard.name = "forkmesh-world-qa-board";
@@ -22971,7 +22978,7 @@ export function createWorldScene({
   registerWorldElement(
     "qa-board", "QA board", "Boards & kiosks", worldQaBoard,
   );
-  placeBillboardOnIsland(worldQaBoard);
+  placeBillboardOnIsland(worldQaBoard, { circle: "hub", feed: "qa-board" });
 
   // Boards whose contents only matter to someone standing at them. Each entry
   // reports its own approach and departure so the owner can fetch on arrival
@@ -23009,18 +23016,36 @@ export function createWorldScene({
       },
       onExit: () => {},
     },
+    // The three billboard circles each own one request family. Nothing in
+    // them is fetched until a visitor steps onto the circle, and the approach
+    // radius is the circle itself plus the depth of the boards standing on it,
+    // so the fetch starts exactly when the faces become readable.
     {
-      // A 23-unit wall on its own island reads from much further out than a
-      // bulletin board does, so it gets a correspondingly wider approach.
-      object: leaderboardSuperPanel,
+      object: billboardCircle("leaderboards").group,
       mode: "town",
-      enter: 34,
-      exit: 42,
+      enter: billboardCircle("leaderboards").radius + 6,
+      exit: billboardCircle("leaderboards").radius + 14,
       cooldownMs: 60_000,
-      onEnter: (refetch) => {
-        if (refetch) onLeaderboardWallNearby();
-      },
-      onExit: () => {},
+      onEnter: (refetch) => onLeaderboardCircleNearby({ refetch }),
+      onExit: () => onLeaderboardCircleAway(),
+    },
+    {
+      object: billboardCircle("social").group,
+      mode: "town",
+      enter: billboardCircle("social").radius + 6,
+      exit: billboardCircle("social").radius + 14,
+      cooldownMs: 60_000,
+      onEnter: (refetch) => onSocialCircleNearby({ refetch }),
+      onExit: () => onSocialCircleAway(),
+    },
+    {
+      object: billboardCircle("hub").group,
+      mode: "town",
+      enter: billboardCircle("hub").radius + 6,
+      exit: billboardCircle("hub").radius + 14,
+      cooldownMs: 60_000,
+      onEnter: (refetch) => onWorldBoardsCircleNearby({ refetch }),
+      onExit: () => onWorldBoardsCircleAway(),
     },
   ].map((board) => ({ ...board, near: false, lastEnterAt: 0 }));
 
@@ -23966,6 +23991,9 @@ export function createWorldScene({
   const cameraDirection = new THREE.Vector3();
   const cameraLookTarget = new THREE.Vector3();
   const cameraOffsetDirection = new THREE.Vector3();
+  // Sampled after the camera update each frame so the sky layer can drop its
+  // stars, planets, and satellites whenever the view is not tilted upward.
+  const skyViewDirection = new THREE.Vector3();
   const cameraDesired = new THREE.Vector3();
   const cameraLocalTarget = new THREE.Vector3();
   const cameraLocalDesired = new THREE.Vector3();
@@ -29908,8 +29936,8 @@ export function createWorldScene({
       syncOperatorBelt(THREE, avatar, enriched.nodes || []);
       avatar.userData.badgeKey = badgeKey;
     });
-    leaderboardGridState.members = leaderboardMembers;
-    repaintLeaderboardGrid();
+    leaderboardCardState.members = leaderboardMembers;
+    repaintActiveLeaderboardCard();
 
     // Populate the open member-circle rings with directory members who are
     // not already represented by a live World avatar.
@@ -34443,24 +34471,15 @@ export function createWorldScene({
       if (href) onMastodonOpenLink(href);
       return;
     }
-    if (hit?.object?.userData?.interactive === "leaderboard-grid") {
-      const canvasX = (Number(hit.uv?.x) || 0) * 2048;
-      const canvasY = (1 - (Number(hit.uv?.y) || 0)) * 2048;
-      const gridTop = 154;
-      const gridHeight = 2048 - gridTop - 38;
-      const column = Math.floor((canvasX - 38) / ((2048 - 76) / 5));
-      const row = Math.floor((canvasY - gridTop) / (gridHeight / 5));
-      const board =
-        column >= 0 && column < 5 && row >= 0 && row < 5
-          ? leaderboardGridBoardDescriptors(leaderboardGridState)[
-              row * 5 + column
-            ]
-          : null;
-      if (board?.id === "referrals") {
+    if (hit?.object?.userData?.interactive === "leaderboard-card") {
+      // The card itself identifies the board now: no canvas-space cell
+      // arithmetic, so a click always lands on the ranking being looked at.
+      const boardId = String(hit.object.userData.boardId || "");
+      if (boardId === "referrals") {
         onReferralBoardSelect();
-      } else if (board?.id === "http-referrers") {
+      } else if (boardId === "http-referrers") {
         const href = safeSiteReferrerURL(
-          leaderboardGridState.siteRows?.[0],
+          leaderboardCardState.siteRows?.[0],
         );
         if (href) onSiteReferrerOpen(href);
       }
@@ -35670,7 +35689,13 @@ export function createWorldScene({
     // the chase/zoom camera update makes wheel, pinch, and orbit changes take
     // effect on the same rendered frame.
     updateNodeDetailLevel();
-    if (worldElementEnabled("sky")) worldSky.tick(Date.now(), camera.position);
+    if (worldElementEnabled("sky")) {
+      worldSky.tick(
+        Date.now(),
+        camera.position,
+        camera.getWorldDirection(skyViewDirection),
+      );
+    }
     tickStoreElements(time);
     // Spatial scans and DOM-adjacent controls do not need monitor refresh
     // cadence. Bounding them to 12.5Hz removes repeated portal walks and
@@ -36434,6 +36459,7 @@ export function createWorldScene({
     updateLeaderboards,
     updateReferralLeaderboard,
     updateSiteReferrerLeaderboard,
+    setBillboardRefreshing,
     deleteNetworkNode,
     updateNetworkNodes,
     armMirrorPushEffect,

@@ -1895,6 +1895,60 @@ void MainWindow::flashErrorBorder()
     m_errorBorderTimer->start(1500); // world-admin-error-arrival's 1.5s
 }
 
+// The good-news twin of flashErrorBorder: a green edge pulse when an agent
+// finishes (adhoc #1630), so a run that lands while the user is reading a diff
+// or another repo announces itself across the whole window rather than only in
+// the corner. Held a shade longer than the error flash — this one is meant to be
+// enjoyed, not just noticed — and re-flashing restarts the countdown.
+void MainWindow::flashCelebrationBorder()
+{
+    if (!m_celebrationBorderOverlay) {
+        class CelebrationBorderWidget : public QWidget
+        {
+        public:
+            explicit CelebrationBorderWidget(QWidget *parent) : QWidget(parent)
+            {
+                setAttribute(Qt::WA_TransparentForMouseEvents);
+                setAttribute(Qt::WA_NoSystemBackground);
+                setAttribute(Qt::WA_TranslucentBackground);
+                setObjectName(QStringLiteral("celebrationBorderOverlay"));
+            }
+
+        protected:
+            void paintEvent(QPaintEvent *) override
+            {
+                QPainter painter(this);
+                painter.setRenderHint(QPainter::Antialiasing, false);
+                // The same success green the Agents list and the toast use, so
+                // the pulse reads as "that finished" rather than a new colour.
+                QPen pen(QColor(63, 185, 80, 190), 3);
+                pen.setJoinStyle(Qt::MiterJoin);
+                painter.setPen(pen);
+                painter.drawRect(rect().adjusted(1, 1, -2, -2));
+                for (int step = 1; step <= 6; ++step) {
+                    const int inset = 2 + step * 3;
+                    QPen glow(QColor(63, 185, 80, 58 - step * 8), 3);
+                    glow.setJoinStyle(Qt::MiterJoin);
+                    painter.setPen(glow);
+                    painter.drawRect(
+                        rect().adjusted(inset, inset, -inset - 1, -inset - 1));
+                }
+            }
+        };
+        m_celebrationBorderOverlay = new CelebrationBorderWidget(this);
+        m_celebrationBorderTimer = new QTimer(this);
+        m_celebrationBorderTimer->setSingleShot(true);
+        connect(m_celebrationBorderTimer, &QTimer::timeout, this, [this] {
+            if (m_celebrationBorderOverlay)
+                m_celebrationBorderOverlay->hide();
+        });
+    }
+    m_celebrationBorderOverlay->setGeometry(rect());
+    m_celebrationBorderOverlay->show();
+    m_celebrationBorderOverlay->raise();
+    m_celebrationBorderTimer->start(2000);
+}
+
 // A restart can spend a while fetching or compiling while the relevant control
 // is hidden in another section.  Pulse the full app edge in the theme's amber
 // caution colour for that entire interval, without intercepting any input.
@@ -2753,10 +2807,16 @@ void MainWindow::refreshWebAlerts(bool force)
     if (node.isEmpty())
         return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    // The heartbeat calls this every minute; one read per five minutes is
-    // plenty for an inbox and keeps the relay's request budget intact.
-    if (!force && m_webAlertsFetchedAtMs > 0 &&
-        now - m_webAlertsFetchedAtMs < 300000)
+    // Not a poll: the ping inbox is read ONCE per run and is push-driven from
+    // then on. The relay fans a payload-free "pings" event frame to this
+    // account's node event socket the moment a ping is written
+    // (notify_account_event), and that frame — plus the socket's reconnect
+    // catch-up and explicit user actions — is what passes `force`. The
+    // heartbeat still calls this unforced, which after the first success is a
+    // no-op; it only matters as the retry that re-seeds a failed first read
+    // (docs/operations/polling-elimination.md).
+    if (m_webAlertsFetchedAtMs > 0 &&
+        (!force || now - m_webAlertsFetchedAtMs < kWebAlertPushFloorMs))
         return;
 
     QUrl url = catalogApiUrl();
@@ -2783,8 +2843,13 @@ void MainWindow::refreshWebAlerts(bool force)
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError || status < 200 ||
-            status >= 300)
+            status >= 300) {
+            // The one read of this run just failed, so there is nothing to sit
+            // on. Clearing the stamp lets the next heartbeat re-seed it (and
+            // only until one read succeeds).
+            m_webAlertsFetchedAtMs = 0;
             return;
+        }
         const QJsonObject payload =
             QJsonDocument::fromJson(reply->readAll()).object();
         m_webAlerts = payload.value(QStringLiteral("notifications")).toArray();
@@ -2814,6 +2879,9 @@ void MainWindow::refreshWebAlerts(bool force)
                 continue;
             m_flashedWebAlertIds.insert(id);
             if (loadingStartupBaseline)
+                continue;
+            if (kind == QLatin1String("operational_alert") &&
+                !QSettings().value(kSystemAlertSetting, true).toBool())
                 continue;
             const QString title =
                 alert.value(QStringLiteral("title")).toString().trimmed();
@@ -4326,7 +4394,7 @@ void MainWindow::maybeAutoFixFailedRun(const ActionRun &run)
                  run.ref, logTail);
     const QString workflowName = run.workflowName;
 
-    m_pendingSteerMessage.insert(sessionId, prompt);
+    queueAgentSteerMessage(sessionId, prompt);
     if (sessionProvider == QLatin1String("claude-code") ||
         agentIsCodexProvider(sessionProvider))
         applyTranscriptEvent(

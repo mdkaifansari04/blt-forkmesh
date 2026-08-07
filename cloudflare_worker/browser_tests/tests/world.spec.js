@@ -6493,6 +6493,84 @@ test("a 4K display keeps the full World inside a 1080p raster budget", async ({
   await context.close();
 });
 
+test("stars, planets, and satellites are drawn only while looking up at night", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-deep-sky-gate");
+  await waitForWorld(page);
+
+  const shell = page.locator("forkmesh-world");
+  const sample = async (mode, pitch) => {
+    const startedAtFrame = await shell.evaluate(
+      (element, view) => {
+        element.world.setDaylightMode(view.mode);
+        // A negative orbit pitch drops the eye below its target, which is how
+        // this camera cranes upward.
+        element.world.setCameraView({ pitch: view.pitch });
+        return element.world.renderer.info.render.frame;
+      },
+      { mode, pitch },
+    );
+    // The gate is sampled in the animation loop, not by the setters.
+    await page.waitForFunction(
+      (frame) =>
+        document.querySelector("forkmesh-world").world.renderer.info.render
+          .frame > frame + 2,
+      startedAtFrame,
+    );
+    return shell.evaluate((element) => {
+      const sky = element.world.getDiagnostics().sky;
+      const group = element.world.scene.getObjectByName("forkmesh-world-sky");
+      return {
+        lookingUp: sky.lookingUp,
+        night: sky.night,
+        deepSkyVisible: sky.deepSkyVisible,
+        drawCalls: sky.drawCalls,
+        starsVisible: Boolean(
+          group.getObjectByName("forkmesh-world-stars")?.visible,
+        ),
+        satellitesVisible: Boolean(
+          group.getObjectByName("forkmesh-world-satellites")?.visible,
+        ),
+        planetInstances: group.getObjectByName("forkmesh-world-planets").count,
+      };
+    });
+  };
+
+  // Daylight keeps the sun and moon instances and nothing else, even with the
+  // camera craned all the way back.
+  expect(await sample("day", -1.2)).toMatchObject({
+    night: false,
+    lookingUp: true,
+    deepSkyVisible: false,
+    drawCalls: 2,
+    starsVisible: false,
+    satellitesVisible: false,
+    planetInstances: 2,
+  });
+  // Night at eye level is just as cheap.
+  expect(await sample("night", 0.6)).toMatchObject({
+    night: true,
+    lookingUp: false,
+    deepSkyVisible: false,
+    drawCalls: 2,
+    starsVisible: false,
+    satellitesVisible: false,
+    planetInstances: 2,
+  });
+  // Only looking up at a night sky pays for the six planets and the stars.
+  const nightLookingUp = await sample("night", -1.2);
+  expect(nightLookingUp).toMatchObject({
+    night: true,
+    lookingUp: true,
+    deepSkyVisible: true,
+    starsVisible: true,
+    satellitesVisible: true,
+    planetInstances: 8,
+  });
+  expect(nightLookingUp.drawCalls).toBeGreaterThan(2);
+});
+
 test("busy walking stays connected while movement frames remain within the soft budget", async ({
   page,
 }) => {

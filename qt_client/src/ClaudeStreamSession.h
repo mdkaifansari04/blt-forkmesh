@@ -52,8 +52,12 @@ public:
                const QString &fallbackModels = QString(),
                int memoryLimitMb = 0,
                const QString &resumeFallbackPrompt = QString());
-    // Send another user turn to a running session (steering).
-    void sendUserText(const QString &text);
+    // Send another user turn to a running session (steering). Returns false when
+    // the turn could not be handed to the CLI — the process is gone, or its stdin
+    // is closed even though the state machine has not caught up yet. The caller
+    // treats that as "this transport is dead" and restarts the session rather than
+    // leaving the user's message written into a broken pipe (adhoc #1618).
+    bool sendUserText(const QString &text);
     // Answer a pending tool call (e.g. the AskUserQuestion clarifying-question
     // tool) by writing a `tool_result` block for that tool_use id. When the
     // agent's turn ended with a tool_use the conversation is structurally
@@ -62,6 +66,11 @@ public:
     void sendToolResult(const QString &toolUseId, const QString &content);
     void stop();
     bool running() const;
+    // Running *and* still able to take a turn. A process whose stdin has gone
+    // (it is exiting, the pipe broke) is running by the state machine and useless
+    // to steer, so the restart gate asks this rather than running() alone
+    // (adhoc #1618).
+    bool acceptsInput() const;
     // PID of the running CLI (0 when not running). Everything the agent shells
     // out to — builds included — lands under this process, so the UI can count
     // its descendants (adhoc #57).
@@ -80,8 +89,15 @@ private:
     void launch();
     void onStdout();
     void onStderr();
-    void writeUserTurn(const QString &text);
-    void writeLine(const QJsonObject &msg);
+    bool writeUserTurn(const QString &text);
+    bool writeLine(const QJsonObject &msg);
+    // Report an exit exactly once. QProcess emits finished() for a process that
+    // ran, and errorOccurred(FailedToStart) for one that never did — a launch
+    // that cannot start at all (its working directory is gone, no shell on PATH)
+    // emits only the latter, so without this the session had no ending: the
+    // caller kept it Running with nothing behind it, and every "add" relaunched
+    // into the same silence (adhoc #1618).
+    void reportExit(int exitCode);
 
     QProcess *m_proc = nullptr;
     QByteArray m_buf; // accumulates partial stdout lines
@@ -101,4 +117,5 @@ private:
     // what proves the conversation actually opened.
     bool m_conversationOpened = false;
     bool m_resumeFallbackUsed = false; // one retry per start(), never a loop
+    bool m_exitReported = false;       // one finished() per launch, never two
 };

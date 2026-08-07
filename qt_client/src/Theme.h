@@ -516,6 +516,13 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
 #topMessagePromptStatus { font-weight: 500; font-size: 11px; }
+/* "🎉 Agent #12 is done!" — the headline of a finished run's celebration
+   (adhoc #1630). A step up from the ordinary message so the good news reads as
+   an event rather than another line of status. */
+#topMessageAgentRow, #topMessageAgentIcon { background: transparent; border: none; }
+#topMessageAgentHeadline {
+    background: transparent; border: none; font-size: 13px; font-weight: 700;
+}
 #topMessagePromptImage {
     background: rgba(48,54,61,0.35); border: 1px solid #30363d;
     border-radius: 5px; padding: 3px;
@@ -683,7 +690,8 @@ QPushButton#memberDeleteButton:hover {
 }
 #promptWrapper:focus-within { border-color: #39d353; }
 /* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
-   button pops the prompt out into its own window. */
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
 #promptDragHandle { background: transparent; border: none; }
 #promptDragPill {
     background-color: rgba(139,148,158,0.55); border: none; border-radius: 1px;
@@ -692,7 +700,7 @@ QPushButton#memberDeleteButton:hover {
     background-color: rgba(139,148,158,0.5); border: none; border-radius: 2px;
 }
 #promptResizeGrip:hover { background-color: rgba(57,211,83,0.65); }
-QPushButton#promptDetachButton {
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
     background: transparent; border: none; padding: 0;
 }
 #promptDetachWindow { background-color: #010409; }
@@ -1122,7 +1130,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
 }
 #promptWrapper:focus-within { border-color: #39d353; }
 /* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
-   button pops the prompt out into its own window. */
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
 #promptDragHandle { background: transparent; border: none; }
 #promptDragPill {
     background-color: rgba(139,148,158,0.55); border: none; border-radius: 1px;
@@ -1131,7 +1140,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     background-color: rgba(139,148,158,0.5); border: none; border-radius: 2px;
 }
 #promptResizeGrip:hover { background-color: rgba(57,211,83,0.65); }
-QPushButton#promptDetachButton {
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
     background: transparent; border: none; padding: 0;
 }
 #promptDetachWindow { background-color: #010409; }
@@ -1974,6 +1983,11 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
 #topMessagePromptStatus { font-weight: 500; font-size: 11px; }
+/* See the dark rules: a finished agent's celebration headline. */
+#topMessageAgentRow, #topMessageAgentIcon { background: transparent; border: none; }
+#topMessageAgentHeadline {
+    background: transparent; border: none; font-size: 13px; font-weight: 700;
+}
 #topMessagePromptImage {
     background: #f6f8fa; border: 1px solid #d0d7de;
     border-radius: 5px; padding: 3px;
@@ -2134,7 +2148,8 @@ QPushButton#memberDeleteButton:hover {
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
 /* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
-   button pops the prompt out into its own window. */
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
 #promptDragHandle { background: transparent; border: none; }
 #promptDragPill {
     background-color: rgba(87,96,106,0.55); border: none; border-radius: 1px;
@@ -2143,7 +2158,7 @@ QPushButton#memberDeleteButton:hover {
     background-color: rgba(87,96,106,0.5); border: none; border-radius: 2px;
 }
 #promptResizeGrip:hover { background-color: rgba(26,127,55,0.65); }
-QPushButton#promptDetachButton {
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
     background: transparent; border: none; padding: 0;
 }
 #promptDetachWindow { background-color: #f6f8fa; }
@@ -2579,7 +2594,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
 /* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
-   button pops the prompt out into its own window. */
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
 #promptDragHandle { background: transparent; border: none; }
 #promptDragPill {
     background-color: rgba(87,96,106,0.55); border: none; border-radius: 1px;
@@ -2588,7 +2604,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     background-color: rgba(87,96,106,0.5); border: none; border-radius: 2px;
 }
 #promptResizeGrip:hover { background-color: rgba(26,127,55,0.65); }
-QPushButton#promptDetachButton {
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
     background: transparent; border: none; padding: 0;
 }
 #promptDetachWindow { background-color: #f6f8fa; }

@@ -237,16 +237,14 @@ def test_worker_exception_capture_does_not_raise_from_reporting_failures():
     assert "write" in call_names
 
 
-def test_background_tasks_observe_exceptions_instead_of_default_handler():
-    assert "def _fire_and_forget" in ENTRY_TEXT
-    assert "def _consume_background_task" in ENTRY_TEXT
-    assert "task.result()" in ENTRY_TEXT
-    ensure_future_lines = [
-        line.strip()
-        for line in ENTRY_TEXT.splitlines()
-        if "asyncio.ensure_future(" in line
-    ]
-    assert ensure_future_lines == ["task = asyncio.ensure_future(coro)"]
+def test_telemetry_never_runs_on_a_detached_task():
+    # There is no fire-and-forget helper any more: a detached task is one more
+    # PyodideTask the runtime can re-enter, and a wedged isolate answers 1101
+    # for every later request (see tests/test_worker_task_concurrency.py).
+    # Telemetry is awaited inline inside its own try/except instead.
+    assert "def _fire_and_forget" not in ENTRY_TEXT
+    assert "asyncio.ensure_future(" not in ENTRY_TEXT
+    assert "asyncio.create_task(" not in ENTRY_TEXT
     # Repository transfers are awaited direct-HTTPS fetches, not detached
     # socket watchdog tasks.
     proxy = ENTRY_TEXT[

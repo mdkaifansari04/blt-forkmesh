@@ -999,7 +999,11 @@ def test_mobile_world_chat_composer_stays_above_safe_area_and_terminal_bars():
 
 
 def test_world_receives_private_notifications_and_global_announcements():
-    assert "WORLD_NOTIFICATION_POLL_MS = 60 * 1000" in APP
+    # Pings are pushed, not polled: the surviving constant is a short cache
+    # max-age that collapses a burst of pushes, not an interval.
+    assert "WORLD_NOTIFICATION_DIGEST_MAX_AGE_MS = 2000" in APP
+    assert "WORLD_NOTIFICATION_POLL_MS" not in APP
+    assert "startNotificationChannel()" in APP
     assert "normalizeWorldNotifications" in APP
     assert "/api/notifications?node=${encodeURIComponent(" in APP
     assert 'this.fetchJSON("/api/world/events"' in APP
@@ -1020,7 +1024,8 @@ def test_world_receives_private_notifications_and_global_announcements():
     assert "this.refreshOpenEventsPanel()" in APP
     assert 'window.addEventListener("storage", this.handleStorage)' in APP
     assert 'window.removeEventListener("storage", this.handleStorage)' in APP
-    assert "window.clearInterval(this.notificationsTimer)" in APP
+    # The timer it used to tear down is gone; teardown now closes the socket.
+    assert "this.notificationChannel?.dispose()" in APP
     assert ".world-notification-button [data-world-notification-count]" in CSS
     assert '.world-notification-list article[data-unread="true"]' in CSS
     assert ".world-event-list article p" in CSS

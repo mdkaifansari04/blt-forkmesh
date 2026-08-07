@@ -107,6 +107,32 @@ class _LazyExport:
         return str(self._load())
 
 
+# ---------------------------------------------------------------------------
+# No concurrent asyncio tasks on a request path.
+#
+# The Python Workers runtime snapshot this Worker rides (compatibility_date
+# 2026-07-23; every newer cut is still undeployable, see wrangler.toml) can
+# step one PyodideTask while another task's step is on the stack. The loop
+# then raises "RuntimeError: Cannot enter into task ... while another task
+# ... is running", the offending task is left pending forever, and from that
+# moment EVERY request the isolate receives dies the same way — a permanently
+# wedged isolate answering Cloudflare 1101 until workerd recycles it. Live
+# tails during the 2026-08-05/06 (issue #555) and 2026-08-07 outages showed
+# 30-85% of relay traffic failing this way, on whatever route happened to be
+# polled: /api/repo/*/*/pending, git info/refs, the world-general room
+# WebSocket, even /health.
+#
+# So: anything that spawns or interleaves a second task inside a request is
+# banned here, however cheap it looks.
+#   - asyncio.gather(...)          -> await the pieces in sequence
+#   - asyncio.wait_for(js_promise) -> js_fetch_with_timeout(), or a native
+#                                     AbortSignal.timeout on the fetch init
+#   - asyncio.ensure_future/create_task on a request path -> just await it
+# The sequential form costs a few milliseconds of added latency per request;
+# the concurrent form costs every request that isolate would have served.
+# tests/test_worker_task_concurrency.py enforces this.
+# ---------------------------------------------------------------------------
+
 # These modules back optional route families.  Do not turn these assignments
 # back into top-level imports: Cloudflare validates Python Worker global scope
 # within a fixed memory budget.
@@ -1615,11 +1641,19 @@ async def repository_metadata_cache_put(env, cache_key, response, status):
             },
         }))
         namespace = getattr(env, "REPOSITORY_METADATA", None)
-        writes = [js_caches.default.put(cache_key, cacheable)]
+        # Sequential on purpose — see the no-concurrent-tasks rule at the top
+        # of this module. Two awaits of single-digit milliseconds on the
+        # repository-read hot path, versus a gather that can wedge the isolate.
+        try:
+            await js_caches.default.put(cache_key, cacheable)
+        except Exception:
+            pass
         if namespace is not None:
             # No expiration: commit/ref changes address a brand-new key.
-            writes.append(namespace.put(cache_key, raw))
-        await asyncio.gather(*writes, return_exceptions=True)
+            try:
+                await namespace.put(cache_key, raw)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -1739,13 +1773,75 @@ async def notify_repo_host(env, owner, repo, topic):
     try:
         node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
         node_object = env.FORKMESH_NODES.get(node_id)
-        await asyncio.wait_for(
-            node_object.fetch(
-                "https://forkmesh.internal/api/nodes/notify"
-                "?topic=" + quote(topic or "") +
-                "&repo=" + quote(owner + "/" + repo)
-            ),
-            timeout=HOST_COUNT_TIMEOUT_MS / 1000,
+        # Awaited directly, NOT under asyncio.wait_for: cancelling a JS-backed
+        # await leaves the underlying Pyodide task pending forever, which is
+        # how a single slow push wedges the isolate for every later request
+        # (see the no-concurrent-tasks rule at the top of this module). The
+        # frame is payload-free and the Durable Object answers immediately;
+        # the platform's own subrequest limits bound the wait.
+        await node_object.fetch(
+            "https://forkmesh.internal/api/nodes/notify"
+            "?topic=" + quote(topic or "") +
+            "&repo=" + quote(owner + "/" + repo)
+        )
+    except Exception:
+        pass
+
+
+# Per-isolate coalescing window for account event pushes. One write path
+# routinely enqueues several notifications for the same person in the same
+# request (an @mention plus a thread subscription, say), and every one of them
+# is answered by the same single signed read on the client. Collapsing the
+# duplicates costs the user nothing and keeps a fan-out inside the Worker's
+# subrequest budget.
+_ACCOUNT_EVENT_PUSH_MEMO = {}
+ACCOUNT_EVENT_PUSH_COALESCE_MS = 2000
+ACCOUNT_EVENT_PUSH_MEMO_MAX = 512
+
+
+async def notify_account_event(env, owner, topic):
+    """Push a payload-free "your <topic> changed" frame to one account.
+
+    Same channel and same contract as notify_repo_host — the per-owner
+    ForkMeshNodes Durable Object — but for account-scoped state that belongs
+    to no repository: the ping inbox and direct-message unread counts. Desktop
+    nodes already hold this socket; browsers open the same one with a
+    short-lived account event ticket. Clients read those counts exactly once
+    at startup and thereafter only when a frame like this arrives, so this
+    push is what replaces their old "any unread yet?" poll
+    (docs/operations/polling-elimination.md).
+
+    Best-effort, like every other push on this channel: a failure here must
+    never fail the write that triggered it, and the worst case is that a badge
+    waits until the reader opens the page it lives on (or the channel
+    reconnects). That is also the safety valve for a wide fan-out — one comment
+    on a heavily-subscribed thread calls this once per subscriber, and if that
+    exhausts the invocation's subrequest budget the remaining pushes fail
+    quietly instead of failing the comment.
+    """
+    owner = safe_segment(owner)
+    topic = clean_string(topic or "", 40)
+    if not owner or not topic:
+        return
+    now = int(Date.now())
+    memo_key = owner + "\n" + topic
+    last = _ACCOUNT_EVENT_PUSH_MEMO.get(memo_key, 0)
+    if last and now - last < ACCOUNT_EVENT_PUSH_COALESCE_MS:
+        return
+    _ACCOUNT_EVENT_PUSH_MEMO[memo_key] = now
+    if len(_ACCOUNT_EVENT_PUSH_MEMO) > ACCOUNT_EVENT_PUSH_MEMO_MAX:
+        cutoff = now - ACCOUNT_EVENT_PUSH_COALESCE_MS
+        for stale in [key for key, ts in _ACCOUNT_EVENT_PUSH_MEMO.items()
+                      if ts < cutoff]:
+            _ACCOUNT_EVENT_PUSH_MEMO.pop(stale, None)
+    try:
+        node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
+        node_object = env.FORKMESH_NODES.get(node_id)
+        # Awaited directly — see notify_repo_host above for why this must not
+        # be wrapped in asyncio.wait_for.
+        await node_object.fetch(
+            "https://forkmesh.internal/api/nodes/notify"
+            "?topic=" + quote(topic)
         )
     except Exception:
         pass
@@ -1798,22 +1894,112 @@ async def notify_repo_mirrors(env, owner, repo, topic):
         await notify_repo_host(env, target, repo, topic)
 
 
+# A browser cannot set headers on a WebSocket upgrade, so it proves its
+# account the way the World already does: exchange the session for a
+# short-lived, HMAC-signed ticket over ordinary authenticated HTTPS and put
+# only that in the upgrade URL. A leaked ticket buys sixty seconds of
+# payload-free "something changed" frames for one account — never the session
+# token, and never any content.
+ACCOUNT_EVENT_TICKET_TTL_MS = 60 * 1000
+
+
+def _account_event_ticket_signature(env, payload):
+    return hmac.new(
+        _account_session_secret(env),
+        b"forkmesh-account-events-ticket-v1\n" + payload.encode(),
+        "sha256",
+    ).hexdigest()
+
+
+def _account_event_ticket_encode(env, claim):
+    payload = base64.urlsafe_b64encode(
+        json.dumps(claim, separators=(",", ":"), sort_keys=True).encode()
+    ).decode().rstrip("=")
+    return payload + "." + _account_event_ticket_signature(env, payload)
+
+
+def _account_event_ticket_owner(env, ticket):
+    """The account name proven by an unexpired event ticket, else ""."""
+    value = clean_string(ticket or "", 1024).strip()
+    if "." not in value:
+        return ""
+    payload, signature = value.rsplit(".", 1)
+    if not payload or not re.fullmatch(r"[A-Za-z0-9_-]+", payload):
+        return ""
+    if not hmac.compare_digest(
+            signature, _account_event_ticket_signature(env, payload)):
+        return ""
+    try:
+        padded = payload + "=" * ((4 - len(payload) % 4) % 4)
+        claim = json.loads(base64.urlsafe_b64decode(padded).decode())
+    except Exception:
+        return ""
+    if not isinstance(claim, dict):
+        return ""
+    now = int(Date.now())
+    try:
+        issued = int(claim.get("issuedAt", 0) or 0)
+        expires = int(claim.get("expiresAt", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    if issued <= 0 or expires <= now or issued > now + 5000:
+        return ""
+    if expires - issued > ACCOUNT_EVENT_TICKET_TTL_MS:
+        return ""
+    return safe_segment(clean_string(claim.get("name", ""), MAX_NODE_NAME))
+
+
+async def account_event_ticket_handler(env, request):
+    """GET /api/accounts/event-ticket — session -> account event ticket."""
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET"})
+    name = safe_segment(await _authed_account_name(env, request))
+    if not name:
+        return json_response(
+            {"ok": True, "authenticated": False, "ticket": "", "expiresAt": 0},
+            cache_control="no-store, max-age=0, must-revalidate")
+    now = int(Date.now())
+    expires = now + ACCOUNT_EVENT_TICKET_TTL_MS
+    return json_response(
+        {
+            "ok": True,
+            "authenticated": True,
+            "name": name,
+            "expiresAt": expires,
+            "ticket": _account_event_ticket_encode(
+                env, {"name": name, "issuedAt": now, "expiresAt": expires}),
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"})
+
+
 async def node_events_handler(env, request):
     # GET /api/nodes/events?owner=&ts=&sig= (WebSocket upgrade only) — a
     # desktop/headless node's live event channel. Auth reuses the same signed
     # forkmesh-issues-pull-v1 drain token as GET /api/sync (_authorize_owner),
-    # checked here BEFORE any Durable Object is selected. The socket only ever
-    # receives payload-free {"type":"event","topic"} frames; all data still
-    # flows through the existing signed HTTPS sync, so this adds no new
+    # checked here BEFORE any Durable Object is selected. A browser instead
+    # presents ?ticket= from /api/accounts/event-ticket, which proves the same
+    # account from an ordinary session; either way the socket only ever
+    # receives payload-free {"type":"event","topic"} frames, so all data still
+    # flows through the existing signed HTTPS routes and this adds no new
     # repository byte or control transport (the retired-tunnel contracts in
     # test_https_mirror_routing_integration.py are unaffected).
     upgrade = (request.headers.get("upgrade") or "").lower()
     if upgrade != "websocket":
         return json_response({"error": "upgrade_required"}, status=426)
     params = parse_qs(urlparse(request.url).query)
-    owner = safe_segment(params.get("owner", [""])[0])
-    if not owner or not await _authorize_owner(env, request, owner):
-        return json_response({"error": "unauthorized"}, status=401)
+    ticket = params.get("ticket", [""])[0]
+    if ticket:
+        owner = _account_event_ticket_owner(env, ticket)
+        if not owner:
+            return json_response({"error": "unauthorized"}, status=401)
+    else:
+        owner = safe_segment(params.get("owner", [""])[0])
+        if not owner or not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
     node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
     # Same retry-twice guard as the chat room router: a platform abort of the
     # DO is transient, and the upgrade request carries no body so re-driving
@@ -1849,6 +2035,11 @@ async def node_events_handler(env, request):
 _LIVE_HOST_PROBE_MEMO = {}
 LIVE_HOST_PROBE_MEMO_TTL_MS = 30 * 1000
 HYDRATE_PROBE_MAX = 8
+# The probes run one after another (never gathered), so the count cap is not
+# on its own a latency bound: eight dead mirrors would cost eight
+# HOST_COUNT_TIMEOUT_MS waits. Stop the pass once it has spent this long and
+# let the next request continue from the memo.
+HYDRATE_PROBE_BUDGET_MS = 1500
 
 
 async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
@@ -1894,26 +2085,35 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
                     presence.pop(key, None)
             continue
         stale.append((key, rec))
-    # Probe concurrently (each already bounded by HOST_COUNT_TIMEOUT_MS inside
-    # repo_live_host_count, so the whole batch costs one timeout, not one per
-    # mirror) and capped per request. Members beyond the cap keep their stale
-    # presence this request; because probed members land in the memo, the next
-    # request's stale list starts where this one stopped, so a large group is
-    # covered across a few requests instead of hanging any single one.
+    # Probe SEQUENTIALLY, capped per request and under a wall-clock budget.
+    # These were gathered until the Pyodide task-reentrancy wedge (see the
+    # no-concurrent-tasks rule at the top of this module) — a fan-out of
+    # Durable Object subrequests on the /mirrors and catalog paths is exactly
+    # the shape that leaves an isolate answering 1101 forever. Serialized, the
+    # cap alone is worth HYDRATE_PROBE_MAX × HOST_COUNT_TIMEOUT_MS in the
+    # worst case, so HYDRATE_PROBE_BUDGET_MS stops the loop early instead.
+    # Members left unprobed simply keep their stale presence this request;
+    # because probed members land in the memo, the next request's stale list
+    # starts where this one stopped, so a large group is covered across a few
+    # requests instead of hanging any single one.
     probes = stale[:HYDRATE_PROBE_MAX]
-    results = await asyncio.gather(*(
-        repo_live_host_count(env, rec.get("owner"), rec.get("name"))
-        for _key, rec in probes), return_exceptions=True)
-    for (key, _rec), hosts in zip(probes, results):
+    probe_deadline = int(Date.now()) + HYDRATE_PROBE_BUDGET_MS
+    for key, rec in probes:
+        try:
+            hosts = await repo_live_host_count(
+                env, rec.get("owner"), rec.get("name"))
+        except Exception:
+            hosts = None
         if not isinstance(hosts, int):
             hosts = None  # failed/timed-out probe: memoized, presence untouched
         _LIVE_HOST_PROBE_MEMO[key] = {"ts": now, "hosts": hosts}
-        if hosts is None:
-            continue
-        if hosts > 0:
-            presence[key] = now
-        else:
-            presence.pop(key, None)
+        if hosts is not None:
+            if hosts > 0:
+                presence[key] = now
+            else:
+                presence.pop(key, None)
+        if int(Date.now()) >= probe_deadline:
+            break
     return presence
 
 
@@ -4797,8 +4997,17 @@ async def wallet_leaderboard(env):
     # least fresh members (an unseen wallet sorts at 0 and goes first).
     members.sort(key=lambda m: (stored.get(m["wallet"], (0, 0))[1], m["name"]))
     refresh = members[:WALLET_BALANCE_REFRESH_PER_REBUILD]
-    balances = await asyncio.gather(*[
-        _solana_balance_lamports(env, member["wallet"]) for member in refresh])
+    # Sequential RPC reads (each already bounded by SOLANA_RPC_TIMEOUT_MS via
+    # a native AbortSignal): WALLET_BALANCE_REFRESH_PER_REBUILD is small, and a
+    # gather here is the concurrency the runtime cannot survive — see the
+    # no-concurrent-tasks rule at the top of this module.
+    balances = []
+    for member in refresh:
+        try:
+            balances.append(
+                await _solana_balance_lamports(env, member["wallet"]))
+        except Exception:
+            balances.append(None)
     for member, lamports in zip(refresh, balances):
         # None means the RPC could not answer; keep the last stored reading
         # rather than publishing an unchecked address as zero.
@@ -4862,28 +5071,33 @@ async def leaderboards_overview(env):
     only normalizes their already-public rows so clients cannot drift on which
     boards exist, how they are titled, or which value each board ranks.
     """
-    # These five public sources are independent. Resolve them concurrently so
-    # the combined endpoint costs the slowest cache/database read, not the sum
-    # of all five, which keeps both the page and World island quick at startup.
+    # These five public sources are independent, and they are read ONE AFTER
+    # ANOTHER — deliberately not gathered. Five concurrent tasks (one of them
+    # the users directory's row-decrypt scan) is exactly the fan-out that trips
+    # the Pyodide task-reentrancy wedge and leaves the isolate answering 1101
+    # for every later request; see the no-concurrent-tasks rule at the top of
+    # this module. Each source keeps its own edge cache/memo and this endpoint
+    # is itself cached, so the sum-instead-of-max latency is paid rarely.
+    # Late-bound so an unread source is never left as an orphan coroutine.
     sources = (
-        ("network", network_leaderboards(env)),
-        ("referrals", referral_leaderboard(env)),
-        ("sites", site_referrer_leaderboard(env)),
-        ("users", _account_users_directory(env, None)),
-        ("wallets", wallet_leaderboard(env)),
+        ("network", lambda: network_leaderboards(env)),
+        ("referrals", lambda: referral_leaderboard(env)),
+        ("sites", lambda: site_referrer_leaderboard(env)),
+        ("users", lambda: _account_users_directory(env, None)),
+        ("wallets", lambda: wallet_leaderboard(env)),
     )
-    # return_exceptions on purpose: a bare gather re-raises the first failure,
-    # so one broken source used to 500 the whole hub — the website grid and the
-    # World island both went dark over a board neither of them needed. adhoc
-    # #225 did exactly that from a call-arity mismatch deep inside the users
-    # directory, and the same 500 was logged again here under /api/leaderboards.
-    # A source that fails now costs its own boards and nothing else.
-    settled = await asyncio.gather(
-        *(source for _name, source in sources), return_exceptions=True)
+    # Per-source isolation, which return_exceptions=True used to provide: one
+    # broken source used to 500 the whole hub — the website grid and the World
+    # island both went dark over a board neither of them needed. adhoc #225 did
+    # exactly that from a call-arity mismatch deep inside the users directory,
+    # and the same 500 was logged again here under /api/leaderboards. A source
+    # that fails now costs its own boards and nothing else.
     payloads = []
     degraded = []
-    for (name, _source), result in zip(sources, settled):
-        if isinstance(result, BaseException):
+    for name, source in sources:
+        try:
+            result = await source()
+        except Exception as error:
             degraded.append(name)
             payloads.append({})
             # Workers Logs stays off, so a degraded board would otherwise be
@@ -4893,7 +5107,7 @@ async def leaderboards_overview(env):
                 await capture_sentry_error(
                     env, 500, "GET", "/api/leaderboards",
                     "leaderboards source failed: " + name + ": "
-                    + _safe_error_text(result), error=result)
+                    + _safe_error_text(error), error=error)
             except BaseException:
                 pass
             continue
@@ -6796,25 +7010,28 @@ async def world_social_posts_handler(env, request):
         blog_rss = await _blog_feed_published_document(env, request)
         if blog_rss:
             blog_posts = world_social_feeds.normalize_blog_feed(blog_rss)
-            distributions = await asyncio.gather(*(
-                _blog_post_distribution(env, request, post)
-                for post in blog_posts
-            ), return_exceptions=True)
-            reach_summaries = await asyncio.gather(*(
-                _blog_post_reach_summary(env, post)
-                for post in blog_posts
-            ), return_exceptions=True)
-            for index, distribution in enumerate(distributions):
-                blog_posts[index]["distribution"] = (
+            # One post at a time, never gathered: this endpoint is public and
+            # each post costs its own D1 reads, so the fan-out was two tasks
+            # per published post inside one request — see the
+            # no-concurrent-tasks rule at the top of this module. A failing
+            # post still degrades to the same empty shapes the gathered
+            # return_exceptions=True produced.
+            for post in blog_posts:
+                try:
+                    distribution = await _blog_post_distribution(
+                        env, request, post)
+                except Exception:
+                    distribution = None
+                try:
+                    reach = await _blog_post_reach_summary(env, post)
+                except Exception:
+                    reach = None
+                post["distribution"] = (
                     distribution
                     if isinstance(distribution, dict)
                     else {"known": False, "networks": []}
                 )
-                blog_posts[index]["reach"] = (
-                    reach_summaries[index]
-                    if isinstance(reach_summaries[index], dict)
-                    else {}
-                )
+                post["reach"] = reach if isinstance(reach, dict) else {}
             blog_ok = bool(blog_posts)
     except Exception:
         blog_posts, blog_ok = [], False
@@ -7077,6 +7294,58 @@ async def _chat_direct_message_retained(
             (conversation_id, conversation_id, account_bi),
         ),
     ])
+    # That first UPDATE is exactly what raises the other participant's
+    # unreadCount, so push them a hint now. Their conversation list is read
+    # once when the chat page opens and never on a timer, so a reader who is
+    # not sitting in this particular conversation would otherwise not see the
+    # count move until they reloaded. (A reader who *is* sitting in it already
+    # got the message over this room's socket; the push is then redundant, and
+    # notify_account_event's coalescing window absorbs it.)
+    recipient = await _chat_direct_message_recipient(
+        env, conversation_id, account_bi)
+    if recipient:
+        await notify_account_event(env, recipient, "direct-messages")
+
+
+# conversation_id -> {sender account_bi: peer name}. A direct conversation has
+# exactly two participants and they never change, so this is immutable for the
+# life of the row and worth memoizing per isolate: the alternative is a D1 read
+# plus a row decrypt plus two blind indexes on every retained message.
+_CHAT_DIRECT_PEER_MEMO = {}
+CHAT_DIRECT_PEER_MEMO_MAX = 256
+
+
+async def _chat_direct_message_recipient(env, conversation_id, sender_bi):
+    """The participant of a direct conversation who is not the sender."""
+    memo_key = str(conversation_id) + "\n" + str(sender_bi)
+    if memo_key in _CHAT_DIRECT_PEER_MEMO:
+        return _CHAT_DIRECT_PEER_MEMO[memo_key]
+    peer = ""
+    try:
+        row = await d1_first(
+            env,
+            "SELECT data FROM chat_direct_conversations "
+            "WHERE conversation_id=?",
+            conversation_id,
+        )
+        record = await decrypt_row(env, (row or {}).get("data", ""))
+        participants = (record or {}).get("participants")
+        if not isinstance(participants, list):
+            return ""
+        for value in participants:
+            name = clean_string(value, MAX_NODE_NAME).strip().lower()
+            if not valid_node_name(name):
+                continue
+            if await blind_index(env, name) != sender_bi:
+                peer = name
+                break
+    except Exception:
+        # A transient read failure must not be memoized as "no recipient".
+        return ""
+    if len(_CHAT_DIRECT_PEER_MEMO) >= CHAT_DIRECT_PEER_MEMO_MAX:
+        _CHAT_DIRECT_PEER_MEMO.clear()
+    _CHAT_DIRECT_PEER_MEMO[memo_key] = peer
+    return peer
 
 
 def _office_entry_ticket(env, account_bi):
@@ -8387,6 +8656,15 @@ class _WorldCommunityRuntime:
 
     def now(self):
         return int(Date.now())
+
+    async def notify_account(self, owner, topic):
+        """Tell one account's clients that something of theirs changed.
+
+        Payload-free, best-effort; see notify_account_event. Chat surfaces read
+        their channel and conversation lists once when the page opens, so this
+        is how a list that changed for somebody else's reason reaches them.
+        """
+        await notify_account_event(self.env, owner, topic)
 
     def new_id(self):
         # The random id contains no account, address, time, path, or provider
@@ -10344,7 +10622,10 @@ REWARD_POOL_FEE_RESERVE_LAMPORTS = 5000
 # A node counts as online for payouts if it has sent a heartbeat within this
 # window (reuses the host-presence staleness window).
 ACCOUNT_PRESENCE_STALE_MS = 10 * 60 * 1000
-HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS = 1500
+# (HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS is gone: the heartbeat's balance probe
+# is bounded by _solana_rpc_call's native AbortSignal, never by wrapping the
+# await in asyncio.wait_for — see the no-concurrent-tasks rule at the top of
+# this module.)
 # Per-isolate throttle for the heartbeat's optional public balance probe:
 # wallet -> last probe ms. Five minutes avoids an RPC subrequest on every
 # 60-second heartbeat. Balance never gates eligibility.
@@ -12260,17 +12541,16 @@ async def _contribution_coverage_rows(
 
 async def _contribution_profile_payload(
         env, profile_bi, profile_name, from_value, to_value):
-    activity_rows, recent_rows, language_rows, coverage_rows = (
-        await asyncio.gather(
-            _contribution_activity_rows(
-                env, profile_bi, from_value, to_value),
-            _contribution_recent_rows(
-                env, profile_bi, from_value, to_value),
-            _contribution_language_rows(env, profile_bi),
-            _contribution_coverage_rows(
-                env, profile_bi, from_value, to_value),
-        )
-    )
+    # Four sequential D1 reads. They were gathered; four concurrent tasks on
+    # the profile/contribution-graph path is the fan-out shape that wedges the
+    # isolate — see the no-concurrent-tasks rule at the top of this module.
+    activity_rows = await _contribution_activity_rows(
+        env, profile_bi, from_value, to_value)
+    recent_rows = await _contribution_recent_rows(
+        env, profile_bi, from_value, to_value)
+    language_rows = await _contribution_language_rows(env, profile_bi)
+    coverage_rows = await _contribution_coverage_rows(
+        env, profile_bi, from_value, to_value)
     summary = next(
         (row for row in activity_rows if row.get("row_kind") == "summary"),
         {},
@@ -15282,13 +15562,19 @@ async def _delete_account_namespace(env, name_bi, rec):
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
-    await asyncio.gather(
-        purge_catalog_related_caches(),
-        edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name)),
-        edge_cache_delete(USERS_DIRECTORY_CACHE_KEY),
-        edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY),
-        return_exceptions=True,
-    )
+    # Sequential, like purge_catalog_related_caches itself (issue #555): a few
+    # single-digit-millisecond cache deletes, versus a gather that can wedge
+    # the isolate — see the no-concurrent-tasks rule at the top of this module.
+    await purge_catalog_related_caches()
+    for cache_key in (
+        ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name),
+        USERS_DIRECTORY_CACHE_KEY,
+        CHAT_ACTIVITY_CACHE_KEY,
+    ):
+        try:
+            await edge_cache_delete(cache_key)
+        except Exception:
+            pass
 
 
 def _owned_nodes(rec):
@@ -15747,30 +16033,76 @@ async def _users_directory_cache_get():
     }))
 
 
+# Per-isolate memo for _public_member_count. The badge behind it loads on
+# every page site-wide, so the moment its 30s edge copy lapsed a burst of
+# concurrent requests hit the cold path below — and each running its OWN
+# 1000-row sequential decrypt_row() pass congested the event loop until
+# unrelated requests in the isolate died with "Cannot enter into task"
+# (git-upload-pack info/refs, room websockets) and NoGilError fatals — the
+# same clone-path family as adhoc #144/#153/#167/#183. At most one caller
+# refreshes per TTL; everyone else is served the memo or a cheap approximate
+# count.
+_MEMBER_COUNT_MEMO = {"count": None, "ts": 0, "refresh_ts": 0}
+MEMBER_COUNT_MEMO_TTL_MS = 60 * 1000
+
+
 async def _public_member_count(env):
     # The one member count every surface should quote (site-wide chat badge,
-    # World campfire HUD). Prefers the roster the directory endpoint already
-    # cached at the edge; only falls back to its own decrypt scan on a cold
-    # cache, so this rarely pays the 1000-row decrypt cost twice.
+    # World campfire HUD): what _is_public_roster_member admits, deduped by
+    # name. Prefers the roster the directory endpoint already cached at the
+    # edge; the decrypt scan runs at most once per isolate per TTL — see
+    # _MEMBER_COUNT_MEMO.
+    now = int(Date.now())
+    memo = _MEMBER_COUNT_MEMO
+    if memo["count"] is not None and now - memo["ts"] < MEMBER_COUNT_MEMO_TTL_MS:
+        return memo["count"]
     cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
     if cached is not None:
         try:
             payload = json.loads(await cached.text())
-            return len(payload.get("users") or [])
+            count = len(payload.get("users") or [])
+            memo["count"] = count
+            memo["ts"] = now
+            return count
         except Exception:
             pass
-    seen = set()
-    count = 0
-    rows = await d1_all(env, "SELECT data FROM users LIMIT ?", 1000)
-    for row in rows or []:
-        rec = await decrypt_row(env, row.get("data", ""))
-        if not _is_public_roster_member(rec):
-            continue
-        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        count += 1
+    # Single-flight refill, the _decrypted_public_catalog pattern: the claim
+    # is atomic (no await between check and claim on the single-threaded
+    # loop) and deliberately NOT a shared future — a request resuming inside
+    # I/O another request started dies with "Cannot perform I/O on behalf of
+    # a different request" (see ensure_schema). Losing callers serve the
+    # stale memo; on a cold isolate with nothing stale they fall back to a
+    # cheap undeduplicated row count instead of piling onto the decrypt scan.
+    if now - memo["refresh_ts"] < MEMBER_COUNT_MEMO_TTL_MS:
+        if memo["count"] is not None:
+            return memo["count"]
+        row = await d1_first(
+            env,
+            "SELECT COUNT(*) AS c FROM users "
+            "WHERE email_bi IS NOT NULL AND email_bi <> ''",
+        )
+        return int((row or {}).get("c") or 0)
+    memo["refresh_ts"] = now
+    try:
+        seen = set()
+        count = 0
+        rows = await d1_all(env, "SELECT data FROM users LIMIT ?", 1000)
+        for row in rows or []:
+            rec = await decrypt_row(env, row.get("data", ""))
+            if not _is_public_roster_member(rec):
+                continue
+            name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            count += 1
+    except BaseException:
+        # Release the slot (covers CancelledError from a canceled request) so
+        # the next caller retries instead of waiting out a phantom refresh.
+        memo["refresh_ts"] = 0
+        raise
+    memo["count"] = count
+    memo["ts"] = now
     return count
 
 
@@ -17468,12 +17800,16 @@ async def _account_profile(env, request):
         # opt-out must stop new public reads immediately in this colo.
         profile_name = clean_string(
             rec.get("name", ""), MAX_NODE_NAME).lower()
-        await asyncio.gather(
-            edge_cache_delete(
-                ACCOUNT_LOOKUP_CACHE_PREFIX + quote(profile_name)),
-            edge_cache_delete(USERS_DIRECTORY_CACHE_KEY),
-            return_exceptions=True,
-        )
+        # Sequential — see the no-concurrent-tasks rule at the top of this
+        # module; two cache deletes never justify a second task.
+        for cache_key in (
+            ACCOUNT_LOOKUP_CACHE_PREFIX + quote(profile_name),
+            USERS_DIRECTORY_CACHE_KEY,
+        ):
+            try:
+                await edge_cache_delete(cache_key)
+            except Exception:
+                pass
         # Fediverse followers of this profile get an Update(Person) so bio
         # changes propagate to remote servers immediately — but only when a
         # federated field actually changed (see fed_before above).
@@ -18859,10 +19195,12 @@ async def _account_heartbeat(env, request):
         if len(_HEARTBEAT_BALANCE_PROBES) > 5000:
             _HEARTBEAT_BALANCE_PROBES.clear()
         try:
-            balance_lamports = await asyncio.wait_for(
-                _solana_balance_lamports(env, wallet),
-                timeout=HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS / 1000,
-            )
+            # No asyncio.wait_for: _solana_rpc_call already bounds every RPC
+            # attempt with a native AbortSignal.timeout, and cancelling a
+            # JS-backed await from Python leaves the task pending forever —
+            # the wedge described at the top of this module, here on the
+            # per-node heartbeat path.
+            balance_lamports = await _solana_balance_lamports(env, wallet)
         except Exception:
             balance_lamports = None
         if balance_lamports is not None:
@@ -29415,6 +29753,10 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
            )""",
         recipient_bi, recipient_bi, MAX_NOTIFICATIONS_PER_RECIPIENT,
     )
+    # This row is the only thing that moves the recipient's unread ping count,
+    # so it is also the only thing that needs to wake their clients. Desktop
+    # and browser both read the inbox once on open and then sit on this push.
+    await notify_account_event(env, recipient, "pings")
     return True
 
 
@@ -34927,31 +35269,12 @@ async def capture_sentry_cron_check_in(env, status, check_in_id="",
         return False
 
 
-def _consume_background_task(task, label):
-    try:
-        task.result()
-    except BaseException as error:
-        if type(error).__name__ == "CancelledError":
-            return
-
-
-def _fire_and_forget(coro, label="background"):
-    try:
-        task = asyncio.ensure_future(coro)
-    except BaseException:
-        try:
-            close = getattr(coro, "close", None)
-            if close is not None:
-                close()
-        except BaseException:
-            pass
-        return None
-    try:
-        task.add_done_callback(
-            lambda done: _consume_background_task(done, label))
-    except BaseException:
-        pass
-    return task
+# _fire_and_forget/_consume_background_task lived here: they wrapped
+# asyncio.ensure_future so a detached task's exception was observed rather than
+# reaching the loop's default handler. Nothing called them, and a detached task
+# is now banned outright — see the no-concurrent-tasks rule at the top of this
+# module. Telemetry that used to want a background task (Sentry captures, error
+# rows) is awaited inline inside its own try/except instead.
 
 
 async def _error_log_actor(env, request):
@@ -38805,7 +39128,6 @@ async def _https_mirror_private_proxy(env, request, private_record):
             {"error": "mirror_unavailable"}, status=503,
             cache_control="no-store",
             extra_headers=EXPECTED_DEGRADED_HEADERS)
-    from js import fetch as js_fetch
     for endpoint in candidates:
         target = https_routing.masked_private_replica_url(
             endpoint["baseUrl"], endpoint["opaqueId"])
@@ -38829,16 +39151,17 @@ async def _https_mirror_private_proxy(env, request, private_record):
             "X-ForkMesh-Signature": signature,
         }
         try:
-            upstream = await asyncio.wait_for(
-                js_fetch(JsRequest.new(
-                    target,
-                    to_js({
-                        "method": method,
-                        "headers": headers,
-                        "redirect": "manual",
-                    }),
-                )),
-                timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+            # Native AbortSignal timeout, not asyncio.wait_for — the private
+            # replica read rides the same clone path whose wedges this rule
+            # exists for (see the top of this module).
+            upstream = await js_fetch_with_timeout(
+                target,
+                {
+                    "method": method,
+                    "headers": headers,
+                    "redirect": "manual",
+                },
+                HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
             )
             status = int(getattr(upstream, "status", 0) or 0)
         except Exception:
@@ -39772,17 +40095,17 @@ async def _https_mirror_merge_proxy(env, endpoint, context, request):
         "X-ForkMesh-Signature": signature,
     }
     try:
-        upstream = await asyncio.wait_for(
-            js_fetch(JsRequest.new(
-                target,
-                to_js({
-                    "method": "POST",
-                    "headers": headers,
-                    "body": Uint8Array.new(_to_js(body)),
-                    "redirect": "manual",
-                }),
-            )),
-            timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        # Native AbortSignal timeout, not asyncio.wait_for — see the
+        # no-concurrent-tasks rule at the top of this module.
+        upstream = await js_fetch_with_timeout(
+            target,
+            {
+                "method": "POST",
+                "headers": headers,
+                "body": Uint8Array.new(_to_js(body)),
+                "redirect": "manual",
+            },
+            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
         )
         status = int(getattr(upstream, "status", 0) or 0)
         announced = int(upstream.headers.get("content-length") or 0)
@@ -39933,16 +40256,12 @@ async def _https_mirror_actions_proxy(env, endpoint, context):
         "X-ForkMesh-Signature": signature,
     }
     try:
-        upstream = await asyncio.wait_for(
-            js_fetch(JsRequest.new(
-                target,
-                to_js({
-                    "method": "GET",
-                    "headers": headers,
-                    "redirect": "manual",
-                }),
-            )),
-            timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        # Native AbortSignal timeout, not asyncio.wait_for — see the
+        # no-concurrent-tasks rule at the top of this module.
+        upstream = await js_fetch_with_timeout(
+            target,
+            {"method": "GET", "headers": headers, "redirect": "manual"},
+            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
         )
         if int(getattr(upstream, "status", 0) or 0) != 200:
             return None
@@ -40423,7 +40742,6 @@ async def _https_mirror_proxy(
             {"error": "mirror_unavailable"}, status=503,
             cache_control="no-store",
             extra_headers=EXPECTED_DEGRADED_HEADERS)
-    from js import fetch as js_fetch
     for endpoint in candidates:
         if not await _https_mirror_repository_proof(
                 env, endpoint, context, operation):
@@ -42083,6 +42401,13 @@ class Default(WorkerEntrypoint):
         # payload-free event frame (see notify_repo_host / ForkMeshNodes).
         if url.path in ("/api/nodes/events", "/api/nodes/events/"):
             return await node_events_handler(self.env, request)
+
+        # The browser's key to that same channel: a session traded for a
+        # 60s account-scoped ticket, because a WebSocket upgrade carries no
+        # Authorization header. Matched ahead of accounts_handler.
+        if url.path in ("/api/accounts/event-ticket",
+                        "/api/accounts/event-ticket/"):
+            return await account_event_ticket_handler(self.env, request)
 
         if url.path in ("/api/forkbot/chat", "/api/forkbot/chat/"):
             return await forkbot_chat_handler(self.env, request)

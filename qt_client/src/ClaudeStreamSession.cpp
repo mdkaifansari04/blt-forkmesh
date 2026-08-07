@@ -39,6 +39,7 @@ void ClaudeStreamSession::launch()
     stop();
     m_buf.clear();
     m_conversationOpened = false;
+    m_exitReported = false;
 
     const QString cwd = m_cwd;
     const QString initialPrompt = m_initialPrompt;
@@ -88,7 +89,26 @@ void ClaudeStreamSession::launch()
                     launch();
                     return;
                 }
-                emit finished(code);
+                reportExit(code);
+            });
+    // A process that never starts emits errorOccurred(FailedToStart) and no
+    // finished() at all, so this is the only ending the caller will ever see for
+    // a launch whose working directory has been removed or whose shell is
+    // missing. Without it the session stayed Running behind a dead transport:
+    // every following "add" restarted it, the restart failed the same silent way,
+    // and the prompts piled up in the transcript with nothing answering them
+    // (adhoc #1618). A start failure is not the resume fallback's problem — the
+    // conversation was never reached — so report it straight through.
+    connect(m_proc, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                emit stderrText(
+                    QStringLiteral(
+                        "Claude Code could not be started in %1 (the working "
+                        "directory may be gone, or `claude` is not on PATH).\n")
+                        .arg(m_cwd));
+                reportExit(-1);
             });
 
     // Run through a login shell so the user's PATH (e.g. ~/.local/bin) resolves
@@ -130,7 +150,7 @@ void ClaudeStreamSession::launch()
         // Reported straight to the caller, never through the resume fallback:
         // nothing was wrong with the conversation, the host could not spawn a
         // process at all, and a second attempt would fail the same way.
-        QTimer::singleShot(0, this, [this] { emit finished(-1); });
+        QTimer::singleShot(0, this, [this] { reportExit(-1); });
         return;
     }
     m_proc->start(launchCmd.program, launchCmd.arguments);
@@ -139,15 +159,16 @@ void ClaudeStreamSession::launch()
         writeUserTurn(initialPrompt);
 }
 
-void ClaudeStreamSession::sendUserText(const QString &text)
+bool ClaudeStreamSession::sendUserText(const QString &text)
 {
-    if (!text.trimmed().isEmpty())
-        writeUserTurn(text);
+    if (text.trimmed().isEmpty())
+        return true; // nothing to deliver, so nothing failed to arrive
+    return writeUserTurn(text);
 }
 
-void ClaudeStreamSession::writeUserTurn(const QString &text)
+bool ClaudeStreamSession::writeUserTurn(const QString &text)
 {
-    writeLine(QJsonObject{
+    return writeLine(QJsonObject{
         {QStringLiteral("type"), QStringLiteral("user")},
         {QStringLiteral("message"),
          QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
@@ -174,11 +195,25 @@ void ClaudeStreamSession::sendToolResult(const QString &toolUseId,
                      {QStringLiteral("content"), QJsonArray{block}}}}});
 }
 
-void ClaudeStreamSession::writeLine(const QJsonObject &msg)
+bool ClaudeStreamSession::writeLine(const QJsonObject &msg)
 {
     if (!running())
+        return false;
+    // A process can read as running while its stdin is already closed (it is
+    // exiting, or the pipe broke). write() reports that, and the caller needs to
+    // know: a turn that goes nowhere used to be indistinguishable from one the
+    // agent simply had not answered yet (adhoc #1618).
+    if (!m_proc->isWritable())
+        return false;
+    return m_proc->write(QJsonDocument(msg).toJson(QJsonDocument::Compact) + '\n') >= 0;
+}
+
+void ClaudeStreamSession::reportExit(int exitCode)
+{
+    if (m_exitReported)
         return;
-    m_proc->write(QJsonDocument(msg).toJson(QJsonDocument::Compact) + '\n');
+    m_exitReported = true;
+    emit finished(exitCode);
 }
 
 void ClaudeStreamSession::stop()
@@ -212,6 +247,11 @@ void ClaudeStreamSession::stop()
 bool ClaudeStreamSession::running() const
 {
     return m_proc && m_proc->state() != QProcess::NotRunning;
+}
+
+bool ClaudeStreamSession::acceptsInput() const
+{
+    return running() && m_proc->isWritable();
 }
 
 qint64 ClaudeStreamSession::processId() const
