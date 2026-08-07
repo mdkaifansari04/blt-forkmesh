@@ -2838,8 +2838,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     // The status dots to the right of the categories are the deployed Worker's
     // own health checks, so clicking them opens the page that dot is about
     // (adhoc #1559, #1602); the viewer that used to be a button on the Log page
-    // stays available on the dedicated Cloudflare tool button.
+    // stays available on the dedicated Cloudflare tool button. The click also
+    // re-runs that dot's checks on the spot (adhoc #1616) so the row is not
+    // still showing a minute-old verdict while its page loads.
     m_logActivityLights->onWebsiteClicked = [this](const QString &statusId) {
+        // Rechecked first so the dot is already blinking as the browser comes
+        // up — opening a URL hands the desktop's focus to another process.
+        recheckWebsiteStatus(statusId);
         openWebsiteStatusTarget(statusId);
     };
     const QString stallTip = QStringLiteral(
@@ -3347,6 +3352,21 @@ const DesktopEdgeProbe *desktopEdgeProbe(const QString &id)
     return nullptr;
 }
 
+// Which desktop-side checks one dot speaks for: the probe's own row while it
+// still has a dot to itself, and the relay row it merges into once that row
+// exists (adhoc #1616 — clicking a merged dot must re-run the local half too,
+// since that is the half of the verdict this machine can actually re-measure).
+QStringList desktopProbesForStatus(const QString &statusId)
+{
+    QStringList ids;
+    for (const DesktopEdgeProbe &probe : desktopEdgeProbes()) {
+        if (statusId == QLatin1String(probe.id) ||
+            statusId == QLatin1String(probe.mergesInto))
+            ids.append(QString::fromLatin1(probe.id));
+    }
+    return ids;
+}
+
 // Cloudflare's own edge failures are the ones the Worker can never report: it
 // is not running when the edge answers 520-527 or blocks the caller, and the
 // response is a branded error document rather than the site. Name the code so
@@ -3731,6 +3751,34 @@ void MainWindow::openWebsiteStatusTarget(const QString &statusId)
     if (url.isValid() && !url.host().isEmpty())
         QDesktopServices::openUrl(url);
 }
+
+// Re-run everything that grades one dot, right now (adhoc #1616). A red dot is
+// the thing you most want a second opinion on, so opening its page also asks
+// for a current verdict instead of leaving the minute timer to answer later.
+//
+// Both in-flight guards below make a second click while a check is still out a
+// no-op, so leaning on a dot cannot stack requests to the site.
+void MainWindow::recheckWebsiteStatus(const QString &statusId)
+{
+    // The relay grades all of its systems together and publishes them in one
+    // payload, so any of its rows re-reads that whole payload. It answers from
+    // the newest completed cron minute — this cannot make the Worker sample
+    // again — but it does pick up a minute this desktop has not fetched yet,
+    // and it ends a stale "the status API answered HTTP …" row as soon as the
+    // endpoint recovers.
+    refreshFooterWebsiteStatus();
+    // The desktop-side checks are ours to run, so these really do re-measure:
+    // the dot's own probe loads the page again from this machine.
+    for (const QString &id : desktopProbesForStatus(statusId))
+        probeDesktopWebsite(id);
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QStringList MainWindow::testWebsiteRecheckProbes(const QString &statusId) const
+{
+    return desktopProbesForStatus(statusId);
+}
+#endif
 
 // The Worker-errors dot opens the admin error log itself. Its console sits
 // behind a secret, deployment-configured path, so unless this desktop was told
