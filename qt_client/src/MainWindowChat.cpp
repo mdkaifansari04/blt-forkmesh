@@ -12005,12 +12005,67 @@ void MainWindow::pushCurrentRepoUpstream()
                         .arg(repo.owner, repo.name, detail));
                 auto *viewBtn = box.addButton(QStringLiteral("View code"),
                                               QMessageBox::ActionRole);
+                auto *markSafeBtn = box.addButton(QStringLiteral("Mark safe & commit"),
+                                                  QMessageBox::YesRole);
                 auto *cancelBtn = box.addButton(QStringLiteral("Cancel push"),
                                                 QMessageBox::RejectRole);
                 auto *bypassBtn = box.addButton(QStringLiteral("Push anyway"),
                                                 QMessageBox::DestructiveRole);
                 box.setDefaultButton(cancelBtn);
                 box.exec();
+                if (box.clickedButton() == markSafeBtn) {
+                    // Reviewed-safe path: append the scanner's inline
+                    // suppression marker to each flagged line, commit that as
+                    // its own change, then rescan/push — the new commit no
+                    // longer matches, so the retry should sail through.
+                    QSet<QString> touchedPaths;
+                    bool allMarked = true;
+                    for (const RepoSecurityFinding &f : scan.findings) {
+                        if (RepoSecurity::markFindingSafe(repo.localPath, f))
+                            touchedPaths.insert(f.path);
+                        else
+                            allMarked = false;
+                    }
+                    m_pushingRepos.remove(index);
+                    clearRepoSyncActivity(index);
+                    refreshRepoSyncIndicators();
+                    if (touchedPaths.isEmpty()) {
+                        flashMessage(QStringLiteral("Could not mark the flagged "
+                                                    "lines as safe."),
+                                     true);
+                        return;
+                    }
+                    QStringList addArgs{QStringLiteral("add"), QStringLiteral("--")};
+                    for (const QString &path : std::as_const(touchedPaths))
+                        addArgs << path;
+                    runGitCapture(repo.localPath, addArgs, nullptr, nullptr);
+                    QByteArray commitErr;
+                    if (!runGitCapture(repo.localPath,
+                                       {QStringLiteral("commit"), QStringLiteral("-m"),
+                                        QStringLiteral("Mark flagged secret scan "
+                                                       "findings as reviewed/safe")},
+                                       nullptr, &commitErr)) {
+                        flashMessage(QStringLiteral("Could not commit the "
+                                                    "reviewed-safe markers: %1")
+                                         .arg(QString::fromUtf8(commitErr).trimmed()),
+                                     true);
+                        return;
+                    }
+                    logSystem(QStringLiteral(
+                                  "Git: marked %1 finding%2 as reviewed/safe in "
+                                  "%3/%4 and committed the change.")
+                                  .arg(scan.findings.size())
+                                  .arg(scan.findings.size() == 1
+                                           ? QString()
+                                           : QStringLiteral("s"))
+                                  .arg(repo.owner, repo.name));
+                    if (!allMarked)
+                        flashMessage(QStringLiteral("Some flagged lines could not "
+                                                    "be marked safe; rescanning."),
+                                     true);
+                    pushCurrentRepoUpstream();
+                    return;
+                }
                 if (box.clickedButton() == viewBtn) {
                     // Jumping to the code cancels the push: the point is to remove
                     // the credential first. Copy the path/line out before the
