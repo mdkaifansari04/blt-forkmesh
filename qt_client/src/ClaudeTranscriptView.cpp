@@ -1297,6 +1297,17 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
                 context << mode;
             if (!m_ctxStrength.isEmpty())
                 context << QStringLiteral("%1 thinking").arg(m_ctxStrength);
+            // Which of the configured provider logins this run is signed in as
+            // (adhoc #1588) — the CLI never says, and with several accounts in
+            // rotation (the usual reason being a usage limit) "who is spending
+            // this" is not answerable from the transcript otherwise. Names
+            // people give their logins often already carry the word
+            // ("Default account"), so only the ones that don't get it prefixed.
+            if (!m_ctxAccount.isEmpty())
+                context << (m_ctxAccount.contains(QStringLiteral("account"),
+                                                  Qt::CaseInsensitive)
+                                ? m_ctxAccount
+                                : QStringLiteral("account %1").arg(m_ctxAccount));
             parts.removeAll(QString());
             QString line = QStringLiteral("session started ") + parts.join(QLatin1Char(' '));
             if (!context.isEmpty())

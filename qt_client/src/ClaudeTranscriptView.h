@@ -112,14 +112,16 @@ public:
 
     // Host-supplied context for the "session started" divider (adhoc #9): the
     // worktree branch the run works on, the permission mode it was launched
-    // under ("Auto" / "Plan" / …), its reasoning strength ("high" / "low"), and
-    // the ForkMesh account the run is signed in as. Only the CLI's own model
-    // and cwd ride in the init event, so the host sets this from the
-    // AgentSession before the session's events are replayed or streamed.
-    // Empty parts are omitted; an empty mode falls back to the permissionMode
-    // the event itself reports (surfaced external sessions).
+    // under ("Auto" / "Plan" / …), its reasoning strength ("high" / "low") and
+    // the name of the provider account it is logged in as (adhoc #1588) — the
+    // CLI never says which of the configured logins is spending the tokens.
+    // Only the CLI's own model and cwd ride in the init event, so the host sets
+    // this from the AgentSession before the session's events are replayed or
+    // streamed. Empty parts are omitted; an empty mode falls back to the
+    // permissionMode the event itself reports (surfaced external sessions).
     void setSessionContext(const QString &branch, const QString &mode,
-                           const QString &strength, const QString &account);
+                           const QString &strength,
+                           const QString &account = QString());
 
     // ---- bulk rebuild support (replaying a stored session) -----------------
     // While on, addRow() skips the per-row fade-in animation: replaying hundreds
