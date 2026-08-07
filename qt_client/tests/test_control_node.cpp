@@ -788,6 +788,49 @@ int main(int argc, char **argv)
               .program.isEmpty(),
           "a missing managed identity file fails closed");
 
+    // Shared fleet key: every host now authorizes one ForkMesh key, so the
+    // controller keeps a single private half beside its known_hosts store and
+    // hands it to every host operation. A device that predates the switch keeps
+    // using the per-provider key file the mirrors already trust.
+    const QString sharedDir = forkmesh::control::sharedHostKeyDirectory();
+    const QString sharedKey =
+        QDir(sharedDir).filePath(QStringLiteral("forkmesh_shared_ed25519"));
+    const QString legacyKey =
+        QDir(sharedDir).filePath(QStringLiteral("vultr_mirror_ed25519"));
+    QFile::remove(sharedKey);
+    QFile::remove(legacyKey);
+    check(!sharedDir.isEmpty() && QFileInfo(sharedDir).isDir() &&
+              forkmesh::control::sharedHostKeyPath() == sharedKey &&
+              forkmesh::control::existingSharedHostIdentityFile().isEmpty(),
+          "the shared host key is named before it exists and is not offered "
+          "until it does");
+    const auto writeKeyFixture = [](const QString &path) {
+        QFile key(path);
+        return key.open(QIODevice::WriteOnly) &&
+               key.write("shared-key-material") > 0;
+    };
+    check(writeKeyFixture(legacyKey) &&
+              forkmesh::control::sharedHostKeyPath() == legacyKey &&
+              forkmesh::control::existingSharedHostIdentityFile() == legacyKey,
+          "a pre-existing per-provider key is adopted as the shared fleet key");
+    check(writeKeyFixture(sharedKey) &&
+              forkmesh::control::sharedHostKeyPath() == sharedKey &&
+              forkmesh::control::existingSharedHostIdentityFile() == sharedKey,
+          "the shared key wins once it exists");
+    const auto sharedCommand = forkmesh::control::buildHostSshCommand(
+        QStringLiteral("203.0.113.10"), QStringLiteral("root"),
+        QStringLiteral("session-only"), QStringLiteral("true"), &actionsError,
+        forkmesh::control::existingSharedHostIdentityFile());
+    check(actionsError.isEmpty() &&
+              sharedCommand.program == QStringLiteral("sshpass") &&
+              sharedCommand.arguments.contains(sharedKey) &&
+              sharedCommand.arguments.contains(
+                  QStringLiteral("PreferredAuthentications=publickey,password")),
+          "a host with both the shared key and a session password tries the "
+          "key first and keeps the password as the fallback");
+    QFile::remove(sharedKey);
+    QFile::remove(legacyKey);
+
     // Provider sign-in terminal (adhoc #422): the agent-CLI installer copies no
     // tokens, so ForkMesh opens a real interactive shell on the mirror right
     // after it finishes. That needs a forced remote TTY and a shell-safe

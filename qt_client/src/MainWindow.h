@@ -2321,7 +2321,10 @@ private:
     void vultrApiCall(const QString &apiKey, const QString &path,
                       const QByteArray &method, const QJsonObject &body,
                       std::function<void(QJsonObject, QString)> onDone);
-    void ensureVultrManagedKeypair(
+    // Generate — or adopt, on a device that already has one — the single SSH
+    // key the whole host fleet authorizes. Every provisioning and deploy path
+    // authenticates with it; the private half never leaves this device.
+    void ensureSharedHostKeypair(
         std::function<void(QString privateKeyPath, QString publicKey,
                            QString error)> onDone);
     void resolveVultrSshKeyId(

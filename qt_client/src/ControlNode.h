@@ -68,11 +68,27 @@ struct HostSshCommand {
     QProcessEnvironment environment;
 };
 
+// The device-local directory holding ForkMesh's SSH state: the shared host key
+// and the persistent known_hosts trust store. Created owner-only on demand;
+// empty when it could not be created.
+QString sharedHostKeyDirectory();
+
+// Path of the one ForkMesh-managed private key every host in the fleet
+// authorizes. Devices that still hold the older per-provider key file keep
+// using that file, so mirrors provisioned before the switch stay reachable.
+// The file itself may not exist yet; sharedHostKeyPath() only names it.
+QString sharedHostKeyPath();
+
+// sharedHostKeyPath() when the key has actually been generated on this device,
+// empty otherwise. Callers use it as the default identity for every saved host,
+// including hosts added by hand.
+QString existingSharedHostIdentityFile();
+
 // Build the common authenticated transport used by install, logs, uninstall,
 // and Actions. The caller owns remoteCommand, which must not contain credentials.
-// identityFile optionally pins authentication to one ForkMesh-managed private
-// key (used for auto-provisioned Vultr mirrors); the path is public metadata,
-// the key material never leaves disk.
+// identityFile pins authentication to one ForkMesh-managed private key — the
+// shared fleet key, or whatever key a saved host recorded; the path is public
+// metadata, the key material never leaves disk.
 HostSshCommand buildHostSshCommand(const QString &host,
                                    const QString &sshUser,
                                    const QString &sshPassword,
