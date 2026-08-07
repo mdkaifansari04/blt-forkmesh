@@ -97,7 +97,7 @@ Credential boundaries:
   process before it is executed.
 
 Python 3 remains an explicit host prerequisite. The Worker deploy wrapper may
-fetch its version-pinned `workers-py<1.14.0` and `wrangler@4.42.1` dependencies
+fetch its version-pinned `workers-py<1.17.0` and `wrangler@4.120.0` dependencies
 on first use; those third-party runtimes are not embedded in ForkMesh.
 
 The bootstrapper asks an external signer for the endpoint manifest. It launches

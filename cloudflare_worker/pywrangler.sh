@@ -9,8 +9,8 @@ PYWRANGLER_VENV="${PYWRANGLER_VENV:-.pywrangler}"
 PYWRANGLER_BIN="$PYWRANGLER_VENV/bin/pywrangler"
 PYWRANGLER_UVX="$PYWRANGLER_VENV/bin/uvx"
 PYWRANGLER_UV="$PYWRANGLER_VENV/bin/uv"
-WORKERS_PY_SPEC="${WORKERS_PY_SPEC:-workers-py<1.14.0}"
-WRANGLER_NPM_SPEC="${WRANGLER_NPM_SPEC:-wrangler@4.42.1}"
+WORKERS_PY_SPEC="${WORKERS_PY_SPEC:-workers-py<1.17.0}"
+WRANGLER_NPM_SPEC="${WRANGLER_NPM_SPEC:-wrangler@4.120.0}"
 
 _pywrangler_ensure_venv_path() {
     case ":$PATH:" in
@@ -31,7 +31,7 @@ if [ "$#" -ge 2 ] && [ "$1" = "--yes" ] && [ "$2" = "wrangler" ]; then
         echo "error: npm is required because pywrangler delegates deploys to Wrangler." >&2
         exit 1
     fi
-    exec npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.42.1}" -- wrangler "$@"
+    exec npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.120.0}" -- wrangler "$@"
 fi
 
 self_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -121,7 +121,7 @@ _pywrangler_run_wrangler() {
         return $?
     fi
     if command -v npx >/dev/null 2>&1; then
-        npx --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.42.1}" -- wrangler "$@"
+        npx --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.120.0}" -- wrangler "$@"
         return $?
     fi
     return 1

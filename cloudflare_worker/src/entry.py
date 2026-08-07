@@ -111,7 +111,7 @@ class _LazyExport:
 # No concurrent asyncio tasks on a request path.
 #
 # The Python Workers runtime snapshot this Worker rides (compatibility_date
-# 2026-07-23; every newer cut is still undeployable, see wrangler.toml) can
+# 2026-08-03, the newest cut that still boots — see wrangler.toml) can
 # step one PyodideTask while another task's step is on the stack. The loop
 # then raises "RuntimeError: Cannot enter into task ... while another task
 # ... is running", the offending task is left pending forever, and from that
