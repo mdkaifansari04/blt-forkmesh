@@ -8127,9 +8127,10 @@ void MainWindow::showAgentSession(int sessionId)
             });
     }
     // Feed the transcript's "session started" divider the run context the CLI
-    // itself never reports — branch, permission mode, reasoning strength (adhoc
-    // #9). Set before any rebuild below so the divider renders with it; external
-    // sessions keep whatever their own init event says.
+    // itself never reports — branch, permission mode, reasoning strength, and
+    // the signed-in ForkMesh account (adhoc #9). Set before any rebuild below
+    // so the divider renders with it; external sessions keep whatever their
+    // own init event says.
     if (m_agentTranscript) {
         QString ctxMode, ctxStrength;
         // Only the CLI providers run under a permission mode; the API ones have
@@ -8148,7 +8149,8 @@ void MainWindow::showAgentSession(int sessionId)
         if (!external)
             ctxStrength = session->strength.isEmpty() ? composerAgentStrength()
                                                       : session->strength;
-        m_agentTranscript->setSessionContext(session->branchName, ctxMode, ctxStrength);
+        m_agentTranscript->setSessionContext(session->branchName, ctxMode, ctxStrength,
+                                             m_accountName);
         // Render a Codex run in Codex's own idiom ("Ran …", "Explored", exit=)
         // rather than Claude Code's tool cards (adhoc #34). Set before the
         // rebuild below so the rows are built in the right dialect.
