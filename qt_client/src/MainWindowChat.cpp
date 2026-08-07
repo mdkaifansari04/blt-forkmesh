@@ -22437,6 +22437,17 @@ bool MainWindow::buildVultrMirrorNodeInstallCommand(
             mirrorBinary = sibling;
     }
     if (mirrorBinary.isEmpty()) {
+        // Desktop-launched GUIs often run without ~/.local/bin in PATH, and a
+        // working-tree build's sibling directory holds no companion — check the
+        // installer-owned location the desktop installer and update flow write.
+        const QString installed =
+            QFileInfo(runningClientExecutable())
+                .dir()
+                .filePath(QStringLiteral("forkmesh-mirror-node"));
+        if (QFileInfo(installed).isExecutable())
+            mirrorBinary = installed;
+    }
+    if (mirrorBinary.isEmpty()) {
         const QString sourceBinary =
             QDir(QStringLiteral(FORKMESH_SOURCE_DIR))
                 .filePath(QStringLiteral("../mirror_node/forkmesh-mirror-node"));
