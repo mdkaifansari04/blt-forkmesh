@@ -12039,7 +12039,7 @@ void MainWindow::pushCurrentRepoUpstream()
                     for (const QString &path : std::as_const(touchedPaths))
                         addArgs << path;
                     runGitCapture(repo.localPath, addArgs, nullptr, nullptr);
-                    QByteArray commitErr;
+                    QString commitErr;
                     if (!runGitCapture(repo.localPath,
                                        {QStringLiteral("commit"), QStringLiteral("-m"),
                                         QStringLiteral("Mark flagged secret scan "
@@ -12047,7 +12047,7 @@ void MainWindow::pushCurrentRepoUpstream()
                                        nullptr, &commitErr)) {
                         flashMessage(QStringLiteral("Could not commit the "
                                                     "reviewed-safe markers: %1")
-                                         .arg(QString::fromUtf8(commitErr).trimmed()),
+                                         .arg(commitErr.trimmed()),
                                      true);
                         return;
                     }
