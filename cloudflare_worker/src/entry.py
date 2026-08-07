@@ -15591,6 +15591,21 @@ def _account_public_last_email(rec):
     }
 
 
+def _contribution_tally(value):
+    """Coerce one contributor_activity column into a non-negative count.
+
+    The directory LEFT JOINs that table, so an account that has never opened
+    an issue or pushed a commit has no row at all and every tally column
+    arrives as SQL NULL — i.e. Python None, which int() rejects. Swallowing
+    that here keeps a contributor-less account from 500-ing the whole
+    directory read (and with it chat's roster and the World campfire).
+    """
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket="",
                               issues=0, pulls=0, commits=0, discussions=0):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
@@ -15606,10 +15621,12 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket="",
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
-        "issues": int(issues),
-        "pulls": int(pulls),
-        "commits": int(commits),
-        "discussions": int(discussions),
+        # Lifetime contribution tallies, one per kind — the columns the Qt
+        # admin Users page shows next to each account.
+        "issues": _contribution_tally(issues),
+        "pulls": _contribution_tally(pulls),
+        "commits": _contribution_tally(commits),
+        "discussions": _contribution_tally(discussions),
         # Payout addresses are public profile data, but never pass through a
         # malformed value from a stored record.
         "solana": solana if SOLANA_RE.match(solana) else "",
@@ -15696,10 +15713,10 @@ async def _account_users_directory(env, request):
         out.append(_account_chat_user_payload(
             rec, row.get("total_active_ms", 0),
             activity_buckets.get(row.get("user_bi"), ""),
-            issues=int(row.get("issues", 0)),
-            pulls=int(row.get("pulls", 0)),
-            commits=int(row.get("commits", 0)),
-            discussions=int(row.get("discussions", 0)),
+            issues=row.get("issues", 0),
+            pulls=row.get("pulls", 0),
+            commits=row.get("commits", 0),
+            discussions=row.get("discussions", 0),
         ))
 
     # The campfire seats members in this same array order, one bench per
