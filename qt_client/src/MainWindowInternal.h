@@ -10049,6 +10049,14 @@ public:
             m_spinAngle = (m_spinAngle + 30) % 360;
             update();
         });
+        // Same deal for the activity light: it only ticks while something this
+        // destination owns is actually running and the item is on screen.
+        m_blinkTimer = new QTimer(this);
+        m_blinkTimer->setInterval(550);
+        connect(m_blinkTimer, &QTimer::timeout, this, [this] {
+            m_blinkOn = !m_blinkOn;
+            update();
+        });
     }
 
     // The app-wide rail has more destinations than the old repo-only rail.
@@ -10147,16 +10155,37 @@ public:
         update();
     }
 
+    // A slowly blinking green light over the icon while a long local job this
+    // destination owns is running — the Control tile during a site deployment
+    // (adhoc #1606), so progress is visible from anywhere in the app. Distinct
+    // from setSyncing()'s rotating glyph, which means "repository traffic".
+    void setActivityBlink(bool on)
+    {
+        if (m_blink == on)
+            return;
+        m_blink = on;
+        m_blinkOn = true;
+        if (m_blink && isVisible())
+            m_blinkTimer->start();
+        else
+            m_blinkTimer->stop();
+        update();
+    }
+    bool activityBlink() const { return m_blink; }
+
 protected:
     void showEvent(QShowEvent *e) override
     {
         if (m_syncing)
             m_spinTimer->start();
+        if (m_blink)
+            m_blinkTimer->start();
         QPushButton::showEvent(e);
     }
     void hideEvent(QHideEvent *e) override
     {
         m_spinTimer->stop();
+        m_blinkTimer->stop();
         QPushButton::hideEvent(e);
     }
     void paintEvent(QPaintEvent *) override
@@ -10272,6 +10301,19 @@ protected:
             p.setPen(QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, text);
         }
+
+        // Activity light: a small green lamp on the icon's lower-right corner,
+        // clear of the badge/spinner corner above it, blinking on its own timer.
+        if (m_blink && m_blinkOn) {
+            const int d = 8;
+            const QRect lamp(iconRect.right() - 2, iconRect.bottom() - d + 1,
+                             d, d);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
+            p.drawEllipse(lamp.adjusted(-2, -2, 2, 2));
+            p.setBrush(QColor("#3fb950"));
+            p.drawEllipse(lamp);
+        }
     }
     void enterEvent(QEnterEvent *e) override
     {
@@ -10294,7 +10336,10 @@ private:
     bool m_accent = false;
     bool m_syncing = false;
     bool m_compact = false;
+    bool m_blink = false;
+    bool m_blinkOn = true;
     QTimer *m_spinTimer = nullptr;
+    QTimer *m_blinkTimer = nullptr;
     int m_spinAngle = 0;
 };
 
