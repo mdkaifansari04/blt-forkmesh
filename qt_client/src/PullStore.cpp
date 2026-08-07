@@ -284,8 +284,8 @@ QString reachableHeadCommit(const QString &workTree, const QString &mirror,
 }
 
 // Drop any other worktree currently holding `branch` checked out so the main
-// worktree can check it out. An agent session runs in a temp worktree at
-// /tmp/forkmesh-worktrees/…; if one is left behind it keeps the branch reserved
+// worktree can check it out. An agent session runs in its own worktree under
+// <checkout>/.worktrees/…; if one is left behind it keeps the branch reserved
 // and `git checkout <branch>` here fails with "is already used by worktree at …".
 // Removing the worktree frees the branch while keeping its ref intact. Returns
 // true if it released something (so the caller should retry the checkout).

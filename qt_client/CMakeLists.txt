@@ -285,6 +285,7 @@ set(FORKMESH_APP_SOURCES
     src/AgentStore.h
     src/AgentStore.cpp
     src/AgentJail.h
+    src/AgentWorktree.h
     src/VirtualMachineRuntime.h
     src/VirtualMachineRuntime.cpp
     src/AgentPromptImages.h
@@ -622,6 +623,7 @@ if(FORKMESH_BUILD_TESTS)
         src/GlobalSearchMatch.cpp
         src/AgentStore.h
         src/AgentStore.cpp
+        src/AgentWorktree.h
         src/UsageLimitCalendar.h
         src/UsageLimitCalendar.cpp
         src/ActionStore.h
