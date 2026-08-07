@@ -14165,9 +14165,9 @@ QWidget *MainWindow::buildHostsSection()
                               m_mirrorFleetDesiredSpin->value());
         }
         if (!enabled) {
-            if (m_mirrorFleetStatus)
-                m_mirrorFleetStatus->setText(QStringLiteral(
-                    "Automatic fleet sizing is off; existing servers are unchanged."));
+            setMirrorFleetStatus(QStringLiteral(
+                "Automatic fleet sizing is off; existing servers are unchanged."));
+            armMirrorFleetCountdown(); // stops the check and its countdown
             return;
         }
         QTimer::singleShot(0, this,
@@ -14188,7 +14188,12 @@ QWidget *MainWindow::buildHostsSection()
     m_mirrorFleetStatus->setObjectName(
         QStringLiteral("healthyMirrorFleetStatus"));
     m_mirrorFleetStatus->setWordWrap(true);
-    m_mirrorFleetStatus->setText(
+    m_mirrorFleetStatus->setToolTip(QStringLiteral(
+        "While automation is on, ForkMesh re-checks the public health catalog "
+        "every five minutes and creates or destroys one managed mirror per "
+        "check until the target is met. The countdown shows when the next "
+        "check runs."));
+    setMirrorFleetStatus(
         m_mirrorFleetEnabledCheck->isChecked()
             ? QStringLiteral("Checking managed mirror health…")
             : QStringLiteral(
@@ -14654,44 +14659,115 @@ void MainWindow::probeSavedHosts()
             host.value(QStringLiteral("user")).toString().trimmed(),
             host.value(QStringLiteral("status")).toString().trimmed());
     }
-    reconcileDesiredMirrorFleet();
+    // The healthy-node check deliberately does not ride this 30-second probe:
+    // it queries the shared relay, which rate-limits at that cadence. It owns
+    // the five-minute timer armed by armMirrorFleetCountdown() instead.
+}
+
+void MainWindow::armMirrorFleetCountdown()
+{
+    if (!m_mirrorFleetEnabledCheck || !m_mirrorFleetEnabledCheck->isChecked()) {
+        if (m_mirrorFleetCheckTimer)
+            m_mirrorFleetCheckTimer->stop();
+        if (m_mirrorFleetCountdownTimer)
+            m_mirrorFleetCountdownTimer->stop();
+        updateMirrorFleetCountdownLabel();
+        return;
+    }
+    if (!m_mirrorFleetCheckTimer) {
+        m_mirrorFleetCheckTimer = new QTimer(this);
+        m_mirrorFleetCheckTimer->setObjectName(
+            QStringLiteral("healthyMirrorFleetTimer"));
+        m_mirrorFleetCheckTimer->setInterval(kMirrorFleetCheckIntervalMs);
+        connect(m_mirrorFleetCheckTimer, &QTimer::timeout, this,
+                &MainWindow::reconcileDesiredMirrorFleet);
+    }
+    if (!m_mirrorFleetCountdownTimer) {
+        m_mirrorFleetCountdownTimer = new QTimer(this);
+        m_mirrorFleetCountdownTimer->setObjectName(
+            QStringLiteral("healthyMirrorFleetCountdown"));
+        m_mirrorFleetCountdownTimer->setInterval(1000);
+        connect(m_mirrorFleetCountdownTimer, &QTimer::timeout, this,
+                &MainWindow::updateMirrorFleetCountdownLabel);
+    }
+    // start() on a running timer restarts it, so each check — whether it acted,
+    // found nothing to do, or could not reach the catalog — measures the next
+    // five minutes from itself rather than stacking extra checks.
+    m_mirrorFleetCheckTimer->start();
+    m_mirrorFleetCountdownTimer->start();
+    updateMirrorFleetCountdownLabel();
+}
+
+void MainWindow::updateMirrorFleetCountdownLabel()
+{
+    if (!m_mirrorFleetStatus)
+        return;
+    const int remainingMs =
+        m_mirrorFleetCheckTimer && m_mirrorFleetCheckTimer->isActive()
+            ? m_mirrorFleetCheckTimer->remainingTime()
+            : -1;
+    if (remainingMs < 0) {
+        m_mirrorFleetStatus->setText(m_mirrorFleetStatusText);
+        return;
+    }
+    // Round up so a freshly armed five-minute window reads 5:00, not 4:59.
+    const int seconds = (remainingMs + 999) / 1000;
+    const QString countdown =
+        QStringLiteral("next healthy-node check in %1:%2")
+            .arg(seconds / 60)
+            .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    m_mirrorFleetStatus->setText(
+        m_mirrorFleetStatusText.isEmpty()
+            ? countdown
+            : m_mirrorFleetStatusText + QString::fromUtf8(" \xC2\xB7 ") +
+                  countdown);
+}
+
+void MainWindow::setMirrorFleetStatus(const QString &text)
+{
+    m_mirrorFleetStatusText = text;
+    updateMirrorFleetCountdownLabel();
 }
 
 void MainWindow::reconcileDesiredMirrorFleet()
 {
     if (!m_mirrorFleetEnabledCheck || !m_mirrorFleetDesiredSpin ||
         !m_mirrorFleetEnabledCheck->isChecked()) {
+        armMirrorFleetCountdown();
         return;
     }
+    // Every entry point — startup, the opt-in checkbox, a target edit, the
+    // five-minute timer, and the follow-up after a create or destroy — restarts
+    // the window, so the countdown always names the next real check.
+    armMirrorFleetCountdown();
     const int desired = m_mirrorFleetDesiredSpin->value();
     if (m_vultrProvisionActive) {
-        if (m_mirrorFleetStatus) {
-            m_mirrorFleetStatus->setText(QStringLiteral(
-                "Target: %1 healthy mirror(s) · waiting for the current "
-                "deployment to become healthy.").arg(desired));
-        }
+        setMirrorFleetStatus(QStringLiteral(
+            "Target: %1 healthy mirror(s) · waiting for the current "
+            "deployment to become healthy.").arg(desired));
         return;
     }
     if (m_mirrorFleetMutationInFlight || m_mirrorFleetReconcileInFlight)
         return;
     if (!m_networkAccess) {
-        if (m_mirrorFleetStatus)
-            m_mirrorFleetStatus->setText(
-                QStringLiteral("Mirror health cannot be checked while network access is unavailable."));
+        setMirrorFleetStatus(
+            QStringLiteral("Mirror health cannot be checked while network access is unavailable."));
         return;
     }
 
     m_mirrorFleetReconcileInFlight = true;
-    if (m_mirrorFleetStatus) {
-        m_mirrorFleetStatus->setText(
-            QStringLiteral("Checking managed mirrors against the public health catalog…"));
-    }
+    setMirrorFleetStatus(
+        QStringLiteral("Checking managed mirrors against the public health catalog…"));
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/repo/forkmesh/forkmesh/mirrors"));
     url.setQuery(QString());
     QNetworkRequest request(url);
     request.setRawHeader(QByteArrayLiteral("accept"),
                          QByteArrayLiteral("application/json"));
+    // A stalled connection must not outlive its own five-minute window: the
+    // in-flight guard would then reject every later check and the loop would
+    // silently stop taking action.
+    request.setTransferTimeout(15000);
     QNetworkReply *reply = m_networkAccess->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         const QByteArray body = reply->readAll();
@@ -14706,12 +14782,12 @@ void MainWindow::reconcileDesiredMirrorFleet()
 
         const QJsonObject payload = QJsonDocument::fromJson(body).object();
         if (!networkOk || !payload.value(QStringLiteral("ok")).toBool()) {
-            if (m_mirrorFleetStatus) {
-                m_mirrorFleetStatus->setText(
-                    QStringLiteral("Could not verify mirror health; no fleet change was made. %1")
-                        .arg(networkOk ? QStringLiteral("The catalog response was invalid.")
-                                       : networkError));
-            }
+            // The countdown is still running, so this is a deferral rather than
+            // a dead end: say so instead of leaving a bare failure on screen.
+            setMirrorFleetStatus(
+                QStringLiteral("Could not verify mirror health; no fleet change was made, retrying. %1")
+                    .arg(networkOk ? QStringLiteral("The catalog response was invalid.")
+                                   : networkError));
             return;
         }
 
@@ -14731,16 +14807,12 @@ void MainWindow::reconcileDesiredMirrorFleet()
 
         switch (plan.action) {
         case forkmesh::control::MirrorFleetAction::None:
-            if (m_mirrorFleetStatus)
-                m_mirrorFleetStatus->setText(
-                    QString::fromUtf8("\xE2\x9C\x94 ") + summary);
+            setMirrorFleetStatus(QString::fromUtf8("\xE2\x9C\x94 ") + summary);
             return;
         case forkmesh::control::MirrorFleetAction::Create:
-            if (m_mirrorFleetStatus) {
-                m_mirrorFleetStatus->setText(
-                    summary + QStringLiteral(
-                                  " · creating one mirror to restore healthy capacity."));
-            }
+            setMirrorFleetStatus(
+                summary + QStringLiteral(
+                              " · creating one mirror to restore healthy capacity."));
             // A failed durable deployment must resume its exact server. A new
             // capacity request, however, always lets the normal name allocator
             // choose a fresh collision-free mirrorN.
@@ -14749,12 +14821,10 @@ void MainWindow::reconcileDesiredMirrorFleet()
             createVultrMirrorFromForm();
             return;
         case forkmesh::control::MirrorFleetAction::Destroy:
-            if (m_mirrorFleetStatus) {
-                m_mirrorFleetStatus->setText(
-                    summary + QStringLiteral(
-                                  " · destroying excess managed mirror %1.")
-                                  .arg(plan.nodeName));
-            }
+            setMirrorFleetStatus(
+                summary +
+                QStringLiteral(" · destroying excess managed mirror %1.")
+                    .arg(plan.nodeName));
             destroyDesiredMirrorFleetNode(plan.nodeName);
             return;
         }
@@ -14788,10 +14858,8 @@ void MainWindow::destroyDesiredMirrorFleetNode(const QString &node)
     const QString invalid =
         forkmesh::control::validateVultrDestroyRequest(apiKey, instanceId);
     if (!invalid.isEmpty()) {
-        if (m_mirrorFleetStatus) {
-            m_mirrorFleetStatus->setText(
-                QStringLiteral("Could not scale down %1: %2").arg(node, invalid));
-        }
+        setMirrorFleetStatus(
+            QStringLiteral("Could not scale down %1: %2").arg(node, invalid));
         return;
     }
 
@@ -14805,11 +14873,9 @@ void MainWindow::destroyDesiredMirrorFleetNode(const QString &node)
         [this, node, instanceId](QJsonObject, QString error) {
             m_mirrorFleetMutationInFlight = false;
             if (!error.isEmpty()) {
-                if (m_mirrorFleetStatus) {
-                    m_mirrorFleetStatus->setText(
-                        QStringLiteral("Could not automatically destroy %1: %2")
-                            .arg(node, error));
-                }
+                setMirrorFleetStatus(
+                    QStringLiteral("Could not automatically destroy %1: %2")
+                        .arg(node, error));
                 appendHostInstallLog(
                     QStringLiteral("Automatic fleet scale-down failed: %1\n")
                         .arg(error));
@@ -14851,11 +14917,9 @@ void MainWindow::destroyDesiredMirrorFleetNode(const QString &node)
                 QStringLiteral("Destroyed excess managed mirror %1; Vultr billing for instance %2 has stopped.")
                     .arg(node, instanceId),
                 false);
-            if (m_mirrorFleetStatus) {
-                m_mirrorFleetStatus->setText(
-                    QStringLiteral("Destroyed excess managed mirror %1; checking the new target…")
-                        .arg(node));
-            }
+            setMirrorFleetStatus(
+                QStringLiteral("Destroyed excess managed mirror %1; checking the new target…")
+                    .arg(node));
             QTimer::singleShot(0, this,
                                &MainWindow::reconcileDesiredMirrorFleet);
         });
