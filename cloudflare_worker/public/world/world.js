@@ -4792,7 +4792,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <span
               class="world-diagnostics-chart"
               data-world-diagnostics-chart
-              title="One chart per health dot · one sample per second · newest at right"
+              title="One chart per health dot, then renderer detail · one sample per second · newest at right"
               aria-hidden="true"
             >
               <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="fps" title="Frames per second">
@@ -4807,8 +4807,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                   <polyline data-world-diagnostics-chart-line="frame" points=""></polyline>
                 </svg>
               </span>
-              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="draw" title="Triangles drawn per frame">
-                <span><b>DRAW △</b><output data-world-diagnostics-chart-value="draw">—</output></span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="draw" title="Draw calls per frame">
+                <span><b>DRAW</b><output data-world-diagnostics-chart-value="draw">—</output></span>
                 <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
                   <polyline data-world-diagnostics-chart-line="draw" points=""></polyline>
                 </svg>
@@ -4847,6 +4847,42 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <span><b>WORLD</b><output data-world-diagnostics-chart-value="world">—</output></span>
                 <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
                   <polyline data-world-diagnostics-chart-line="world" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="triangles" title="Triangles drawn per frame">
+                <span><b>TRIS △</b><output data-world-diagnostics-chart-value="triangles">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="triangles" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="cpu" title="Main-thread work per frame; the gap to FRAME is time spent waiting on the GPU">
+                <span><b>CPU</b><output data-world-diagnostics-chart-value="cpu">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="cpu" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="p95" title="95th percentile frame time each second">
+                <span><b>P95</b><output data-world-diagnostics-chart-value="p95">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="p95" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="jank" title="Frames over 34ms in each second">
+                <span><b>JANK</b><output data-world-diagnostics-chart-value="jank">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="jank" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="anim" title="Animation callbacks running each frame">
+                <span><b>ANIM</b><output data-world-diagnostics-chart-value="anim">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="anim" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="avatars" title="Other people rendered around you">
+                <span><b>AVTR</b><output data-world-diagnostics-chart-value="avatars">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="avatars" points=""></polyline>
                 </svg>
               </span>
               <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="memory" title="JS heap; ~ means estimated renderer assets">
@@ -28077,11 +28113,16 @@ class ForkMeshWorld extends HTMLElement {
     this.diagnosticsQueueTotal = queueTotal;
     this.diagnosticsFrameHistory.push({
       fps: liveRenderer ? liveRenderer.fps : NaN,
+      drawCalls: liveRenderer ? liveRenderer.calls : NaN,
       triangles: liveRenderer ? liveRenderer.triangles : NaN,
       memoryMB: snapshot.memory.chartUsedMB,
       frameTimeMs: liveRenderer ? liveRenderer.frameTimeMs : NaN,
+      frameTimeP95Ms: liveRenderer ? liveRenderer.frameTimeP95Ms : NaN,
+      cpuFrameMs: liveRenderer ? liveRenderer.cpuFrameMs : NaN,
       longestFrameMs: liveRenderer ? liveRenderer.longestFrameMs : NaN,
       longFrames: liveRenderer ? liveRenderer.longFrames : NaN,
+      animations: liveRenderer ? liveRenderer.animations : NaN,
+      remoteAvatars: liveRenderer ? liveRenderer.remoteAvatars : NaN,
       inputResponseMs: liveRenderer ? liveRenderer.inputResponseMs : NaN,
       networkHealth: diagnosticHealthScore(dotLevels.network),
       trafficRate: snapshot.traffic.inboundRate + snapshot.traffic.outboundRate,
@@ -28261,10 +28302,12 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  // One chart per health dot, in the dots' own order, plus the memory trace no
-  // dot owns. Each chart takes its colour from the same grading the dot above
-  // it uses, so the strip is the nine dots' last sixty seconds rather than a
-  // second, unrelated view of the same scene.
+  // One chart per health dot, in the dots' own order, then the renderer detail
+  // traces no dot owns — triangles, main-thread cost, P95, jank, animations,
+  // avatars — and the memory trace last. Each dot chart takes its colour from
+  // the same grading the dot above it uses, so the strip's first nine cells are
+  // the dots' last sixty seconds rather than a second, unrelated view of the
+  // same scene; the detail traces grade themselves against the same thresholds.
   renderDiagnosticsChart(snapshot) {
     const chart = this.$("[data-world-diagnostics-chart]");
     if (!chart) return;
@@ -28306,8 +28349,8 @@ class ForkMeshWorld extends HTMLElement {
         level: levels.frame,
       },
       draw: {
-        value: renderer ? compactCount(renderer.triangles) : "—",
-        points: diagnosticsChartPoints(history, "triangles", {
+        value: renderer ? compactCount(renderer.calls) : "—",
+        points: diagnosticsChartPoints(history, "drawCalls", {
           zeroBased: false,
         }),
         level: levels.draw,
@@ -28350,6 +28393,51 @@ class ForkMeshWorld extends HTMLElement {
         value: renderer ? (renderer.paused ? "PAUSED" : "LIVE") : "—",
         points: healthChart("worldHealth"),
         level: levels.world,
+      },
+      // The renderer detail block below the nine dot traces: readings no dot
+      // owns on its own, each one a fresh per-second sample rather than a
+      // running total, so a spike marks the second it actually happened.
+      triangles: {
+        value: renderer ? compactCount(renderer.triangles) : "—",
+        points: diagnosticsChartPoints(history, "triangles", {
+          zeroBased: false,
+        }),
+        level: renderer
+          ? diagnosticLevel("triangles", renderer.triangles)
+          : "unavailable",
+      },
+      cpu: {
+        value: liveRenderer ? millis(liveRenderer.cpuFrameMs) : "—",
+        points: diagnosticsChartPoints(history, "cpuFrameMs"),
+        level: liveRenderer
+          ? diagnosticLevel("cpuFrameMs", liveRenderer.cpuFrameMs)
+          : "unavailable",
+      },
+      p95: {
+        value: liveRenderer ? millis(liveRenderer.frameTimeP95Ms) : "—",
+        points: diagnosticsChartPoints(history, "frameTimeP95Ms"),
+        level: liveRenderer
+          ? diagnosticLevel("frameTimeP95Ms", liveRenderer.frameTimeP95Ms)
+          : "unavailable",
+      },
+      jank: {
+        value: liveRenderer ? compactCount(liveRenderer.longFrames) : "—",
+        points: diagnosticsChartPoints(history, "longFrames"),
+        level: liveRenderer
+          ? diagnosticLevel("longFrames", liveRenderer.longFrames)
+          : "unavailable",
+      },
+      anim: {
+        value: renderer ? compactCount(renderer.animations) : "—",
+        points: diagnosticsChartPoints(history, "animations", {
+          zeroBased: false,
+        }),
+        level: renderer ? "good" : "unavailable",
+      },
+      avatars: {
+        value: renderer ? compactCount(renderer.remoteAvatars) : "—",
+        points: diagnosticsChartPoints(history, "remoteAvatars"),
+        level: renderer ? "good" : "unavailable",
       },
       memory: {
         value: Number.isFinite(memoryMB)
