@@ -24,6 +24,7 @@
 #include "WorldSpeechBridge.h"
 
 #include <QBrush>
+#include <QCheckBox>
 #include <QCryptographicHash>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -1793,6 +1794,19 @@ QWidget *MainWindow::buildStatusBar()
     connect(cloudflareButton, &QPushButton::clicked, this,
             &MainWindow::showCloudflareWorkerLogs);
 
+    // Beside the button that opens that tail, the checkbox that keeps it
+    // running without one (adhoc #1615): while it is ticked a background
+    // Wrangler tail feeds every Worker error into the log, where it raises the
+    // same red card as any other failure. Session-only on purpose — it holds a
+    // Cloudflare API token open, which is not a state to restore silently at
+    // launch.
+    m_cloudLogMonitorCheck = new QCheckBox(QStringLiteral("Monitor"));
+    m_cloudLogMonitorCheck->setObjectName(QStringLiteral("cloudLogMonitorCheck"));
+    m_cloudLogMonitorCheck->setCursor(Qt::PointingHandCursor);
+    updateCloudLogMonitorTooltip();
+    connect(m_cloudLogMonitorCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setCloudLogMonitorEnabled(on); });
+
     // Third tool: grow the window by a five-line live tail of the log, so the
     // newest lines are readable without opening the footer overlay or the full
     // Log page. Checkable — it is a state, not a one-shot action.
@@ -1807,8 +1821,9 @@ QWidget *MainWindow::buildStatusBar()
     connect(logTailButton, &QPushButton::toggled, this,
             [this](bool on) { setDebugLogTailVisible(on); });
 
-    for (QPushButton *tool : {static_cast<QPushButton *>(cloudflareButton),
-                              m_navRebuildButton, m_navResizeButton,
+    debugToolsRow->addWidget(cloudflareButton, 0, Qt::AlignVCenter);
+    debugToolsRow->addWidget(m_cloudLogMonitorCheck, 0, Qt::AlignVCenter);
+    for (QPushButton *tool : {m_navRebuildButton, m_navResizeButton,
                               static_cast<QPushButton *>(logTailButton)})
         if (tool)
             debugToolsRow->addWidget(tool, 0, Qt::AlignVCenter);
@@ -2838,8 +2853,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     // The status dots to the right of the categories are the deployed Worker's
     // own health checks, so clicking them opens the page that dot is about
     // (adhoc #1559, #1602); the viewer that used to be a button on the Log page
-    // stays available on the dedicated Cloudflare tool button.
+    // stays available on the dedicated Cloudflare tool button. The click also
+    // re-runs that dot's checks on the spot (adhoc #1616) so the row is not
+    // still showing a minute-old verdict while its page loads.
     m_logActivityLights->onWebsiteClicked = [this](const QString &statusId) {
+        // Rechecked first so the dot is already blinking as the browser comes
+        // up — opening a URL hands the desktop's focus to another process.
+        recheckWebsiteStatus(statusId);
         openWebsiteStatusTarget(statusId);
     };
     const QString stallTip = QStringLiteral(
@@ -3347,6 +3367,21 @@ const DesktopEdgeProbe *desktopEdgeProbe(const QString &id)
     return nullptr;
 }
 
+// Which desktop-side checks one dot speaks for: the probe's own row while it
+// still has a dot to itself, and the relay row it merges into once that row
+// exists (adhoc #1616 — clicking a merged dot must re-run the local half too,
+// since that is the half of the verdict this machine can actually re-measure).
+QStringList desktopProbesForStatus(const QString &statusId)
+{
+    QStringList ids;
+    for (const DesktopEdgeProbe &probe : desktopEdgeProbes()) {
+        if (statusId == QLatin1String(probe.id) ||
+            statusId == QLatin1String(probe.mergesInto))
+            ids.append(QString::fromLatin1(probe.id));
+    }
+    return ids;
+}
+
 // Cloudflare's own edge failures are the ones the Worker can never report: it
 // is not running when the edge answers 520-527 or blocks the caller, and the
 // response is a branded error document rather than the site. Name the code so
@@ -3731,6 +3766,34 @@ void MainWindow::openWebsiteStatusTarget(const QString &statusId)
     if (url.isValid() && !url.host().isEmpty())
         QDesktopServices::openUrl(url);
 }
+
+// Re-run everything that grades one dot, right now (adhoc #1616). A red dot is
+// the thing you most want a second opinion on, so opening its page also asks
+// for a current verdict instead of leaving the minute timer to answer later.
+//
+// Both in-flight guards below make a second click while a check is still out a
+// no-op, so leaning on a dot cannot stack requests to the site.
+void MainWindow::recheckWebsiteStatus(const QString &statusId)
+{
+    // The relay grades all of its systems together and publishes them in one
+    // payload, so any of its rows re-reads that whole payload. It answers from
+    // the newest completed cron minute — this cannot make the Worker sample
+    // again — but it does pick up a minute this desktop has not fetched yet,
+    // and it ends a stale "the status API answered HTTP …" row as soon as the
+    // endpoint recovers.
+    refreshFooterWebsiteStatus();
+    // The desktop-side checks are ours to run, so these really do re-measure:
+    // the dot's own probe loads the page again from this machine.
+    for (const QString &id : desktopProbesForStatus(statusId))
+        probeDesktopWebsite(id);
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QStringList MainWindow::testWebsiteRecheckProbes(const QString &statusId) const
+{
+    return desktopProbesForStatus(statusId);
+}
+#endif
 
 // The Worker-errors dot opens the admin error log itself. Its console sits
 // behind a secret, deployment-configured path, so unless this desktop was told
@@ -8311,42 +8374,64 @@ QString MainWindow::testLogTimelineSummary() const
 }
 #endif
 
-void MainWindow::showCloudflareWorkerLogs()
+// Shared by the live viewer and the debug bar's Monitor toggle: both need the
+// same Worker directory, the same pinned Wrangler invocation, and the same
+// credential — and neither may ever put that credential in argv.
+bool MainWindow::prepareCloudflareTail(
+    QString *token, QString *workerDirectory,
+    forkmesh::control::CloudflareBootstrapCommand *command,
+    bool *fromStoredSecret, bool allowPrompt)
 {
-    QString token =
-        m_cloudflareTokenEdit
-            ? m_cloudflareTokenEdit->text().trimmed()
-            : QString();
+    if (!token || !workerDirectory || !command)
+        return false;
+    const auto scrub = [token] {
+        token->fill(QChar(u'\0'));
+        token->clear();
+    };
+    *token = m_cloudflareTokenEdit ? m_cloudflareTokenEdit->text().trimmed()
+                                   : QString();
     // Fall back to the credential this node already stores for the deploy
     // workflow (Settings > Secrets & Coves) so the viewer does not ask for a
     // second token that authenticates against the same account.
     const QMap<QString, QString> storedVariables = ActionStore::variables();
-    bool storedToken = false;
-    if (token.isEmpty()) {
-        token = forkmesh::control::cloudflareApiTokenFromVariables(
+    if (fromStoredSecret)
+        *fromStoredSecret = false;
+    if (token->isEmpty()) {
+        *token = forkmesh::control::cloudflareApiTokenFromVariables(
             storedVariables);
-        storedToken = !token.isEmpty();
+        if (fromStoredSecret)
+            *fromStoredSecret = !token->isEmpty();
     }
-    if (token.isEmpty()) {
+    if (token->isEmpty()) {
+        // A background monitor must never be the thing that pops a modal —
+        // it can be switched on from the debug bar at any moment, including
+        // on a headless node with nobody there to type.
+        if (!allowPrompt) {
+            flashMessage(
+                QStringLiteral(
+                    "Cloud log monitoring needs a Cloudflare API token. Open "
+                    "the Cloud viewer once, or store CLOUDFLARE_API_TOKEN in "
+                    "Settings > Secrets."),
+                true);
+            return false;
+        }
         bool accepted = false;
-        token = QInputDialog::getText(
-                    this, QStringLiteral("Cloudflare Worker logs"),
-                    QStringLiteral(
-                        "Scoped Cloudflare API token (used for this live "
-                        "viewer only):"),
-                    QLineEdit::Password, QString(), &accepted)
-                    .trimmed();
-        if (!accepted || token.isEmpty()) {
-            token.fill(QChar(u'\0'));
-            token.clear();
-            return;
+        *token = QInputDialog::getText(
+                     this, QStringLiteral("Cloudflare Worker logs"),
+                     QStringLiteral(
+                         "Scoped Cloudflare API token (used for this live "
+                         "viewer only):"),
+                     QLineEdit::Password, QString(), &accepted)
+                     .trimmed();
+        if (!accepted || token->isEmpty()) {
+            scrub();
+            return false;
         }
     }
 
-    const QString workerDirectory =
-        forkmesh::control::findCloudflareWorkerDirectory(
-            QStringLiteral(FORKMESH_SOURCE_DIR),
-            QCoreApplication::applicationDirPath());
+    *workerDirectory = forkmesh::control::findCloudflareWorkerDirectory(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
     const QString npx =
         QStandardPaths::findExecutable(QStringLiteral("npx"));
     QString account =
@@ -8364,37 +8449,121 @@ void MainWindow::showCloudflareWorkerLogs()
         account = forkmesh::control::cloudflareAccountIdFromVariables(
             storedVariables);
     }
-    const auto command =
-        forkmesh::control::buildCloudflareTailCommand(
-            token, account, npx);
-    if (workerDirectory.isEmpty() || command.program.isEmpty()) {
+    *command = forkmesh::control::buildCloudflareTailCommand(*token, account,
+                                                             npx);
+    if (workerDirectory->isEmpty() || command->program.isEmpty()) {
         flashMessage(
-            workerDirectory.isEmpty()
+            workerDirectory->isEmpty()
                 ? QStringLiteral(
                       "The installed Cloudflare Worker bundle is incomplete.")
                 : QStringLiteral(
                       "Cloudflare live logs require Node.js/npx and a valid "
                       "account ID."),
             true);
-        token.fill(QChar(u'\0'));
-        token.clear();
-        return;
+        scrub();
+        return false;
     }
-    if (command.arguments.join(QChar(u'\0')).contains(token)) {
+    if (command->arguments.join(QChar(u'\0')).contains(*token)) {
         flashMessage(
             QStringLiteral(
                 "Refusing an unsafe Worker log command containing a "
                 "credential."),
             true);
-        token.fill(QChar(u'\0'));
-        token.clear();
-        return;
+        scrub();
+        return false;
     }
     if (m_cloudflareTokenEdit &&
         !m_cloudflareTokenEdit->text().isEmpty()) {
         m_cloudflareTokenEdit->clear();
         m_cloudflareTokenEdit->setPlaceholderText(
             QStringLiteral("token is in the live log viewer only"));
+    }
+    return true;
+}
+
+void MainWindow::showCloudflareWorkerLogs()
+{
+    // The debug bar's Monitor toggle already holds a tail open against this
+    // Worker. Cloudflare caps how many tails one script can carry, and a second
+    // one would double the traffic for the same lines, so the viewer attaches
+    // to the running monitor instead: its backlog fills the pane and every new
+    // line arrives over cloudLogLineReceived().
+    if (m_cloudLogMonitorProcess &&
+        m_cloudLogMonitorProcess->state() != QProcess::NotRunning) {
+        QDialog monitorDialog(this);
+        monitorDialog.setObjectName(
+            QStringLiteral("cloudflareWorkerLogsDialog"));
+        monitorDialog.setWindowTitle(
+            QStringLiteral("Cloudflare Worker live logs"));
+        monitorDialog.resize(900, 560);
+        auto *monitorLayout = new QVBoxLayout(&monitorDialog);
+        monitorLayout->setContentsMargins(16, 16, 16, 16);
+        monitorLayout->setSpacing(8);
+        auto *monitorNotice = new QLabel(QStringLiteral(
+            "Attached to the debug bar's cloud log monitor. Every request "
+            "shows the user agent behind it; Worker errors also raise an "
+            "alert. Unchecking Monitor stops the stream."));
+        monitorNotice->setObjectName(QStringLiteral("modeHint"));
+        monitorNotice->setWordWrap(true);
+        monitorLayout->addWidget(monitorNotice);
+        auto *monitorStatus = new QLabel;
+        monitorStatus->setObjectName(
+            QStringLiteral("cloudflareWorkerLogsStatus"));
+        monitorLayout->addWidget(monitorStatus);
+        auto *monitorOutput = new QPlainTextEdit;
+        monitorOutput->setObjectName(
+            QStringLiteral("cloudflareWorkerLiveLogs"));
+        monitorOutput->setReadOnly(true);
+        monitorOutput->setLineWrapMode(QPlainTextEdit::NoWrap);
+        monitorOutput->document()->setMaximumBlockCount(2500);
+        // Trailing newline included: live lines append at the end, and without
+        // it the first one would run into the last line of the backlog.
+        monitorOutput->setPlainText(
+            m_cloudLogMonitorRecent.isEmpty()
+                ? QString()
+                : m_cloudLogMonitorRecent.join(QLatin1Char('\n')) +
+                      QLatin1Char('\n'));
+        monitorOutput->moveCursor(QTextCursor::End);
+        monitorLayout->addWidget(monitorOutput, 1);
+        const auto renderStatus = [this, monitorStatus] {
+            monitorStatus->setText(
+                QStringLiteral("Monitoring · %1 event%2 · %3 error%4")
+                    .arg(m_cloudLogMonitorEvents)
+                    .arg(m_cloudLogMonitorEvents == 1 ? QString()
+                                                      : QStringLiteral("s"))
+                    .arg(m_cloudLogMonitorErrors)
+                    .arg(m_cloudLogMonitorErrors == 1 ? QString()
+                                                      : QStringLiteral("s")));
+        };
+        renderStatus();
+        connect(this, &MainWindow::cloudLogLineReceived, &monitorDialog,
+                [monitorOutput, renderStatus](const QString &line, bool) {
+                    monitorOutput->moveCursor(QTextCursor::End);
+                    monitorOutput->insertPlainText(line + QLatin1Char('\n'));
+                    monitorOutput->moveCursor(QTextCursor::End);
+                    monitorOutput->ensureCursorVisible();
+                    renderStatus();
+                });
+        auto *monitorClose = new QPushButton(QStringLiteral("Close"));
+        monitorClose->setObjectName(QStringLiteral("primaryButton"));
+        monitorClose->setCursor(Qt::PointingHandCursor);
+        connect(monitorClose, &QPushButton::clicked, &monitorDialog,
+                &QDialog::accept);
+        auto *monitorButtons = new QHBoxLayout;
+        monitorButtons->addStretch(1);
+        monitorButtons->addWidget(monitorClose);
+        monitorLayout->addLayout(monitorButtons);
+        monitorDialog.exec();
+        return;
+    }
+
+    QString token;
+    QString workerDirectory;
+    forkmesh::control::CloudflareBootstrapCommand command;
+    bool storedToken = false;
+    if (!prepareCloudflareTail(&token, &workerDirectory, &command, &storedToken,
+                               true)) {
+        return;
     }
 
     QDialog dialog(this);
@@ -8409,13 +8578,15 @@ void MainWindow::showCloudflareWorkerLogs()
         storedToken
             ? QStringLiteral(
                   "Read-only live tail for the configured ForkMesh Worker, "
-                  "authenticated with the stored CLOUDFLARE_API_TOKEN secret. "
-                  "The token stays in this process's memory only and is erased "
-                  "when this viewer closes.")
+                  "showing the user agent behind each request, authenticated "
+                  "with the stored CLOUDFLARE_API_TOKEN secret. The token stays "
+                  "in this process's memory only and is erased when this viewer "
+                  "closes.")
             : QStringLiteral(
-                  "Read-only live tail for the configured ForkMesh Worker. The "
-                  "API token stays in this process's memory only and is erased "
-                  "when this viewer closes."));
+                  "Read-only live tail for the configured ForkMesh Worker, "
+                  "showing the user agent behind each request. The API token "
+                  "stays in this process's memory only and is erased when this "
+                  "viewer closes."));
     notice->setObjectName(QStringLiteral("modeHint"));
     notice->setWordWrap(true);
     layout->addWidget(notice);
@@ -8446,14 +8617,33 @@ void MainWindow::showCloudflareWorkerLogs()
     process.setProcessEnvironment(command.environment);
     process.setProcessChannelMode(QProcess::MergedChannels);
     process.setStandardInputFile(QProcess::nullDevice());
-    const auto appendOutput = [&process, output, &token] {
-        const QString chunk =
-            QString::fromUtf8(process.readAllStandardOutput());
-        if (chunk.isEmpty())
+    // Wrangler streams NDJSON now, so the pane renders each event itself: one
+    // line per hit, ending in the user agent that made it. A read can split a
+    // line in half, so whatever follows the last newline is held back until the
+    // rest of it arrives.
+    QByteArray pending;
+    const auto appendOutput = [&process, output, &token, &pending] {
+        pending += process.readAllStandardOutput();
+        int newline = -1;
+        QString rendered;
+        while ((newline = pending.indexOf('\n')) >= 0) {
+            const QString line =
+                QString::fromUtf8(pending.left(newline)).trimmed();
+            pending.remove(0, newline + 1);
+            if (line.isEmpty())
+                continue;
+            rendered += forkmesh::control::parseCloudflareTailLine(line).summary;
+            rendered += QLatin1Char('\n');
+        }
+        // A stalled half-line must not grow without bound if the child ever
+        // emits a stream with no newline in it at all.
+        if (pending.size() > 1024 * 1024)
+            pending.clear();
+        if (rendered.isEmpty())
             return;
         output->moveCursor(QTextCursor::End);
         output->insertPlainText(
-            forkmesh::control::redactProcessOutput(chunk, {token}));
+            forkmesh::control::redactProcessOutput(rendered, {token}));
         output->moveCursor(QTextCursor::End);
         output->ensureCursorVisible();
     };
@@ -8502,6 +8692,188 @@ void MainWindow::showCloudflareWorkerLogs()
         m_cloudflareTokenEdit->setPlaceholderText(
             QStringLiteral("session-only Cloudflare API token"));
     }
+}
+
+// How much of the monitor's stream is kept for a viewer opened later. The point
+// of the backlog is context around the error that raised the alert, not a
+// second copy of the log.
+static constexpr int kCloudLogMonitorBacklog = 500;
+
+// The debug bar's Monitor checkbox. Checked, it holds one Wrangler tail open in
+// the background and turns every Worker failure into an ERROR-badged log line —
+// which is all it takes for alertOnLoggedError() to raise the same red card any
+// other failure gets (adhoc #1615). Healthy hits are not logged: they would bury
+// the app's own log under Worker traffic. The viewer sees them instead.
+void MainWindow::setCloudLogMonitorEnabled(bool enabled)
+{
+    if (enabled && m_cloudLogMonitorProcess)
+        return; // already monitoring (or still tearing the last one down)
+
+    if (!enabled) {
+        // Idempotent: the failed-start and died-on-its-own paths both come back
+        // through here by unchecking the box, and neither should log a stop for
+        // a monitor that is already gone.
+        if (!m_cloudLogMonitorProcess)
+            return;
+        m_cloudLogMonitorStopping = true;
+        if (m_cloudLogMonitorProcess->state() != QProcess::NotRunning) {
+            m_cloudLogMonitorProcess->terminate();
+            if (!m_cloudLogMonitorProcess->waitForFinished(1500)) {
+                m_cloudLogMonitorProcess->kill();
+                m_cloudLogMonitorProcess->waitForFinished(1000);
+            }
+        }
+        // The environment holds the API token, so it is dropped the moment the
+        // child that needed it is gone.
+        m_cloudLogMonitorProcess->setProcessEnvironment(QProcessEnvironment());
+        m_cloudLogMonitorProcess->disconnect(this);
+        m_cloudLogMonitorProcess->deleteLater();
+        m_cloudLogMonitorProcess = nullptr;
+        m_cloudLogMonitorStopping = false;
+        m_cloudLogMonitorBuffer.clear();
+        logSystem(QStringLiteral(
+                      "Cloud: stopped monitoring the Worker log (%1 event%2, "
+                      "%3 error%4).")
+                      .arg(m_cloudLogMonitorEvents)
+                      .arg(m_cloudLogMonitorEvents == 1 ? QString()
+                                                        : QStringLiteral("s"))
+                      .arg(m_cloudLogMonitorErrors)
+                      .arg(m_cloudLogMonitorErrors == 1 ? QString()
+                                                        : QStringLiteral("s")));
+        updateCloudLogMonitorTooltip();
+        return;
+    }
+
+    QString token;
+    QString workerDirectory;
+    forkmesh::control::CloudflareBootstrapCommand command;
+    // allowPrompt=false: a checkbox in the debug bar must not open a modal
+    // asking for a credential. Without a stored token it explains itself and
+    // pops back out.
+    if (!prepareCloudflareTail(&token, &workerDirectory, &command, nullptr,
+                               false)) {
+        if (m_cloudLogMonitorCheck)
+            m_cloudLogMonitorCheck->setChecked(false);
+        return;
+    }
+
+    m_cloudLogMonitorBuffer.clear();
+    m_cloudLogMonitorRecent.clear();
+    m_cloudLogMonitorErrors = 0;
+    m_cloudLogMonitorEvents = 0;
+    m_cloudLogMonitorStopping = false;
+    m_cloudLogMonitorProcess = new QProcess(this);
+    m_cloudLogMonitorProcess->setWorkingDirectory(workerDirectory);
+    m_cloudLogMonitorProcess->setProcessEnvironment(command.environment);
+    m_cloudLogMonitorProcess->setProcessChannelMode(QProcess::MergedChannels);
+    m_cloudLogMonitorProcess->setStandardInputFile(QProcess::nullDevice());
+    connect(m_cloudLogMonitorProcess, &QProcess::readyReadStandardOutput, this,
+            &MainWindow::readCloudLogMonitorOutput);
+    connect(m_cloudLogMonitorProcess, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                logSystem(QStringLiteral(
+                    "Cloud: could not start the Worker log monitor \xE2\x80\x94 "
+                    "Node.js and npx are required."));
+                // Unchecking runs the teardown; the direct call covers a node
+                // with no debug bar to uncheck. Both are idempotent.
+                if (m_cloudLogMonitorCheck)
+                    m_cloudLogMonitorCheck->setChecked(false);
+                setCloudLogMonitorEnabled(false);
+            });
+    connect(m_cloudLogMonitorProcess, &QProcess::finished, this,
+            [this](int exitCode, QProcess::ExitStatus) {
+                readCloudLogMonitorOutput();
+                if (m_cloudLogMonitorStopping)
+                    return;
+                // The stream dying on its own is itself worth an alert: a
+                // monitor nobody knows has stopped is worse than no monitor.
+                logSystem(QStringLiteral(
+                              "Cloud: the Worker log monitor failed and "
+                              "stopped (exit %1).")
+                              .arg(exitCode));
+                if (m_cloudLogMonitorCheck)
+                    m_cloudLogMonitorCheck->setChecked(false);
+                setCloudLogMonitorEnabled(false);
+            });
+    // Logged before start() so the order reads right even when the child fails
+    // to launch synchronously.
+    logSystem(QStringLiteral(
+        "Cloud: monitoring the deployed Worker's live log for errors."));
+    updateCloudLogMonitorTooltip();
+    m_cloudLogMonitorProcess->start(command.program, command.arguments);
+    // The token only ever lived in the child's environment and this local; both
+    // copies go now that the process owns its own.
+    token.fill(QChar(u'\0'));
+    token.clear();
+}
+
+void MainWindow::readCloudLogMonitorOutput()
+{
+    if (!m_cloudLogMonitorProcess)
+        return;
+    m_cloudLogMonitorBuffer += m_cloudLogMonitorProcess->readAllStandardOutput();
+    int newline = -1;
+    while ((newline = m_cloudLogMonitorBuffer.indexOf('\n')) >= 0) {
+        const QString line =
+            QString::fromUtf8(m_cloudLogMonitorBuffer.left(newline)).trimmed();
+        m_cloudLogMonitorBuffer.remove(0, newline + 1);
+        if (!line.isEmpty())
+            handleCloudLogMonitorLine(line);
+    }
+    // Same bound as the viewer: a stream with no newline in it can't grow into
+    // the heap unchecked.
+    if (m_cloudLogMonitorBuffer.size() > 1024 * 1024)
+        m_cloudLogMonitorBuffer.clear();
+}
+
+void MainWindow::handleCloudLogMonitorLine(const QString &line)
+{
+    const forkmesh::control::CloudflareTailEvent event =
+        forkmesh::control::parseCloudflareTailLine(line);
+    const QString rendered =
+        forkmesh::control::redactProcessOutput(event.summary);
+    if (rendered.isEmpty())
+        return;
+    if (event.parsed)
+        ++m_cloudLogMonitorEvents;
+    m_cloudLogMonitorRecent << rendered;
+    while (m_cloudLogMonitorRecent.size() > kCloudLogMonitorBacklog)
+        m_cloudLogMonitorRecent.removeFirst();
+    emit cloudLogLineReceived(rendered, event.isError);
+    if (!event.isError) {
+        updateCloudLogMonitorTooltip();
+        return;
+    }
+    ++m_cloudLogMonitorErrors;
+    // "error" in the text is what networkLogStyleFor() badges ERROR, and an
+    // ERROR-badged line is what alertOnLoggedError() turns into the red card.
+    // Nothing else here has to know about the alert path.
+    logSystem(QStringLiteral("Cloud: Worker error \xC2\xB7 %1").arg(rendered));
+    updateCloudLogMonitorTooltip();
+}
+
+void MainWindow::updateCloudLogMonitorTooltip()
+{
+    if (!m_cloudLogMonitorCheck)
+        return;
+    const bool running = m_cloudLogMonitorProcess &&
+                         m_cloudLogMonitorProcess->state() !=
+                             QProcess::NotRunning;
+    m_cloudLogMonitorCheck->setToolTip(
+        running ? QStringLiteral(
+                      "Watching the deployed Worker's live log \xC2\xB7 %1 "
+                      "event%2, %3 error%4. Errors raise an alert.")
+                      .arg(m_cloudLogMonitorEvents)
+                      .arg(m_cloudLogMonitorEvents == 1 ? QString()
+                                                        : QStringLiteral("s"))
+                      .arg(m_cloudLogMonitorErrors)
+                      .arg(m_cloudLogMonitorErrors == 1 ? QString()
+                                                        : QStringLiteral("s"))
+                : QStringLiteral(
+                      "Watch the deployed Cloudflare Worker's live log and "
+                      "alert on every error it reports"));
 }
 
 QWidget *MainWindow::buildBreadcrumb()

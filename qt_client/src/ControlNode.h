@@ -341,6 +341,27 @@ CloudflareBootstrapCommand buildCloudflareTailCommand(
     const QString &accountId,
     const QString &npxProgram);
 
+// One decoded line of `wrangler tail --format json`. The viewer renders these
+// itself (rather than letting Wrangler pretty-print) because the pretty format
+// drops request headers — and the user agent behind each hit is exactly what
+// the cloud log is read for.
+struct CloudflareTailEvent {
+    bool parsed = false;    // false for banner/plain lines: show them verbatim
+    bool isError = false;   // an exception, a non-ok outcome, a 5xx, error logs
+    QString summary;        // the rendered one-line form for the viewer
+    QString method;
+    QString url;
+    QString userAgent;      // request user-agent header, empty when absent
+    QString outcome;
+    int status = 0;         // response status, 0 when the event carries none
+    QStringList messages;   // console logs and exception text, newest first
+};
+
+// Decode one NDJSON line of Wrangler's tail. Anything that is not a JSON tail
+// event (Wrangler's own banner, a blank line) comes back with parsed=false and
+// the trimmed text in `summary`, so callers can pass it through untouched.
+CloudflareTailEvent parseCloudflareTailLine(const QString &line);
+
 // Decode the bootstrapper's bounded, non-secret machine result. Human log
 // output may surround the sentinel line; malformed or duplicate results fail
 // closed.

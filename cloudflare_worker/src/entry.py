@@ -11413,10 +11413,11 @@ CHAT_ACTIVITY_TTL = 30
 
 async def chat_activity_handler(env, request):
     # Lightweight public digest behind the site-wide header chat badge: how many
-    # retained #general messages exist and how many user accounts are registered.
-    # Counts only — chat_history bodies stay encrypted and user rows are never
-    # decrypted (email_bi is only set on email-bearing user accounts, so it
-    # separates users from keyless node reservations without touching `data`).
+    # retained #general messages exist and how many members are registered.
+    # userCount reuses _public_member_count so this badge always agrees with
+    # the World campfire HUD, which quotes the same function (adhoc #1617 —
+    # they used to run two different filters over `users` and could drift by
+    # a few accounts).
     # Edge-cached so every page load across the site collapses to one D1 read
     # pair per colo per TTL.
     del request
@@ -11430,17 +11431,13 @@ async def chat_activity_handler(env, request):
         "WHERE room_key=?",
         FLAGSHIP_ROOM_KEY,
     )
-    user_row = await d1_first(
-        env,
-        "SELECT COUNT(*) AS c FROM users "
-        "WHERE email_bi IS NOT NULL AND email_bi <> ''",
-    )
+    user_count = await _public_member_count(env)
     resp = json_response(
         {
             "ok": True,
             "messageCount": int((msg_row or {}).get("c") or 0),
             "latestMessageTs": int((msg_row or {}).get("latest") or 0),
-            "userCount": int((user_row or {}).get("c") or 0),
+            "userCount": user_count,
         },
         cache_seconds=CHAT_ACTIVITY_TTL,
     )
@@ -14457,6 +14454,18 @@ def _account_kind(rec):
     return "user" if rec.get("pass_hash") else "node"
 
 
+def _is_public_roster_member(rec):
+    # The one predicate for "counts as a member" everywhere the site shows a
+    # member figure (site-wide chat badge, World campfire HUD, accounts
+    # directory). Keeping this in one place is the fix for adhoc #1617: the
+    # chat badge and the World roster used to apply different filters over
+    # the same `users` table and could disagree by a few accounts.
+    return bool(rec) and (
+        _account_kind(rec) == "user"
+        and rec.get("status") == "active"
+        and not rec.get("profile_private"))
+
+
 def _account_has_legacy_wallet_key(rec):
     # Compatibility detector only. A historical account blob can still contain
     # a donation wallet seed until the offline migration scrubs it. No active
@@ -15917,6 +15926,33 @@ async def _users_directory_cache_get():
     }))
 
 
+async def _public_member_count(env):
+    # The one member count every surface should quote (site-wide chat badge,
+    # World campfire HUD). Prefers the roster the directory endpoint already
+    # cached at the edge; only falls back to its own decrypt scan on a cold
+    # cache, so this rarely pays the 1000-row decrypt cost twice.
+    cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
+    if cached is not None:
+        try:
+            payload = json.loads(await cached.text())
+            return len(payload.get("users") or [])
+        except Exception:
+            pass
+    seen = set()
+    count = 0
+    rows = await d1_all(env, "SELECT data FROM users LIMIT ?", 1000)
+    for row in rows or []:
+        rec = await decrypt_row(env, row.get("data", ""))
+        if not _is_public_roster_member(rec):
+            continue
+        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        count += 1
+    return count
+
+
 async def _account_users_directory(env, request):
     # Public chat roster directory: user profiles only, with no email, password,
     # device, admin, or signature material. Live node presence is still carried
@@ -15949,9 +15985,7 @@ async def _account_users_directory(env, request):
     commit_totals = await _contribution_commit_totals(env)
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
-        if (not rec or _account_kind(rec) != "user"
-                or rec.get("status") != "active"
-                or rec.get("profile_private")):
+        if not _is_public_roster_member(rec):
             continue
         name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
         if not name or name in seen:

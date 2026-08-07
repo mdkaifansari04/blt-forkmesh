@@ -7949,7 +7949,8 @@ protected:
                     tip += QStringLiteral("\nChecking now…");
                 if (onWebsiteClicked)
                     tip += QStringLiteral(
-                        "\nClick to open the related website page.");
+                        "\nClick to check again now and open the related "
+                        "website page.");
                 QToolTip::showText(help->globalPos(), tip, this);
                 return true;
             }

@@ -206,6 +206,7 @@ class PublicMirrorMaterialization;
 namespace forkmesh::control {
 struct MirrorActionsConfigurationRequest;
 struct AgentCliCredentials;
+struct CloudflareBootstrapCommand;
 }
 namespace forkmesh::ui {
 class DiffFileNavigator;  // file-list <-> diff-view sync
@@ -481,6 +482,19 @@ public:
     {
         showPromptBubble(prompt, -1, status);
     }
+    // adhoc #1615: feed the cloud log monitor one line of Wrangler's tail, as
+    // its process would, and read back what it counted. The alert itself is
+    // checked through the log, since that is the route the monitor takes.
+    void testCloudLogMonitorLine(const QString &line)
+    {
+        handleCloudLogMonitorLine(line);
+    }
+    int testCloudLogMonitorErrors() const { return m_cloudLogMonitorErrors; }
+    int testCloudLogMonitorEvents() const { return m_cloudLogMonitorEvents; }
+    QStringList testCloudLogMonitorRecent() const
+    {
+        return m_cloudLogMonitorRecent;
+    }
     QRect testTopMessageRect() { return topMessageBubbleRect(); }
     int testTopMessageQueueDepth() const { return m_topMessageQueue.size(); }
     void testDismissTopMessage() { dismissTopMessage(); }
@@ -544,6 +558,10 @@ public:
     // What a desktop-measured row publishes to the dots: the newest reply's
     // verdict widened by the recent-failure memory (adhoc #1614).
     QString testDesktopWebsiteRowStatus(const QString &id) const;
+    // Which desktop-side checks a click on one dot re-runs (adhoc #1616). The
+    // relay half of the recheck is a single /api/status read for every row, so
+    // only this routing needs pinning.
+    QStringList testWebsiteRecheckProbes(const QString &statusId) const;
     // Forgets the recent verdicts for every desktop-measured row, so a test can
     // grade a fresh reply without the ones it fed in earlier bleeding through.
     void testClearDesktopProbeHistory() { m_desktopProbeHistory.clear(); }
@@ -1335,6 +1353,12 @@ signals:
     // console can attach its live event feed to the new ChatBackend.
     void backendAttached(ChatBackend *backend);
 
+    // One rendered line of the Cloudflare Worker's live tail, as produced by
+    // the debug bar's Monitor toggle. The live-log viewer listens for this so
+    // an already-running monitor feeds it instead of opening a second tail
+    // against the same Worker (adhoc #1615).
+    void cloudLogLineReceived(const QString &line, bool isError);
+
 protected:
     void closeEvent(QCloseEvent *event) override;
     // Rescan the changes panel when the window regains focus (e.g. after a
@@ -1673,6 +1697,11 @@ private:
     // resolved separately because its path is a deployment secret.
     QUrl websiteStatusTargetUrl(const QString &statusId) const;
     void openWebsiteStatusTarget(const QString &statusId);
+    // Clicking a dot is also "check this one again, now" (adhoc #1616): the
+    // checks behind that dot re-run immediately instead of waiting for the next
+    // minute tick, so the verdict beside the page the click just opened is a
+    // fresh one rather than up to a minute old.
+    void recheckWebsiteStatus(const QString &statusId);
     void openAdminErrorConsole();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
@@ -1866,6 +1895,22 @@ private:
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
     void showCloudflareWorkerLogs();
+    // Resolve everything a Wrangler tail needs: the Worker bundle directory,
+    // npx, the account, and the API token (from the settings field, the stored
+    // deploy secret, or — only when `allowPrompt` — the user). Returns false
+    // after explaining why in a toast. The token is returned to the caller so
+    // it can be scrubbed from memory once the tail ends.
+    bool prepareCloudflareTail(QString *token, QString *workerDirectory,
+                               forkmesh::control::CloudflareBootstrapCommand
+                                   *command,
+                               bool *fromStoredSecret, bool allowPrompt);
+    // Debug-bar "Monitor" checkbox: keep a Wrangler tail running in the
+    // background and route every Worker error into the log, where the existing
+    // ERROR alert raises the same card any other failure gets (adhoc #1615).
+    void setCloudLogMonitorEnabled(bool enabled);
+    void readCloudLogMonitorOutput();
+    void handleCloudLogMonitorLine(const QString &line);
+    void updateCloudLogMonitorTooltip();
     // The same log in a window of its own: everything retained, unfiltered.
     void showNetworkLogPopout();
 
@@ -6151,6 +6196,17 @@ private:
     QPushButton *m_debugLogTailButton = nullptr;
     int m_debugLogTailHeight = 0; // the strip the window grows by, in pixels
     bool m_debugLogTailShown = false;
+    // Debug bar's "Monitor" checkbox and the background Wrangler tail it owns
+    // (adhoc #1615). While it runs, every Worker exception/5xx reaches the log
+    // as an ERROR line, which raises the same toast as any other failure. The
+    // token lives in the child environment only, never in argv or QSettings.
+    QCheckBox *m_cloudLogMonitorCheck = nullptr;
+    QProcess *m_cloudLogMonitorProcess = nullptr;
+    QByteArray m_cloudLogMonitorBuffer; // partial NDJSON line across reads
+    QStringList m_cloudLogMonitorRecent; // rendered backlog for the viewer
+    int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
+    int m_cloudLogMonitorEvents = 0;     // Worker events seen since then
+    bool m_cloudLogMonitorStopping = false; // a deliberate stop, not a crash
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;

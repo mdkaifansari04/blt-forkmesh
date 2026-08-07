@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -1620,12 +1621,15 @@ CloudflareBootstrapCommand buildCloudflareTailCommand(
         return command;
     }
 
+    // JSON, not pretty: Wrangler's pretty printer throws the request headers
+    // away, and the user agent behind each hit is the whole reason to read this
+    // log. parseCloudflareTailLine() renders the line instead (adhoc #1615).
     command.arguments = {
         QStringLiteral("--yes"),
         QStringLiteral("wrangler@4.42.1"),
         QStringLiteral("tail"),
         QStringLiteral("--format"),
-        QStringLiteral("pretty"),
+        QStringLiteral("json"),
     };
     command.environment = QProcessEnvironment::systemEnvironment();
     command.environment.remove(QStringLiteral("CLOUDFLARE_API_KEY"));
@@ -1640,6 +1644,175 @@ CloudflareBootstrapCommand buildCloudflareTailCommand(
             QStringLiteral("CLOUDFLARE_ACCOUNT_ID"), account);
     }
     return command;
+}
+
+namespace {
+
+// One console-log argument as text. Wrangler ships each log entry's message as
+// an array of whatever the Worker passed to console.log, so anything that isn't
+// already a string is re-encoded compactly rather than dropped.
+QString tailLogArgument(const QJsonValue &value)
+{
+    if (value.isString())
+        return value.toString();
+    if (value.isDouble())
+        return QString::number(value.toDouble());
+    if (value.isBool())
+        return value.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    if (value.isNull())
+        return QStringLiteral("null");
+    if (value.isObject())
+        return QString::fromUtf8(
+            QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact));
+    if (value.isArray())
+        return QString::fromUtf8(
+            QJsonDocument(value.toArray()).toJson(QJsonDocument::Compact));
+    return {};
+}
+
+// Keep one field from turning a tail line into a paragraph. A pathological user
+// agent (or a Worker logging a whole payload) is truncated with an ellipsis so
+// the viewer stays one readable line per event.
+QString elideTailField(QString value, int limit)
+{
+    value.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    value.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    value = value.simplified();
+    if (value.size() <= limit)
+        return value;
+    return value.left(qMax(0, limit - 1)) + QString::fromUtf8("\xE2\x80\xA6");
+}
+
+}  // namespace
+
+CloudflareTailEvent parseCloudflareTailLine(const QString &line)
+{
+    CloudflareTailEvent event;
+    const QString trimmed = line.trimmed();
+    event.summary = trimmed;
+    if (trimmed.isEmpty() || !trimmed.startsWith(QLatin1Char('{')))
+        return event;
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(trimmed.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject())
+        return event;
+    const QJsonObject root = document.object();
+    // Wrangler's tail frames always carry an outcome; anything else that merely
+    // happens to be JSON on stdout is passed through as plain text.
+    if (!root.contains(QStringLiteral("outcome")))
+        return event;
+    event.parsed = true;
+
+    event.outcome = root.value(QStringLiteral("outcome")).toString().trimmed();
+    const QJsonObject eventBody =
+        root.value(QStringLiteral("event")).toObject();
+    const QJsonObject request =
+        eventBody.value(QStringLiteral("request")).toObject();
+    event.method = request.value(QStringLiteral("method")).toString().trimmed();
+    event.url = request.value(QStringLiteral("url")).toString().trimmed();
+    const QJsonObject headers =
+        request.value(QStringLiteral("headers")).toObject();
+    for (auto it = headers.constBegin(); it != headers.constEnd(); ++it) {
+        // Header names arrive lower-cased in practice, but the match is
+        // case-insensitive so a proxy that re-cases them can't hide the agent.
+        if (it.key().compare(QLatin1String("user-agent"),
+                             Qt::CaseInsensitive) == 0) {
+            event.userAgent = it.value().toString().trimmed();
+            break;
+        }
+    }
+    const QJsonValue response = eventBody.value(QStringLiteral("response"));
+    if (response.isObject()) {
+        event.status =
+            response.toObject().value(QStringLiteral("status")).toInt();
+    }
+
+    bool errorLevelLog = false;
+    const QJsonArray exceptions =
+        root.value(QStringLiteral("exceptions")).toArray();
+    for (const QJsonValue &value : exceptions) {
+        const QJsonObject exception = value.toObject();
+        const QString name =
+            exception.value(QStringLiteral("name")).toString().trimmed();
+        const QString message =
+            exception.value(QStringLiteral("message")).toString().trimmed();
+        const QString text = name.isEmpty()
+                                 ? message
+                                 : (message.isEmpty()
+                                        ? name
+                                        : name + QStringLiteral(": ") + message);
+        if (!text.isEmpty())
+            event.messages << text;
+    }
+    const QJsonArray logs = root.value(QStringLiteral("logs")).toArray();
+    for (const QJsonValue &value : logs) {
+        const QJsonObject entry = value.toObject();
+        const QString level =
+            entry.value(QStringLiteral("level")).toString().trimmed().toLower();
+        if (level == QLatin1String("error") || level == QLatin1String("fatal"))
+            errorLevelLog = true;
+        QStringList parts;
+        const QJsonValue message = entry.value(QStringLiteral("message"));
+        if (message.isArray()) {
+            for (const QJsonValue &argument : message.toArray()) {
+                const QString text = tailLogArgument(argument);
+                if (!text.isEmpty())
+                    parts << text;
+            }
+        } else {
+            const QString text = tailLogArgument(message);
+            if (!text.isEmpty())
+                parts << text;
+        }
+        if (parts.isEmpty())
+            continue;
+        const QString joined = parts.join(QLatin1Char(' '));
+        event.messages << (level.isEmpty() || level == QLatin1String("log")
+                               ? joined
+                               : level + QStringLiteral(": ") + joined);
+    }
+
+    // "canceled" is the client hanging up mid-request and "unknown" is Wrangler
+    // having no verdict — neither is the Worker failing, so neither raises an
+    // alert. A 5xx does, whatever the outcome says.
+    const bool badOutcome = !event.outcome.isEmpty() &&
+                            event.outcome != QLatin1String("ok") &&
+                            event.outcome != QLatin1String("unknown") &&
+                            event.outcome != QLatin1String("canceled");
+    event.isError = badOutcome || !exceptions.isEmpty() || errorLevelLog ||
+                    event.status >= 500;
+
+    QStringList fields;
+    const qint64 timestampMs = static_cast<qint64>(
+        root.value(QStringLiteral("eventTimestamp")).toDouble());
+    if (timestampMs > 0) {
+        fields << QDateTime::fromMSecsSinceEpoch(timestampMs)
+                      .toString(QStringLiteral("HH:mm:ss"));
+    }
+    if (!event.method.isEmpty())
+        fields << event.method;
+    if (event.status > 0)
+        fields << QString::number(event.status);
+    if (!event.url.isEmpty())
+        fields << elideTailField(event.url, 160);
+    const QJsonValue cron = eventBody.value(QStringLiteral("cron"));
+    if (event.url.isEmpty() && cron.isString()) {
+        fields << QStringLiteral("cron \"%1\"")
+                      .arg(elideTailField(cron.toString(), 40));
+    }
+    if (!event.outcome.isEmpty())
+        fields << event.outcome;
+    // The agent string is the point of this line, so it is never the field that
+    // gets dropped — it is labelled and kept last where the eye can skip it.
+    fields << (event.userAgent.isEmpty()
+                   ? QStringLiteral("UA (none)")
+                   : QStringLiteral("UA %1")
+                         .arg(elideTailField(event.userAgent, 160)));
+    for (const QString &message : std::as_const(event.messages))
+        fields << elideTailField(message, 400);
+    event.summary = fields.join(QString::fromUtf8(" \xC2\xB7 "));
+    return event;
 }
 
 QJsonObject parseCloudflareBootstrapResult(const QByteArray &output,
