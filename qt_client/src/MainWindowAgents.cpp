@@ -322,6 +322,13 @@ QString agentStatusPillText(const AgentSession &session)
 // than as another toolbar glyph.
 constexpr int kAgentStatusPillIconPx = 44;
 
+// How many times a CLI that dies without finishing a turn is put back on the
+// queue before the session is failed with a reason. A crash mid-turn is worth
+// retrying; a launch that cannot work today (its saved conversation is gone,
+// the login expired, the CLI is broken) fails identically every pass, and
+// retrying it forever is indistinguishable from a button that does nothing.
+constexpr int kMaxAgentRelaunchAttempts = 2;
+
 QIcon agentStatusPillIcon(const AgentSession &session)
 {
     if (session.merged || session.status == AgentStatus::Success)
@@ -9171,9 +9178,40 @@ QString MainWindow::saveNewAgentPromptImage(const QImage &image)
     return AgentPromptImages::save(image);
 }
 
+// The user-driven route into continueAgentSession: the detail page's Continue
+// button and the composer's "add" with nothing typed. continueAgentSession() is
+// also a background path (a website-queued resume, "Start all", the restart
+// recovery) so it returns quietly on the states it will not act on — which from
+// this side is exactly what a dead button looks like. Name the reason here,
+// where a person is waiting for one.
 void MainWindow::continueSelectedAgentSession()
 {
-    continueAgentSession(m_selectedAgentSessionId);
+    const int sid = m_selectedAgentSessionId;
+    if (sid <= 0 || !findAgentSession(sid)) {
+        logSystem(QStringLiteral(
+            "No agent open above to continue \xE2\x80\x94 open one first."));
+        return;
+    }
+    if (isExternalSession(sid)) {
+        logSystem(QStringLiteral(
+            "This session belongs to another process, so ForkMesh can only "
+            "watch it \xE2\x80\x94 start a new agent instead."));
+        return;
+    }
+    if (agentSessionHasLiveTransport(sid)) {
+        flashMessage(QStringLiteral(
+            "This agent is already running \xE2\x80\x94 type a message and it goes "
+            "straight to it."));
+        return;
+    }
+    if (const AgentSession *session = findAgentSession(sid);
+        session && session->status == AgentStatus::Queued &&
+        m_agentQueue.contains(sid)) {
+        flashMessage(QStringLiteral(
+            "This agent is queued and starts as soon as a run slot frees up."));
+        return;
+    }
+    continueAgentSession(sid);
 }
 
 // Same as continueSelectedAgentSession, but for an arbitrary session id
@@ -9461,6 +9499,7 @@ void MainWindow::purgeSessionState(int sessionId)
     m_streamAccountId.remove(sessionId);
     m_sessionWorkdirCache.remove(sessionId);
     m_pendingSteerMessage.remove(sessionId);
+    m_agentRelaunchAttempts.remove(sessionId);
     m_sessionTokens.remove(sessionId);
     m_lastAssistantText.remove(sessionId);
     m_scannerStates.remove(sessionId);
@@ -10608,14 +10647,22 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
         }
     }
-    QString codexResumeFallbackPrompt;
-    if (codex && !resumeId.isEmpty()) {
-        codexResumeFallbackPrompt =
+    // Both CLIs keep their conversations in their own config root and prune them,
+    // so a session picked back up days later can have nothing left to resume.
+    // Neither is allowed to fail on that: the branch still holds the work and is
+    // still the point, so hand the run a full-context turn to fall back on. This
+    // is what lets "add" restart *any* past session rather than only the ones
+    // whose conversation the CLI still happens to hold.
+    QString resumeFallbackPrompt;
+    if (!resumeId.isEmpty()) {
+        resumeFallbackPrompt =
             QStringLiteral(
-                "The previous Codex thread could not be resumed. Continue the "
+                "The previous %1 conversation could not be resumed. Continue the "
                 "same work from the current branch and repository state.\n\n"
-                "Original task:\n%1\n\nLatest user instruction:\n%2")
-                .arg(originalTaskPrompt,
+                "Original task:\n%2\n\nLatest user instruction:\n%3")
+                .arg(codex ? QStringLiteral("Codex thread")
+                           : QStringLiteral("Claude Code session"),
+                     originalTaskPrompt,
                      steer.isEmpty() ? QStringLiteral("Continue where you left off.")
                                      : steer);
     }
@@ -10703,34 +10750,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 }
             } else if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
-                // Only re-queue a process that actually got somewhere (crash mid-turn);
-                // one that never produced a session id at all (bad install, expired
-                // login) would otherwise cycle Queued -> Running -> exit forever via
-                // processAgentQueue(), each pass reporting "Running" to
-                // anyAgentRunning() and leaving Rebuild & restart stuck on "Waiting
-                // for running actions to finish" with no real work in flight (adhoc
-                // #116). Codex already guarded this; extend the same check to Claude
-                // Code.
-                const bool launchFailed = codex ? lastCodexThreadId(sid).isEmpty()
-                                                 : lastClaudeSessionId(sid).isEmpty();
-                if (launchFailed) {
-                    as->status = AgentStatus::Failed;
-                    as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
-                    as->lastError =
-                        codex ? QStringLiteral("Codex app-server exited before "
-                                               "starting a thread (exit %1).")
-                                    .arg(exitCode)
-                              : QStringLiteral("Claude Code exited before starting "
-                                               "a session (exit %1).")
-                                    .arg(exitCode);
-                } else {
-                    as->status = AgentStatus::Queued;
-                    as->lastError.clear();
-                    if (!m_agentQueue.contains(sid))
-                        m_agentQueue.append(sid);
-                }
-                m_agentStore->saveSession(*as);
-                scheduleAgentSessionsPush(); // adhoc #182
+                applyCliExitWithoutResult(sid, codex, exitCode);
             }
         }
         // Pull requests are user-driven now (adhoc #2 follow-up: "I don't want
@@ -10907,7 +10927,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
-    auto launch = [this, sid, prompt, codexResumeFallbackPrompt, autoMode,
+    auto launch = [this, sid, prompt, resumeFallbackPrompt, autoMode,
                    branchName, resumeId, selectedModel, routeTask, codex,
                    sessionMode, sessionStrength,
                    runAccountEnv](const QString &workdir) {
@@ -10955,7 +10975,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 codexEnv << AgentJail::envEntries(jailDir);
             }
             live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
-                        effort, jailMb, codexResumeFallbackPrompt);
+                        effort, jailMb, resumeFallbackPrompt);
             return;
         }
 
@@ -10983,8 +11003,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // runs the router (adhoc #91), which is asynchronous — so `begin`
         // re-checks that this stream is still the session's live one (the user
         // may have stopped or restarted it while the triage ran).
-        auto begin = [this, sid, live, workdir, env, prompt, autoMode,
-                      resumeId, sessionMode, sessionStrength](const QString &chosenModel) {
+        auto begin = [this, sid, live, workdir, env, prompt, autoMode, resumeId,
+                      resumeFallbackPrompt, sessionMode,
+                      sessionStrength](const QString &chosenModel) {
             if (m_streamSessions.value(sid) != live)
                 return;
             // Footer slash-actions menu (adhoc #116): effort and model-fallback
@@ -11022,7 +11043,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                  QStringLiteral("claude-code"), chosenModel,
                                  sessionMode, effort)));
             live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
-                        resumeId, chosenModel, effort, fallback, jailMb);
+                        resumeId, chosenModel, effort, fallback, jailMb,
+                        resumeFallbackPrompt);
         };
         if (selectedModel == kClaudeAutoModelId)
             resolveAutoClaudeModel(sid, routeTask, workdir, live, std::move(begin));
@@ -12467,6 +12489,67 @@ void MainWindow::popOutAgentSessionToTerminal(int sessionId)
                          : QStringLiteral("%1.").arg(what));
 }
 
+// A CLI exited while its session was still Running/Waiting, i.e. without ever
+// finishing a turn. Decide between another go and giving up, and stamp the
+// session accordingly; returns true when it was re-queued.
+//
+// Only re-queue a process that actually got somewhere (a crash mid-turn); one
+// that never produced a session id at all (bad install, expired login) would
+// otherwise cycle Queued -> Running -> exit forever via processAgentQueue(),
+// each pass reporting "Running" to anyAgentRunning() and leaving Rebuild &
+// restart stuck on "Waiting for running actions to finish" with no real work in
+// flight (adhoc #116).
+//
+// That id check reads the whole persisted transcript, though, so it only catches
+// a session that has NEVER launched. One that ran fine last week and cannot
+// start today — the conversation its resume names has been pruned, the login
+// expired, the CLI is broken — still shows an id from those older turns, so it
+// took the re-queue branch on every pass and span there: queued, exit, queued,
+// with a perpetual spinner and no error anywhere. Pressing Continue or the
+// composer's "add" on such a past session was indistinguishable from a dead
+// button. Bound the retries and fail with a reason instead.
+bool MainWindow::applyCliExitWithoutResult(int sessionId, bool codex, int exitCode)
+{
+    AgentSession *session = findAgentSession(sessionId);
+    if (!session)
+        return false;
+    const bool neverLaunched = codex ? lastCodexThreadId(sessionId).isEmpty()
+                                     : lastClaudeSessionId(sessionId).isEmpty();
+    const int attempts = m_agentRelaunchAttempts.value(sessionId) + 1;
+    m_agentRelaunchAttempts.insert(sessionId, attempts);
+    const bool giveUp = neverLaunched || attempts > kMaxAgentRelaunchAttempts;
+    if (giveUp) {
+        m_agentRelaunchAttempts.remove(sessionId);
+        session->status = AgentStatus::Failed;
+        session->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+        const QString cli = codex ? QStringLiteral("Codex app-server")
+                                  : QStringLiteral("Claude Code");
+        session->lastError =
+            neverLaunched
+                ? QStringLiteral("%1 exited before starting a %2 (exit %3).")
+                      .arg(cli,
+                           codex ? QStringLiteral("thread")
+                                 : QStringLiteral("session"))
+                      .arg(exitCode)
+                : QStringLiteral("%1 exited without starting a turn on %2 "
+                                 "attempts (exit %3). The branch still holds the "
+                                 "work \xE2\x80\x94 check the CLI is installed and "
+                                 "logged in, then continue this session again.")
+                      .arg(cli)
+                      .arg(attempts)
+                      .arg(exitCode);
+    } else {
+        session->status = AgentStatus::Queued;
+        session->lastError.clear();
+        if (!m_agentQueue.contains(sessionId))
+            m_agentQueue.append(sessionId);
+    }
+    if (m_agentStore)
+        m_agentStore->saveSession(*session);
+    scheduleAgentSessionsPush(); // adhoc #182
+    return !giveUp;
+}
+
 // The session started working again — a resumed CLI announced itself, or a new
 // user turn was steered into a live one. Whatever terminal state the previous
 // turn left (Waiting, Failed, Success), the list must show it Running now (adhoc
@@ -12480,6 +12563,10 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     // result; that old poll must never turn this new turn into Done.
     m_agentCompletionChecks.remove(sessionId);
     m_agentCompletionPollCounts.remove(sessionId);
+    // Getting here means a launch reached the CLI's own announcement, so the
+    // relaunch budget starts over: a later crash mid-turn is a new problem, not
+    // a continuation of a launch that could never work.
+    m_agentRelaunchAttempts.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status == AgentStatus::Running)
         return;
