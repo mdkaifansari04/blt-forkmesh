@@ -53,19 +53,24 @@ constexpr int kMaximumWorkerResponse = 1024 * 1024;
 constexpr int kFinalizationPollLimit = 36;
 constexpr int kFinalizationPollMs = 5000;
 
+// Open pane, not a bordered card: this is one tab of the control-node page and
+// every tab there dropped its container (adhoc #1606).
 QFrame *rewardCard()
 {
     auto *card = new QFrame;
-    card->setObjectName(QStringLiteral("leaderboardCard"));
-    card->setFrameShape(QFrame::StyledPanel);
+    card->setObjectName(QStringLiteral("controlTabPane"));
+    card->setFrameShape(QFrame::NoFrame);
     return card;
 }
 
+// Marked as control-node help text so the page's Help tile hides/reveals it
+// with every other explanatory paragraph.
 QLabel *rewardHint(const QString &text)
 {
     auto *label = new QLabel(text);
     label->setObjectName(QStringLiteral("mutedLabel"));
     label->setWordWrap(true);
+    label->setProperty("fmControlHelp", true);
     return label;
 }
 
@@ -157,12 +162,9 @@ QWidget *MainWindow::buildRewardPoolControlCard()
 {
     QFrame *card = rewardCard();
     auto *layout = new QVBoxLayout(card);
-    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(10);
 
-    auto *title = new QLabel(QStringLiteral("Community reward-pool signer"));
-    title->setObjectName(QStringLiteral("sectionLabel"));
-    layout->addWidget(title);
     layout->addWidget(rewardHint(
         QStringLiteral(
             "First-instance owner only. Import an existing Solana pool key into "

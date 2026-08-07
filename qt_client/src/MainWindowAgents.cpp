@@ -500,10 +500,9 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                                 const AgentSession &session,
                                 const QString &gitDir, const QString &base,
                                 const QString &worktree,
-                                bool probeConflict, bool autoSyncCompleted)
+                                bool probeConflict, bool idleSession)
 {
     AgentDiffStat stat;
-    bool trackedDirty = false;
     // forkmesh/pulls is the shared signed PR ledger, not an agent-authored code
     // branch. Comparing its historical storage tree to main produces a bogus
     // 99+ file badge and can trigger an equally bogus behind/conflict state.
@@ -522,12 +521,6 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
             const QString lines = QString::fromUtf8(dirtyOut).trimmed();
             stat.dirty =
                 lines.isEmpty() ? 0 : lines.count(QLatin1Char('\n')) + 1;
-            for (const QString &line : lines.split(QLatin1Char('\n'))) {
-                if (!line.isEmpty() && !line.startsWith(QLatin1String("??"))) {
-                    trackedDirty = true;
-                    break;
-                }
-            }
         }
     }
     if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
@@ -587,55 +580,20 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                 stat.ahead = parts.at(1).toInt();
             }
         }
-        // A merge into main advances the base for every surviving agent branch.
-        // Keep completed, clean worktrees current as part of the same background
-        // refresh instead of painting every row as newly unhealthy until the
-        // user opens it one by one. Never touch an active or dirty worktree, and
-        // preflight the merge tree so a genuine conflict stays completely
-        // unchanged and visible for manual resolution.
-        if (autoSyncCompleted && stat.behind > 0 && !trackedDirty &&
-            !stat.worktree.isEmpty()) {
-            const bool canMerge =
-                runGitCapture(gitDir,
-                              {QStringLiteral("merge-tree"),
-                               QStringLiteral("--write-tree"),
-                               session.branchName, base},
-                              nullptr, nullptr);
-            if (canMerge) {
-                const QStringList mergeArgs =
-                    stat.ahead == 0
-                        ? QStringList{QStringLiteral("merge"),
-                                      QStringLiteral("--ff-only"), base}
-                        : QStringList{QStringLiteral("merge"),
-                                      QStringLiteral("--no-edit"), base};
-                if (runGitCapture(stat.worktree, mergeArgs, nullptr, nullptr)) {
-                    QByteArray refreshedCounts;
-                    if (runGitCapture(
-                            gitDir,
-                            {QStringLiteral("rev-list"),
-                             QStringLiteral("--left-right"),
-                             QStringLiteral("--count"),
-                             base + QStringLiteral("...") + session.branchName},
-                            &refreshedCounts, nullptr)) {
-                        const QStringList refreshed =
-                            QString::fromUtf8(refreshedCounts)
-                                .trimmed()
-                                .split(QRegularExpression(QStringLiteral("\\s+")));
-                        if (refreshed.size() >= 2) {
-                            stat.behind = refreshed.at(0).toInt();
-                            stat.ahead = refreshed.at(1).toInt();
-                        }
-                    }
-                }
-            } else {
-                stat.conflicted = true;
-            }
-        }
-        // merge-tree is materially slower than the ref/status reads above. The
-        // selected row gets an exact verdict; all other rows publish their
-        // counts immediately and the branch detail performs its own cached
+        // This refresh reports on branches; it never moves them. A merge into
+        // main advances the base for every surviving agent branch, and the
+        // refresh used to quietly merge it back into each idle, clean worktree
+        // so the rows didn't all turn "behind" at once. That automatic pull is
+        // gone (adhoc #1611): main goes into an agent branch only when asked
+        // for, from the Agents toolbar's "Update all" or one session's "Update".
+        //
+        // merge-tree is materially slower than the ref/status reads above, so
+        // the exact verdict is confined to the rows where a wrong one is worth
+        // the cost: the selected one, and the idle ones (an active session's
+        // branch tip moves under the probe anyway). Everything else publishes
+        // its counts immediately, and the branch detail performs its own cached
         // conflict probe when opened.
-        if (probeConflict && stat.behind > 0 && !session.merged &&
+        if ((probeConflict || idleSession) && stat.behind > 0 && !session.merged &&
             !runGitCapture(gitDir,
                            {QStringLiteral("merge-tree"),
                             QStringLiteral("--write-tree"), session.branchName,
@@ -2215,6 +2173,19 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
+    // "Update all" is the detail page's per-session "Update" run over the whole
+    // fleet: merge each session's base branch into its own worktree branch. It is
+    // deliberately a button and nothing else — ForkMesh never pulls main into a
+    // branch on its own, so branches only catch up when this is pressed.
+    m_agentUpdateAllButton = railActionButton(
+        QStringLiteral("sync"), QStringLiteral("Update all"),
+        "Merge each agent's base branch into its own worktree branch. Uncommitted "
+        "work is stashed and restored on top; a branch that can't merge cleanly "
+        "is left exactly as it was.");
+    m_agentUpdateAllButton->setObjectName("agentUpdateAllButton");
+    connect(m_agentUpdateAllButton, &QPushButton::clicked, this,
+            &MainWindow::updateAllAgentWorktreesFromMain);
+
     // Keep every fleet action in one floating bar at the bottom-right of the
     // session-list pane. Queue capacity, bulk controls, and interactive
     // provider terminals are all available from one place.
@@ -2335,6 +2306,7 @@ QWidget *MainWindow::buildAgentsTab()
     });
     agentQueueLayout->addWidget(m_agentStartAllButton);
     agentQueueLayout->addWidget(m_agentStopAllButton);
+    agentQueueLayout->addWidget(m_agentUpdateAllButton);
     agentQueueLayout->addWidget(m_agentDeleteMergedButton);
     agentQueueLayout->addWidget(m_agentHideDetailButton);
     agentQueueLayout->addWidget(claudeTerminalButton);
@@ -7410,10 +7382,11 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
         return false;
     // Every successful merge advances the comparison base for every surviving
     // agent branch, even when the merged PR did not originate from an agent.
-    // Arm the coalesced worker now: completed clean worktrees are updated there,
-    // active/dirty ones are retried by the reload that follows their completion.
-    // This is intentionally independent of whether the merged PR matches a
-    // session below.
+    // Arm the coalesced worker now so those rows re-read their behind/conflict
+    // counts against the new base — it only measures them; catching a branch up
+    // is "Update all" in the Agents toolbar and nothing else (adhoc #1611). This
+    // is intentionally independent of whether the merged PR matches a session
+    // below.
     m_agentDiffRefreshPending = true;
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     bool changed = false;
@@ -11548,6 +11521,144 @@ void MainWindow::startAllStoppedAgents()
                      .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
 }
 
+// The branches "Update all" would merge into: our own unfinished work, in any
+// repository, that still has a branch of its own to catch up. Merged sessions
+// are landed, external (watch-only) rows and association-only PR records own no
+// worktree, and a session sitting on its own base has nothing to pull in.
+// Deliberately cheap — no git here — because updateAgentActionState() calls this
+// on every selection change; the batch below is where paths are resolved.
+QList<int> MainWindow::updatableAgentSessionIds() const
+{
+    QList<int> ids;
+    QSet<QString> seen;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.merged || session.associationOnly ||
+            isExternalSession(session.id))
+            continue;
+        if (session.branchName.isEmpty() ||
+            session.branchName == agentMergeBase(session))
+            continue;
+        const int repoIndex = repoIndexFor(session.owner, session.name);
+        if (repoIndex < 0 || m_repositories.at(repoIndex).localPath.isEmpty())
+            continue;
+        // One entry per branch: a follow-up run shares its predecessor's branch,
+        // and the second merge of the same base would be an empty no-op counted
+        // as a second update.
+        const QString key = m_repositories.at(repoIndex).localPath +
+                            QLatin1Char('\n') + session.branchName;
+        if (seen.contains(key))
+            continue;
+        seen.insert(key);
+        ids << session.id;
+    }
+    return ids;
+}
+
+// "Update all" (adhoc #1611): the detail page's per-session "Update" over the
+// whole fleet — merge each session's own base branch into its own worktree
+// branch. Nothing else in the app pulls main into an agent branch any more; the
+// background diff refresh used to do it silently for every idle worktree, and
+// now only measures how far behind each one is. Pressing this is the whole
+// mechanism.
+//
+// Every merge goes through mergeBaseIntoLinkedWorktree(), the same
+// autostash-protected, transactional path "Pull main" uses on one branch: an
+// agent's uncommitted edits are set aside and restored on top, and a merge that
+// can't complete cleanly leaves its branch exactly as it was, wearing the row's
+// conflict alert that hands it to an agent.
+void MainWindow::updateAllAgentWorktreesFromMain()
+{
+    // Snapshot the ids up front: the refreshes at the end rebuild m_agentSessions.
+    const QList<int> ids = updatableAgentSessionIds();
+    if (ids.isEmpty()) {
+        flashMessage(QStringLiteral("No agent branches to update."));
+        return;
+    }
+    int updated = 0;    // merged base in
+    int current = 0;    // already contained it
+    int busy = 0;       // a merge or unresolved files were already in the way
+    int conflicted = 0; // merge refused or rolled back; branch left alone
+    int skipped = 0;    // no worktree of its own, or no such base branch
+    for (const int sessionId : std::as_const(ids)) {
+        const AgentSession *session = findAgentSession(sessionId);
+        const int repoIndex =
+            session ? repoIndexFor(session->owner, session->name) : -1;
+        if (repoIndex < 0) {
+            ++skipped;
+            continue;
+        }
+        const QString branch = session->branchName;
+        const QString base = agentMergeBase(*session);
+        const QString worktree = worktreePathForBranch(
+            m_repositories.at(repoIndex).localPath, branch);
+        // No checkout of its own (deleted, or never created): there is nothing to
+        // merge into. Merging in the repo's main checkout would move whatever
+        // unrelated branch is sitting there.
+        if (worktree.isEmpty() || !QDir(worktree).exists()) {
+            ++skipped;
+            continue;
+        }
+        // A base recorded by the session but no longer present locally would make
+        // `git merge` fail as if the branch conflicted, so name it for what it is.
+        if (!runGitCapture(worktree,
+                           {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                            QStringLiteral("--quiet"),
+                            QStringLiteral("refs/heads/%1").arg(base)},
+                           nullptr, nullptr)) {
+            ++skipped;
+            continue;
+        }
+        // Already has base in its history: merging again would only build an
+        // empty commit, and counting it as "updated" would overstate the batch.
+        if (runGitCapture(worktree,
+                          {QStringLiteral("merge-base"),
+                           QStringLiteral("--is-ancestor"), base,
+                           QStringLiteral("HEAD")},
+                          nullptr, nullptr)) {
+            ++current;
+            continue;
+        }
+        switch (mergeBaseIntoLinkedWorktree(worktree, branch, base).status) {
+        case WorktreeMergeReport::Merged:
+            ++updated;
+            break;
+        case WorktreeMergeReport::Busy:
+            ++busy;
+            break;
+        case WorktreeMergeReport::Conflicted:
+        case WorktreeMergeReport::Failed:
+            ++conflicted;
+            break;
+        }
+    }
+    QStringList notes;
+    if (current > 0)
+        notes << QStringLiteral("%1 already current").arg(current);
+    if (busy > 0)
+        notes << QStringLiteral("%1 mid-merge").arg(busy);
+    if (conflicted > 0)
+        notes << QStringLiteral("%1 conflicting").arg(conflicted);
+    if (skipped > 0)
+        notes << QStringLiteral("%1 without a worktree").arg(skipped);
+    flashMessage(
+        QStringLiteral("Updated %1 agent branch%2%3.")
+            .arg(updated)
+            .arg(updated == 1 ? QString() : QStringLiteral("es"),
+                 notes.isEmpty() ? QString()
+                                 : QStringLiteral(" (%1 skipped: %2)")
+                                       .arg(ids.size() - updated)
+                                       .arg(notes.join(QStringLiteral(", ")))),
+        /*isError=*/conflicted > 0);
+    // The merges moved branch tips: re-read the behind/conflict badges, the open
+    // session's Files-changed diff, and the Worktrees table if it is built.
+    m_agentDiffRefreshPending = true;
+    reloadAgents();
+    if (m_selectedAgentSessionId > 0)
+        refreshAgentFilesPanel(m_selectedAgentSessionId);
+    loadWorktreesPanel();
+    updateAgentActionState();
+}
+
 // ---- External Claude Code sessions ----------------------------------------
 // Watch-only mirrors of `claude` runs started outside ForkMesh. See the header.
 
@@ -14508,6 +14619,10 @@ void MainWindow::updateAgentActionState()
     // session is sitting there resumable, selection or not.
     if (m_agentStartAllButton)
         m_agentStartAllButton->setEnabled(!startableAgentSessionIds().isEmpty());
+    // And for "Update all" (adhoc #1611): live whenever any unmerged session still
+    // holds a branch of its own that main could be merged into, selection or not.
+    if (m_agentUpdateAllButton)
+        m_agentUpdateAllButton->setEnabled(!updatableAgentSessionIds().isEmpty());
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
     // Block deleting the session whose working-tree git-am the in-flight AI fix is

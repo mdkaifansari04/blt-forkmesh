@@ -81,13 +81,39 @@ def test_build_board_refreshes_on_approach_with_a_scene_native_spinner():
     assert 'buildBoardSpinner.name = "forkmesh-build-board-updating-spinner"' in SCENE
     assert "buildBoardSpinner.visible = false;" in SCENE
     assert "function setBuildBoardLoading(loading)" in SCENE
-    assert "function updateBuildBoardProximity()" in SCENE
-    assert "if (distance <= 18 && !buildBoardWasNearby)" in SCENE
-    assert "else if (distance >= 23)" in SCENE
-    assert "onBuildBoardNearby();" in SCENE
-    assert "updateBuildBoardProximity();" in SCENE
-    assert "onBuildBoardNearby: () =>" in WORLD
+    # The board is one entry in the shared proximity table: it fetches on
+    # approach and stops polling on departure, so an entry that never walks
+    # over to it costs no requests at all.
+    assert "function updateBoardProximity()" in SCENE
+    assert "updateBoardProximity();" in SCENE
+    assert "object: officeTaskBulletin," in SCENE
+    assert "enter: 18," in SCENE
+    assert "exit: 23," in SCENE
+    assert "onEnter: (refetch) => onBuildBoardNearby({ refetch })," in SCENE
+    assert "onExit: () => onBuildBoardAway()," in SCENE
+    # The exit radius must stay wider than the entry radius, or pacing the
+    # boundary would thrash the fetch.
+    assert "distance <= board.enter" in SCENE
+    assert "distance >= board.exit" in SCENE
+    assert "onBuildBoardNearby: ({ refetch } = {}) =>" in WORLD
+    assert "onBuildBoardAway: () => this.stopBuildBoardWatch()," in WORLD
     assert "void this.refreshBuildBoard({ quiet: true })" in WORLD
+    # Approaching starts the cadence; leaving clears it.
+    watch = WORLD[
+        WORLD.index("  startBuildBoardWatch("):
+        WORLD.index("  async refreshBuildBoard(")
+    ]
+    assert "window.setInterval" in watch
+    assert "WORLD_BUILD_BOARD_POLL_MS" in watch
+    assert "window.clearInterval(this.buildBoardTimer);" in watch
+    assert "this.buildBoardTimer = 0;" in watch
+    # The board must not be fetched as part of entering the World.
+    boot = WORLD[
+        WORLD.index('this.finishBootStep("scene");'):
+        WORLD.index("this.sessionWatchTimer = window.setInterval(")
+    ]
+    assert "refreshBuildBoard" not in boot
+    assert "refreshQaDeck" not in boot
     refresh = WORLD[
         WORLD.index("  async refreshBuildBoard("):
         WORLD.index("\n  applyQaDeck(", WORLD.index("  async refreshBuildBoard("))
