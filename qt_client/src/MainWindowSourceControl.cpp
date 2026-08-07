@@ -2393,11 +2393,21 @@ void MainWindow::scmDiscardAll()
 
 bool MainWindow::performScmCommit()
 {
+    const QString msg =
+        m_scmMessage ? m_scmMessage->toPlainText().trimmed() : QString();
+    if (!commitWorkingTree(msg))
+        return false;
+    if (m_scmMessage)
+        m_scmMessage->clear();
+    return true;
+}
+
+bool MainWindow::commitWorkingTree(const QString &message)
+{
     const QString dir = sourceControlGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree())
         return false;
-    const QString msg =
-        m_scmMessage ? m_scmMessage->toPlainText().trimmed() : QString();
+    const QString msg = message.trimmed();
     if (msg.isEmpty()) {
         QMessageBox::information(this, "Commit", "Enter a commit message first.");
         return false;
@@ -2426,8 +2436,6 @@ bool MainWindow::performScmCommit()
                              err.isEmpty() ? "git commit failed." : err.left(300));
         return false;
     }
-    if (m_scmMessage)
-        m_scmMessage->clear();
     logSystem(QStringLiteral("Committed: %1").arg(msg.section('\n', 0, 0)));
     loadCommits(); // refresh history + the working-changes panel
     if (m_repoDetailIndex >= 0)
@@ -3285,10 +3293,8 @@ QWidget *MainWindow::buildRepoSecurityTab()
         const QString path = item->data(Qt::UserRole).toString();
         if (path.isEmpty())
             return;
-        // Switch to the Code tab (index 0) so the highlighted line is visible;
-        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
-        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-            m_repoDetailTabs->button(0)->click();
+        // openRepoFileAtLine opens the Files section itself (adhoc #1590), so
+        // the highlighted line is on screen without picking a repo tab first.
         openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
@@ -3914,10 +3920,8 @@ QWidget *MainWindow::buildRepoQualityTab()
         const QString path = item->data(Qt::UserRole).toString();
         if (path.isEmpty())
             return;
-        // Switch to the Code tab (index 0) so the highlighted line is visible;
-        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
-        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-            m_repoDetailTabs->button(0)->click();
+        // openRepoFileAtLine opens the Files section itself (adhoc #1590), so
+        // the highlighted line is on screen without picking a repo tab first.
         openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
