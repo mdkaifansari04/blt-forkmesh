@@ -795,7 +795,9 @@ if(FORKMESH_BUILD_TESTS)
     # hook denial still reads as a failure), against real local git repos.
     qt_add_executable(forkmesh-ssh-mirror-push-tests
         tests/test_ssh_mirror_push.cpp
+        src/MirrorGatewayHealth.h
         src/MirrorPushOutcome.h
+        src/NetworkBackoff.h
     )
     target_include_directories(forkmesh-ssh-mirror-push-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
