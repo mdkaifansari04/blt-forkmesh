@@ -1392,9 +1392,9 @@ def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
         bootstrap.index("await Promise.allSettled([contextPromise, dataPromise]);")
         < bootstrap.index("void this.autoLoadFlagshipRepositoryMap();")
     )
-    assert "this.world = createWorldScene({" in bootstrap
+    assert "this.world = scene.createWorldScene({" in bootstrap
     assert (
-        bootstrap.index("this.world = createWorldScene({")
+        bootstrap.index("this.world = scene.createWorldScene({")
         < bootstrap.index("void this.autoLoadFlagshipRepositoryMap();")
     )
 

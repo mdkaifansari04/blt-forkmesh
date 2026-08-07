@@ -1,10 +1,12 @@
 import {
   ACTIVITY_OPTIONS,
   AVAILABILITY_OPTIONS,
+  CAMPFIRE_SEATED_ACTIVITY,
   FORKMESH_SONG,
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
   OUTFIT_STYLE_OPTIONS,
+  SWING_RIDING_ACTIVITY,
   THEME_OPTIONS,
   TOUR_STEPS,
   WORLD_EMOJI_CATEGORIES,
@@ -47,13 +49,7 @@ import {
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { officeFloorsForTeam } from "./world-office-tower.js";
 import { createWorldSocketRecoveryTimers } from "./world-socket-recovery.js";
-import {
-  CAMPFIRE_SEATED_ACTIVITY,
-  QR_MODULE_READY,
-  SWING_RIDING_ACTIVITY,
-  createWorldScene,
-  proceduralAvatarFaceDataURL,
-} from "./world-scene.js";
+import { proceduralAvatarFaceDataURL } from "./world-avatar-face.js";
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
@@ -66,6 +62,14 @@ const SATELLITE_SGP4_MODULE_URL =
 // keeps a CDN failure from surfacing as an unhandled rejection before then.
 const THREE_MODULE = import(THREE_MODULE_URL);
 THREE_MODULE.catch(() => {});
+// The scene builder cannot run before three.js resolves, so it does not belong
+// in the shell's static graph: the first visit would parse a megabyte of
+// geometry before the loading curtain could paint. index.html modulepreloads
+// it during HTML parse, so this import is served from that preload rather than
+// opening a new request, and it streams beside the three.js CDN fetch that
+// bootstrap() has to wait for anyway.
+const WORLD_SCENE_MODULE = import("./world-scene.js");
+WORLD_SCENE_MODULE.catch(() => {});
 let satelliteSgp4ModulePromise = null;
 
 function loadSatelliteSgp4Module() {
@@ -7168,9 +7172,11 @@ class ForkMeshWorld extends HTMLElement {
         return this.trackBootStep("data", this.loadWorldData());
       });
       this.setLoadingProgress(28, "Starting the live renderer…");
-      const THREE = await this.trackBootStep(
+      // Both halves of the renderer have been streaming since page load, and
+      // neither is usable without the other, so the engine row covers the pair.
+      const [THREE, scene] = await this.trackBootStep(
         "engine",
-        THREE_MODULE,
+        Promise.all([THREE_MODULE, WORLD_SCENE_MODULE]),
         "three.js r184 · streaming since page load",
       );
       if (this.destroyed) return;
@@ -7185,9 +7191,9 @@ class ForkMeshWorld extends HTMLElement {
       // starts when world-scene evaluates; wait here so a valid wallet gets
       // its QR code on the first scene render without adding the encoder to
       // the initial static module graph.
-      await QR_MODULE_READY;
+      await scene.QR_MODULE_READY;
       if (this.destroyed) return;
-      this.world = createWorldScene({
+      this.world = scene.createWorldScene({
         THREE,
         container: this.$("[data-world-canvas-wrap]"),
         labelLayer: this.$("[data-world-label-layer]"),

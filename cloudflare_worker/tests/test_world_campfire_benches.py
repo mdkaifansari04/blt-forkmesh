@@ -226,11 +226,14 @@ def test_sitting_survives_the_campfire_landmark_proximity_label():
     # The bench is inside the campfire landmark's own label radius, so the
     # proximity relabel would otherwise overwrite the seated activity other
     # visitors render the pose from.
-    assert "export const CAMPFIRE_SEATED_ACTIVITY" in SCENE
-    scene_import = APP.split('from "./world-scene.js";', 1)[0]
-    assert "CAMPFIRE_SEATED_ACTIVITY," in scene_import
-    assert "SWING_RIDING_ACTIVITY," in scene_import
-    assert "createWorldScene," in scene_import
+    # The constant lives with the data both the shell and the scene already
+    # import: the shell reads it before the renderer module has even loaded.
+    assert "export const CAMPFIRE_SEATED_ACTIVITY" in DATA
+    assert "export const SWING_RIDING_ACTIVITY" in DATA
+    data_import = APP.split('from "./world-data.js";', 1)[0]
+    assert "CAMPFIRE_SEATED_ACTIVITY," in data_import
+    assert "SWING_RIDING_ACTIVITY," in data_import
+    assert "this.world = scene.createWorldScene({" in APP
     location = APP.split("  updateLocation(label, id) {", 1)[1].split(
         "\n  updateRegion(", 1
     )[0]

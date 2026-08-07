@@ -73,6 +73,7 @@ def test_world_refreshes_cannot_reuse_an_older_application_graph():
     for asset in (
         "world.js",
         "world-data.js",
+        "world-avatar-face.js",
         "world-scene.js",
         "world-mirror-nodes.js",
         "world-pull-review.js",
