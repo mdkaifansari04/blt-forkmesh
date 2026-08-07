@@ -326,6 +326,49 @@ QJsonArray scrubSavedHostPasswords(
 
 } // namespace
 
+QString sharedHostKeyDirectory()
+{
+    const QString appDataDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (appDataDir.isEmpty())
+        return {};
+    const QString sshStateDir =
+        QDir(appDataDir).filePath(QStringLiteral("ssh"));
+    if (!QDir().mkpath(sshStateDir))
+        return {};
+    QFile::setPermissions(
+        sshStateDir,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner);
+    return sshStateDir;
+}
+
+QString sharedHostKeyPath()
+{
+    const QString sshStateDir = sharedHostKeyDirectory();
+    if (sshStateDir.isEmpty())
+        return {};
+    const QString sharedPath =
+        QDir(sshStateDir).filePath(QStringLiteral("forkmesh_shared_ed25519"));
+    if (QFileInfo(sharedPath).isFile())
+        return sharedPath;
+    // Devices set up before the fleet moved to one shared key still hold the
+    // key the mirrors already authorize, under its old per-provider name.
+    // Adopt that file in place; generating a second key here would leave every
+    // existing host rejecting it.
+    const QString legacyPath =
+        QDir(sshStateDir).filePath(QStringLiteral("vultr_mirror_ed25519"));
+    if (QFileInfo(legacyPath).isFile())
+        return legacyPath;
+    return sharedPath;
+}
+
+QString existingSharedHostIdentityFile()
+{
+    const QString keyPath = sharedHostKeyPath();
+    return QFileInfo(keyPath).isFile() ? keyPath : QString();
+}
+
 HostSshCommand buildHostSshCommand(const QString &host,
                                    const QString &sshUser,
                                    const QString &sshPassword,
@@ -346,20 +389,13 @@ HostSshCommand buildHostSshCommand(const QString &host,
         return command;
     }
 
-    const QString appDataDir =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    const QString sshStateDir =
-        QDir(appDataDir).filePath(QStringLiteral("ssh"));
-    if (appDataDir.isEmpty() || !QDir().mkpath(sshStateDir)) {
+    const QString sshStateDir = sharedHostKeyDirectory();
+    if (sshStateDir.isEmpty()) {
         if (error)
             *error = QStringLiteral(
                 "ForkMesh could not create its persistent SSH trust store.");
         return command;
     }
-    QFile::setPermissions(
-        sshStateDir,
-        QFileDevice::ReadOwner | QFileDevice::WriteOwner |
-            QFileDevice::ExeOwner);
     const QString knownHostsPath =
         QDir(sshStateDir).filePath(QStringLiteral("known_hosts"));
     if (!QFileInfo::exists(knownHostsPath)) {
@@ -386,9 +422,10 @@ HostSshCommand buildHostSshCommand(const QString &host,
         QStringLiteral("-o"), QStringLiteral("UpdateHostKeys=yes"),
         QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
     };
-    // Pin authentication to a ForkMesh-managed key when the saved host records
-    // one (auto-provisioned Vultr mirrors). -i is argv-safe for any path;
-    // IdentitiesOnly stops the agent offering unrelated keys first.
+    // Pin authentication to the ForkMesh-managed key the caller resolved — the
+    // shared fleet key for every host, or a key a saved host recorded itself.
+    // -i is argv-safe for any path; IdentitiesOnly stops the agent offering
+    // unrelated keys first.
     const QString identity = identityFile.trimmed();
     if (!identity.isEmpty()) {
         if (identity.contains(QChar::Null) ||
