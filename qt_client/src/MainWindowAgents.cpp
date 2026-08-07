@@ -3107,6 +3107,20 @@ QWidget *MainWindow::buildAgentsTab()
     return page;
 }
 
+// Does this session have something that can receive a prompt right now?  The
+// persisted status alone is not a transport liveness signal: after a Codex
+// app-server window exits or disconnects, a session can still read Running even
+// though it no longer has a process behind it.  Asked by the restart gate (which
+// must not start a second copy of a live session) and by the composer stash
+// (which must not retarget one).
+bool MainWindow::agentSessionHasLiveTransport(int sessionId) const
+{
+    const ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
+    const CodexAppServerSession *codex = m_codexStreams.value(sessionId);
+    return (claude && claude->running()) || (codex && codex->running()) ||
+           runnerForSession(sessionId) != nullptr;
+}
+
 // The composer's model dropdown is the user's live choice for what runs
 // next; without this the session kept coasting on whatever model it
 // happened to launch with, so switching the dropdown before following up
@@ -3120,6 +3134,16 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
         session && (session->provider == QLatin1String("claude-code") ||
                     agentIsCodexProvider(session->provider))) {
         bool changed = false;
+        // A session with a live transport is not up for grabs: continueAgentSession()
+        // refuses to restart one, so a provider switch stashed here could never be
+        // honored by a resume — it would only be handed straight to the process
+        // already running. That is what broke "add" from an Opus composer to a
+        // ChatGPT agent: the session was relabelled claude-code and given a Claude
+        // model, then sendPromptToAgentSession() passed that model into the Codex
+        // app-server's turn/start, which rejects a model that is not its own, so
+        // the follow-up never reached the agent. The prompt goes to whoever is
+        // actually running; the dropdown takes effect on the next restart.
+        const bool liveTransport = agentSessionHasLiveTransport(sessionId);
         // The composer's provider dropdown is the user's live choice for which
         // agent continues this session. Honor a switch to a *different*
         // CLI-backed provider (Claude Code <-> Codex) so a session can be handed
@@ -3135,15 +3159,38 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
             composerProvider == QLatin1String("claude-code") ||
             agentIsCodexProvider(composerProvider);
         if (composerIsCli && composerProvider != session->provider) {
-            session->provider = composerProvider;
-            changed = true;
+            if (liveTransport) {
+                // Say so once, where the answer will appear: the reply comes back
+                // from the agent that is running, not the one the dropdown names,
+                // and silence there reads as the message having gone nowhere.
+                applyTranscriptEvent(
+                    sessionId,
+                    QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("_local_notice")},
+                        {QStringLiteral("text"),
+                         QStringLiteral("This session is still live under %1, so the "
+                                        "message went to it. %2 takes over when the "
+                                        "session is next restarted.")
+                             .arg(cliProviderLabel(session->provider),
+                                  cliProviderLabel(composerProvider))}});
+            } else {
+                session->provider = composerProvider;
+                changed = true;
+            }
         }
         if (composerIsCli && m_quickAddClaudeModel) {
             const QString chosen = (composerProvider == QLatin1String("claude-code")
                                        ? selectedModelComboValue(m_quickAddClaudeModel)
                                        : codexChatGptModelId(
                                            selectedModelComboValue(m_quickAddClaudeModel)));
-            if (session->model != chosen) {
+            // The model only ever belongs to the provider that will actually run
+            // it. A declined hand-off above leaves those two disagreeing — the
+            // composer's Claude model against a session still live under Codex —
+            // and writing it through anyway is what sendPromptToAgentSession()
+            // then fed to the Codex app-server's turn/start, which rejects a model
+            // that is not its own and drops the follow-up on the floor.
+            if (session->model != chosen &&
+                agentModelMatchesProvider(session->provider, chosen)) {
                 session->model = chosen;
                 changed = true;
             }
@@ -3210,7 +3257,19 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
                     QSettings()
                         .value(kClaudeEffortSetting, QStringLiteral("high"))
                         .toString();
-                codex->setTurnOptions(session->model, session->mode, effort);
+                // Only a Codex model may ride into turn/start; the app-server
+                // fails the whole turn on anything else, which silently ate the
+                // follow-up. A session record can still name a Claude model here
+                // — one was written onto it by an older build before the
+                // composer stash learned to leave a live session alone — so pass
+                // nothing rather than a foreign id and let the running thread
+                // keep the model it started with.
+                QString model = session->model.trimmed();
+                if (!model.isEmpty())
+                    model = codexChatGptModelId(model);
+                if (!agentModelMatchesProvider(kCodexProvider, model))
+                    model.clear();
+                codex->setTurnOptions(model, session->mode, effort);
             }
             codex->sendUserText(prompt);
         } else {
@@ -9015,18 +9074,19 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
                                     "cannot be started."));
         return;
     }
-    // Do not start a second copy of a genuinely live session.  The persisted
-    // status alone is not a transport liveness signal: after a Codex app-server
-    // window exits or disconnects, a session can still read Running even though
-    // it no longer has a process to receive a prompt.  Treat that stale state as
-    // resumable so Continue and a follow-up prompt reconnect it instead of
-    // silently leaving the message in m_pendingSteerMessage.
-    ClaudeStreamSession *claude = m_streamSessions.value(session->id);
-    CodexAppServerSession *codex = m_codexStreams.value(session->id);
-    const bool liveTransport =
-        (claude && claude->running()) || (codex && codex->running());
-    if (session->status == AgentStatus::Queued || liveTransport ||
-        runnerForSession(session->id))
+    // Do not start a second copy of a genuinely live session.  A stale Running
+    // status with no process behind it stays resumable, so Continue and a
+    // follow-up prompt reconnect it instead of silently leaving the message in
+    // m_pendingSteerMessage — see agentSessionHasLiveTransport().
+    if (agentSessionHasLiveTransport(session->id))
+        return;
+    // Queued means "waiting for a run slot", and processAgentQueue() will get to
+    // it — but only while the queue still holds it. A Queued status the queue has
+    // lost (the app was restarted, or a pass dropped it) is another stale state
+    // with nothing behind it: leaving it alone strands the session, and strands
+    // the follow-up prompt the caller just parked in m_pendingSteerMessage. Fall
+    // through and re-queue instead.
+    if (session->status == AgentStatus::Queued && m_agentQueue.contains(session->id))
         return;
 
     session->status = AgentStatus::Queued;

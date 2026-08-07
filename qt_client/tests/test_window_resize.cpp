@@ -3666,6 +3666,27 @@ int main(int argc, char *argv[])
                              "for a follow-up prompt"));
         window.testRemoveAgentSession(detachedCodex.id);
     }
+    // A session can also persist as Queued from before an app restart — the
+    // restart starts with an empty in-memory queue, so nothing will ever pick
+    // a merely-labelled-Queued session back up. Before this fix, Continue (and
+    // the quick-add "add" follow-up that calls it) treated any Queued status as
+    // "already being handled" and returned without requeuing it, so the
+    // follow-up prompt landed in m_pendingSteerMessage for a run that would
+    // never start — the message silently never went anywhere.
+    {
+        AgentSession stuckQueued;
+        stuckQueued.id = 133894;
+        stuckQueued.owner = QStringLiteral("me");
+        stuckQueued.name = QStringLiteral("r");
+        stuckQueued.provider = QStringLiteral("codex");
+        stuckQueued.prompt = QStringLiteral("Stuck Queued fixture");
+        stuckQueued.status = AgentStatus::Queued;
+        window.testAddAgentSession(stuckQueued);
+        check(window.testQueueDetachedRunningAgentSession(stuckQueued.id),
+              QStringLiteral("a Queued session missing from the in-memory queue "
+                             "is requeued rather than left stuck"));
+        window.testRemoveAgentSession(stuckQueued.id);
+    }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
     // own "Updated" column) and the title, which is the column that flexes — so
