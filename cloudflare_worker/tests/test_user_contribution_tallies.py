@@ -2,9 +2,12 @@
 """Per-account PR/issue/commit/discussion tallies in the user directory.
 
 The Qt app's admin Users page shows one row per account with a column for
-each kind of contribution that account has made. Those four numbers come
-from ``contributor_activity`` — the same running tally the leaderboards use
-— joined onto the directory read, so the page needs no extra round trip.
+each kind of contribution that account has made. Issues, PRs, and
+discussions come from ``contributor_activity`` — the same running tally the
+leaderboards use — joined onto the directory read. Commits cannot: nothing
+increments that column, because commits reach the mesh as whole-repo
+snapshots rather than one signed event apiece, so they are summed out of
+``profile_contribution_days`` instead.
 
 Contracts pinned here:
 
@@ -12,7 +15,12 @@ Contracts pinned here:
     ``commits``/``discussions`` as integers, defaulting to 0 for an account
     the tally has never seen (a LEFT JOIN miss hands the caller NULL).
   * ``_account_users_directory`` LEFT JOINs ``contributor_activity`` on the
-    account blind index and forwards all four columns.
+    account blind index for the three event-tallied kinds, and takes commits
+    from ``_contribution_commit_totals`` keyed by the same blind index.
+  * ``_contribution_commit_totals`` counts only public projects on public
+    repositories, and one source repo per project, so an unauthenticated
+    read of the directory leaks no private activity and a mirrored project
+    is not counted once per mirror.
   * Discussions are tallied at all: ``_record_contributor`` accepts the kind
     and ``discussions_handler`` calls it on an accepted event.
   * ``contributor_activity`` carries a ``discussions`` column on fresh
@@ -20,6 +28,7 @@ Contracts pinned here:
 """
 
 import ast
+import asyncio
 import re
 from pathlib import Path
 
@@ -51,6 +60,10 @@ def _load_function(name, namespace):
         ast.Module(body=[function], type_ignores=[])),
         str(ENTRY), "exec"), scope)
     return scope[name]
+
+
+def _run(coro):
+    return asyncio.run(coro)
 
 
 TALLY_KEYS = ("issues", "pulls", "commits", "discussions")
@@ -112,12 +125,93 @@ def test_directory_joins_the_contribution_tally_table():
     source = _function_source("_account_users_directory")
     assert "LEFT JOIN contributor_activity c ON c.author_bi=u.user_bi" in \
         source
-    for key in TALLY_KEYS:
+    for key in ("issues", "pulls", "discussions"):
         assert f"c.{key}" in source
         # Coercion belongs to _contribution_tally; a bare int() here would
         # raise on the NULL a LEFT JOIN miss produces.
         assert f'{key}=row.get("{key}", 0)' in source
         assert f'int(row.get("{key}"' not in source
+
+
+def test_directory_takes_commits_from_the_contribution_snapshots():
+    # contributor_activity.commits is dead weight — no code path increments
+    # it — so reading the column back would pin every account at 0 commits.
+    source = _function_source("_account_users_directory")
+    assert "c.commits" not in source
+    assert 'commits=row.get("commits"' not in source
+    assert "commit_totals = await _contribution_commit_totals(env)" in source
+    assert 'commits=commit_totals.get(row.get("user_bi"), 0)' in source
+
+
+def test_nothing_increments_the_dead_commits_tally_column():
+    # Guards the reasoning above: if a commit tally writer is ever added,
+    # this test fails and the directory should go back to the cheap join.
+    assert not re.search(
+        r'_record_contributor\([^)]*"commits"\)', ENTRY_TEXT)
+
+
+# --- commit totals -----------------------------------------------------------
+
+def test_commit_totals_are_summed_per_account():
+    source = _function_source("_contribution_commit_totals")
+    assert "SUM(days.commits) AS commits" in source
+    assert "GROUP BY days.subject_user_bi" in source
+    # Keyed by the account blind index, the directory's join key.
+    assert "days.subject_user_bi AS user_bi" in source
+    # Only rows belonging to each project's active snapshot generation.
+    assert "days.generation_bi=sources.active_generation_bi" in source
+
+
+def test_commit_totals_exclude_private_activity():
+    # The directory endpoint is unauthenticated (it backs the chat roster and
+    # the World campfire), so a commit count drawn from it must stay inside
+    # what the public profile graph already shows.
+    source = _function_source("_contribution_commit_totals")
+    assert "projects.is_public=1 AND repositories.is_private=0" in source
+
+
+def test_commit_totals_count_a_mirrored_project_once():
+    # A project mirrored across several nodes has one contribution snapshot
+    # per mirror; ranking picks the latest capture so commits are not
+    # multiplied by the mirror count.
+    source = _function_source("_contribution_commit_totals")
+    assert "PARTITION BY projects.project_bi" in source
+    assert "SELECT * FROM ranked_sources WHERE source_rank=1" in source
+
+
+def test_commit_totals_skip_unkeyed_rows_and_coerce_counts():
+    totals_fn = _load_function("_contribution_commit_totals", {
+        "d1_all": None,
+        "_contribution_tally": _load_function("_contribution_tally", {}),
+    })
+    rows = [
+        {"user_bi": "bi-ada", "commits": "12"},
+        {"user_bi": "", "commits": 5},        # unresolved actor: dropped
+        {"user_bi": None, "commits": 5},      # same
+        {"user_bi": "bi-grace", "commits": None},
+    ]
+
+    async def fake_d1_all(env, sql, *params):
+        del env, sql, params
+        return rows
+
+    totals_fn.__globals__["d1_all"] = fake_d1_all
+    totals = _run(totals_fn(object()))
+    assert totals == {"bi-ada": 12, "bi-grace": 0}
+
+
+def test_commit_totals_survive_an_empty_table():
+    totals_fn = _load_function("_contribution_commit_totals", {
+        "d1_all": None,
+        "_contribution_tally": _load_function("_contribution_tally", {}),
+    })
+
+    async def fake_d1_all(env, sql, *params):
+        del env, sql, params
+        return None
+
+    totals_fn.__globals__["d1_all"] = fake_d1_all
+    assert _run(totals_fn(object())) == {}
 
 
 # --- discussion tallying -----------------------------------------------------

@@ -13,6 +13,7 @@
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 #include "LogTimelineChart.h"
+#include "OfficeChannelMirror.h"
 #include "PrivateMirrorStore.h"
 #include "PublicMirrorRuntime.h"
 #include "RepoSecurity.h"
@@ -3767,18 +3768,11 @@ void MainWindow::alertOnDesktopEdgeOutage(const FooterStatusRow &row)
             ? QStringLiteral("This desktop could not load the page.")
             : row.reason;
     // Files the outage on the Pings page and raises the red toast above the
-    // footer log, exactly like any other failure this node reports.
+    // footer log, exactly like any other failure this node reports. No OS
+    // notification here: this is a self-check of ForkMesh's own site, so the
+    // in-app alert plus the footer dot turning red (adhoc #1600) is enough —
+    // it doesn't need to interrupt whatever else is on screen.
     addNotification(title, body, /*warning=*/true);
-    // …plus the OS notification, so an outage is seen while ForkMesh is behind
-    // another window. A headless node forces the offscreen platform and has no
-    // desktop to raise it on (and a window-test run must not spray real toasts
-    // across the developer's screen), so that case stops at the ping above.
-    if (m_headless ||
-        QGuiApplication::platformName().contains(QStringLiteral("offscreen"),
-                                                 Qt::CaseInsensitive))
-        return;
-    postNotification(title, body, /*warning=*/true,
-                     QStringLiteral("network-error"));
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -11562,6 +11556,12 @@ void MainWindow::showChatView()
     showSection(2);
     if (!unread.isEmpty())
         switchConversation(unread);
+    // Nothing polls the office channel list any more (its messages arrive on
+    // each room's socket), so a channel created since launch would otherwise be
+    // missing from the sidebar. Opening chat is the user action that has to
+    // show it — and it re-lists once, not on a beat.
+    if (m_officeChannelMirror)
+        m_officeChannelMirror->refresh();
 }
 
 QString MainWindow::mostRecentUnreadConversation() const

@@ -301,10 +301,32 @@ QString agentStatusBadgeText(const AgentSession &session)
     return QStringLiteral("%1 is: %2").arg(modelWord, state);
 }
 
+// The pill breaks after "is:" so the state word gets its own line (adhoc
+// #1598). With the portrait beside it now drawn large, "Fable is: failed" on
+// one line pushed the session actions across the header; stacked, the pill
+// stays the width of its widest word. The tooltip keeps the flat one-liner.
+QString agentStatusPillText(const AgentSession &session)
+{
+    const QString flat = agentStatusBadgeText(session);
+    const int at = flat.indexOf(QLatin1String("is: "));
+    if (at < 0)
+        return flat;
+    QString wrapped = flat;
+    wrapped.replace(at, 4, QStringLiteral("is:\n"));
+    return wrapped;
+}
+
+// Size of the model portrait in the detail header's status pill. Much larger
+// than the 22px it used to be (adhoc #1598): the face is how you tell at a
+// glance which agent a session is running, so it reads as a portrait rather
+// than as another toolbar glyph.
+constexpr int kAgentStatusPillIconPx = 44;
+
 QIcon agentStatusPillIcon(const AgentSession &session)
 {
     if (session.merged || session.status == AgentStatus::Success)
-        return themedOcticon("check-circle", QColor("#3fb950"), 22);
+        return themedOcticon("check-circle", QColor("#3fb950"),
+                             kAgentStatusPillIconPx);
     return agentControlIcon(agentStatusModelIconIndex(session));
 }
 
@@ -2567,12 +2589,18 @@ QWidget *MainWindow::buildAgentsTab()
     // The model icon doubles as the compact outcome control. Its outline is
     // outcome-coloured and the "<Model> is: <state>" label reads who is doing
     // what at a glance; hover or click reveals the fuller session detail
-    // without restoring a long pill. The icon size pairs with the pill's zero
-    // vertical padding in Theme.h so the portrait fills the pill top to bottom.
+    // without restoring a long pill. The portrait is drawn large (adhoc #1598)
+    // — it is the fastest read of which agent a session runs — with the state
+    // word stacked under the model name beside it so the pill stays narrow.
     m_agentStatusPill = new QToolButton;
     m_agentStatusPill->setObjectName("agentStatusPill");
     m_agentStatusPill->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_agentStatusPill->setIconSize(QSize(22, 22));
+    m_agentStatusPill->setIconSize(
+        QSize(kAgentStatusPillIconPx, kAgentStatusPillIconPx));
+    // Reserve the portrait's own height: the pill only ever holds an icon and a
+    // two-line label, and without this the row it shares with the fixed-height
+    // action tiles hands it their 40px and the face paints over its border.
+    m_agentStatusPill->setFixedHeight(kAgentStatusPillIconPx + 6);
     m_agentStatusPill->setCursor(Qt::PointingHandCursor);
     m_agentStatusPill->installEventFilter(this);
     connect(m_agentStatusPill, &QToolButton::clicked, this,
@@ -2641,17 +2669,21 @@ QWidget *MainWindow::buildAgentsTab()
     statusRow->addSpacing(4);
     statusRow->addLayout(actionRow);
     topRow->addLayout(statusRow);
+    // Screenshots the prompt attached, above the title (adhoc #1598): what the
+    // run was handed reads before what it was asked. Filled per session in
+    // renderAgentPromptImages(); hidden when the prompt carried none.
+    m_agentPromptImages = new QWidget;
+    m_agentPromptImages->setObjectName(QStringLiteral("agentPromptImages"));
+    auto *promptImagesRow = new QHBoxLayout(m_agentPromptImages);
+    promptImagesRow->setContentsMargins(0, 0, 0, 2);
+    promptImagesRow->setSpacing(6);
+    m_agentPromptImages->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    m_agentPromptImages->hide();
+    topRow->addWidget(m_agentPromptImages);
     topRow->addWidget(m_agentTitle);
-    m_agentPromptLabel = new QLabel(QStringLiteral("Prompt"));
-    m_agentPromptLabel->setObjectName(QStringLiteral("agentPromptLabel"));
-    m_agentPrompt = new QPlainTextEdit;
-    m_agentPrompt->setObjectName(QStringLiteral("agentPrompt"));
-    m_agentPrompt->setReadOnly(true);
-    applyLogFont(m_agentPrompt);
-    m_agentPrompt->setPlaceholderText(
-        QStringLiteral("Select a session to view its original prompt."));
-    m_agentPrompt->setMaximumHeight(140);
-    m_agentPrompt->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // adhoc #1598 removed the read-only "Prompt" box that used to sit under the
+    // title: the title is that prompt's first line and the transcript's opening
+    // turn is the prompt in full, so the box was the third copy on the page.
 
     m_agentLog = new QPlainTextEdit;
     m_agentLog->setReadOnly(true);
@@ -2772,35 +2804,28 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentOutputStack->addWidget(m_agentTerminal);   // page 1: embedded terminal
     m_agentOutputStack->addWidget(m_agentTranscript); // page 2: rich transcript
 
-    // Transcript | Raw switch, shown only for Claude Code transcript sessions.
-    // The same octicon-over-caption tiles as the session actions it now sits
-    // beside in the header (adhoc #224) — the segmented pill it used to be was
-    // the last control on the page with a look of its own. Still checkable, so
-    // the rail button's green accent line marks the view you are on.
-    m_transcriptModeButton =
-        railActionButton(QStringLiteral("comment"), QStringLiteral("Transcript"),
-                         "Show this run as rendered transcript cards");
-    m_terminalModeButton =
+    // Transcript/Raw switch, shown only for Claude Code transcript sessions.
+    // One octicon-over-caption tile like the session actions it sits beside in
+    // the header (adhoc #224). adhoc #1598 folded the checkable pair into this
+    // single toggle: the tile names the view a click gives you, so there is no
+    // second tile and no checked-state accent line down its left edge.
+    m_agentOutputModeButton =
         railActionButton(QStringLiteral("terminal"), QStringLiteral("Raw"),
                          "Show this run's raw, unformatted output");
-    for (QPushButton *b : {m_transcriptModeButton, m_terminalModeButton})
-        b->setCheckable(true);
-    auto *outputModeGroup = new QButtonGroup(this);
-    outputModeGroup->setExclusive(true);
-    outputModeGroup->addButton(m_transcriptModeButton);
-    outputModeGroup->addButton(m_terminalModeButton);
-    m_transcriptModeButton->setChecked(true);
-    connect(m_transcriptModeButton, &QPushButton::clicked, this, [this] {
-        m_transcriptModeButton->setChecked(true);
-        m_terminalModeButton->setChecked(false);
-        if (m_agentOutputStack)
-            m_agentOutputStack->setCurrentWidget(m_agentTranscript);
-    });
-    connect(m_terminalModeButton, &QPushButton::clicked, this, [this] {
-        m_terminalModeButton->setChecked(true);
-        m_transcriptModeButton->setChecked(false);
-        showAgentRawOutput();
-    });
+    // Sized once for the longer of the two captions so toggling never reflows
+    // the header row.
+    {
+        QFont f = QGuiApplication::font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        m_agentOutputModeButton->setFixedSize(
+            qMax(railItemWidth(),
+                 QFontMetrics(f).horizontalAdvance(QStringLiteral("Transcript"))
+                     + 12),
+            kRailItemHeight);
+    }
+    connect(m_agentOutputModeButton, &QPushButton::clicked, this,
+            [this] { setAgentRawOutputMode(!m_agentRawOutputMode); });
     // The unified/split diff-style selector that used to sit here is gone (adhoc
     // #51); the transcript still honours the stored kClaudeDiffSplitSetting.
 
@@ -2840,12 +2865,11 @@ QWidget *MainWindow::buildAgentsTab()
             });
 
     // The output toolbar is gone with the search box it was built around (adhoc
-    // #224): its last two controls, Transcript and Raw, join the actions in the
-    // header's top-right corner, so the transcript starts directly under the
-    // title instead of a row down. Branch follows the pair with no extra
+    // #224): its Transcript/Raw switch — now one toggle (adhoc #1598) — joins the
+    // actions in the header's top-right corner, so the transcript starts directly
+    // under the title instead of a row down. Branch follows it with no extra
     // separator, making it the final right-most action.
-    statusRow->addWidget(m_transcriptModeButton, 0, Qt::AlignVCenter);
-    statusRow->addWidget(m_terminalModeButton, 0, Qt::AlignVCenter);
+    statusRow->addWidget(m_agentOutputModeButton, 0, Qt::AlignVCenter);
     statusRow->addWidget(m_agentBranchButton, 0, Qt::AlignVCenter);
 
     // Edited-files list for the "Files changed" tab: the files this session has
@@ -3068,8 +3092,6 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->setContentsMargins(12, 12, 22, 14);
     detailLayout->setSpacing(8);
     detailLayout->addLayout(topRow);
-    detailLayout->addWidget(m_agentPromptLabel);
-    detailLayout->addWidget(m_agentPrompt);
     // m_agentMeta is not laid out here any more — it lives in the popup opened
     // from the header's status control (adhoc #61).
     detailLayout->addWidget(m_agentNetPanel);
@@ -6414,14 +6436,96 @@ void MainWindow::scanAgentSessionImages(const QList<AgentSession> &sessions,
             // Only redraw when something actually moved: the rows are rewritten
             // in place and this runs behind every reload, so an unconditional
             // refresh here would double the cost of a quiet tick.
-            if (changed)
+            if (changed) {
                 refreshAgentTable();
+                // The open session's attachment strip is drawn from the same
+                // map, so fill it in when a scan finds pictures the header was
+                // showing nothing for (adhoc #1598).
+                if (m_selectedAgentSessionId > 0)
+                    renderAgentPromptImages(m_selectedAgentSessionId);
+            }
         });
 }
 
 QStringList MainWindow::agentSessionImages(int sessionId) const
 {
     return m_agentSessionImages.value(sessionId);
+}
+
+// Attachment strip above the detail header's title (adhoc #1598). Paths come
+// from the background scan where it has run, and from the session's own stored
+// prompt otherwise — the launch screenshot is named there, so a session in a
+// repository the scan has not covered still shows it without any file reads.
+void MainWindow::renderAgentPromptImages(int sessionId)
+{
+    if (!m_agentPromptImages)
+        return;
+    auto *row = qobject_cast<QHBoxLayout *>(m_agentPromptImages->layout());
+    if (!row)
+        return;
+    QStringList paths;
+    if (const AgentSession *session = findAgentSession(sessionId)) {
+        for (const QString &raw : AgentStore::attachmentPathsIn(session->prompt)) {
+            const QString path = AgentPromptImages::resolve(raw);
+            if (!path.isEmpty() && !paths.contains(path))
+                paths.append(path);
+        }
+    }
+    for (const QString &path : agentSessionImages(sessionId))
+        if (!paths.contains(path))
+            paths.append(path);
+    // Rebuilding the strip decodes every attachment, and showAgentSession() runs
+    // on each reload — skip the work when nothing about the strip has changed.
+    if (m_agentPromptImageSession == sessionId && paths == m_agentPromptImagePaths)
+        return;
+    m_agentPromptImageSession = sessionId;
+    m_agentPromptImagePaths = paths;
+    while (QLayoutItem *item = row->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+
+    // Big enough to recognise the screenshot a run was started from, small
+    // enough that the title still leads the pane. Click one for the full-size
+    // view, the same dialog the composer's own attachment chips open.
+    constexpr int kStripHeight = 76;
+    constexpr int kStripMaxWidth = 220;
+    int shown = 0;
+    for (const QString &path : std::as_const(paths)) {
+        QImageReader reader(path);
+        reader.setAutoTransform(true);
+        const QSize src = reader.size(); // header only, no pixel decode
+        if (src.isValid() && !src.isEmpty() &&
+            (src.width() > kStripMaxWidth || src.height() > kStripHeight)) {
+            QSize target = src;
+            target.scale(kStripMaxWidth, kStripHeight, Qt::KeepAspectRatio);
+            reader.setScaledSize(target.expandedTo(QSize(1, 1)));
+        }
+        const QImage image = reader.read();
+        if (image.isNull())
+            continue; // attachment moved or unreadable — nothing to show
+        const QPixmap pixmap = QPixmap::fromImage(image);
+        auto *thumbnail = new QPushButton(m_agentPromptImages);
+        thumbnail->setObjectName(QStringLiteral("agentPromptImage"));
+        thumbnail->setFlat(true);
+        thumbnail->setCursor(Qt::PointingHandCursor);
+        thumbnail->setFocusPolicy(Qt::NoFocus);
+        thumbnail->setToolTip(
+            QStringLiteral("View %1").arg(QFileInfo(path).fileName()));
+        thumbnail->setIcon(QIcon(pixmap));
+        thumbnail->setIconSize(pixmap.size());
+        // Hug the picture rather than padding every attachment out to the full
+        // strip height — a wide, short screenshot would otherwise sit in a tall
+        // empty box.
+        thumbnail->setFixedSize(pixmap.width() + 6, pixmap.height() + 6);
+        connect(thumbnail, &QPushButton::clicked, this,
+                [this, path] { showQuickAddImageDetail(path); });
+        row->addWidget(thumbnail);
+        ++shown;
+    }
+    row->addStretch(1);
+    m_agentPromptImages->setVisible(shown > 0);
 }
 
 QIcon MainWindow::agentThumbnail(const QString &path)
@@ -7979,10 +8083,7 @@ void MainWindow::showAgentSession(int sessionId)
             static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setStats(QString());
         if (m_agentNetPanel)
             m_agentNetPanel->clear();
-        if (m_agentPrompt)
-            m_agentPrompt->clear();
-        if (m_agentPromptLabel)
-            m_agentPromptLabel->setText(QStringLiteral("Prompt"));
+        renderAgentPromptImages(-1);
         if (m_agentViewPrButton)
             m_agentViewPrButton->hide();
         if (m_agentCreatePrButton)
@@ -8063,15 +8164,7 @@ void MainWindow::showAgentSession(int sessionId)
                                    : adHocTitle));
         }
     }
-    if (m_agentPromptLabel)
-        m_agentPromptLabel->setText(QStringLiteral("Prompt"));
-    if (m_agentPrompt) {
-        const QString prompt = session->prompt;
-        const QString fallback =
-            QStringLiteral("No initial prompt was stored for this session.");
-        m_agentPrompt->setPlaceholderText(QString());
-        m_agentPrompt->setPlainText(prompt.isEmpty() ? fallback : prompt);
-    }
+    renderAgentPromptImages(sessionId);
     // The detail header's key/value meta lines (identity, issue/branch/worktree/PR
     // chips, run Stats). Split out so the live-update paths can refresh just the
     // header text without a costly transcript rebuild (adhoc #42).
@@ -8225,13 +8318,11 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLog->setPlainText(QString());
         m_agentLogSession = -1; // set out-of-band; the async set re-renders
     }
-    // The Transcript/Raw switch lives in the header with the session actions
+    // The Transcript/Raw toggle lives in the header with the session actions
     // (adhoc #224) and comes and goes with the surface it acts on: a plain
     // log/terminal session has no transcript to switch to.
-    if (m_transcriptModeButton)
-        m_transcriptModeButton->setVisible(transcript);
-    if (m_terminalModeButton)
-        m_terminalModeButton->setVisible(transcript);
+    if (m_agentOutputModeButton)
+        m_agentOutputModeButton->setVisible(transcript);
     // The "Files changed" tab only applies to local transcript sessions (external
     // sessions have no worktree/diff here). Hide it otherwise and fall back to the
     // Agent tab so the user never lands on an empty tab.
@@ -8255,10 +8346,9 @@ void MainWindow::showAgentSession(int sessionId)
         const bool termLive = sessionId == m_terminalSessionId && m_agentTerminal &&
                               m_agentTerminal->isRunning();
         if (transcript) {
-            const bool raw = m_terminalModeButton && m_terminalModeButton->isChecked();
             m_agentOutputStack->setCurrentWidget(
-                raw ? static_cast<QWidget *>(m_agentLog)
-                    : static_cast<QWidget *>(m_agentTranscript));
+                m_agentRawOutputMode ? static_cast<QWidget *>(m_agentLog)
+                                     : static_cast<QWidget *>(m_agentTranscript));
         } else if (termLive) {
             m_agentOutputStack->setCurrentWidget(m_agentTerminal);
         } else {
@@ -10795,10 +10885,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         if (switchToTab && m_selectedAgentSessionId != sid)
             switchToAgentsTab(sid);
         showAgentSession(sid); // renders the buffered turn + selects the surface
-        if (m_transcriptModeButton)
-            m_transcriptModeButton->setChecked(true);
-        if (m_terminalModeButton)
-            m_terminalModeButton->setChecked(false);
+        setAgentRawOutputMode(false); // a fresh run opens on its transcript
     }
     reloadAgents();
 
@@ -12609,7 +12696,7 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
         return;
     m_agentStatusPill->setProperty("outcomeTone", agentStatusBadgeTone(*session));
     m_agentStatusPill->setIcon(agentStatusPillIcon(*session));
-    m_agentStatusPill->setText(agentStatusBadgeText(*session));
+    m_agentStatusPill->setText(agentStatusPillText(*session));
     m_agentStatusPill->setToolTip(agentStatusBadgeToolTip(*session));
     m_agentStatusPill->style()->unpolish(m_agentStatusPill);
     m_agentStatusPill->style()->polish(m_agentStatusPill);
@@ -14144,6 +14231,27 @@ void MainWindow::appendAgentRawLog(const QString &text)
 // first: while the transcript is shown appendAgentRawLog() skips the edit, so it
 // can be behind. setPlainText() lays out lazily (one pass), unlike the per-line
 // inserts that caused the stalls.
+// The header's single Transcript/Raw tile (adhoc #1598). It names the view a
+// click switches to, so the caption/glyph is always the *other* surface: on the
+// transcript it offers "Raw", on the raw log it offers "Transcript".
+void MainWindow::setAgentRawOutputMode(bool raw)
+{
+    m_agentRawOutputMode = raw;
+    if (m_agentOutputModeButton) {
+        m_agentOutputModeButton->setGlyph(
+            raw ? QStringLiteral("comment") : QStringLiteral("terminal"),
+            raw ? QStringLiteral("Transcript") : QStringLiteral("Raw"));
+        m_agentOutputModeButton->setToolTip(
+            raw ? QStringLiteral("Show this run as rendered transcript cards")
+                : QStringLiteral("Show this run's raw, unformatted output"));
+    }
+    if (raw) {
+        showAgentRawOutput();
+    } else if (m_agentOutputStack && m_agentTranscript) {
+        m_agentOutputStack->setCurrentWidget(m_agentTranscript);
+    }
+}
+
 void MainWindow::showAgentRawOutput()
 {
     if (!m_agentOutputStack || !m_agentLog)

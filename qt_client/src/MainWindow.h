@@ -8153,7 +8153,13 @@ private:
     QPushButton *m_agentHideDetailButton = nullptr;
     bool m_agentDetailHidden = false;
     QLabel *m_agentTitle = nullptr;
-    QLabel *m_agentPromptLabel = nullptr;
+    // Thumbnails of the images the session's prompt attached, above the title
+    // (adhoc #1598) — a run started from a screenshot shows what it was looking
+    // at before it says what it was asked. Click one for the full-size view.
+    QWidget *m_agentPromptImages = nullptr;
+    QStringList m_agentPromptImagePaths;
+    int m_agentPromptImageSession = -1;
+    void renderAgentPromptImages(int sessionId);
     QToolButton *m_agentStatusPill = nullptr; // compact model + outcome control
     // The session's field list (agent/model/mode/repo/status/issue/PR/branch/
     // worktree/stats) and the popup it lives in — opened from the header's
@@ -8163,7 +8169,10 @@ private:
     // "Pop out": stop the session here and reopen its CLI conversation in the
     // user's own terminal, from the popup that shows the session id (adhoc #1584).
     QPushButton *m_agentPopOutButton = nullptr;
-    QPlainTextEdit *m_agentPrompt = nullptr;
+    // adhoc #1598 removed the read-only "Prompt" box that sat under the title:
+    // the title is the prompt's first line and the transcript opens on the whole
+    // prompt as the run's first turn, so the box repeated what was already on
+    // screen twice over.
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create PR" — pull requests are user-driven (adhoc #2 follow-up): a run
@@ -8186,13 +8195,15 @@ private:
                           const QString &newPath, const QString &newContents);
     // Extension-style transcript for Claude Code sessions: claude runs in
     // stream-json mode (ClaudeStreamSession) and the events render as native
-    // cards (ClaudeTranscriptView, output stack page 2). The Transcript/Raw pair
-    // in the detail header flips to the raw process output (page 0) for
-    // debugging; both are rail-style tiles beside the session actions (adhoc
-    // #224) and are hidden for sessions that have no transcript at all.
+    // cards (ClaudeTranscriptView, output stack page 2). One rail-style tile in
+    // the detail header toggles to the raw process output (page 0) for debugging
+    // — adhoc #1598 folded the old checkable Transcript/Raw pair into it, so the
+    // tile names the view a click gives you and no selection line is drawn. It
+    // is hidden for sessions that have no transcript at all.
     ClaudeTranscriptView *m_agentTranscript = nullptr;
-    QPushButton *m_transcriptModeButton = nullptr;
-    QPushButton *m_terminalModeButton = nullptr;
+    ActivityRailButton *m_agentOutputModeButton = nullptr;
+    bool m_agentRawOutputMode = false;
+    void setAgentRawOutputMode(bool raw);
     // adhoc #201: the transcript's search query and "3/12" match counter. Both
     // are off-screen since adhoc #224 removed the detail pane's own search box —
     // the window's top-bar search mirrors into this line edit, which is what

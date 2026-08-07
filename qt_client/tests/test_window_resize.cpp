@@ -6279,6 +6279,12 @@ int main(int argc, char *argv[])
               QString("the account joins the rest of the run context rather "
                       "than replacing it (got \"%1\")")
                   .arg(line));
+        // Named once. Two branches added an account to this divider (the other
+        // named the signed-in ForkMesh account, not the provider login), and the
+        // merge of the two left the run announcing its account twice.
+        check(line.count(QStringLiteral("account work laptop")) == 1,
+              QString("the login is named once on the divider (got \"%1\")")
+                  .arg(line));
 
         // A login whose own name already says "account" isn't announced twice.
         ClaudeTranscriptView labelled;
