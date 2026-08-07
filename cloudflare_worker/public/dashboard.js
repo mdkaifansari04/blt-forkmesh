@@ -9715,7 +9715,7 @@
 
   function renderIssueCommentForm(number) {
     if (!state.session?.nodeName) {
-      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment on this issue.</div>`;
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login?next=${encodeURIComponent(location.pathname + location.search)}" class="font-medium text-primary hover:underline">Log in</a> to comment on this issue.</div>`;
     }
     const detail = state.repoRecordDetail;
     const canManage = Boolean(detail?.parsed?.issueMutationAuthorized);
@@ -9738,7 +9738,7 @@
 
   function renderDiscussionReplyForm(number) {
     if (!state.session?.nodeName) {
-      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login?next=${encodeURIComponent(location.pathname + location.search)}" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
     }
     return `
       <form data-repo-discussion-reply-form data-repo-discussion-reply-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
@@ -9755,7 +9755,7 @@
 
   function renderPullReviewForm(number) {
     if (!state.session?.nodeName) {
-      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment or review this pull request.</div>`;
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login?next=${encodeURIComponent(location.pathname + location.search)}" class="font-medium text-primary hover:underline">Log in</a> to comment or review this pull request.</div>`;
     }
     return `
       <form data-repo-pull-review-form data-repo-pull-review-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
@@ -10183,7 +10183,9 @@
       detail?.kind !== "issues" ||
       !state.session?.sessionToken
     ) {
-      if (!state.session?.sessionToken) location.href = "/login";
+      if (!state.session?.sessionToken) {
+        location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
+      }
       return false;
     }
     const title = String(
@@ -10803,7 +10805,7 @@
       || (state.selectedRepo && repoKey(state.selectedRepo) === key ? state.selectedRepo : null);
     if (!repo) return;
     if (!state.session?.sessionToken) {
-      location.href = "/login";
+      location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
       return;
     }
     const nextStarred = button.getAttribute("aria-pressed") !== "true";
@@ -17259,7 +17261,7 @@
       const issueNewButton = event.target.closest("[data-repo-issue-new]");
       if (issueNewButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openIssueCompose(state.selectedRepo);
@@ -17269,7 +17271,7 @@
       const issueImportButton = event.target.closest("[data-repo-issue-import]");
       if (issueImportButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openIssueImport(state.selectedRepo);
@@ -17285,7 +17287,7 @@
       const pullNewButton = event.target.closest("[data-repo-pull-new]");
       if (pullNewButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openPullCompose(state.selectedRepo);
