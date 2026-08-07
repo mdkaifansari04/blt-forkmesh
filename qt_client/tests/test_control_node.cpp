@@ -597,7 +597,7 @@ int main(int argc, char **argv)
     check(tailCommand.program == QStringLiteral("/usr/bin/npx") &&
               tailCommand.arguments ==
                   QStringList({QStringLiteral("--yes"),
-                               QStringLiteral("wrangler@4.42.1"),
+                               QStringLiteral("wrangler@4.120.0"),
                                QStringLiteral("tail"),
                                QStringLiteral("--format"),
                                QStringLiteral("json")}),

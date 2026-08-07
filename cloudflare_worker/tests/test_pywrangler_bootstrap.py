@@ -55,7 +55,7 @@ def test_pywrangler_uses_local_venv_uvx_without_system_uv(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "uvx-call:--from workers-py<1.14.0 pywrangler deploy --env"
+    assert result.stdout.strip() == "uvx-call:--from workers-py<1.17.0 pywrangler deploy --env"
 
 
 def test_no_node_pipeline_refuses_to_auto_install_pywrangler(tmp_path):

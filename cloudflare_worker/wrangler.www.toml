@@ -25,7 +25,7 @@
 # its routes and the relay's custom-domain catch-all resumes serving every
 # path below, byte-identically.
 name = "forkmesh-www"
-compatibility_date = "2026-07-23"
+compatibility_date = "2026-08-03"
 
 [build]
 command = "python3 tools/build_split_assets.py www"

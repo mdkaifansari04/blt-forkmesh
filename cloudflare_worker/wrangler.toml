@@ -4,18 +4,29 @@ main = "src_build/entry.py"
 # made-up flag to suppress it: Cloudflare rejects unknown compatibility flags
 # before it can validate a new Worker version.
 compatibility_flags = [ "python_workers" ]
-# Keep the Python/Pyodide runtime on Cloudflare's current snapshot. The older
-# 2026-06-14 snapshot could re-enter one scheduled wrapper task while another
-# request wrapper was executing ("Cannot enter into task ..."); the 2026-07-23
-# snapshot still did the same between concurrent REQUEST wrappers (2026-08-05/06:
-# poisoned isolates answered 30-90% of traffic with 1101 until recycled — issue
-# #555). The 2026-08-05 snapshot cut is UNDEPLOYABLE: upload validation dies in
+# Keep the Python/Pyodide runtime on the newest snapshot Cloudflare will still
+# boot. The 2026-06-14 snapshot could re-enter one scheduled wrapper task while
+# another request wrapper was executing ("Cannot enter into task ..."); the
+# 2026-07-23 snapshot still did the same between concurrent REQUEST wrappers
+# (2026-08-05/06: poisoned isolates answered 30-90% of traffic with 1101 until
+# recycled — issue #555).
+#
+# 2026-08-04 is where the snapshot cuts stop booting: upload validation dies in
 # Pyodide's own bootstrap ("Dynamic require of \"fs\" is not supported", code
-# 10021) on both wrangler 4.42.1 and 4.119.0 — that is why 1eb2027b9 was
-# reverted within minutes. 2026-08-04 deliberately sits one day earlier so we
-# ride the newest snapshot cut that still boots; retry 2026-08-05+ once
-# Cloudflare fixes the bootstrap regression.
-compatibility_date = "2026-07-23"
+# 10021), which is why 1eb2027b9 (2026-08-05) was reverted within minutes.
+# Bisected against the live upload validator on 2026-08-07 (wrangler versions
+# upload on forkmesh-api, which routes no traffic): 2026-08-03 and every
+# earlier date upload; 2026-08-04, -05, -06 and -07 all fail. 08-04 and 08-05
+# fail identically on wrangler 4.42.1 + workers-py 1.13 AND on 4.120.0 +
+# workers-py 1.16, so it is a server-side regression no client bump reaches.
+# 2026-08-03 is therefore the newest deployable cut; retry 2026-08-04+ once
+# Cloudflare fixes the bootstrap.
+#
+# Watch after deploying this: 2026-08-01 was tried live on 2026-08-06 and
+# billed noticeably more CPU (24 exceededCpu in 199 events) than 2026-07-23 did
+# — that was before 7091f8342 took every concurrent asyncio task off the
+# request paths. If exceededCpu climbs again, drop back to "2026-07-23".
+compatibility_date = "2026-08-03"
 
 # Runs automatically before every deploy: applies the D1 schema (idempotent)
 # and stages the relay's slimmed asset copy (public/ minus the trees owned by
