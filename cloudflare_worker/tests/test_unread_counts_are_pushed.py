@@ -95,6 +95,27 @@ def test_every_write_that_moves_an_unread_count_pushes():
         "_CHAT_DIRECT_PEER_MEMO[memo_key] = peer")
 
 
+def test_a_list_that_changed_for_someone_elses_reason_is_pushed_too():
+    # Dropping the 30s conversation/channel re-read also dropped how an invite
+    # or a newly-opened conversation was discovered. Both now push, and neither
+    # notifies the actor who caused it.
+    channels = (ROOT / "src" / "chat_channels_api.py").read_text(
+        encoding="utf-8")
+    assert channels.count(
+        'await runtime.notify_account(canonical, "private-channels")') == 2
+    assert channels.count("if canonical != actor:") == 2
+    direct = (ROOT / "src" / "chat_direct_messages_api.py").read_text(
+        encoding="utf-8")
+    assert 'await runtime.notify_account(target, "direct-messages")' in direct
+    # The capability is on the shared runtime base, so both APIs inherit it.
+    base = ENTRY_TEXT[
+        ENTRY_TEXT.index("class _WorldCommunityRuntime"):
+        ENTRY_TEXT.index("class _OfficeMarketingTasksRuntime")
+    ]
+    assert "async def notify_account(self, owner, topic):" in base
+    assert "await notify_account_event(self.env, owner, topic)" in base
+
+
 # --- the browser's key to that channel ---------------------------------------
 
 def _ticket_namespace():
@@ -271,7 +292,11 @@ def test_chat_page_stops_polling_conversations_and_activity():
     # The 30s conversation re-read and its constant are gone.
     assert "PRIVATE_CHANNEL_REFRESH_MS" not in CHAT
     assert "startAccountEventChannel();" in CHAT
-    assert 'if (topic !== "direct-messages") return;' in CHAT
+    assert 'if (topic === "direct-messages") {' in CHAT
+    # That 30s poll also discovered lists that changed for somebody ELSE's
+    # reason — a channel invite, a conversation somebody opened with us — so
+    # both of those are pushed too rather than quietly becoming reload-only.
+    assert '} else if (topic === "private-channels") {' in CHAT
     # The first connect needs no catch-up: the caller just read both lists.
     assert "if (!accountEventsConnectedOnce) {" in CHAT
     # The remaining interval is the (edge-cached) registered-user directory,

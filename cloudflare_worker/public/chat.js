@@ -1353,8 +1353,14 @@ function startAccountEventChannel() {
   accountEvents = createAccountEventChannel({
     sessionToken: () => userSession()?.sessionToken || "",
     onTopic: (topic) => {
-      if (topic !== "direct-messages") return;
-      refreshDirectMessages({ preserve: true, selectSaved: false });
+      // A new message in a conversation this browser is not sitting in, or a
+      // conversation/channel that appeared because somebody else invited or
+      // messaged us. Both lists used to be re-read every 30s to find these.
+      if (topic === "direct-messages") {
+        refreshDirectMessages({ preserve: true, selectSaved: false });
+      } else if (topic === "private-channels") {
+        refreshPrivateChannels();
+      }
     },
     // One catch-up per RE-connect: a DM that arrived while the channel was
     // down pushed its frame into the void, and there is no fallback poll

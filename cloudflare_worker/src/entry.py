@@ -8586,6 +8586,15 @@ class _WorldCommunityRuntime:
     def now(self):
         return int(Date.now())
 
+    async def notify_account(self, owner, topic):
+        """Tell one account's clients that something of theirs changed.
+
+        Payload-free, best-effort; see notify_account_event. Chat surfaces read
+        their channel and conversation lists once when the page opens, so this
+        is how a list that changed for somebody else's reason reaches them.
+        """
+        await notify_account_event(self.env, owner, topic)
+
     def new_id(self):
         # The random id contains no account, address, time, path, or provider
         # information and is safe to use as the public resource identifier.
