@@ -2411,6 +2411,14 @@ private:
     // at a time when the target is lowered. Manually added hosts are excluded.
     void reconcileDesiredMirrorFleet();
     void destroyDesiredMirrorFleetNode(const QString &node);
+    // Restart the five-minute healthy-node check window (and its per-second
+    // countdown) from now, or stop both when automation is switched off. Every
+    // check re-arms itself, so a rate-limited or otherwise failed check is
+    // retried on the next tick instead of dead-ending the loop.
+    void armMirrorFleetCountdown();
+    void updateMirrorFleetCountdownLabel();
+    // Fleet status without the countdown suffix; the label is the two joined.
+    void setMirrorFleetStatus(const QString &text);
     // Print the per-attempt record collected for this provision run into the
     // install log, so a finished run shows what every attempt did (adhoc #342).
     void appendVultrAttemptHistory();
@@ -6486,6 +6494,12 @@ private:
     QCheckBox *m_mirrorFleetEnabledCheck = nullptr;
     QSpinBox *m_mirrorFleetDesiredSpin = nullptr;
     QLabel *m_mirrorFleetStatus = nullptr;
+    // Runs only while automation is enabled: the first timer performs the
+    // healthy-node check, the second repaints the countdown to it once a
+    // second. Both are owned by the window and stopped on opt-out.
+    QTimer *m_mirrorFleetCheckTimer = nullptr;
+    QTimer *m_mirrorFleetCountdownTimer = nullptr;
+    QString m_mirrorFleetStatusText;
     bool m_mirrorFleetReconcileInFlight = false;
     bool m_mirrorFleetMutationInFlight = false;
     QWidget *m_vultrProgressPanel = nullptr;

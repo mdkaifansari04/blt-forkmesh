@@ -1361,6 +1361,41 @@ int main(int argc, char *argv[])
                       .toInt() == 2,
               QStringLiteral(
                   "editing the desired healthy mirror count persists while automation is off"));
+
+        // The healthy-node check owns a five-minute timer of its own. It must
+        // not ride the 30-second saved-host probe, whose cadence the shared
+        // relay rate-limits (HTTP 429) into never making a fleet change.
+        QTimer *fleetCheck = window.findChild<QTimer *>(
+            QStringLiteral("healthyMirrorFleetTimer"));
+        check(!fleetCheck || !fleetCheck->isActive(),
+              QStringLiteral(
+                  "no healthy-node check runs while automatic fleet sizing is off"));
+        if (enabled)
+            enabled->setChecked(true);
+        QApplication::processEvents();
+        fleetCheck = window.findChild<QTimer *>(
+            QStringLiteral("healthyMirrorFleetTimer"));
+        QTimer *fleetCountdown = window.findChild<QTimer *>(
+            QStringLiteral("healthyMirrorFleetCountdown"));
+        check(fleetCheck && fleetCheck->isActive() &&
+                  fleetCheck->interval() == 5 * 60 * 1000 &&
+                  fleetCountdown && fleetCountdown->isActive() &&
+                  fleetCountdown->interval() == 1000 && status &&
+                  status->text().contains(
+                      QStringLiteral("next healthy-node check in 5:00")),
+              QStringLiteral(
+                  "enabling automation arms a five-minute healthy-node check with a visible countdown"));
+        if (enabled)
+            enabled->setChecked(false);
+        QApplication::processEvents();
+        check(fleetCheck && !fleetCheck->isActive() && fleetCountdown &&
+                  !fleetCountdown->isActive() && status &&
+                  !status->text().contains(
+                      QStringLiteral("healthy-node check in")) &&
+                  status->text().contains(QStringLiteral("off")),
+              QStringLiteral(
+                  "opting out stops the healthy-node check and clears its countdown"));
+
         settings.remove(QStringLiteral("hosts/list"));
         settings.remove(QStringLiteral("hosts/healthyMirrorFleet/enabled"));
         settings.remove(QStringLiteral("hosts/healthyMirrorFleet/desired"));
