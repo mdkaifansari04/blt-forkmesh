@@ -23966,6 +23966,9 @@ export function createWorldScene({
   const cameraDirection = new THREE.Vector3();
   const cameraLookTarget = new THREE.Vector3();
   const cameraOffsetDirection = new THREE.Vector3();
+  // Sampled after the camera update each frame so the sky layer can drop its
+  // stars, planets, and satellites whenever the view is not tilted upward.
+  const skyViewDirection = new THREE.Vector3();
   const cameraDesired = new THREE.Vector3();
   const cameraLocalTarget = new THREE.Vector3();
   const cameraLocalDesired = new THREE.Vector3();
@@ -35670,7 +35673,13 @@ export function createWorldScene({
     // the chase/zoom camera update makes wheel, pinch, and orbit changes take
     // effect on the same rendered frame.
     updateNodeDetailLevel();
-    if (worldElementEnabled("sky")) worldSky.tick(Date.now(), camera.position);
+    if (worldElementEnabled("sky")) {
+      worldSky.tick(
+        Date.now(),
+        camera.position,
+        camera.getWorldDirection(skyViewDirection),
+      );
+    }
     tickStoreElements(time);
     // Spatial scans and DOM-adjacent controls do not need monitor refresh
     // cadence. Bounding them to 12.5Hz removes repeated portal walks and
