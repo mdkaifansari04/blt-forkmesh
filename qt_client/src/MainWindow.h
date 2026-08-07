@@ -1124,9 +1124,11 @@ public:
     QString testOpenRepoFilePath() const { return openRepoFilePath(); }
     void testOpenRepoDirectory(const QString &path) { loadRepoOverview(path); }
     QString testOverviewDirectory() const { return m_overviewPath; }
-    // Which half of the Code view is on screen: 0 = file list, 1 = editor.
+    // Which half of the Code view is on screen: 0 = file list, 1 = coves.
     // (Out of line: QStackedWidget is only forward-declared here.)
     int testFilesStackPage() const;
+    // True while the rail's Files destination — the one editor — is on screen.
+    bool testFilesSectionShowing() const;
     // The commit whose diff the Git view is showing ("" when it is on the
     // working-tree page), so a test can prove Back leaves a commit diff.
     QString testOpenCommitHash() const;
@@ -2432,12 +2434,34 @@ private:
     void refreshUsersPage(bool force = false);
     void renderUsersPage(const QJsonArray &users);
 
-    // Files: a plain local file explorer on its own rail destination, so any
-    // directory on this machine is one click away instead of only the tracked
-    // paths of the open repository. Hidden entries are shown by default —
-    // .git, .forkmesh and dotfiles are exactly what this is usually opened for.
+    // Files: the one editor destination (adhoc #1590). The rail's Files page
+    // holds both explorers — the real filesystem and the open repository's
+    // tracked tree — over a shared column of editor tabs, with the file's
+    // commit / pull-request actions and a working-tree commit + push above
+    // them. The Code page has no Explorer of its own any more. Hidden entries
+    // are shown by default: .git, .forkmesh and dotfiles are exactly what the
+    // filesystem side is usually opened for.
     QWidget *buildFilesSection();
+    // The row above the splitter: markdown preview, file history, commit
+    // direct / save as PR, then the working-tree commit message + Commit and
+    // Push. Built as part of buildFilesSection.
+    QLayout *buildFilesEditorBar();
     void refreshFilesPage();
+    // Swap the left column between the filesystem tree and the repository's
+    // tracked tree. Every root control (Up / Home / Choose / the path bar)
+    // implies the filesystem side, so they route through the second.
+    void showFilesRepoTree();
+    void showFilesDiskTree();
+    // Open `path` (absolute, on this machine) in an editor tab: as a repo file
+    // when git tracks it in the open repository — so the commit actions apply —
+    // and as a read-only tab otherwise.
+    void openLocalFileTab(const QString &path);
+    // Commit and push the whole working tree from the Files page, using the
+    // message box beside the buttons.
+    void commitFilesTabChanges();
+    void updateFilesCommitActions();
+    // Drop every open file tab, leaving the permanent preview tab in place.
+    void clearRepoFileTabs();
     // Re-root the explorer at `path` (a directory) and list it.
     void setFileExplorerRoot(const QString &path);
     // Fill `item`'s children from disk. Directories are inserted with a dummy
@@ -2467,7 +2491,6 @@ private:
     QWidget *buildRepoDetailSection();
     QWidget *buildRepoFilesPanel();
     QWidget *buildRepoOverviewPage();
-    QWidget *buildRepoEditorPage();
     QWidget *buildRepoCoveExplorerPage();
     QWidget *buildRepoCommitsTab();
     void showCommit(const QString &hash); // open the commit diff detail view
@@ -3615,7 +3638,6 @@ private:
     void refreshRepoTabCounts();
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
-    void showRepoEditor();
     void showRepoCoveExplorer();
     // The Git workspace is stored beside the Code overview for layout reuse,
     // but only the activity-rail Git destination opens it.
@@ -4415,6 +4437,10 @@ private:
     // Shared commit body for both buttons above. Returns true once a commit lands
     // so "Commit & push" only pushes after a successful commit.
     bool performScmCommit();
+    // The commit itself, with the message supplied rather than read off the
+    // Source Control panel — the Files page has its own message box and drives
+    // the same staging, ratchet check and post-commit refresh through this.
+    bool commitWorkingTree(const QString &message);
     // Bring a file's section of the combined working-tree diff into view.
     void showScmDiff(const QString &path, bool staged, bool untracked);
     // "Open Changes" for a whole group: jump the combined diff to the first
@@ -6806,7 +6832,7 @@ private:
     // Repository chrome is hidden while the activity-rail Git workspace is
     // active so source control can use the page's full height.
     QWidget *m_repoDetailChrome = nullptr;   // repo actions + repository tabs
-    QWidget *m_repoFilesModeBar = nullptr;   // Code overview / Explorer toggles
+    QWidget *m_repoFilesModeBar = nullptr;   // Code overview / Coves toggles
     QWidget *m_repoOverviewChrome = nullptr; // branch toolbar + commit strip
     // Thin activity rail down the repo detail page's left edge (adhoc #357):
     // Code (file browser) and Git (current changes) entries. The Git one carries
@@ -7089,9 +7115,10 @@ private:
     QPushButton *m_remotesButton = nullptr;   // "N remotes" dropdown in the Code toolbar
     QPushButton *m_tagsButton = nullptr;
     // Persistent segmented toggle, always visible above the Code page, that
-    // switches between the GitHub-style overview and the explorer/editor view.
+    // switches between the GitHub-style overview and the account cove files.
+    // The explorer/editor toggle that used to sit between them is gone: the
+    // explorer lives on the rail's Files destination now (adhoc #1590).
     QPushButton *m_filesModeOverviewButton = nullptr; // -> code overview
-    QPushButton *m_filesModeExplorerButton = nullptr; // -> explorer/editor
     QPushButton *m_filesModeCoveExplorerButton = nullptr; // -> account cove explorer
     QLineEdit *m_fileSearch = nullptr;
     QCompleter *m_fileCompleter = nullptr;
@@ -7403,9 +7430,10 @@ private:
     QPushButton *m_commitSplitButton = nullptr; // toggle unified <-> side-by-side
     QString m_currentCommitHash; // full hash shown in the detail view
     int m_currentCommitRow = -1; // row in m_commitsTable the detail view is showing
-    // Files view: a GitHub-style overview (latest commit + file list + README)
-    // that switches to an explorer-tree + editor-tabs view when a file is open.
-    QStackedWidget *m_filesStack = nullptr; // 0 overview, 1 editor
+    // Code view: a GitHub-style overview (latest commit + file list + README)
+    // and the account cove files. Opening a file leaves this page entirely —
+    // the explorer and its editor tabs are the rail's Files destination now.
+    QStackedWidget *m_filesStack = nullptr; // 0 overview, 1 secure cove
     QString m_overviewPath;                 // current directory in the overview
     // Signature (repo|path|branch|HEAD) of the overview currently rendered, so
     // re-entering the repo screen unchanged skips the expensive git re-read.
@@ -7450,17 +7478,28 @@ private:
     QPushButton *m_repoFilePullButton = nullptr;
     QPushButton *m_repoFileHistoryButton = nullptr;
     QPushButton *m_repoFilePreviewButton = nullptr; // toggle markdown source/render
-    QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
-    // Files section (kFilesSectionIndex): a lazily-expanded tree of the real
-    // filesystem plus a read-only preview of whatever is selected. The root is
+    // Editor tab keys are repo-relative for a tracked file and absolute for a
+    // file the filesystem explorer opened from outside the repository; the two
+    // forms cannot collide, so one map serves both.
+    QHash<QString, QWidget *> m_openFileTabs;
+    // Files section (kFilesSectionIndex): both explorers over one column of
+    // editor tabs. The filesystem tree is lazily expanded and its root is
     // remembered across launches, as is the hidden-entry toggle — which starts
     // on, so dotfiles are visible without anyone having to find the switch.
+    QStackedWidget *m_filesTreeStack = nullptr; // 0 filesystem, 1 repository
+    QPushButton *m_filesRepoTreeButton = nullptr; // -> the repository's tree
     QTreeWidget *m_fileExplorerTree = nullptr;
+    // Permanent first tab of m_repoFileTabs: whatever the filesystem tree has
+    // selected, read-only. Opening a file adds a tab of its own beside it.
     QPlainTextEdit *m_fileExplorerPreview = nullptr;
     QLineEdit *m_fileExplorerPath = nullptr;
     QLabel *m_fileExplorerStatus = nullptr;
     QCheckBox *m_fileExplorerHidden = nullptr;
     QString m_fileExplorerRoot;
+    // Working-tree commit + push, above the editor tabs.
+    QLineEdit *m_filesCommitMessage = nullptr;
+    QPushButton *m_filesCommitButton = nullptr;
+    QPushButton *m_filesPushButton = nullptr;
 
     QComboBox *m_coveExplorerSelector = nullptr;
     QLabel *m_coveExplorerStatus = nullptr;

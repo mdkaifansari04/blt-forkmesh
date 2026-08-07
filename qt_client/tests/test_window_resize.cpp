@@ -4804,14 +4804,17 @@ int main(int argc, char *argv[])
               QString("Forward reopens the commit's diff (commit = %1)")
                   .arg(window.testOpenCommitHash()));
 
+        // adhoc #1590: opening a file leaves the Code page for the rail's Files
+        // destination, which is the only editor now — so the place the trail
+        // records is that section, with the file it has open.
         window.testOpenRepoFile(QStringLiteral("base-delete.txt"));
         QApplication::processEvents();
-        check(window.testFilesStackPage() == 1 &&
+        check(window.testFilesSectionShowing() &&
                   window.testOpenRepoFilePath() ==
                       QStringLiteral("base-delete.txt"),
-              QString("opening a file shows it in the Code editor (page = %1, "
+              QString("opening a file shows it in the Files editor (files = %1, "
                       "file = %2)")
-                  .arg(window.testFilesStackPage())
+                  .arg(window.testFilesSectionShowing())
                   .arg(window.testOpenRepoFilePath()));
         check(window.testNavBackToolTip().contains(navCommit.left(7)),
               QString("Back from an open file returns to the commit it was "
@@ -4819,20 +4822,20 @@ int main(int argc, char *argv[])
                   .arg(window.testNavBackToolTip()));
         window.testNavigateBack();
         QApplication::processEvents();
-        check(window.testFilesStackPage() == 0 &&
+        check(!window.testFilesSectionShowing() &&
                   window.testOpenCommitHash() == navCommit,
               QString("Back leaves the file editor for the previous place "
-                      "(page = %1, commit = %2)")
-                  .arg(window.testFilesStackPage())
+                      "(files = %1, commit = %2)")
+                  .arg(window.testFilesSectionShowing())
                   .arg(window.testOpenCommitHash()));
         window.testNavigateForward();
         QApplication::processEvents();
-        check(window.testFilesStackPage() == 1 &&
+        check(window.testFilesSectionShowing() &&
                   window.testOpenRepoFilePath() ==
                       QStringLiteral("base-delete.txt"),
-              QString("Forward reopens the file that was on screen (page = %1, "
+              QString("Forward reopens the file that was on screen (files = %1, "
                       "file = %2)")
-                  .arg(window.testFilesStackPage())
+                  .arg(window.testFilesSectionShowing())
                   .arg(window.testOpenRepoFilePath()));
         QFile::remove(livePath);
         // And the refresh it kicked off still lands, leaving that branch selected.
