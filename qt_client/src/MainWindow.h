@@ -124,6 +124,7 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
+class BusySpinner;
 class NodeDotMatrix;
 class RelaySpeedDot;
 class ActionRunStrip;
@@ -133,6 +134,7 @@ class ElidingStatusLabel;
 using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
+using forkmesh::ui::BusySpinner;
 using forkmesh::ui::ElidingStatusLabel;
 using forkmesh::ui::NodeDotMatrix;
 using forkmesh::ui::RelaySpeedDot;
@@ -2056,6 +2058,9 @@ private:
     QWidget *buildSiteDeployCard();
     void runSiteDeploy();
     void cancelSiteDeploy();
+    // Spinner on the page + blinking light on the Control rail tile while the
+    // deploy runs (adhoc #1606).
+    void setSiteDeployRunning(bool running);
     void appendSiteDeployOutput(const QString &text);
     void connectToDeployedRelay(const QString &hostname);
     void deploySavedHostsFromControl();
@@ -6240,6 +6245,7 @@ private:
     QPushButton *m_siteDeployButton = nullptr;
     QPushButton *m_siteDeployCancelButton = nullptr;
     QLabel *m_siteDeployStatus = nullptr;
+    BusySpinner *m_siteDeploySpinner = nullptr;
     QPlainTextEdit *m_siteDeployOutput = nullptr;
     QProcess *m_siteDeployProcess = nullptr;
     QProcess *m_cloudflareBootstrapProcess = nullptr;
