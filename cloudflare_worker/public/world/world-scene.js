@@ -16314,6 +16314,11 @@ export function createWorldScene({
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
   onBuildBoardNearby = () => {},
+  onBuildBoardAway = () => {},
+  onQaBoardNearby = () => {},
+  onQaBoardAway = () => {},
+  onLobbyLinkKioskNearby = () => {},
+  onLeaderboardWallNearby = () => {},
   onBuildVideoSelect = () => {},
   onBuildBoardReorder = () => {},
   onBuildIssueAssign = () => {},
@@ -22511,30 +22516,9 @@ export function createWorldScene({
     issues: [],
   };
   let draggedBuildCard = null;
-  let buildBoardWasNearby = false;
 
   function setBuildBoardLoading(loading) {
     buildBoardSpinner.visible = loading === true;
-  }
-
-  function updateBuildBoardProximity() {
-    if (officeSceneMode !== "town") {
-      buildBoardWasNearby = false;
-      return;
-    }
-    const position = officeTaskBulletin.getWorldPosition(
-      buildBoardWorldPosition,
-    );
-    const distance = Math.hypot(
-      player.position.x - position.x,
-      player.position.z - position.z,
-    );
-    if (distance <= 18 && !buildBoardWasNearby) {
-      buildBoardWasNearby = true;
-      onBuildBoardNearby();
-    } else if (distance >= 23) {
-      buildBoardWasNearby = false;
-    }
   }
 
   function repaintBuildBoards() {
@@ -22746,6 +22730,91 @@ export function createWorldScene({
     "qa-board", "QA board", "Boards & kiosks", worldQaBoard,
   );
   placeBillboardOnIsland(worldQaBoard);
+
+  // Boards whose contents only matter to someone standing at them. Each entry
+  // reports its own approach and departure so the owner can fetch on arrival
+  // and stop polling on the way out, instead of holding a permanent request
+  // cadence for a board nobody is looking at. The exit radius is deliberately
+  // wider than the entry radius so pacing the boundary cannot thrash the
+  // fetch, and cooldownMs bounds how often a re-approach may refetch.
+  const proximityBoards = [
+    {
+      object: officeTaskBulletin,
+      mode: "town",
+      enter: 18,
+      exit: 23,
+      cooldownMs: 15_000,
+      onEnter: (refetch) => onBuildBoardNearby({ refetch }),
+      onExit: () => onBuildBoardAway(),
+    },
+    {
+      object: worldQaBoard,
+      mode: "town",
+      enter: 18,
+      exit: 23,
+      cooldownMs: 5_000,
+      onEnter: (refetch) => onQaBoardNearby({ refetch }),
+      onExit: () => onQaBoardAway(),
+    },
+    {
+      object: officeLinkKiosk,
+      mode: "lobby",
+      enter: 14,
+      exit: 19,
+      cooldownMs: 60_000,
+      onEnter: (refetch) => {
+        if (refetch) onLobbyLinkKioskNearby();
+      },
+      onExit: () => {},
+    },
+    {
+      // A 23-unit wall on its own island reads from much further out than a
+      // bulletin board does, so it gets a correspondingly wider approach.
+      object: leaderboardSuperPanel,
+      mode: "town",
+      enter: 34,
+      exit: 42,
+      cooldownMs: 60_000,
+      onEnter: (refetch) => {
+        if (refetch) onLeaderboardWallNearby();
+      },
+      onExit: () => {},
+    },
+  ].map((board) => ({ ...board, near: false, lastEnterAt: 0 }));
+
+  function updateBoardProximity() {
+    for (const board of proximityBoards) {
+      if (officeSceneMode !== board.mode) {
+        // Leaving the scene the board lives in counts as walking away, so a
+        // visitor who ducks into the office does not leave a town poll running.
+        if (board.near) {
+          board.near = false;
+          board.onExit();
+        }
+        continue;
+      }
+      const position = board.object.getWorldPosition(
+        proximityBoardWorldPosition,
+      );
+      const distance = Math.hypot(
+        player.position.x - position.x,
+        player.position.z - position.z,
+      );
+      if (!board.near && distance <= board.enter) {
+        board.near = true;
+        // The cooldown gates the immediate refetch, not the approach itself:
+        // a board that polls while you stand at it must still start its timer
+        // on every arrival, even when its contents are too fresh to refetch.
+        const now = Date.now();
+        const stale = now - board.lastEnterAt >= board.cooldownMs;
+        if (stale) board.lastEnterAt = now;
+        board.onEnter(stale);
+      } else if (board.near && distance >= board.exit) {
+        board.near = false;
+        board.onExit();
+      }
+    }
+  }
 
   let qaBoardSnapshot = { view: "cards", list: [] };
 
@@ -23653,7 +23722,7 @@ export function createWorldScene({
   const diagnosticsDrawingBuffer = new THREE.Vector2();
   const officeDoorLocalPosition = new THREE.Vector3();
   const officeReceptionLocalPosition = new THREE.Vector3();
-  const buildBoardWorldPosition = new THREE.Vector3();
+  const proximityBoardWorldPosition = new THREE.Vector3();
   const localPointLightPosition = new THREE.Vector3();
   const localPointLightCandidates = [];
   scene.traverse((object) => {
@@ -35257,7 +35326,7 @@ export function createWorldScene({
     // layout writes while movement and WebGL rendering remain full-rate.
     if (time >= nextProximityUpdateAt) {
       nextProximityUpdateAt = time + 80;
-      updateBuildBoardProximity();
+      updateBoardProximity();
       if (officeSceneMode === "town") {
         nearestLandmark();
         updateRepositoryPortalLabels();
