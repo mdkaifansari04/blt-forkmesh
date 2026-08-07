@@ -5321,6 +5321,170 @@ void MainWindow::createPullFromBranch(const QString &branch)
     switchToPullTab(number);
 }
 
+// Merge `base` into `branch` inside the linked worktree that owns it — the one
+// place in the app that moves an agent branch forward. "Pull main" on a single
+// branch and the Agents toolbar's "Update all" both come through here, so a
+// worktree is protected the same way whichever one is pressed.
+//
+// Agent worktrees are commonly dirty while the agent is still working, so the
+// merge autostashes: local edits are set aside, base is merged, and the edits
+// are restored on top. A plain merge refused as soon as main and the agent had
+// both touched any one file, which is why long-running agents used to pile up
+// the same "would be overwritten" error while main kept moving.
+MainWindow::WorktreeMergeReport
+MainWindow::mergeBaseIntoLinkedWorktree(const QString &worktree,
+                                        const QString &branch,
+                                        const QString &base)
+{
+    WorktreeMergeReport report;
+    QByteArray existingMerge;
+    if (runGitCapture(worktree, {"rev-parse", "-q", "--verify", "MERGE_HEAD"},
+                      &existingMerge, nullptr) &&
+        !existingMerge.trimmed().isEmpty()) {
+        report.status = WorktreeMergeReport::Busy;
+        report.message =
+            QStringLiteral("%1 already has a merge in progress in its worktree; "
+                           "finish or abort it before updating from %2.")
+                .arg(branch, base);
+        return report;
+    }
+
+    QByteArray existingUnmerged;
+    if (runGitCapture(worktree, {"diff", "--name-only", "--diff-filter=U"},
+                      &existingUnmerged, nullptr) &&
+        !existingUnmerged.trimmed().isEmpty()) {
+        report.status = WorktreeMergeReport::Busy;
+        report.message = QStringLiteral("%1 already has unresolved local files; "
+                                        "resolve them before updating from %2.")
+                             .arg(branch, base);
+        return report;
+    }
+
+    QByteArray beforeStatus;
+    runGitCapture(worktree, {"status", "--porcelain"}, &beforeStatus, nullptr);
+    const bool protectedLocalEdits = !beforeStatus.trimmed().isEmpty();
+    QByteArray beforeHeadOut;
+    if (!runGitCapture(worktree, {"rev-parse", "HEAD"}, &beforeHeadOut, nullptr) ||
+        beforeHeadOut.trimmed().isEmpty()) {
+        report.status = WorktreeMergeReport::Failed;
+        report.message = QStringLiteral("Couldn't identify %1's current commit "
+                                        "before updating it from %2.")
+                             .arg(branch, base);
+        return report;
+    }
+    const QString beforeHead = QString::fromUtf8(beforeHeadOut).trimmed();
+    QByteArray beforeStashOut;
+    runGitCapture(worktree, {"rev-parse", "-q", "--verify", "refs/stash"},
+                  &beforeStashOut, nullptr);
+    QString worktreeError;
+    if (!runGitCapture(worktree, {"merge", "--autostash", "--no-edit", base},
+                       nullptr, &worktreeError)) {
+        // Abort only a merge this call actually started. A refusal caused by
+        // a genuine branch conflict has MERGE_HEAD; with --autostash, aborting
+        // also puts the protected local edits back where they started.
+        QByteArray startedMerge;
+        if (runGitCapture(worktree, {"rev-parse", "-q", "--verify", "MERGE_HEAD"},
+                          &startedMerge, nullptr) &&
+            !startedMerge.trimmed().isEmpty())
+            runGitCapture(worktree, {"merge", "--abort"}, nullptr, nullptr);
+        report.status = WorktreeMergeReport::Conflicted;
+        report.message =
+            QStringLiteral("Couldn't update %1 from %2 in its worktree: %3. "
+                           "Its local changes are safe. Use Merge editor or "
+                           "Fix with agent to resolve the branch conflict.")
+                .arg(branch, base,
+                     worktreeError.trimmed().isEmpty()
+                         ? QStringLiteral("the merge was refused")
+                         : worktreeError.trimmed().left(240));
+        return report;
+    }
+
+    // A merge can return success after advancing the branch but still leave
+    // conflicts while reapplying the autostash. Treat the whole operation as
+    // transactional: put the branch back at its original commit and reapply
+    // the retained autostash there. That prevents one attempted update from
+    // turning a clean, small agent branch into a worktree containing a broad
+    // staged/conflicted snapshot of main.
+    QByteArray unmerged;
+    const bool restoreConflict =
+        runGitCapture(worktree, {"diff", "--name-only", "--diff-filter=U"},
+                      &unmerged, nullptr) &&
+        !unmerged.trimmed().isEmpty();
+    if (restoreConflict) {
+        const int count =
+            QString::fromUtf8(unmerged).split('\n', Qt::SkipEmptyParts).size();
+        QByteArray retainedStashOut;
+        runGitCapture(worktree, {"rev-parse", "-q", "--verify", "refs/stash"},
+                      &retainedStashOut, nullptr);
+        const QString retainedStash = QString::fromUtf8(retainedStashOut).trimmed();
+        QString rollbackError;
+        const bool rolledBack = runGitCapture(
+            worktree, {"reset", "--hard", beforeHead}, nullptr, &rollbackError);
+        QString restoreError;
+        const bool haveNewAutostash =
+            !retainedStash.isEmpty() &&
+            retainedStashOut.trimmed() != beforeStashOut.trimmed();
+        const bool restored =
+            rolledBack &&
+            (!protectedLocalEdits ||
+             (haveNewAutostash &&
+              runGitCapture(worktree,
+                            {"stash", "apply", "--index", retainedStash}, nullptr,
+                            &restoreError)));
+        // A failed stash application can itself leave conflict markers.
+        // Clear those generated files once more; the retained stash is the
+        // recoverable copy of the original edits in this rare fallback.
+        if (!restored && rolledBack)
+            runGitCapture(worktree, {"reset", "--hard", beforeHead}, nullptr,
+                          nullptr);
+        if (restored && haveNewAutostash) {
+            QByteArray topStashOut;
+            runGitCapture(worktree, {"rev-parse", "-q", "--verify", "stash@{0}"},
+                          &topStashOut, nullptr);
+            if (QString::fromUtf8(topStashOut).trimmed() == retainedStash)
+                runGitCapture(worktree, {"stash", "drop", "stash@{0}"}, nullptr,
+                              nullptr);
+        }
+        logSystem(QStringLiteral(
+                      "Git: rolled %1 back after %2 local file(s) conflicted "
+                      "with %3; original edits %4.")
+                      .arg(branch)
+                      .arg(count)
+                      .arg(base)
+                      .arg(restored ? QStringLiteral("restored")
+                                    : QStringLiteral("kept in the autostash")));
+        report.status = WorktreeMergeReport::Conflicted;
+        report.message =
+            restored
+                ? QStringLiteral("Couldn't update %1 from %2 because %3 local "
+                                 "file(s) overlap. The branch was rolled back "
+                                 "and its original edits were restored cleanly.")
+                      .arg(branch, base)
+                      .arg(count)
+                : QStringLiteral("Couldn't update %1 from %2 because %3 local "
+                                 "file(s) overlap. The branch was rolled back; "
+                                 "the original edits remain safe in Git's "
+                                 "autostash (%4).")
+                      .arg(branch, base)
+                      .arg(count)
+                      .arg((rollbackError + QLatin1Char(' ') + restoreError)
+                               .trimmed()
+                               .left(180));
+        return report;
+    }
+
+    logSystem(QStringLiteral("Git: merged %1 into %2 in its linked worktree.")
+                  .arg(base, branch));
+    report.status = WorktreeMergeReport::Merged;
+    report.message =
+        protectedLocalEdits
+            ? QStringLiteral("Updated %1 with %2 and safely restored its local "
+                             "changes.")
+                  .arg(branch, base)
+            : QStringLiteral("Updated %1 with %2 in its worktree.").arg(branch, base);
+    return report;
+}
+
 void MainWindow::updateBranchFromBase(const QString &branch)
 {
     const QString dir = repoGitDir();
@@ -5355,179 +5519,15 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         return;
     }
 
-    // Agent branches are normally checked out in their own linked worktree.
-    // Updating their ref from the main checkout is rejected by Git (and the old
-    // path either displayed that refusal or tried to check out an already-live
-    // branch). Merge the base in the checkout that actually owns the branch.
-    // Agent worktrees are commonly dirty while the agent is still running. Use
-    // Git's autostash merge so those edits are protected, base is merged, and the
-    // edits are restored on top. The old plain merge refused as soon as main and
-    // the agent had both touched any of the same files, which is why many
-    // long-running agents suddenly accumulated the same "would be overwritten"
-    // error while main kept moving.
+    // Agent branches are normally checked out in their own linked worktree, and
+    // the merge has to happen in the checkout that owns the branch.
     const QString linkedWorktree = worktreePathForBranch(dir, branch);
     if (!linkedWorktree.isEmpty() &&
         QDir(linkedWorktree).absolutePath() != QDir(dir).absolutePath()) {
-        QByteArray existingMerge;
-        if (runGitCapture(linkedWorktree,
-                          {"rev-parse", "-q", "--verify", "MERGE_HEAD"},
-                          &existingMerge, nullptr) && !existingMerge.trimmed().isEmpty()) {
-            setRepoDetailNotice(
-                QStringLiteral("%1 already has a merge in progress in its worktree; "
-                               "finish or abort it before updating from %2.")
-                    .arg(branch, base),
-                true);
-            return;
-        }
-
-        QByteArray existingUnmerged;
-        if (runGitCapture(linkedWorktree,
-                          {"diff", "--name-only", "--diff-filter=U"},
-                          &existingUnmerged, nullptr) &&
-            !existingUnmerged.trimmed().isEmpty()) {
-            setRepoDetailNotice(
-                QStringLiteral("%1 already has unresolved local files; resolve "
-                               "them before updating from %2.")
-                    .arg(branch, base),
-                true);
-            return;
-        }
-
-        QByteArray beforeStatus;
-        runGitCapture(linkedWorktree, {"status", "--porcelain"}, &beforeStatus,
-                      nullptr);
-        const bool protectedLocalEdits = !beforeStatus.trimmed().isEmpty();
-        QByteArray beforeHeadOut;
-        if (!runGitCapture(linkedWorktree, {"rev-parse", "HEAD"}, &beforeHeadOut,
-                           nullptr) ||
-            beforeHeadOut.trimmed().isEmpty()) {
-            setRepoDetailNotice(
-                QStringLiteral("Couldn't identify %1's current commit before "
-                               "updating it from %2.")
-                    .arg(branch, base),
-                true);
-            return;
-        }
-        const QString beforeHead = QString::fromUtf8(beforeHeadOut).trimmed();
-        QByteArray beforeStashOut;
-        runGitCapture(linkedWorktree,
-                      {"rev-parse", "-q", "--verify", "refs/stash"},
-                      &beforeStashOut, nullptr);
-        QString worktreeError;
-        if (!runGitCapture(linkedWorktree,
-                           {"merge", "--autostash", "--no-edit", base}, nullptr,
-                           &worktreeError)) {
-            // Abort only a merge this call actually started. A refusal caused by
-            // a genuine branch conflict has MERGE_HEAD; with --autostash, aborting
-            // also puts the protected local edits back where they started.
-            QByteArray startedMerge;
-            if (runGitCapture(linkedWorktree,
-                              {"rev-parse", "-q", "--verify", "MERGE_HEAD"},
-                              &startedMerge, nullptr) &&
-                !startedMerge.trimmed().isEmpty())
-                runGitCapture(linkedWorktree, {"merge", "--abort"}, nullptr,
-                              nullptr);
-            setRepoDetailNotice(
-                QStringLiteral("Couldn't update %1 from %2 in its worktree: %3. "
-                               "Its local changes are safe. Use Merge editor or "
-                               "Fix with agent to resolve the branch conflict.")
-                    .arg(branch, base,
-                         worktreeError.trimmed().isEmpty()
-                             ? QStringLiteral("the merge was refused")
-                             : worktreeError.trimmed().left(240)),
-                true);
-            return;
-        }
-
-        // A merge can return success after advancing the branch but still leave
-        // conflicts while reapplying the autostash. Treat the whole operation as
-        // transactional: put the branch back at its original commit and reapply
-        // the retained autostash there. That prevents one attempted update from
-        // turning a clean, small agent branch into a worktree containing a broad
-        // staged/conflicted snapshot of main.
-        QByteArray unmerged;
-        const bool restoreConflict =
-            runGitCapture(linkedWorktree,
-                          {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
-                          nullptr) &&
-            !unmerged.trimmed().isEmpty();
-        if (restoreConflict) {
-            const int count = QString::fromUtf8(unmerged)
-                                  .split('\n', Qt::SkipEmptyParts)
-                                  .size();
-            QByteArray retainedStashOut;
-            runGitCapture(linkedWorktree,
-                          {"rev-parse", "-q", "--verify", "refs/stash"},
-                          &retainedStashOut, nullptr);
-            const QString retainedStash =
-                QString::fromUtf8(retainedStashOut).trimmed();
-            QString rollbackError;
-            const bool rolledBack =
-                runGitCapture(linkedWorktree, {"reset", "--hard", beforeHead},
-                              nullptr, &rollbackError);
-            QString restoreError;
-            const bool haveNewAutostash =
-                !retainedStash.isEmpty() &&
-                retainedStashOut.trimmed() != beforeStashOut.trimmed();
-            const bool restored =
-                rolledBack &&
-                (!protectedLocalEdits ||
-                 (haveNewAutostash &&
-                  runGitCapture(linkedWorktree,
-                                {"stash", "apply", "--index", retainedStash},
-                                nullptr, &restoreError)));
-            // A failed stash application can itself leave conflict markers.
-            // Clear those generated files once more; the retained stash is the
-            // recoverable copy of the original edits in this rare fallback.
-            if (!restored && rolledBack)
-                runGitCapture(linkedWorktree,
-                              {"reset", "--hard", beforeHead}, nullptr, nullptr);
-            if (restored && haveNewAutostash) {
-                QByteArray topStashOut;
-                runGitCapture(linkedWorktree,
-                              {"rev-parse", "-q", "--verify", "stash@{0}"},
-                              &topStashOut, nullptr);
-                if (QString::fromUtf8(topStashOut).trimmed() == retainedStash)
-                    runGitCapture(linkedWorktree,
-                                  {"stash", "drop", "stash@{0}"}, nullptr,
-                                  nullptr);
-            }
-            logSystem(QStringLiteral(
-                          "Git: rolled %1 back after %2 local file(s) conflicted "
-                          "with %3; original edits %4.")
-                          .arg(branch)
-                          .arg(count)
-                          .arg(base)
-                          .arg(restored ? QStringLiteral("restored")
-                                        : QStringLiteral("kept in the autostash")));
-            setRepoDetailNotice(
-                restored
-                    ? QStringLiteral("Couldn't update %1 from %2 because %3 local "
-                                     "file(s) overlap. The branch was rolled back "
-                                     "and its original edits were restored cleanly.")
-                          .arg(branch, base)
-                          .arg(count)
-                    : QStringLiteral("Couldn't update %1 from %2 because %3 local "
-                                     "file(s) overlap. The branch was rolled back; "
-                                     "the original edits remain safe in Git's "
-                                     "autostash (%4).")
-                          .arg(branch, base)
-                          .arg(count)
-                          .arg((rollbackError + QLatin1Char(' ') + restoreError)
-                                   .trimmed()
-                                   .left(180)),
-                true);
-        } else {
-            logSystem(QStringLiteral("Git: merged %1 into %2 in its linked worktree.")
-                          .arg(base, branch));
-            setRepoDetailNotice(
-                protectedLocalEdits
-                    ? QStringLiteral("Updated %1 with %2 and safely restored its "
-                                     "local changes.")
-                          .arg(branch, base)
-                    : QStringLiteral("Updated %1 with %2 in its worktree.")
-                          .arg(branch, base));
-        }
+        const WorktreeMergeReport report =
+            mergeBaseIntoLinkedWorktree(linkedWorktree, branch, base);
+        setRepoDetailNotice(report.message,
+                            report.status != WorktreeMergeReport::Merged);
         m_branchesCache.clear();
         if (m_branchDiffBranch == branch)
             showBranchDiff(branch, m_branchDiffAgentSessionId);
