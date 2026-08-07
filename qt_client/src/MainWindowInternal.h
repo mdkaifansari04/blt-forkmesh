@@ -3824,6 +3824,11 @@ const QString kAccountAlertDeleteProof =
 // in entry.py.
 const QString kAccountAlertClearProof =
     QStringLiteral("forkmesh-account-alert-clear-v1");
+// The ping inbox is read once per run and thereafter only when the relay
+// pushes a "pings" event frame. A write path can raise several pings in one
+// go (a mention plus a thread subscription), so coalesce the resulting burst
+// of pushes into one read rather than one read per frame.
+constexpr qint64 kWebAlertPushFloorMs = 5000;
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.

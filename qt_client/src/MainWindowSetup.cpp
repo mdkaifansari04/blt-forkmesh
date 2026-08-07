@@ -1942,9 +1942,11 @@ void MainWindow::sendNodeHeartbeat()
         // Bring the World virtual office's channel conversations into the chat
         // sidebar (adhoc #412). Idempotent, so the heartbeat can just call it.
         startOfficeChannelMirror();
-        // Keep the bell's badge honest about alerts raised on the website
-        // (adhoc #59). Throttled inside, so this 60s beat costs one read per
-        // five minutes rather than one per beat.
+        // Seed the bell's badge with what the website already had waiting
+        // (adhoc #59). This is the first beat's job only: refreshWebAlerts()
+        // reads the inbox once per run and then goes quiet, leaving later
+        // pings to the relay's "pings" event frame. Every subsequent beat is a
+        // no-op unless that one read failed.
         refreshWebAlerts();
         if (m_isAdmin) {
             if (!m_adminPollTimer) {

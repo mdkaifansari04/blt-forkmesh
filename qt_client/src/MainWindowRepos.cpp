@@ -3689,8 +3689,15 @@ void MainWindow::startNodeEventSocket()
     });
     connect(m_nodeEventSocket, &NodeEventSocket::eventReceived, this,
             [this](const QString &topic, const QString &repo) {
-                Q_UNUSED(topic);
                 Q_UNUSED(repo);
+                // Account-scoped topics answer a different question than the
+                // repo sync does. "pings" is the only thing that moves the
+                // bell's unread count, which is why that inbox is read once at
+                // launch and never on a timer.
+                if (topic == QLatin1String("pings")) {
+                    refreshWebAlerts(true);
+                    return;
+                }
                 // New inbox work also outdates the cached /pending tallies
                 // behind the toolbar badges; zeroing clientFetchedAt lets the
                 // badge refresh refetch them (fetchMirrorPendingCounts is
@@ -3706,9 +3713,13 @@ void MainWindow::startNodeEventSocket()
                 // One catch-up sync per (re)connect drains anything queued
                 // while the channel was down. That catch-up is the whole
                 // missed-event story: there is no fallback poll behind the
-                // socket (docs/operations/polling-elimination.md).
-                if (connected)
+                // socket (docs/operations/polling-elimination.md). The ping
+                // inbox rides the same catch-up, since a ping raised while the
+                // channel was down pushed its frame into the void.
+                if (connected) {
                     scheduleRelaySync();
+                    refreshWebAlerts(true);
+                }
             });
     connect(m_nodeEventSocket, &NodeEventSocket::systemMessage, this,
             [this](const QString &text) { logSystem(text); });
