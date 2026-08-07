@@ -526,6 +526,11 @@ public:
     {
         applyFooterWebsiteStatusFailure(httpStatus);
     }
+    // Where a footer status dot leads when it is clicked (adhoc #1602).
+    QUrl testWebsiteStatusTargetUrl(const QString &statusId) const
+    {
+        return websiteStatusTargetUrl(statusId);
+    }
     // Hands one desktop-side edge probe the answer it would have received and
     // returns the graded state, so Cloudflare-error grading is exercised
     // without a live network.
@@ -1599,8 +1604,16 @@ private:
     // check for as long as it keeps failing (adhoc #1596).
     struct FooterStatusRow; // defined with the rest of the footer state below
     void alertOnDesktopEdgeOutage(const FooterStatusRow &row);
-    // Relay-graded rows first, desktop-measured ones after, onto both dot rows.
+    // Relay-graded rows, each with the desktop-measured check for the same
+    // subject folded into it, onto both dot rows (adhoc #1602).
     void publishFooterWebsiteStatuses();
+    // Clicking a dot opens the surface that dot is about: the site, /status,
+    // the API host, the flagship repository page, or the admin error console
+    // (adhoc #1602). An invalid URL means only the admin console, which is
+    // resolved separately because its path is a deployment secret.
+    QUrl websiteStatusTargetUrl(const QString &statusId) const;
+    void openWebsiteStatusTarget(const QString &statusId);
+    void openAdminErrorConsole();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
@@ -6061,6 +6074,9 @@ private:
     QList<FooterStatusRow> m_footerRelayStatuses;
     QList<FooterStatusRow> m_footerDesktopStatuses;
     QSet<QString> m_desktopProbesInFlight;
+    // One outstanding "where is my admin console" lookup at a time, so a
+    // double-click on the errors dot does not ask the relay twice.
+    bool m_adminConsoleUrlInFlight = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
     // live log and the prompt). One chip per open *kind* of work, not per ticket:
