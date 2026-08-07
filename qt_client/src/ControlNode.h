@@ -341,10 +341,11 @@ CloudflareBootstrapCommand buildCloudflareTailCommand(
     const QString &accountId,
     const QString &npxProgram);
 
-// One decoded line of `wrangler tail --format json`. The viewer renders these
+// One decoded event of `wrangler tail --format json`. The viewer renders these
 // itself (rather than letting Wrangler pretty-print) because the pretty format
 // drops request headers — and the user agent behind each hit is exactly what
-// the cloud log is read for.
+// the cloud log is read for. `summary` is Wrangler's own default line with the
+// agent appended, so the log reads the way `wrangler tail` does.
 struct CloudflareTailEvent {
     bool parsed = false;    // false for banner/plain lines: show them verbatim
     bool isError = false;   // an exception, a non-ok outcome, a 5xx, error logs
@@ -357,9 +358,22 @@ struct CloudflareTailEvent {
     QStringList messages;   // console logs and exception text, newest first
 };
 
-// Decode one NDJSON line of Wrangler's tail. Anything that is not a JSON tail
-// event (Wrangler's own banner, a blank line) comes back with parsed=false and
-// the trimmed text in `summary`, so callers can pass it through untouched.
+// Cut whatever Wrangler has written so far into whole tail records, leaving any
+// incomplete trailing one in `buffer` for the next read.
+//
+// `--format json` is NOT NDJSON: Wrangler prints each event with
+// JSON.stringify(event, null, 4), so a single hit spans ~30 indented lines
+// (adhoc #1623). Splitting on newlines alone therefore hands the parser
+// fragments like `    "outcome": "ok",`, none of which decode — which is how the
+// whole expanded object ended up in the viewer, and why no Worker failure ever
+// reached the alert path. A record here is one brace-balanced JSON document, or
+// one plain line (Wrangler's own banner/warnings) when no document is open.
+QStringList takeCloudflareTailRecords(QByteArray *buffer);
+
+// Decode one record of Wrangler's tail, as produced by
+// takeCloudflareTailRecords(). Anything that is not a JSON tail event
+// (Wrangler's own banner, a blank line) comes back with parsed=false and the
+// text collapsed to one line in `summary`, so callers can pass it through.
 CloudflareTailEvent parseCloudflareTailLine(const QString &line);
 
 // Decode the bootstrapper's bounded, non-secret machine result. Human log

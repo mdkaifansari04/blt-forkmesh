@@ -15,6 +15,7 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 FUNCTIONS = {
     "_chat_direct_passphrase",
     "_chat_direct_message_retained",
+    "_chat_direct_message_recipient",
     "_chat_direct_ticket",
     "_chat_direct_ticket_claims",
     "_require_data_secret",
@@ -272,11 +273,36 @@ def test_direct_ticket_round_trip_and_expiry():
 def test_retained_direct_message_atomically_advances_sender_cursor():
     namespace, clock = _helpers()
     calls = []
+    pushes = []
 
     async def run_batch(env, statements):
         calls.append((env, statements))
 
+    # The retained counter is what raises the OTHER participant's unreadCount,
+    # so it is also where their clients get told (adhoc #1604). Their chat page
+    # reads the conversation list once on open and never on a timer.
+    async def d1_first(_env, _sql, *_params):
+        return {"data": "row"}
+
+    async def decrypt_row(_env, _value):
+        return {"participants": ["alice", "bob"]}
+
+    async def blind_index(_env, name):
+        return {"alice": "b" * 64, "bob": "c" * 64}[name]
+
+    async def notify_account_event(_env, owner, topic):
+        pushes.append((owner, topic))
+
     namespace["_contribution_run_batch"] = run_batch
+    namespace["d1_first"] = d1_first
+    namespace["decrypt_row"] = decrypt_row
+    namespace["blind_index"] = blind_index
+    namespace["notify_account_event"] = notify_account_event
+    namespace["clean_string"] = lambda value, limit: str(value or "")[:limit]
+    namespace["valid_node_name"] = lambda value: bool(value)
+    namespace["MAX_NODE_NAME"] = 63
+    namespace["_CHAT_DIRECT_PEER_MEMO"] = {}
+    namespace["CHAT_DIRECT_PEER_MEMO_MAX"] = 256
     env = _Env()
     conversation_id = "a" * 32
     account_bi = "b" * 64
@@ -286,6 +312,9 @@ def test_retained_direct_message_atomically_advances_sender_cursor():
         account_bi,
         clock[0],
     ))
+
+    # alice sent it, so bob is the one whose unread count moved.
+    assert pushes == [("bob", "direct-messages")]
 
     assert len(calls) == 1
     statements = calls[0][1]
@@ -426,3 +455,49 @@ def test_account_removal_revokes_and_deletes_direct_message_state():
     delete = _source_for("_delete_account_namespace")
     assert "_delete_chat_direct_conversations(env, name_bi)" in rename
     assert "_delete_chat_direct_conversations(env, name_bi)" in delete
+
+
+def test_direct_message_peer_lookup_is_memoized_per_conversation():
+    # A conversation's two participants never change, so resolving the
+    # recipient of the unread-count push must not cost a D1 read plus a row
+    # decrypt on every message a busy conversation retains.
+    namespace, _clock = _helpers()
+    reads = []
+
+    async def d1_first(_env, sql, *_params):
+        reads.append(sql)
+        return {"data": "row"}
+
+    async def decrypt_row(_env, _value):
+        return {"participants": ["alice", "bob"]}
+
+    async def blind_index(_env, name):
+        return {"alice": "b" * 64, "bob": "c" * 64}[name]
+
+    namespace["d1_first"] = d1_first
+    namespace["decrypt_row"] = decrypt_row
+    namespace["blind_index"] = blind_index
+    namespace["clean_string"] = lambda value, limit: str(value or "")[:limit]
+    namespace["valid_node_name"] = lambda value: bool(value)
+    namespace["MAX_NODE_NAME"] = 63
+    namespace["_CHAT_DIRECT_PEER_MEMO"] = {}
+    namespace["CHAT_DIRECT_PEER_MEMO_MAX"] = 256
+
+    env = _Env()
+    conversation_id = "a" * 32
+    for _ in range(4):
+        assert asyncio.run(namespace["_chat_direct_message_recipient"](
+            env, conversation_id, "b" * 64)) == "bob"
+    assert len(reads) == 1
+
+    # A transient read failure must not be remembered as "nobody to notify".
+    async def failing_d1_first(_env, _sql, *_params):
+        raise RuntimeError("D1 unavailable")
+
+    namespace["d1_first"] = failing_d1_first
+    other = "c" * 32
+    assert asyncio.run(namespace["_chat_direct_message_recipient"](
+        env, other, "b" * 64)) == ""
+    namespace["d1_first"] = d1_first
+    assert asyncio.run(namespace["_chat_direct_message_recipient"](
+        env, other, "b" * 64)) == "bob"

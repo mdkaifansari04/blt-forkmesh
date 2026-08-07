@@ -1943,34 +1943,26 @@ QWidget *MainWindow::buildNetworkLogDock()
     // footer top to bottom the way the log panel beside it does.
     m_issueQuickAdd->document()->setDocumentMargin(2);
     // Four rows + the QSS vertical padding (4px top/bottom) + document margins.
+    // A minimum, not a fixed height (adhoc #1621): resizing the composer taller
+    // should grow the text area itself, not just leave blank space above it.
     const int kQuickAddRowH = m_issueQuickAdd->fontMetrics().lineSpacing();
-    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 4 + 8 + 4);
+    m_issueQuickAdd->setMinimumHeight(kQuickAddRowH * 4 + 8 + 4);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is capped at the same length as the Claude prompt / message input
     // (kMaxTextChars). QPlainTextEdit has no setMaxLength, so the cap is enforced
     // in the textChanged handler below.
     const int kQuickAddMaxChars = 16000;
-    m_quickAddTargetAgentLabel = new QLabel;
-    m_quickAddTargetAgentLabel->setObjectName(QStringLiteral("quickAddTargetAgentLabel"));
-    m_quickAddTargetAgentLabel->setAlignment(Qt::AlignRight | Qt::AlignTop);
-    m_quickAddTargetAgentLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_quickAddTargetAgentLabel->setStyleSheet(
-        "QLabel#quickAddTargetAgentLabel {"
-        " background: transparent;"
-        " color: rgba(125, 128, 128, 0.45);"
-        " font-size: 9px;"
-        "}");
-    m_quickAddTargetAgentLabel->setVisible(false);
+    // The follow-up target used to ride a separate "Agent #123" label pinned to
+    // the box's top-right corner, disconnected from the placeholder text it
+    // described. It now folds straight into the placeholder itself (adhoc
+    // #1621) via updateQuickAddTargetAgentLabel(), so "enter prompt to agent
+    // #123" reads as one line in the text area.
     auto *quickAddInputHost = new QWidget;
     auto *quickAddInputLayout = new QGridLayout(quickAddInputHost);
     quickAddInputLayout->setContentsMargins(0, 0, 0, 0);
     quickAddInputLayout->setSpacing(0);
     quickAddInputLayout->addWidget(m_issueQuickAdd, 0, 0);
-    quickAddInputLayout->addWidget(m_quickAddTargetAgentLabel,
-                                  0,
-                                  0,
-                                  Qt::AlignRight | Qt::AlignTop);
 
     // Ctrl+V with an image on the clipboard attaches it (issue #79).
     m_issueQuickAdd->installEventFilter(this);
@@ -2383,12 +2375,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendButton->setObjectName("quickAddSendIcon");
     m_quickAddSendButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_quickAddSendButton, "paper-airplane", 17);
-    // Fixed width, but stretch vertically (adhoc #115): the two send buttons now
-    // form a full-height column down the right edge of the prompt frame, so the
-    // prompt box is exactly as tall as the stacked add/new buttons.
+    // Fixed width and height (adhoc #1621): the send column sits at the bottom
+    // of the prompt frame's right edge and does not grow when the composer is
+    // resized taller — only the text area to its left should open up.
     m_quickAddSendButton->setFixedWidth(58);
     m_quickAddSendButton->setMinimumHeight(28);
-    m_quickAddSendButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    m_quickAddSendButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     connect(m_quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
     // No corner glyph on the button any more (adhoc #120): the little green "⏎"
@@ -2407,7 +2399,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendToAgentButton->setFixedWidth(58);
     m_quickAddSendToAgentButton->setMinimumHeight(28);
     m_quickAddSendToAgentButton->setSizePolicy(QSizePolicy::Fixed,
-                                               QSizePolicy::Expanding);
+                                               QSizePolicy::Fixed);
     connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
         if (!m_issueQuickAdd)
             return;
@@ -2459,7 +2451,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddGenieButton->setFixedWidth(58);
     m_quickAddGenieButton->setMinimumHeight(24);
     m_quickAddGenieButton->setSizePolicy(QSizePolicy::Fixed,
-                                         QSizePolicy::Expanding);
+                                         QSizePolicy::Fixed);
     m_quickAddGenieButton->setToolTip(
         QString::fromUtf8("Task \xE2\x80\x94 add this prompt to the organization's "
                           "general task list."));
@@ -2474,16 +2466,18 @@ QWidget *MainWindow::buildNetworkLogDock()
     // the text).
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // Three buttons stacked in a full-height column down the prompt's right edge
-    // (adhoc #115): each stretches to take its share of the frame height, so the
-    // text area to their left ends flush against them and the whole prompt box is
-    // just as tall as the task/add/new stack. "task" sits on top (adhoc #42).
+    // Three fixed-height buttons stacked down the prompt's right edge (adhoc
+    // #115, resized adhoc #1621): a leading stretch soaks up any extra height
+    // the resized frame gives this column, so the buttons stay put at the foot
+    // instead of growing — when the composer opens up taller, only the text
+    // area beside them should grow. "task" sits on top (adhoc #42).
     auto *sendColumn = new QVBoxLayout;
     sendColumn->setContentsMargins(0, 0, 0, 0);
     sendColumn->setSpacing(2);
-    sendColumn->addWidget(m_quickAddGenieButton, 1);
-    sendColumn->addWidget(m_quickAddSendToAgentButton, 1);
-    sendColumn->addWidget(m_quickAddSendButton, 1);
+    sendColumn->addStretch(1);
+    sendColumn->addWidget(m_quickAddGenieButton, 0);
+    sendColumn->addWidget(m_quickAddSendToAgentButton, 0);
+    sendColumn->addWidget(m_quickAddSendButton, 0);
     // Enter targets "new" until an agent session is opened above.
     updateQuickAddEnterTarget();
 
@@ -3182,7 +3176,12 @@ bool MainWindow::handlePromptPlacementEvent(QObject *object, QEvent *event)
                 QPoint(m_promptOverlaySize.width() - 1,
                        m_promptOverlaySize.height() - 1);
         }
-        clampPromptOverlayIntoHost();
+        // Full relayout, not just the geometry clamp: positionGlobalFooterOverlays()
+        // is what re-anchors the avatar to the bottom-left corner off the host's
+        // current height, so it has to run on every drag step or the avatar is
+        // left stranded at its pre-drag position while the panel resizes around
+        // it (adhoc #1621).
+        positionGlobalFooterOverlays();
         m_promptOverlayHost->raise();
         return true;
     }
@@ -8617,28 +8616,25 @@ void MainWindow::showCloudflareWorkerLogs()
     process.setProcessEnvironment(command.environment);
     process.setProcessChannelMode(QProcess::MergedChannels);
     process.setStandardInputFile(QProcess::nullDevice());
-    // Wrangler streams NDJSON now, so the pane renders each event itself: one
-    // line per hit, ending in the user agent that made it. A read can split a
-    // line in half, so whatever follows the last newline is held back until the
-    // rest of it arrives.
+    // Wrangler streams JSON, so the pane renders each event itself: one line per
+    // hit, in Wrangler's own default shape, ending in the user agent that made
+    // it. One event spans many lines of that JSON and a read can split it
+    // anywhere, so takeCloudflareTailRecords() hands back only whole events and
+    // keeps the rest until the next read (adhoc #1623).
     QByteArray pending;
     const auto appendOutput = [&process, output, &token, &pending] {
         pending += process.readAllStandardOutput();
-        int newline = -1;
         QString rendered;
-        while ((newline = pending.indexOf('\n')) >= 0) {
-            const QString line =
-                QString::fromUtf8(pending.left(newline)).trimmed();
-            pending.remove(0, newline + 1);
-            if (line.isEmpty())
+        const QStringList records =
+            forkmesh::control::takeCloudflareTailRecords(&pending);
+        for (const QString &record : records) {
+            const QString summary =
+                forkmesh::control::parseCloudflareTailLine(record).summary;
+            if (summary.isEmpty())
                 continue;
-            rendered += forkmesh::control::parseCloudflareTailLine(line).summary;
+            rendered += summary;
             rendered += QLatin1Char('\n');
         }
-        // A stalled half-line must not grow without bound if the child ever
-        // emits a stream with no newline in it at all.
-        if (pending.size() > 1024 * 1024)
-            pending.clear();
         if (rendered.isEmpty())
             return;
         output->moveCursor(QTextCursor::End);
@@ -8813,19 +8809,22 @@ void MainWindow::readCloudLogMonitorOutput()
 {
     if (!m_cloudLogMonitorProcess)
         return;
-    m_cloudLogMonitorBuffer += m_cloudLogMonitorProcess->readAllStandardOutput();
-    int newline = -1;
-    while ((newline = m_cloudLogMonitorBuffer.indexOf('\n')) >= 0) {
-        const QString line =
-            QString::fromUtf8(m_cloudLogMonitorBuffer.left(newline)).trimmed();
-        m_cloudLogMonitorBuffer.remove(0, newline + 1);
-        if (!line.isEmpty())
-            handleCloudLogMonitorLine(line);
-    }
-    // Same bound as the viewer: a stream with no newline in it can't grow into
-    // the heap unchecked.
-    if (m_cloudLogMonitorBuffer.size() > 1024 * 1024)
-        m_cloudLogMonitorBuffer.clear();
+    consumeCloudLogMonitorBytes(
+        m_cloudLogMonitorProcess->readAllStandardOutput());
+}
+
+// Wrangler's `--format json` is pretty-printed, so one Worker event arrives as
+// ~30 indented lines and a read can cut through the middle of any of them.
+// Splitting per line used to hand parseCloudflareTailLine() fragments that never
+// decoded: the expanded JSON went straight to the viewer and no failure ever set
+// isError, so the Monitor box raised no alerts at all (adhoc #1623).
+void MainWindow::consumeCloudLogMonitorBytes(const QByteArray &chunk)
+{
+    m_cloudLogMonitorBuffer += chunk;
+    const QStringList records =
+        forkmesh::control::takeCloudflareTailRecords(&m_cloudLogMonitorBuffer);
+    for (const QString &record : records)
+        handleCloudLogMonitorLine(record);
 }
 
 void MainWindow::handleCloudLogMonitorLine(const QString &line)
@@ -12006,12 +12005,67 @@ void MainWindow::pushCurrentRepoUpstream()
                         .arg(repo.owner, repo.name, detail));
                 auto *viewBtn = box.addButton(QStringLiteral("View code"),
                                               QMessageBox::ActionRole);
+                auto *markSafeBtn = box.addButton(QStringLiteral("Mark safe & commit"),
+                                                  QMessageBox::YesRole);
                 auto *cancelBtn = box.addButton(QStringLiteral("Cancel push"),
                                                 QMessageBox::RejectRole);
                 auto *bypassBtn = box.addButton(QStringLiteral("Push anyway"),
                                                 QMessageBox::DestructiveRole);
                 box.setDefaultButton(cancelBtn);
                 box.exec();
+                if (box.clickedButton() == markSafeBtn) {
+                    // Reviewed-safe path: append the scanner's inline
+                    // suppression marker to each flagged line, commit that as
+                    // its own change, then rescan/push — the new commit no
+                    // longer matches, so the retry should sail through.
+                    QSet<QString> touchedPaths;
+                    bool allMarked = true;
+                    for (const RepoSecurityFinding &f : scan.findings) {
+                        if (RepoSecurity::markFindingSafe(repo.localPath, f))
+                            touchedPaths.insert(f.path);
+                        else
+                            allMarked = false;
+                    }
+                    m_pushingRepos.remove(index);
+                    clearRepoSyncActivity(index);
+                    refreshRepoSyncIndicators();
+                    if (touchedPaths.isEmpty()) {
+                        flashMessage(QStringLiteral("Could not mark the flagged "
+                                                    "lines as safe."),
+                                     true);
+                        return;
+                    }
+                    QStringList addArgs{QStringLiteral("add"), QStringLiteral("--")};
+                    for (const QString &path : std::as_const(touchedPaths))
+                        addArgs << path;
+                    runGitCapture(repo.localPath, addArgs, nullptr, nullptr);
+                    QString commitErr;
+                    if (!runGitCapture(repo.localPath,
+                                       {QStringLiteral("commit"), QStringLiteral("-m"),
+                                        QStringLiteral("Mark flagged secret scan "
+                                                       "findings as reviewed/safe")},
+                                       nullptr, &commitErr)) {
+                        flashMessage(QStringLiteral("Could not commit the "
+                                                    "reviewed-safe markers: %1")
+                                         .arg(commitErr.trimmed()),
+                                     true);
+                        return;
+                    }
+                    logSystem(QStringLiteral(
+                                  "Git: marked %1 finding%2 as reviewed/safe in "
+                                  "%3/%4 and committed the change.")
+                                  .arg(scan.findings.size())
+                                  .arg(scan.findings.size() == 1
+                                           ? QString()
+                                           : QStringLiteral("s"))
+                                  .arg(repo.owner, repo.name));
+                    if (!allMarked)
+                        flashMessage(QStringLiteral("Some flagged lines could not "
+                                                    "be marked safe; rescanning."),
+                                     true);
+                    pushCurrentRepoUpstream();
+                    return;
+                }
                 if (box.clickedButton() == viewBtn) {
                     // Jumping to the code cancels the push: the point is to remove
                     // the credential first. Copy the path/line out before the
@@ -12630,7 +12684,9 @@ void MainWindow::showSection(int index)
     } else if (index == 3) {
         // Opening Pings is the moment the website inbox has to be current
         // (adhoc #59); refreshWebAlerts() repaints the table when it lands.
-        refreshWebAlerts();
+        // Forced, because the unforced read is a one-shot seed at launch — a
+        // user action is exactly the case that outranks it.
+        refreshWebAlerts(true);
         refreshNotificationsTable();
     } else if (index == 4 && m_settingsLog) {
         // First visit renders the persisted history that buildLogSection()

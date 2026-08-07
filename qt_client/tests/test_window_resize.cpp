@@ -702,6 +702,56 @@ void checkCloudLogMonitorAlert(MainWindow &window)
           QStringLiteral("a Worker exception raises the same alert as any other "
                          "error, naming the agent that hit it"));
 
+    // adhoc #1623: the real stream is not one event per line. Wrangler
+    // pretty-prints it, and a read boundary can fall mid-event — which is what
+    // dropped the whole expanded object into the viewer and left the Monitor box
+    // raising nothing. Fed here exactly as the process delivers it.
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+    const int errorsBefore = window.testCloudLogMonitorErrors();
+    const int eventsBefore = window.testCloudLogMonitorEvents();
+    window.testCloudLogMonitorChunk(QByteArray(
+        "{\n"
+        "    \"outcome\": \"exception\",\n"
+        "    \"eventTimestamp\": 3000,\n"
+        "    \"event\": {\n"
+        "        \"request\": {\n"
+        "            \"method\": \"GET\",\n"
+        "            \"url\": \"https://forkmesh.com/api/repos\",\n"
+        "            \"headers\": {\n"
+        "                \"user-agent\": \"curl/8.5.0\"\n"));
+    QApplication::processEvents();
+    check(window.testCloudLogMonitorEvents() == eventsBefore &&
+              window.testCloudLogMonitorErrors() == errorsBefore &&
+              !window.testErrorBorderVisible(),
+          QStringLiteral("half an event is not rendered or alerted on"));
+    window.testCloudLogMonitorChunk(QByteArray(
+        "            }\n"
+        "        }\n"
+        "    },\n"
+        "    \"logs\": [],\n"
+        "    \"exceptions\": [\n"
+        "        {\n"
+        "            \"name\": \"RangeError\",\n"
+        "            \"message\": \"stack overflow\"\n"
+        "        }\n"
+        "    ]\n"
+        "}\n"));
+    QApplication::processEvents();
+    check(window.testCloudLogMonitorEvents() == eventsBefore + 1 &&
+              window.testCloudLogMonitorErrors() == errorsBefore + 1 &&
+              window.testErrorBorderVisible() &&
+              window.testCloudLogMonitorRecent().constLast().contains(
+                  QStringLiteral("UA curl/8.5.0")) &&
+              !window.testCloudLogMonitorRecent().constLast().contains(
+                  QStringLiteral("\"outcome\"")) &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("RangeError: stack overflow")),
+          QStringLiteral("a pretty-printed Worker exception spanning two reads "
+                         "renders as one line and raises the alert"));
+
     window.testDismissTopMessage();
     window.testResetNetworkLog();
     window.testResetLoggedErrorAlerts();
