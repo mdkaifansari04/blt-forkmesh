@@ -3198,6 +3198,10 @@ const QString kInAppNotificationDurationSetting =
 // Every ERROR-badged log line flashes the window border and shows itself as a
 // card. On by default: a failure nobody sees is the thing this exists to stop.
 const QString kErrorLogAlertSetting = QStringLiteral("notifications/errorLogFlash");
+// The "System alert" ping (kind operational_alert: a mesh system going down or
+// recovering, per webPingKindLabel). On by default like kErrorLogAlertSetting —
+// this only gates the toast/border flash, the Pings page logs it regardless.
+const QString kSystemAlertSetting = QStringLiteral("notifications/systemAlert");
 const QString kEmailNotifyMentionSetting = QStringLiteral("notifications/email/mention");
 const QString kEmailNotifySubscribedSetting = QStringLiteral("notifications/email/subscribed");
 const QString kEmailNotifyPullSubmittedSetting = QStringLiteral("notifications/email/pullSubmitted");

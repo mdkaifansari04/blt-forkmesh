@@ -2880,6 +2880,9 @@ void MainWindow::refreshWebAlerts(bool force)
             m_flashedWebAlertIds.insert(id);
             if (loadingStartupBaseline)
                 continue;
+            if (kind == QLatin1String("operational_alert") &&
+                !QSettings().value(kSystemAlertSetting, true).toBool())
+                continue;
             const QString title =
                 alert.value(QStringLiteral("title")).toString().trimmed();
             // The recovery that closes an outage arrives on the same channel as

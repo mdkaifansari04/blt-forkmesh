@@ -650,6 +650,17 @@ QWidget *MainWindow::buildSettingsSection()
     connect(errorLogAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kErrorLogAlertSetting, enabled);
     });
+    auto *systemAlertCheck =
+        new QCheckBox("Show a card for ForkMesh system alerts");
+    systemAlertCheck->setChecked(
+        QSettings().value(kSystemAlertSetting, true).toBool());
+    systemAlertCheck->setToolTip(
+        "Pop up a card (naming the specific system, e.g. \"Relay needs "
+        "attention\") when a mesh system goes down or recovers. The Pings "
+        "page keeps logging these either way.");
+    connect(systemAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kSystemAlertSetting, enabled);
+    });
     auto *pushAlertCheck =
         new QCheckBox("Show a system ping when a push reaches a mirror");
     pushAlertCheck->setChecked(
@@ -2177,6 +2188,7 @@ QWidget *MainWindow::buildSettingsSection()
     pingsGroup->addWidget(inAppPingsCheck);
     pingsGroup->addWidget(inAppPingDuration, 0, Qt::AlignLeft);
     pingsGroup->addWidget(errorLogAlertCheck);
+    pingsGroup->addWidget(systemAlertCheck);
     pingsGroup->addWidget(pushAlertCheck);
     pingsGroup->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
     pingsGroup->addWidget(actionAlertStartedCheck, 0, Qt::AlignLeft);
