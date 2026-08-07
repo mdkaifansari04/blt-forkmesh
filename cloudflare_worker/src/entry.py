@@ -1751,6 +1751,66 @@ async def notify_repo_host(env, owner, repo, topic):
         pass
 
 
+# Per-isolate coalescing window for account event pushes. One write path
+# routinely enqueues several notifications for the same person in the same
+# request (an @mention plus a thread subscription, say), and every one of them
+# is answered by the same single signed read on the client. Collapsing the
+# duplicates costs the user nothing and keeps a fan-out inside the Worker's
+# subrequest budget.
+_ACCOUNT_EVENT_PUSH_MEMO = {}
+ACCOUNT_EVENT_PUSH_COALESCE_MS = 2000
+ACCOUNT_EVENT_PUSH_MEMO_MAX = 512
+
+
+async def notify_account_event(env, owner, topic):
+    """Push a payload-free "your <topic> changed" frame to one account.
+
+    Same channel and same contract as notify_repo_host — the per-owner
+    ForkMeshNodes Durable Object — but for account-scoped state that belongs
+    to no repository: the ping inbox and direct-message unread counts. Desktop
+    nodes already hold this socket; browsers open the same one with a
+    short-lived account event ticket. Clients read those counts exactly once
+    at startup and thereafter only when a frame like this arrives, so this
+    push is what replaces their old "any unread yet?" poll
+    (docs/operations/polling-elimination.md).
+
+    Best-effort, like every other push on this channel: a failure here must
+    never fail the write that triggered it, and the worst case is that a badge
+    waits until the reader opens the page it lives on (or the channel
+    reconnects). That is also the safety valve for a wide fan-out — one comment
+    on a heavily-subscribed thread calls this once per subscriber, and if that
+    exhausts the invocation's subrequest budget the remaining pushes fail
+    quietly instead of failing the comment.
+    """
+    owner = safe_segment(owner)
+    topic = clean_string(topic or "", 40)
+    if not owner or not topic:
+        return
+    now = int(Date.now())
+    memo_key = owner + "\n" + topic
+    last = _ACCOUNT_EVENT_PUSH_MEMO.get(memo_key, 0)
+    if last and now - last < ACCOUNT_EVENT_PUSH_COALESCE_MS:
+        return
+    _ACCOUNT_EVENT_PUSH_MEMO[memo_key] = now
+    if len(_ACCOUNT_EVENT_PUSH_MEMO) > ACCOUNT_EVENT_PUSH_MEMO_MAX:
+        cutoff = now - ACCOUNT_EVENT_PUSH_COALESCE_MS
+        for stale in [key for key, ts in _ACCOUNT_EVENT_PUSH_MEMO.items()
+                      if ts < cutoff]:
+            _ACCOUNT_EVENT_PUSH_MEMO.pop(stale, None)
+    try:
+        node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
+        node_object = env.FORKMESH_NODES.get(node_id)
+        await asyncio.wait_for(
+            node_object.fetch(
+                "https://forkmesh.internal/api/nodes/notify"
+                "?topic=" + quote(topic)
+            ),
+            timeout=HOST_COUNT_TIMEOUT_MS / 1000,
+        )
+    except Exception:
+        pass
+
+
 async def notify_repo_mirrors(env, owner, repo, topic):
     """Wake every integrity-approved public mirror after an issue arrives."""
     try:
@@ -1798,22 +1858,112 @@ async def notify_repo_mirrors(env, owner, repo, topic):
         await notify_repo_host(env, target, repo, topic)
 
 
+# A browser cannot set headers on a WebSocket upgrade, so it proves its
+# account the way the World already does: exchange the session for a
+# short-lived, HMAC-signed ticket over ordinary authenticated HTTPS and put
+# only that in the upgrade URL. A leaked ticket buys sixty seconds of
+# payload-free "something changed" frames for one account — never the session
+# token, and never any content.
+ACCOUNT_EVENT_TICKET_TTL_MS = 60 * 1000
+
+
+def _account_event_ticket_signature(env, payload):
+    return hmac.new(
+        _account_session_secret(env),
+        b"forkmesh-account-events-ticket-v1\n" + payload.encode(),
+        "sha256",
+    ).hexdigest()
+
+
+def _account_event_ticket_encode(env, claim):
+    payload = base64.urlsafe_b64encode(
+        json.dumps(claim, separators=(",", ":"), sort_keys=True).encode()
+    ).decode().rstrip("=")
+    return payload + "." + _account_event_ticket_signature(env, payload)
+
+
+def _account_event_ticket_owner(env, ticket):
+    """The account name proven by an unexpired event ticket, else ""."""
+    value = clean_string(ticket or "", 1024).strip()
+    if "." not in value:
+        return ""
+    payload, signature = value.rsplit(".", 1)
+    if not payload or not re.fullmatch(r"[A-Za-z0-9_-]+", payload):
+        return ""
+    if not hmac.compare_digest(
+            signature, _account_event_ticket_signature(env, payload)):
+        return ""
+    try:
+        padded = payload + "=" * ((4 - len(payload) % 4) % 4)
+        claim = json.loads(base64.urlsafe_b64decode(padded).decode())
+    except Exception:
+        return ""
+    if not isinstance(claim, dict):
+        return ""
+    now = int(Date.now())
+    try:
+        issued = int(claim.get("issuedAt", 0) or 0)
+        expires = int(claim.get("expiresAt", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    if issued <= 0 or expires <= now or issued > now + 5000:
+        return ""
+    if expires - issued > ACCOUNT_EVENT_TICKET_TTL_MS:
+        return ""
+    return safe_segment(clean_string(claim.get("name", ""), MAX_NODE_NAME))
+
+
+async def account_event_ticket_handler(env, request):
+    """GET /api/accounts/event-ticket — session -> account event ticket."""
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET"})
+    name = safe_segment(await _authed_account_name(env, request))
+    if not name:
+        return json_response(
+            {"ok": True, "authenticated": False, "ticket": "", "expiresAt": 0},
+            cache_control="no-store, max-age=0, must-revalidate")
+    now = int(Date.now())
+    expires = now + ACCOUNT_EVENT_TICKET_TTL_MS
+    return json_response(
+        {
+            "ok": True,
+            "authenticated": True,
+            "name": name,
+            "expiresAt": expires,
+            "ticket": _account_event_ticket_encode(
+                env, {"name": name, "issuedAt": now, "expiresAt": expires}),
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"})
+
+
 async def node_events_handler(env, request):
     # GET /api/nodes/events?owner=&ts=&sig= (WebSocket upgrade only) — a
     # desktop/headless node's live event channel. Auth reuses the same signed
     # forkmesh-issues-pull-v1 drain token as GET /api/sync (_authorize_owner),
-    # checked here BEFORE any Durable Object is selected. The socket only ever
-    # receives payload-free {"type":"event","topic"} frames; all data still
-    # flows through the existing signed HTTPS sync, so this adds no new
+    # checked here BEFORE any Durable Object is selected. A browser instead
+    # presents ?ticket= from /api/accounts/event-ticket, which proves the same
+    # account from an ordinary session; either way the socket only ever
+    # receives payload-free {"type":"event","topic"} frames, so all data still
+    # flows through the existing signed HTTPS routes and this adds no new
     # repository byte or control transport (the retired-tunnel contracts in
     # test_https_mirror_routing_integration.py are unaffected).
     upgrade = (request.headers.get("upgrade") or "").lower()
     if upgrade != "websocket":
         return json_response({"error": "upgrade_required"}, status=426)
     params = parse_qs(urlparse(request.url).query)
-    owner = safe_segment(params.get("owner", [""])[0])
-    if not owner or not await _authorize_owner(env, request, owner):
-        return json_response({"error": "unauthorized"}, status=401)
+    ticket = params.get("ticket", [""])[0]
+    if ticket:
+        owner = _account_event_ticket_owner(env, ticket)
+        if not owner:
+            return json_response({"error": "unauthorized"}, status=401)
+    else:
+        owner = safe_segment(params.get("owner", [""])[0])
+        if not owner or not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
     node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
     # Same retry-twice guard as the chat room router: a platform abort of the
     # DO is transient, and the upgrade request carries no body so re-driving
@@ -7077,6 +7227,58 @@ async def _chat_direct_message_retained(
             (conversation_id, conversation_id, account_bi),
         ),
     ])
+    # That first UPDATE is exactly what raises the other participant's
+    # unreadCount, so push them a hint now. Their conversation list is read
+    # once when the chat page opens and never on a timer, so a reader who is
+    # not sitting in this particular conversation would otherwise not see the
+    # count move until they reloaded. (A reader who *is* sitting in it already
+    # got the message over this room's socket; the push is then redundant, and
+    # notify_account_event's coalescing window absorbs it.)
+    recipient = await _chat_direct_message_recipient(
+        env, conversation_id, account_bi)
+    if recipient:
+        await notify_account_event(env, recipient, "direct-messages")
+
+
+# conversation_id -> {sender account_bi: peer name}. A direct conversation has
+# exactly two participants and they never change, so this is immutable for the
+# life of the row and worth memoizing per isolate: the alternative is a D1 read
+# plus a row decrypt plus two blind indexes on every retained message.
+_CHAT_DIRECT_PEER_MEMO = {}
+CHAT_DIRECT_PEER_MEMO_MAX = 256
+
+
+async def _chat_direct_message_recipient(env, conversation_id, sender_bi):
+    """The participant of a direct conversation who is not the sender."""
+    memo_key = str(conversation_id) + "\n" + str(sender_bi)
+    if memo_key in _CHAT_DIRECT_PEER_MEMO:
+        return _CHAT_DIRECT_PEER_MEMO[memo_key]
+    peer = ""
+    try:
+        row = await d1_first(
+            env,
+            "SELECT data FROM chat_direct_conversations "
+            "WHERE conversation_id=?",
+            conversation_id,
+        )
+        record = await decrypt_row(env, (row or {}).get("data", ""))
+        participants = (record or {}).get("participants")
+        if not isinstance(participants, list):
+            return ""
+        for value in participants:
+            name = clean_string(value, MAX_NODE_NAME).strip().lower()
+            if not valid_node_name(name):
+                continue
+            if await blind_index(env, name) != sender_bi:
+                peer = name
+                break
+    except Exception:
+        # A transient read failure must not be memoized as "no recipient".
+        return ""
+    if len(_CHAT_DIRECT_PEER_MEMO) >= CHAT_DIRECT_PEER_MEMO_MAX:
+        _CHAT_DIRECT_PEER_MEMO.clear()
+    _CHAT_DIRECT_PEER_MEMO[memo_key] = peer
+    return peer
 
 
 def _office_entry_ticket(env, account_bi):
@@ -8387,6 +8589,15 @@ class _WorldCommunityRuntime:
 
     def now(self):
         return int(Date.now())
+
+    async def notify_account(self, owner, topic):
+        """Tell one account's clients that something of theirs changed.
+
+        Payload-free, best-effort; see notify_account_event. Chat surfaces read
+        their channel and conversation lists once when the page opens, so this
+        is how a list that changed for somebody else's reason reaches them.
+        """
+        await notify_account_event(self.env, owner, topic)
 
     def new_id(self):
         # The random id contains no account, address, time, path, or provider
@@ -29461,6 +29672,10 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
            )""",
         recipient_bi, recipient_bi, MAX_NOTIFICATIONS_PER_RECIPIENT,
     )
+    # This row is the only thing that moves the recipient's unread ping count,
+    # so it is also the only thing that needs to wake their clients. Desktop
+    # and browser both read the inbox once on open and then sit on this push.
+    await notify_account_event(env, recipient, "pings")
     return True
 
 
@@ -42049,6 +42264,13 @@ class Default(WorkerEntrypoint):
         # payload-free event frame (see notify_repo_host / ForkMeshNodes).
         if url.path in ("/api/nodes/events", "/api/nodes/events/"):
             return await node_events_handler(self.env, request)
+
+        # The browser's key to that same channel: a session traded for a
+        # 60s account-scoped ticket, because a WebSocket upgrade carries no
+        # Authorization header. Matched ahead of accounts_handler.
+        if url.path in ("/api/accounts/event-ticket",
+                        "/api/accounts/event-ticket/"):
+            return await account_event_ticket_handler(self.env, request)
 
         if url.path in ("/api/forkbot/chat", "/api/forkbot/chat/"):
             return await forkbot_chat_handler(self.env, request)

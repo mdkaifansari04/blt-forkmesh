@@ -26,6 +26,11 @@ import {
   withWorldBackoff,
   worldCoolingDownError,
 } from "./world-backoff.js";
+// Shared with /chat: one authenticated payload-free event channel per account.
+// It lives outside /world/ because both surfaces use it — the world Worker
+// only routes /world/*, so this resolves on the relay like every other
+// un-routed subresource the World loads.
+import { createAccountEventChannel } from "../account-events.js";
 import { buildLiveMirrorNodes } from "./world-mirror-nodes.js";
 import {
   MASTODON_LOOKUP_URL,
@@ -319,7 +324,12 @@ const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
 // at boot. Retries stop the moment a repository is open.
 const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
-const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
+// Not a poll interval any more (pings arrive over startNotificationChannel).
+// This is only how long a ping-digest response stays reusable from cache, and
+// it exists to collapse a burst of pushes — one write path can raise several
+// pings at once — into a single read. It has to stay short: the whole point of
+// a push-triggered read is that it sees the ping that triggered it.
+const WORLD_NOTIFICATION_DIGEST_MAX_AGE_MS = 2000;
 // One poll can carry a whole incident: several systems failing, then the
 // recoveries that close them. The bubble stack keeps six cards, so the two
 // classes of ping are budgeted separately instead of competing newest-first.
@@ -6267,7 +6277,7 @@ class ForkMeshWorld extends HTMLElement {
     this.instanceCelebrationTimer = 0;
     this.installCelebrationTimer = 0;
     this.lastCelebratedInstallId = "";
-    this.notificationsTimer = 0;
+    this.notificationChannel = null;
     this.notificationBoardDetailId = "";
     this.adminErrorTimer = 0;
     this.adminErrorLatestId = 0;
@@ -7663,7 +7673,7 @@ class ForkMeshWorld extends HTMLElement {
       // deferred catalog read rather than watching a district nobody visited.
       this.startInstanceDirectoryPolling();
       this.startEventPolling();
-      this.startNotificationPolling();
+      this.startNotificationChannel();
       this.startMediaPlaybackPolling();
       this.announceWorldNotifications();
       this.distanceTimer = window.setInterval(() => {
@@ -7690,7 +7700,7 @@ class ForkMeshWorld extends HTMLElement {
       await this.loadWorldData().catch(() => {});
       this.updateMetrics();
       this.startEventPolling();
-      this.startNotificationPolling();
+      this.startNotificationChannel();
       this.announceWorldNotifications();
       if (this.requestedLandmark) {
         this.openLandmark(this.requestedLandmark);
@@ -8960,6 +8970,9 @@ class ForkMeshWorld extends HTMLElement {
   handleStorage = (event) => {
     if (event.key === "forkmesh.session") {
       this.refreshPersonalNotifications(false);
+      // Signing in or out in another tab changes whose pings these are, and
+      // the ticket this socket was opened with proves the old identity.
+      this.startNotificationChannel();
     }
   };
 
@@ -19064,7 +19077,7 @@ class ForkMeshWorld extends HTMLElement {
           `/api/poll?node=${encodeURIComponent(account)}`,
           {
             timeout: 5000,
-            maxAge: WORLD_NOTIFICATION_POLL_MS - 5000,
+            maxAge: WORLD_NOTIFICATION_DIGEST_MAX_AGE_MS,
             backoff: true,
             staleIfError: true,
           },
@@ -19190,13 +19203,32 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  startNotificationPolling() {
-    window.clearInterval(this.notificationsTimer);
-    this.notificationsTimer = window.setInterval(() => {
-      if (!document.hidden) {
-        this.refreshPersonalNotifications(false, { digestOnly: true });
-      }
-    }, WORLD_NOTIFICATION_POLL_MS);
+  // Pings are pushed, not polled. The inbox is read once during boot
+  // (announceWorldNotifications) and then this channel — the same per-account
+  // ForkMeshNodes socket the desktop node holds — reports the only thing that
+  // can change the unread count: somebody wrote a ping for this account
+  // (notify_account_event). No fallback timer sits behind it, so the one
+  // catch-up read per (re)connect is what covers a ping raised while the
+  // channel was down (docs/operations/polling-elimination.md).
+  startNotificationChannel() {
+    if (this.notificationChannel) {
+      this.notificationChannel.restart();
+      return;
+    }
+    if (!this.sessionAuthenticated && !validWorldSession()?.sessionToken) {
+      return;
+    }
+    this.notificationChannel = createAccountEventChannel({
+      sessionToken: () => validWorldSession()?.sessionToken || "",
+      onTopic: (topic) => {
+        if (topic !== "pings") return;
+        void this.refreshPersonalNotifications(false, { digestOnly: true });
+      },
+      onConnected: () => {
+        void this.refreshPersonalNotifications(false, { digestOnly: true });
+      },
+    });
+    this.notificationChannel.start();
   }
 
   neighborhoodPanelHTML() {
@@ -29017,9 +29049,12 @@ class ForkMeshWorld extends HTMLElement {
     this.startAdminErrorPolling();
     // The ticket usually authenticates after the initial loadContext() already
     // gave up on personal pings ("signed-out"), which stranded the board empty
-    // until the next 60s poll. Fetch them the moment the session proves out.
+    // until the next 60s poll. Fetch them the moment the session proves out —
+    // and open the push channel that has replaced that poll, since boot may
+    // have reached startNotificationChannel() while this was still a guest.
     if (!wasAuthenticated || this.notificationsState === "signed-out") {
       void this.refreshPersonalNotifications(this.isEventsPanelOpen());
+      this.startNotificationChannel();
     }
     return true;
   }
@@ -31346,7 +31381,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.repositoryImportTimer);
     window.clearTimeout(this.mirrorPushRefreshTimer);
     window.clearInterval(this.eventsTimer);
-    window.clearInterval(this.notificationsTimer);
+    this.notificationChannel?.dispose();
+    this.notificationChannel = null;
     window.clearInterval(this.adminErrorTimer);
     window.clearTimeout(this.adminErrorEffectTimer);
     window.clearTimeout(this.instanceCelebrationTimer);
