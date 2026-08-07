@@ -12115,6 +12115,57 @@ async def _contribution_language_rows(env, owner_user_bi):
     )
 
 
+async def _contribution_commit_totals(env):
+    """Map subject_user_bi -> lifetime commit count, for every account at once.
+
+    ``contributor_activity`` tallies issues, PRs, and discussions as each
+    signed event reaches an inbox, but nothing ever increments its ``commits``
+    column — commits arrive as whole-repo snapshots, not one event apiece, so
+    that column has always read 0. The real per-author counts live in
+    ``profile_contribution_days``, the same rows the profile contribution
+    graph draws from, so the directory sums them here instead of publishing a
+    commit count stuck at zero.
+
+    Only public projects on public repositories are counted, exactly as the
+    public profile graph does: the directory this feeds is unauthenticated, so
+    it may not expose commit activity a private repo would otherwise hide.
+    One source repo per project wins (latest capture), matching
+    _contribution_language_rows, so a project mirrored across several nodes is
+    not counted once per mirror.
+    """
+    rows = await d1_all(
+        env,
+        """WITH ranked_sources AS (
+               SELECT projects.source_repo_bi,
+                      projects.active_generation_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY projects.project_bi
+                        ORDER BY projects.captured_at DESC,
+                                 projects.source_repo_bi ASC) AS source_rank
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+                  AND projects.active_generation_bi IS NOT NULL
+             ), selected_sources AS (
+               SELECT * FROM ranked_sources WHERE source_rank=1
+             )
+             SELECT days.subject_user_bi AS user_bi,
+                    SUM(days.commits) AS commits
+               FROM selected_sources AS sources
+               JOIN profile_contribution_days AS days
+                 ON days.source_repo_bi=sources.source_repo_bi
+                AND days.generation_bi=sources.active_generation_bi
+              GROUP BY days.subject_user_bi""",
+    )
+    totals = {}
+    for row in rows or []:
+        user_bi = row.get("user_bi")
+        if user_bi:
+            totals[user_bi] = _contribution_tally(row.get("commits"))
+    return totals
+
+
 async def _contribution_coverage_rows(
         env, subject_user_bi, from_value, to_value):
     return await d1_all(
@@ -15691,7 +15742,7 @@ async def _account_users_directory(env, request):
     rows = await d1_all(
         env,
         "SELECT u.data,u.user_bi,a.total_active_ms,c.issues,c.pulls,"
-        "c.commits,c.discussions FROM users u "
+        "c.discussions FROM users u "
         "LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "
         "LEFT JOIN contributor_activity c ON c.author_bi=u.user_bi "
         "ORDER BY u.username COLLATE NOCASE LIMIT ?",
@@ -15700,6 +15751,9 @@ async def _account_users_directory(env, request):
     # A bucket label only, joined in from its own query so this function
     # body never handles the raw touch timestamp behind it.
     activity_buckets = await _world_user_activity_buckets(env)
+    # Commits alone are not event-tallied in contributor_activity; they come
+    # from the contribution snapshots, summed per account in one pass.
+    commit_totals = await _contribution_commit_totals(env)
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
         if (not rec or _account_kind(rec) != "user"
@@ -15715,7 +15769,7 @@ async def _account_users_directory(env, request):
             activity_buckets.get(row.get("user_bi"), ""),
             issues=row.get("issues", 0),
             pulls=row.get("pulls", 0),
-            commits=row.get("commits", 0),
+            commits=commit_totals.get(row.get("user_bi"), 0),
             discussions=row.get("discussions", 0),
         ))
 

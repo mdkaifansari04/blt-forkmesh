@@ -13,6 +13,7 @@
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 #include "LogTimelineChart.h"
+#include "OfficeChannelMirror.h"
 #include "PrivateMirrorStore.h"
 #include "PublicMirrorRuntime.h"
 #include "RepoSecurity.h"
@@ -11555,6 +11556,12 @@ void MainWindow::showChatView()
     showSection(2);
     if (!unread.isEmpty())
         switchConversation(unread);
+    // Nothing polls the office channel list any more (its messages arrive on
+    // each room's socket), so a channel created since launch would otherwise be
+    // missing from the sidebar. Opening chat is the user action that has to
+    // show it — and it re-lists once, not on a beat.
+    if (m_officeChannelMirror)
+        m_officeChannelMirror->refresh();
 }
 
 QString MainWindow::mostRecentUnreadConversation() const
