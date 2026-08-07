@@ -4174,8 +4174,17 @@ const Rule kNetworkLogRules[] = {
         // what freezes the window, so "how much of this session was *not*
         // backgrounded" has to be countable on its own rather than buried in the
         // same tally as the healthy ✓ runs.
+        //
+        // Both halves are matched on the "… backgrounded" phrase the outcome
+        // line always carries, not on the word "background" — otherwise every
+        // line that merely *mentions* background work (a startup trace
+        // scheduling some, a daemon note) lands in the same tally as a retired
+        // ticket and inflates the count the split exists to make trustworthy.
+        // Those mentions get their own dim badge below (adhoc #1594): still
+        // filterable as background chatter, but never counted as a task run.
         {" not backgrounded", "#f0883e", "BGBLOCK"},
-        {"background ", "#8b949e", "BGTASK"},
+        {" backgrounded", "#8b949e", "BGTASK"},
+        {"background ", "#6e7681", "BGNOTE"},
         {"pull request", "#3fb950", "PULL"},
         {"pull #", "#3fb950", "PULL"},
         {"merged", "#a371f7", "MERGE"},
@@ -4898,8 +4907,9 @@ void MainWindow::rebuildLogFilterButtons()
                                 m_logFilterCounts.value(right);
                      });
     // The categories whose names don't explain themselves: the diagnostic people
-    // go looking for after the window felt frozen, and the two halves of the
-    // background ✓ / ✕ split.
+    // go looking for after the window felt frozen, and the three background
+    // categories — the two halves of the ✓ / ✕ split plus the mentions that are
+    // neither.
     static const QHash<QString, QString> tips = {
         {QString::fromLatin1(kStallBadge),
          QStringLiteral("Show only recorded UI stalls — moments the window "
@@ -4910,6 +4920,10 @@ void MainWindow::rebuildLogFilterButtons()
         {QStringLiteral("BGBLOCK"),
          QStringLiteral("Show only work that was not backgrounded — it ran on the "
                         "GUI thread and blocked the window while it did")},
+        {QStringLiteral("BGNOTE"),
+         QStringLiteral("Show only lines that mention background work without "
+                        "reporting a finished run — scheduling notes and the "
+                        "like, kept out of the two tallies above")},
     };
     for (const QString &badge : std::as_const(badges))
         addChip(badge, badge, tips.value(badge));

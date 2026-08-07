@@ -1065,6 +1065,11 @@ QPixmap agentLeadGlyphPixmap(const AgentSession &session,
         const QIcon icon = themedOcticon(statusIcon, agentStatusIconColor(session),
                                          kAgentStatusGlyphPx);
         if (running) {
+            // The status glyph is a rasterized octicon pixmap, and this is a
+            // freehand rotation (not a multiple of 90 degrees) driven by
+            // activityAngle every tick — without SmoothPixmapTransform, Qt
+            // resamples it nearest-neighbour and the spin reads as jagged.
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
             p.save();
             p.translate(statusRect.center());
             p.rotate(activityAngle);
@@ -1377,8 +1382,8 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
-        s.rwidth() += chipWidth(opt) + countWidth(opt) + kGlyphSize +
-                      4 * kButtonMargin + 2 * kChipGap + kBarWidth;
+        s.rwidth() += chipWidth(opt) + countWidth(opt) + 2 * kGlyphSize +
+                      4 * kButtonMargin + 3 * kChipGap + kBarWidth;
         s.rheight() = qMax(s.height(), kBarHeight + 6);
         return s;
     }
@@ -1441,6 +1446,17 @@ public:
                     kGlyphSize, kGlyphSize);
         themedOcticon("git-branch", ink, kGlyphSize).paint(painter, glyph);
         painter->restore();
+
+        // The worktree glyph sits just left of the chip, in the chip's own
+        // "live" blue: the ring colour already carries this, but it only
+        // reads on hover-comparison, so a session with a checkout still on
+        // disk gets its own glyph instead of asking the ring colour to be
+        // remembered row to row.
+        if (live) {
+            const QColor liveColor(dark ? "#58a6ff" : "#0969da");
+            themedOcticon("worktree", liveColor, kGlyphSize)
+                .paint(painter, worktreeRect(option, index));
+        }
 
         // Only the branch glyph is boxed. Counts and branch-health glyphs sit
         // beside it directly on the row, matching the compact screenshot and
@@ -1582,6 +1598,15 @@ private:
     static int countWidth(const QStyleOptionViewItem &opt)
     {
         return QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+"));
+    }
+
+    // The worktree glyph's slot, immediately before the chip: the mirror image
+    // of conflictRect on the chip's other side.
+    static QRect worktreeRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    {
+        const QRect chip = buttonRect(opt, idx);
+        return QRect(chip.left() - kChipGap - kGlyphSize,
+                     chip.center().y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
     }
 
     // The conflict/behind glyph's own click target, immediately after the chip
@@ -3082,6 +3107,20 @@ QWidget *MainWindow::buildAgentsTab()
     return page;
 }
 
+// Does this session have something that can receive a prompt right now?  The
+// persisted status alone is not a transport liveness signal: after a Codex
+// app-server window exits or disconnects, a session can still read Running even
+// though it no longer has a process behind it.  Asked by the restart gate (which
+// must not start a second copy of a live session) and by the composer stash
+// (which must not retarget one).
+bool MainWindow::agentSessionHasLiveTransport(int sessionId) const
+{
+    const ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
+    const CodexAppServerSession *codex = m_codexStreams.value(sessionId);
+    return (claude && claude->running()) || (codex && codex->running()) ||
+           runnerForSession(sessionId) != nullptr;
+}
+
 // The composer's model dropdown is the user's live choice for what runs
 // next; without this the session kept coasting on whatever model it
 // happened to launch with, so switching the dropdown before following up
@@ -3095,6 +3134,16 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
         session && (session->provider == QLatin1String("claude-code") ||
                     agentIsCodexProvider(session->provider))) {
         bool changed = false;
+        // A session with a live transport is not up for grabs: continueAgentSession()
+        // refuses to restart one, so a provider switch stashed here could never be
+        // honored by a resume — it would only be handed straight to the process
+        // already running. That is what broke "add" from an Opus composer to a
+        // ChatGPT agent: the session was relabelled claude-code and given a Claude
+        // model, then sendPromptToAgentSession() passed that model into the Codex
+        // app-server's turn/start, which rejects a model that is not its own, so
+        // the follow-up never reached the agent. The prompt goes to whoever is
+        // actually running; the dropdown takes effect on the next restart.
+        const bool liveTransport = agentSessionHasLiveTransport(sessionId);
         // The composer's provider dropdown is the user's live choice for which
         // agent continues this session. Honor a switch to a *different*
         // CLI-backed provider (Claude Code <-> Codex) so a session can be handed
@@ -3110,15 +3159,38 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
             composerProvider == QLatin1String("claude-code") ||
             agentIsCodexProvider(composerProvider);
         if (composerIsCli && composerProvider != session->provider) {
-            session->provider = composerProvider;
-            changed = true;
+            if (liveTransport) {
+                // Say so once, where the answer will appear: the reply comes back
+                // from the agent that is running, not the one the dropdown names,
+                // and silence there reads as the message having gone nowhere.
+                applyTranscriptEvent(
+                    sessionId,
+                    QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("_local_notice")},
+                        {QStringLiteral("text"),
+                         QStringLiteral("This session is still live under %1, so the "
+                                        "message went to it. %2 takes over when the "
+                                        "session is next restarted.")
+                             .arg(cliProviderLabel(session->provider),
+                                  cliProviderLabel(composerProvider))}});
+            } else {
+                session->provider = composerProvider;
+                changed = true;
+            }
         }
         if (composerIsCli && m_quickAddClaudeModel) {
             const QString chosen = (composerProvider == QLatin1String("claude-code")
                                        ? selectedModelComboValue(m_quickAddClaudeModel)
                                        : codexChatGptModelId(
                                            selectedModelComboValue(m_quickAddClaudeModel)));
-            if (session->model != chosen) {
+            // The model only ever belongs to the provider that will actually run
+            // it. A declined hand-off above leaves those two disagreeing — the
+            // composer's Claude model against a session still live under Codex —
+            // and writing it through anyway is what sendPromptToAgentSession()
+            // then fed to the Codex app-server's turn/start, which rejects a model
+            // that is not its own and drops the follow-up on the floor.
+            if (session->model != chosen &&
+                agentModelMatchesProvider(session->provider, chosen)) {
                 session->model = chosen;
                 changed = true;
             }
@@ -3185,7 +3257,19 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
                     QSettings()
                         .value(kClaudeEffortSetting, QStringLiteral("high"))
                         .toString();
-                codex->setTurnOptions(session->model, session->mode, effort);
+                // Only a Codex model may ride into turn/start; the app-server
+                // fails the whole turn on anything else, which silently ate the
+                // follow-up. A session record can still name a Claude model here
+                // — one was written onto it by an older build before the
+                // composer stash learned to leave a live session alone — so pass
+                // nothing rather than a foreign id and let the running thread
+                // keep the model it started with.
+                QString model = session->model.trimmed();
+                if (!model.isEmpty())
+                    model = codexChatGptModelId(model);
+                if (!agentModelMatchesProvider(kCodexProvider, model))
+                    model.clear();
+                codex->setTurnOptions(model, session->mode, effort);
             }
             codex->sendUserText(prompt);
         } else {
@@ -8043,9 +8127,10 @@ void MainWindow::showAgentSession(int sessionId)
             });
     }
     // Feed the transcript's "session started" divider the run context the CLI
-    // itself never reports — branch, permission mode, reasoning strength (adhoc
-    // #9). Set before any rebuild below so the divider renders with it; external
-    // sessions keep whatever their own init event says.
+    // itself never reports — branch, permission mode, reasoning strength, and
+    // the signed-in ForkMesh account (adhoc #9). Set before any rebuild below
+    // so the divider renders with it; external sessions keep whatever their
+    // own init event says.
     if (m_agentTranscript) {
         QString ctxMode, ctxStrength;
         // Only the CLI providers run under a permission mode; the API ones have
@@ -8064,7 +8149,8 @@ void MainWindow::showAgentSession(int sessionId)
         if (!external)
             ctxStrength = session->strength.isEmpty() ? composerAgentStrength()
                                                       : session->strength;
-        m_agentTranscript->setSessionContext(session->branchName, ctxMode, ctxStrength);
+        m_agentTranscript->setSessionContext(session->branchName, ctxMode, ctxStrength,
+                                             m_accountName);
         // Render a Codex run in Codex's own idiom ("Ran …", "Explored", exit=)
         // rather than Claude Code's tool cards (adhoc #34). Set before the
         // rebuild below so the rows are built in the right dialect.
@@ -8990,18 +9076,19 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
                                     "cannot be started."));
         return;
     }
-    // Do not start a second copy of a genuinely live session.  The persisted
-    // status alone is not a transport liveness signal: after a Codex app-server
-    // window exits or disconnects, a session can still read Running even though
-    // it no longer has a process to receive a prompt.  Treat that stale state as
-    // resumable so Continue and a follow-up prompt reconnect it instead of
-    // silently leaving the message in m_pendingSteerMessage.
-    ClaudeStreamSession *claude = m_streamSessions.value(session->id);
-    CodexAppServerSession *codex = m_codexStreams.value(session->id);
-    const bool liveTransport =
-        (claude && claude->running()) || (codex && codex->running());
-    if (session->status == AgentStatus::Queued || liveTransport ||
-        runnerForSession(session->id))
+    // Do not start a second copy of a genuinely live session.  A stale Running
+    // status with no process behind it stays resumable, so Continue and a
+    // follow-up prompt reconnect it instead of silently leaving the message in
+    // m_pendingSteerMessage — see agentSessionHasLiveTransport().
+    if (agentSessionHasLiveTransport(session->id))
+        return;
+    // Queued means "waiting for a run slot", and processAgentQueue() will get to
+    // it — but only while the queue still holds it. A Queued status the queue has
+    // lost (the app was restarted, or a pass dropped it) is another stale state
+    // with nothing behind it: leaving it alone strands the session, and strands
+    // the follow-up prompt the caller just parked in m_pendingSteerMessage. Fall
+    // through and re-queue instead.
+    if (session->status == AgentStatus::Queued && m_agentQueue.contains(session->id))
         return;
 
     session->status = AgentStatus::Queued;

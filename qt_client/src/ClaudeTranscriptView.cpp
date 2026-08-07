@@ -873,11 +873,13 @@ void ClaudeTranscriptView::setCodexStyle(bool on) { m_codexStyle = on; }
 
 void ClaudeTranscriptView::setSessionContext(const QString &branch,
                                              const QString &mode,
-                                             const QString &strength)
+                                             const QString &strength,
+                                             const QString &account)
 {
     m_ctxBranch = branch.trimmed();
     m_ctxMode = mode.trimmed();
     m_ctxStrength = strength.trimmed();
+    m_ctxAccount = account.trimmed();
 }
 
 // A playful, ForkMesh-flavoured gerund for the live "what it's doing" ticker —
@@ -1282,6 +1284,8 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
             QStringList parts{ev.value(QStringLiteral("model")).toString().trimmed(),
                               ev.value(QStringLiteral("cwd")).toString().trimmed()};
             QStringList context;
+            if (!m_ctxAccount.isEmpty())
+                context << QStringLiteral("account %1").arg(m_ctxAccount);
             if (!m_ctxBranch.isEmpty())
                 context << QStringLiteral("branch %1").arg(m_ctxBranch);
             const QString mode =

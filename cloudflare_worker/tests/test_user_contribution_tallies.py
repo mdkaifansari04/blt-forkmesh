@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Per-account PR/issue/commit/discussion tallies in the user directory.
+
+The Qt app's admin Users page shows one row per account with a column for
+each kind of contribution that account has made. Those four numbers come
+from ``contributor_activity`` — the same running tally the leaderboards use
+— joined onto the directory read, so the page needs no extra round trip.
+
+Contracts pinned here:
+
+  * ``_account_chat_user_payload`` always emits ``pulls``/``issues``/
+    ``commits``/``discussions`` as integers, defaulting to 0 for an account
+    the tally has never seen (a LEFT JOIN miss hands the caller NULL).
+  * ``_account_users_directory`` LEFT JOINs ``contributor_activity`` on the
+    account blind index and forwards all four columns.
+  * Discussions are tallied at all: ``_record_contributor`` accepts the kind
+    and ``discussions_handler`` calls it on an accepted event.
+  * ``contributor_activity`` carries a ``discussions`` column on fresh
+    databases and gains one on already-deployed ones.
+"""
+
+import ast
+import re
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ENTRY = ROOT / "src" / "entry.py"
+ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+SCHEMA_TEXT = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
+
+
+def _function_source(name):
+    tree = ast.parse(ENTRY_TEXT)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                node.name == name:
+            return ast.get_source_segment(ENTRY_TEXT, node)
+    raise AssertionError(f"entry.py must define {name}")
+
+
+def _load_function(name, namespace):
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == name
+    )
+    scope = dict(namespace)
+    exec(compile(ast.fix_missing_locations(
+        ast.Module(body=[function], type_ignores=[])),
+        str(ENTRY), "exec"), scope)
+    return scope[name]
+
+
+TALLY_KEYS = ("issues", "pulls", "commits", "discussions")
+
+
+def _payload_fn():
+    return _load_function("_account_chat_user_payload", {
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "MAX_NODE_NAME": 63,
+        "SOLANA_RE": re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$"),
+        "_owned_nodes": lambda rec: list(rec.get("nodes", [])),
+        "_world_public_total_active_ms": lambda ms: int(ms or 0),
+        "_account_public_last_email": lambda rec: {},
+        "_account_world_client_fields": lambda rec: {},
+        "_contribution_tally": _load_function("_contribution_tally", {}),
+    })
+
+
+# --- payload shape -----------------------------------------------------------
+
+def test_directory_payload_carries_every_contribution_tally():
+    payload = _payload_fn()(
+        {"name": "Ada"}, 0, "", issues=9, pulls=2, commits=40, discussions=1)
+    assert payload["issues"] == 9
+    assert payload["pulls"] == 2
+    assert payload["commits"] == 40
+    assert payload["discussions"] == 1
+
+
+def test_untallied_account_reports_zero_not_null():
+    # An account that has never contributed has no contributor_activity row,
+    # so the LEFT JOIN hands every tally column back as SQL NULL — None in
+    # Python, which bare int() raises on. One such account would have 500-ed
+    # the entire directory read (and with it chat's roster and the World
+    # campfire), so NULL has to land as a plain 0.
+    payload = _payload_fn()(
+        {"name": "ada"}, 0, "",
+        issues=None, pulls=None, commits=None, discussions=None)
+    assert [payload[key] for key in TALLY_KEYS] == [0, 0, 0, 0]
+    assert all(isinstance(payload[key], int) for key in TALLY_KEYS)
+    # Defaults (no tallies passed at all) behave the same way.
+    assert [_payload_fn()({"name": "ada"})[key] for key in TALLY_KEYS] == \
+        [0, 0, 0, 0]
+
+
+def test_tally_coercion_survives_junk_column_values():
+    tally = _load_function("_contribution_tally", {})
+    assert tally(None) == 0
+    assert tally("") == 0
+    assert tally("nope") == 0
+    assert tally(-4) == 0
+    assert tally("12") == 12
+    assert tally(7.9) == 7
+
+
+# --- directory read ----------------------------------------------------------
+
+def test_directory_joins_the_contribution_tally_table():
+    source = _function_source("_account_users_directory")
+    assert "LEFT JOIN contributor_activity c ON c.author_bi=u.user_bi" in \
+        source
+    for key in TALLY_KEYS:
+        assert f"c.{key}" in source
+        # Coercion belongs to _contribution_tally; a bare int() here would
+        # raise on the NULL a LEFT JOIN miss produces.
+        assert f'{key}=row.get("{key}", 0)' in source
+        assert f'int(row.get("{key}"' not in source
+
+
+# --- discussion tallying -----------------------------------------------------
+
+def test_record_contributor_accepts_discussions():
+    source = _function_source("_record_contributor")
+    assert '"issues", "pulls", "commits", "discussions"' in source
+
+
+def test_accepted_discussion_events_are_tallied():
+    source = _function_source("discussions_handler")
+    assert '_record_contributor(env, event.get("author", ""), "discussions")' \
+        in source
+
+
+def test_contributor_activity_has_a_discussions_column():
+    assert re.search(
+        r"CREATE TABLE IF NOT EXISTS contributor_activity[^\"]*?"
+        r"discussions INTEGER NOT NULL DEFAULT 0", SCHEMA_TEXT, re.S)
+    # Deployed databases predate the column, so the lazy upgrade adds it.
+    assert ("ALTER TABLE contributor_activity ADD COLUMN discussions "
+            "INTEGER NOT NULL DEFAULT 0") in ENTRY_TEXT

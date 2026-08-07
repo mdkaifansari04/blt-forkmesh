@@ -3736,6 +3736,49 @@ void MainWindow::applyDesktopWebsiteProbe(const QString &id, int httpStatus,
                          });
     }
     publishFooterWebsiteStatuses();
+    alertOnDesktopEdgeOutage(row);
+}
+
+// Announce a desktop-measured outage. Every graded reply comes here, and the
+// probes are driven by the minute timer, so a check that stays down raises one
+// ping a minute for as long as it keeps failing — deliberately not deduplicated,
+// because a site that is still down a minute later is still news (adhoc #1596).
+//
+// Only "down" alerts. "degraded" is the edge answering imperfectly (a rate
+// limit, an unexpected document) and "unknown" is this desktop being unable to
+// look at all — a firewall block or no link — neither of which is an outage of
+// the site, and both of which would otherwise alert every minute from a laptop
+// that is merely asleep on a train.
+void MainWindow::alertOnDesktopEdgeOutage(const FooterStatusRow &row)
+{
+    if (row.status != QLatin1String("down"))
+        return;
+    const DesktopEdgeProbe *probe = desktopEdgeProbe(row.id);
+    if (!probe)
+        return;
+    const QString host = catalogApiUrl().host();
+    const QString title =
+        host.isEmpty()
+            ? QStringLiteral("%1 is down").arg(QString::fromLatin1(probe->what))
+            : QStringLiteral("%1 on %2 is down")
+                  .arg(QString::fromLatin1(probe->what), host);
+    const QString body =
+        row.reason.isEmpty()
+            ? QStringLiteral("This desktop could not load the page.")
+            : row.reason;
+    // Files the outage on the Pings page and raises the red toast above the
+    // footer log, exactly like any other failure this node reports.
+    addNotification(title, body, /*warning=*/true);
+    // …plus the OS notification, so an outage is seen while ForkMesh is behind
+    // another window. A headless node forces the offscreen platform and has no
+    // desktop to raise it on (and a window-test run must not spray real toasts
+    // across the developer's screen), so that case stops at the ping above.
+    if (m_headless ||
+        QGuiApplication::platformName().contains(QStringLiteral("offscreen"),
+                                                 Qt::CaseInsensitive))
+        return;
+    postNotification(title, body, /*warning=*/true,
+                     QStringLiteral("network-error"));
 }
 
 #ifdef FORKMESH_WINDOW_TESTS

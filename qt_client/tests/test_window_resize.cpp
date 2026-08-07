@@ -156,10 +156,10 @@ void checkFooterOverlayGeometry(MainWindow &window)
         QStringLiteral("statusVersionButton"));
     check(dock && log && prompt && lights && header && debugBar && version &&
               !log->isVisible() && !debugBar->isVisible() && lights->isDebug() &&
-              lights->lightCount() == 31 &&
+              lights->lightCount() == 32 &&
               prompt->geometry().center().x() > dock->rect().center().x() &&
               prompt->geometry().bottom() == dock->rect().bottom(),
-          QStringLiteral("all 31 labeled log categories start collapsed in the "
+          QStringLiteral("all 32 labeled log categories start collapsed in the "
                          "version-controlled debug bar"));
     if (version && debugBar) {
         version->click();
@@ -274,6 +274,34 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("the /status check fails on a server error, on a "
                              "document that isn't the status page, and when the "
                              "page cannot be fetched at all"));
+
+        // adhoc #1596: these two checks run on the minute timer, and a red
+        // five-pixel dot is easy to miss, so every failing check also files an
+        // alert. Deliberately not deduplicated — a site still down a minute
+        // later raises another ping, so the outage keeps announcing itself for
+        // as long as it lasts.
+        const int alertsBefore = window.testNotificationsTitled(
+            QStringLiteral("is down"));
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            521, cloudflareError);
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            521, cloudflareError);
+        const int alertsAfterDown = window.testNotificationsTitled(
+            QStringLiteral("is down"));
+        check(alertsAfterDown == alertsBefore + 2,
+              QStringLiteral("a desktop-side check that is down alerts on every "
+                             "run, so a lasting outage pings once a minute"));
+
+        // A degraded or recovered check is not an outage and must stay quiet,
+        // or a rate-limited laptop would alert every minute forever.
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            429, homepage);
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            200, homepage);
+        check(window.testNotificationsTitled(QStringLiteral("is down")) ==
+                  alertsAfterDown,
+              QStringLiteral("a degraded or healthy check raises no outage "
+                             "alert"));
 
         // Rebuild+restart came down from the window-chrome line and Resize came
         // out of the navigation rail: both now sit in the debug bar's own tool
@@ -427,7 +455,7 @@ void checkFooterOverlayGeometry(MainWindow &window)
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
     check(log && lights && header && log->isVisible() && lights->isVisible() &&
-              header->isVisible() && header->lightCount() == 31 &&
+              header->isVisible() && header->lightCount() == 32 &&
               log->geometry().center().x() < dock->rect().center().x() &&
               log->geometry().bottom() == dock->rect().bottom() &&
               header->geometry().top() >= log->rect().top(),
@@ -2492,6 +2520,10 @@ int main(int argc, char *argv[])
                     {QStringLiteral("createdAt"), 1700000000000.0},
                     {QStringLiteral("totalActiveMs"), 3600000.0},
                     {QStringLiteral("activityBucket"), QStringLiteral("5h")},
+                    {QStringLiteral("pulls"), 2.0},
+                    {QStringLiteral("issues"), 9.0},
+                    {QStringLiteral("commits"), 40.0},
+                    {QStringLiteral("discussions"), 1.0},
                     {QStringLiteral("lastEmailAt"), 0},
                     {QStringLiteral("lastEmailStatus"), QString()},
                     {QStringLiteral("countryCode"), QStringLiteral("CA")},
@@ -2507,6 +2539,11 @@ int main(int argc, char *argv[])
                     {QStringLiteral("createdAt"), 1600000000000.0},
                     {QStringLiteral("totalActiveMs"), 7380000.0},
                     {QStringLiteral("activityBucket"), QStringLiteral("hour")},
+                    {QStringLiteral("pulls"), 13.0},
+                    {QStringLiteral("issues"), 4.0},
+                    {QStringLiteral("commits"), 7.0},
+                    // discussions omitted on purpose: an account the tally has
+                    // never seen still has to render a real 0, not a blank.
                     {QStringLiteral("lastEmailAt"), 1710000000000.0},
                     {QStringLiteral("lastEmailStatus"),
                      QStringLiteral("delivered")},
@@ -2524,6 +2561,8 @@ int main(int argc, char *argv[])
         QStringLiteral("Status"),        QStringLiteral("Joined"),
         QStringLiteral("World activity"),
         QStringLiteral("Activity recency"),
+        QStringLiteral("PRs"),           QStringLiteral("Issues"),
+        QStringLiteral("Commits"),       QStringLiteral("Discussions"),
         QStringLiteral("Last email"),    QStringLiteral("Email delivery"),
         QStringLiteral("Country"),       QStringLiteral("Browser"),
         QStringLiteral("OS"),            QStringLiteral("Nodes")};
@@ -2542,6 +2581,26 @@ int main(int argc, char *argv[])
               window.testUsersCellText(0, QStringLiteral("Nodes")) ==
                   QStringLiteral("2 - node-a, node-b"),
           QStringLiteral("Users sorts formatted statistics by their numeric values"));
+    check(window.testUsersCellText(0, QStringLiteral("PRs")) ==
+                  QStringLiteral("13") &&
+              window.testUsersCellText(0, QStringLiteral("Issues")) ==
+                  QStringLiteral("4") &&
+              window.testUsersCellText(0, QStringLiteral("Commits")) ==
+                  QStringLiteral("7") &&
+              window.testUsersCellText(0, QStringLiteral("Discussions")) ==
+                  QStringLiteral("0"),
+          QStringLiteral("Users reports each contribution tally per account"));
+    // Commits sorts 40 above 7, which lexicographic ordering would invert —
+    // the tallies carry their numeric sort key like every other column.
+    const QStringList commitOrder = window.testSortUsersBy(
+        QStringLiteral("Commits"), Qt::DescendingOrder);
+    check(commitOrder == QStringList{QStringLiteral("zora"),
+                                     QStringLiteral("alice")} &&
+              window.testUsersCellText(0, QStringLiteral("Commits")) ==
+                  QStringLiteral("40") &&
+              window.testUsersCellText(0, QStringLiteral("Discussions")) ==
+                  QStringLiteral("1"),
+          QStringLiteral("Users sorts contribution tallies numerically"));
     window.testSetAdmin(false);
     check(!window.testUsersNavButtonVisible(),
           QStringLiteral("losing admin status immediately hides Users"));
@@ -3634,6 +3693,27 @@ int main(int argc, char *argv[])
               QStringLiteral("a detached Running Codex session can be requeued "
                              "for a follow-up prompt"));
         window.testRemoveAgentSession(detachedCodex.id);
+    }
+    // A session can also persist as Queued from before an app restart — the
+    // restart starts with an empty in-memory queue, so nothing will ever pick
+    // a merely-labelled-Queued session back up. Before this fix, Continue (and
+    // the quick-add "add" follow-up that calls it) treated any Queued status as
+    // "already being handled" and returned without requeuing it, so the
+    // follow-up prompt landed in m_pendingSteerMessage for a run that would
+    // never start — the message silently never went anywhere.
+    {
+        AgentSession stuckQueued;
+        stuckQueued.id = 133894;
+        stuckQueued.owner = QStringLiteral("me");
+        stuckQueued.name = QStringLiteral("r");
+        stuckQueued.provider = QStringLiteral("codex");
+        stuckQueued.prompt = QStringLiteral("Stuck Queued fixture");
+        stuckQueued.status = AgentStatus::Queued;
+        window.testAddAgentSession(stuckQueued);
+        check(window.testQueueDetachedRunningAgentSession(stuckQueued.id),
+              QStringLiteral("a Queued session missing from the in-memory queue "
+                             "is requeued rather than left stuck"));
+        window.testRemoveAgentSession(stuckQueued.id);
     }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
@@ -6917,11 +6997,24 @@ int main(int argc, char *argv[])
               QStringLiteral("work that was not backgrounded badges as BGBLOCK, "
                              "its own category"));
 
+        // adhoc #1594: a line that only mentions background work is not a
+        // finished run, and counting it as one is what made the BGTASK tally
+        // untrustworthy. It gets its own dim badge instead.
+        window.testLogSystem(QStringLiteral(
+            "scheduling background issue metadata reload after restore"));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("BGNOTE"),
+              QStringLiteral("a line that merely mentions background work badges "
+                             "as BGNOTE, not BGTASK"));
+
         const QStringList labels = window.testLogFilterChipLabels();
         check(labels.contains(QStringLiteral("BGTASK 1")) &&
-                  labels.contains(QStringLiteral("BGBLOCK 1")),
+                  labels.contains(QStringLiteral("BGBLOCK 1")) &&
+                  labels.contains(QStringLiteral("BGNOTE 1")),
               QStringLiteral("the log filter row counts the backgrounded and "
-                             "not-backgrounded halves separately"));
+                             "not-backgrounded halves separately, and background "
+                             "mentions separately again"));
         window.testResetNetworkLog();
     }
 
