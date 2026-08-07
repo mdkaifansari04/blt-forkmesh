@@ -6937,6 +6937,150 @@ test("every element in the Elements tab opens into its own pieces, each list sor
   await expect(parts).toHaveCount(0);
 });
 
+test("right-clicking a piece of the world deletes it, and the Elements tab puts it back", async ({
+  page,
+}) => {
+  // Boot, two settings round trips, a delete and a restore do not fit in the
+  // default per-test budget.
+  test.slow();
+  await prepareWorldPage(page, "world-object-delete");
+  await waitForWorld(page);
+
+  const countSceneObjects = () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      let objects = 0;
+      shell.world.scene.traverse(() => {
+        objects += 1;
+      });
+      return objects;
+    });
+
+  const canvas = page.locator("[data-world-canvas-wrap]");
+  const box = await canvas.boundingBox();
+  const aim = { x: box.x + box.width / 2, y: box.y + box.height * 0.66 };
+  const menu = page.locator("[data-world-object-menu]");
+
+  // Without the tool switched on, the browser keeps its own context menu.
+  // Dispatched rather than clicked, so no native menu is left open over the
+  // canvas for the rest of this test.
+  await canvas.dispatchEvent("contextmenu");
+  await expect(menu).toBeHidden();
+
+  // Turning the debug panel on is the visitor-facing way in; an administrator
+  // has it without asking.
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="debug"]').click();
+  await page.locator("[data-world-debug-panel]").check();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-world-settings]")).toHaveAttribute(
+    "data-open",
+    "false",
+  );
+
+  const before = await countSceneObjects();
+  await page.mouse.click(aim.x, aim.y, { button: "right" });
+  await expect(menu).toBeVisible();
+  const deleteAction = menu.locator("[data-world-object-delete]").first();
+  const key = await deleteAction.getAttribute("data-world-object-delete");
+  expect(key).toMatch(/^[a-z0-9-]+:\d+(\.\d+)*$/);
+
+  // Deleting takes it out of the scene graph and off the device's clickable
+  // list, and remembers the choice on this browser.
+  await deleteAction.click();
+  await expect(menu).toBeHidden();
+  expect(await countSceneObjects()).toBeLessThan(before);
+  expect(
+    await page
+      .locator("forkmesh-world")
+      .evaluate((shell) =>
+        shell.world.listDeletedWorldObjects().map((entry) => entry.key),
+      ),
+  ).toEqual([key]);
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(
+        localStorage.getItem("forkmesh.world.deletedObjects.v1") || "[]",
+      ).map((entry) => entry.key),
+    ),
+  ).toEqual([key]);
+
+  // Everything deleted is listed in the Elements tab, and one click puts it
+  // back exactly where it was.
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="elements"]').click();
+  const deletedRows = page.locator(
+    "[data-world-deleted-list] .world-deleted-row",
+  );
+  await expect(deletedRows).toHaveCount(1);
+  await deletedRows.locator("[data-world-object-restore]").click();
+  await expect(deletedRows).toHaveCount(0);
+  expect(await countSceneObjects()).toBe(before);
+  expect(
+    await page.evaluate(
+      () => localStorage.getItem("forkmesh.world.deletedObjects.v1") || "[]",
+    ),
+  ).toBe("[]");
+});
+
+test("a deleted piece is still gone after a reload, and still comes back", async ({
+  page,
+}) => {
+  test.slow();
+  await prepareWorldPage(page, "world-object-delete-reload");
+  await waitForWorld(page);
+
+  const countSceneObjects = () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      let objects = 0;
+      shell.world.scene.traverse(() => {
+        objects += 1;
+      });
+      return objects;
+    });
+
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="debug"]').click();
+  await page.locator("[data-world-debug-panel]").check();
+  await page.keyboard.press("Escape");
+
+  const box = await page.locator("[data-world-canvas-wrap]").boundingBox();
+  const before = await countSceneObjects();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.66, {
+    button: "right",
+  });
+  const menu = page.locator("[data-world-object-menu]");
+  await expect(menu).toBeVisible();
+  const deleteAction = menu.locator("[data-world-object-delete]").first();
+  const key = await deleteAction.getAttribute("data-world-object-delete");
+  await deleteAction.click();
+  const afterDelete = await countSceneObjects();
+  expect(afterDelete).toBeLessThan(before);
+
+  // The world opens the way it was left: the piece comes out again as its
+  // element is rebuilt, not as a leftover entry waiting for one.
+  await page.reload();
+  await waitForWorldReady(page);
+  expect(await countSceneObjects()).toBe(afterDelete);
+  expect(
+    await page
+      .locator("forkmesh-world")
+      .evaluate((shell) => shell.world.listDeletedWorldObjects()),
+  ).toEqual([
+    {
+      key,
+      label: "campfire-member-circle-dirt",
+      elementId: "campfire",
+      elementLabel: "Members Circle campfire",
+      pending: false,
+    },
+  ]);
+
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="elements"]').click();
+  await page.locator("[data-world-object-restore]").first().click();
+  expect(await countSceneObjects()).toBe(before);
+});
+
 test("the topbar has no clock or emote actions and local light level survives movement without becoming presence data", async ({
   page,
 }) => {
