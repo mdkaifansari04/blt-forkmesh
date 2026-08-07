@@ -661,13 +661,14 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kPushAlertSetting, enabled);
     });
     auto *actionAlertCombo = new QComboBox;
-    actionAlertCombo->addItem("Action pings: all runs", QStringLiteral("all"));
+    actionAlertCombo->addItem("Action finish pings: all runs",
+                              QStringLiteral("all"));
     actionAlertCombo->addItem("Action pings: failures only",
                               QStringLiteral("failed"));
     actionAlertCombo->addItem("Action pings: off", QStringLiteral("none"));
     actionAlertCombo->setToolTip(
-        "Desktop notifications for .forkmesh/ workflows: pop one for every run "
-        "(start and finish, except manually stopped runs), only when a run "
+        "Desktop notifications for .forkmesh/ workflows on run completion: pop "
+        "one for every run (except manually stopped runs), only when a run "
         "fails, or never. The in-app Pings page logs every run regardless.");
     {
         const int idx = actionAlertCombo->findData(actionAlertMode());
@@ -677,6 +678,17 @@ QWidget *MainWindow::buildSettingsSection()
             [actionAlertCombo](int) {
                 QSettings().setValue(kActionAlertModeSetting,
                                      actionAlertCombo->currentData().toString());
+            });
+    auto *actionAlertStartedCheck =
+        new QCheckBox("Show a system ping when an action starts");
+    actionAlertStartedCheck->setChecked(
+        QSettings().value(kActionAlertStartedSetting, false).toBool());
+    actionAlertStartedCheck->setToolTip(
+        "Opt in to a desktop pop-up when an action run enters the running "
+        "state. The Pings page still logs the event regardless.");
+    connect(actionAlertStartedCheck, &QCheckBox::toggled, this,
+            [](bool enabled) {
+                QSettings().setValue(kActionAlertStartedSetting, enabled);
             });
     auto *nodeConnectAlertCheck =
         new QCheckBox("Show a system ping when a node connects");
@@ -2164,6 +2176,7 @@ QWidget *MainWindow::buildSettingsSection()
     pingsGroup->addWidget(errorLogAlertCheck);
     pingsGroup->addWidget(pushAlertCheck);
     pingsGroup->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
+    pingsGroup->addWidget(actionAlertStartedCheck, 0, Qt::AlignLeft);
     pingsGroup->addWidget(nodeConnectAlertCheck);
     pingsGroup->addWidget(disbursementAlertCheck);
     pingsGroup->addWidget(chatMessageAlertCheck);
