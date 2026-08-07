@@ -275,6 +275,34 @@ void checkFooterOverlayGeometry(MainWindow &window)
                              "document that isn't the status page, and when the "
                              "page cannot be fetched at all"));
 
+        // adhoc #1596: these two checks run on the minute timer, and a red
+        // five-pixel dot is easy to miss, so every failing check also files an
+        // alert. Deliberately not deduplicated — a site still down a minute
+        // later raises another ping, so the outage keeps announcing itself for
+        // as long as it lasts.
+        const int alertsBefore = window.testNotificationsTitled(
+            QStringLiteral("is down"));
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            521, cloudflareError);
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            521, cloudflareError);
+        const int alertsAfterDown = window.testNotificationsTitled(
+            QStringLiteral("is down"));
+        check(alertsAfterDown == alertsBefore + 2,
+              QStringLiteral("a desktop-side check that is down alerts on every "
+                             "run, so a lasting outage pings once a minute"));
+
+        // A degraded or recovered check is not an outage and must stay quiet,
+        // or a rate-limited laptop would alert every minute forever.
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            429, homepage);
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            200, homepage);
+        check(window.testNotificationsTitled(QStringLiteral("is down")) ==
+                  alertsAfterDown,
+              QStringLiteral("a degraded or healthy check raises no outage "
+                             "alert"));
+
         // Rebuild+restart came down from the window-chrome line and Resize came
         // out of the navigation rail: both now sit in the debug bar's own tool
         // cluster at the right edge, outside the scrolling category row, each
@@ -3665,6 +3693,27 @@ int main(int argc, char *argv[])
               QStringLiteral("a detached Running Codex session can be requeued "
                              "for a follow-up prompt"));
         window.testRemoveAgentSession(detachedCodex.id);
+    }
+    // A session can also persist as Queued from before an app restart — the
+    // restart starts with an empty in-memory queue, so nothing will ever pick
+    // a merely-labelled-Queued session back up. Before this fix, Continue (and
+    // the quick-add "add" follow-up that calls it) treated any Queued status as
+    // "already being handled" and returned without requeuing it, so the
+    // follow-up prompt landed in m_pendingSteerMessage for a run that would
+    // never start — the message silently never went anywhere.
+    {
+        AgentSession stuckQueued;
+        stuckQueued.id = 133894;
+        stuckQueued.owner = QStringLiteral("me");
+        stuckQueued.name = QStringLiteral("r");
+        stuckQueued.provider = QStringLiteral("codex");
+        stuckQueued.prompt = QStringLiteral("Stuck Queued fixture");
+        stuckQueued.status = AgentStatus::Queued;
+        window.testAddAgentSession(stuckQueued);
+        check(window.testQueueDetachedRunningAgentSession(stuckQueued.id),
+              QStringLiteral("a Queued session missing from the in-memory queue "
+                             "is requeued rather than left stuck"));
+        window.testRemoveAgentSession(stuckQueued.id);
     }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its

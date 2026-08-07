@@ -1441,6 +1441,65 @@ void runTurnOptionsTest(const QString &executable)
           "leaving Plan clears collaboration mode and restores workspace sandbox");
 }
 
+// A follow-up whose caller has no model to name — the desktop refuses to hand a
+// live ChatGPT thread the Claude model its composer is sitting on, which is what
+// silently ate "add" from an Opus composer to a running ChatGPT agent — must
+// still start its turn, on the model the thread already runs. An empty model is
+// "no opinion", never "clear the model".
+void runTurnOptionsKeepModelTest(const QString &executable)
+{
+    QTemporaryDir temp;
+    const QString logPath = temp.filePath(QStringLiteral("keep-model.jsonl"));
+    CodexAppServerSession session;
+    session.setAppServerCommand(executable,
+                                {QStringLiteral("--codex-stub"),
+                                 QStringLiteral("options"), logPath});
+    QList<QJsonObject> events;
+    bool finished = false;
+    QObject::connect(&session, &CodexAppServerSession::event,
+                     [&](const QJsonObject &event) { events.append(event); });
+    QObject::connect(&session, &CodexAppServerSession::finished,
+                     [&](int) { finished = true; });
+    session.start(temp.path(), QStringList(), QStringLiteral("first"), QString(),
+                  QStringLiteral("gpt-old"), QStringLiteral("Auto mode"),
+                  QStringLiteral("low"));
+    check(pump([&] {
+              return eventCount(events, QStringLiteral("result")) == 1 &&
+                     session.running();
+          }),
+          "keep-model stub completes its initial turn");
+    session.setTurnOptions(QString(), QStringLiteral("Auto mode"),
+                           QStringLiteral("high"));
+    session.sendUserText(QStringLiteral("second"));
+    check(pump([&] {
+              return eventCount(events, QStringLiteral("result")) == 2 &&
+                     session.running();
+          }),
+          "a follow-up naming no model still completes its turn");
+    // Third turn only so the stub exits and the log is complete.
+    session.sendUserText(QStringLiteral("third"));
+    check(pump([&] { return finished; }), "keep-model stub exits");
+
+    QList<QJsonObject> starts;
+    for (const QJsonObject &message : readMessages(logPath)) {
+        if (message.value(QStringLiteral("method")).toString() ==
+            QStringLiteral("turn/start"))
+            starts.append(message);
+    }
+    const QJsonObject params = starts.size() > 1
+                                   ? starts.at(1)
+                                         .value(QStringLiteral("params"))
+                                         .toObject()
+                                   : QJsonObject();
+    check(starts.size() == 3 &&
+              params.value(QStringLiteral("model")).toString() ==
+                  QStringLiteral("gpt-old") &&
+              params.value(QStringLiteral("effort")).toString() ==
+                  QStringLiteral("high"),
+          "an empty setTurnOptions model keeps the thread's own model and still "
+          "applies the rest");
+}
+
 void runFatalErrorTest(const QString &executable)
 {
     QTemporaryDir temp;
@@ -1671,6 +1730,7 @@ int main(int argc, char *argv[])
     runResumeFailureTest(executable);
     runInterruptTest(executable);
     runTurnOptionsTest(executable);
+    runTurnOptionsKeepModelTest(executable);
     runFatalErrorTest(executable);
     runResumeIdentityTest();
     runResumeAccountTest();

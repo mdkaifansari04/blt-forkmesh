@@ -532,6 +532,17 @@ public:
     QString testApplyDesktopWebsiteProbe(const QString &id, int httpStatus,
                                          const QByteArray &body,
                                          const QString &transportError = QString());
+    // How many filed pings carry this text in their title — the observable end
+    // of the outage alert a failing desktop-side check raises every minute.
+    int testNotificationsTitled(const QString &needle) const
+    {
+        int count = 0;
+        for (const AppNotification &item : m_notifications) {
+            if (item.title.contains(needle))
+                ++count;
+        }
+        return count;
+    }
     // Streams one line through the live-log fan-out (footer strip, category
     // lights and the debug bar's five-line tail) without a real event.
     void testSetFooterUpdateLine(const QString &line)
@@ -1560,6 +1571,12 @@ private:
     void applyDesktopWebsiteProbe(const QString &id, int httpStatus,
                                   const QByteArray &body,
                                   const QString &transportError);
+    // A five-pixel dot turning red in the footer is easy to miss, so a check
+    // this desktop graded "down" also raises a ping and a desktop toast. The
+    // probes ride the minute timer, so this fires once a minute per failing
+    // check for as long as it keeps failing (adhoc #1596).
+    struct FooterStatusRow; // defined with the rest of the footer state below
+    void alertOnDesktopEdgeOutage(const FooterStatusRow &row);
     // Relay-graded rows first, desktop-measured ones after, onto both dot rows.
     void publishFooterWebsiteStatuses();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
@@ -3065,10 +3082,19 @@ private:
     // resume it. Driven by the agents list's orange conflict button (adhoc
     // #446); a no-op while that session is already running or queued.
     void fixAgentConflictsWithAgent(int sessionId);
+    // Whether this session still has a process that can take a prompt right
+    // now — a live Claude/Codex transcript transport or a busy AgentRunner.
+    // The persisted status is not a liveness signal (a session can read Running
+    // with nothing behind it), so both the restart gate and the composer stash
+    // ask this instead.
+    bool agentSessionHasLiveTransport(int sessionId) const;
     // Stash the quick-add composer's provider/model/mode dropdowns onto the
     // given session, so the next resume runs with what the user has selected
     // right now. Shared by the follow-up path and the bare "add" (continue,
-    // nothing typed) path.
+    // nothing typed) path. A session with a live transport keeps the provider
+    // (and any model belonging to it) it is actually running under: nothing can
+    // restart it until it stops, and handing the running CLI the other one's
+    // model fails the turn outright.
     void applyComposerSelectionToAgentSession(int sessionId);
     // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
     // agent detail composer's Send button and the footer quick-add's up-arrow

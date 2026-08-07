@@ -36,6 +36,10 @@ public:
                const QString &resumeFallbackPrompt = QString());
     void sendUserText(const QString &text);
     void respondToRequest(const QString &token, const QString &answer);
+    // Options for the next turn on the live thread. An empty `model` means "no
+    // opinion" and leaves the thread on the one it started with, so a caller
+    // with nothing valid to say (a session record naming another CLI's model)
+    // can steer without renaming the model out from under the running thread.
     void setTurnOptions(const QString &model, const QString &mode,
                         const QString &effort);
     void interrupt();
