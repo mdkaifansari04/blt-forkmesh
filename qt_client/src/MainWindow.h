@@ -965,6 +965,17 @@ public:
         m_agentSessions.append(session);
     }
     void testRefreshAgentQueueControls() { refreshAgentQueueControls(); }
+    // Re-run the pass that enables/disables the fleet and detail buttons, so a
+    // test can click one the way a user does once its precondition holds.
+    void testUpdateAgentActionState() { updateAgentActionState(); }
+    // Force the coalesced diff/worktree worker to run now, the way arriving on
+    // the tab does. It reports each branch's behind/conflict state and must not
+    // move any branch itself (adhoc #1611).
+    void testRefreshAgentDiffStats()
+    {
+        m_agentDiffRefreshPending = true;
+        refreshAgentTable();
+    }
     int testAgentSessionForPullId(int prNumber, const QString &headBranch) const
     {
         const AgentSession *session = agentSessionForPull(prNumber, headBranch);
@@ -999,6 +1010,45 @@ public:
     // A transport can disappear while the persisted session is still marked
     // Running.  Queue it without launching a real CLI so the UI test can prove
     // that Continue (and a follow-up prompt) recovers this detached state.
+    // Give a session the conversation id an earlier successful run would have
+    // left behind, so a test can stand in for "this session has run before".
+    void testSeedResumeConversationId(int sessionId, const QString &conversationId,
+                                      bool codex)
+    {
+        m_streamEvents[sessionId].append(QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("system")},
+            {QStringLiteral("subtype"), QStringLiteral("init")},
+            {codex ? QStringLiteral("thread_id") : QStringLiteral("session_id"),
+             conversationId}});
+    }
+    // Replay "the CLI exited without finishing a turn" for a session that has
+    // already produced a conversation id, so a test can prove the retries are
+    // bounded rather than spinning queued -> exit -> queued forever. Returns one
+    // 'q' (re-queued) or 'f' (failed) per exit, oldest first.
+    QString testReplayCliExitsWithoutResult(int sessionId, bool codex, int times)
+    {
+        QString outcomes;
+        for (int i = 0; i < times; ++i) {
+            if (AgentSession *session = findAgentSession(sessionId))
+                session->status = AgentStatus::Running;
+            outcomes += applyCliExitWithoutResult(sessionId, codex, /*exitCode=*/1)
+                            ? QLatin1Char('q')
+                            : QLatin1Char('f');
+            m_agentQueue.removeAll(sessionId);
+        }
+        return outcomes;
+    }
+    QString testAgentSessionLastError(int sessionId)
+    {
+        const AgentSession *session = findAgentSession(sessionId);
+        return session ? session->lastError : QString();
+    }
+    // The CLI's own announcement clears the retry budget, so a session that
+    // crashes again later gets a fresh set of attempts.
+    void testMarkAgentSessionRunning(int sessionId)
+    {
+        markAgentSessionRunning(sessionId);
+    }
     bool testQueueDetachedRunningAgentSession(int sessionId)
     {
         continueAgentSession(sessionId, /*deferRefresh=*/true);
@@ -3382,6 +3432,12 @@ private:
     QList<int> startableAgentSessionIds() const;
     // Queue every session above for a resume; the run limit drains the queue.
     void startAllStoppedAgents();
+    // The sessions "Update all" acts on: ours, unmerged, still holding a feature
+    // worktree on disk that isn't already the base branch, across all repos.
+    QList<int> updatableAgentSessionIds() const;
+    // Merge each of those sessions' base branch into its worktree branch, in one
+    // click. Never automatic: it only runs when the button is pressed.
+    void updateAllAgentWorktreesFromMain();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
@@ -4175,6 +4231,26 @@ private:
     QString diffViewedScope(const QString &context) const;
     QSet<QString> loadDiffViewed(const QString &context) const;
     void setDiffViewed(const QString &context, const QString &path, bool viewed);
+    // What merging a base branch into the linked worktree that owns another
+    // branch did. Shared by "Pull main" on one branch and the Agents toolbar's
+    // "Update all", so both report and protect a worktree identically.
+    struct WorktreeMergeReport
+    {
+        enum Status {
+            Merged,     // base is in; any local edits were restored on top
+            Busy,       // a merge or unresolved files were already in the way
+            Conflicted, // refused or rolled back; the branch is untouched
+            Failed,     // couldn't be attempted at all
+        };
+        Status status = Failed;
+        QString message; // ready to show, naming the branch and the base
+    };
+    // Merge `base` into `branch` inside the worktree that has it checked out,
+    // autostashing local edits and rolling the whole thing back if they can't be
+    // restored cleanly. The only path that moves an agent branch forward.
+    WorktreeMergeReport mergeBaseIntoLinkedWorktree(const QString &worktree,
+                                                    const QString &branch,
+                                                    const QString &base);
     // Merge the default branch into `branch` so it catches up with main.
     void updateBranchFromBase(const QString &branch);
     // Bring `branch` up to date with base via the interactive merge editor,
@@ -8377,7 +8453,13 @@ private:
     // spent waiting on a non-empty process tree — used to escalate a stuck
     // wait to a kill, then to giving up on the tree entirely (adhoc #1583).
     QHash<int, int> m_agentCompletionPollCounts;
+    // Consecutive times a session's CLI exited without finishing a turn and was
+    // put back on the queue. Cleared the moment a launch reaches the CLI's
+    // system/init line (markAgentSessionRunning), so only a launch that keeps
+    // failing the same way ever reaches kMaxAgentRelaunchAttempts.
+    QHash<int, int> m_agentRelaunchAttempts;
     void notifyAgentWaiting(int sessionId, bool needsPermission);
+    bool applyCliExitWithoutResult(int sessionId, bool codex, int exitCode);
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
@@ -8693,6 +8775,10 @@ private:
     // (adhoc #136).
     QPushButton *m_agentStopAllButton = nullptr;
     QPushButton *m_agentStartAllButton = nullptr;
+    // Beside them: merge each session's base branch into its own worktree branch.
+    // A button rather than a background sweep — pulling main in is only ever done
+    // on request.
+    QPushButton *m_agentUpdateAllButton = nullptr;
     // Beside Start all: queued sessions / concurrent run limit, with direct
     // one-click controls for that limit.
     QLabel *m_agentQueueStatusLabel = nullptr;
