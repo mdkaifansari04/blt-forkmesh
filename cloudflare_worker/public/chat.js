@@ -26,6 +26,7 @@ import {
   issueTitleFromMessage,
   loadIssueRepositories,
 } from "./chat-issue-filing.js";
+import { createAccountEventChannel } from "./account-events.js";
 import { createChatRoomTransport } from "./chat-room-transport.js";
 import { moderateChatPlain, moderateChatText } from "./chat-moderation.js";
 import { createThreadStore } from "./chat-thread-model.js";
@@ -61,7 +62,6 @@ const PUBLIC_WORLD_CHAT_WS_PATH =
   "/api/repo/mainnode/forkmesh/rooms/world-general/ws";
 const PRIVATE_CHANNELS_ENDPOINT = "/api/chat/channels";
 const DIRECT_MESSAGES_ENDPOINT = "/api/chat/direct-messages";
-const PRIVATE_CHANNEL_REFRESH_MS = 30000;
 const FORKBOT_ENDPOINT = "/api/forkbot/chat";
 // Cloudflare Workers AI models ForkBot can be pointed at, plus the picked one.
 // The pick is per-browser (not per-room): it only decides which model this
@@ -1336,6 +1336,36 @@ function loadMoreDirectMessages() {
   });
 }
 
+// The page's one authenticated push channel. It replaces the 30s re-read of
+// the conversation list: an unread count only ever changes because somebody
+// wrote to this account, and the relay says so the moment it happens.
+let accountEvents = null;
+
+function startAccountEventChannel() {
+  // Guests have no conversations to be unread, and no session to trade for a
+  // ticket. Signing in reloads the page, which is where this runs.
+  if (!userSession()?.sessionToken) return;
+  if (accountEvents) {
+    accountEvents.restart();
+    return;
+  }
+  accountEvents = createAccountEventChannel({
+    sessionToken: () => userSession()?.sessionToken || "",
+    onTopic: (topic) => {
+      if (topic !== "direct-messages") return;
+      refreshDirectMessages({ preserve: true, selectSaved: false });
+    },
+    // One catch-up per (re)connect: a DM that arrived while the channel was
+    // down pushed its frame into the void, and there is no fallback poll
+    // behind this socket (docs/operations/polling-elimination.md).
+    onConnected: () => {
+      refreshPrivateChannels();
+      refreshDirectMessages({ preserve: true, selectSaved: false });
+    },
+  });
+  accountEvents.start();
+}
+
 async function markDirectMessageRead(channelKey) {
   const direct = directMessageForKey(channelKey);
   if (!direct || directReadPending.has(direct.id)) return;
@@ -1782,12 +1812,14 @@ async function markChatActivitySeen() {
   } catch (_) {}
 }
 
-// You have obviously already read your own message, so it must never light the
-// header's chat badge. That badge is a delta between the retained #general
-// count and this browser's stored baseline, so every retained line we send
-// advances the baseline by one. Without this, talking in the World or the
-// dashboard left an unread pill on every other page of the site.
-function noteOwnChatActivity() {
+// You have obviously already read your own message, and — with the chat page
+// open in front of you — everything that arrives in it too. So neither must
+// light the header's chat badge. That badge is a delta between the retained
+// #general count and this browser's stored baseline, so every retained line
+// that crosses this page advances the baseline by one. Doing it here, off the
+// socket, is what lets the page stop re-reading the counters on a timer:
+// re-baselining used to mean a GET /api/chat/activity every minute.
+function noteSeenChatActivity() {
   try {
     const raw = localStorage.getItem(CHAT_ACTIVITY_SEEN_KEY);
     if (!raw) return; // no baseline yet: the header seeds one silently
@@ -3112,6 +3144,19 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
   // announce themselves (hello/presence) without accountKind, and the people
   // pane should still show them with their online status.
   noteRoster(plain);
+  // A live retained #general line is one the reader is looking at right now, so
+  // it advances the header badge's baseline exactly like a line they sent. This
+  // is the socket half of what used to be a GET /api/chat/activity every
+  // minute. Replayed "history" is deliberately excluded: the baseline read when
+  // the page opened already counted it.
+  if (
+    scope === "public-world-general" &&
+    type !== "history" &&
+    DURABLE_TYPES.has(type) &&
+    !plain.file
+  ) {
+    noteSeenChatActivity();
+  }
   if (scope === "public-world-general" &&
       (type === "hello" || type === "channel")) ensureChannel("#general");
   const sender = (plain.sender || "peer").slice(0, MAX_NAME);
@@ -3222,7 +3267,7 @@ function send(plain) {
   // Only retained #general frames reach the counter behind the header badge,
   // and oversized file frames are dropped before retention.
   if (envelope.persist && scope === "public-world-general" && !plain.file) {
-    noteOwnChatActivity();
+    noteSeenChatActivity();
   }
   return roomTransport.send(plain, { persist: envelope.persist });
 }
@@ -4035,18 +4080,22 @@ async function initChat() {
   renderRooms();
   renderPeople();
   // Fill the people pane with every registered user (and thereafter pick up
-  // brand-new signups), and baseline the header badge counters for this visit.
+  // brand-new signups — accounts that have never spoken have no socket frame
+  // to announce them, so this one stays on its edge-cached tick).
   refreshUsersDirectory();
   loadForkbotModels();
+  // Once per visit. The counters only move when a message is retained, and
+  // every retained line that crosses this page now advances the baseline
+  // locally off the socket (noteSeenChatActivity) — so there is nothing left
+  // for a timer to discover.
   markChatActivitySeen();
-  setInterval(() => {
-    refreshUsersDirectory();
-    markChatActivitySeen();
-  }, USERS_DIRECTORY_REFRESH_MS);
-  setInterval(() => {
-    refreshPrivateChannels();
-    refreshDirectMessages({ preserve: true, selectSaved: false });
-  }, PRIVATE_CHANNEL_REFRESH_MS);
+  setInterval(refreshUsersDirectory, USERS_DIRECTORY_REFRESH_MS);
+  // Conversations and their unread counts were read once above; from here they
+  // are push-driven. A DM that lands in a conversation this browser is not
+  // sitting in is the one case the room sockets cannot report, and the relay
+  // pushes a payload-free "direct-messages" frame for exactly that
+  // (notify_account_event).
+  startAccountEventChannel();
   // Public World #general connects for everyone. Private channels remain
   // session-gated and each uses its own ticketed room and current key version.
   if (canJoinChannel()) {
