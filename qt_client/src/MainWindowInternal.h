@@ -11307,6 +11307,30 @@ inline bool isTransientGitError(const QString &err)
     return false;
 }
 
+// A .gitignore rule that matches exactly one file, for the changes panel's
+// "Add to .gitignore" (adhoc #1594). Anchored at the repository root with a
+// leading "/" so ignoring "docs/notes.txt" doesn't also swallow some other
+// notes.txt elsewhere in the tree, and glob metacharacters in the name are
+// escaped so a literal "[" or "*" can't turn the rule into a pattern.
+inline QString gitignoreRuleForPath(const QString &relPath)
+{
+    QString rule;
+    rule.reserve(relPath.size() + 8);
+    for (const QChar c : relPath) {
+        if (c == QLatin1Char('*') || c == QLatin1Char('?') ||
+            c == QLatin1Char('[') || c == QLatin1Char(']') ||
+            c == QLatin1Char('\\'))
+            rule.append(QLatin1Char('\\'));
+        rule.append(c);
+    }
+    // git strips trailing spaces from a pattern unless they are escaped.
+    if (rule.endsWith(QLatin1Char(' '))) {
+        rule.chop(1);
+        rule.append(QLatin1String("\\ "));
+    }
+    return QLatin1Char('/') + rule;
+}
+
 // The failure pane for a branch range that could not be diffed. Git's own words
 // are the useful part — a timeout now carries the command line and whatever the
 // child printed before it was killed — so show them verbatim in a terminal block

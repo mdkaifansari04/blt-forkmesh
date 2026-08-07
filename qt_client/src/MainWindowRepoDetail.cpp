@@ -735,10 +735,22 @@ QWidget *MainWindow::buildRepoEditorPage()
     setOcticon(m_repoFilePullButton, "git-pull-request", 16);
     connect(m_repoFilePullButton, &QPushButton::clicked, this,
             [this] { saveCurrentRepoFile(true); });
+    // Takes the place of the pair above for a file opened from the changes panel
+    // (openWorkingTreeFile): that edit belongs in the working tree, where the
+    // panel can then stage and commit it like any other change.
+    m_repoFileSaveButton = new QPushButton("Save");
+    m_repoFileSaveButton->setObjectName("primaryButton");
+    m_repoFileSaveButton->setCursor(Qt::PointingHandCursor);
+    m_repoFileSaveButton->setToolTip("Write this file back to the working tree");
+    setOcticon(m_repoFileSaveButton, "check", 16);
+    m_repoFileSaveButton->hide();
+    connect(m_repoFileSaveButton, &QPushButton::clicked, this,
+            [this] { saveCurrentRepoFile(false); });
     backRow->addWidget(m_repoFilePreviewButton);
     backRow->addWidget(m_repoFileHistoryButton);
     backRow->addWidget(m_repoFileCommitButton);
     backRow->addWidget(m_repoFilePullButton);
+    backRow->addWidget(m_repoFileSaveButton);
 
     m_repoFileTree = new QTreeWidget;
     m_repoFileTree->setObjectName("fileTree");
@@ -802,7 +814,9 @@ QWidget *MainWindow::buildRepoEditorPage()
     auto *saveShortcut = new QShortcut(QKeySequence::Save, m_repoFileTabs);
     saveShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(saveShortcut, &QShortcut::activated, this, [this] {
-        if (m_repoFileCommitButton && m_repoFileCommitButton->isEnabled())
+        if (m_repoFileSaveButton && m_repoFileSaveButton->isEnabled())
+            saveCurrentRepoFile(false); // working-tree tab: write it to disk
+        else if (m_repoFileCommitButton && m_repoFileCommitButton->isEnabled())
             saveCurrentRepoFile(false);
         else if (m_repoFilePullButton && m_repoFilePullButton->isEnabled())
             saveCurrentRepoFile(true);
@@ -2154,6 +2168,101 @@ void MainWindow::openRepoFile(const QString &path)
     updateRepoFileSaveActions();
 }
 
+// Open a file straight from a working tree: the bytes on disk, not the version
+// git has at the current ref. The changes panel needs exactly this — every file
+// it lists differs from the committed content, so openRepoFile() above would
+// show the *old* text and then refuse to save it (saveRepoFileEdit bails on a
+// dirty tree). This tab's Save writes back to the same file (adhoc #1594).
+void MainWindow::openWorkingTreeFile(const QString &dir, const QString &relPath)
+{
+    if (dir.isEmpty() || relPath.isEmpty() || !m_repoFileTabs)
+        return;
+    const QString abs = QDir(dir).absoluteFilePath(relPath);
+    // Opening a file reveals the explorer + editor view; build the tree lazily.
+    if (m_treeLoadedForIndex != m_repoDetailIndex) {
+        loadRepoFileTree();
+        m_treeLoadedForIndex = m_repoDetailIndex;
+    }
+    if (m_filesStack)
+        m_filesStack->setCurrentIndex(1);
+
+    // Keyed by the absolute path: a working-tree tab and a ref-backed tab for the
+    // same file are different documents and must not share a slot.
+    if (m_openFileTabs.contains(abs)) {
+        m_repoFileTabs->setCurrentWidget(m_openFileTabs.value(abs));
+        return;
+    }
+
+    QString content;
+    bool editable = false;
+    QFile file(abs);
+    const qint64 size = QFileInfo(abs).size();
+    if (!file.open(QIODevice::ReadOnly)) {
+        content = QStringLiteral("Could not read %1.").arg(abs);
+    } else {
+        const QByteArray bytes = file.readAll();
+        file.close();
+        if (bytes.size() > 1024 * 1024)
+            content = QStringLiteral("File is too large to edit (%1 KB).")
+                          .arg(size / 1024);
+        else if (bytes.contains('\0'))
+            content = QString::fromUtf8("Binary file (%1 bytes) \xE2\x80\x94 not shown.")
+                          .arg(size);
+        else {
+            content = QString::fromUtf8(bytes);
+            editable = true;
+        }
+    }
+
+    auto *editor = new CodePreviewEditor(relPath);
+    // The absolute path both names the save target and marks this as a
+    // working-tree tab (see updateRepoFileSaveActions / saveCurrentRepoFile).
+    // Left empty for an unreadable/binary/oversized file so nothing can write a
+    // placeholder message over it.
+    editor->setProperty("worktreeFile", editable ? abs : QString());
+    editor->setReadOnly(!editable);
+    editor->setPlainText(content);
+    editor->document()->setModified(false);
+    new CodePreviewHighlighter(editor->document(), relPath);
+
+    const QString name = relPath.section('/', -1);
+    const int index = m_repoFileTabs->addTab(editor, iconForFile(name), name);
+    m_repoFileTabs->setTabToolTip(index, abs);
+    m_repoFileTabs->setCurrentIndex(index);
+    m_openFileTabs.insert(abs, editor);
+    connect(editor->document(), &QTextDocument::modificationChanged, this,
+            [this, editor, name](bool modified) {
+                const int idx = m_repoFileTabs ? m_repoFileTabs->indexOf(editor) : -1;
+                if (idx >= 0)
+                    m_repoFileTabs->setTabText(
+                        idx, modified ? QString::fromUtf8("\xE2\x97\x8F ") + name : name);
+            });
+    updateRepoFileSaveActions();
+}
+
+bool MainWindow::saveWorkingTreeFileEdit(const QString &absPath,
+                                         const QString &content)
+{
+    QFile file(absPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        setRepoDetailNotice(QStringLiteral("Could not write %1.").arg(absPath), true);
+        return false;
+    }
+    const QByteArray bytes = content.toUtf8();
+    const bool wrote = file.write(bytes) == bytes.size();
+    file.close();
+    if (!wrote) {
+        setRepoDetailNotice(QStringLiteral("Could not write %1.").arg(absPath), true);
+        return false;
+    }
+    setRepoDetailNotice(
+        QStringLiteral("Saved %1.").arg(QFileInfo(absPath).fileName()));
+    // The file's diff just changed, so whichever changes view this was opened
+    // from is now stale.
+    refreshSourceControl(true);
+    return true;
+}
+
 void MainWindow::updateRepoFileSaveActions()
 {
     const QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
@@ -2161,6 +2270,17 @@ void MainWindow::updateRepoFileSaveActions()
     const QString path = w ? w->property("previewPath").toString() : QString();
     const bool haveFile = editor && !path.isEmpty();
     const bool editable = haveFile && !editor->isReadOnly();
+    // A working-tree tab saves to disk, so it swaps the two git-backed buttons
+    // for a plain Save.
+    const bool onDisk = w && !w->property("worktreeFile").toString().isEmpty();
+    if (m_repoFileSaveButton) {
+        m_repoFileSaveButton->setVisible(onDisk);
+        m_repoFileSaveButton->setEnabled(onDisk && editable);
+    }
+    if (m_repoFileCommitButton)
+        m_repoFileCommitButton->setVisible(!onDisk);
+    if (m_repoFilePullButton)
+        m_repoFilePullButton->setVisible(!onDisk);
     // The rendered-markdown toggle only makes sense for Markdown files; it reflects
     // whichever side (source / preview) the current tab is showing.
     if (m_repoFilePreviewButton) {
@@ -2176,12 +2296,14 @@ void MainWindow::updateRepoFileSaveActions()
     if (m_repoFileHistoryButton)
         m_repoFileHistoryButton->setEnabled(haveFile);
     // Direct commits need a working tree we own; a mirrored repo can still open a
-    // pull request, which is sent to the owner's inbox.
+    // pull request, which is sent to the owner's inbox. Both stay disabled (not
+    // just hidden) for a working-tree tab, so the Ctrl+S fallback below can pick
+    // the right save path purely from what is enabled.
     if (m_repoFileCommitButton)
-        m_repoFileCommitButton->setEnabled(editable && repoHasWorkingTree());
+        m_repoFileCommitButton->setEnabled(!onDisk && editable && repoHasWorkingTree());
     if (m_repoFilePullButton)
         m_repoFilePullButton->setEnabled(
-            editable && (repoHasWorkingTree() || repoCanProposePull()));
+            !onDisk && editable && (repoHasWorkingTree() || repoCanProposePull()));
 }
 
 void MainWindow::saveCurrentRepoFile(bool createPull)
@@ -2193,6 +2315,16 @@ void MainWindow::saveCurrentRepoFile(bool createPull)
     const QString path = w->property("previewPath").toString();
     if (path.isEmpty())
         return;
+    // A working-tree tab is the file on disk, so it saves there. The git-backed
+    // paths below would refuse anyway: they all require a clean working tree,
+    // which a file opened from the changes panel by definition isn't.
+    const QString worktreeFile = w->property("worktreeFile").toString();
+    if (!worktreeFile.isEmpty()) {
+        if (saveWorkingTreeFileEdit(worktreeFile, editor->toPlainText()))
+            editor->document()->setModified(false);
+        updateRepoFileSaveActions();
+        return;
+    }
     if (saveRepoFileEdit(path, editor->toPlainText(), createPull))
         editor->document()->setModified(false);
     updateRepoFileSaveActions();
