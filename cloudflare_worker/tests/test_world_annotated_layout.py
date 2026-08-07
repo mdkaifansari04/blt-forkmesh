@@ -39,27 +39,33 @@ def test_all_repositories_live_expanded_on_the_east_island():
     assert "label.visible = true;" in SCENE
 
 
-def test_billboards_use_one_aligned_perimeter():
-    assert "function placeBillboardOnIsland(object)" in SCENE
-    assert "const relayoutBillboardCircle = () =>" in SCENE
-    assert "billboardIslandObjects.push({ object });" in SCENE
+def test_billboards_are_split_across_three_aligned_circles():
+    assert "function placeBillboardOnIsland(object, options = {})" in SCENE
+    assert "const relayoutBillboardCircle = (circle) =>" in SCENE
+    assert "circle.objects.push(record);" in SCENE
     assert "Math.cos(angle) * radius" in SCENE
     assert "Math.sin(angle) * radius" in SCENE
-    for object_name in (
-        "worldBulletin",
-        "worldGeneralChatBoard",
-        "mastodonKiosk",
-        "twitterBanner",
-        "redditBanner",
-        "blogBanner",
-        "statusBanner",
-        "officeTaskBulletin",
-        "worldQaBoard",
+    assert "const BILLBOARD_CIRCLE_SPECS = Object.freeze({" in SCENE
+    for circle_id in ("hub", "social", "leaderboards"):
+        assert f"forkmesh-${{spec.id}}-billboard-circle" in SCENE
+        assert f"{circle_id}: Object.freeze({{" in SCENE
+    # Each board names the circle it stands on; none of them share one ring.
+    for object_name, circle_id in (
+        ("worldBulletin", "hub"),
+        ("worldGeneralChatBoard", "hub"),
+        ("statusBanner", "hub"),
+        ("officeTaskBulletin", "hub"),
+        ("worldQaBoard", "hub"),
+        ("worldDiscordBoard", "social"),
+        ("mastodonKiosk", "social"),
     ):
-        assert f"placeBillboardOnIsland({object_name}" in SCENE or (
-            object_name in SCENE
-            and "placeBillboardOnIsland(board))" in SCENE
-        )
+        placement = SCENE.split(f"placeBillboardOnIsland({object_name}", 1)
+        assert len(placement) == 2, object_name
+        assert f'circle: "{circle_id}"' in placement[1][:120], object_name
+    # The three social banners are placed together on the social circle.
+    banners = SCENE.split("[twitterBanner, redditBanner, blogBanner].forEach", 1)
+    assert len(banners) == 2
+    assert 'circle: "social", feed: "social"' in banners[1][:200]
 
 
 def test_members_share_continuous_land_with_path_under_dirt_and_open_entrance():

@@ -25,7 +25,11 @@ BUILTIN_KEYS = frozenset({
     "task:member-verification-admin-link",
     "task:engineering-debug-panel",
     "task:compact-leaderboard",
+    # The 5x5 wall this key named became three billboard circles of individual
+    # cards. Both keys stay accepted: a stored board order still references the
+    # old one, and dropping it would 409 every reorder that carries it.
     "task:leaderboard-grid",
+    "task:billboard-circles",
     "task:reward-node-download",
     "task:world-ground-cleanup",
     "task:world-bike-groove",

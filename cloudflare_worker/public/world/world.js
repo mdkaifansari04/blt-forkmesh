@@ -7428,7 +7428,15 @@ class ForkMeshWorld extends HTMLElement {
           this.startQaDeckWatch({ refetch }),
         onQaBoardAway: () => this.stopQaDeckWatch(),
         onLobbyLinkKioskNearby: () => void this.loadLobbyLinkBoard(),
-        onLeaderboardWallNearby: () => void this.loadReferralLeaderboard(),
+        onLeaderboardCircleNearby: ({ refetch } = {}) =>
+          this.startLeaderboardCircleWatch({ refetch }),
+        onLeaderboardCircleAway: () => this.stopLeaderboardCircleWatch(),
+        onSocialCircleNearby: ({ refetch } = {}) =>
+          this.startSocialCircleWatch({ refetch }),
+        onSocialCircleAway: () => this.stopSocialCircleWatch(),
+        onWorldBoardsCircleNearby: ({ refetch } = {}) =>
+          this.startWorldBoardsCircleWatch({ refetch }),
+        onWorldBoardsCircleAway: () => this.stopWorldBoardsCircleWatch(),
         onBuildVideoSelect: () =>
           window.open(
             "/assets/video/forkmesh-forever.mp4",
@@ -7591,21 +7599,22 @@ class ForkMeshWorld extends HTMLElement {
       // optional, edge-cached read after the essential World data settles;
       // orbit propagation then stays entirely local for the life of the page.
       void this.loadSatelliteSky();
-      // Populate the Mastodon kiosk billboard on entry; the fetch is public,
-      // credential-free, and cached for ten minutes. When a fresh snapshot
-      // is already cached the load resolves without refetching, so push the
-      // cached profile onto the rebuilt scene explicitly.
-      void this.loadMastodonBoard();
+      // Boot requests nothing for the billboard circles. Any snapshot this
+      // page already holds is pushed onto the rebuilt scene, and the
+      // one-second ticks below only drive the stand clocks — the first fetch
+      // for the kiosk, the feeds, the status board, and the rankings waits
+      // until the visitor walks onto the circle that carries them. A rebuilt
+      // scene therefore starts every circle "away", and its own first
+      // proximity pass is what reports the visitor back onto one.
+      this.leaderboardCircleNear = false;
+      this.socialCircleNear = false;
+      this.worldBoardsCircleNear = false;
       this.syncMastodonKiosk();
       this.startMastodonRefresh();
-      // Same pattern for the Twitter/Reddit/blog banners: push any cached
-      // snapshot onto the rebuilt scene, then keep the ten-minute cadence
-      // (whose one-second tick also drives the stand clocks).
       this.syncSocialBanners();
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
       this.seatFreshArrivalAtCampfire();
-      void this.loadReferralLeaderboard();
       void this.loadLobbyLinkBoard();
       // The repository district starts empty and requests nothing. No catalog,
       // no import list, no flagship tree, and no size maps until a character
@@ -8080,6 +8089,45 @@ class ForkMeshWorld extends HTMLElement {
     this.qaTimer = 0;
   }
 
+  // The three billboard circles follow the same rule as the task boards, and
+  // it is the only rule they follow: nothing standing on a circle is fetched
+  // until a visitor walks onto it. The near flags are what the one-second
+  // stand-clock ticks consult before they are allowed to start a request, so
+  // a page parked anywhere else in the World holds no cadence for these
+  // boards at all. `refetch` is false when the scene judged the last approach
+  // recent enough that re-entering does not justify another read.
+  startLeaderboardCircleWatch({ refetch = true } = {}) {
+    this.leaderboardCircleNear = true;
+    if (refetch) void this.loadReferralLeaderboard();
+  }
+
+  stopLeaderboardCircleWatch() {
+    this.leaderboardCircleNear = false;
+  }
+
+  startSocialCircleWatch({ refetch = true } = {}) {
+    this.socialCircleNear = true;
+    if (refetch) {
+      void this.loadMastodonBoard();
+      void this.loadSocialBanners();
+    }
+    this.syncMastodonCountdown();
+    this.syncSocialBannerTimers();
+  }
+
+  stopSocialCircleWatch() {
+    this.socialCircleNear = false;
+  }
+
+  startWorldBoardsCircleWatch({ refetch = true } = {}) {
+    this.worldBoardsCircleNear = true;
+    if (refetch) void this.refreshSystemStatusBoard().catch(() => {});
+  }
+
+  stopWorldBoardsCircleWatch() {
+    this.worldBoardsCircleNear = false;
+  }
+
   async refreshBuildBoard({ quiet = false } = {}) {
     if (this.buildBoardLoad) return this.buildBoardLoad;
     this.world?.setBuildBoardLoading?.(true);
@@ -8382,6 +8430,7 @@ class ForkMeshWorld extends HTMLElement {
 
   async refreshQaDeck({ afterKey = "", quiet = false } = {}) {
     if (this.qaLoad) return this.qaLoad;
+    this.world?.setBillboardRefreshing?.("qa-board", true);
     this.qaLoad = (async () => {
       try {
         const payload = await this.fetchJSON(WORLD_QA_ENDPOINT, {
@@ -8397,6 +8446,7 @@ class ForkMeshWorld extends HTMLElement {
         return this.qaDeck;
       } finally {
         this.qaLoad = null;
+        this.world?.setBillboardRefreshing?.("qa-board", false);
       }
     })();
     return this.qaLoad;
@@ -14860,7 +14910,8 @@ class ForkMeshWorld extends HTMLElement {
         sinceMs: since,
       },
     });
-    if (!loading && remaining <= 0) {
+    this.world?.setBillboardRefreshing?.("status", loading);
+    if (!loading && remaining <= 0 && this.worldBoardsCircleNear) {
       void this.refreshSystemStatusBoard().catch(() => {});
     }
   }
@@ -16933,16 +16984,17 @@ class ForkMeshWorld extends HTMLElement {
     return this.socialFeedsLoad;
   }
 
-  // Like the Mastodon kiosk, a one-second tick drives both the stand clocks
-  // and the ten-minute reload: when the countdown reaches zero the next tick
-  // starts the fetch, so a repaint from a fresh snapshot restarts the same
+  // Like the Mastodon kiosk, a one-second tick drives the stand clocks and
+  // counts the ten-minute window down. Reaching zero only marks the banners
+  // as due: the tick refetches when — and only when — somebody is standing on
+  // the social circle, and a repaint from a fresh snapshot restarts the same
   // window the boards were counting down.
   startSocialBannersRefresh() {
     window.clearInterval(this.socialFeedsTimer);
     this.socialFeedsTimer = window.setInterval(() => {
       this.syncSocialBannerTimers();
     }, 1000);
-    void this.loadSocialBanners();
+    this.syncSocialBannerTimers();
   }
 
   socialRefreshRemaining() {
@@ -16968,7 +17020,8 @@ class ForkMeshWorld extends HTMLElement {
   syncSocialBannerTimers() {
     const loading = Boolean(this.socialFeedsLoad);
     const remaining = this.socialRefreshRemaining();
-    if (!loading && remaining <= 0) {
+    this.world?.setBillboardRefreshing?.("social", loading);
+    if (!loading && remaining <= 0 && this.socialCircleNear) {
       void this.loadSocialBanners();
       return;
     }
@@ -17136,7 +17189,11 @@ class ForkMeshWorld extends HTMLElement {
   syncMastodonCountdown() {
     const loading = Boolean(this.mastodonLoad);
     const remaining = this.mastodonRefreshRemaining();
-    if (!loading && remaining <= 0) {
+    this.world?.setBillboardRefreshing?.("mastodon", loading);
+    // An elapsed window no longer starts a fetch on its own: it only means the
+    // kiosk is due, and the next visitor to walk onto the social circle is
+    // what actually reloads it.
+    if (!loading && remaining <= 0 && this.socialCircleNear) {
       void this.loadMastodonBoard(true);
       return;
     }
@@ -31065,8 +31122,10 @@ class ForkMeshWorld extends HTMLElement {
     )}`;
   }
 
-  // One edge-cached snapshot keeps every island sign synchronized with the
-  // website hub. Custom referral faces still retain their richer tap actions.
+  // One edge-cached snapshot keeps every card on the leaderboard circle
+  // synchronized with the website hub. Custom referral faces still retain
+  // their richer tap actions. Every card spins while the read is open, since
+  // the visitor's own approach is what started it.
   async loadReferralLeaderboard() {
     if (
       !this.world?.updateLeaderboards &&
@@ -31075,6 +31134,18 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return;
     }
+    if (this.leaderboardLoad) return this.leaderboardLoad;
+    this.leaderboardLoad = this.fetchLeaderboardSnapshot();
+    this.world?.setBillboardRefreshing?.("leaderboards", true);
+    try {
+      await this.leaderboardLoad;
+    } finally {
+      this.leaderboardLoad = null;
+      this.world?.setBillboardRefreshing?.("leaderboards", false);
+    }
+  }
+
+  async fetchLeaderboardSnapshot() {
     try {
       const snapshot = await this.fetchJSON("/api/leaderboards", {
         auth: false,
