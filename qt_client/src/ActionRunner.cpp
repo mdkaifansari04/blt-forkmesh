@@ -206,6 +206,27 @@ qint64 actionScopeMemoryBytes(const ActionSandboxLimits &limits)
     return qMax(bytes, floorBytes);
 }
 
+int actionScopeTasksMax(const ActionSandboxLimits &limits)
+{
+    if (limits.maxProcesses > 0)
+        return qMax(8, limits.maxProcesses);
+    // systemd's TasksMax counts *threads*, not just processes, so this ceiling
+    // has to grow with the CPU quota for the same reason MemoryMax does. A flat
+    // 128 let the "CI tests" Qt build die on `std::system_error: Resource
+    // temporarily unavailable` — pthread_create hitting the cgroup pids limit —
+    // once make -j8 had six AUTOMOC drivers running at once (adhoc #1586).
+    //
+    // A step gets one tool process per granted CPU, and a tool that sizes its
+    // own thread pool does it from the host's core count: nothing inside the
+    // sandbox can see the quota. AUTOMOC is exactly that tool, so budget the
+    // worst case honestly — quota jobs times host threads — plus a base for the
+    // shell, the build tool and its bookkeeping. Still bounded, so a runaway
+    // fork loop stays contained.
+    const int cpus = qMax(1, actionCpuQuotaPercent() / 100);
+    const int hostThreads = qMax(1, QThread::idealThreadCount());
+    return qBound(128, 64 + cpus * hostThreads, 4096);
+}
+
 ActionRunner::ActionRunner(ActionStore *store, QObject *parent)
     : QObject(parent), m_store(store)
 {
@@ -795,7 +816,7 @@ void ActionRunner::launchSandboxedStep(const QString &command)
         QStringLiteral("--quiet"),
         QStringLiteral("--unit=") + m_systemdUnit,
         QStringLiteral("--property=TasksMax=%1")
-            .arg(qMax(8, m_limits.maxProcesses)),
+            .arg(actionScopeTasksMax(m_limits)),
         QStringLiteral("--property=MemoryMax=%1")
             .arg(actionScopeMemoryBytes(m_limits)),
         QStringLiteral("--property=MemorySwapMax=0"),
