@@ -275,6 +275,34 @@ void checkFooterOverlayGeometry(MainWindow &window)
                              "document that isn't the status page, and when the "
                              "page cannot be fetched at all"));
 
+        // adhoc #1596: these two checks run on the minute timer, and a red
+        // five-pixel dot is easy to miss, so every failing check also files an
+        // alert. Deliberately not deduplicated — a site still down a minute
+        // later raises another ping, so the outage keeps announcing itself for
+        // as long as it lasts.
+        const int alertsBefore = window.testNotificationsTitled(
+            QStringLiteral("is down"));
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            521, cloudflareError);
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            521, cloudflareError);
+        const int alertsAfterDown = window.testNotificationsTitled(
+            QStringLiteral("is down"));
+        check(alertsAfterDown == alertsBefore + 2,
+              QStringLiteral("a desktop-side check that is down alerts on every "
+                             "run, so a lasting outage pings once a minute"));
+
+        // A degraded or recovered check is not an outage and must stay quiet,
+        // or a rate-limited laptop would alert every minute forever.
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            429, homepage);
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            200, homepage);
+        check(window.testNotificationsTitled(QStringLiteral("is down")) ==
+                  alertsAfterDown,
+              QStringLiteral("a degraded or healthy check raises no outage "
+                             "alert"));
+
         // Rebuild+restart came down from the window-chrome line and Resize came
         // out of the navigation rail: both now sit in the debug bar's own tool
         // cluster at the right edge, outside the scrolling category row, each

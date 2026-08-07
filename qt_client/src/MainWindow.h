@@ -532,6 +532,17 @@ public:
     QString testApplyDesktopWebsiteProbe(const QString &id, int httpStatus,
                                          const QByteArray &body,
                                          const QString &transportError = QString());
+    // How many filed pings carry this text in their title — the observable end
+    // of the outage alert a failing desktop-side check raises every minute.
+    int testNotificationsTitled(const QString &needle) const
+    {
+        int count = 0;
+        for (const AppNotification &item : m_notifications) {
+            if (item.title.contains(needle))
+                ++count;
+        }
+        return count;
+    }
     // Streams one line through the live-log fan-out (footer strip, category
     // lights and the debug bar's five-line tail) without a real event.
     void testSetFooterUpdateLine(const QString &line)
@@ -1560,6 +1571,12 @@ private:
     void applyDesktopWebsiteProbe(const QString &id, int httpStatus,
                                   const QByteArray &body,
                                   const QString &transportError);
+    // A five-pixel dot turning red in the footer is easy to miss, so a check
+    // this desktop graded "down" also raises a ping and a desktop toast. The
+    // probes ride the minute timer, so this fires once a minute per failing
+    // check for as long as it keeps failing (adhoc #1596).
+    struct FooterStatusRow; // defined with the rest of the footer state below
+    void alertOnDesktopEdgeOutage(const FooterStatusRow &row);
     // Relay-graded rows first, desktop-measured ones after, onto both dot rows.
     void publishFooterWebsiteStatuses();
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
