@@ -621,7 +621,7 @@ deploy_split_site_workers() {
     local config
     for config in wrangler.www.toml wrangler.world.toml; do
         echo "Deploying split site Worker from $config ..."
-        npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.42.1}" -- \
+        npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.120.0}" -- \
             wrangler deploy --config "$config"
     done
     # The API split ships the same Python application as the relay, so it
