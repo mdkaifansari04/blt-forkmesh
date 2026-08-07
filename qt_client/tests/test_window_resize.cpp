@@ -2492,6 +2492,10 @@ int main(int argc, char *argv[])
                     {QStringLiteral("createdAt"), 1700000000000.0},
                     {QStringLiteral("totalActiveMs"), 3600000.0},
                     {QStringLiteral("activityBucket"), QStringLiteral("5h")},
+                    {QStringLiteral("pulls"), 2.0},
+                    {QStringLiteral("issues"), 9.0},
+                    {QStringLiteral("commits"), 40.0},
+                    {QStringLiteral("discussions"), 1.0},
                     {QStringLiteral("lastEmailAt"), 0},
                     {QStringLiteral("lastEmailStatus"), QString()},
                     {QStringLiteral("countryCode"), QStringLiteral("CA")},
@@ -2507,6 +2511,11 @@ int main(int argc, char *argv[])
                     {QStringLiteral("createdAt"), 1600000000000.0},
                     {QStringLiteral("totalActiveMs"), 7380000.0},
                     {QStringLiteral("activityBucket"), QStringLiteral("hour")},
+                    {QStringLiteral("pulls"), 13.0},
+                    {QStringLiteral("issues"), 4.0},
+                    {QStringLiteral("commits"), 7.0},
+                    // discussions omitted on purpose: an account the tally has
+                    // never seen still has to render a real 0, not a blank.
                     {QStringLiteral("lastEmailAt"), 1710000000000.0},
                     {QStringLiteral("lastEmailStatus"),
                      QStringLiteral("delivered")},
@@ -2524,6 +2533,8 @@ int main(int argc, char *argv[])
         QStringLiteral("Status"),        QStringLiteral("Joined"),
         QStringLiteral("World activity"),
         QStringLiteral("Activity recency"),
+        QStringLiteral("PRs"),           QStringLiteral("Issues"),
+        QStringLiteral("Commits"),       QStringLiteral("Discussions"),
         QStringLiteral("Last email"),    QStringLiteral("Email delivery"),
         QStringLiteral("Country"),       QStringLiteral("Browser"),
         QStringLiteral("OS"),            QStringLiteral("Nodes")};
@@ -2542,6 +2553,26 @@ int main(int argc, char *argv[])
               window.testUsersCellText(0, QStringLiteral("Nodes")) ==
                   QStringLiteral("2 - node-a, node-b"),
           QStringLiteral("Users sorts formatted statistics by their numeric values"));
+    check(window.testUsersCellText(0, QStringLiteral("PRs")) ==
+                  QStringLiteral("13") &&
+              window.testUsersCellText(0, QStringLiteral("Issues")) ==
+                  QStringLiteral("4") &&
+              window.testUsersCellText(0, QStringLiteral("Commits")) ==
+                  QStringLiteral("7") &&
+              window.testUsersCellText(0, QStringLiteral("Discussions")) ==
+                  QStringLiteral("0"),
+          QStringLiteral("Users reports each contribution tally per account"));
+    // Commits sorts 40 above 7, which lexicographic ordering would invert —
+    // the tallies carry their numeric sort key like every other column.
+    const QStringList commitOrder = window.testSortUsersBy(
+        QStringLiteral("Commits"), Qt::DescendingOrder);
+    check(commitOrder == QStringList{QStringLiteral("zora"),
+                                     QStringLiteral("alice")} &&
+              window.testUsersCellText(0, QStringLiteral("Commits")) ==
+                  QStringLiteral("40") &&
+              window.testUsersCellText(0, QStringLiteral("Discussions")) ==
+                  QStringLiteral("1"),
+          QStringLiteral("Users sorts contribution tallies numerically"));
     window.testSetAdmin(false);
     check(!window.testUsersNavButtonVisible(),
           QStringLiteral("losing admin status immediately hides Users"));

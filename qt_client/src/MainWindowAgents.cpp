@@ -1065,6 +1065,11 @@ QPixmap agentLeadGlyphPixmap(const AgentSession &session,
         const QIcon icon = themedOcticon(statusIcon, agentStatusIconColor(session),
                                          kAgentStatusGlyphPx);
         if (running) {
+            // The status glyph is a rasterized octicon pixmap, and this is a
+            // freehand rotation (not a multiple of 90 degrees) driven by
+            // activityAngle every tick — without SmoothPixmapTransform, Qt
+            // resamples it nearest-neighbour and the spin reads as jagged.
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
             p.save();
             p.translate(statusRect.center());
             p.rotate(activityAngle);
@@ -1377,8 +1382,8 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
-        s.rwidth() += chipWidth(opt) + countWidth(opt) + kGlyphSize +
-                      4 * kButtonMargin + 2 * kChipGap + kBarWidth;
+        s.rwidth() += chipWidth(opt) + countWidth(opt) + 2 * kGlyphSize +
+                      4 * kButtonMargin + 3 * kChipGap + kBarWidth;
         s.rheight() = qMax(s.height(), kBarHeight + 6);
         return s;
     }
@@ -1441,6 +1446,17 @@ public:
                     kGlyphSize, kGlyphSize);
         themedOcticon("git-branch", ink, kGlyphSize).paint(painter, glyph);
         painter->restore();
+
+        // The worktree glyph sits just left of the chip, in the chip's own
+        // "live" blue: the ring colour already carries this, but it only
+        // reads on hover-comparison, so a session with a checkout still on
+        // disk gets its own glyph instead of asking the ring colour to be
+        // remembered row to row.
+        if (live) {
+            const QColor liveColor(dark ? "#58a6ff" : "#0969da");
+            themedOcticon("worktree", liveColor, kGlyphSize)
+                .paint(painter, worktreeRect(option, index));
+        }
 
         // Only the branch glyph is boxed. Counts and branch-health glyphs sit
         // beside it directly on the row, matching the compact screenshot and
@@ -1582,6 +1598,15 @@ private:
     static int countWidth(const QStyleOptionViewItem &opt)
     {
         return QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+"));
+    }
+
+    // The worktree glyph's slot, immediately before the chip: the mirror image
+    // of conflictRect on the chip's other side.
+    static QRect worktreeRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    {
+        const QRect chip = buttonRect(opt, idx);
+        return QRect(chip.left() - kChipGap - kGlyphSize,
+                     chip.center().y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
     }
 
     // The conflict/behind glyph's own click target, immediately after the chip
