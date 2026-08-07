@@ -164,8 +164,12 @@ jobs:
           fi
           [ "$jobs" -lt 1 ] && jobs=1
           echo "Building with -j$jobs (memory budget: ${mem_mb}MB)"
+          # AUTOGEN_PARALLEL's AUTO default sizes each AUTOMOC driver's thread
+          # pool from the host's core count, which the sandbox cannot see; one
+          # such pool per -j slot exhausts the cgroup's task ceiling (#1586).
           cmake -S qt_client -B qt_client/build-release \
             -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF \
+            -DCMAKE_AUTOGEN_PARALLEL="$jobs" \
             -DFORKMESH_BUILD_COMMIT_OVERRIDE="$revision" \
             ${version:+-DFORKMESH_VERSION_OVERRIDE="$version"}
           cmake --build qt_client/build-release -j"$jobs"

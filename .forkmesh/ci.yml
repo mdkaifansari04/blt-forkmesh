@@ -58,7 +58,6 @@ jobs:
           export CCACHE_DIR="$ci_tmp/ccache"
           rm -rf "$ci_tmp"
           mkdir -p "$CCACHE_DIR"
-          cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON
 
           # Size -j from the sandbox's memory budget as well as its CPU quota.
           # The heaviest translation units here (MainWindow*.cpp) peak near
@@ -71,6 +70,14 @@ jobs:
           if [ "$jobs" -lt 1 ]; then jobs=1; fi
           if [ "$jobs" -gt "$cpus" ]; then jobs="$cpus"; fi
           echo "building with -j$jobs (${cpus} cpus, ${memory_mb} MiB budget)"
+
+          # AUTOGEN_PARALLEL defaults to AUTO, and AUTO means the *host's* core
+          # count: nothing in the sandbox can see the cgroup. Every AUTOMOC
+          # driver make starts then opens a host-sized thread pool, so a -j8
+          # build asked for eight of them at once and pthread_create failed
+          # against TasksMax with "Resource temporarily unavailable" (#1586).
+          # Pin the pools to the same budget the compiles are sized from.
+          cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON -DCMAKE_AUTOGEN_PARALLEL="$jobs"
 
           # `critical-tests` is defined next to the "critical" CTest label, so
           # it always covers exactly the binaries the runner is about to

@@ -24,7 +24,11 @@ struct ActionSandboxLimits {
     qint64 maxScopeMemoryBytes = 0;
     qint64 maxFileBytes = 1024LL * 1024 * 1024;
     qint64 maxWorkspaceBytes = 2LL * 1024 * 1024 * 1024;
-    int maxProcesses = 128;
+    // Tasks (processes *and* threads) the step's whole cgroup may hold
+    // (systemd TasksMax). 0 derives it from the CPU quota the same step is
+    // granted — see actionScopeTasksMax(). A flat ceiling is a ceiling that
+    // turns extra cores into pthread_create failures (adhoc #1586).
+    int maxProcesses = 0;
     int maxOpenFiles = 256;
     int maxCpuSeconds = 20 * 60;
     // A release step compiles the whole desktop client from scratch inside the
@@ -39,6 +43,11 @@ struct ActionSandboxLimits {
 // below the per-process address-space cap, and never more than half the host's
 // RAM so a second run and the node itself still fit beside it.
 qint64 actionScopeMemoryBytes(const ActionSandboxLimits &limits);
+
+// Tasks a sandboxed step's cgroup may hold, with the derive-from-CPU-quota
+// default (maxProcesses == 0) resolved. Threads count too, so this scales with
+// both the granted CPU quota and the host's core count, and stays bounded.
+int actionScopeTasksMax(const ActionSandboxLimits &limits);
 
 // CPU share a sandboxed step may use, as a systemd CPUQuota percentage.
 int actionCpuQuotaPercent();

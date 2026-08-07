@@ -16,6 +16,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 
 #include <cstdio>
@@ -603,6 +604,26 @@ int main(int argc, char **argv)
         check(actionScopeMemoryBytes(pinnedLimits) == 768LL * 1024 * 1024,
               "an explicitly configured memory budget overrides the "
               "CPU-derived one");
+
+        // The same argument applies to TasksMax, which counts threads: a step
+        // runs one tool per granted CPU and each tool sizes its own thread pool
+        // from the host's cores, because the quota is invisible inside the
+        // sandbox. The flat 128 killed the Qt build at -j8 with
+        // pthread_create's EAGAIN once make had six AUTOMOC drivers up at once
+        // (adhoc #1586).
+        const int derivedTasks = actionScopeTasksMax(productionLimits);
+        const int hostThreads = qMax(1, QThread::idealThreadCount());
+        check(derivedTasks >= grantedCpus * hostThreads,
+              "the sandbox task ceiling covers one host-sized thread pool per "
+              "job the CPU quota grants");
+        check(derivedTasks <= 4096,
+              "the sandbox task ceiling stays bounded against a runaway fork "
+              "loop");
+        ActionSandboxLimits pinnedTasks;
+        pinnedTasks.maxProcesses = 32;
+        check(actionScopeTasksMax(pinnedTasks) == 32,
+              "an explicitly configured task ceiling overrides the CPU-derived "
+              "one");
 
         // /usr/bin/awk, cc, c++ and friends are symlinks into
         // /etc/alternatives on Debian-family hosts. When that farm is outside
