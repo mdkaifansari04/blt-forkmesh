@@ -502,6 +502,31 @@ public:
     {
         return m_cloudLogMonitorRecent;
     }
+    // adhoc #1626: the viewer is a window of its own now, with an error chart
+    // over the stream and a Pause control. These drive it with no Wrangler tail
+    // behind it — a line arrives exactly as either tail would deliver it.
+    void testOpenCloudflareLogWindow() { buildCloudflareLogWindow(); }
+    void testCloudflareLogLine(const QString &line, bool isError)
+    {
+        recordCloudLogEvent(isError);
+        emit cloudLogLineReceived(line, isError);
+    }
+    void testSetCloudflareLogPaused(bool paused)
+    {
+        setCloudLogWindowPaused(paused);
+    }
+    bool testCloudflareLogPaused() const { return m_cloudLogWindowPaused; }
+    void testSetCloudflareLogErrorsOnly(bool on)
+    {
+        m_cloudLogWindowErrorsOnly = on;
+        refreshCloudLogTimeline();
+    }
+    QWidget *testCloudflareLogWindow() const;
+    QString testCloudflareLogText() const;
+    QString testCloudflareLogStatusText() const;
+    QString testCloudflareLogTimelineSummary() const;
+    int testCloudflareLogTimelineCount() const;
+    bool testCloudflareLogAtBottom() const;
     QRect testTopMessageRect() { return topMessageBubbleRect(); }
     int testTopMessageQueueDepth() const { return m_topMessageQueue.size(); }
     void testDismissTopMessage() { dismissTopMessage(); }
@@ -1941,6 +1966,29 @@ private:
     void consumeCloudLogMonitorBytes(const QByteArray &chunk);
     void handleCloudLogMonitorLine(const QString &line);
     void updateCloudLogMonitorTooltip();
+    // The Worker log viewer (adhoc #1626): a window of its own, the same shape
+    // as the app's full log screen — an error-activity rail over the stream,
+    // and a Pause control that stops the pane following the tail. Fed by
+    // whichever Wrangler tail is running: the debug bar's monitor, or the one
+    // the window starts and owns itself.
+    void buildCloudflareLogWindow();
+    void startCloudflareLogViewerTail(
+        const QString &token, const QString &workerDirectory,
+        const forkmesh::control::CloudflareBootstrapCommand &command);
+    void stopCloudflareLogViewerTail();
+    void readCloudflareLogViewerOutput();
+    bool cloudLogMonitorRunning() const;
+    bool cloudLogViewerRunning() const;
+    void appendCloudLogWindowLine(const QString &line, bool isError);
+    void recordCloudLogEvent(bool isError);
+    void refreshCloudLogTimeline();
+    void setCloudLogTimelineMinutes(int minutes);
+    void updateCloudLogTimelineSummary();
+    void updateCloudLogWindowNotice();
+    void updateCloudLogWindowStatus();
+    void setCloudLogWindowPaused(bool paused);
+    void onCloudLogWindowScrolled(int value);
+    void scrollCloudLogWindowToEnd();
     // The same log in a window of its own: everything retained, unfiltered.
     void showNetworkLogPopout();
 
@@ -6254,6 +6302,34 @@ private:
     int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
     int m_cloudLogMonitorEvents = 0;     // Worker events seen since then
     bool m_cloudLogMonitorStopping = false; // a deliberate stop, not a crash
+    // The Worker log window and the tail it owns when the Monitor box is off
+    // (adhoc #1626). Guarded pointers: the window is WA_DeleteOnClose, so these
+    // go null on their own when it is closed.
+    QPointer<QDialog> m_cloudLogWindow;
+    QPointer<QLabel> m_cloudLogWindowNotice;
+    QPointer<QLabel> m_cloudLogWindowStatus;
+    QPointer<QLabel> m_cloudLogWindowSummary;
+    QPointer<QPlainTextEdit> m_cloudLogWindowView;
+    QPointer<QPushButton> m_cloudLogWindowPauseButton;
+    QPointer<QPushButton> m_cloudLogWindowResetZoom;
+    QPointer<LogTimelineChart> m_cloudLogWindowChart;
+    QProcess *m_cloudLogViewerProcess = nullptr; // this window's own tail
+    QByteArray m_cloudLogViewerBuffer;   // partial tail record across reads
+    QString m_cloudLogViewerToken;       // redacts the stream; scrubbed on stop
+    bool m_cloudLogViewerStoredToken = false; // came from the deploy secret
+    int m_cloudLogViewerEvents = 0;
+    int m_cloudLogViewerErrors = 0;
+    QString m_cloudLogWindowState;          // "Monitoring", "Log stream ended"…
+    bool m_cloudLogWindowFromMonitor = false; // which tail last fed the pane
+    bool m_cloudLogWindowPaused = false;    // pane held still by the reader
+    bool m_cloudLogWindowScrolling = false; // our tail-follow, not their scroll
+    int m_cloudLogWindowHeld = 0;           // lines arrived while paused
+    bool m_cloudLogWindowErrorsOnly = true; // the chart's default rail
+    int m_cloudLogWindowRangeMinutes = 60;
+    // (timestamp, isError) per Worker event, for the window's activity chart.
+    // Kept whether or not the window is open: the monitor may have been running
+    // for hours before anyone opens the viewer, and that history is the point.
+    QVector<QPair<qint64, bool>> m_cloudLogTicks;
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
