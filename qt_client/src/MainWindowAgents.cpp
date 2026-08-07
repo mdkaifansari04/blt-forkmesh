@@ -34,7 +34,8 @@ namespace {
 
 QIcon agentDoneImageIcon(int sidePx)
 {
-    static const QString kAgentDoneImagePath =
+    static const QString kAgentDoneImageFile = QStringLiteral("paste-IxNUZi.png");
+    static const QString kLegacyAgentDoneImagePath =
         QStringLiteral("/home/f/.local/share/ForkMesh/ForkMesh/agent-images/"
                        "paste-IxNUZi.png");
     static QHash<int, QIcon> cache;
@@ -43,7 +44,9 @@ QIcon agentDoneImageIcon(int sidePx)
         return *it;
 
     QIcon icon;
-    const QPixmap source(kAgentDoneImagePath);
+    QPixmap source(AgentPromptImages::directory() + QLatin1Char('/') + kAgentDoneImageFile);
+    if (source.isNull())
+        source = QPixmap(kLegacyAgentDoneImagePath);
     if (!source.isNull())
         icon.addPixmap(roundedRectPixmap(source, side, 4.0));
     cache.insert(side, icon);
