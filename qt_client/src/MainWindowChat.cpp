@@ -13,6 +13,7 @@
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 #include "LogTimelineChart.h"
+#include "OfficeChannelMirror.h"
 #include "PrivateMirrorStore.h"
 #include "PublicMirrorRuntime.h"
 #include "RepoSecurity.h"
@@ -33,6 +34,7 @@
 #include <QFormLayout>
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
+#include <QHostAddress>
 #include <QInputDialog>
 #include <QNetworkInformation>
 #include <QPlainTextEdit>
@@ -2834,20 +2836,11 @@ QWidget *MainWindow::buildNetworkLogDock()
         openFullLogForCategory(category);
     };
     // The status dots to the right of the categories are the deployed Worker's
-    // own health checks, so clicking them opens the matching website page (adhoc
-    // #1559); the viewer that used to be a button on the Log page stays
-    // available on the dedicated Cloudflare tool button.
+    // own health checks, so clicking them opens the page that dot is about
+    // (adhoc #1559, #1602); the viewer that used to be a button on the Log page
+    // stays available on the dedicated Cloudflare tool button.
     m_logActivityLights->onWebsiteClicked = [this](const QString &statusId) {
-        QUrl url = catalogApiUrl();
-        if (!url.isValid() || url.host().isEmpty())
-            return;
-        if (statusId == QStringLiteral("desktop_status_page"))
-            url.setPath(QStringLiteral("/status"));
-        else
-            url.setPath(QStringLiteral("/"));
-        url.setQuery(QString());
-        url.setFragment(QString());
-        QDesktopServices::openUrl(url);
+        openWebsiteStatusTarget(statusId);
     };
     const QString stallTip = QStringLiteral(
         "Click to draft a fix-it prompt for recorded UI stalls; right-click "
@@ -3315,17 +3308,21 @@ struct DesktopEdgeProbe {
     const char *label;
     const char *marker;     // identity of the expected document
     const char *what;       // how the row names itself in a reason line
+    // The relay-reported system this check grades from the other side. Both
+    // verdicts share one dot (adhoc #1602) rather than repeating the same two
+    // subjects at the end of the row.
+    const char *mergesInto;
 };
 
 const QVector<DesktopEdgeProbe> &desktopEdgeProbes()
 {
     static const QVector<DesktopEdgeProbe> probes = {
         {"desktop_website", "/", "Website loaded from this desktop", "forkmesh",
-         "The site"},
+         "The site", "website"},
         // status.html carries this id on its heading; the homepage does not, so
         // a /status route quietly serving some other document still fails.
         {"desktop_status_page", "/status", "Status page loaded from this desktop",
-         "status-title", "The /status page"},
+         "status-title", "The /status page", "status_page"},
     };
     return probes;
 }
@@ -3388,6 +3385,62 @@ struct DesktopEdgeVerdict {
     QString status;
     QString reason;
 };
+
+// Severity of one verdict, used when the relay's own grade and this desktop's
+// grade for the same system are merged into a single dot. "unknown" ranks below
+// every real answer: nobody being able to look is not evidence of health, but
+// it must never overwrite a verdict somebody did manage to take.
+int websiteStatusSeverity(const QString &status)
+{
+    if (status == QLatin1String("down"))
+        return 3;
+    if (status == QLatin1String("degraded"))
+        return 2;
+    if (status == QLatin1String("operational"))
+        return 1;
+    return 0;
+}
+
+// The worse of two verdicts for the same system: a site that fails from either
+// side is not working, whatever the other side says.
+QString worseWebsiteStatus(const QString &left, const QString &right)
+{
+    return websiteStatusSeverity(right) > websiteStatusSeverity(left) ? right
+                                                                     : left;
+}
+
+// The public API answers on its own hostname (api.forkmesh.com in production),
+// so the API dot opens that host instead of the site's front page. Anything
+// that is not a plain multi-label domain — an IP literal, a bare "localhost",
+// a host that already is the API — is left exactly as it is.
+QString apiHostFor(const QString &host)
+{
+    if (host.startsWith(QLatin1String("api."), Qt::CaseInsensitive))
+        return host;
+    QString bare = host;
+    if (bare.startsWith(QLatin1String("www."), Qt::CaseInsensitive))
+        bare = bare.mid(4);
+    if (!bare.contains(QLatin1Char('.')) || !QHostAddress(bare).isNull())
+        return host;
+    return QStringLiteral("api.") + bare;
+}
+
+// The admin console answers on a secret path each deployment chooses (the
+// Worker's ADMIN_PATH), so it is deliberately never baked into this public
+// source. An operator can point their desktop straight at it with
+// FORKMESH_ADMIN_PATH; otherwise the relay hands a signed-in admin their own
+// URL (see MainWindow::openAdminErrorConsole).
+QString configuredAdminPath()
+{
+    QString path = qEnvironmentVariable("FORKMESH_ADMIN_PATH").trimmed();
+    if (path.isEmpty())
+        path = qEnvironmentVariable("ADMIN_PATH").trimmed();
+    while (path.startsWith(QLatin1Char('/')))
+        path.remove(0, 1);
+    while (path.endsWith(QLatin1Char('/')))
+        path.chop(1);
+    return path;
+}
 
 // Grade one desktop-side probe. Everything here is decided from the response
 // alone so the same rules can be replayed in tests without a network.
@@ -3535,14 +3588,15 @@ bool MainWindow::applyFooterWebsiteStatusPayload(const QJsonObject &payload)
 }
 
 // One dot row out of the two sources. The relay's own systems keep their
-// published order, and the desktop-measured edge rows are appended in their
-// declared order, so the locally-checked dots are always the last two.
+// published order, and each desktop-measured edge check folds into the relay
+// row for the same subject (adhoc #1602): "Web here" and "Status here" were the
+// site and the /status page all over again, so one dot now carries both
+// verdicts — the worse of the two, with each side named in the tooltip.
 void MainWindow::publishFooterWebsiteStatuses()
 {
     QList<LogActivityLights::WebsiteStatus> rows;
     rows.reserve(m_footerRelayStatuses.size() + m_footerDesktopStatuses.size());
-    for (const FooterStatusRow &source :
-         m_footerRelayStatuses + m_footerDesktopStatuses) {
+    for (const FooterStatusRow &source : m_footerRelayStatuses) {
         LogActivityLights::WebsiteStatus row;
         row.id = source.id;
         row.label = source.label;
@@ -3550,7 +3604,41 @@ void MainWindow::publishFooterWebsiteStatuses()
         row.reason = source.reason;
         row.minuteTs = source.minuteTs;
         row.local = source.local;
+        // One fetch grades every relay-reported row, so they all blink together.
+        row.checking = m_footerWebsiteStatusInFlight;
         rows.append(row);
+    }
+    for (const FooterStatusRow &source : m_footerDesktopStatuses) {
+        const DesktopEdgeProbe *probe = desktopEdgeProbe(source.id);
+        const QString target =
+            probe ? QString::fromLatin1(probe->mergesInto) : QString();
+        int merged = -1;
+        for (int i = 0; i < rows.size() && merged < 0; ++i) {
+            if (!target.isEmpty() && rows.at(i).id == target)
+                merged = i;
+        }
+        const bool checking = m_desktopProbesInFlight.contains(source.id);
+        if (merged < 0) {
+            // Nothing to merge into: the relay's own list has not arrived yet,
+            // or it no longer publishes that system. Keep the local check as
+            // its own dot rather than dropping the only verdict there is.
+            LogActivityLights::WebsiteStatus row;
+            row.id = source.id;
+            row.label = source.label;
+            row.status = source.status;
+            row.reason = source.reason;
+            row.minuteTs = source.minuteTs;
+            row.local = true;
+            row.checking = checking;
+            rows.append(row);
+            continue;
+        }
+        LogActivityLights::WebsiteStatus &row = rows[merged];
+        row.status = worseWebsiteStatus(row.status, source.status);
+        row.localStatus = source.status;
+        row.localReason = source.reason;
+        row.localCheckedTs = source.minuteTs;
+        row.checking = row.checking || checking;
     }
     if (rows.isEmpty())
         return;
@@ -3559,6 +3647,122 @@ void MainWindow::publishFooterWebsiteStatuses()
     if (m_logActivityHeader)
         m_logActivityHeader->setWebsiteStatuses(rows);
     positionGlobalFooterOverlays();
+}
+
+// Where one footer status dot leads. Each dot is about a specific surface, so
+// clicking it opens that surface rather than dropping every click on the site's
+// front page (adhoc #1602). An invalid URL means "this one cannot be built from
+// here": only the Worker-errors dot, whose admin console lives at a path this
+// desktop has to be told or ask for — see openAdminErrorConsole.
+QUrl MainWindow::websiteStatusTargetUrl(const QString &statusId) const
+{
+    QUrl url = catalogApiUrl();
+    if (!url.isValid() || url.host().isEmpty())
+        return QUrl();
+    url.setPath(QStringLiteral("/"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    if (statusId == QLatin1String("status_page") ||
+        statusId == QLatin1String("desktop_status_page")) {
+        url.setPath(QStringLiteral("/status"));
+    } else if (statusId == QLatin1String("api")) {
+        url.setHost(apiHostFor(url.host()));
+    } else if (statusId == QLatin1String("flagship_repository")) {
+        url.setPath(QStringLiteral("/forkmesh/forkmesh"));
+    } else if (statusId == QLatin1String("errors")) {
+        const QString adminPath = configuredAdminPath();
+        if (adminPath.isEmpty())
+            return QUrl();
+        url.setPath(QLatin1Char('/') + adminPath);
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("table"),
+                           QStringLiteral("error_log"));
+        url.setQuery(query);
+    }
+    return url;
+}
+
+void MainWindow::openWebsiteStatusTarget(const QString &statusId)
+{
+    if (statusId == QLatin1String("errors")) {
+        openAdminErrorConsole();
+        return;
+    }
+    const QUrl url = websiteStatusTargetUrl(statusId);
+    if (url.isValid() && !url.host().isEmpty())
+        QDesktopServices::openUrl(url);
+}
+
+// The Worker-errors dot opens the admin error log itself. Its console sits
+// behind a secret, deployment-configured path, so unless this desktop was told
+// that path outright it asks the relay for the signed-in admin's own URL. An
+// account that is not an admin gets the public /status page instead — the only
+// error view it could open anyway.
+void MainWindow::openAdminErrorConsole()
+{
+    const QUrl configured = websiteStatusTargetUrl(QStringLiteral("errors"));
+    if (configured.isValid() && !configured.host().isEmpty()) {
+        QDesktopServices::openUrl(configured);
+        return;
+    }
+    QUrl base = catalogApiUrl();
+    if (!base.isValid() || base.host().isEmpty())
+        return;
+    base.setQuery(QString());
+    base.setFragment(QString());
+    const auto openStatusPage = [this, base] {
+        QUrl fallback = base;
+        fallback.setPath(QStringLiteral("/status"));
+        QDesktopServices::openUrl(fallback);
+    };
+    const QString token = m_accountSessionToken.trimmed();
+    if (!m_networkAccess || token.isEmpty()) {
+        openStatusPage();
+        return;
+    }
+    if (m_adminConsoleUrlInFlight)
+        return;
+
+    QUrl url = base;
+    url.setPath(QStringLiteral("/api/accounts/admin-session"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    request.setRawHeader("authorization",
+                         QByteArrayLiteral("Bearer ") + token.toUtf8());
+    request.setTransferTimeout(8000);
+    m_adminConsoleUrlInFlight = true;
+    QNetworkReply *reply =
+        m_networkAccess->post(request, QByteArrayLiteral("{}"));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, base, openStatusPage] {
+        m_adminConsoleUrlInFlight = false;
+        const QByteArray body = reply->readAll();
+        const bool transportOk = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        QString adminUrl;
+        if (transportOk) {
+            const QJsonObject payload =
+                QJsonDocument::fromJson(body).object();
+            if (payload.value(QStringLiteral("ok")).toBool())
+                adminUrl =
+                    payload.value(QStringLiteral("adminUrl")).toString().trimmed();
+        }
+        // The relay answers with a path plus the ?admin= identity it wants
+        // carried along, so keep its query and add the error log table to it.
+        if (!adminUrl.startsWith(QLatin1Char('/'))) {
+            openStatusPage();
+            return;
+        }
+        const QUrl relative(adminUrl);
+        QUrl target = base;
+        target.setPath(relative.path());
+        QUrlQuery query(relative.query());
+        query.removeAllQueryItems(QStringLiteral("table"));
+        query.addQueryItem(QStringLiteral("table"), QStringLiteral("error_log"));
+        target.setQuery(query);
+        QDesktopServices::openUrl(target);
+    });
 }
 
 void MainWindow::refreshFooterWebsiteStatus()
@@ -3582,6 +3786,8 @@ void MainWindow::refreshFooterWebsiteStatus()
     request.setRawHeader("accept", "application/json");
     request.setTransferTimeout(8000);
     m_footerWebsiteStatusInFlight = true;
+    // Repaint the row so its dots blink for as long as this read is out.
+    publishFooterWebsiteStatuses();
     QNetworkReply *reply = m_networkAccess->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         m_footerWebsiteStatusInFlight = false;
@@ -3594,6 +3800,8 @@ void MainWindow::refreshFooterWebsiteStatus()
             // This desktop never got an answer at all (DNS/timeout/refused):
             // that says nothing about the relay, so keep showing the last
             // good minute rather than paint a false outage from a local miss.
+            // The row still repaints, to end the blink and restart the ring.
+            publishFooterWebsiteStatuses();
             return;
         }
         QJsonParseError error;
@@ -3616,8 +3824,12 @@ void MainWindow::refreshFooterWebsiteStatus()
 // ongoing outage of the status endpoint itself.
 void MainWindow::applyFooterWebsiteStatusFailure(int httpStatus)
 {
-    if (m_footerRelayStatuses.isEmpty())
+    if (m_footerRelayStatuses.isEmpty()) {
+        // Nothing of the relay's to mark stale, but the row still repaints so
+        // a finished read stops blinking.
+        publishFooterWebsiteStatuses();
         return;
+    }
     const QString reason =
         httpStatus > 0
             ? QStringLiteral(
@@ -3673,6 +3885,8 @@ void MainWindow::probeDesktopWebsite(const QString &id)
     request.setRawHeader("range", "bytes=0-8191");
     request.setTransferTimeout(8000);
     m_desktopProbesInFlight.insert(id);
+    // Blink this row's dot for as long as the check is out.
+    publishFooterWebsiteStatuses();
     QNetworkReply *reply = m_networkAccess->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, id] {
         m_desktopProbesInFlight.remove(id);
@@ -11555,6 +11769,12 @@ void MainWindow::showChatView()
     showSection(2);
     if (!unread.isEmpty())
         switchConversation(unread);
+    // Nothing polls the office channel list any more (its messages arrive on
+    // each room's socket), so a channel created since launch would otherwise be
+    // missing from the sidebar. Opening chat is the user action that has to
+    // show it — and it re-lists once, not on a beat.
+    if (m_officeChannelMirror)
+        m_officeChannelMirror->refresh();
 }
 
 QString MainWindow::mostRecentUnreadConversation() const
@@ -22428,6 +22648,17 @@ bool MainWindow::buildVultrMirrorNodeInstallCommand(
                 .filePath(QStringLiteral("forkmesh-mirror-node"));
         if (QFileInfo(sibling).isExecutable())
             mirrorBinary = sibling;
+    }
+    if (mirrorBinary.isEmpty()) {
+        // Desktop-launched GUIs often run without ~/.local/bin in PATH, and a
+        // working-tree build's sibling directory holds no companion — check the
+        // installer-owned location the desktop installer and update flow write.
+        const QString installed =
+            QFileInfo(runningClientExecutable())
+                .dir()
+                .filePath(QStringLiteral("forkmesh-mirror-node"));
+        if (QFileInfo(installed).isExecutable())
+            mirrorBinary = installed;
     }
     if (mirrorBinary.isEmpty()) {
         const QString sourceBinary =
