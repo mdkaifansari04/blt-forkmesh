@@ -1655,16 +1655,19 @@ def request_bypasses_repository_metadata_cache(request):
 
 
 async def purge_catalog_related_caches():
-    # One concurrent sweep instead of four sequential awaits — this runs on
-    # every catalog write, inside the request's critical path.
-    await asyncio.gather(*(
-        edge_cache_delete(key)
-        for key in (
+    # Sequential on purpose. This runs on every catalog publish (each mirror
+    # node, every 30s), and gathering the deletes was the wedge site of the
+    # 2026-08-05/06 outage: the Pyodide runtime re-entered a concurrently
+    # scheduled task mid-`caches.delete` ("Cannot enter into task ...",
+    # issue #555), permanently poisoning the isolate. Four sequential cache
+    # deletes cost single-digit ms; a wedged isolate 500s until recycled.
+    for key in (
             CATALOG_CACHE_KEY,
             NETWORK_STATS_CACHE_KEY,
             NETWORK_LEADERBOARDS_CACHE_KEY,
             NETWORK_OVERVIEW_CACHE_KEY,
-        )), return_exceptions=True)
+    ):
+        await edge_cache_delete(key)
 
 
 # Versioned so neither the fail-closed visibility contract nor signed-endpoint
@@ -4010,11 +4013,12 @@ LEADERBOARD_LIMIT = 10  # rows returned per board
 
 async def _record_contributor(env, author, kind):
     # Bump a contributor's running activity tally. kind is one of
-    # "issues"/"pulls"/"commits". Called as signed issue/PR/commit events are
+    # "issues"/"pulls"/"commits"/"discussions". Called as signed issue/PR/commit
+    # (and discussion) events are
     # accepted into the inbox; best-effort so a tally failure never blocks the
     # submission. author is the public contributor name.
     name = clean_string(author or "", MAX_NODE_NAME)
-    if not name or kind not in ("issues", "pulls", "commits"):
+    if not name or kind not in ("issues", "pulls", "commits", "discussions"):
         return
     try:
         author_bi = await blind_index(env, name.lower())
@@ -10477,6 +10481,7 @@ SCHEMA_ALTER_STATEMENTS = [
     # Operator-settable flag granting a user access to the /outreach console
     # without a roster row (migration 0040). Mirrors is_admin.
     "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE contributor_activity ADD COLUMN discussions INTEGER NOT NULL DEFAULT 0",
     # Early local builds created membership rows before their encrypted display
     # payload was added. Existing blind-index grants remain valid; new writes
     # always provide this ciphertext column.
@@ -13086,6 +13091,19 @@ async def catalog_handler(env, request):
                     record.get("changedFiles", []))
             except Exception:
                 pass
+            # The same moved head is what the mirror fleet waits on: push a
+            # payload-free "commits" event over the node event channel so
+            # mirrors fetch now instead of on a sync poll (the no-polling
+            # policy, docs/operations/polling-elimination.md). Only the
+            # source's own publish notifies — a mirror's "remote-clone"
+            # record echoes the same head after ITS fetch, and notifying on
+            # that would re-wake the fleet in a loop.
+            if record.get("source") == "local-node":
+                try:
+                    await notify_repo_mirrors(
+                        env, owner, record["name"], "commits")
+                except Exception:
+                    pass
         payload = {
             "ok": True,
             "repository": record,
@@ -15573,7 +15591,23 @@ def _account_public_last_email(rec):
     }
 
 
-def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
+def _contribution_tally(value):
+    """Coerce one contributor_activity column into a non-negative count.
+
+    The directory LEFT JOINs that table, so an account that has never opened
+    an issue or pushed a commit has no row at all and every tally column
+    arrives as SQL NULL — i.e. Python None, which int() rejects. Swallowing
+    that here keeps a contributor-less account from 500-ing the whole
+    directory read (and with it chat's roster and the World campfire).
+    """
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket="",
+                              issues=0, pulls=0, commits=0, discussions=0):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     solana = (rec.get("solana") or "").strip()
     return {
@@ -15587,6 +15621,12 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
+        # Lifetime contribution tallies, one per kind — the columns the Qt
+        # admin Users page shows next to each account.
+        "issues": _contribution_tally(issues),
+        "pulls": _contribution_tally(pulls),
+        "commits": _contribution_tally(commits),
+        "discussions": _contribution_tally(discussions),
         # Payout addresses are public profile data, but never pass through a
         # malformed value from a stored record.
         "solana": solana if SOLANA_RE.match(solana) else "",
@@ -15650,8 +15690,10 @@ async def _account_users_directory(env, request):
     seen = set()
     rows = await d1_all(
         env,
-        "SELECT u.data,u.user_bi,a.total_active_ms FROM users u "
+        "SELECT u.data,u.user_bi,a.total_active_ms,c.issues,c.pulls,"
+        "c.commits,c.discussions FROM users u "
         "LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "
+        "LEFT JOIN contributor_activity c ON c.author_bi=u.user_bi "
         "ORDER BY u.username COLLATE NOCASE LIMIT ?",
         1000,
     )
@@ -15670,7 +15712,12 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(
             rec, row.get("total_active_ms", 0),
-            activity_buckets.get(row.get("user_bi"), "")))
+            activity_buckets.get(row.get("user_bi"), ""),
+            issues=row.get("issues", 0),
+            pulls=row.get("pulls", 0),
+            commits=row.get("commits", 0),
+            discussions=row.get("discussions", 0),
+        ))
 
     # The campfire seats members in this same array order, one bench per
     # account for the session — so this is sorted by join date (oldest
@@ -31534,6 +31581,7 @@ async def discussions_handler(env, request, owner, repo):
                 env, request, owner, repo, "discussion", event.get("type"),
                 number, item.get("titleIfNew", ""), event.get("body", ""),
                 event.get("authorName", "")))
+        await _record_contributor(env, event.get("author", ""), "discussions")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":

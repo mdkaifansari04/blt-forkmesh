@@ -16,6 +16,7 @@
 #include "ActionRunner.h"
 #include "BackgroundActivity.h"
 #include "BackoffNetworkAccessManager.h"
+#include "FileTreeSupport.h"
 #include "GuiPump.h"
 #include "ClaudeAgentScript.h"
 #include "ClaudeIdeBridge.h"
@@ -3142,9 +3143,12 @@ const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
 // migration: older builds stored a plain bool here; new builds read/write
 // kActionAlertModeSetting ("all" / "failed" / "none") instead.
 const QString kActionAlertSetting = QStringLiteral("actions/runAlert");
-// Which action runs raise a desktop alert: "all" (start + every non-stopped
-// finish), "failed" (only failures), or "none" (never). Mirrors GitHub's
-// per-account Actions notification choice.
+// Default-off, separate toggle for start-run popups.
+const QString kActionAlertStartedSetting =
+    QStringLiteral("actions/runAlertStarted");
+// Which action runs raise a desktop alert on completion: "all" (every
+// non-stopped finish), "failed" (only failures), or "none" (never). Mirrors
+// GitHub's per-account Actions notification choice.
 const QString kActionAlertModeSetting = QStringLiteral("actions/runAlertMode");
 
 // Resolve the effective action-alert mode, migrating the legacy bool: an
@@ -3855,6 +3859,18 @@ inline bool agentIsCodexProvider(const QString &provider)
     return provider == kCodexProvider;
 }
 
+// How the two CLI-backed providers are named to the user — the same words the
+// composer's agent dropdown and the transcript's hand-off notices use. Anything
+// else (an API provider, an id from a newer build) reads back as itself.
+inline QString cliProviderLabel(const QString &provider)
+{
+    if (agentIsCodexProvider(provider))
+        return QStringLiteral("Codex");
+    if (provider == QLatin1String("claude-code"))
+        return QStringLiteral("Claude Code");
+    return provider;
+}
+
 inline bool agentUsesOpenAiKey(const QString &provider)
 {
     return provider == QLatin1String("openai");
@@ -4510,8 +4526,8 @@ inline QString codexChatGptModelId(const QString &model)
     const QString trimmed = model.trimmed();
     if (trimmed.isEmpty())
         return QStringLiteral("gpt-5.5");
-    if (trimmed == QLatin1String("gpt-5.3-codex-spark"))
-        return QStringLiteral("gpt-5.3-spark");
+    if (trimmed == QLatin1String("gpt-5.3-spark"))
+        return QStringLiteral("gpt-5.3-codex-spark");
     if (trimmed == QLatin1String("gpt-5.5-codex"))
         return QStringLiteral("gpt-5.5");
     if (trimmed == QLatin1String("gpt-5.4"))
@@ -4532,6 +4548,7 @@ inline void populateCodexModelCombo(QComboBox *combo)
     combo->setEditable(false);
     combo->setInsertPolicy(QComboBox::NoInsert);
     combo->setProperty("allowAutoModel", false);
+    QSet<QString> seen;
     const QJsonArray live = QJsonDocument::fromJson(
                                 QSettings().value(kCodexModelsCacheSetting).toByteArray())
                                 .array();
@@ -4542,8 +4559,11 @@ inline void populateCodexModelCombo(QComboBox *combo)
         QString id = model.value(QStringLiteral("model")).toString().trimmed();
         if (id.isEmpty())
             id = model.value(QStringLiteral("id")).toString().trimmed();
-        if (!id.isEmpty())
+        id = codexChatGptModelId(id);
+        if (!id.isEmpty() && !seen.contains(id)) {
             combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
+            seen.insert(id);
+        }
     }
     if (combo->count() == 0) {
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
@@ -4642,9 +4662,10 @@ inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
     if (!combo || models.isEmpty())
         return;
     QSignalBlocker blocker(combo);
-    const QVariant selected = combo->currentData();
+    const QString selected = codexChatGptModelId(combo->currentData().toString());
     combo->clear();
     QString defaultId;
+    QSet<QString> seen;
     for (const QJsonValue &value : models) {
         const QJsonObject model = value.toObject();
         if (model.value(QStringLiteral("hidden")).toBool())
@@ -4652,10 +4673,12 @@ inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
         QString id = model.value(QStringLiteral("model")).toString().trimmed();
         if (id.isEmpty())
             id = model.value(QStringLiteral("id")).toString().trimmed();
-        if (!id.isEmpty()) {
+        id = codexChatGptModelId(id);
+        if (!id.isEmpty() && !seen.contains(id)) {
             combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
             if (model.value(QStringLiteral("isDefault")).toBool())
                 defaultId = id;
+            seen.insert(id);
         }
     }
     const int restored = combo->findData(selected);
@@ -4776,6 +4799,39 @@ inline int agentModelPowerRank(const QString &model, const QString &label)
     return 500 + int(version * 100.0 + 0.5) + tier;
 }
 
+// Which rows the composer's agent/model dropdown leaves out (adhoc #1557). The
+// menu lists every model each installed provider offers, which is more choice
+// than most people want in a picker they open dozens of times a day; this is the
+// set they have switched off in Settings → Agents.
+//
+// Stored as the *hidden* set rather than the shown one so a model that appears
+// after this list was last edited — a live /v1/models fetch, a new Codex catalog
+// entry — shows up by default instead of being silently suppressed.
+const QString kComposerHiddenModelsSetting =
+    QStringLiteral("agents/composerHiddenModels");
+
+// Stable identity for one composer row. Provider-only agents (OpenAI API, Claude
+// API, Manual) carry no model of their own, so their key is just the provider.
+inline QString composerModelKey(const QString &provider, const QString &model)
+{
+    return provider.trimmed().toLower() + QLatin1Char('\x1f') +
+           model.trimmed().toLower();
+}
+
+inline QSet<QString> hiddenComposerModels()
+{
+    const QStringList saved =
+        QSettings().value(kComposerHiddenModelsSetting).toStringList();
+    return QSet<QString>(saved.cbegin(), saved.cend());
+}
+
+inline void saveHiddenComposerModels(const QSet<QString> &hidden)
+{
+    QStringList keys(hidden.cbegin(), hidden.cend());
+    keys.sort(); // stable on disk, so a no-op edit doesn't rewrite the file
+    QSettings().setValue(kComposerHiddenModelsSetting, keys);
+}
+
 inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
@@ -4811,7 +4867,38 @@ inline QString agentModelLabel(const QString &model)
         {QStringLiteral("gpt-5.5"), QStringLiteral("GPT-5.5")},
         {QStringLiteral("gpt-5.5-codex"), QStringLiteral("GPT-5.5 Codex")},
     };
-    return kLabels.value(model.trimmed(), model.trimmed());
+    const QString id = model.trimmed();
+    if (const QString mapped = kLabels.value(id); !mapped.isEmpty())
+        return mapped;
+    // New Claude ids ship before this map learns them ("claude-opus-5" showed
+    // as its raw id in the status pill). Prettify "claude-<family>-<n>-<n>…"
+    // instead: capitalise the family word and dot-join the numeric version,
+    // dropping a trailing build-date stamp — "claude-opus-5" → "Opus 5",
+    // "claude-haiku-4-5-20251001" → "Haiku 4.5". Ids whose family slot isn't a
+    // word (the legacy "claude-3-5-sonnet" order) stay raw rather than mangled.
+    if (id.startsWith(QLatin1String("claude-"))) {
+        const QStringList parts =
+            id.mid(7).split(QLatin1Char('-'), Qt::SkipEmptyParts);
+        const auto numeric = [](const QString &p) {
+            return std::all_of(p.cbegin(), p.cend(),
+                               [](QChar c) { return c.isDigit(); });
+        };
+        if (!parts.isEmpty() && !numeric(parts.first())) {
+            QString family = parts.first();
+            family[0] = family.at(0).toUpper();
+            QStringList version;
+            for (int i = 1; i < parts.size(); ++i) {
+                if (!numeric(parts.at(i)) || parts.at(i).size() >= 8)
+                    break;
+                version << parts.at(i);
+            }
+            return version.isEmpty()
+                       ? family
+                       : family + QLatin1Char(' ') +
+                             version.join(QLatin1Char('.'));
+        }
+    }
+    return id;
 }
 
 // The running-session status pill has no room for "Opus 4.8" alongside its
@@ -5260,6 +5347,81 @@ inline int ramCappedBuildJobs()
     if (totalRam > 0)
         jobs = qBound(1, int(totalRam / (3LL * 1024 * 1024 * 1024)), jobs);
     return jobs;
+}
+
+// The scratch directory a rebuild points the toolchain's TMPDIR at. GCC and
+// Clang stream every translation unit's assembly through TMPDIR, so a -j<N>
+// build of qt_client has hundreds of megabytes of .s files live there at once.
+// On most desktop Linux installs /tmp is a RAM-backed tmpfs that ForkMesh also
+// shares with agent worktrees and mirror materializations, so a rebuild with
+// gigabytes free on the build disk still dies mid-compile with "No space left
+// on device" (adhoc #1563). Keeping the scratch inside the build tree puts it
+// on the one filesystem the build already has to fit on.
+inline QString buildScratchDir(const QString &buildDir)
+{
+    return buildDir + QStringLiteral("/.forkmesh-tmp");
+}
+
+// Free bytes on the filesystem holding `path`, walking up to the nearest
+// existing ancestor because the build directory may not exist yet. Returns -1
+// when the volume cannot be read, which callers must treat as "unknown" rather
+// than "full" so an unreadable mount never blocks an update.
+inline qint64 freeBytesForPath(const QString &path)
+{
+    QString probe = QDir::cleanPath(path);
+    while (!probe.isEmpty() && !QFileInfo::exists(probe)) {
+        const QString parent = QFileInfo(probe).absolutePath();
+        if (parent == probe || parent.isEmpty())
+            break;
+        probe = parent;
+    }
+    const QStorageInfo volume(probe);
+    if (!volume.isValid() || !volume.isReady())
+        return -1;
+    return volume.bytesAvailable();
+}
+
+// How much free space a rebuild into `buildDir` must have before it is worth
+// starting. A build tree from scratch is ~2 GB of objects plus the linked
+// binary and the assembler scratch above; an incremental rebuild overwrites
+// those objects in place, so it only needs headroom for the scratch and the
+// new binary. Getting this wrong in the strict direction would block a
+// perfectly viable update on a tight disk, so an existing tree is judged by
+// the smaller figure.
+inline qint64 rebuildFreeBytesRequired(const QString &buildDir)
+{
+    const bool incremental =
+        QFileInfo::exists(buildDir + QStringLiteral("/CMakeFiles/forkmesh.dir"));
+    return incremental ? 1024LL * 1024 * 1024 : 3LL * 1024 * 1024 * 1024;
+}
+
+// The one-line summary shown on the status label when an update step exits
+// non-zero. The raw output tail used to be chopped at a fixed 300 characters,
+// which routinely landed mid-word ("Update failed: vice") and told the user
+// nothing. Prefer the first real diagnostic — the tail of a parallel make is
+// just "gmake: *** [Makefile:136: all] Error 2" — and special-case a full disk,
+// which is the one failure with an obvious remedy.
+inline QString updateFailureSummary(const QString &output)
+{
+    if (output.contains(QLatin1String("No space left on device")))
+        return QStringLiteral(
+            "the disk filled up during the build. Free space on the volume "
+            "holding the build directory, then start the update again — "
+            "nothing was replaced.");
+    const QStringList lines = output.split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+        if (trimmed.contains(QLatin1String("error:")) ||
+            trimmed.startsWith(QLatin1String("fatal:")))
+            return trimmed.left(300);
+    }
+    // Nothing recognisable: fall back to the tail, but drop the partial first
+    // line so the label never starts mid-word.
+    QString tail = output.trimmed().right(300);
+    const int newline = tail.indexOf(QLatin1Char('\n'));
+    if (newline >= 0 && newline < tail.size() - 1)
+        tail = tail.mid(newline + 1);
+    return tail.trimmed();
 }
 
 inline QStringList cmakeConfigureArgs(const QString &clientDir, const QString &buildDir,
@@ -5937,8 +6099,9 @@ protected:
         }
         const QString target =
             rel.isEmpty() ? m_basePath : QDir(m_basePath).filePath(rel);
-        // File slices reveal their containing directory (a file itself can't
-        // be opened as a folder).
+        // Only offer the menu for something that is still on disk. File slices
+        // resolve to their containing directory — revealInDesktopFileManager
+        // applies that same rule when the action actually fires.
         const QFileInfo targetInfo(target);
         const QString dir = targetInfo.isDir()
                                 ? target
@@ -5952,7 +6115,7 @@ protected:
         QAction *open = menu.addAction(
             QStringLiteral("Open \"%1\" in file explorer").arg(label));
         connect(open, &QAction::triggered, this,
-                [dir] { QDesktopServices::openUrl(QUrl::fromLocalFile(dir)); });
+                [target] { revealInDesktopFileManager(target); });
         menu.exec(event->globalPos());
     }
 
@@ -7426,6 +7589,10 @@ public:
         QString status;
         QString reason;
         qint64 minuteTs = 0;
+        // Measured by this desktop (the Cloudflare edge probes) rather than
+        // graded by the relay, which changes what the timestamp means: a
+        // local check time, not the relay's newest completed sample minute.
+        bool local = false;
     };
 
     explicit LogActivityLights(Presentation presentation = Compact,
@@ -7535,6 +7702,28 @@ public:
     }
 
     int lightCount() const { return categoryCount(); }
+
+    // The category taxonomy this strip paints, published so the Log page's
+    // quick-filter chips can wear the same glyph, in the same order, for the
+    // same badge (adhoc #1559) instead of keeping a second list in step by hand.
+    static QStringList badges()
+    {
+        QStringList names;
+        names.reserve(categoryCount());
+        for (int i = 0; i < categoryCount(); ++i)
+            names << QString::fromLatin1(categories()[i].badge);
+        return names;
+    }
+
+    static QString iconForBadge(const QString &badge)
+    {
+        for (int i = 0; i < categoryCount(); ++i) {
+            if (badge == QLatin1String(categories()[i].badge))
+                return QString::fromLatin1(categories()[i].icon);
+        }
+        return QStringLiteral("info");
+    }
+
     quint64 countFor(const QString &badge) const
     {
         const int lane = categoryIndex(badge);
@@ -7559,6 +7748,7 @@ public:
     bool isDebug() const { return m_presentation == Debug; }
 
     std::function<void(const QString &category)> onCategoryClicked;
+    std::function<void(const QString &statusId)> onWebsiteClicked;
     std::function<void()> onStallClicked;
     std::function<void()> onStallContextMenu;
     std::function<void()> onClicked;
@@ -7620,7 +7810,7 @@ protected:
                                  Qt::AlignLeft | Qt::AlignTop, count);
 
                 QFont labelFont = painter.font();
-                labelFont.setPixelSize(5);
+                labelFont.setPixelSize(6);
                 labelFont.setBold(false);
                 painter.setFont(labelFont);
                 painter.setPen(unseen);
@@ -7643,7 +7833,7 @@ protected:
                 painter.drawEllipse(dotRect);
                 if (m_presentation == Debug) {
                     QFont labelFont = painter.font();
-                    labelFont.setPixelSize(6);
+                    labelFont.setPixelSize(7);
                     labelFont.setBold(false);
                     painter.setFont(labelFont);
                     painter.setPen(unseen);
@@ -7681,13 +7871,19 @@ protected:
                 QString tip = QStringLiteral("%1 — %2")
                                   .arg(status.label, status.status);
                 if (status.minuteTs > 0) {
-                    tip += QStringLiteral("\nLast completed minute: %1")
-                               .arg(QDateTime::fromMSecsSinceEpoch(status.minuteTs)
+                    tip += QStringLiteral("\n%1: %2")
+                               .arg(status.local
+                                        ? QStringLiteral("Checked from this desktop")
+                                        : QStringLiteral("Last completed minute"),
+                                    QDateTime::fromMSecsSinceEpoch(status.minuteTs)
                                         .toLocalTime()
                                         .toString(QStringLiteral("yyyy-MM-dd HH:mm")));
                 }
                 if (!status.reason.isEmpty())
                     tip += QLatin1Char('\n') + status.reason;
+                if (onWebsiteClicked)
+                    tip += QStringLiteral(
+                        "\nClick to open the related website page.");
                 QToolTip::showText(help->globalPos(), tip, this);
                 return true;
             }
@@ -7699,9 +7895,19 @@ protected:
     {
         if (event->button() == Qt::LeftButton && rect().contains(event->pos())) {
             const int lane = categoryAt(event->pos());
-            if (lane == stallCategoryIndex() && onStallClicked)
+            if (lane == stallCategoryIndex() && onStallClicked) {
                 onStallClicked();
-            else if (m_presentation != Header) {
+            } else if (lane < 0) {
+                // Outside the category glyphs. The website dots are the relay's
+                // own health, so they open related pages in the website (adhoc
+                // #1559); nothing else in the strip claims this area. Reading
+                // categories()[-1] is what this branch used to do.
+                const int website = websiteStatusAt(event->pos());
+                if (website >= 0 && onWebsiteClicked) {
+                    onWebsiteClicked(m_websiteStatuses.at(website).id);
+                } else if (onClicked)
+                    onClicked();
+            } else if (m_presentation != Header) {
                 if (onCategoryClicked)
                     onCategoryClicked(categories()[lane].badge);
                 else if (onClicked)
@@ -7748,6 +7954,8 @@ private:
             {"PIN", "#79c0ff", "shield-check"},
             {"GIT", "#58a6ff", "git-commit"},
             {"BGTASK", "#8b949e", "gear"},
+            {"BGBLOCK", "#f0883e", "stop"},
+            {"BGNOTE", "#6e7681", "note"},
             {"PUBLISH", "#58a6ff", "upload"},
             {"PULL", "#3fb950", "git-pull-request"},
             {"MERGE", "#a371f7", "git-merge"},
@@ -7765,13 +7973,20 @@ private:
             {"ERROR", "#f85149", "x"},
             {"INFO", "#6e7681", "info"},
         };
+        static_assert(sizeof(values) / sizeof(values[0]) == kCategoryCount,
+                      "kCategoryCount must match the taxonomy above");
         return values;
     }
 
-    static constexpr int categoryCount() { return 30; }
-    static constexpr int stallCategoryIndex() { return 27; }
-    static constexpr int kCompactColumns = 10;
+    // One entry per row of categories() above; the per-lane arrays below and the
+    // compact grid are both sized from it.
+    static constexpr int kCategoryCount = 32;
+    static constexpr int categoryCount() { return kCategoryCount; }
     static constexpr int kCompactRows = 3;
+    // Enough columns to hold the whole taxonomy in those rows, so adding a
+    // category widens the grid instead of dropping the overflow off the bottom.
+    static constexpr int kCompactColumns =
+        (kCategoryCount + kCompactRows - 1) / kCompactRows;
     static constexpr int kCompactCell = 16;
     static constexpr int kCompactPadding = 7;
     static constexpr int kHeaderHeight = 32;
@@ -7787,6 +8002,15 @@ private:
                 return i;
         }
         return categoryCount() - 1; // unknown future categories pulse INFO
+    }
+
+    // Looked up rather than hard-coded: STALL's lane shifts every time a
+    // category is inserted above it, and a stale index would silently hand the
+    // stall click/tooltip to whatever category took its place.
+    static int stallCategoryIndex()
+    {
+        static const int index = categoryIndex(QStringLiteral("STALL"));
+        return index;
     }
 
     int compactCategoryWidth() const
@@ -7984,6 +8208,9 @@ private:
             {QStringLiteral("git_hosting"), QStringLiteral("Git host")},
             {QStringLiteral("realtime"), QStringLiteral("Realtime")},
             {QStringLiteral("durable_objects"), QStringLiteral("Durables")},
+            // Measured from this desktop, not reported by the relay.
+            {QStringLiteral("desktop_website"), QStringLiteral("Web here")},
+            {QStringLiteral("desktop_status_page"), QStringLiteral("Status here")},
         };
         const auto known = labels.constFind(status.id);
         if (known != labels.cend())
@@ -8020,8 +8247,9 @@ private:
             return;
         }
         setToolTip(QStringLiteral(
-            "30 live-log categories%1 — hover an icon for its count; click for full "
+            "%1 live-log categories%2 — hover an icon for its count; click for full "
             "Log page filtered to this category")
+                       .arg(categoryCount())
                        .arg(m_websiteStatuses.isEmpty()
                                 ? QString()
                                 : QStringLiteral(" and %1 website status results")
@@ -8029,10 +8257,10 @@ private:
     }
 
     Presentation m_presentation = Compact;
-    quint64 m_counts[30] = {};
-    bool m_blinkVisible[30] = {};
-    bool m_blinking[30] = {};
-    int m_generation[30] = {};
+    quint64 m_counts[kCategoryCount] = {};
+    bool m_blinkVisible[kCategoryCount] = {};
+    bool m_blinking[kCategoryCount] = {};
+    int m_generation[kCategoryCount] = {};
     bool m_expanded = false;
     QList<WebsiteStatus> m_websiteStatuses;
     QString m_stallToolTip;
@@ -10615,6 +10843,57 @@ inline QString logPromptAnchorLine(const QString &href)
         href.mid(kLogPromptAnchorPrefix.size()).toLatin1());
 }
 
+// "Where did this line come from?" (adhoc #1587): the trailing
+// "qt_client/src/Foo.cpp:42" every entry carries is an anchor, and clicking it
+// opens that file in the Files explorer at that line. Line first, so the path
+// runs to the end of the href and needs no delimiter of its own; it is left
+// unencoded because forkmesh::logSourceSuffix() only ever stores paths made of
+// characters that are safe both here and in the href attribute.
+const QString kLogSourceAnchorPrefix = QStringLiteral("fmlogsrc:");
+
+inline QString logSourceAnchorHref(const QString &relativePath, int line)
+{
+    return kLogSourceAnchorPrefix + QString::number(line) + QLatin1Char(':') +
+           relativePath;
+}
+
+// Decodes such an href. False (leaving the outputs untouched) for any other
+// link, including the http(s) ones inside a message body.
+inline bool logSourceAnchorTarget(const QString &href, QString *relativePath,
+                                  int *line)
+{
+    if (!href.startsWith(kLogSourceAnchorPrefix))
+        return false;
+    const QString rest = href.mid(kLogSourceAnchorPrefix.size());
+    const int colon = rest.indexOf(QLatin1Char(':'));
+    if (colon <= 0)
+        return false;
+    bool numeric = false;
+    const int parsed = rest.left(colon).toInt(&numeric);
+    if (!numeric)
+        return false;
+    if (line)
+        *line = parsed;
+    if (relativePath)
+        *relativePath = rest.mid(colon + 1);
+    return true;
+}
+
+// The dim "Foo.cpp:42" link closing a rendered log entry. Empty when the line
+// carries no location (history written before entries recorded one).
+inline QString logSourceAnchorHtml(const QString &relativePath, int line,
+                                   bool dark)
+{
+    if (relativePath.isEmpty() || line <= 0)
+        return QString();
+    return QStringLiteral(
+               "&nbsp;&nbsp;<a href='%1' style='color:%2; "
+               "text-decoration:none'>%3</a>")
+        .arg(logSourceAnchorHref(relativePath, line),
+             dark ? QStringLiteral("#6e7681") : QStringLiteral("#8c959f"),
+             forkmesh::logSourceLabel(relativePath, line).toHtmlEscaped());
+}
+
 inline QString octiconForBackgroundTaskWord(const QString &word)
 {
     static const QHash<QString, QString> icons{
@@ -10655,6 +10934,29 @@ inline QString backgroundTaskWordFromLogMessage(const QString &storedLine)
     return line.left(split < 0 ? line.size() : split).toLower();
 }
 
+// A blank the exact size of an icon. Every log entry reserves the same icon
+// slots whether or not it fills them (adhoc #1559), so timestamps, badges and
+// message text all start in the same column instead of stepping left and right
+// with whichever glyphs a line happened to earn.
+inline QString logIconSpacerTag(QTextEdit *view, int size)
+{
+    if (!view)
+        return QString();
+    static QHash<int, QPixmap> blanks;
+    if (!blanks.contains(size)) {
+        QPixmap blank(size, size);
+        blank.fill(Qt::transparent);
+        blanks.insert(size, blank);
+    }
+    const QString resource = QStringLiteral("logspacer://%1").arg(size);
+    view->document()->addResource(QTextDocument::ImageResource, QUrl(resource),
+                                  blanks.value(size));
+    return QStringLiteral("<img src='%1' width='%2' height='%2' "
+                          "style='vertical-align:middle'>&nbsp;")
+        .arg(resource)
+        .arg(size);
+}
+
 inline QString logBgtaskIconTag(QTextEdit *view, const QString &storedLine)
 {
     if (!view)
@@ -10664,7 +10966,7 @@ inline QString logBgtaskIconTag(QTextEdit *view, const QString &storedLine)
         message = storedLine.mid(21);
     const QString word = backgroundTaskWordFromLogMessage(message);
     if (word.isEmpty())
-        return QString();
+        return logIconSpacerTag(view, 11);
     const QString icon = octiconForBackgroundTaskWord(word);
     const QString resource = QStringLiteral("logbgtask://") + word + QLatin1String("-")
                              + icon;

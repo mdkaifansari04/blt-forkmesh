@@ -415,9 +415,7 @@ def test_forkmesh_actions_run_bounded_critical_suites():
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in CI_WORKFLOW_TEXT
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in DEPLOY_WORKFLOW_TEXT
     assert "cmake -S qt_client -B qt_client/build-ci" in CI_WORKFLOW_TEXT
-    assert "--target forkmesh-control-tests forkmesh-private-mirror-tests" in (
-        CI_WORKFLOW_TEXT
-    )
+    assert "--target critical-tests" in CI_WORKFLOW_TEXT
     assert "python3 tools/run_critical_tests.py qt" in CI_WORKFLOW_TEXT
 
 

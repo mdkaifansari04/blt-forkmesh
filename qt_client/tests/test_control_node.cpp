@@ -269,6 +269,39 @@ int main(int argc, char **argv)
               QStringList{QStringLiteral("jett")},
           "invalid direct mirror owner aliases fail closed");
 
+    // A relay-only node leaves the direct gateway settings empty on purpose:
+    // background refreshes ask this before rebuilding, so "not configured"
+    // has to be reported as such instead of looking like a broken endpoint.
+    const QString routerKey = base64Url(QByteArray(32, 'R'));
+    check(forkmesh::control::isValidMirrorRouterPublicKey(routerKey),
+          "a 32-byte base64url router key is accepted");
+    check(!forkmesh::control::isValidMirrorRouterPublicKey(
+              base64Url(QByteArray(31, 'R'))),
+          "a short router key is rejected");
+    check(!forkmesh::control::isValidMirrorRouterPublicKey(
+              QString(routerKey).replace(0, 1, QLatin1Char('+'))),
+          "a non-base64url router key is rejected");
+    check(forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("mirror1"),
+              QStringLiteral("https://mirror1.example.com"), routerKey),
+          "a complete direct gateway configuration is recognized");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QString(), QString(), QString()),
+          "a relay-only node reports no direct gateway configuration");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("mirror1"), QString(), routerKey),
+          "an unusable mirror hostname leaves the gateway unconfigured");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("-mirror1"),
+              QStringLiteral("https://mirror1.example.com"), routerKey),
+          "a node name that is not a DNS label leaves the gateway "
+          "unconfigured");
+    check(!forkmesh::control::directMirrorGatewayIsConfigured(
+              QStringLiteral("mirror1"),
+              QStringLiteral("https://mirror1.example.com"),
+              QStringLiteral("not-a-router-key")),
+          "a malformed router key leaves the gateway unconfigured");
+
     const QString publicKey = base64Url(QByteArray(32, 'K'));
     const QByteArray payload =
         QJsonDocument(QJsonObject{

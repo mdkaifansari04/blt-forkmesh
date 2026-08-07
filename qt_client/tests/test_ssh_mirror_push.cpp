@@ -1,4 +1,4 @@
-#include "SshMirrorPushOutcome.h"
+#include "MirrorPushOutcome.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -17,9 +17,10 @@
 // healthy fan-out as "SSH mirror push of forkmesh/forkmesh to
 // forkmesh-mirror10-sync failed: … a pushed branch tip is behind its remote
 // counterpart", every five-second safety pass, and told a release push that a
-// mirror had failed — while main had in fact reached the whole fleet. Only a
-// push that reports no ref status at all (unreachable gateway, refused key) or
-// a rejection that is not divergence (a hook denial) is a real failure.
+// mirror had failed — while main had in fact reached the whole fleet.
+//
+// Only the rejections that converge on their own are tolerated. A hook denial,
+// a clobbered tag, or a gateway that never answered stay hard failures.
 
 namespace {
 
@@ -31,6 +32,15 @@ void check(bool condition, const char *message)
         return;
     std::fprintf(stderr, "FAIL: %s\n", message);
     ++failures;
+}
+
+// The rule pushToSshMirrorRemotes applies to a finished push. Mirrored here so
+// the tests exercise the decision the fan-out actually makes, not just the
+// classifier in isolation: the exit code alone is meaningless without the
+// per-ref status, and the status alone cannot see an unreachable gateway.
+bool pushFailed(const MirrorPushOutcome &outcome, int exitCode)
+{
+    return exitCode != 0 && !outcome.onlyHeldBack;
 }
 
 bool git(const QString &path, const QStringList &arguments,
@@ -85,32 +95,31 @@ void testPartialRejectionIsNotAFailure()
         " \trefs/heads/main:refs/heads/main\t349f2db..b0f0298\n"
         "!\trefs/heads/pulls:refs/heads/pulls\t[rejected] (non-fast-forward)\n"
         "Done\n");
-    const SshMirrorPushOutcome outcome =
-        SshMirrorPush::parsePorcelain(output, 1);
-    check(!outcome.failed(), "a divergent branch alone is not a push failure");
-    check(!outcome.fatal, "the gateway answered, so nothing is fatal");
-    check(outcome.advancedRefs == 1, "main still advanced on the gateway");
-    check(outcome.updated(), "an advanced ref counts as an update");
-    check(outcome.divergedRefs == QStringList{QStringLiteral("refs/heads/pulls")},
-          "the divergent ref is named by its remote-side name");
+    const MirrorPushOutcome outcome = classifyMirrorPush(output);
+    check(!pushFailed(outcome, 1),
+          "a divergent branch alone is not a push failure");
+    check(outcome.onlyHeldBack, "the only rejection was rewind protection");
+    check(outcome.updated == QStringList{QStringLiteral("main")},
+          "main still advanced on the gateway");
+    check(outcome.heldBack == QStringList{QStringLiteral("pulls")},
+          "the held-back ref is named by its short branch name");
 }
 
 // "fetch first" is the same condition seen from a checkout with no
 // remote-tracking ref for the gateway — the mirror-node fan-out's usual case.
-void testFetchFirstAndStaleInfoAreDivergence()
+void testFetchFirstAndStaleInfoAreHeldBack()
 {
     const QString output = QStringLiteral(
         "To ssh://gateway/repo.git\n"
         "*\trefs/heads/topic:refs/heads/topic\t[new branch]\n"
         "!\trefs/heads/pulls:refs/heads/pulls\t[rejected] (fetch first)\n"
         "!\trefs/heads/wip:refs/heads/wip\t[rejected] (stale info)\n"
-        "!\trefs/tags/v1.0:refs/tags/v1.0\t[rejected] (already exists)\n"
         "Done\n");
-    const SshMirrorPushOutcome outcome =
-        SshMirrorPush::parsePorcelain(output, 1);
-    check(!outcome.failed(), "every rejection here is benign divergence");
-    check(outcome.advancedRefs == 1, "the new branch was created");
-    check(outcome.divergedRefs.size() == 3, "three refs were left alone");
+    const MirrorPushOutcome outcome = classifyMirrorPush(output);
+    check(!pushFailed(outcome, 1), "both rejections resolve themselves");
+    check(outcome.updated == QStringList{QStringLiteral("topic")},
+          "the new branch was created");
+    check(outcome.heldBack.size() == 2, "two refs were left alone");
 }
 
 // A pre-receive hook refusing the push is a genuine failure: nothing will
@@ -120,25 +129,37 @@ void testHookDenialStaysAFailure()
     const QString output = QStringLiteral(
         "To ssh://gateway/repo.git\n"
         " \trefs/heads/main:refs/heads/main\t349f2db..b0f0298\n"
-        "!\trefs/heads/main:refs/heads/main\t[remote rejected] "
+        "!\trefs/heads/topic:refs/heads/topic\t[remote rejected] "
         "(pre-receive hook declined)\n"
         "Done\n");
-    const SshMirrorPushOutcome outcome =
-        SshMirrorPush::parsePorcelain(output, 1);
-    check(outcome.failed(), "a hook denial is a real failure");
-    check(outcome.rejectedRefs.size() == 1, "the denied ref is reported");
-    check(outcome.divergedRefs.isEmpty(), "a hook denial is not divergence");
+    const MirrorPushOutcome outcome = classifyMirrorPush(output);
+    check(pushFailed(outcome, 1), "a hook denial is a real failure");
+    check(!outcome.onlyHeldBack, "a hook denial is not rewind protection");
+    check(outcome.heldBack.isEmpty(), "nothing was merely held back");
+}
+
+// A tag the gateway already carries at a different commit will never converge
+// on its own — unlike a branch, nothing here fast-forwards later.
+void testClobberedTagStaysAFailure()
+{
+    const QString output = QStringLiteral(
+        "To ssh://gateway/repo.git\n"
+        "!\trefs/tags/v1.0:refs/tags/v1.0\t[rejected] (already exists)\n"
+        "Done\n");
+    const MirrorPushOutcome outcome = classifyMirrorPush(output);
+    check(pushFailed(outcome, 1), "a clobbered tag is a real failure");
+    check(outcome.heldBack.isEmpty(), "a tag clash is not rewind protection");
 }
 
 // An unreachable gateway or a refused key never reaches ref negotiation: no
 // status lines at all, so the failure must stay loud.
-void testUnreachableGatewayIsFatal()
+void testUnreachableGatewayIsAFailure()
 {
-    const SshMirrorPushOutcome outcome =
-        SshMirrorPush::parsePorcelain(QString(), 128);
-    check(outcome.fatal, "no ref status with a non-zero exit is fatal");
-    check(outcome.failed(), "a fatal push counts as a failed remote");
-    check(!outcome.updated(), "nothing moved");
+    const MirrorPushOutcome outcome = classifyMirrorPush(QString());
+    check(pushFailed(outcome, 128),
+          "no ref status with a non-zero exit is a failure");
+    check(!outcome.onlyHeldBack, "nothing was held back; nothing was reached");
+    check(outcome.updated.isEmpty(), "nothing moved");
 }
 
 // A clean, fully up-to-date push must stay silent: this runs on the
@@ -150,39 +171,23 @@ void testUpToDatePushIsSilent()
         "=\trefs/heads/main:refs/heads/main\t[up to date]\n"
         "=\trefs/tags/v1.0:refs/tags/v1.0\t[up to date]\n"
         "Done\n");
-    const SshMirrorPushOutcome outcome =
-        SshMirrorPush::parsePorcelain(output, 0);
-    check(!outcome.failed(), "an up-to-date push is not a failure");
-    check(!outcome.updated(), "nothing moved, so nothing is logged");
-    check(outcome.divergedRefs.isEmpty(), "up to date is not divergence");
+    const MirrorPushOutcome outcome = classifyMirrorPush(output);
+    check(!pushFailed(outcome, 0), "an up-to-date push is not a failure");
+    check(outcome.updated.isEmpty(), "nothing moved, so nothing is logged");
+    check(outcome.heldBack.isEmpty(), "up to date is not rewind protection");
 }
 
-// "To <url>" and "Done" carry no tab-delimited ref status and must never be
-// mistaken for one — the pre-fix line scan counted "To …" as an update.
+// "To <url>" and "Done" carry no ref status and must never be mistaken for
+// one — an early line scan counted "To …" as an update.
 void testFramingLinesAreIgnored()
 {
     const QString output = QStringLiteral(
-        "To ssh://gateway/repo.git\r\n"
-        "Done\r\n");
-    const SshMirrorPushOutcome outcome =
-        SshMirrorPush::parsePorcelain(output, 0);
-    check(outcome.advancedRefs == 0, "framing lines are not ref updates");
-    check(!outcome.failed(), "a clean exit with no refs is not a failure");
-}
-
-void testRefSummaryTruncates()
-{
-    const QStringList many{QStringLiteral("a"), QStringLiteral("b"),
-                           QStringLiteral("c"), QStringLiteral("d"),
-                           QStringLiteral("e"), QStringLiteral("f")};
-    check(SshMirrorPush::summariseRefs(many) ==
-              QStringLiteral("a, b, c, d and 2 more"),
-          "a long divergence list is truncated for the log");
-    check(SshMirrorPush::summariseRefs({QStringLiteral("refs/heads/x")}) ==
-              QStringLiteral("refs/heads/x"),
-          "a short list is named in full");
-    check(SshMirrorPush::summariseRefs({}).isEmpty(),
-          "no divergence summarises to nothing");
+        "To ssh://gateway/repo.git\n"
+        "Done\n");
+    const MirrorPushOutcome outcome = classifyMirrorPush(output);
+    check(outcome.updated.isEmpty(), "framing lines are not ref updates");
+    check(!pushFailed(outcome, 0),
+          "a clean exit with no refs is not a failure");
 }
 
 // End to end against real git: reproduce the reported outage — the gateway
@@ -248,12 +253,14 @@ void testAgainstRealGit()
     check(ran, "the fan-out push ran");
     check(exitCode != 0, "git reports the partial rejection as a failure");
 
-    const SshMirrorPushOutcome outcome =
-        SshMirrorPush::parsePorcelain(QString::fromUtf8(out), exitCode);
-    check(!outcome.failed(),
+    const MirrorPushOutcome outcome =
+        classifyMirrorPush(QString::fromUtf8(out));
+    check(!pushFailed(outcome, exitCode),
           "a gateway that is merely ahead on pulls is not a failed mirror");
-    check(outcome.updated(), "main advanced despite the rejected branch");
-    check(outcome.divergedRefs.size() == 1, "only pulls was left alone");
+    check(outcome.updated.contains(QStringLiteral("main")),
+          "main advanced despite the rejected branch");
+    check(outcome.heldBack == QStringList{QStringLiteral("pulls")},
+          "only pulls was left alone");
 
     // The point of tolerating the rejection: main really did reach the mirror.
     QByteArray sourceMain;
@@ -273,12 +280,12 @@ int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
     testPartialRejectionIsNotAFailure();
-    testFetchFirstAndStaleInfoAreDivergence();
+    testFetchFirstAndStaleInfoAreHeldBack();
     testHookDenialStaysAFailure();
-    testUnreachableGatewayIsFatal();
+    testClobberedTagStaysAFailure();
+    testUnreachableGatewayIsAFailure();
     testUpToDatePushIsSilent();
     testFramingLinesAreIgnored();
-    testRefSummaryTruncates();
     testAgainstRealGit();
     if (failures == 0)
         std::fprintf(stderr, "ssh mirror push tests passed\n");

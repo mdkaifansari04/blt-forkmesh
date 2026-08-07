@@ -6,7 +6,15 @@ main = "src_build/entry.py"
 compatibility_flags = [ "python_workers" ]
 # Keep the Python/Pyodide runtime on Cloudflare's current snapshot. The older
 # 2026-06-14 snapshot could re-enter one scheduled wrapper task while another
-# request wrapper was executing ("Cannot enter into task ...").
+# request wrapper was executing ("Cannot enter into task ..."); the 2026-07-23
+# snapshot still did the same between concurrent REQUEST wrappers (2026-08-05/06:
+# poisoned isolates answered 30-90% of traffic with 1101 until recycled — issue
+# #555). The 2026-08-05 snapshot cut is UNDEPLOYABLE: upload validation dies in
+# Pyodide's own bootstrap ("Dynamic require of \"fs\" is not supported", code
+# 10021) on both wrangler 4.42.1 and 4.119.0 — that is why 1eb2027b9 was
+# reverted within minutes. 2026-08-04 deliberately sits one day earlier so we
+# ride the newest snapshot cut that still boots; retry 2026-08-05+ once
+# Cloudflare fixes the bootstrap regression.
 compatibility_date = "2026-07-23"
 
 # Runs automatically before every deploy: applies the D1 schema (idempotent)

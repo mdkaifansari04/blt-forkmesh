@@ -327,9 +327,10 @@ void CodexAppServerSession::setTurnOptions(const QString &model,
                                            const QString &mode,
                                            const QString &effort)
 {
-    m_model = model.trimmed();
-    if (!m_model.isEmpty())
-        m_effectiveModel = m_model;
+    if (const QString trimmed = model.trimmed(); !trimmed.isEmpty()) {
+        m_model = trimmed;
+        m_effectiveModel = trimmed;
+    }
     m_mode = mode;
     m_effort = effort.trimmed();
 }

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.16 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.18 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -158,6 +158,7 @@ set(FORKMESH_MAIN_WINDOW_SOURCES
     src/MainWindowChat.cpp
     src/MainWindowTasks.cpp
     src/MainWindowNotes.cpp
+    src/MainWindowFiles.cpp
     src/MainWindowIssues.cpp
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp
@@ -187,6 +188,8 @@ set(FORKMESH_APP_SOURCES
     src/CrashHandler.cpp
     src/PlatformLogFilter.h
     src/PlatformLogFilter.cpp
+    src/LogSource.h
+    src/LogSource.cpp
     src/SingleInstance.h
     src/SingleInstance.cpp
     src/StartupSplash.h
@@ -213,7 +216,7 @@ set(FORKMESH_APP_SOURCES
     src/PublicMirrorRuntime.cpp
     src/UpstreamCheckoutSync.h
     src/UpstreamCheckoutSync.cpp
-    src/SshMirrorPushOutcome.h
+    src/MirrorPushOutcome.h
     src/CoveStore.h
     src/CoveStore.cpp
     src/ChatHistoryLimits.h
@@ -711,6 +714,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ActionStore.cpp
         src/ActionRunner.h
         src/ActionRunner.cpp
+        src/SystemStats.h
+        src/SystemStats.cpp
     )
     target_include_directories(forkmesh-action-security-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -789,7 +794,7 @@ if(FORKMESH_BUILD_TESTS)
     # hook denial still reads as a failure), against real local git repos.
     qt_add_executable(forkmesh-ssh-mirror-push-tests
         tests/test_ssh_mirror_push.cpp
-        src/SshMirrorPushOutcome.h
+        src/MirrorPushOutcome.h
     )
     target_include_directories(forkmesh-ssh-mirror-push-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -987,8 +992,8 @@ if(FORKMESH_BUILD_TESTS)
     # perf-tests each recompile every app source, so building them implicitly
     # tripled the cost of a plain `cmake --build build` (what run.sh and the
     # in-app quick-update do). They still build on demand — `--target check`
-    # below depends on all of them, run.sh test and ci.yml name their targets
-    # explicitly, and the release/deploy builds configure with
+    # below depends on all of them, run.sh test and ci.yml build the
+    # `critical-tests` aggregate, and the release/deploy builds configure with
     # FORKMESH_BUILD_TESTS=OFF anyway.
     set_target_properties(
         forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
@@ -1050,11 +1055,23 @@ if(FORKMESH_BUILD_TESTS)
     # The default developer/CI suite stays intentionally small: deployment
     # trust boundaries, private/public mirror encryption, and the agent
     # transport. The remaining targets are available for focused changes.
-    set_tests_properties(
+    set(FORKMESH_CRITICAL_TESTS
         forkmesh-control-tests forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests forkmesh-codex-tests
-        forkmesh-vm-runtime-tests forkmesh-mirror-fleet-window-tests
+        forkmesh-vm-runtime-tests forkmesh-mirror-fleet-window-tests)
+    set_tests_properties(${FORKMESH_CRITICAL_TESTS}
         PROPERTIES LABELS "critical" TIMEOUT 20)
+    # The binaries those test names execute. Not the same list: the mirror
+    # fleet suite is a second, flag-selected run of forkmesh-window-tests.
+    # Every critical test target is EXCLUDE_FROM_ALL, so ctest reports a bare
+    # "***Not Run" when one was never built -- promoting a suite to critical
+    # without teaching ci.yml to build it is silent until the run fails. This
+    # aggregate is what ci.yml builds, so the two can no longer drift apart.
+    set(FORKMESH_CRITICAL_TEST_TARGETS
+        forkmesh-control-tests forkmesh-private-mirror-tests
+        forkmesh-public-mirror-tests forkmesh-codex-tests
+        forkmesh-vm-runtime-tests forkmesh-window-tests)
+    add_custom_target(critical-tests DEPENDS ${FORKMESH_CRITICAL_TEST_TARGETS})
     # The e2e loop drives real git subprocesses and needs the stub agent's path.
     set_tests_properties(forkmesh-e2e PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;FORKMESH_E2E_STUB_AGENT=$<TARGET_FILE:forkmesh-e2e-stub-agent>")

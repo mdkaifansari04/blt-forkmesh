@@ -1392,6 +1392,13 @@ int main(int argc, char *argv[])
           "poll backoff blocks a retry before the base delay elapses");
     check(pollBackoff.ready(pollKey, 1125),
           "poll backoff clears once the base delay (+jitter span) elapses");
+    // What's left of the delay is readable, so a caller can say "try again in
+    // ~1s" instead of only "not yet".
+    check(pollBackoff.msUntilReady(pollKey, 0) >= 1000
+              && pollBackoff.msUntilReady(pollKey, 0) <= 1125,
+          "the remaining backoff is reported in milliseconds");
+    check(pollBackoff.msUntilReady(pollKey, 1125) == 0,
+          "a channel that is ready reports no remaining backoff");
     pollBackoff.noteFailure(pollKey, 0, 1000, 8000); // 2nd failure: ~2000ms
     check(!pollBackoff.ready(pollKey, 1999),
           "a second consecutive failure at least doubles the backoff");
@@ -1419,6 +1426,7 @@ int main(int argc, char *argv[])
     {
         StubBackoffNetworkAccessManager manager;
         const QString base = QStringLiteral("http://relay.test");
+        bool lastSuppressed = false;
         const auto runRequest = [&](const QString &path) {
             QNetworkReply *reply = manager.get(QNetworkRequest(QUrl(base + path)));
             bool done = false;
@@ -1428,6 +1436,8 @@ int main(int argc, char *argv[])
             while (!done && timer.elapsed() < 3000)
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
             const QString err = reply->errorString();
+            lastSuppressed =
+                BackoffNetworkAccessManager::isBackoffSuppressed(reply);
             reply->deleteLater();
             return err;
         };
@@ -1443,11 +1453,22 @@ int main(int argc, char *argv[])
               "a second /api/ request during cooldown never reaches the network handoff");
         check(suppressedErr.contains(QStringLiteral("rate-limited")),
               "the suppressed reply reports a rate-limited error");
+        // The reply carries no HTTP status (it never left the machine), so a
+        // call site that wants to say "the relay is busy" rather than show a
+        // dialog reading "(HTTP 0)" has to recognise it without the error text.
+        check(lastSuppressed,
+              "a reply the cooldown answered locally is marked as such");
+        check(manager.hostCooldownRemainingMs(QStringLiteral("relay.test")) > 0,
+              "the cooldown reports how long it still has to run");
+        check(manager.hostCooldownRemainingMs(QStringLiteral("other.test")) == 0,
+              "a host that never failed has no cooldown left to report");
 
         manager.seenPaths.clear();
         runRequest(QStringLiteral("/static/app.js"));
         check(!manager.seenPaths.isEmpty(),
               "non-/api/ paths bypass the backoff gate even during cooldown");
+        check(!lastSuppressed,
+              "a reply that did reach the network is not marked as suppressed");
 
         manager.setFirewallEnabled(true);
         manager.seenPaths.clear();
@@ -7590,7 +7611,10 @@ int main(int argc, char *argv[])
         forkmesh::installPlatformLogFilter(); // chains to captureMessages
 
         QList<QPair<QtMsgType, QString>> sunk;
-        const auto record = [&sunk](QtMsgType type, const QString &message) {
+        // The sink also receives the emitting file and line (adhoc #1587); this
+        // suite only cares which messages reach it.
+        const auto record = [&sunk](QtMsgType type, const QString &message,
+                                    const QString &, int) {
             sunk.append({type, message});
         };
 
@@ -7606,7 +7630,8 @@ int main(int argc, char *argv[])
 
         // A sink that logs would otherwise re-enter itself forever.
         forkmesh::setAppLogSink(
-            [&sunk](QtMsgType type, const QString &message) {
+            [&sunk](QtMsgType type, const QString &message, const QString &,
+                    int) {
                 sunk.append({type, message});
                 if (!message.startsWith(QLatin1String("re-entrant")))
                     qWarning("re-entrant sink line");

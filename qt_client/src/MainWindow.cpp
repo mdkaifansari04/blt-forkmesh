@@ -40,6 +40,7 @@ QString networkRequestEventFor(const QUrl &url)
         {"/mirrors", "mirror sync"},
         {"/api/repo/", "repo fetch"},
         {"/api/version", "version check"},
+        {"/api/metrics", "traffic metrics"},
         {"/api/network", "network stats"},
         {"/api/security", "security report"},
         {"/api/forkbot", "forkbot chat"},
@@ -284,6 +285,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                     !QSettings()
                          .value(kVerboseNetworkLogSetting, false)
                          .toBool())
+                    return;
+                // Favicon fetches (adhoc #190/#436) are decorative background
+                // enrichment, not app traffic the user asked about, and plenty of
+                // hosts (e.g. mastodon.social) 404 on /favicon.ico — logging that
+                // dumps the site's full 404 HTML body into the log as a scary
+                // "ERR 404" line for a failure the UI already handles quietly via
+                // m_faviconMissing. /favicon.ico is only ever requested by the
+                // favicon-fetch helpers, so the path alone identifies these.
+                if (reply->url().path() == QStringLiteral("/favicon.ico"))
                     return;
                 static const char *const verbs[] = {"HEAD",   "GET", "PUT",
                                                      "POST",   "DELETE",
@@ -590,16 +600,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // Source-of-truth nodes pick up issues/PRs/comments/agent-prompts filed by
     // other nodes through the relay's event push: a minimal frame on the
     // per-owner node event socket (NodeEventSocket -> ForkMeshNodes DO)
-    // triggers one consolidated GET /api/sync (see performRelaySync). This
-    // timer is only the slow safety net for dropped events and reconnect gaps
-    // — it used to be a 60s poll of four endpoints per owned repo. It relaxes
-    // to 15 minutes while the event socket is connected (startNodeEventSocket)
-    // and returns to 5 minutes when the push channel drops. First pass shortly
-    // after launch covers anything queued while the app was closed.
-    m_inboxPollTimer = new QTimer(this);
-    connect(m_inboxPollTimer, &QTimer::timeout, this, &MainWindow::performRelaySync);
-    m_inboxPollTimer->start(5 * 60 * 1000);
-    logStartup(QStringLiteral("  timer armed: relay inbox safety sync every 300000ms"));
+    // triggers one consolidated GET /api/sync (see performRelaySync). There is
+    // deliberately NO fallback poll behind the socket (the no-polling policy,
+    // docs/operations/polling-elimination.md): the socket reconnects on its
+    // own with bounded backoff, and connectedChanged fires one catch-up sync
+    // per (re)connect that drains anything queued while the channel was down.
+    // The one-shot below covers whatever queued while the app was closed.
 #ifndef FORKMESH_WINDOW_TESTS
     QTimer::singleShot(20000, this, [this] {
         forkmesh::StartupTraceStep step(
@@ -665,6 +671,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // independent of whether the websocket supplied a fresh latency sample.
     connect(m_relayLatencyTimer, &QTimer::timeout, this,
             &MainWindow::refreshFooterWebsiteStatus);
+    // …and on the same tick, the two dots the relay cannot grade for itself:
+    // this desktop loads the site and the /status page over the real public
+    // hostname, so a Cloudflare edge failure in front of the Worker is visible
+    // here rather than hidden behind a green self-report (adhoc #1564).
+    connect(m_relayLatencyTimer, &QTimer::timeout, this,
+            &MainWindow::refreshDesktopWebsiteProbes);
     m_relayLatencyTimer->start(60 * 1000);
     logStartup(QStringLiteral("  timer armed: relay latency and uptime every 60000ms"));
 #ifndef FORKMESH_WINDOW_TESTS

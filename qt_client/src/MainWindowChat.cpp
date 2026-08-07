@@ -29,6 +29,7 @@
 #include <QDateTimeEdit>
 #include <QElapsedTimer>
 #include <QFontDatabase>
+#include <QGridLayout>
 #include <QFormLayout>
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
@@ -812,14 +813,25 @@ void MainWindow::selectAgentAccount(const QString &provider,
         return;
 
     const bool codex = agentIsCodexProvider(provider);
+    // The "ran out" flags travel with the account too (issue #346 tracks them per
+    // provider). Leaving them behind made the account just switched to inherit
+    // the exhausted one's "usage limit reached" — on the very screen the user is
+    // looking at while switching away from a limit, and on a login with usage to
+    // spare. An account with no flag of its own reads as not exhausted, which is
+    // the truth until its own run reports otherwise.
     const QStringList globals = codex
         ? QStringList{kCodexUsage5hPctSetting, kCodexUsageWeekPctSetting,
                       kCodexUsage5hResetSetting, kCodexUsageWeekResetSetting,
-                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting}
+                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting,
+                      kCodexUsage5hExhaustedSetting,
+                      kCodexUsageWeekExhaustedSetting}
         : QStringList{kClaudeUsage5hPctSetting, kClaudeUsageWeekPctSetting,
                       kClaudeUsageFablePctSetting, kClaudeUsage5hResetSetting,
                       kClaudeUsageWeekResetSetting, kClaudeUsageFableResetSetting,
-                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting};
+                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting,
+                      kClaudeUsage5hExhaustedSetting,
+                      kClaudeUsageWeekExhaustedSetting,
+                      kClaudeUsageFableExhaustedSetting};
     QSettings settings;
     const QString oldId = activeAgentAccount(provider).id;
     // Preserve the current account's last provider reading before replacing the
@@ -840,6 +852,10 @@ void MainWindow::selectAgentAccount(const QString &provider,
         else
             settings.remove(global);
     }
+    // Re-arm the "your limit has refilled" reminders against the account now
+    // selected: the ones standing were armed from the previous account's
+    // exhausted windows, which this login neither shares nor waits on.
+    restoreUsageLimitReminders();
 
     if (codex) {
         refreshCodexUsageRemaining();
@@ -1026,17 +1042,36 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
     }
 
     const QString cwd = repoGitDir().isEmpty() ? QDir::homePath() : repoGitDir();
+    QMap<QString, QString> accountEnv;
+    const AgentAccountProfile account = activeAgentAccount(provider);
+    if (!account.builtIn)
+        accountEnv.insert(codex ? QStringLiteral("CODEX_HOME")
+                                : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                          account.configDir);
+    launchSystemTerminal(program, commandArgs, cwd, accountEnv);
+}
+
+// Open the host's own terminal emulator on `program args` in `cwd`, with the
+// caller's environment overrides (a provider account's CLAUDE_CONFIG_DIR /
+// CODEX_HOME) applied on top of a copy of ForkMesh's environment that has every
+// provider API key stripped: a hand-off terminal must authenticate as the
+// account the user picked, not as whatever key happened to be exported into the
+// app. Split out of launchAgentSystemTerminal so the agent detail's "Pop out"
+// hand-off (adhoc #1584) reaches the same emulator lookup rather than repeating
+// the per-platform table. Reports its own failures and returns false.
+bool MainWindow::launchSystemTerminal(const QString &program,
+                                      const QStringList &commandArgs,
+                                      const QString &cwd,
+                                      const QMap<QString, QString> &extraEnv)
+{
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     environment.remove(QStringLiteral("ANTHROPIC_API_KEY"));
     environment.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
     environment.remove(QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN"));
     environment.remove(QStringLiteral("OPENAI_API_KEY"));
     environment.remove(QStringLiteral("CODEX_API_KEY"));
-    const AgentAccountProfile account = activeAgentAccount(provider);
-    if (!account.builtIn)
-        environment.insert(codex ? QStringLiteral("CODEX_HOME")
-                                 : QStringLiteral("CLAUDE_CONFIG_DIR"),
-                           account.configDir);
+    for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+        environment.insert(it.key(), it.value());
 
     QString terminalProgram;
     QStringList terminalArgs;
@@ -1055,11 +1090,12 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
         return QLatin1Char('\'') + value + QLatin1Char('\'');
     };
     QString command = QStringLiteral("cd %1 && ").arg(shellQuote(cwd));
-    if (!account.builtIn) {
-        command += QStringLiteral("env %1=%2 ")
-                       .arg(codex ? QStringLiteral("CODEX_HOME")
-                                  : QStringLiteral("CLAUDE_CONFIG_DIR"),
-                            shellQuote(account.configDir));
+    // osascript hands the command to a fresh login shell, so the environment
+    // built above cannot reach it — the overrides ride along as an `env` prefix.
+    if (!extraEnv.isEmpty()) {
+        command += QStringLiteral("env ");
+        for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+            command += QStringLiteral("%1=%2 ").arg(it.key(), shellQuote(it.value()));
     }
     command += shellQuote(program);
     for (const QString &argument : commandArgs)
@@ -1088,7 +1124,7 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
 #endif
     if (terminalProgram.isEmpty()) {
         flashMessage(QStringLiteral("No supported system terminal was found."), true);
-        return;
+        return false;
     }
     QProcess launcher;
     launcher.setProgram(terminalProgram);
@@ -1097,8 +1133,9 @@ void MainWindow::launchAgentSystemTerminal(const QString &provider,
     launcher.setProcessEnvironment(environment);
     if (!launcher.startDetached()) {
         flashMessage(QStringLiteral("Could not launch the system terminal."), true);
-        return;
+        return false;
     }
+    return true;
 }
 
 // -------------------------------------------------------------- server rail
@@ -1455,7 +1492,7 @@ QWidget *MainWindow::buildChatPage()
     for (int index = 3; index <= 8; ++index)
         addDeferredSection();
     m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
-    for (int index = 10; index <= 17; ++index)
+    for (int index = 10; index <= 18; ++index)
         addDeferredSection();
     logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
@@ -1526,7 +1563,8 @@ QWidget *MainWindow::buildChatPage()
     // the bottom utility group, Tasks directly above Pings (adhoc #97).
     for (QPushButton *button :
          {m_agentsNavButton, m_reposNavButton, m_chatButton,
-          m_controlNodeNavButton, m_networkNavButton, m_usersNavButton})
+          m_controlNodeNavButton, m_networkNavButton, m_usersNavButton,
+          m_filesNavButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
     // Repo is redundant with the contextual Code entry. Keep the hidden button
     // as section 0's QButtonGroup state carrier for programmatic navigation.
@@ -1738,6 +1776,21 @@ QWidget *MainWindow::buildStatusBar()
     toolsSeparator->setFixedHeight(32);
     debugToolsRow->addWidget(toolsSeparator, 0, Qt::AlignVCenter);
 
+    // The relay's live tail is a section of this strip now (adhoc #1559) rather
+    // than a button on the Log page: it sits beside the Worker status dots it
+    // explains, and one click opens the full viewer.
+    auto *cloudflareButton = new ActivityRailButton(QStringLiteral("cloud"),
+                                                    QStringLiteral("Cloud"));
+    cloudflareButton->setObjectName(
+        QStringLiteral("cloudflareWorkerLogsButton"));
+    cloudflareButton->setCheckable(false);
+    cloudflareButton->setCursor(Qt::PointingHandCursor);
+    cloudflareButton->setIconSize(QSize(kRailIconPx, kRailIconPx));
+    cloudflareButton->setToolTip(
+        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
+    connect(cloudflareButton, &QPushButton::clicked, this,
+            &MainWindow::showCloudflareWorkerLogs);
+
     // Third tool: grow the window by a five-line live tail of the log, so the
     // newest lines are readable without opening the footer overlay or the full
     // Log page. Checkable — it is a state, not a one-shot action.
@@ -1752,7 +1805,8 @@ QWidget *MainWindow::buildStatusBar()
     connect(logTailButton, &QPushButton::toggled, this,
             [this](bool on) { setDebugLogTailVisible(on); });
 
-    for (QPushButton *tool : {m_navRebuildButton, m_navResizeButton,
+    for (QPushButton *tool : {static_cast<QPushButton *>(cloudflareButton),
+                              m_navRebuildButton, m_navResizeButton,
                               static_cast<QPushButton *>(logTailButton)})
         if (tool)
             debugToolsRow->addWidget(tool, 0, Qt::AlignVCenter);
@@ -1880,6 +1934,27 @@ QWidget *MainWindow::buildNetworkLogDock()
     // (kMaxTextChars). QPlainTextEdit has no setMaxLength, so the cap is enforced
     // in the textChanged handler below.
     const int kQuickAddMaxChars = 16000;
+    m_quickAddTargetAgentLabel = new QLabel;
+    m_quickAddTargetAgentLabel->setObjectName(QStringLiteral("quickAddTargetAgentLabel"));
+    m_quickAddTargetAgentLabel->setAlignment(Qt::AlignRight | Qt::AlignTop);
+    m_quickAddTargetAgentLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_quickAddTargetAgentLabel->setStyleSheet(
+        "QLabel#quickAddTargetAgentLabel {"
+        " background: transparent;"
+        " color: rgba(125, 128, 128, 0.45);"
+        " font-size: 9px;"
+        "}");
+    m_quickAddTargetAgentLabel->setVisible(false);
+    auto *quickAddInputHost = new QWidget;
+    auto *quickAddInputLayout = new QGridLayout(quickAddInputHost);
+    quickAddInputLayout->setContentsMargins(0, 0, 0, 0);
+    quickAddInputLayout->setSpacing(0);
+    quickAddInputLayout->addWidget(m_issueQuickAdd, 0, 0);
+    quickAddInputLayout->addWidget(m_quickAddTargetAgentLabel,
+                                  0,
+                                  0,
+                                  Qt::AlignRight | Qt::AlignTop);
+
     // Ctrl+V with an image on the clipboard attaches it (issue #79).
     m_issueQuickAdd->installEventFilter(this);
     // Restore the prompt history persisted from earlier sessions so Up recalls
@@ -2558,7 +2633,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // The editor stretches to fill the freed vertical space (the send column no
     // longer sits below it), and the bottom bar carries its own fixed height, so
     // the border sits right above the text and the controls weld to the foot.
-    promptLeftCol->addWidget(m_issueQuickAdd, 1);
+    promptLeftCol->addWidget(quickAddInputHost, 1);
     promptLeftCol->addWidget(bottomBarScroll, 0);
     promptLayout->addLayout(promptLeftCol, 1);
     promptLayout->addLayout(sendColumn, 0);
@@ -2758,6 +2833,22 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_logActivityLights->onCategoryClicked = [this](const QString &category) {
         openFullLogForCategory(category);
     };
+    // The status dots to the right of the categories are the deployed Worker's
+    // own health checks, so clicking them opens the matching website page (adhoc
+    // #1559); the viewer that used to be a button on the Log page stays
+    // available on the dedicated Cloudflare tool button.
+    m_logActivityLights->onWebsiteClicked = [this](const QString &statusId) {
+        QUrl url = catalogApiUrl();
+        if (!url.isValid() || url.host().isEmpty())
+            return;
+        if (statusId == QStringLiteral("desktop_status_page"))
+            url.setPath(QStringLiteral("/status"));
+        else
+            url.setPath(QStringLiteral("/"));
+        url.setQuery(QString());
+        url.setFragment(QString());
+        QDesktopServices::openUrl(url);
+    };
     const QString stallTip = QStringLiteral(
         "Click to draft a fix-it prompt for recorded UI stalls; right-click "
         "for the captured backtraces.");
@@ -2793,6 +2884,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     // samples. Fetch once after the overlay exists; MainWindow's existing minute
     // timer keeps it fresh after that.
     QTimer::singleShot(1500, this, &MainWindow::refreshFooterWebsiteStatus);
+    // The desktop-side edge checks are staggered a little behind that read so
+    // the first paint of the row isn't three requests in the same instant.
+    // They are the one part of this row that leaves the machine on its own
+    // schedule, so the window tests — which feed the probes their responses
+    // directly — never let a real one race their assertions.
+#ifndef FORKMESH_WINDOW_TESTS
+    QTimer::singleShot(3000, this, &MainWindow::refreshDesktopWebsiteProbes);
+#endif
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
@@ -2965,28 +3064,30 @@ void MainWindow::savePromptOverlayPlacement()
                       m_promptDetachGeometry);
 }
 
+// Every launch starts on the footer's lower-right anchor (adhoc #1565). Moving
+// the composer — dragging it over the workspace or popping it out into its own
+// window — is a gesture for the task at hand, and restoring it a day later meant
+// the app opened with its prompt parked mid-page or on a window the compositor
+// had put behind everything else, which reads as the prompt having gone missing.
+// The drag, the resize and the pop-out all still work and still hold for the rest
+// of the session; they simply do not decide where the next launch opens. Only the
+// popped-out window's own geometry is kept, so re-popping it lands where it was.
 void MainWindow::loadPromptOverlayPlacement()
 {
     if (!m_promptOverlayHost)
         return;
     QSettings settings;
-    m_promptOverlaySize =
-        settings.value(QLatin1String(kPromptFloatSizeSetting)).toSize();
-    m_promptOverlayPos =
-        settings.value(QLatin1String(kPromptFloatPosSetting)).toPoint();
     m_promptDetachGeometry =
         settings.value(QLatin1String(kPromptDetachGeometrySetting)).toRect();
-    if (settings.value(QLatin1String(kPromptFloatingSetting), false).toBool()) {
-        m_promptOverlayFloating = true;
-        if (auto *dockRow = m_footerDock
-                                ? qobject_cast<QHBoxLayout *>(m_footerDock->layout())
-                                : nullptr)
-            dockRow->removeWidget(m_promptOverlayHost);
-        m_promptOverlayHost->setParent(m_globalOverlayHost);
-        m_promptOverlayHost->show();
-    }
-    if (settings.value(QLatin1String(kPromptDetachedSetting), false).toBool())
-        setPromptOverlayDetached(true);
+    m_promptOverlayFloating = false;
+    m_promptOverlayDetached = false;
+    m_promptOverlaySize = QSize();
+    m_promptOverlayPos = QPoint();
+    // The composer was added to the footer row when it was built and has not
+    // moved since, so anchoring it is a matter of leaving it there — but the
+    // stored placement has to go with it, or a session that never touches the
+    // prompt would write yesterday's float back out on the next save.
+    savePromptOverlayPlacement();
 }
 
 // Drag/resize gestures on the composer's top strip. Everything is done in
@@ -3202,6 +3303,179 @@ void MainWindow::positionGlobalFooterOverlays()
         m_promptOverlayHost->raise();
 }
 
+namespace {
+
+// The two edge checks this desktop runs itself (adhoc #1564). Each names the
+// document it loads over the real public hostname and the lowercase markers
+// that document must carry, so a Cloudflare interstitial served with HTTP 200
+// still fails instead of counting as a healthy page.
+struct DesktopEdgeProbe {
+    const char *id;
+    const char *path;
+    const char *label;
+    const char *marker;     // identity of the expected document
+    const char *what;       // how the row names itself in a reason line
+};
+
+const QVector<DesktopEdgeProbe> &desktopEdgeProbes()
+{
+    static const QVector<DesktopEdgeProbe> probes = {
+        {"desktop_website", "/", "Website loaded from this desktop", "forkmesh",
+         "The site"},
+        // status.html carries this id on its heading; the homepage does not, so
+        // a /status route quietly serving some other document still fails.
+        {"desktop_status_page", "/status", "Status page loaded from this desktop",
+         "status-title", "The /status page"},
+    };
+    return probes;
+}
+
+// Position of a probe in the declared order; unknown ids sort last.
+int desktopEdgeProbeRank(const QString &id)
+{
+    const QVector<DesktopEdgeProbe> &probes = desktopEdgeProbes();
+    for (int i = 0; i < probes.size(); ++i) {
+        if (id == QLatin1String(probes.at(i).id))
+            return i;
+    }
+    return int(probes.size());
+}
+
+const DesktopEdgeProbe *desktopEdgeProbe(const QString &id)
+{
+    for (const DesktopEdgeProbe &probe : desktopEdgeProbes()) {
+        if (id == QLatin1String(probe.id))
+            return &probe;
+    }
+    return nullptr;
+}
+
+// Cloudflare's own edge failures are the ones the Worker can never report: it
+// is not running when the edge answers 520-527 or blocks the caller, and the
+// response is a branded error document rather than the site. Name the code so
+// the tooltip says which failure this is.
+QString cloudflareEdgeErrorName(int httpStatus)
+{
+    switch (httpStatus) {
+    case 520: return QStringLiteral("web server returned an unknown error");
+    case 521: return QStringLiteral("web server is down");
+    case 522: return QStringLiteral("connection timed out");
+    case 523: return QStringLiteral("origin is unreachable");
+    case 524: return QStringLiteral("a timeout occurred");
+    case 525: return QStringLiteral("SSL handshake failed");
+    case 526: return QStringLiteral("invalid SSL certificate");
+    case 527: return QStringLiteral("Railgun listener to origin error");
+    case 530: return QStringLiteral("origin DNS error");
+    default: return QString();
+    }
+}
+
+// Does this body look like a Cloudflare error/challenge document rather than
+// the page that was asked for? The branded pages all pair the Cloudflare name
+// with a Ray ID or a numeric error code, which no ForkMesh page carries.
+bool looksLikeCloudflareErrorDocument(const QString &lowered)
+{
+    if (!lowered.contains(QLatin1String("cloudflare")))
+        return false;
+    return lowered.contains(QLatin1String("cf-error")) ||
+           lowered.contains(QLatin1String("ray id")) ||
+           lowered.contains(QLatin1String("error code")) ||
+           lowered.contains(QLatin1String("attention required")) ||
+           lowered.contains(QLatin1String("just a moment"));
+}
+
+struct DesktopEdgeVerdict {
+    QString status;
+    QString reason;
+};
+
+// Grade one desktop-side probe. Everything here is decided from the response
+// alone so the same rules can be replayed in tests without a network.
+DesktopEdgeVerdict gradeDesktopEdgeProbe(const DesktopEdgeProbe &probe,
+                                         const QString &host, int httpStatus,
+                                         const QByteArray &body,
+                                         const QString &transportError,
+                                         bool osOffline)
+{
+    const QString what = QString::fromLatin1(probe.what);
+    if (!transportError.isEmpty()) {
+        // A request this desktop refused to send never saw the edge at all.
+        if (transportError.contains(QLatin1String("firewall blocked"),
+                                    Qt::CaseInsensitive)) {
+            return {QStringLiteral("unknown"),
+                    QStringLiteral("This desktop's own firewall blocked the "
+                                   "check, so %1 was not loaded from here.")
+                        .arg(what.toLower())};
+        }
+        // A desktop with no link at all says nothing about the site, so that
+        // case stays grey rather than painting a false outage.
+        if (osOffline) {
+            return {QStringLiteral("unknown"),
+                    QStringLiteral("This desktop is offline, so %1 could not be "
+                                   "checked from here.")
+                        .arg(host)};
+        }
+        return {QStringLiteral("down"),
+                QStringLiteral("%1 could not be reached from this desktop: %2")
+                    .arg(what, transportError)};
+    }
+
+    const QString lowered = QString::fromUtf8(body.left(64 * 1024)).toLower();
+    const bool branded = looksLikeCloudflareErrorDocument(lowered);
+    const QString edgeError = cloudflareEdgeErrorName(httpStatus);
+    if (!edgeError.isEmpty()) {
+        return {QStringLiteral("down"),
+                QStringLiteral("Cloudflare answered %1 with HTTP %2 — %3.")
+                    .arg(what)
+                    .arg(httpStatus)
+                    .arg(edgeError)};
+    }
+    if (httpStatus == 429 || lowered.contains(QLatin1String("error 1015"))) {
+        return {QStringLiteral("degraded"),
+                QStringLiteral("Cloudflare rate-limited this desktop (HTTP %1) "
+                               "instead of serving %2.")
+                    .arg(httpStatus)
+                    .arg(what.toLower())};
+    }
+    if ((httpStatus == 403 || httpStatus == 503) && branded) {
+        return {QStringLiteral("degraded"),
+                QStringLiteral("Cloudflare challenged or blocked this desktop "
+                               "(HTTP %1) instead of serving %2.")
+                    .arg(httpStatus)
+                    .arg(what.toLower())};
+    }
+    if (httpStatus >= 500) {
+        return {QStringLiteral("down"),
+                QStringLiteral("%1 returned HTTP %2 to this desktop.")
+                    .arg(what)
+                    .arg(httpStatus)};
+    }
+    // A ranged request answers 206; a server that ignores Range answers 200.
+    if (httpStatus != 200 && httpStatus != 206) {
+        return {QStringLiteral("down"),
+                QStringLiteral("%1 returned HTTP %2 to this desktop.")
+                    .arg(what)
+                    .arg(httpStatus)};
+    }
+    if (branded) {
+        return {QStringLiteral("down"),
+                QStringLiteral("Cloudflare served an error document for %1 "
+                               "instead of the page.")
+                    .arg(what.toLower())};
+    }
+    if (!lowered.contains(QLatin1String("<!doctype html")) ||
+        !lowered.contains(QLatin1String(probe.marker))) {
+        return {QStringLiteral("degraded"),
+                QStringLiteral("%1 answered HTTP %2 from this desktop, but the "
+                               "document was not the expected page.")
+                    .arg(what)
+                    .arg(httpStatus)};
+    }
+    return {QStringLiteral("operational"), QString()};
+}
+
+} // namespace
+
 // Apply the compact public /status projection to both footer icon surfaces.
 // The last array cell is commonly the still-in-progress current minute, marked
 // "future", so each system deliberately selects its newest completed sample.
@@ -3216,11 +3490,11 @@ bool MainWindow::applyFooterWebsiteStatusPayload(const QJsonObject &payload)
     const qint64 payloadNow = static_cast<qint64>(
         payload.value(QStringLiteral("now")).toDouble(
             QDateTime::currentMSecsSinceEpoch()));
-    QList<LogActivityLights::WebsiteStatus> statuses;
+    QList<FooterStatusRow> statuses;
     statuses.reserve(systems.size());
     for (const QJsonValue &value : systems) {
         const QJsonObject system = value.toObject();
-        LogActivityLights::WebsiteStatus result;
+        FooterStatusRow result;
         result.id = system.value(QStringLiteral("id")).toString().trimmed();
         result.label = system.value(QStringLiteral("label")).toString().trimmed();
         if (result.id.isEmpty())
@@ -3255,12 +3529,36 @@ bool MainWindow::applyFooterWebsiteStatusPayload(const QJsonObject &payload)
     }
     if (statuses.isEmpty())
         return false;
-    if (m_logActivityLights)
-        m_logActivityLights->setWebsiteStatuses(statuses);
-    if (m_logActivityHeader)
-        m_logActivityHeader->setWebsiteStatuses(statuses);
-    positionGlobalFooterOverlays();
+    m_footerRelayStatuses = statuses;
+    publishFooterWebsiteStatuses();
     return true;
+}
+
+// One dot row out of the two sources. The relay's own systems keep their
+// published order, and the desktop-measured edge rows are appended in their
+// declared order, so the locally-checked dots are always the last two.
+void MainWindow::publishFooterWebsiteStatuses()
+{
+    QList<LogActivityLights::WebsiteStatus> rows;
+    rows.reserve(m_footerRelayStatuses.size() + m_footerDesktopStatuses.size());
+    for (const FooterStatusRow &source :
+         m_footerRelayStatuses + m_footerDesktopStatuses) {
+        LogActivityLights::WebsiteStatus row;
+        row.id = source.id;
+        row.label = source.label;
+        row.status = source.status;
+        row.reason = source.reason;
+        row.minuteTs = source.minuteTs;
+        row.local = source.local;
+        rows.append(row);
+    }
+    if (rows.isEmpty())
+        return;
+    if (m_logActivityLights)
+        m_logActivityLights->setWebsiteStatuses(rows);
+    if (m_logActivityHeader)
+        m_logActivityHeader->setWebsiteStatuses(rows);
+    positionGlobalFooterOverlays();
 }
 
 void MainWindow::refreshFooterWebsiteStatus()
@@ -3288,17 +3586,215 @@ void MainWindow::refreshFooterWebsiteStatus()
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         m_footerWebsiteStatusInFlight = false;
         const QByteArray body = reply->readAll();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const bool transportOk = reply->error() == QNetworkReply::NoError;
         reply->deleteLater();
-        if (!transportOk)
-            return; // Retain the last good minute through a transient miss.
+        if (!transportOk && httpStatus <= 0) {
+            // This desktop never got an answer at all (DNS/timeout/refused):
+            // that says nothing about the relay, so keep showing the last
+            // good minute rather than paint a false outage from a local miss.
+            return;
+        }
         QJsonParseError error;
         const QJsonDocument document = QJsonDocument::fromJson(body, &error);
-        if (error.error != QJsonParseError::NoError || !document.isObject())
+        if (transportOk && error.error == QJsonParseError::NoError &&
+            document.isObject() &&
+            applyFooterWebsiteStatusPayload(document.object()))
             return;
-        applyFooterWebsiteStatusPayload(document.object());
+        // The edge answered — with an HTTP error, a Cloudflare error document,
+        // or malformed JSON — instead of the status payload. That is real
+        // information (this is exactly how a Worker exception/1101 shows up),
+        // so the dots must stop claiming the stale cached minute is current.
+        applyFooterWebsiteStatusFailure(httpStatus);
     });
 }
+
+// The relay's own /api/status fetch answered, but not with a usable status
+// payload — mark every relay-reported row unknown rather than keep repainting
+// whatever minute happened to be cached last, which would silently hide an
+// ongoing outage of the status endpoint itself.
+void MainWindow::applyFooterWebsiteStatusFailure(int httpStatus)
+{
+    if (m_footerRelayStatuses.isEmpty())
+        return;
+    const QString reason =
+        httpStatus > 0
+            ? QStringLiteral(
+                  "The status API answered HTTP %1 instead of a status "
+                  "payload, so this data is stale.")
+                  .arg(httpStatus)
+            : QStringLiteral("The status API did not return a usable "
+                             "payload, so this data is stale.");
+    for (FooterStatusRow &row : m_footerRelayStatuses) {
+        row.status = QStringLiteral("unknown");
+        row.reason = reason;
+    }
+    publishFooterWebsiteStatuses();
+}
+
+// Run both desktop-side edge checks for the active relay's public hostname.
+void MainWindow::refreshDesktopWebsiteProbes()
+{
+    for (const DesktopEdgeProbe &probe : desktopEdgeProbes())
+        probeDesktopWebsite(QString::fromLatin1(probe.id));
+}
+
+// Load one public document the way a browser on this machine would. Only the
+// first few kilobytes are asked for: the marker and any Cloudflare branding sit
+// in the head, and a full homepage every minute would be megabytes an hour for
+// a two-pixel dot. A Cloudflare error is served whole regardless of Range, so
+// nothing that this row exists to catch is truncated away.
+void MainWindow::probeDesktopWebsite(const QString &id)
+{
+    const DesktopEdgeProbe *probe = desktopEdgeProbe(id);
+    if (!probe || !m_networkAccess || !m_logActivityLights ||
+        m_desktopProbesInFlight.contains(id))
+        return;
+
+    QUrl url = catalogApiUrl();
+    if (!url.isValid() || url.host().isEmpty())
+        return;
+    url.setPath(QString::fromLatin1(probe->path));
+    url.setQuery(QString());
+    url.setFragment(QString());
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    // Follow the edge's own canonical redirects; the check is "does this
+    // hostname serve the page", not "does it serve it without a hop".
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QVariant::fromValue(
+                             QNetworkRequest::NoLessSafeRedirectPolicy));
+    request.setMaximumRedirectsAllowed(3);
+    request.setRawHeader("accept", "text/html");
+    request.setRawHeader("cache-control", "no-cache");
+    request.setRawHeader("range", "bytes=0-8191");
+    request.setTransferTimeout(8000);
+    m_desktopProbesInFlight.insert(id);
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, id] {
+        m_desktopProbesInFlight.remove(id);
+        const QByteArray body = reply->readAll();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // An HTTP answer is the verdict even when Qt flags the reply as an
+        // error: a Cloudflare 5xx interstitial is exactly what this row is
+        // looking for. Only a reply that never produced a status counts as a
+        // transport failure.
+        const QString transportError =
+            (httpStatus <= 0 && reply->error() != QNetworkReply::NoError)
+                ? reply->errorString()
+                : QString();
+        reply->deleteLater();
+        applyDesktopWebsiteProbe(id, httpStatus, body, transportError);
+    });
+}
+
+// Grade one probe response and repaint the merged dot row.
+void MainWindow::applyDesktopWebsiteProbe(const QString &id, int httpStatus,
+                                          const QByteArray &body,
+                                          const QString &transportError)
+{
+    const DesktopEdgeProbe *probe = desktopEdgeProbe(id);
+    if (!probe)
+        return;
+    const auto *netInfo = QNetworkInformation::instance();
+    const bool osOffline = netInfo &&
+                           netInfo->reachability() ==
+                               QNetworkInformation::Reachability::Disconnected;
+    const QString host = catalogApiUrl().host();
+    const DesktopEdgeVerdict verdict = gradeDesktopEdgeProbe(
+        *probe, host, httpStatus, body, transportError, osOffline);
+
+    FooterStatusRow row;
+    row.id = id;
+    row.label = QString::fromLatin1(probe->label);
+    row.status = verdict.status;
+    row.reason = verdict.reason;
+    row.minuteTs = QDateTime::currentMSecsSinceEpoch();
+    row.local = true;
+
+    bool replaced = false;
+    for (FooterStatusRow &existing : m_footerDesktopStatuses) {
+        if (existing.id == id) {
+            existing = row;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) {
+        m_footerDesktopStatuses.append(row);
+        // Keep the two rows in their declared order however the replies land.
+        std::stable_sort(m_footerDesktopStatuses.begin(),
+                         m_footerDesktopStatuses.end(),
+                         [](const FooterStatusRow &left,
+                            const FooterStatusRow &right) {
+                             return desktopEdgeProbeRank(left.id) <
+                                    desktopEdgeProbeRank(right.id);
+                         });
+    }
+    publishFooterWebsiteStatuses();
+    alertOnDesktopEdgeOutage(row);
+}
+
+// Announce a desktop-measured outage. Every graded reply comes here, and the
+// probes are driven by the minute timer, so a check that stays down raises one
+// ping a minute for as long as it keeps failing — deliberately not deduplicated,
+// because a site that is still down a minute later is still news (adhoc #1596).
+//
+// Only "down" alerts. "degraded" is the edge answering imperfectly (a rate
+// limit, an unexpected document) and "unknown" is this desktop being unable to
+// look at all — a firewall block or no link — neither of which is an outage of
+// the site, and both of which would otherwise alert every minute from a laptop
+// that is merely asleep on a train.
+void MainWindow::alertOnDesktopEdgeOutage(const FooterStatusRow &row)
+{
+    if (row.status != QLatin1String("down"))
+        return;
+    const DesktopEdgeProbe *probe = desktopEdgeProbe(row.id);
+    if (!probe)
+        return;
+    const QString host = catalogApiUrl().host();
+    const QString title =
+        host.isEmpty()
+            ? QStringLiteral("%1 is down").arg(QString::fromLatin1(probe->what))
+            : QStringLiteral("%1 on %2 is down")
+                  .arg(QString::fromLatin1(probe->what), host);
+    const QString body =
+        row.reason.isEmpty()
+            ? QStringLiteral("This desktop could not load the page.")
+            : row.reason;
+    // Files the outage on the Pings page and raises the red toast above the
+    // footer log, exactly like any other failure this node reports.
+    addNotification(title, body, /*warning=*/true);
+    // …plus the OS notification, so an outage is seen while ForkMesh is behind
+    // another window. A headless node forces the offscreen platform and has no
+    // desktop to raise it on (and a window-test run must not spray real toasts
+    // across the developer's screen), so that case stops at the ping above.
+    if (m_headless ||
+        QGuiApplication::platformName().contains(QStringLiteral("offscreen"),
+                                                 Qt::CaseInsensitive))
+        return;
+    postNotification(title, body, /*warning=*/true,
+                     QStringLiteral("network-error"));
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testApplyDesktopWebsiteProbe(const QString &id,
+                                                 int httpStatus,
+                                                 const QByteArray &body,
+                                                 const QString &transportError)
+{
+    applyDesktopWebsiteProbe(id, httpStatus, body, transportError);
+    for (const FooterStatusRow &row : m_footerDesktopStatuses) {
+        if (row.id == id)
+            return row.status;
+    }
+    return QString();
+}
+#endif
 
 // One-word tag for the strip: callers may hand over a phrase, the icon maps the
 // first word ("git", "net", "fork" …) to a glyph and keeps the detail in its
@@ -3972,6 +4468,9 @@ void MainWindow::refreshCloudflareAiModels()
                                  : picked);
         }
         refreshQuickAddAgentModelSelector();
+        // Settings lists the same line-up with a checkbox each, so newly
+        // announced models have to reach it too.
+        refreshComposerModelVisibilityList();
     });
 }
 
@@ -4129,18 +4628,96 @@ void MainWindow::refreshQuickAddSpeedSelector()
         QStringLiteral(". Higher levels are slower and more thorough."));
 }
 
+// Every agent/model the composer could offer, in provider order and before any
+// ranking or filtering. Shared by the composer's dropdown (which ranks these by
+// merged success) and Settings → Agents → "Composer models" (which lists them
+// with a checkbox each), so the setting can never drift out of step with the
+// menu it governs.
+//
+// "Manual · create issue" is deliberately absent: it starts no agent, and it is
+// the row the dropdown falls back to, so it is always offered.
+QList<ComposerModelChoice> MainWindow::composerModelCatalog() const
+{
+    QList<ComposerModelChoice> choices;
+
+    QComboBox claudeModels;
+    populateClaudeModelCombo(&claudeModels);
+    if (!m_liveClaudeModels.isEmpty())
+        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
+    for (int i = 0; i < claudeModels.count(); ++i) {
+        const QString id = claudeModels.itemData(i).toString();
+        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
+        // borrowing one model's portrait.
+        const int icon =
+            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
+                ? 7
+                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
+        choices.append(ComposerModelChoice{
+            QStringLiteral("claude-code"), id,
+            compactModelName(claudeModels.itemText(i)),
+            QStringLiteral("Claude Code"), QString(), icon, true});
+    }
+
+    QComboBox codexModels;
+    populateCodexModelCombo(&codexModels);
+    for (int i = 0; i < codexModels.count(); ++i) {
+        const QString id = codexModels.itemData(i).toString();
+        choices.append(ComposerModelChoice{
+            kCodexProvider, id, codexModels.itemText(i),
+            QStringLiteral("Codex"), QString(),
+            agentModelFaceIconIndex(kCodexProvider, id), true});
+    }
+
+    // These API agents do not expose a per-run model chooser in this composer,
+    // but remain first-class choices in the combined menu.
+    choices.append(ComposerModelChoice{
+        QStringLiteral("openai"), QString(), QStringLiteral("OpenAI API"),
+        QStringLiteral("OpenAI API"), QStringLiteral("Headless OpenAI API agent"),
+        agentModelFaceIconIndex(QStringLiteral("openai"), QString()), false});
+    choices.append(ComposerModelChoice{
+        QStringLiteral("claude-api"), QString(), QStringLiteral("Claude API"),
+        QStringLiteral("Claude API"), QStringLiteral("Headless Claude API agent"),
+        agentModelFaceIconIndex(QStringLiteral("claude-api"), QString()), false});
+
+    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
+    // rather than starting an agent, so they are their own group instead of
+    // being ranked among the coding models above — a 70B chat model is not
+    // "stronger" or "weaker" than an agent that can edit the repository.
+    QComboBox cloudflareModels;
+    populateCloudflareAiModelCombo(&cloudflareModels);
+    for (int i = 0; i < cloudflareModels.count(); ++i) {
+        const QString label = cloudflareModels.itemText(i);
+        // One mark for the whole group: these are relay chat models, not one of
+        // the top lines the World drew a portrait for.
+        choices.append(ComposerModelChoice{
+            kCloudflareAiProvider, cloudflareModels.itemData(i).toString(), label,
+            QStringLiteral("Cloudflare AI"),
+            QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
+                           "starts no agent").arg(label),
+            agentModelFaceIconIndex(kCloudflareAiProvider, QString()), false});
+    }
+    return choices;
+}
+
 // Build the one visible agent/model menu from the canonical hidden provider and
 // model controls. Each row stores provider in UserRole and model in UserRole+1,
 // allowing a single click to update both without changing the launch contract.
 //
-// Rows read as the model name plus its merged-work count: "Opus 5 · 3 merged",
+// Rows read as the model name plus its merged-work count — "Opus 5   3 merged",
 // not "Opus 5 · Claude Code". Which CLI runs a model follows from the model, so
 // the provider suffix was the same handful of words repeated down the whole
-// menu; the tooltip still carries it. A merge is the durable success signal for
+// menu; the tooltip still carries it. The count is a popup-only second column
+// (kAgentChoiceDescriptionRole): the closed control shows the bare model name,
+// since the badge on the prompt should say what is about to run rather than
+// carry a standing scoreboard. A merge is the durable success signal for
 // an agent run, so models with the most merged work lead the list; power is a
 // stable tie-breaker for equal success counts. Scores count every run this
 // desktop has made, including the ones whose branch and session were cleaned up
 // afterwards (see AgentStore::retiredModelOutcomes).
+//
+// Rows switched off in Settings → Agents (adhoc #1557) are left out, except the
+// one currently selected: the menu has to be able to show what the composer is
+// actually about to run, even if that model was hidden after it was picked.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -4167,6 +4744,16 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         int runCount = 0;
         int powerRank = 0; // stable tie-breaker for equally-used models
     };
+    // A row the user switched off in Settings stays out of the menu unless it is
+    // the current selection (see the note above this function).
+    const QSet<QString> hidden = hiddenComposerModels();
+    const auto rowIsVisible = [&](const QString &provider,
+                                  const QString &model) {
+        if (!hidden.contains(composerModelKey(provider, model)))
+            return true;
+        return provider == selectedProvider &&
+               (selectedModel.isEmpty() || model == selectedModel);
+    };
     QHash<QString, int> modelMergedCounts;
     QHash<QString, int> modelRunCounts;
     // A model's track record has to outlive the work that earned it. Sweeping up
@@ -4191,43 +4778,25 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         if (session.merged)
             ++modelMergedCounts[key];
     }
+    // The catalog is the single source of what the picker can offer; this
+    // function only scores, orders and filters it.
+    const QList<ComposerModelChoice> catalog = composerModelCatalog();
     QList<Choice> models;
-    auto addModel = [&models, &modelMergedCounts, &modelRunCounts](
-                        const QIcon &icon, const QString &label,
-                        const QString &provider, const QString &model,
-                        const QString &agentName) {
-        const QString key = AgentStore::modelOutcomeKey(provider, model);
-        models.append(Choice{icon, label, provider, model, agentName,
+    QList<ComposerModelChoice> unranked;
+    for (const ComposerModelChoice &entry : catalog) {
+        if (!rowIsVisible(entry.provider, entry.model))
+            continue;
+        if (!entry.ranked) {
+            unranked.append(entry);
+            continue;
+        }
+        const QString key =
+            AgentStore::modelOutcomeKey(entry.provider, entry.model);
+        models.append(Choice{agentControlIcon(entry.iconIndex), entry.label,
+                             entry.provider, entry.model, entry.agentName,
                              modelMergedCounts.value(key),
                              modelRunCounts.value(key),
-                             agentModelPowerRank(model, label)});
-    };
-
-    QComboBox claudeModels;
-    populateClaudeModelCombo(&claudeModels);
-    if (!m_liveClaudeModels.isEmpty())
-        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
-    for (int i = 0; i < claudeModels.count(); ++i) {
-        const QString id = claudeModels.itemData(i).toString();
-        // "Auto" is a router, not a model, so it keeps the auto glyph instead of
-        // borrowing one model's portrait.
-        const int icon =
-            id.compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
-                ? 7
-                : agentModelFaceIconIndex(QStringLiteral("claude-code"), id);
-        addModel(agentControlIcon(icon),
-                 compactModelName(claudeModels.itemText(i)),
-                 QStringLiteral("claude-code"), id,
-                 QStringLiteral("Claude Code"));
-    }
-
-    QComboBox codexModels;
-    populateCodexModelCombo(&codexModels);
-    for (int i = 0; i < codexModels.count(); ++i) {
-        const QString id = codexModels.itemData(i).toString();
-        addModel(agentControlIcon(agentModelFaceIconIndex(kCodexProvider, id)),
-                 codexModels.itemText(i), kCodexProvider, id,
-                 QStringLiteral("Codex"));
+                             agentModelPowerRank(entry.model, entry.label)});
     }
 
     // Most merged work first. Power ties (Opus 4.8 and Sonnet 5 score the
@@ -4242,13 +4811,20 @@ void MainWindow::refreshQuickAddAgentModelSelector()
 
     auto addChoice = [this](const QIcon &icon, const QString &label,
                             const QString &provider, const QString &model,
-                            const QString &tooltip) {
+                            const QString &tooltip,
+                            const QString &description = QString()) {
         const int row = m_quickAddAgentModelSelector->count();
         m_quickAddAgentModelSelector->addItem(icon, label, provider);
         m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
         if (!tooltip.isEmpty())
             m_quickAddAgentModelSelector->setItemData(row, tooltip,
                                                       Qt::ToolTipRole);
+        // Painted beside the label by AgentChoiceDescriptionDelegate, which only
+        // draws the popup rows — so this half of the row exists in the open menu
+        // and nowhere else.
+        if (!description.isEmpty())
+            m_quickAddAgentModelSelector->setItemData(
+                row, description, kAgentChoiceDescriptionRole);
     };
     addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
               QStringLiteral("manual"), QString(),
@@ -4264,13 +4840,17 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
     QHash<QString, QString> providerIdentities;
     for (const Choice &choice : models) {
-        // Keep the success count in the row so the best model can be spotted
-        // without opening a tooltip. The run total remains in the tooltip: a
-        // session that is still under review must not be mistaken for a failed
-        // merge simply because it has not landed yet.
-        const QString label = QStringLiteral("%1 · %2 merged")
-                                  .arg(choice.label)
-                                  .arg(choice.mergedCount);
+        // Keep the success count in the open menu so the best model can be
+        // spotted without opening a tooltip — but only there (adhoc #1565). The
+        // closed control is a one-line badge on the prompt and its job is to say
+        // which model is about to run; "Opus 5 · 11 merged" sitting there all day
+        // is a scoreboard for a comparison the user is not making until they open
+        // the picker. The run total remains in the tooltip: a session that is
+        // still under review must not be mistaken for a failed merge simply
+        // because it has not landed yet.
+        const QString label = choice.label;
+        const QString mergedNote =
+            QStringLiteral("%1 merged").arg(choice.mergedCount);
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
         toolTip += QStringLiteral("\nMerged success: %1 of %2 runs")
@@ -4288,40 +4868,18 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(chosenIdentity, toolTip);
-        addChoice(choice.icon, label, choice.provider, choice.model, toolTip);
+        addChoice(choice.icon, label, choice.provider, choice.model, toolTip,
+                  mergedNote);
     }
 
-    // These API agents do not expose a per-run model chooser in this composer,
-    // but remain first-class choices in the combined menu.
-    addChoice(agentControlIcon(
-                  agentModelFaceIconIndex(QStringLiteral("openai"), QString())),
-              QStringLiteral("OpenAI API"), QStringLiteral("openai"), QString(),
-              QStringLiteral("Headless OpenAI API agent"));
-    addChoice(agentControlIcon(agentModelFaceIconIndex(
-                  QStringLiteral("claude-api"), QString())),
-              QStringLiteral("Claude API"), QStringLiteral("claude-api"),
-              QString(), QStringLiteral("Headless Claude API agent"));
-
-    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
-    // rather than starting an agent, so they are appended as their own group
-    // instead of being ranked among the coding models above — a 70B chat model
-    // is not "stronger" or "weaker" than an agent that can edit the repository.
-    QComboBox cloudflareModels;
-    populateCloudflareAiModelCombo(&cloudflareModels);
-    for (int i = 0; i < cloudflareModels.count(); ++i) {
-        const QString label = cloudflareModels.itemText(i);
-        // Cloudflare AI only answers a prompt and never creates a branch, so it
-        // has no merge outcome to count. Keep its label distinct rather than
-        // presenting a misleading permanent "0 merged" score.
-        // One mark for the whole group: these are relay chat models, not one of
-        // the top lines the World drew a portrait for.
-        addChoice(agentControlIcon(agentModelFaceIconIndex(kCloudflareAiProvider,
-                                                          QString())),
-                  label, kCloudflareAiProvider,
-                  cloudflareModels.itemData(i).toString(),
-                  QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
-                                 "starts no agent").arg(label));
-    }
+    // The headless API agents and the Cloudflare Workers AI chat models, in
+    // catalog order below the ranked coding models. None of them has a merge
+    // outcome to count — a Workers AI model only answers a prompt and never
+    // creates a branch — so they carry no "0 merged" score that would read as a
+    // failure rather than as "not applicable".
+    for (const ComposerModelChoice &entry : unranked)
+        addChoice(agentControlIcon(entry.iconIndex), entry.label, entry.provider,
+                  entry.model, entry.tooltip);
 
     int selected = -1;
     for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
@@ -4375,6 +4933,28 @@ QString MainWindow::testQuickAddAgentModelLabel(const QString &model) const
             return m_quickAddAgentModelSelector->itemText(row);
     }
     return QString();
+}
+
+QString MainWindow::testQuickAddAgentModelMergedNote(const QString &model) const
+{
+    if (!m_quickAddAgentModelSelector)
+        return QString();
+    for (int row = 0; row < m_quickAddAgentModelSelector->count(); ++row) {
+        if (m_quickAddAgentModelSelector->itemData(row, Qt::UserRole + 1)
+                .toString() == model)
+            return m_quickAddAgentModelSelector
+                ->itemData(row, kAgentChoiceDescriptionRole)
+                .toString();
+    }
+    return QString();
+}
+
+QString MainWindow::testPromptOverlayPlacement() const
+{
+    if (m_promptOverlayDetached)
+        return QStringLiteral("detached");
+    return m_promptOverlayFloating ? QStringLiteral("floating")
+                                   : QStringLiteral("anchored");
 }
 #endif // FORKMESH_WINDOW_TESTS
 
@@ -7100,15 +7680,18 @@ QWidget *MainWindow::buildLogSection()
     clearButton->setCursor(Qt::PointingHandCursor);
     clearButton->setToolTip("Clear all saved logs");
     setOcticon(clearButton, "trash", 14);
-    auto *cloudflareButton = new QPushButton("Cloudflare logs");
-    cloudflareButton->setObjectName(
-        QStringLiteral("cloudflareWorkerLogsButton"));
-    cloudflareButton->setCursor(Qt::PointingHandCursor);
-    cloudflareButton->setToolTip(
-        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
-    setOcticon(cloudflareButton, "cloud", 14);
-    connect(cloudflareButton, &QPushButton::clicked, this,
-            &MainWindow::showCloudflareWorkerLogs);
+    // The Cloudflare viewer moved down to the debug strip beside the Worker's
+    // own status dots (adhoc #1559). What sits here instead is the whole log in
+    // its own window: every retained line, unfiltered, in one scrollback.
+    auto *popoutButton = new QPushButton("Pop out");
+    popoutButton->setObjectName(QStringLiteral("logPopoutButton"));
+    popoutButton->setCursor(Qt::PointingHandCursor);
+    popoutButton->setToolTip(
+        QStringLiteral("Open the complete log — every category, every retained "
+                       "line — in its own window"));
+    setOcticon(popoutButton, "screen-full", 14);
+    connect(popoutButton, &QPushButton::clicked, this,
+            &MainWindow::showNetworkLogPopout);
 
     // The timeline is only a compact overview. Keep the paged rich log visible
     // below it so opening Logs stays useful immediately instead of spending the
@@ -7190,7 +7773,9 @@ QWidget *MainWindow::buildLogSection()
     filterScroll->setFrameShape(QFrame::NoFrame);
     filterScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     filterScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    filterScroll->setFixedHeight(34);
+    // Tall enough for the bigger, icon-bearing chips (adhoc #1559) plus the
+    // horizontal scrollbar the full taxonomy needs on a laptop-width window.
+    filterScroll->setFixedHeight(44);
 
     // Discover which categories the buffered history contains and build the
     // chips now, but leave rendering the history itself (the newest
@@ -7214,6 +7799,12 @@ QWidget *MainWindow::buildLogSection()
         m_logFilterEmptyNotice = false;
         if (m_settingsLog)
             m_settingsLog->clear();
+        // The pop-out shows the same buffer, so it empties with it.
+        if (m_logPopoutView)
+            m_logPopoutView->clear();
+        m_logPopoutDate.clear();
+        m_logPopoutPending.clear();
+        updateNetworkLogPopoutStatus();
         if (m_logActivityLights)
             m_logActivityLights->reset();
         if (m_logActivityHeader)
@@ -7228,7 +7819,7 @@ QWidget *MainWindow::buildLogSection()
     headerRow->addWidget(label);
     headerRow->addWidget(m_logTimelineSummary);
     headerRow->addStretch();
-    headerRow->addWidget(cloudflareButton);
+    headerRow->addWidget(popoutButton);
     headerRow->addWidget(clearButton);
 
     auto *layout = new QVBoxLayout(page);
@@ -7963,7 +8554,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessagePromptStatusLabel = new QLabel;
     m_topMessagePromptStatusLabel->setObjectName("topMessagePromptStatus");
     m_topMessagePromptStatusLabel->setTextFormat(Qt::RichText);
-    m_topMessagePromptStatusLabel->setWordWrap(true);
+    // One line, always — a live status keeps replacing this as the agent
+    // streams (adhoc #1570), so it elides rather than wrapping onto a second
+    // line and shifting the bubble's height on every event.
+    m_topMessagePromptStatusLabel->setWordWrap(false);
     m_topMessagePromptStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_topMessagePromptStatusLabel->setMinimumWidth(1);
     m_topMessagePromptStatusLabel->setFocusPolicy(Qt::NoFocus);
@@ -8391,6 +8985,24 @@ QWidget *MainWindow::buildBreadcrumb()
             [this] { showSection(kUsersSectionIndex); });
     m_usersNavButton->setVisible(m_isAdmin);
 
+    // Files sits directly under Users, closing out the Network group: the same
+    // file-directory glyph the repo Explorer tab uses, so the rail reads as
+    // "the mesh, then the machine it runs on". Unlike the repo Explorer this
+    // browses the real filesystem — hidden entries included — so .git,
+    // .forkmesh and dotfiles are reachable without leaving the app.
+    m_filesNavButton = new ActivityRailButton(QStringLiteral("file-directory"),
+                                              QStringLiteral("Files"));
+    m_filesNavButton->setObjectName(QStringLiteral("topNavButton"));
+    m_filesNavButton->setCheckable(true);
+    m_filesNavButton->setCursor(Qt::PointingHandCursor);
+    m_filesNavButton->setToolTip(
+        QStringLiteral("Files - browse this machine's filesystem, hidden files "
+                       "included"));
+    setOcticon(m_filesNavButton, "file-directory", 16);
+    m_navGroup->addButton(m_filesNavButton, kFilesSectionIndex);
+    connect(m_filesNavButton, &QPushButton::clicked, this,
+            [this] { showSection(kFilesSectionIndex); });
+
     // Rebuild+restart. It used to be an icon-only button on the window-chrome
     // line; it now sits in the debug bar's right-hand tool cluster as a captioned
     // rail item (see buildStatusBar), so the icon carries its word like every
@@ -8644,7 +9256,12 @@ void MainWindow::updateSignInButton()
 {
     if (!m_navSignInButton)
         return;
-    const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
+    // Signed-in state is now tracked explicitly on the auth path (`hasActive`
+    // includes a successful in-app login or matching desktop key binding). Use
+    // that primary signal and fall back to owner-name inference for any older
+    // state where the cached relay profile has already resolved the owner.
+    const bool signedIn = hasActiveAccountSession() ||
+                         !nodeOwnerDisplayName().trimmed().isEmpty();
     m_navSignInButton->setVisible(!m_headless && m_startupAuthResolved && !signedIn);
 }
 
@@ -10750,13 +11367,8 @@ void MainWindow::pushCurrentRepoUpstream()
                     clearRepoSyncActivity(index);
                     refreshRepoSyncIndicators();
                     openRepoDetail(index);
-                    // Switch to the Code tab (index 0) so the highlighted line is
-                    // visible; openRepoFileAtLine alone only touches the (currently
-                    // hidden) files panel.
-                    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-                        m_repoDetailTabs->button(0)->setChecked(true);
-                    if (m_repoDetailStack)
-                        m_repoDetailStack->setCurrentIndex(0);
+                    // openRepoFileAtLine opens the Files section itself
+                    // (adhoc #1590), which is where the highlighted line shows.
                     openRepoFileAtLine(path, line);
                     return;
                 }
@@ -11292,6 +11904,7 @@ void MainWindow::ensureSectionBuilt(int index)
     case 15: section = buildOrganizationTasksSection(); break;
     case 16: section = buildNotesSection(); break;
     case 17: section = buildUsersSection(); break;
+    case 18: section = buildFilesSection(); break;
     default: break;
     }
     if (!section)
@@ -11377,6 +11990,8 @@ void MainWindow::showSection(int index)
     } else if (index == kNetworkDiagnosticsSectionIndex) {
         refreshFirewallTables();
         refreshNetworkDiagnostics();
+        // Guards itself on the Web Requests tab being the current one.
+        refreshNetworkWebRequests();
     } else if (index == kControlNodeSectionIndex) {
         refreshControlNode();
     } else if (index == kOrganizationTasksSectionIndex) {
@@ -11385,6 +12000,8 @@ void MainWindow::showSection(int index)
         refreshNotes();
     } else if (index == kUsersSectionIndex) {
         refreshUsersPage();
+    } else if (index == kFilesSectionIndex) {
+        refreshFilesPage();
     }
 }
 
@@ -11403,6 +12020,12 @@ void MainWindow::showNetworkTab(int tabIndex)
 
 void MainWindow::refreshNetworkTab(int tabIndex)
 {
+    if (tabIndex >= 0 && tabIndex == m_networkWebRequestsTabIndex) {
+        // Web Requests reads the Worker's own traffic buckets, not local
+        // state, so it has its own fetch instead of the diagnostics rebuild.
+        refreshNetworkWebRequests();
+        return;
+    }
     switch (tabIndex) {
     case kNetworkRelaysTab:
         // Re-list and re-probe the relays each time the Relays tab opens.
@@ -11740,10 +12363,40 @@ void MainWindow::refreshNetworkReposPage()
     if (m_networkReposRefreshButton)
         m_networkReposRefreshButton->setEnabled(false);
 
+    const auto localCatalog = [this]() -> QJsonArray {
+        QJsonArray repos;
+        const QString localOwner = accountOwner().trimmed();
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (repo.previewOnly || repo.owner.trimmed().isEmpty() ||
+                repo.name.trimmed().isEmpty())
+                continue;
+            if (repo.localPath.trimmed().isEmpty() &&
+                repo.mirrorPath.trimmed().isEmpty())
+                continue;
+            const QString owner = repo.owner.trimmed();
+            const QString name = repo.name.trimmed();
+            QJsonObject localRepo;
+            localRepo.insert(QStringLiteral("owner"), owner);
+            localRepo.insert(QStringLiteral("name"), name);
+            localRepo.insert(QStringLiteral("source"), QStringLiteral("local-node"));
+            localRepo.insert(QStringLiteral("servingOwner"), owner);
+            const QString cloneUrl = repo.cloneUrl.trimmed();
+            localRepo.insert(
+                QStringLiteral("cloneUrl"),
+                cloneUrl.isEmpty() ? hostedCloneUrl(owner, name) : cloneUrl);
+            localRepo.insert(QStringLiteral("private"), repo.isPrivate);
+            localRepo.insert(QStringLiteral("isPrivate"), repo.isPrivate);
+            localRepo.insert(QStringLiteral("machineName"), localOwner);
+            repos.append(localRepo);
+        }
+        return repos;
+    };
+
     QNetworkRequest request(catalogListUrl());
     request.setRawHeader("accept", "application/json");
     QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, generation] {
+	connect(reply, &QNetworkReply::finished, this,
+	        [this, reply, localCatalog, generation] {
         const QByteArray body = reply->readAll();
         const QNetworkReply::NetworkError error = reply->error();
         const QString errorString = reply->errorString();
@@ -11753,9 +12406,19 @@ void MainWindow::refreshNetworkReposPage()
         if (m_networkReposRefreshButton)
             m_networkReposRefreshButton->setEnabled(true);
         if (error != QNetworkReply::NoError) {
-            if (m_networkReposStatus)
+            if (m_networkReposStatus) {
+                const QJsonArray localRepos = localCatalog();
+                if (!localRepos.isEmpty()) {
+                    m_networkReposStatus->setText(
+                        QStringLiteral("Showing local repositories (website unavailable): %1")
+                            .arg(errorString));
+                    renderNetworkRepos(localRepos);
+                    return;
+                }
                 m_networkReposStatus->setText(
-                    QStringLiteral("Repositories unavailable: %1").arg(errorString));
+                    QStringLiteral("Repositories unavailable: %1")
+                        .arg(errorString));
+            }
             return;
         }
         const QJsonObject obj = QJsonDocument::fromJson(body).object();
@@ -17058,6 +17721,188 @@ QWidget *networkTabPage()
     return page;
 }
 
+// Web Requests tab columns: identity first, then volume, the status-class
+// split, and latency. Everything /api/metrics/summary publishes per group.
+enum WebRequestsColumn {
+    kWebRequestsColGroup = 0,
+    kWebRequestsColRequests,
+    kWebRequestsColShare,
+    kWebRequestsCol2xx,
+    kWebRequestsCol3xx,
+    kWebRequestsCol4xx,
+    kWebRequestsCol5xx,
+    kWebRequestsColAvg,
+    kWebRequestsColMax,
+    kWebRequestsColCount,
+};
+
+// A table item that displays a formatted count but sorts by the raw value
+// (QTableWidgetItem's default comparison is lexical over the display text).
+class WebRequestsNumberItem final : public QTableWidgetItem
+{
+public:
+    WebRequestsNumberItem(qlonglong value, const QString &text)
+        : QTableWidgetItem(text)
+    {
+        setData(Qt::UserRole, value);
+        setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    }
+
+    bool operator<(const QTableWidgetItem &other) const override
+    {
+        return data(Qt::UserRole).toLongLong() <
+               other.data(Qt::UserRole).toLongLong();
+    }
+};
+
+// The landing page's "Top endpoints" bar chart redrawn as a QWidget: one
+// horizontal bar per route group, most frequent first. Identity rides the row
+// label and the value a direct label at the bar's end, so a single hue is
+// enough — categorical slot 1 (#3987e5), the same hue the landing page's
+// charts use for the request series.
+class WebRequestsBarChart final : public QWidget
+{
+public:
+    struct Entry {
+        QString group;
+        qlonglong requests = 0;
+        QString valueLabel;
+        QString tooltip;
+    };
+
+    explicit WebRequestsBarChart(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("webRequestsChart"));
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setMouseTracking(true);
+        setFixedHeight(kRowHeight + 2 * kPadding);
+    }
+
+    void setEntries(const QVector<Entry> &entries, const QString &emptyText)
+    {
+        m_entries = entries;
+        m_emptyText = emptyText;
+        m_hovered = -1;
+        setFixedHeight(qMax(1, int(m_entries.size())) * kRowHeight +
+                       2 * kPadding);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const QColor ink = palette().color(QPalette::WindowText);
+        if (m_entries.isEmpty()) {
+            QColor muted = ink;
+            muted.setAlpha(150);
+            painter.setPen(muted);
+            painter.drawText(rect(), Qt::AlignCenter, m_emptyText);
+            return;
+        }
+
+        QFont valueFont = font();
+        valueFont.setPointSizeF(qMax(7.0, valueFont.pointSizeF() - 1.0));
+        const QFontMetrics labelMetrics(font());
+        const QFontMetrics valueMetrics(valueFont);
+
+        qlonglong maxRequests = 1;
+        int labelWidth = 0;
+        int valueWidth = 0;
+        for (const Entry &entry : m_entries) {
+            maxRequests = qMax(maxRequests, entry.requests);
+            labelWidth = qMax(labelWidth,
+                              labelMetrics.horizontalAdvance(entry.group));
+            valueWidth = qMax(
+                valueWidth, valueMetrics.horizontalAdvance(entry.valueLabel));
+        }
+        labelWidth = qMin(labelWidth, width() / 3);
+        const qreal barLeft = labelWidth + 12.0;
+        const qreal barSpan =
+            qMax(1.0, width() - barLeft - valueWidth - 12.0);
+
+        for (int row = 0; row < m_entries.size(); ++row) {
+            const Entry &entry = m_entries.at(row);
+            const qreal top = kPadding + row * kRowHeight;
+
+            if (row == m_hovered) {
+                QColor highlight = ink;
+                highlight.setAlpha(14);
+                painter.fillRect(QRectF(0, top, width(), kRowHeight),
+                                 highlight);
+            }
+
+            painter.setFont(font());
+            painter.setPen(ink);
+            painter.drawText(
+                QRectF(0, top, labelWidth, kRowHeight),
+                Qt::AlignRight | Qt::AlignVCenter,
+                labelMetrics.elidedText(entry.group, Qt::ElideMiddle,
+                                        labelWidth));
+
+            const qreal barWidth = qMax(
+                2.0, barSpan * (qreal(entry.requests) / qreal(maxRequests)));
+            const QRectF bar(barLeft, top + (kRowHeight - kBarHeight) / 2.0,
+                             barWidth, kBarHeight);
+            // Rounded data end, square baseline end. Winding fill so the two
+            // overlapping rects union instead of odd-even cancelling.
+            QPainterPath path;
+            path.setFillRule(Qt::WindingFill);
+            path.addRoundedRect(bar, 4.0, 4.0);
+            path.addRect(bar.left(), bar.top(),
+                         qMin(4.0, bar.width() / 2.0), bar.height());
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(QStringLiteral("#3987e5")));
+            painter.drawPath(path);
+
+            QColor valueInk = ink;
+            valueInk.setAlpha(190);
+            painter.setFont(valueFont);
+            painter.setPen(valueInk);
+            painter.drawText(
+                QRectF(bar.right() + 6.0, top,
+                       qMax(0.0, width() - bar.right() - 6.0), kRowHeight),
+                Qt::AlignLeft | Qt::AlignVCenter, entry.valueLabel);
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int row = rowAt(event->pos());
+        if (row != m_hovered) {
+            m_hovered = row;
+            update();
+        }
+        if (row >= 0 && row < m_entries.size())
+            QToolTip::showText(event->globalPosition().toPoint(),
+                               m_entries.at(row).tooltip, this);
+        else
+            QToolTip::hideText();
+    }
+
+    void leaveEvent(QEvent *) override
+    {
+        m_hovered = -1;
+        update();
+    }
+
+private:
+    int rowAt(const QPoint &pos) const
+    {
+        const int row = (pos.y() - kPadding) / kRowHeight;
+        return row >= 0 && row < m_entries.size() ? row : -1;
+    }
+
+    static constexpr int kRowHeight = 26;
+    static constexpr int kBarHeight = 12;
+    static constexpr int kPadding = 4;
+    QVector<Entry> m_entries;
+    QString m_emptyText;
+    int m_hovered = -1;
+};
+
 enum UsersColumn {
     kUsersColName = 0,
     kUsersColSolana,
@@ -17066,6 +17911,10 @@ enum UsersColumn {
     kUsersColJoined,
     kUsersColWorldActivity,
     kUsersColActivityRecency,
+    kUsersColPulls,
+    kUsersColIssues,
+    kUsersColCommits,
+    kUsersColDiscussions,
     kUsersColLastEmail,
     kUsersColEmailDelivery,
     kUsersColCountry,
@@ -17081,7 +17930,9 @@ QStringList usersTableHeaders()
             QStringLiteral("Email verified"),
             QStringLiteral("Status"), QStringLiteral("Joined"),
             QStringLiteral("World activity"),
-            QStringLiteral("Activity recency"), QStringLiteral("Last email"),
+            QStringLiteral("Activity recency"), QStringLiteral("PRs"),
+            QStringLiteral("Issues"), QStringLiteral("Commits"),
+            QStringLiteral("Discussions"), QStringLiteral("Last email"),
             QStringLiteral("Email delivery"), QStringLiteral("Country"),
             QStringLiteral("Browser"), QStringLiteral("OS"),
             QStringLiteral("Nodes")};
@@ -17272,6 +18123,30 @@ void MainWindow::renderUsersPage(const QJsonArray &users)
             row, kUsersColActivityRecency,
             usersTableItem(recency.first, recency.second));
 
+        const int pulls =
+            static_cast<int>(user.value(QStringLiteral("pulls")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColPulls,
+            usersTableItem(QString::number(pulls), pulls));
+
+        const int issues =
+            static_cast<int>(user.value(QStringLiteral("issues")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColIssues,
+            usersTableItem(QString::number(issues), issues));
+
+        const int commits =
+            static_cast<int>(user.value(QStringLiteral("commits")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColCommits,
+            usersTableItem(QString::number(commits), commits));
+
+        const int discussions =
+            static_cast<int>(user.value(QStringLiteral("discussions")).toDouble());
+        m_usersTable->setItem(
+            row, kUsersColDiscussions,
+            usersTableItem(QString::number(discussions), discussions));
+
         const qint64 lastEmail = static_cast<qint64>(
             user.value(QStringLiteral("lastEmailAt")).toDouble());
         m_usersTable->setItem(
@@ -17411,6 +18286,7 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
             [this] {
                 refreshFirewallTables();
                 refreshNetworkDiagnostics();
+                refreshNetworkWebRequests();
             });
     header->addWidget(m_networkDiagnosticsRefreshButton);
     outer->addLayout(header);
@@ -17467,6 +18343,70 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
             [this] { m_networkEndpointsUserSorted = true; });
     endpointsLayout->addWidget(m_networkEndpointsTable, 1);
     tabs->addTab(endpointsPage, QStringLiteral("Endpoints"));
+
+    // Web Requests: the mirror image of Endpoints. That table is the traffic
+    // this client sends; this one is everything the Worker answered, fetched
+    // from the same public /api/metrics/summary buckets the api.forkmesh.com
+    // landing page charts — masked route groups, most frequent first. The
+    // chart carries the busiest groups; the table lists every group the
+    // Worker reported, without pagination.
+    auto *webRequestsPage = networkTabPage();
+    auto *webRequestsLayout =
+        qobject_cast<QVBoxLayout *>(webRequestsPage->layout());
+    auto *webRequestsRow = new QHBoxLayout;
+    webRequestsRow->setContentsMargins(0, 0, 0, 0);
+    webRequestsRow->setSpacing(8);
+    m_networkWebRequestsStatus = new QLabel(
+        QStringLiteral("Open this tab to load the worker's web requests."));
+    m_networkWebRequestsStatus->setObjectName("mutedLabel");
+    // A failure line quotes the worker's own error, so it can run long: wrap
+    // it instead of widening the page, and let it be selected for a report.
+    m_networkWebRequestsStatus->setWordWrap(true);
+    m_networkWebRequestsStatus->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
+    webRequestsRow->addWidget(m_networkWebRequestsStatus, 1);
+    m_networkWebRequestsRange = new QComboBox;
+    m_networkWebRequestsRange->setCursor(Qt::PointingHandCursor);
+    m_networkWebRequestsRange->addItem(QStringLiteral("Last hour"), 60);
+    m_networkWebRequestsRange->addItem(QStringLiteral("Last 6 hours"), 360);
+    m_networkWebRequestsRange->addItem(QStringLiteral("Last 24 hours"), 1440);
+    connect(m_networkWebRequestsRange, &QComboBox::currentIndexChanged, this,
+            [this](int) {
+                m_networkWebRequestsMinutes =
+                    m_networkWebRequestsRange->currentData().toInt();
+                refreshNetworkWebRequests();
+            });
+    webRequestsRow->addWidget(m_networkWebRequestsRange);
+    webRequestsLayout->addLayout(webRequestsRow);
+
+    m_networkWebRequestsChart = new WebRequestsBarChart;
+    webRequestsLayout->addWidget(m_networkWebRequestsChart);
+
+    m_networkWebRequestsTable = new QTableWidget(0, kWebRequestsColCount);
+    installColumnHeaderMenu(m_networkWebRequestsTable);
+    m_networkWebRequestsTable->setObjectName("issueTable");
+    m_networkWebRequestsTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Route group"), QStringLiteral("Requests"),
+         QStringLiteral("Share"), QStringLiteral("2xx"), QStringLiteral("3xx"),
+         QStringLiteral("4xx"), QStringLiteral("5xx"), QStringLiteral("Avg ms"),
+         QStringLiteral("Max ms")});
+    m_networkWebRequestsTable->verticalHeader()->setVisible(false);
+    m_networkWebRequestsTable->setSelectionBehavior(
+        QAbstractItemView::SelectRows);
+    m_networkWebRequestsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_networkWebRequestsTable->setShowGrid(false);
+    m_networkWebRequestsTable->setSortingEnabled(true);
+    networkPrepareFullTable(m_networkWebRequestsTable);
+    for (int c = 0; c < m_networkWebRequestsTable->columnCount(); ++c)
+        m_networkWebRequestsTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_networkWebRequestsTable);
+    connect(m_networkWebRequestsTable->horizontalHeader(),
+            &QHeaderView::sortIndicatorChanged, this,
+            [this] { m_networkWebRequestsUserSorted = true; });
+    webRequestsLayout->addWidget(m_networkWebRequestsTable, 1);
+    m_networkWebRequestsTabIndex =
+        tabs->addTab(webRequestsPage, QStringLiteral("Web Requests"));
 
     auto *socketsPage = networkTabPage();
     auto *socketsLayout = qobject_cast<QVBoxLayout *>(socketsPage->layout());
@@ -17840,6 +18780,397 @@ void MainWindow::refreshNetworkDiagnostics()
     m_networkDiagnosticsTable->setSortingEnabled(true);
     m_networkDiagnosticsTable->resizeColumnsToContents();
     m_networkDiagnosticsTable->resizeRowsToContents();
+}
+
+namespace {
+
+// How many times one open of the tab asks the Worker before giving up. The
+// relay answers a slice of every request with a Cloudflare 1101 error page
+// (adhoc #1585), so a single attempt fails often enough to look broken.
+constexpr int kWebRequestsMaxAttempts = 3;
+
+// A short, single-line quote of whatever the Worker actually sent back. HTML
+// error pages and JSON blobs both collapse to something a user can read (and
+// paste into a bug report) instead of flooding the status line.
+QString webRequestsBodySnippet(const QByteArray &body)
+{
+    QString text = QString::fromUtf8(body).simplified();
+    if (text.startsWith(QLatin1Char('<'))) {
+        // Cloudflare's 1101/1102 pages are HTML; keep their words, drop tags.
+        static const QRegularExpression tags(QStringLiteral("<[^>]*>"));
+        text = text.remove(tags).simplified();
+    }
+    if (text.size() > 160)
+        text = text.left(157) + QStringLiteral("...");
+    return text;
+}
+
+QString webRequestsSeconds(qint64 ms)
+{
+    const qint64 seconds = (qMax<qint64>(0, ms) + 999) / 1000;
+    return seconds >= 60 ? QStringLiteral("%1m %2s").arg(seconds / 60).arg(seconds % 60)
+                         : QStringLiteral("%1s").arg(seconds);
+}
+
+// Names what actually failed. Everything arrives as plain values rather than a
+// QNetworkReply so the tests can drive every branch without a socket. A
+// positive cooldownMs means this client suppressed the request itself; a
+// negative one means it did with no window left to quote.
+QString webRequestsFailureDetail(const QString &host, qint64 cooldownMs,
+                                 int httpStatus, const QString &transportError,
+                                 const QString &parseError,
+                                 const QString &payloadError,
+                                 const QByteArray &body)
+{
+    const QString where =
+        host.isEmpty() ? QStringLiteral("the worker") : host;
+    // The client's own host-wide cooldown, not the network: say so, because
+    // this request never left the machine and waiting is the only cure.
+    if (cooldownMs > 0)
+        return QStringLiteral(
+                   "%1 is in this client's rate-limit cooldown after repeated "
+                   "relay errors (%2 left); the request never left this machine")
+            .arg(where, webRequestsSeconds(cooldownMs));
+    if (cooldownMs < 0)
+        return QStringLiteral(
+                   "%1 is in this client's rate-limit cooldown after repeated "
+                   "relay errors; the request never left this machine")
+            .arg(where);
+    const QString snippet = webRequestsBodySnippet(body);
+    if (httpStatus >= 400)
+        return snippet.isEmpty()
+                   ? QStringLiteral("%1 answered HTTP %2").arg(where).arg(httpStatus)
+                   : QStringLiteral("%1 answered HTTP %2 - %3")
+                         .arg(where, QString::number(httpStatus), snippet);
+    if (!transportError.isEmpty())
+        return QStringLiteral("%1 could not be reached - %2")
+            .arg(where, transportError);
+    if (!parseError.isEmpty())
+        return QStringLiteral("%1 answered unreadable JSON - %2%3")
+            .arg(where, parseError,
+                 snippet.isEmpty() ? QString()
+                                   : QStringLiteral(" (%1)").arg(snippet));
+    if (!payloadError.isEmpty())
+        return QStringLiteral("%1 refused the metrics query - %2")
+            .arg(where, payloadError);
+    return QStringLiteral("%1 answered a payload without ok=true%2")
+        .arg(where, snippet.isEmpty() ? QString()
+                                      : QStringLiteral(" (%1)").arg(snippet));
+}
+
+} // namespace
+
+void MainWindow::showNetworkWebRequestsFailure(const QString &detail,
+                                               bool willRetry, qint64 retryInMs)
+{
+    // Every failed attempt is logged, not just the last: a tab that recovers
+    // on attempt three still leaves the relay's 500s visible in the Log tab.
+    logSystem(QStringLiteral("Web Requests: %1.").arg(detail));
+    if (!m_networkWebRequestsStatus)
+        return;
+    if (willRetry) {
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral("Could not load web requests: %1. Retrying "
+                           "(attempt %2 of %3) in %4...")
+                .arg(detail)
+                .arg(m_networkWebRequestsAttempt + 1)
+                .arg(kWebRequestsMaxAttempts)
+                .arg(webRequestsSeconds(retryInMs)));
+    } else if (m_networkWebRequestsAttempt > 0) {
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral("Could not load web requests: %1. Gave up after %2 "
+                           "attempt(s) - reopen the tab or pick a range to try "
+                           "again.")
+                .arg(detail)
+                .arg(m_networkWebRequestsAttempt));
+    } else {
+        // Nothing was ever sent (no relay configured), so there is no attempt
+        // count to report and nothing a retry could improve.
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral("Could not load web requests: %1.").arg(detail));
+    }
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testNetworkWebRequestsFailureText(
+    int httpStatus, const QString &transportError, const QString &parseError,
+    const QString &payloadError, const QByteArray &body, qint64 cooldownMs,
+    qint64 retryInMs)
+{
+    m_networkWebRequestsAttempt = 1;
+    showNetworkWebRequestsFailure(
+        webRequestsFailureDetail(QStringLiteral("forkmesh.com"), cooldownMs,
+                                 httpStatus, transportError, parseError,
+                                 payloadError, body),
+        retryInMs >= 0, retryInMs);
+    m_networkWebRequestsAttempt = 0;
+    return testNetworkWebRequestsStatusText();
+}
+#endif // FORKMESH_WINDOW_TESTS
+
+void MainWindow::refreshNetworkWebRequests(bool isRetry)
+{
+    if (!m_networkWebRequestsTable || !m_networkAccess ||
+        m_networkWebRequestsInFlight)
+        return;
+    // Same visibility discipline as refreshNetworkDiagnostics(), one level
+    // down: only fetch while this tab is actually on screen. Opening the tab
+    // (or the section with it in front) refreshes it, so nothing goes stale.
+    if (m_sectionStack &&
+        m_sectionStack->currentIndex() != kNetworkDiagnosticsSectionIndex)
+        return;
+    if (m_networkTabs &&
+        m_networkTabs->currentIndex() != m_networkWebRequestsTabIndex)
+        return;
+
+    // A user-driven open, or a range change, is a fresh load: forget the
+    // attempts a previous one spent and drop any retry it still had pending.
+    if (!isRetry) {
+        m_networkWebRequestsAttempt = 0;
+        if (m_networkWebRequestsRetryTimer)
+            m_networkWebRequestsRetryTimer->stop();
+    }
+
+    QUrl url = catalogApiUrl();
+    if (!url.isValid() || url.host().isEmpty()) {
+        showNetworkWebRequestsFailure(
+            QStringLiteral("no relay host is configured in Settings"), false, 0);
+        return;
+    }
+    url.setPath(QStringLiteral("/api/metrics/summary"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("minutes"),
+                       QString::number(m_networkWebRequestsMinutes));
+    // Every group the Worker holds, not the landing page's top-40 slice —
+    // route_group() already caps cardinality before folding into "other".
+    query.addQueryItem(QStringLiteral("limit"), QStringLiteral("500"));
+    url.setQuery(query);
+    url.setFragment(QString());
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("accept", "application/json");
+    request.setTransferTimeout(8000);
+    m_networkWebRequestsInFlight = true;
+    ++m_networkWebRequestsAttempt;
+    if (m_networkWebRequestsStatus)
+        m_networkWebRequestsStatus->setText(
+            m_networkWebRequestsAttempt > 1
+                ? QStringLiteral("Loading web requests (attempt %1 of %2)...")
+                      .arg(m_networkWebRequestsAttempt)
+                      .arg(kWebRequestsMaxAttempts)
+                : QStringLiteral("Loading web requests..."));
+    const QString host = url.host();
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, host] {
+        m_networkWebRequestsInFlight = false;
+        const QByteArray body = reply->readAll();
+        const bool transportOk = reply->error() == QNetworkReply::NoError;
+        const QString transportError =
+            transportOk ? QString() : reply->errorString();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // A reply the firewall manager answered locally never reached the
+        // network; its "rate-limited" error string would otherwise be pinned
+        // on the Worker.
+        const bool suppressed =
+            BackoffNetworkAccessManager::isBackoffSuppressed(reply);
+        reply->deleteLater();
+        QJsonParseError parseError;
+        const QJsonDocument document =
+            QJsonDocument::fromJson(body, &parseError);
+        const QJsonObject payload = document.object();
+        if (transportOk && parseError.error == QJsonParseError::NoError &&
+            document.isObject() &&
+            payload.value(QStringLiteral("ok")).toBool()) {
+            m_networkWebRequestsAttempt = 0;
+            renderNetworkWebRequests(payload);
+            return;
+        }
+
+        // The relay's 5xx also trips this client's host-wide cooldown, so the
+        // next attempt has to wait for that window to close or it is answered
+        // locally without ever being sent.
+        qint64 cooldownMs = 0;
+        if (auto *manager = requestFirewallManager(m_networkAccess))
+            cooldownMs = manager->hostCooldownRemainingMs(host);
+        const QString detail = webRequestsFailureDetail(
+            host, suppressed ? (cooldownMs > 0 ? cooldownMs : -1) : 0, httpStatus,
+            transportError, parseError.error == QJsonParseError::NoError
+                                ? QString()
+                                : parseError.errorString(),
+            payload.value(QStringLiteral("error")).toString(), body);
+
+        const qint64 retryInMs =
+            qMax<qint64>(cooldownMs + 400, 1200LL * m_networkWebRequestsAttempt);
+        // Past the cap the wait is long enough that the reader is better served
+        // by a message than by a spinner they cannot see progress on.
+        const bool willRetry =
+            m_networkWebRequestsAttempt < kWebRequestsMaxAttempts &&
+            retryInMs <= 30000;
+        showNetworkWebRequestsFailure(detail, willRetry, retryInMs);
+        if (!willRetry)
+            return;
+        if (!m_networkWebRequestsRetryTimer) {
+            m_networkWebRequestsRetryTimer = new QTimer(this);
+            m_networkWebRequestsRetryTimer->setSingleShot(true);
+            connect(m_networkWebRequestsRetryTimer, &QTimer::timeout, this,
+                    [this] { refreshNetworkWebRequests(true); });
+        }
+        m_networkWebRequestsRetryTimer->start(int(retryInMs));
+    });
+}
+
+void MainWindow::renderNetworkWebRequests(const QJsonObject &payload)
+{
+    if (!m_networkWebRequestsTable || !m_networkWebRequestsChart)
+        return;
+
+    // The Worker answers most-frequent-first already, but sort defensively:
+    // the chart's bar order and its top-N cut both depend on it.
+    QVector<QJsonObject> groups;
+    const QJsonArray groupsPayload =
+        payload.value(QStringLiteral("groups")).toArray();
+    groups.reserve(groupsPayload.size());
+    for (const QJsonValue &value : groupsPayload)
+        groups.append(value.toObject());
+    std::sort(groups.begin(), groups.end(),
+              [](const QJsonObject &a, const QJsonObject &b) {
+                  return a.value(QStringLiteral("requests")).toDouble() >
+                         b.value(QStringLiteral("requests")).toDouble();
+              });
+    qlonglong totalRequests = 0;
+    qlonglong totalErrors = 0;
+    for (const QJsonObject &group : std::as_const(groups)) {
+        totalRequests +=
+            qlonglong(group.value(QStringLiteral("requests")).toDouble());
+        totalErrors +=
+            qlonglong(group.value(QStringLiteral("errors")).toDouble());
+    }
+    const auto share = [totalRequests](qlonglong requests) {
+        return totalRequests > 0 ? 100.0 * requests / totalRequests : 0.0;
+    };
+
+    // The chart carries the busiest groups (the landing page's top-12 cut);
+    // the table below is the full list.
+    QVector<WebRequestsBarChart::Entry> chartEntries;
+    for (const QJsonObject &group : std::as_const(groups)) {
+        if (chartEntries.size() >= 12)
+            break;
+        const QJsonObject classes =
+            group.value(QStringLiteral("classes")).toObject();
+        WebRequestsBarChart::Entry entry;
+        entry.group = group.value(QStringLiteral("group")).toString();
+        entry.requests =
+            qlonglong(group.value(QStringLiteral("requests")).toDouble());
+        entry.valueLabel = formatCount(entry.requests);
+        entry.tooltip =
+            QStringLiteral("%1\n%2 request(s) - %3% of the window\n"
+                           "avg %4 ms - max %5 ms\n2xx %6 - 3xx %7 - 4xx %8 - "
+                           "5xx %9")
+                .arg(entry.group, formatCount(entry.requests),
+                     QString::number(share(entry.requests), 'f', 1),
+                     QString::number(qlonglong(
+                         group.value(QStringLiteral("avg_ms")).toDouble())),
+                     QString::number(qlonglong(
+                         group.value(QStringLiteral("dur_ms_max")).toDouble())),
+                     formatCount(qlonglong(
+                         classes.value(QStringLiteral("2xx")).toDouble())),
+                     formatCount(qlonglong(
+                         classes.value(QStringLiteral("3xx")).toDouble())),
+                     formatCount(qlonglong(
+                         classes.value(QStringLiteral("4xx")).toDouble())))
+                .arg(formatCount(qlonglong(
+                    classes.value(QStringLiteral("5xx")).toDouble())));
+        chartEntries.append(entry);
+    }
+    static_cast<WebRequestsBarChart *>(m_networkWebRequestsChart)
+        ->setEntries(chartEntries,
+                     QStringLiteral(
+                         "No web requests reached the worker in this window."));
+
+    {
+        TableRepaintGuard repaintGuard(m_networkWebRequestsTable);
+        const int sortColumn = m_networkWebRequestsTable->horizontalHeader()
+                                   ->sortIndicatorSection();
+        const Qt::SortOrder sortOrder =
+            m_networkWebRequestsTable->horizontalHeader()->sortIndicatorOrder();
+        m_networkWebRequestsTable->setSortingEnabled(false);
+        m_networkWebRequestsTable->setRowCount(0);
+        for (const QJsonObject &group : std::as_const(groups)) {
+            const QJsonObject classes =
+                group.value(QStringLiteral("classes")).toObject();
+            const qlonglong requests =
+                qlonglong(group.value(QStringLiteral("requests")).toDouble());
+            const int row = m_networkWebRequestsTable->rowCount();
+            m_networkWebRequestsTable->insertRow(row);
+            const QString name =
+                group.value(QStringLiteral("group")).toString();
+            m_networkWebRequestsTable->setItem(row, kWebRequestsColGroup,
+                                               networkDiagItem(name, name));
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColRequests,
+                new WebRequestsNumberItem(requests, formatCount(requests)));
+            const double sharePercent = share(requests);
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColShare,
+                new WebRequestsNumberItem(
+                    qlonglong(sharePercent * 10.0),
+                    QStringLiteral("%1%").arg(sharePercent, 0, 'f', 1)));
+            const struct {
+                WebRequestsColumn column;
+                const char *key;
+            } classColumns[] = {{kWebRequestsCol2xx, "2xx"},
+                                {kWebRequestsCol3xx, "3xx"},
+                                {kWebRequestsCol4xx, "4xx"},
+                                {kWebRequestsCol5xx, "5xx"}};
+            for (const auto &classColumn : classColumns) {
+                const qlonglong count = qlonglong(
+                    classes.value(QLatin1String(classColumn.key)).toDouble());
+                auto *item =
+                    new WebRequestsNumberItem(count, formatCount(count));
+                if (classColumn.column == kWebRequestsCol5xx && count > 0)
+                    item->setForeground(QColor(QStringLiteral("#f85149")));
+                m_networkWebRequestsTable->setItem(row, classColumn.column,
+                                                   item);
+            }
+            const qlonglong avgMs =
+                qlonglong(group.value(QStringLiteral("avg_ms")).toDouble());
+            const qlonglong maxMs = qlonglong(
+                group.value(QStringLiteral("dur_ms_max")).toDouble());
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColAvg,
+                new WebRequestsNumberItem(avgMs, formatCount(avgMs)));
+            m_networkWebRequestsTable->setItem(
+                row, kWebRequestsColMax,
+                new WebRequestsNumberItem(maxMs, formatCount(maxMs)));
+        }
+        m_networkWebRequestsTable->setSortingEnabled(true);
+        if (m_networkWebRequestsUserSorted)
+            m_networkWebRequestsTable->sortItems(sortColumn, sortOrder);
+        else
+            m_networkWebRequestsTable->sortItems(kWebRequestsColRequests,
+                                                 Qt::DescendingOrder);
+        m_networkWebRequestsTable->resizeColumnsToContents();
+        m_networkWebRequestsTable->resizeRowsToContents();
+    }
+
+    if (m_networkWebRequestsStatus) {
+        const int windowMinutes =
+            payload.value(QStringLiteral("windowMinutes"))
+                .toInt(m_networkWebRequestsMinutes);
+        const QString window =
+            windowMinutes % 60 == 0
+                ? QStringLiteral("%1 hour(s)").arg(windowMinutes / 60)
+                : QStringLiteral("%1 minute(s)").arg(windowMinutes);
+        m_networkWebRequestsStatus->setText(
+            QStringLiteral(
+                "%1 request(s) across %2 route group(s) in the last %3 - "
+                "%4 5xx")
+                .arg(formatCount(totalRequests), formatCount(groups.size()),
+                     window, formatCount(totalErrors)));
+    }
 }
 
 void MainWindow::showEndpointRequestDetails(int row, int column)

@@ -184,8 +184,8 @@ QPushButton#ghostButton:hover { color: #e6edf3; }
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
 QPushButton#logFilterChip {
     background: transparent; border: 1px solid #30363d; color: #8b949e;
-    font-weight: 600; font-size: 11px; padding: 2px 10px; border-radius: 11px;
-    min-height: 20px; max-height: 24px;
+    font-weight: 600; font-size: 12px; padding: 4px 12px; border-radius: 13px;
+    min-height: 24px; max-height: 28px;
 }
 QPushButton#logFilterChip:hover { color: #e6edf3; border-color: #6e7681; }
 QPushButton#logFilterChip:checked {
@@ -428,11 +428,14 @@ QPushButton#relayJoinApproveButton:hover { background-color: #f85149; }
    always visible, with a clear selected state. */
 #topNavBar { background: transparent; }
 #navDivider { background-color: #21262d; border: none; }
-QPushButton#topNavButton {
+QPushButton#topNavButton, QPushButton#cloudflareWorkerLogsButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #8b949e; font-size: 13px; font-weight: 600; padding: 5px 12px;
 }
-QPushButton#topNavButton:hover { background-color: #161b22; color: #e6edf3; }
+QPushButton#topNavButton:hover,
+QPushButton#cloudflareWorkerLogsButton:hover {
+    background-color: #161b22; color: #e6edf3;
+}
 QPushButton#topNavButton:checked {
     background-color: #21262d; color: #e6edf3; border-color: #30363d;
 }
@@ -506,7 +509,7 @@ QPushButton#agentsMagicButton:checked {
 #topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
-#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptStatus { font-weight: 500; font-size: 11px; }
 #topMessagePromptImage {
     background: rgba(48,54,61,0.35); border: 1px solid #30363d;
     border-radius: 5px; padding: 3px;
@@ -717,9 +720,9 @@ QPushButton#agentQueueLimitDecreaseButton:disabled {
     font-weight: 700;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(139,148,158,0.3); border-radius: 4px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(139,148,158,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #3fb950;
     padding: 4px; border-radius: 4px;
@@ -929,7 +932,7 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #0f2a1a; border: 1px solid #238636; border-radius: 10px;
     color: #3fb950; padding: 2px 8px; font-size: 11px; font-weight: 700;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #010409; border: none;
     color: #8b949e; font-family: monospace; font-size: 12px;
 }
@@ -1074,7 +1077,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     color: #6e7681;
     font-size: 11px;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #010409;
     border: none;
     color: #8b949e;
@@ -1122,10 +1125,10 @@ QPushButton#promptDetachButton {
     border-radius: 8px;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(139,148,158,0.3); border-radius: 4px;
     min-height: 38px; max-height: 38px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(139,148,158,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #3fb950;
     padding: 4px; border-radius: 4px;
@@ -1488,7 +1491,7 @@ QToolButton#agentStatusPill {
     background-color: transparent;
     border: 1px solid #d1d5db;
     border-radius: 12px;
-    padding: 2px 7px 2px 4px;
+    padding: 0px 7px 0px 4px;
     font-size: 11px;
     font-weight: 600;
     color: #1f2937;
@@ -1662,8 +1665,8 @@ QPushButton#ghostButton:hover { color: #1f2328; }
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
 QPushButton#logFilterChip {
     background: transparent; border: 1px solid #d0d7de; color: #656d76;
-    font-weight: 600; font-size: 11px; padding: 2px 10px; border-radius: 11px;
-    min-height: 20px; max-height: 24px;
+    font-weight: 600; font-size: 12px; padding: 4px 12px; border-radius: 13px;
+    min-height: 24px; max-height: 28px;
 }
 QPushButton#logFilterChip:hover { color: #1f2328; border-color: #afb8c1; }
 QPushButton#logFilterChip:checked {
@@ -1883,11 +1886,14 @@ QPushButton#relayJoinApproveButton:hover { background-color: #a40e26; }
    always visible, with a clear selected state. */
 #topNavBar { background: transparent; }
 #navDivider { background-color: #d0d7de; border: none; }
-QPushButton#topNavButton {
+QPushButton#topNavButton, QPushButton#cloudflareWorkerLogsButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #656d76; font-size: 13px; font-weight: 600; padding: 5px 12px;
 }
-QPushButton#topNavButton:hover { background-color: #eaeef2; color: #1f2328; }
+QPushButton#topNavButton:hover,
+QPushButton#cloudflareWorkerLogsButton:hover {
+    background-color: #eaeef2; color: #1f2328;
+}
 QPushButton#topNavButton:checked {
     background-color: #eaeef2; color: #1f2328; border-color: #d0d7de;
 }
@@ -1949,7 +1955,7 @@ QPushButton#agentsMagicButton:checked {
 #topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
-#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptStatus { font-weight: 500; font-size: 11px; }
 #topMessagePromptImage {
     background: #f6f8fa; border: 1px solid #d0d7de;
     border-radius: 5px; padding: 3px;
@@ -2153,9 +2159,9 @@ QPushButton#agentQueueLimitDecreaseButton:disabled {
     font-weight: 700;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(87,96,106,0.3); border-radius: 4px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(87,96,106,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #1a7f37;
     padding: 4px; border-radius: 4px;
@@ -2344,7 +2350,7 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #dafbe1; border: 1px solid #2da44e; border-radius: 10px;
     color: #1a7f37; padding: 2px 8px; font-size: 11px; font-weight: 700;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #ffffff; border: none;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
@@ -2512,7 +2518,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     color: #6e7681;
     font-size: 11px;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #ffffff;
     border: none;
     color: #1f2328;
@@ -2560,10 +2566,10 @@ QPushButton#promptDetachButton {
     border-radius: 8px;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(87,96,106,0.3); border-radius: 4px;
     min-height: 38px; max-height: 38px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(87,96,106,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #1a7f37;
     padding: 4px; border-radius: 4px;
@@ -2920,7 +2926,7 @@ QToolButton#agentStatusPill {
     background-color: transparent;
     border: 1px solid #d0d7de;
     border-radius: 12px;
-    padding: 2px 7px 2px 4px;
+    padding: 0px 7px 0px 4px;
     font-size: 11px;
     font-weight: 600;
 }

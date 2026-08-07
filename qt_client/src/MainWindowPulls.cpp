@@ -7993,6 +7993,19 @@ void MainWindow::syncPullsInbox()
                      QStringLiteral("pulls"));
 }
 
+QString MainWindow::relayCooldownMessage(const QString &host) const
+{
+    const auto *network =
+        qobject_cast<BackoffNetworkAccessManager *>(m_networkAccess);
+    const qint64 remainingMs =
+        network && !host.isEmpty() ? network->hostCooldownRemainingMs(host) : 0;
+    if (remainingMs <= 0)
+        return QStringLiteral("ForkMesh relay is rate-limited — try again in a "
+                              "moment.");
+    return QStringLiteral("ForkMesh relay is rate-limited — try again in %1.")
+        .arg(formatDuration(remainingMs));
+}
+
 void MainWindow::showPendingInbox(const RepositoryRecord &repo,
                                   const QString &kind)
 {
@@ -8015,19 +8028,35 @@ void MainWindow::showPendingInbox(const RepositoryRecord &repo,
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, kind] {
+            [this, reply, repo, kind, host = url.host()] {
         const QByteArray body = reply->readAll();
         const int status = reply->attribute(
             QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QNetworkReply::NetworkError networkError = reply->error();
         const QString networkErrorText = reply->errorString();
+        const bool rateLimited =
+            BackoffNetworkAccessManager::isBackoffSuppressed(reply);
         reply->deleteLater();
         if (networkError != QNetworkReply::NoError) {
+            // The host-wide cooldown answered this locally, so it never reached
+            // the relay: there is no HTTP status to show (the modal used to read
+            // a baffling "HTTP 0") and nothing to do but wait. Say when it is
+            // worth retrying, in the status bar rather than behind an OK button.
+            if (rateLimited) {
+                flashMessage(relayCooldownMessage(host), true);
+                return;
+            }
+            // A transport failure has no status either; only name one when the
+            // relay actually answered with it.
             QMessageBox::warning(
                 this, QStringLiteral("Sync inbox"),
-                QStringLiteral("Could not load the pending inbox (HTTP %1): %2")
-                    .arg(status)
-                    .arg(networkErrorText));
+                status > 0
+                    ? QStringLiteral(
+                          "Could not load the pending inbox (HTTP %1): %2")
+                          .arg(status)
+                          .arg(networkErrorText)
+                    : QStringLiteral("Could not load the pending inbox: %1")
+                          .arg(networkErrorText));
             return;
         }
         const QJsonArray pending =
@@ -8551,15 +8580,18 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive,
         if (mirrorIntake)
             m_mirrorIssueIntakeInFlight.remove(intakeKey);
         if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(backoffKey,
-                                      QDateTime::currentMSecsSinceEpoch());
+            noteInboxDrainFailure(
+                backoffKey,
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt(),
+                mirrorIntake);
             if (interactive)
                 QMessageBox::warning(this, "Sync inbox",
                                      "Could not reach the inbox: " +
                                          reply->errorString());
             return;
         }
-        m_pollBackoff.noteSuccess(backoffKey);
+        noteInboxDrainSuccess(backoffKey);
         const QJsonArray pending =
             QJsonDocument::fromJson(reply->readAll())
                 .object()
@@ -8845,8 +8877,9 @@ void MainWindow::scheduleRelaySync()
 // account across every owned repo — pending issue/pull/discussion/commit
 // inbox items and queued agent prompts — and the shared apply* helpers merge
 // each slice exactly as the old per-topic drains did. Runs when a relay event
-// frame arrives (scheduleRelaySync) and on the slow m_inboxPollTimer fallback
-// tick that covers dropped events and reconnect gaps.
+// frame arrives (scheduleRelaySync), once per event-socket (re)connect as the
+// catch-up for anything queued while the channel was down, and once shortly
+// after launch. There is no periodic fallback tick.
 void MainWindow::performRelaySync()
 {
     if (!m_networkAccess)

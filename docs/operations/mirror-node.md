@@ -18,12 +18,28 @@ never accepts either value in argv, JSON, an HTTP request, or a catalog record.
 Its two gateway helper modes accept only the bounded ForkMesh health and masked
 proxy protocols on stdin.
 
-During the intake migration, the daemon polls the relay's content-free pending
-counter every five seconds. It starts the Qt relay lease/materialization bridge
-only while issue, pull, or discussion work exists and stops it after the queue
-drains. `FORKMESH_EXTERNAL_MIRROR_NODE=1` keeps that short-lived worker from
+During the intake migration, the daemon holds one WebSocket to the relay's
+per-owner node event channel (`wss://…/api/nodes/events`, the ForkMeshNodes
+Durable Object) authenticated with the node's own Ed25519 identity. The relay
+pushes a payload-free `{"type":"event","topic","repo"}` frame the instant an
+issue, pull, or discussion submission lands; the daemon starts the Qt relay
+lease/materialization bridge on that push and stops it `intakeIdleGrace`
+(default 2m) after the last one. There is **no** polling and no fallback poll:
+`GET /api/repo/*/pending` is never called (`intakePollInterval` is parsed but
+ignored). Missed pushes are covered by the socket itself — every reconnect
+fires one catch-up wake that drains whatever queued while the channel was
+down. `FORKMESH_EXTERNAL_MIRROR_NODE=1` keeps the short-lived worker from
 fetching Git, publishing catalog state, or supervising gateway/tunnel children.
 There is no resident Qt service and therefore no idle Qt memory cost.
+
+Repository sync rides the same channel: the relay pushes a `commits` event
+when a source node publishes a moved public head, and the daemon fetches on
+that push (plus one catch-up per reconnect). The `syncInterval` fetch ticker
+only runs when an upstream lives outside the relay (a third-party git host
+that cannot push) or when the catalog — and therefore the channel — is
+disabled. A four-minute heartbeat cycle still republishes the catalog record
+and renews the HTTPS endpoint lease from local refs reads; that is a liveness
+proof, not a poll.
 
 ## Build and test
 

@@ -630,10 +630,11 @@ deploy_split_site_workers() {
     # have no unconfigured window.
     #
     # UN-PARKED (2026-08-06): forkmesh-api is the canonical API host at
-    # api.forkmesh.com (plus the forkmesh.com/api/* compat routes) and hosts
-    # the traffic-diagnostics landing page. Its 2026-08-06 isolate meltdown
+    # api.forkmesh.com and hosts the traffic-diagnostics landing page. It no
+    # longer claims the forkmesh.com/api/* zone routes — its isolate meltdown
     # ("PyProxy when Python GIL not held" at initPyInstance under cold-start
-    # churn) is a startup-ceiling symptom shared with the relay — set
+    # churn) broke same-origin API traffic, so those paths resolve on the
+    # relay's custom-domain catch-all (see wrangler.api.toml). Set
     # FORKMESH_DEPLOY_API_WORKER=0 to park it again in an emergency
     # (rollback: wrangler delete --name forkmesh-api).
     if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" = "1" ]; then
@@ -688,20 +689,17 @@ verify_split_site_workers() {
     base="${base%/}"
     echo "Verifying the split Workers own their routes on $base ..."
     local failed=0
-    # /api/* is answered by forkmesh-api while that Worker is shipped (the
-    # default; see deploy_split_site_workers); parked, the relay's
-    # custom-domain catch-all owns it and must say so.
-    local api_body expected_api_worker
-    expected_api_worker="api"
-    if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" != "1" ]; then
-        expected_api_worker="relay"
-    fi
+    # Same-origin /api/* always resolves on the relay's custom-domain
+    # catch-all: wrangler.api.toml deliberately leaves the forkmesh.com/api/*
+    # zone routes unclaimed while forkmesh-api melts fresh isolates under
+    # cold-start churn, so forkmesh-api answers only on api.forkmesh.com.
+    local api_body
     api_body="$(curl -sS --max-time 25 "$base/api/version" 2>/dev/null || true)"
-    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"'"$expected_api_worker"'"' <<<"$api_body"; then
-        echo "ERROR: $base/api/version is not served by the $expected_api_worker Worker (got: ${api_body:-<none>})." >&2
+    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"relay"' <<<"$api_body"; then
+        echo "ERROR: $base/api/version is not served by the relay Worker (got: ${api_body:-<none>})." >&2
         failed=1
     fi
-    if [ "$expected_api_worker" = "api" ] && [ "$base" = "https://forkmesh.com" ]; then
+    if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" = "1" ] && [ "$base" = "https://forkmesh.com" ]; then
         # The canonical API host: the diagnostics landing page and the same
         # /api surface must answer on api.forkmesh.com.
         local api_host_body
@@ -717,8 +715,8 @@ verify_split_site_workers() {
             failed=1
         fi
     fi
-    # ... while the relay proves its own build through the relay-routed
-    # /health stamp, which verify_deploy can no longer see via /api/*.
+    # ... and the relay also proves its build through the /health stamp,
+    # which stays relay-routed no matter who owns /api/*.
     local health_body health_rev
     health_body="$(curl -sS --max-time 25 "$base/health" 2>/dev/null || true)"
     if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"relay"' <<<"$health_body"; then

@@ -182,3 +182,15 @@ Nothing here is applied — this is the audit only.
    that recovers `NODE`, `ISSUE` and nine other categories.
 4. Consider whether `ADMIN` should be checked above `account`, so
    admin-ownership lines aren't lost to the polling endpoint's name.
+
+## Note for a future audit: the stored line gained a tail
+
+Since adhoc #1587 every entry ends with the file and line that logged it —
+`2026-08-06 12:45:01  Mirror sync finished  [qt_client/src/MainWindowRepos.cpp:812]`
+— in `network_log.txt` as well as on screen. Anything re-implementing
+`networkLogStyleFor()` over a captured log must strip that tail first
+(`forkmesh::logMessageBody()`, `qt_client/src/LogSource.h`): the path is not
+part of what the caller wrote, and a line logged from `MainWindowIssues.cpp`
+would otherwise badge as `ISSUE`. The app itself strips it in
+`MainWindow::logBadgeFor()` / `logAccentFor()` and never appends it to the text
+handed to the classifier.

@@ -9,10 +9,10 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 #include "ControlNode.h"
+#include "MirrorPushOutcome.h"
 #include "NodeEventSocket.h"
 #include "PrivateMirrorRuntime.h"
 #include "PublicMirrorRuntime.h"
-#include "SshMirrorPushOutcome.h"
 #include "UpstreamCheckoutSync.h"
 
 #include <QCryptographicHash>
@@ -550,6 +550,7 @@ QList<RepoRemoteRow> readRepoRemotes(const QString &gitDir)
               });
     return remotes;
 }
+
 } // namespace
 
 // ------------------------------------------------------------- repositories
@@ -2455,13 +2456,16 @@ void MainWindow::deleteRepositoryAt(int index, bool reopenRepoDetail)
     // the same owner/name indefinitely.
     m_repositories.removeAt(index);
     saveRepositories();
-    QString gatewayError;
-    if (!rebuildDirectMirrorGatewayConfiguration(
-            &gatewayError, true)) {
-        logSystem(
-            QStringLiteral(
-                "Direct gateway refresh after repository deletion failed: %1")
-                .arg(gatewayError));
+    if (directMirrorGatewayConfigured()) {
+        QString gatewayError;
+        if (!rebuildDirectMirrorGatewayConfiguration(
+                &gatewayError, true)) {
+            logSystem(
+                QStringLiteral(
+                    "Direct gateway refresh after repository deletion "
+                    "failed: %1")
+                    .arg(gatewayError));
+        }
     }
     startRepoHosts();
     refreshRepositoryList();
@@ -3639,14 +3643,15 @@ void MainWindow::startRepoHosts()
 // One WebSocket per signed-in owner account to the relay's ForkMeshNodes
 // Durable Object. The relay pushes a payload-free {"type":"event","topic"}
 // frame the instant a web submission lands for any owned repo; the node
-// answers with its usual debounced signed GET /api/sync. While the channel is
-// up the 5-minute fallback poll relaxes to 15 minutes — pushes carry the fast
-// path, so steady-state HTTPS polling drops to a third.
+// answers with its usual debounced signed GET /api/sync. This channel IS the
+// sync trigger — there is no fallback poll (the no-polling policy,
+// docs/operations/polling-elimination.md); dropped connections are covered by
+// the socket's own reconnect plus the catch-up sync in connectedChanged.
 void MainWindow::startNodeEventSocket()
 {
     if (m_nodeOffline) {
         // Honour a node parked offline: no serving, no heartbeat, no live
-        // event channel. The bounded sync poll still runs.
+        // event channel — and therefore no relay syncs until it comes back.
         stopNodeEventSocket();
         return;
     }
@@ -3685,20 +3690,24 @@ void MainWindow::startNodeEventSocket()
             [this](const QString &topic, const QString &repo) {
                 Q_UNUSED(topic);
                 Q_UNUSED(repo);
+                // New inbox work also outdates the cached /pending tallies
+                // behind the toolbar badges; zeroing clientFetchedAt lets the
+                // badge refresh refetch them (fetchMirrorPendingCounts is
+                // otherwise fetch-once — the badges are push-driven too).
+                for (auto it = m_mirrorPendingCache.begin();
+                     it != m_mirrorPendingCache.end(); ++it)
+                    it.value().insert(QStringLiteral("clientFetchedAt"), 0);
                 scheduleRelaySync();
+                refreshPendingInboxBadges();
             });
     connect(m_nodeEventSocket, &NodeEventSocket::connectedChanged, this,
             [this](bool connected) {
-                if (!m_inboxPollTimer)
-                    return;
-                if (connected) {
-                    // Catch up on anything queued while the channel was down,
-                    // then let pushes carry the fast path.
+                // One catch-up sync per (re)connect drains anything queued
+                // while the channel was down. That catch-up is the whole
+                // missed-event story: there is no fallback poll behind the
+                // socket (docs/operations/polling-elimination.md).
+                if (connected)
                     scheduleRelaySync();
-                    m_inboxPollTimer->setInterval(15 * 60 * 1000);
-                } else {
-                    m_inboxPollTimer->setInterval(5 * 60 * 1000);
-                }
             });
     connect(m_nodeEventSocket, &NodeEventSocket::systemMessage, this,
             [this](const QString &text) { logSystem(text); });
@@ -3712,8 +3721,6 @@ void MainWindow::stopNodeEventSocket()
     m_nodeEventSocket->stop();
     m_nodeEventSocket->deleteLater();
     m_nodeEventSocket = nullptr;
-    if (m_inboxPollTimer)
-        m_inboxPollTimer->setInterval(5 * 60 * 1000);
 }
 
 void MainWindow::onRequestServed(const QString &owner, const QString &name, bool clone)
@@ -7008,50 +7015,66 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
                         QString::fromUtf8(process->readAllStandardError())
                             .trimmed();
                     process->deleteLater();
-                    // git exits non-zero when *any* ref is rejected, so the
-                    // exit code alone cannot tell "the gateway is unreachable"
-                    // from "main advanced and one divergent branch was left
-                    // alone, exactly as this non-atomic non-forcing push
-                    // intends". Judge by the per-ref --porcelain status lines,
-                    // which git still writes to stdout on a partial rejection.
-                    const SshMirrorPushOutcome outcome =
-                        SshMirrorPush::parsePorcelain(output, exitCode);
-                    if (outcome.failed()) {
-                        // Name the refs the gateway refused; git's stderr
-                        // carries the reason (a hook's "remote: …" message).
-                        const QString detail =
-                            outcome.rejectedRefs.isEmpty()
-                                ? errors.right(300)
-                                : QStringLiteral("rejected %1: %2")
-                                      .arg(SshMirrorPush::summariseRefs(
-                                               outcome.rejectedRefs),
-                                           errors.right(200));
+                    // --porcelain: one status line per ref; '=' means already
+                    // up to date. A non-zero exit whose only rejections are
+                    // Git's own rewind protection is the safety net doing its
+                    // job on one divergent branch, not an unreachable mirror.
+                    const MirrorPushOutcome outcome =
+                        classifyMirrorPush(output);
+                    if (exitCode != 0 && !outcome.onlyHeldBack) {
+                        // Git's "use 'git pull'" hint block is the tail of
+                        // stderr, so right() kept the boilerplate and cut the
+                        // one line naming the failure. Drop the hints instead.
+                        QStringList detail;
+                        for (const QString &line :
+                             errors.split(QLatin1Char('\n'))) {
+                            if (!line.trimmed().startsWith(
+                                    QLatin1String("hint:")))
+                                detail.append(line.trimmed());
+                        }
                         logSystem(QStringLiteral(
                                       "Mirror: SSH mirror push of %1 to %2 "
                                       "failed: %3")
-                                      .arg(repoKey, gatewayHost, detail));
+                                      .arg(repoKey, gatewayHost,
+                                           detail.join(QLatin1Char(' '))
+                                               .trimmed()
+                                               .left(300)));
                         finishPush(false, false);
                         return;
                     }
                     // Only speak up when something actually moved, so the quiet
                     // auto-sync cadence doesn't spam the log.
-                    if (outcome.updated())
+                    if (!outcome.updated.isEmpty())
                         logSystem(QStringLiteral(
                                       "Mirror: pushed %1 to SSH mirror %2.")
                                       .arg(repoKey, gatewayHost));
-                    // Divergence is expected and self-healing, but log it once
-                    // per push so a branch that stays stuck behind the fleet
-                    // is visible instead of being swallowed as success.
-                    if (!outcome.divergedRefs.isEmpty())
+                    // Say the held-back set once per gateway while it stays the
+                    // same: every sync round would otherwise repeat an alarming
+                    // line about a mirror working exactly as designed. Clearing
+                    // on a clean round lets a later divergence speak up again.
+                    static QHash<QString, QString> s_heldBackReported;
+                    const QString heldKey =
+                        repoKey + QLatin1Char(' ') + gatewayHost;
+                    const QString held =
+                        outcome.heldBack.join(QStringLiteral(", "));
+                    if (held.isEmpty()) {
+                        s_heldBackReported.remove(heldKey);
+                    } else if (s_heldBackReported.value(heldKey) != held) {
+                        s_heldBackReported.insert(heldKey, held);
                         logSystem(
                             QStringLiteral(
-                                "Mirror: SSH mirror %1 is ahead of %2 on %3; "
-                                "left it alone, retrying after the source "
+                                "Mirror: SSH mirror %1 is ahead of this node on "
+                                "%2 for %3, so those branches were left alone "
+                                "(a mirror push never rewinds one). Every other "
+                                "branch synced; they retry once this node "
                                 "catches up.")
-                                .arg(gatewayHost, repoKey,
-                                     SshMirrorPush::summariseRefs(
-                                         outcome.divergedRefs)));
-                    finishPush(true, !outcome.divergedRefs.isEmpty());
+                                .arg(gatewayHost, held, repoKey));
+                    }
+                    // The log line above is throttled per gateway, so a release
+                    // push still passes the held-back state through: someone
+                    // watching a tag go out should not read "pushed to N
+                    // mirrors" as "every branch landed".
+                    finishPush(true, !outcome.heldBack.isEmpty());
                 });
         connect(process, &QProcess::errorOccurred, this,
                 [this, process, repoKey, finishPush,
@@ -7488,14 +7511,20 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                             // advertising the new catalog state; otherwise the
                             // gateway remains online but correctly quarantines
                             // the repository it just fetched as unavailable.
-                            QString gatewayError;
-                            if (!rebuildDirectMirrorGatewayConfiguration(
-                                    &gatewayError, true)) {
-                                logSystem(
-                                    QStringLiteral(
-                                        "Direct gateway refresh after mirror "
-                                        "sync failed: %1")
-                                        .arg(gatewayError));
+                            // Nodes that never provisioned a direct endpoint
+                            // serve through the relay and have no pin to
+                            // refresh, so don't rebuild — and don't report a
+                            // failure — for a setup that is working as chosen.
+                            if (directMirrorGatewayConfigured()) {
+                                QString gatewayError;
+                                if (!rebuildDirectMirrorGatewayConfiguration(
+                                        &gatewayError, true)) {
+                                    logSystem(
+                                        QStringLiteral(
+                                            "Direct gateway refresh after "
+                                            "mirror sync failed: %1")
+                                            .arg(gatewayError));
+                                }
                             }
                             publishRepository(index, false);
                             // Refresh the compatibility lifecycle hook after the
