@@ -340,6 +340,63 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("a degraded or healthy check raises no outage "
                              "alert"));
 
+        // adhoc #1614: the failure this row exists to catch — a Worker
+        // exception behind the edge — throws on a share of requests rather than
+        // all of them, so the once-a-minute probe keeps landing on a good reply
+        // in between. Grading each reply on its own repainted the dot green
+        // seconds after the very same page had failed to load in the app, so a
+        // row that failed inside the remembered window must not go back to
+        // green on the next lucky sample.
+        window.testClearDesktopProbeHistory();
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            500, cloudflareError);
+        check(window.testApplyDesktopWebsiteProbe(
+                  QStringLiteral("desktop_website"), 200, homepage) ==
+                      QStringLiteral("operational") &&
+                  window.testDesktopWebsiteRowStatus(
+                      QStringLiteral("desktop_website")) ==
+                      QStringLiteral("down") &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("down"),
+              QStringLiteral("one page that loads does not clear a site that "
+                             "failed the check a minute ago: the dot stays red "
+                             "while half the recent checks are failures"));
+
+        // …and it does not stay red for ever either. As the good replies pile
+        // up the row steps down to amber ("answering, but not reliably") and
+        // only returns to green once the failure has aged out of the window.
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            200, homepage);
+        const QString whileFlapping = window.testDesktopWebsiteRowStatus(
+            QStringLiteral("desktop_website"));
+        for (int i = 0; i < 8; ++i) {
+            window.testApplyDesktopWebsiteProbe(
+                QStringLiteral("desktop_website"), 200, homepage);
+        }
+        check(whileFlapping == QStringLiteral("degraded") &&
+                  window.testDesktopWebsiteRowStatus(
+                      QStringLiteral("desktop_website")) ==
+                      QStringLiteral("operational") &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("operational"),
+              QStringLiteral("a recovering site fades red to amber to green as "
+                             "the remembered failure ages out"));
+
+        // A desktop that cannot look at all reports nothing either way, so it
+        // must not count as a clean check that dilutes a remembered failure.
+        window.testClearDesktopProbeHistory();
+        window.testApplyDesktopWebsiteProbe(QStringLiteral("desktop_website"),
+                                            500, cloudflareError);
+        for (int i = 0; i < 8; ++i) {
+            window.testApplyDesktopWebsiteProbe(
+                QStringLiteral("desktop_website"), 0, QByteArray(),
+                QStringLiteral("This desktop's own firewall blocked the check"));
+        }
+        check(window.testDesktopWebsiteRowStatus(
+                  QStringLiteral("desktop_website")) == QStringLiteral("down"),
+              QStringLiteral("checks this desktop could not run do not age a "
+                             "real failure out of the window"));
+
         // Rebuild+restart came down from the window-chrome line and Resize came
         // out of the navigation rail: both now sit in the debug bar's own tool
         // cluster at the right edge, outside the scrolling category row, each
