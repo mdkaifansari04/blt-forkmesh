@@ -22,6 +22,7 @@
 #include "../src/PrivateMirrorStore.h"
 #include "../src/McpConnector.h"
 #include "../src/NetworkBackoff.h"
+#include "../src/NetworkReplyError.h"
 #include "../src/NodeDiagnostics.h"
 #include "../src/NoteListEntry.h"
 #include "../src/PlatformLogFilter.h"
@@ -1416,6 +1417,35 @@ int main(int argc, char *argv[])
     pollBackoff.noteSuccess(pollKey);
     check(pollBackoff.ready(pollKey, 0),
           "a successful poll clears the exponential backoff");
+
+    // --- How a failed reply reads in a log line (adhoc #1613) -------------
+    // A relay 503 used to be logged through Qt's errorString(), which repeats
+    // the URL the line already carries and stops dead at "server replied: "
+    // when the response had no reason phrase — Cloudflare Workers send none.
+    {
+        using forkmesh::networkFailureText;
+        using forkmesh::networkResponseSnippet;
+        const QString qtBoilerplate =
+            "Error transferring https://forkmesh.com/api/repo/forkmesh/forkmesh"
+            "/releases/blob/sha256/c832d0e0 - server replied: ";
+        check(networkFailureText(503, QString(), qtBoilerplate) == "503",
+              "a status code with no reason phrase logs as the bare code, not "
+              "Qt's URL-repeating boilerplate");
+        check(networkFailureText(429, "Too Many Requests", qtBoilerplate) ==
+                  "429 Too Many Requests",
+              "a reason phrase the server did send is what gets quoted");
+        check(networkFailureText(0, QString(), "Host forkmesh.com not found") ==
+                  "Host forkmesh.com not found",
+              "a transport failure with no HTTP status still reports Qt's "
+              "description, the only one there is");
+        check(networkResponseSnippet("{\"error\":\n \"mirror_unavailable\"}") ==
+                  "{\"error\": \"mirror_unavailable\"}",
+              "the server's own explanation is flattened onto one line");
+        check(networkResponseSnippet(QByteArray(400, 'x'), 200).size() == 201,
+              "an upstream that answers with a whole HTML page is capped");
+        check(networkResponseSnippet(QByteArray()).isEmpty(),
+              "an empty body adds nothing to the line");
+    }
 
     // --- BackoffNetworkAccessManager: host-wide 429 gate (adhoc #78) -----
     // An in-process reply stub stands in for the relay so createRequest's

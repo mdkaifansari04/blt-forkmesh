@@ -1261,6 +1261,16 @@ async function waitForWorld(page, url = "/world/") {
   await waitForWorldReady(page);
 }
 
+// Boot requests nothing from the repository district. A character has to stand
+// on its ground circle before the catalog, the flagship tree, or any size map
+// is fetched, so a spec that inspects repository state walks there first —
+// exactly what a visitor does — instead of reaching for the loader directly.
+async function enterRepositoryDistrict(page) {
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setSpawn({ x: 130, z: 0, space: "town-square" });
+  });
+}
+
 test("authorized agent sessions create one status-lit world robot each", async ({
   page,
 }) => {
@@ -1502,6 +1512,7 @@ async function waitForOfficeEntry(page) {
 
 async function openWorldPullReview(page, number = 44) {
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready" &&
@@ -1522,6 +1533,7 @@ async function openWorldPullReview(page, number = 44) {
 
 async function openWorldRepositoryExplorer(page) {
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready" &&
@@ -7972,6 +7984,7 @@ test("a stale offline alias cannot erase the live mirrors' flagship pin", async 
     repositoryFixture: { staleOfflineAlias: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready";
@@ -8021,6 +8034,7 @@ test("the flagship pin keeps user ownership separate from source node identity",
     repositoryFixture: { sourceUserOwner: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready";
@@ -8054,6 +8068,7 @@ test("repository portals and the 3D size sunburst use the verified catalog tree"
     repositoryFixture: { staleOfflineAlias: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready";
@@ -8223,6 +8238,7 @@ test("disagreeing eligible mirrors leave the automatic flagship map unpinned", a
     repositoryFixture: { conflictingHealthyAlias: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "unavailable";
@@ -8260,6 +8276,7 @@ test("the flagship portal opens once mid-sync mirrors converge after entry", asy
     repositoryFixture,
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "unavailable";
@@ -8313,6 +8330,7 @@ test("an incomplete healthy-mirror state attestation cannot auto-load the flagsh
     repositoryFixture: { missingHealthyStateHash: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "unavailable";
@@ -8746,6 +8764,7 @@ test("pull requests open and become viewed entirely inside the repository World"
     repositoryFixture: {},
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready" &&
@@ -8855,6 +8874,7 @@ test("a fresh map resolves exact pull metadata before slow issue scans", async (
     },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready" &&
@@ -8941,6 +8961,7 @@ test("four fresh single-core contexts keep exact pull metadata ahead of other re
       repositoryFixture,
     });
     await waitForWorld(page);
+    await enterRepositoryDistrict(page);
     await page.waitForFunction(() => {
       const shell = document.querySelector("forkmesh-world");
       return shell?.repositoryMapState === "ready" &&
@@ -9273,6 +9294,7 @@ test("missing pull metadata branch fails closed without probing main", async ({
     repositoryFixture: { invalidPullBranch: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready";
@@ -9312,6 +9334,7 @@ test("a listed pull with unreadable metadata is unknown rather than open", async
     repositoryFixture: { missingPullMetadata: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready";

@@ -1,10 +1,12 @@
 import {
   ACTIVITY_OPTIONS,
   AVAILABILITY_OPTIONS,
+  CAMPFIRE_SEATED_ACTIVITY,
   FORKMESH_SONG,
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
   OUTFIT_STYLE_OPTIONS,
+  SWING_RIDING_ACTIVITY,
   THEME_OPTIONS,
   TOUR_STEPS,
   WORLD_EMOJI_CATEGORIES,
@@ -47,13 +49,7 @@ import {
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { officeFloorsForTeam } from "./world-office-tower.js";
 import { createWorldSocketRecoveryTimers } from "./world-socket-recovery.js";
-import {
-  CAMPFIRE_SEATED_ACTIVITY,
-  QR_MODULE_READY,
-  SWING_RIDING_ACTIVITY,
-  createWorldScene,
-  proceduralAvatarFaceDataURL,
-} from "./world-scene.js";
+import { proceduralAvatarFaceDataURL } from "./world-avatar-face.js";
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
@@ -66,6 +62,14 @@ const SATELLITE_SGP4_MODULE_URL =
 // keeps a CDN failure from surfacing as an unhandled rejection before then.
 const THREE_MODULE = import(THREE_MODULE_URL);
 THREE_MODULE.catch(() => {});
+// The scene builder cannot run before three.js resolves, so it does not belong
+// in the shell's static graph: the first visit would parse a megabyte of
+// geometry before the loading curtain could paint. index.html modulepreloads
+// it during HTML parse, so this import is served from that preload rather than
+// opening a new request, and it streams beside the three.js CDN fetch that
+// bootstrap() has to wait for anyway.
+const WORLD_SCENE_MODULE = import("./world-scene.js");
+WORLD_SCENE_MODULE.catch(() => {});
 let satelliteSgp4ModulePromise = null;
 
 function loadSatelliteSgp4Module() {
@@ -4185,6 +4189,9 @@ const LOCAL_LIVE_LANDMARKS = new Set([
   "broadcast",
 ]);
 
+// Landmarks whose backing read only runs when a visitor reaches them.
+const DEFERRED_LANDMARKS = new Set(["repositories"]);
+
 const LANDMARK_CONSTRUCTION_REASONS = Object.freeze({
   fountain:
     "A configured public Solana reward-pool address has not been verified in this session.",
@@ -4206,6 +4213,11 @@ function initialLandmarkCapabilities() {
       landmark.id,
       {
         live: LOCAL_LIVE_LANDMARKS.has(landmark.id),
+        // A landmark whose backing read is deferred until a visitor arrives
+        // has not failed a check — nothing has been asked yet. Claiming it is
+        // under construction would be as untrue as claiming it is live, so the
+        // marker stays off until the deferred read actually answers.
+        deferred: DEFERRED_LANDMARKS.has(landmark.id),
         reason:
           LANDMARK_CONSTRUCTION_REASONS[landmark.id] ||
           "This integration has not been verified in this session.",
@@ -4241,7 +4253,7 @@ function hasCompletedSecurityScan(scan) {
 }
 
 function constructionMarkerHTML(id, capability, className = "") {
-  const live = capability?.live === true;
+  const live = capability?.live === true || capability?.deferred === true;
   const reason =
     String(capability?.reason || "").trim() ||
     "This integration has not been verified in this session.";
@@ -4792,7 +4804,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <span
               class="world-diagnostics-chart"
               data-world-diagnostics-chart
-              title="One chart per health dot · one sample per second · newest at right"
+              title="One chart per health dot, then renderer detail · one sample per second · newest at right"
               aria-hidden="true"
             >
               <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="fps" title="Frames per second">
@@ -4807,8 +4819,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                   <polyline data-world-diagnostics-chart-line="frame" points=""></polyline>
                 </svg>
               </span>
-              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="draw" title="Triangles drawn per frame">
-                <span><b>DRAW △</b><output data-world-diagnostics-chart-value="draw">—</output></span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="draw" title="Draw calls per frame">
+                <span><b>DRAW</b><output data-world-diagnostics-chart-value="draw">—</output></span>
                 <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
                   <polyline data-world-diagnostics-chart-line="draw" points=""></polyline>
                 </svg>
@@ -4847,6 +4859,42 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <span><b>WORLD</b><output data-world-diagnostics-chart-value="world">—</output></span>
                 <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
                   <polyline data-world-diagnostics-chart-line="world" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="triangles" title="Triangles drawn per frame">
+                <span><b>TRIS △</b><output data-world-diagnostics-chart-value="triangles">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="triangles" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="cpu" title="Main-thread work per frame; the gap to FRAME is time spent waiting on the GPU">
+                <span><b>CPU</b><output data-world-diagnostics-chart-value="cpu">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="cpu" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="p95" title="95th percentile frame time each second">
+                <span><b>P95</b><output data-world-diagnostics-chart-value="p95">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="p95" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="jank" title="Frames over 34ms in each second">
+                <span><b>JANK</b><output data-world-diagnostics-chart-value="jank">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="jank" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="anim" title="Animation callbacks running each frame">
+                <span><b>ANIM</b><output data-world-diagnostics-chart-value="anim">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="anim" points=""></polyline>
+                </svg>
+              </span>
+              <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-detail data-world-diagnostics-chart-metric="avatars" title="Other people rendered around you">
+                <span><b>AVTR</b><output data-world-diagnostics-chart-value="avatars">—</output></span>
+                <svg viewBox="0 0 72 16" preserveAspectRatio="none" focusable="false">
+                  <polyline data-world-diagnostics-chart-line="avatars" points=""></polyline>
                 </svg>
               </span>
               <span class="world-diagnostics-chart-metric" data-world-diagnostics-chart-metric="memory" title="JS heap; ~ means estimated renderer assets">
@@ -5916,7 +5964,14 @@ class ForkMeshWorld extends HTMLElement {
     this.rawNativeRepositories = [];
     this.repositoryAliasSignature = null;
     this.externalRepositories = [];
-    this.repositoryCatalogState = "loading";
+    // The repository district is the heaviest read in the World and most
+    // visits never walk east at all, so nothing about it is requested at boot.
+    // The catalog, the import list, the flagship tree, and every hosted size
+    // map wait until a character stands on the repositories circle (or opens
+    // the repositories panel, which is the same request by another door).
+    this.repositoryCatalogState = "deferred";
+    this.repositoryCatalogRequest = null;
+    this.repositoryDistrictVisited = false;
     this.flagshipPortalRetries = 0;
     this.network = {};
     this.mirrorCatalogs = [];
@@ -7168,9 +7223,11 @@ class ForkMeshWorld extends HTMLElement {
         return this.trackBootStep("data", this.loadWorldData());
       });
       this.setLoadingProgress(28, "Starting the live renderer…");
-      const THREE = await this.trackBootStep(
+      // Both halves of the renderer have been streaming since page load, and
+      // neither is usable without the other, so the engine row covers the pair.
+      const [THREE, scene] = await this.trackBootStep(
         "engine",
-        THREE_MODULE,
+        Promise.all([THREE_MODULE, WORLD_SCENE_MODULE]),
         "three.js r184 · streaming since page load",
       );
       if (this.destroyed) return;
@@ -7185,9 +7242,9 @@ class ForkMeshWorld extends HTMLElement {
       // starts when world-scene evaluates; wait here so a valid wallet gets
       // its QR code on the first scene render without adding the encoder to
       // the initial static module graph.
-      await QR_MODULE_READY;
+      await scene.QR_MODULE_READY;
       if (this.destroyed) return;
-      this.world = createWorldScene({
+      this.world = scene.createWorldScene({
         THREE,
         container: this.$("[data-world-canvas-wrap]"),
         labelLayer: this.$("[data-world-label-layer]"),
@@ -7434,6 +7491,8 @@ class ForkMeshWorld extends HTMLElement {
           this.playOfficeElevatorSound(stage, trip);
         },
         onLocationChange: (label, id) => this.updateLocation(label, id),
+        onRepositoryDistrictEnter: () =>
+          void this.loadRepositoryCatalog({ reason: "arrival" }),
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
@@ -7491,9 +7550,12 @@ class ForkMeshWorld extends HTMLElement {
       this.world.setMovementTuning?.(this.movementTuning());
       await Promise.allSettled([contextPromise, dataPromise]);
       this.setLoadingProgress(86, "Adding mirrors, members, and boards…");
+      // Repositories are deliberately absent from this count: boot does not
+      // read the catalog, so reporting "0 repositories" here would describe a
+      // request that was never made as an empty answer.
       this.startBootStep(
         "populate",
-        `${this.repositories.length} repositories · ${this.federatedInstances.length} instances`,
+        `${this.federatedInstances.length} instances`,
       );
       await this.nextBootPaint();
       if (this.destroyed) return;
@@ -7533,24 +7595,14 @@ class ForkMeshWorld extends HTMLElement {
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
       this.seatFreshArrivalAtCampfire();
-      // The leaderboard wall and the lobby link kiosk each sit at one spot in
-      // the World and load when the visitor reaches them, so neither is part
-      // of entry. Both remain reachable on demand from their select handlers.
+      void this.loadReferralLeaderboard();
+      void this.loadLobbyLinkBoard();
+      // The repository district starts empty and requests nothing. No catalog,
+      // no import list, no flagship tree, and no size maps until a character
+      // walks onto the repositories circle — the portal's construction
+      // geometry is decorative, so an empty ring leaves nothing that looks
+      // selectable behind. loadRepositoryCatalog() takes it from there.
       this.syncRepositoryScene();
-      void this.hydrateHostedRepositorySizeMaps();
-      // Do not fan out a star request for every perimeter portal at startup.
-      // The active repository hydrates its exact count below; inactive portals
-      // retain any catalog-provided count until the visitor selects them.
-      if (this.repositories.length) {
-        // The scene and authenticated live catalog are both ready. Populate
-        // the repository district from the canonical flagship route without
-        // delaying entry into the rest of the World.
-        void this.autoLoadFlagshipRepositoryMap();
-      } else {
-        // The portal's construction geometry is decorative, but an empty or
-        // failed live catalog must not leave file icons that look selectable.
-        this.syncRepositoryScene();
-      }
       this.finishBootStep("populate");
       this.startBootStep(
         "spawn",
@@ -7607,7 +7659,8 @@ class ForkMeshWorld extends HTMLElement {
       this.startStatusBoardPolling();
       this.startMirrorPolling();
       this.startMirrorActionsPolling();
-      this.startRepositoryImportPolling();
+      // Import polling belongs to the repository district; it starts with the
+      // deferred catalog read rather than watching a district nobody visited.
       this.startInstanceDirectoryPolling();
       this.startEventPolling();
       this.startNotificationPolling();
@@ -9874,8 +9927,6 @@ class ForkMeshWorld extends HTMLElement {
       networkResult,
       mirrorResult,
       instancesResult,
-      reposResult,
-      externalReposResult,
       versionResult,
       rewardResult,
       orgResult,
@@ -9903,12 +9954,9 @@ class ForkMeshWorld extends HTMLElement {
           timeout: 5000,
           cache: "no-store",
         }),
-        this.fetchJSON("/api/repositories", { auth: hasSession }),
-        this.fetchJSON("/api/repository-imports", {
-          auth: hasSession,
-          timeout: 12000,
-          cache: "no-store",
-        }),
+        // /api/repositories and /api/repository-imports are deliberately
+        // absent: loadRepositoryCatalog() issues them when a character
+        // reaches the repository district.
         this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
         this.fetchJSON("/api/accounts/central-fund", {
           auth: false,
@@ -10023,22 +10071,10 @@ class ForkMeshWorld extends HTMLElement {
         : [];
     this.renderCommunityPlacement();
     this.renderFediverseActivity();
-    this.externalRepositories =
-      externalReposResult.status === "fulfilled"
-        ? cleanExternalRepositories(externalReposResult.value)
-        : [];
-    this.rawNativeRepositories =
-      reposResult.status === "fulfilled"
-        ? cleanRepositories(reposResult.value)
-        : [];
+    // A mirror snapshot arriving before the district has been visited still
+    // re-derives the (empty) alias catalog; it stays empty until a character
+    // walks onto the repositories circle and loadRepositoryCatalog() runs.
     this.reconcileRepositoryAliasCatalog();
-    if (reposResult.status === "fulfilled") {
-      this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
-    } else {
-      this.repositoryCatalogState = this.repositories.length
-        ? "ready"
-        : "unavailable";
-    }
     if (eventsResult.status === "fulfilled") {
       this.events = normalizeCommunityEvents(eventsResult.value);
       this.eventsState = this.events.length ? "ready" : "empty";
@@ -10204,12 +10240,9 @@ class ForkMeshWorld extends HTMLElement {
         /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rewardAddress),
       reason: LANDMARK_CONSTRUCTION_REASONS.fountain,
     };
-    this.landmarkCapabilities.repositories = {
-      live:
-        reposResult.status === "fulfilled" &&
-        hasRepositoryCatalogSchema(reposResult.value),
-      reason: LANDMARK_CONSTRUCTION_REASONS.repositories,
-    };
+    // The repository landmark stays unverified until the deferred catalog read
+    // actually runs. It is not claimed live on the strength of a boot request
+    // this build no longer makes.
     this.landmarkCapabilities.organizations = {
       live:
         orgResult.status === "fulfilled" &&
@@ -15045,10 +15078,14 @@ class ForkMeshWorld extends HTMLElement {
         reason: "This integration has not been verified in this session.",
       };
       const reason = String(capability.reason || "");
+      // Verified live and not-yet-asked both leave the marker off. Only a read
+      // that actually ran and failed puts a landmark under construction.
+      const unverified =
+        capability.live !== true && capability.deferred !== true;
       this.$$(
         `[data-world-construction-marker="${landmarkId}"]`,
       ).forEach((marker) => {
-        marker.hidden = capability.live === true;
+        marker.hidden = !unverified;
         marker.setAttribute(
           "aria-label",
           `Under construction: ${reason}`,
@@ -15056,9 +15093,7 @@ class ForkMeshWorld extends HTMLElement {
         marker.setAttribute("title", `Under construction: ${reason}`);
       });
       this.$$(`[data-world-landmark="${landmarkId}"]`).forEach((button) => {
-        button.dataset.worldUnderConstruction = String(
-          capability.live !== true,
-        );
+        button.dataset.worldUnderConstruction = String(unverified);
       });
     });
   }
@@ -15147,6 +15182,12 @@ class ForkMeshWorld extends HTMLElement {
             secondary: null,
           }
         : landmarkById(id);
+    // Opening this panel is a deliberate request for the repository catalog,
+    // so it wakes the deferred district exactly like walking onto its circle.
+    // refreshOpenRepositoryPanel() fills the panel in when the records land.
+    if (landmark.id === "repositories") {
+      void this.loadRepositoryCatalog({ reason: "panel" });
+    }
     const capability = this.landmarkCapabilities[landmark.id] || {
       live: false,
       reason: "This integration has not been verified in this session.",
@@ -17821,6 +17862,7 @@ class ForkMeshWorld extends HTMLElement {
     const repos = this.repositories;
     const catalogEmpty = this.repositoryCatalogState === "empty";
     const catalogUnavailable = this.repositoryCatalogState === "unavailable";
+    const catalogDeferred = this.repositoryCatalogState === "deferred";
     return `
       <div class="world-repositories-panel" aria-label="Repository portals">
         ${
@@ -17886,14 +17928,18 @@ class ForkMeshWorld extends HTMLElement {
                     ? "Repository catalog unavailable"
                     : catalogEmpty
                       ? "No authorized repositories listed"
-                      : "Repository catalog loading"
+                      : catalogDeferred
+                        ? "Repository district asleep"
+                        : "Repository catalog loading"
                 }</strong>
                 <span>${
                   catalogUnavailable
                     ? "The live catalog request failed. ForkMesh does not substitute demo repositories or imply that a mirror is online."
                     : catalogEmpty
                       ? "The catalog returned no public or account-authorized repositories. No repository can be opened or analyzed from this panel."
-                      : "Waiting for the live repository catalog."
+                      : catalogDeferred
+                        ? "Nothing has been requested yet. Walk onto the repositories circle to raise the portals."
+                        : "Waiting for the live repository catalog."
                 }</span>
               </div>`
         }
@@ -20982,6 +21028,94 @@ class ForkMeshWorld extends HTMLElement {
       this.externalRepositories,
     );
     return true;
+  }
+
+  // The one door into the repository district's data. Nothing above this line
+  // fetches a repository: the boot fan-out skips the catalog entirely, and
+  // this runs when a character reaches the repositories circle (or opens the
+  // repositories panel, which is the same request by another door). It is
+  // idempotent — concurrent callers share the in-flight promise, and a
+  // completed district never refetches from here.
+  async loadRepositoryCatalog({ reason = "arrival" } = {}) {
+    if (this.destroyed) return false;
+    if (this.repositoryCatalogRequest) return this.repositoryCatalogRequest;
+    if (this.repositoryDistrictVisited) return this.repositories.length > 0;
+    this.repositoryDistrictVisited = true;
+    this.repositoryCatalogState = "loading";
+    this.refreshOpenRepositoryPanel();
+    // Tell the scene the district is waking before the requests go out, so the
+    // portals that land rise out of the ring and shimmer while their size maps
+    // are still being assembled instead of blinking into place.
+    this.world?.beginRepositoryDistrictReveal?.(reason);
+    this.repositoryCatalogRequest = (async () => {
+      const hasSession =
+        this.sessionAuthenticated && Boolean(validWorldSession());
+      const [reposResult, externalReposResult] = await Promise.allSettled([
+        this.fetchJSON("/api/repositories", { auth: hasSession }),
+        this.fetchJSON("/api/repository-imports", {
+          auth: hasSession,
+          timeout: 12000,
+          cache: "no-store",
+        }),
+      ]);
+      if (this.destroyed) return false;
+      this.externalRepositories =
+        externalReposResult.status === "fulfilled"
+          ? cleanExternalRepositories(externalReposResult.value)
+          : [];
+      this.rawNativeRepositories =
+        reposResult.status === "fulfilled"
+          ? cleanRepositories(reposResult.value)
+          : [];
+      // The boot path already reconciled an empty catalog against the mirror
+      // snapshot, so the cached signature has to be dropped for the real
+      // records to reach the scene.
+      this.repositoryAliasSignature = null;
+      this.reconcileRepositoryAliasCatalog();
+      if (reposResult.status === "fulfilled") {
+        this.repositoryCatalogState = this.repositories.length
+          ? "ready"
+          : "empty";
+      } else {
+        this.repositoryCatalogState = this.repositories.length
+          ? "ready"
+          : "unavailable";
+      }
+      this.setLandmarkCapability(
+        "repositories",
+        reposResult.status === "fulfilled" &&
+          hasRepositoryCatalogSchema(reposResult.value),
+      );
+      this.syncRepositoryScene();
+      this.refreshOpenRepositoryPanel();
+      this.startRepositoryImportPolling();
+      // Do not fan out a star request for every perimeter portal. The flagship
+      // hydrates its exact count; inactive portals retain the catalog count
+      // until the visitor selects them.
+      if (this.repositories.length) {
+        void this.autoLoadFlagshipRepositoryMap();
+      }
+      // Each size map that lands replaces one portal's shimmer with its real
+      // file wedges, so the district finishes building in front of the visitor.
+      void this.hydrateHostedRepositorySizeMaps();
+      return this.repositories.length > 0;
+    })();
+    try {
+      return await this.repositoryCatalogRequest;
+    } finally {
+      this.repositoryCatalogRequest = null;
+    }
+  }
+
+  // The repositories panel is rendered once when it opens. Re-render just its
+  // body when the deferred catalog lands underneath an already-open panel.
+  refreshOpenRepositoryPanel() {
+    const detail = this.$("[data-world-detail]");
+    if (detail?.dataset.openLandmark !== "repositories") return;
+    const panel = detail.querySelector(".world-repositories-panel");
+    if (!panel) return;
+    panel.outerHTML = this.repositoryPanelHTML();
+    this.updateRepositoryReviewMode();
   }
 
   // Keep working toward the default open portal after entry. The catalog read
@@ -24265,7 +24399,9 @@ class ForkMeshWorld extends HTMLElement {
           ? `${this.repositories.length} authorized repository portals are mapped. Choose one in this panel.`
           : this.repositoryCatalogState === "unavailable"
             ? "The live catalog is unavailable. No substitute portal is shown or treated as mirrored."
-            : "The live catalog contains no public or account-authorized repository portal.",
+            : ["deferred", "loading"].includes(this.repositoryCatalogState)
+              ? "The repository district is waking up. Its portals rise as the live catalog lands."
+              : "The live catalog contains no public or account-authorized repository portal.",
       );
       return;
     }
@@ -28077,11 +28213,16 @@ class ForkMeshWorld extends HTMLElement {
     this.diagnosticsQueueTotal = queueTotal;
     this.diagnosticsFrameHistory.push({
       fps: liveRenderer ? liveRenderer.fps : NaN,
+      drawCalls: liveRenderer ? liveRenderer.calls : NaN,
       triangles: liveRenderer ? liveRenderer.triangles : NaN,
       memoryMB: snapshot.memory.chartUsedMB,
       frameTimeMs: liveRenderer ? liveRenderer.frameTimeMs : NaN,
+      frameTimeP95Ms: liveRenderer ? liveRenderer.frameTimeP95Ms : NaN,
+      cpuFrameMs: liveRenderer ? liveRenderer.cpuFrameMs : NaN,
       longestFrameMs: liveRenderer ? liveRenderer.longestFrameMs : NaN,
       longFrames: liveRenderer ? liveRenderer.longFrames : NaN,
+      animations: liveRenderer ? liveRenderer.animations : NaN,
+      remoteAvatars: liveRenderer ? liveRenderer.remoteAvatars : NaN,
       inputResponseMs: liveRenderer ? liveRenderer.inputResponseMs : NaN,
       networkHealth: diagnosticHealthScore(dotLevels.network),
       trafficRate: snapshot.traffic.inboundRate + snapshot.traffic.outboundRate,
@@ -28261,10 +28402,12 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  // One chart per health dot, in the dots' own order, plus the memory trace no
-  // dot owns. Each chart takes its colour from the same grading the dot above
-  // it uses, so the strip is the nine dots' last sixty seconds rather than a
-  // second, unrelated view of the same scene.
+  // One chart per health dot, in the dots' own order, then the renderer detail
+  // traces no dot owns — triangles, main-thread cost, P95, jank, animations,
+  // avatars — and the memory trace last. Each dot chart takes its colour from
+  // the same grading the dot above it uses, so the strip's first nine cells are
+  // the dots' last sixty seconds rather than a second, unrelated view of the
+  // same scene; the detail traces grade themselves against the same thresholds.
   renderDiagnosticsChart(snapshot) {
     const chart = this.$("[data-world-diagnostics-chart]");
     if (!chart) return;
@@ -28306,8 +28449,8 @@ class ForkMeshWorld extends HTMLElement {
         level: levels.frame,
       },
       draw: {
-        value: renderer ? compactCount(renderer.triangles) : "—",
-        points: diagnosticsChartPoints(history, "triangles", {
+        value: renderer ? compactCount(renderer.calls) : "—",
+        points: diagnosticsChartPoints(history, "drawCalls", {
           zeroBased: false,
         }),
         level: levels.draw,
@@ -28350,6 +28493,51 @@ class ForkMeshWorld extends HTMLElement {
         value: renderer ? (renderer.paused ? "PAUSED" : "LIVE") : "—",
         points: healthChart("worldHealth"),
         level: levels.world,
+      },
+      // The renderer detail block below the nine dot traces: readings no dot
+      // owns on its own, each one a fresh per-second sample rather than a
+      // running total, so a spike marks the second it actually happened.
+      triangles: {
+        value: renderer ? compactCount(renderer.triangles) : "—",
+        points: diagnosticsChartPoints(history, "triangles", {
+          zeroBased: false,
+        }),
+        level: renderer
+          ? diagnosticLevel("triangles", renderer.triangles)
+          : "unavailable",
+      },
+      cpu: {
+        value: liveRenderer ? millis(liveRenderer.cpuFrameMs) : "—",
+        points: diagnosticsChartPoints(history, "cpuFrameMs"),
+        level: liveRenderer
+          ? diagnosticLevel("cpuFrameMs", liveRenderer.cpuFrameMs)
+          : "unavailable",
+      },
+      p95: {
+        value: liveRenderer ? millis(liveRenderer.frameTimeP95Ms) : "—",
+        points: diagnosticsChartPoints(history, "frameTimeP95Ms"),
+        level: liveRenderer
+          ? diagnosticLevel("frameTimeP95Ms", liveRenderer.frameTimeP95Ms)
+          : "unavailable",
+      },
+      jank: {
+        value: liveRenderer ? compactCount(liveRenderer.longFrames) : "—",
+        points: diagnosticsChartPoints(history, "longFrames"),
+        level: liveRenderer
+          ? diagnosticLevel("longFrames", liveRenderer.longFrames)
+          : "unavailable",
+      },
+      anim: {
+        value: renderer ? compactCount(renderer.animations) : "—",
+        points: diagnosticsChartPoints(history, "animations", {
+          zeroBased: false,
+        }),
+        level: renderer ? "good" : "unavailable",
+      },
+      avatars: {
+        value: renderer ? compactCount(renderer.remoteAvatars) : "—",
+        points: diagnosticsChartPoints(history, "remoteAvatars"),
+        level: renderer ? "good" : "unavailable",
       },
       memory: {
         value: Number.isFinite(memoryMB)

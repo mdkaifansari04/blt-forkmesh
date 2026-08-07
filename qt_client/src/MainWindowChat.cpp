@@ -3386,6 +3386,12 @@ struct DesktopEdgeVerdict {
     QString reason;
 };
 
+// How much recent history one desktop-measured dot keeps: ten samples at the
+// minute cadence, and nothing older than ten minutes, so a laptop that slept
+// through an outage does not wake up still painting it.
+constexpr int kDesktopProbeHistoryMax = 10;
+constexpr qint64 kDesktopProbeHistoryMs = 10 * 60 * 1000;
+
 // Severity of one verdict, used when the relay's own grade and this desktop's
 // grade for the same system are merged into a single dot. "unknown" ranks below
 // every real answer: nobody being able to look is not evidence of health, but
@@ -3407,6 +3413,39 @@ QString worseWebsiteStatus(const QString &left, const QString &right)
 {
     return websiteStatusSeverity(right) > websiteStatusSeverity(left) ? right
                                                                      : left;
+}
+
+// What a desktop-measured dot publishes, given how the newest reply graded and
+// how the last few minutes went (adhoc #1614). An edge that throws on a large
+// share of requests still answers plenty of them correctly, so "the last reply
+// was fine" is not the same as "the site is working" — the page the operator
+// just failed to load and the page this probe just loaded are the same site,
+// one minute apart. A row that failed anywhere inside the remembered window
+// therefore never paints green, and one that failed at least half of those
+// checks stays red outright rather than flickering with the dice.
+DesktopEdgeVerdict mergeDesktopEdgeHistory(const DesktopEdgeVerdict &sample,
+                                           const QString &what, int downs,
+                                           int samples, qint64 lastDownTs)
+{
+    if (downs <= 0 || samples <= 0 || sample.status == QLatin1String("down"))
+        return sample;
+    const QString tally =
+        QStringLiteral("%1 failed %2 of the last %3 checks from this desktop "
+                       "(most recently at %4).")
+            .arg(what)
+            .arg(downs)
+            .arg(samples)
+            .arg(QDateTime::fromMSecsSinceEpoch(lastDownTs)
+                     .toLocalTime()
+                     .toString(QStringLiteral("HH:mm")));
+    if (downs * 2 >= samples) {
+        return {QStringLiteral("down"),
+                tally + QStringLiteral(" A page that happens to load does not "
+                                       "make it reachable.")};
+    }
+    return {QStringLiteral("degraded"),
+            tally + QStringLiteral(" This check answered, but the site is not "
+                                   "serving reliably.")};
 }
 
 // The public API answers on its own hostname (api.forkmesh.com in production),
@@ -3919,15 +3958,40 @@ void MainWindow::applyDesktopWebsiteProbe(const QString &id, int httpStatus,
                            netInfo->reachability() ==
                                QNetworkInformation::Reachability::Disconnected;
     const QString host = catalogApiUrl().host();
-    const DesktopEdgeVerdict verdict = gradeDesktopEdgeProbe(
+    const DesktopEdgeVerdict sample = gradeDesktopEdgeProbe(
         *probe, host, httpStatus, body, transportError, osOffline);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    // Remember how this reply graded, then let the last few minutes widen the
+    // verdict (adhoc #1614). "unknown" is this desktop being unable to look —
+    // no evidence either way — so it is never recorded: it must neither count
+    // as a healthy check that dilutes a real failure nor as a failure itself.
+    QList<DesktopProbeSample> &history = m_desktopProbeHistory[id];
+    if (sample.status != QLatin1String("unknown"))
+        history.append({now, sample.status});
+    while (!history.isEmpty() &&
+           (history.size() > kDesktopProbeHistoryMax ||
+            now - history.first().ts > kDesktopProbeHistoryMs))
+        history.removeFirst();
+    int downs = 0;
+    qint64 lastDownTs = 0;
+    for (const DesktopProbeSample &past : history) {
+        if (past.status != QLatin1String("down"))
+            continue;
+        ++downs;
+        lastDownTs = past.ts;
+    }
+    const DesktopEdgeVerdict verdict = mergeDesktopEdgeHistory(
+        sample, QString::fromLatin1(probe->what), downs, history.size(),
+        lastDownTs);
 
     FooterStatusRow row;
     row.id = id;
     row.label = QString::fromLatin1(probe->label);
     row.status = verdict.status;
+    row.sampleStatus = sample.status;
     row.reason = verdict.reason;
-    row.minuteTs = QDateTime::currentMSecsSinceEpoch();
+    row.minuteTs = now;
     row.local = true;
 
     bool replaced = false;
@@ -3965,7 +4029,11 @@ void MainWindow::applyDesktopWebsiteProbe(const QString &id, int httpStatus,
 // that is merely asleep on a train.
 void MainWindow::alertOnDesktopEdgeOutage(const FooterStatusRow &row)
 {
-    if (row.status != QLatin1String("down"))
+    // Keyed on the reply this run actually got, not on the history-widened dot
+    // (adhoc #1614): a row held red because the site failed half of the last
+    // ten checks would otherwise keep pinging on the minutes it did load, long
+    // after the reply that earned the alert.
+    if (row.sampleStatus != QLatin1String("down"))
         return;
     const DesktopEdgeProbe *probe = desktopEdgeProbe(row.id);
     if (!probe)
@@ -3995,6 +4063,15 @@ QString MainWindow::testApplyDesktopWebsiteProbe(const QString &id,
                                                  const QString &transportError)
 {
     applyDesktopWebsiteProbe(id, httpStatus, body, transportError);
+    for (const FooterStatusRow &row : m_footerDesktopStatuses) {
+        if (row.id == id)
+            return row.sampleStatus;
+    }
+    return QString();
+}
+
+QString MainWindow::testDesktopWebsiteRowStatus(const QString &id) const
+{
     for (const FooterStatusRow &row : m_footerDesktopStatuses) {
         if (row.id == id)
             return row.status;
@@ -13864,10 +13941,12 @@ QWidget *MainWindow::buildHostsSection()
     m_hostPassEdit = new QLineEdit;
     m_hostPassEdit->setEchoMode(QLineEdit::Password);
     m_hostPassEdit->setPlaceholderText(
-        QStringLiteral("Optional — SSH agent/default key is preferred"));
+        QStringLiteral("Optional — the shared ForkMesh key is used first"));
     m_hostPassEdit->setToolTip(QStringLiteral(
-        "Leave blank to use your SSH agent, default key, or ~/.ssh/config. "
-        "A password entered here is kept only until ForkMesh exits and is "
+        "Leave blank when this host already authorizes the shared ForkMesh SSH "
+        "key (every fleet host does); ForkMesh falls back to your SSH agent, "
+        "default key, or ~/.ssh/config. A password entered here is only used "
+        "if the shared key is refused, is kept until ForkMesh exits, and is "
         "never written to settings."));
     form->addRow(QStringLiteral("SSH password (optional)"), m_hostPassEdit);
 
@@ -14845,9 +14924,10 @@ void MainWindow::probeSavedHost(const QString &name, const QString &ip,
             break;
         }
     }
+    // The shared fleet key answers for every host, so it is always offered
+    // first; a saved session password stays as the fallback for a host that
+    // has not been given the shared key yet.
     const QString identityFile = savedHostIdentityFile(name, ip, user);
-    if (!identityFile.isEmpty())
-        password.clear();
     const QString remoteCommand = QStringLiteral(
         "sh -lc 'probe_home=\"$HOME\"; "
         "if test \"$(id -u)\" = 0 && id forkmesh-node >/dev/null 2>&1; then "
@@ -15034,12 +15114,11 @@ void MainWindow::installAgentClisForHost(int row)
         }
     }
     const QString identityFile = savedHostIdentityFile(node, ip, user);
-    // A Vultr mirror provisioned by ForkMesh has a pinned per-host identity.
-    // Use only that identity even if this process still has an old session
-    // password in memory; this avoids an opaque password fallback and makes
-    // the authentication path match every later headless-agent connection.
-    const QString sshPassword =
-        identityFile.isEmpty() ? pass : QString();
+    // Every mirror authorizes the shared ForkMesh key, so that key is what the
+    // installer authenticates with — the same transport every later
+    // headless-agent connection uses. A session password is still passed when
+    // one was entered, and ssh only reaches it if the shared key is refused.
+    const QString sshPassword = pass;
     if (m_hostInstallLog)
         m_hostInstallLog->clear();
     if (m_hostInstallStatus)
@@ -15111,10 +15190,12 @@ void MainWindow::runAgentCliInstall(
     appendHostInstallLog(
         identityFile.isEmpty()
             ? QStringLiteral(
-                  "No managed key is saved for this host; using the current "
-                  "session credential or the system SSH agent.\n")
+                  "The shared ForkMesh SSH key has not been generated on this "
+                  "device; using the current session credential or the system "
+                  "SSH agent.\n")
             : QStringLiteral(
-                  "Using the ForkMesh-managed SSH identity for this host.\n"));
+                  "Using the shared ForkMesh SSH identity (%1).\n")
+                  .arg(identityFile));
     if (copyCredentials)
         appendHostInstallLog(
             QStringLiteral("Copying this device's agent access (%1) over the "
@@ -15184,9 +15265,10 @@ void MainWindow::runAgentCliInstall(
                           .arg(ip)
                     : keyRejected && !identityFile.isEmpty()
                         ? QStringLiteral(
-                              "The mirror rejected its saved ForkMesh SSH "
-                              "key. Re-provision or replace that host key, "
+                              "The mirror rejected the shared ForkMesh SSH "
+                              "key. Add that key to %1's authorized_keys, "
                               "then retry.")
+                              .arg(node)
                 : QStringLiteral(
                       "Agent CLI installation failed on %1; see Live output.")
                       .arg(node));
@@ -15246,10 +15328,10 @@ void MainWindow::openHostAgentLoginTerminal(const QString &node,
         }
     }
     const QString identityFile = savedHostIdentityFile(node, ip, user);
-    // Same rule as the installer: a pinned managed key is the only credential
-    // used when one exists, so the sign-in shell rides the exact transport
-    // every later headless-agent connection does.
-    const QString sshPassword = identityFile.isEmpty() ? pass : QString();
+    // Same rule as the installer: the shared fleet key is offered first, so the
+    // sign-in shell rides the exact transport every later headless-agent
+    // connection does, with the session password only as a fallback.
+    const QString sshPassword = pass;
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostInteractiveSshCommand(
@@ -20153,7 +20235,7 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         connect(proc, &QProcess::finished, dialog,
                 [this, dialog, proc, output, table, status, totalLabel,
                  navWidgets, path, ip, user, mountCardsLayout, mountStatus,
-                 loadPath, sessionPass, identityFile, credentialKey](
+                 loadPath, sessionPass, credentialKey](
                     int code, QProcess::ExitStatus exitStatus) {
                     if (m_hostDiskProcess == proc)
                         m_hostDiskProcess = nullptr;
@@ -20267,11 +20349,13 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
                         // Without a password ssh runs BatchMode/publickey-only,
                         // so a password-login host can never finish this scan:
                         // ask for the one credential that would, then retry the
-                        // same folder. Hosts pinned to a ForkMesh-managed key
-                        // never fall back to a password, so they are left alone.
+                        // same folder. The shared fleet key is offered to every
+                        // host, so a rejected key is exactly the case that needs
+                        // the prompt — only an already-entered password is a
+                        // reason not to ask again.
                         const int sshExit =
                             exitStatus == QProcess::NormalExit ? code : 255;
-                        if (identityFile.isEmpty() &&
+                        if (sessionPass->isEmpty() &&
                             forkmesh::control::sshFailureNeedsPassword(sshExit,
                                                                        tail)) {
                             status->setText(
@@ -20463,11 +20547,23 @@ void MainWindow::addHostFromForm()
         return;
     }
     // Save the server info up front with a not-yet-installed status. Running
-    // the installer later flips it to "installed".
-    rememberHost(node, ip, user, pass, QStringLiteral("added"));
-    if (m_hostInstallStatus)
-        m_hostInstallStatus->setText(QString::fromUtf8(
-            "Saved \"%1\". Click Install ForkMesh to provision it.").arg(node));
+    // the installer later flips it to "installed". A host added by hand joins
+    // a fleet that authorizes one shared key, so it is recorded against that
+    // key just like a provisioned mirror.
+    const QString identityFile =
+        forkmesh::control::existingSharedHostIdentityFile();
+    rememberHost(node, ip, user, pass, QStringLiteral("added"), identityFile);
+    if (m_hostInstallStatus) {
+        m_hostInstallStatus->setText(
+            identityFile.isEmpty()
+                ? QString::fromUtf8(
+                      "Saved \"%1\". Click Install ForkMesh to provision it.")
+                      .arg(node)
+                : QString::fromUtf8(
+                      "Saved \"%1\" against the shared ForkMesh SSH key. Click "
+                      "Install ForkMesh to provision it.")
+                      .arg(node));
+    }
 }
 
 void MainWindow::rememberHost(const QString &name, const QString &ip,
@@ -20714,9 +20810,14 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
         // buildHostSshCommand() owns validation and will then fail closed with
         // "The managed SSH key for this host is missing." Treating the path as
         // absent here would silently fall back to a session password.
-        return identity;
+        if (!identity.isEmpty())
+            return identity;
+        break;
     }
-    return {};
+    // Every host in the fleet now authorizes the same ForkMesh key, so a saved
+    // row without its own recorded identity — a host added by hand, or one
+    // saved before the switch — still connects with the shared key.
+    return forkmesh::control::existingSharedHostIdentityFile();
 }
 
 // --- One-click Vultr mirror provisioning (adhoc #315) -----------------------
@@ -21454,22 +21555,18 @@ void MainWindow::ensureVultrMirrorDns(const QString &node, const QString &ip,
         });
 }
 
-void MainWindow::ensureVultrManagedKeypair(
+void MainWindow::ensureSharedHostKeypair(
     std::function<void(QString, QString, QString)> onDone)
 {
-    const QString appDataDir =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    const QString sshDir = QDir(appDataDir).filePath(QStringLiteral("ssh"));
-    if (appDataDir.isEmpty() || !QDir().mkpath(sshDir)) {
+    // One key for the whole fleet: newly provisioned mirrors get it from the
+    // provider, hand-added hosts already carry it in authorized_keys, and this
+    // device keeps the single private half.
+    const QString keyPath = forkmesh::control::sharedHostKeyPath();
+    if (keyPath.isEmpty()) {
         onDone({}, {}, QStringLiteral(
             "ForkMesh could not create its managed SSH key directory."));
         return;
     }
-    QFile::setPermissions(sshDir,
-                          QFileDevice::ReadOwner | QFileDevice::WriteOwner |
-                              QFileDevice::ExeOwner);
-    const QString keyPath =
-        QDir(sshDir).filePath(QStringLiteral("vultr_mirror_ed25519"));
     const QString pubPath = keyPath + QStringLiteral(".pub");
     const auto readPublicKey = [pubPath]() {
         QFile pub(pubPath);
@@ -21485,7 +21582,7 @@ void MainWindow::ensureVultrManagedKeypair(
         }
     }
     appendHostInstallLog(QString::fromUtf8(
-        "Generating the managed SSH key for Vultr mirrors\xE2\x80\xA6\n"));
+        "Generating the shared ForkMesh SSH key for this fleet\xE2\x80\xA6\n"));
     auto *keygen = new QProcess(this);
     keygen->setProcessChannelMode(QProcess::MergedChannels);
     connect(keygen, &QProcess::errorOccurred, this,
@@ -21523,7 +21620,7 @@ void MainWindow::ensureVultrManagedKeypair(
                   {QStringLiteral("-q"), QStringLiteral("-t"),
                    QStringLiteral("ed25519"), QStringLiteral("-N"),
                    QString(), QStringLiteral("-C"),
-                   QStringLiteral("forkmesh-vultr-mirror"),
+                   QStringLiteral("forkmesh-shared-host-key"),
                    QStringLiteral("-f"), keyPath});
 }
 
@@ -21563,7 +21660,7 @@ void MainWindow::resolveVultrSshKeyId(
             }
             const QJsonObject body{
                 {QStringLiteral("name"),
-                 QStringLiteral("forkmesh-mirror-controller")},
+                 QStringLiteral("forkmesh-shared-host-key")},
                 {QStringLiteral("ssh_key"), publicKey},
             };
             vultrApiCall(
@@ -21771,12 +21868,12 @@ void MainWindow::createVultrMirrorFromForm()
     }
     setVultrProvisionStage(
         1, resumedPreInstance
-               ? QStringLiteral("Resuming credentials and managed SSH key…")
-               : QStringLiteral("Preparing credentials and managed SSH key…"));
+               ? QStringLiteral("Resuming credentials and shared SSH key…")
+               : QStringLiteral("Preparing credentials and shared SSH key…"));
 
-    ensureVultrManagedKeypair([this, apiKey, node](
-                                  QString keyPath, QString publicKey,
-                                  QString keyError) {
+    ensureSharedHostKeypair([this, apiKey, node](QString keyPath,
+                                                 QString publicKey,
+                                                 QString keyError) {
         if (!keyError.isEmpty()) {
             finishVultrProvision(false, keyError);
             return;
@@ -21784,7 +21881,7 @@ void MainWindow::createVultrMirrorFromForm()
         m_vultrIdentityFile = keyPath;
         persistVultrProvisionState();
         appendHostInstallLog(
-            QStringLiteral("Managed SSH key: %1\n").arg(keyPath));
+            QStringLiteral("Shared ForkMesh SSH key: %1\n").arg(keyPath));
         if (m_vultrStatus)
             m_vultrStatus->setText(QString::fromUtf8(
                 "Registering the SSH key with Vultr\xE2\x80\xA6"));
@@ -23076,7 +23173,8 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QString::fromUtf8(
                 "Enter the host IP, SSH username and a node name first. "
-                "Leave the password blank to use your SSH agent/default key."));
+                "Leave the password blank to use the shared ForkMesh SSH "
+                "key."));
         if (onFinished)
             onFinished(false);
         return;
@@ -23457,8 +23555,9 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
     if (!m_hostDeployPanel || !m_hostDeployGrid)
         return;
 
-    // Load non-sensitive host metadata. A password may exist only in this
-    // process's cache; otherwise the session uses an SSH agent/default key.
+    // Load non-sensitive host metadata. Every session authenticates with the
+    // shared ForkMesh key; a password cached in this process (or, failing
+    // both, an SSH agent/default key) is only the fallback.
     QSettings settings;
     const QJsonArray hosts = forkmesh::control::loadSavedHosts(
         settings, kHostsSetting, &m_hostSessionPasswords);
@@ -23777,7 +23876,8 @@ void MainWindow::runHostUninstall()
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QString::fromUtf8(
                 "Enter the host IP, SSH username and a node name first. "
-                "Leave the password blank to use your SSH agent/default key."));
+                "Leave the password blank to use the shared ForkMesh SSH "
+                "key."));
         return;
     }
     const QString uninstallUrl = uninstallScriptUrl();

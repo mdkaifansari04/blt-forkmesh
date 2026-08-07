@@ -8,9 +8,11 @@ import {
   withWorldBackoff,
 } from "./world-backoff.js";
 import {
+  CAMPFIRE_SEATED_ACTIVITY,
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
   OUTFIT_STYLE_OPTIONS,
+  SWING_RIDING_ACTIVITY,
   WORLD_REGIONS,
   flagEmoji,
   landmarkById,
@@ -43,6 +45,10 @@ import {
   nextOfficeZoneState,
 } from "./world-office-tower.js";
 import { createWorldSky } from "./world-sky.js";
+import {
+  hashNumber,
+  paintProceduralAvatarFace,
+} from "./world-avatar-face.js";
 import { WORKER_FOOTPRINT } from "./worker-footprint.js";
 // Side-effect import: ForkMesh's own QR generator publishes globalThis.ForkMeshQR,
 // used for the reward-pool treasury address board.
@@ -577,14 +583,6 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
   broadcast: 9,
   office: 10,
 });
-// Shared by the seated pose and the presence frame so other visitors can render
-// a bench sitter sitting rather than standing on the plank. Exported because
-// the shell must keep it out of the landmark-proximity activity label.
-export const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
-// Shared by the swing-set ride and the presence frame for the same reason:
-// exported so the shell keeps it out of the landmark-proximity activity label
-// while a visitor is riding one of the town swings.
-export const SWING_RIDING_ACTIVITY = "swinging on the town swing set";
 // Legs hinge at the hip and again at the knee. Avatar fronts face local -Z, so
 // the positive pitch about X is the one that swings the knee over the front
 // edge of the bench instead of out behind the sitter; the knee then folds back
@@ -719,15 +717,6 @@ function worldRendererPixelRatio(width, height, devicePixelRatio, compact) {
     DESKTOP_RENDER_PIXEL_BUDGET / (cssWidth * cssHeight),
   );
   return Math.min(dpr, densityCap, pixelBudgetRatio);
-}
-
-function hashNumber(value) {
-  let hash = 2166136261;
-  for (const char of String(value || "")) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return Math.abs(hash >>> 0);
 }
 
 function deterministicFraction(value) {
@@ -5808,117 +5797,12 @@ function avatarFaceTexture(THREE, emoji) {
   return { texture, color: color || AVATAR_EMOJI_SKIN_COLOR };
 }
 
-// A stable, code-native portrait for accounts that have not uploaded a photo.
-// The same public identity key always selects the same skin, eyes, brows,
-// mouth, freckles and glasses, so people remain recognizable across devices
-// without storing another image or sending image bytes over presence.
-//
-// The painter is separated from the texture so the flat HUD — the account
-// launcher badge in the top-right corner, which every guest reaches without a
-// photo — can print the identical 128px face onto a plain 2D canvas instead of
-// sitting empty. Returns the drawn skin colour.
-export function paintProceduralAvatarFace(context, identityKey) {
-  const seed = hashNumber(String(identityKey || "forkmesh-visitor"));
-  const skins = ["#f6d8b6", "#e9bb8c", "#c98555", "#8e5738", "#5d392a"];
-  const eyes = ["#30231c", "#31576d", "#3f633b", "#725138"];
-  const skin = skins[seed % skins.length];
-  const eye = eyes[(seed >>> 3) % eyes.length];
-  const eyeSpacing = 19 + ((seed >>> 7) % 7);
-  const eyeRadius = 4 + ((seed >>> 10) % 3);
-  const browLift = (seed >>> 13) % 7;
-  const smile = (seed >>> 16) % 3;
-  const glasses = ((seed >>> 19) & 3) === 0;
-  const freckles = ((seed >>> 22) & 3) === 0;
-  context.fillStyle = skin;
-  context.fillRect(0, 0, 128, 128);
-  context.lineCap = "round";
-  context.lineJoin = "round";
-
-  context.strokeStyle = "#553a2d";
-  context.lineWidth = 5;
-  context.beginPath();
-  context.moveTo(64 - eyeSpacing - 8, 42 - browLift);
-  context.quadraticCurveTo(64 - eyeSpacing, 38 - browLift, 64 - eyeSpacing + 8, 42 - browLift);
-  context.moveTo(64 + eyeSpacing - 8, 42 - (6 - browLift));
-  context.quadraticCurveTo(64 + eyeSpacing, 38 - (6 - browLift), 64 + eyeSpacing + 8, 42 - (6 - browLift));
-  context.stroke();
-
-  context.fillStyle = "#ffffff";
-  [64 - eyeSpacing, 64 + eyeSpacing].forEach((x) => {
-    context.beginPath();
-    context.ellipse(x, 57, eyeRadius + 3, eyeRadius + 5, 0, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = eye;
-    context.beginPath();
-    context.arc(x, 58, eyeRadius, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = "#ffffff";
-    context.beginPath();
-    context.arc(x - 1, 56, 1.5, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = "#ffffff";
-  });
-
-  context.strokeStyle = "#9a6245";
-  context.lineWidth = 4;
-  context.beginPath();
-  context.moveTo(64, 61);
-  context.quadraticCurveTo(58 + (seed % 13), 72, 65, 76);
-  context.stroke();
-
-  context.strokeStyle = "#5c3028";
-  context.lineWidth = 5;
-  context.beginPath();
-  context.moveTo(43, 88);
-  context.quadraticCurveTo(64, 100 + smile * 4, 85, 88 - smile * 2);
-  context.stroke();
-
-  if (glasses) {
-    context.strokeStyle = "#253a39";
-    context.lineWidth = 4;
-    context.strokeRect(38 - eyeSpacing / 5, 47, 29, 23);
-    context.strokeRect(61 + eyeSpacing / 5, 47, 29, 23);
-    context.beginPath();
-    context.moveTo(67, 56);
-    context.lineTo(73, 56);
-    context.stroke();
-  }
-  if (freckles) {
-    context.fillStyle = "rgba(104,56,42,0.55)";
-    [-24, -17, -10, 10, 17, 24].forEach((offset, index) => {
-      context.beginPath();
-      context.arc(64 + offset, 75 + (index % 2) * 3, 1.5, 0, Math.PI * 2);
-      context.fill();
-    });
-  }
-  return skin;
-}
-
 function proceduralAvatarFaceTexture(THREE, identityKey) {
   let skin = AVATAR_EMOJI_SKIN_COLOR;
   const texture = canvasTexture(THREE, 128, 128, (context) => {
     skin = paintProceduralAvatarFace(context, identityKey);
   });
   return { texture, color: skin };
-}
-
-// The same portrait as a flat image the HUD can hand to an <img>. Guests never
-// have an uploaded photo, so without this the round account launcher in the
-// top-right corner rendered as an empty disc.
-export function proceduralAvatarFaceDataURL(identityKey, size = 128) {
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const context = canvas.getContext("2d");
-    if (!context) return "";
-    if (size !== 128) context.setTransform(size / 128, 0, 0, size / 128, 0, 0);
-    paintProceduralAvatarFace(context, identityKey);
-    return canvas.toDataURL("image/png");
-  } catch (_) {
-    // A tainted or unavailable canvas must never keep the HUD from rendering.
-    return "";
-  }
 }
 
 function syncAvatarFace(THREE, avatar) {
@@ -10754,6 +10638,46 @@ function repositoryFollowerIconTexture(THREE, follower, accent, image = null) {
       216,
     );
   });
+}
+
+// How long a freshly risen portal keeps shimmering while its size tree is
+// still being assembled. A map that never arrives fades out instead of leaving
+// a permanent decoration on a repository nothing is happening to.
+const REPOSITORY_SPARKLE_MS = 11_000;
+
+// The motes that orbit a portal while its size map is being built. Seeds are
+// carried on the object so the animation loop can move every mote from one
+// buffer write per frame instead of allocating.
+function makeRepositorySizeMapSparkle(THREE, radius, label) {
+  const count = 26;
+  const positions = new Float32Array(count * 3);
+  const seeds = new Float32Array(count * 3);
+  for (let index = 0; index < count; index += 1) {
+    const angle = (index / count) * Math.PI * 2;
+    // Radius, vertical phase, and angular speed. The staggered radii read as a
+    // shell of dust around the disk rather than a single flat ring.
+    seeds[index * 3] = radius * (1.06 + (index % 5) * 0.16);
+    seeds[index * 3 + 1] = angle;
+    seeds[index * 3 + 2] = 0.9 + (index % 7) * 0.14;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const sparkle = new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
+      color: "#a5f3fc",
+      size: 0.17,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  sparkle.name = `repository-size-map-sparkle:${label}`;
+  sparkle.position.z = 0.14;
+  sparkle.userData.repositorySparkleSeeds = seeds;
+  return sparkle;
 }
 
 function makeRepositoryFollowerIcon(THREE, follower) {
@@ -16332,6 +16256,7 @@ export function createWorldScene({
   onOfficeMovement = () => {},
   onOfficeElevatorSound = () => {},
   onLocationChange = () => {},
+  onRepositoryDistrictEnter = () => {},
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
@@ -23972,6 +23897,17 @@ export function createWorldScene({
   const memberFacts = new Map();
   const repositoryPortals = new Map();
   const repositoryPortalBornAt = new Map();
+  // Sparkle deadline per portal key. A portal that is still waiting for its
+  // size tree shimmers until this timestamp; the map landing rebuilds the
+  // layer without a sparkle, and a map that never arrives simply fades out.
+  const repositorySparkleUntil = new Map();
+  // The repository district loads nothing until a character stands on its
+  // ground circle. The scene reports that arrival once; the shell owns every
+  // request that follows.
+  let repositoryDistrictEntered = false;
+  // Set by the shell the moment it starts the deferred catalog read, so the
+  // first portals to arrive rise out of the ground instead of appearing.
+  let repositoryRevealPending = false;
   const emoteSprites = [];
   const rewardFlights = [];
   const pushSurges = [];
@@ -25014,7 +24950,32 @@ export function createWorldScene({
     return false;
   }
 
+  // The repository catalog, its imports, and every hosted size map are the
+  // heaviest reads in the World, and most visits never walk east at all. None
+  // of them are requested until a character is actually standing on the
+  // repositories ground circle, which is what this reports — exactly once.
+  function updateRepositoryDistrictArrival() {
+    if (repositoryDistrictEntered) return;
+    const distance = Math.hypot(
+      player.position.x - REPOSITORY_ISLAND_CENTER_X,
+      player.position.z,
+    );
+    if (distance > REPOSITORY_GROUND_RADIUS) return;
+    repositoryDistrictEntered = true;
+    onRepositoryDistrictEnter();
+  }
+
+  // Called by the shell when it begins the deferred catalog read, whether the
+  // trigger was the ground circle or the repositories panel. Portals built
+  // after this point rise and shimmer instead of popping into the ring.
+  function beginRepositoryDistrictReveal() {
+    repositoryDistrictEntered = true;
+    repositoryRevealPending = true;
+    return true;
+  }
+
   function nearestLandmark() {
+    updateRepositoryDistrictArrival();
     if (
       !["town-square", "east", "central", "west"].includes(currentSpace)
     ) {
@@ -31615,27 +31576,39 @@ export function createWorldScene({
         Math.sin(angle) * ringRadius,
       );
       node.rotation.y = -angle - Math.PI / 2;
-      if (
-        ["external-import", "hosted-import", "bulk-import"].includes(
-          record.source,
-        ) &&
-        !previousPortalKeys.has(record.key)
-      ) {
-        const importedBefore = records
+      // A portal rises when it is genuinely new to the ring: a fresh import, or
+      // the whole district arriving at once because a character just walked
+      // onto the repositories circle. The district reveal stages tightly so a
+      // full catalog reads as one wave rather than a several-minute queue.
+      const risesOnArrival =
+        !previousPortalKeys.has(record.key) &&
+        (repositoryRevealPending ||
+          ["external-import", "hosted-import", "bulk-import"].includes(
+            record.source,
+          ));
+      if (risesOnArrival) {
+        const risingBefore = records
           .slice(0, index)
           .filter(
             (candidate) =>
-              ["external-import", "hosted-import", "bulk-import"].includes(
-                candidate.source,
-              ) &&
-              !previousPortalKeys.has(candidate.key),
+              !previousPortalKeys.has(candidate.key) &&
+              (repositoryRevealPending ||
+                ["external-import", "hosted-import", "bulk-import"].includes(
+                  candidate.source,
+                )),
           ).length;
-        repositoryPortalBornAt.set(
+        const bornAt =
+          performance.now() +
+          risingBefore * (repositoryRevealPending ? 90 : 320);
+        repositoryPortalBornAt.set(record.key, bornAt);
+        repositorySparkleUntil.set(
           record.key,
-          performance.now() + importedBefore * 320,
+          bornAt + REPOSITORY_SPARKLE_MS,
         );
         node.scale.setScalar(reducedMotion ? 1 : 0.015);
       }
+      // The size tree has landed, so this portal has nothing left to build.
+      if (record.sizeTree) repositorySparkleUntil.delete(record.key);
       const face = new THREE.Group();
       face.name = `repository-portal-face:${record.owner}/${record.name}`;
       face.scale.setScalar(portalDensityScale);
@@ -31692,6 +31665,19 @@ export function createWorldScene({
         expandedProfile.add(ring);
       });
       face.add(expandedProfile);
+      // Still waiting on this repository's size tree. Shimmer while the map is
+      // assembled — the wedges below replace the shimmer the moment it lands.
+      const sparkleUntil = repositorySparkleUntil.get(record.key) || 0;
+      if (!reducedMotion && !record.sizeTree && performance.now() < sparkleUntil) {
+        const sparkle = makeRepositorySizeMapSparkle(
+          THREE,
+          nodeRadius,
+          `${record.owner}/${record.name}`,
+        );
+        sparkle.userData.repositorySparkleUntil = sparkleUntil;
+        face.add(sparkle);
+        node.userData.repositorySparkle = sparkle;
+      }
       if (record.termsFlagged) {
         const policyFlag = new THREE.Group();
         policyFlag.name =
@@ -31957,6 +31943,12 @@ export function createWorldScene({
         key: record.key,
         record,
       });
+    });
+    // The district has now risen once. Later catalog refreshes are ordinary
+    // updates again, so only genuinely new imports get the arrival animation.
+    repositoryRevealPending = false;
+    repositorySparkleUntil.forEach((_, key) => {
+      if (!repositoryPortals.has(key)) repositorySparkleUntil.delete(key);
     });
 
     layer.userData.repositoryCatalogLayer = true;
@@ -35405,6 +35397,48 @@ export function createWorldScene({
           repositoryPortalBornAt.delete(key);
         }
       });
+      // Motes circling a portal whose size tree is still being assembled. They
+      // fade in with the portal, twinkle while the map builds, and fade out on
+      // their own if the map never arrives, so a stalled mirror is never left
+      // wearing a permanent celebration.
+      if (worldElementEnabled("repository-portals")) {
+        repositoryPortals.forEach(({ group, key }) => {
+          const sparkle = group.userData.repositorySparkle;
+          if (!sparkle) return;
+          const seeds = sparkle.userData.repositorySparkleSeeds;
+          const until = sparkle.userData.repositorySparkleUntil || 0;
+          const remaining = until - time;
+          if (remaining <= 0 || !seeds) {
+            if (sparkle.visible) {
+              sparkle.visible = false;
+              sparkle.material.opacity = 0;
+              repositorySparkleUntil.delete(key);
+            }
+            return;
+          }
+          sparkle.visible = true;
+          const born = repositoryPortalBornAt.get(key);
+          const rising = born ? clamp((time - born) / 1050, 0, 1) : 1;
+          // Fade out over the last second so the shimmer never cuts off.
+          sparkle.material.opacity =
+            0.9 * rising * clamp(remaining / 1000, 0, 1);
+          const positions = sparkle.geometry.attributes.position;
+          const array = positions.array;
+          for (let index = 0; index < array.length; index += 3) {
+            const radius = seeds[index];
+            const phase = seeds[index + 1];
+            const speed = seeds[index + 2];
+            const angle = phase + time * 0.0011 * speed;
+            // Breathe the orbit so the motes look like they are still settling
+            // onto a map that has not finished resolving.
+            const breath = 1 + Math.sin(time * 0.0021 + phase) * 0.16;
+            array[index] = Math.cos(angle) * radius * breath;
+            array[index + 1] = Math.sin(angle) * radius * breath;
+            array[index + 2] = Math.sin(time * 0.0035 + phase) * 0.12;
+          }
+          positions.needsUpdate = true;
+        });
+      }
       // Node beacons hold a steady colour and size — no pulse — so a status
       // reads the same in a screenshot as it does live. Only degraded and
       // healing nodes carry a sweep, and it turns rather than fades, so the
@@ -36418,6 +36452,7 @@ export function createWorldScene({
     updateIdentity,
     setInputActive,
     updateRepositoryCatalog,
+    beginRepositoryDistrictReveal,
     updateRepositoryGraph,
     updateRepositoryActivity,
     setRepositoryImportState,

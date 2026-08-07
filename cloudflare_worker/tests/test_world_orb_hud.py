@@ -19,6 +19,11 @@ DIAGNOSTIC_DOTS = (
     "build", "world",
 )
 
+# Renderer readings no health dot owns, charted under the nine dot traces.
+DIAGNOSTIC_DETAIL_CHARTS = (
+    "triangles", "cpu", "p95", "jank", "anim", "avatars",
+)
+
 
 def test_debug_bar_is_a_live_metric_pill_with_graded_health_dots():
     assert 'class="world-diagnostics-orb"' in WORLD
@@ -44,8 +49,9 @@ def test_debug_bar_is_a_live_metric_pill_with_graded_health_dots():
 
 def test_every_health_dot_has_its_own_chart_in_the_same_order():
     # Each of the nine dots is backed by a visible trace, laid out in the dots'
-    # own order, plus the memory trace no dot owns.
-    charts = [*DIAGNOSTIC_DOTS, "memory"]
+    # own order, then the renderer detail traces, then memory — none of which a
+    # dot owns.
+    charts = [*DIAGNOSTIC_DOTS, *DIAGNOSTIC_DETAIL_CHARTS, "memory"]
     for metric in charts:
         assert f'data-world-diagnostics-chart-metric="{metric}"' in WORLD
         assert f'data-world-diagnostics-chart-line="{metric}"' in WORLD
@@ -78,6 +84,53 @@ def test_every_health_dot_has_its_own_chart_in_the_same_order():
     ) in CSS
     # The collapsed pill grows for the grid; the chat orb keeps its circle.
     assert ".world-diagnostics:not(.world-chat-terminal) > summary {\n  height: auto;\n}" in CSS
+
+
+def test_draw_charts_calls_and_triangles_get_their_own_live_trace():
+    # DRAW is the per-frame submission count; the triangle count it used to
+    # stand in for now has its own trace, so a scene that trades calls for
+    # triangles (or the reverse) is readable from the strip alone.
+    assert '<b>DRAW</b>' in WORLD
+    assert 'title="Draw calls per frame"' in WORLD
+    assert 'diagnosticsChartPoints(history, "drawCalls", {' in WORLD
+    assert "value: renderer ? compactCount(renderer.calls) : \"—\"," in WORLD
+    assert '<b>TRIS △</b>' in WORLD
+    assert 'title="Triangles drawn per frame"' in WORLD
+    assert "value: renderer ? compactCount(renderer.triangles) : \"—\"," in WORLD
+
+
+def test_renderer_detail_traces_sample_once_a_second_and_grade_themselves():
+    # Every detail trace is a fresh per-second reading, and each one that has a
+    # threshold is coloured by it rather than always drawing green.
+    for label in ("<b>CPU</b>", "<b>P95</b>", "<b>JANK</b>", "<b>ANIM</b>", "<b>AVTR</b>"):
+        assert label in WORLD
+    for key in (
+        "drawCalls: liveRenderer ? liveRenderer.calls : NaN,",
+        "frameTimeP95Ms: liveRenderer ? liveRenderer.frameTimeP95Ms : NaN,",
+        "cpuFrameMs: liveRenderer ? liveRenderer.cpuFrameMs : NaN,",
+        "animations: liveRenderer ? liveRenderer.animations : NaN,",
+        "remoteAvatars: liveRenderer ? liveRenderer.remoteAvatars : NaN,",
+    ):
+        assert key in WORLD
+    for metric in ("triangles", "cpuFrameMs", "frameTimeP95Ms", "longFrames"):
+        assert f'diagnosticLevel("{metric}", ' in WORLD
+    # A paused or missing renderer dims the detail cells instead of plotting
+    # zeros it never measured.
+    assert WORLD.count(': "unavailable",') >= 6
+    assert '.world-diagnostics-chart-metric[data-level="unavailable"]' in CSS
+    # The two detail rows would swallow a phone screen, so the closed pill drops
+    # them there and opening DEBUG brings them back.
+    for metric in DIAGNOSTIC_DETAIL_CHARTS:
+        assert (
+            "data-world-diagnostics-chart-detail "
+            f'data-world-diagnostics-chart-metric="{metric}"'
+        ) in WORLD
+    assert (
+        "  .world-diagnostics:not([open])\n"
+        "    .world-diagnostics-chart-metric[data-world-diagnostics-chart-detail] {\n"
+        "    display: none;\n"
+        "  }"
+    ) in CSS
 
 
 def test_state_dots_chart_their_own_verdict_on_a_fixed_scale():
@@ -311,8 +364,12 @@ def test_new_hud_work_is_visible_as_a_completed_build_board_item():
 
 
 def test_new_hud_has_an_explicit_shared_qa_card():
-    entry = (ROOT / "src/entry.py").read_text(encoding="utf-8")
-    assert '"2026-07-28-24h-25"' in entry
-    assert '"world-compact-debug-chat-orbs"' in entry
-    assert "logo-sized circles while closed" in entry
-    assert "fades after ten " in entry
+    # The QA deck moved out of entry.py so the isolate only pays for it on the
+    # QA route; the cards themselves still have to spell out the new HUD work.
+    qa = (ROOT / "src/world_qa.py").read_text(encoding="utf-8")
+    assert "WORLD_QA_DECK_REVISION = " in qa
+    assert '"world-compact-debug-chat-orbs"' in qa
+    assert "logo-sized circles while closed" in qa
+    assert "fades after ten " in qa
+    assert '"world-debug-live-telemetry-strip"' in qa
+    assert "DRAW must read draw calls per frame and TRIS " in qa

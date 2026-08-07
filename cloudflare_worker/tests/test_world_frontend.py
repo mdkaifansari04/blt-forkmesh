@@ -1198,7 +1198,15 @@ def test_world_boot_defers_optional_repository_star_and_security_fanout():
         APP.index("\n  handleVisibility =", APP.index("  async bootstrap() {"))
     ]
     assert ".slice(0, 48)" not in bootstrap
-    assert "Do not fan out a star request" in bootstrap
+    # The whole repository district is deferred now: boot neither reads the
+    # catalog nor fans a star request out over its portals. The note about the
+    # star fan-out moved with the requests into the arrival-triggered loader.
+    assert "/api/repositories" not in bootstrap
+    district = APP[
+        APP.index("  async loadRepositoryCatalog({"):
+        APP.index("\n  refreshOpenRepositoryPanel() {")
+    ]
+    assert "Do not fan out a star request" in district
     loader = APP[
         APP.index("  async loadRepositoryMap("):
         APP.index(
@@ -1387,15 +1395,23 @@ def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
         APP.index("\n  handleVisibility =", APP.index("  async bootstrap() {"))
     ]
     assert "await Promise.allSettled([contextPromise, dataPromise]);" in bootstrap
-    assert "void this.autoLoadFlagshipRepositoryMap();" in bootstrap
-    assert (
-        bootstrap.index("await Promise.allSettled([contextPromise, dataPromise]);")
-        < bootstrap.index("void this.autoLoadFlagshipRepositoryMap();")
-    )
     assert "this.world = createWorldScene({" in bootstrap
+    # The flagship map is no longer a boot request. It rides the deferred
+    # district read, which only runs once a character reaches the circle.
+    assert "void this.autoLoadFlagshipRepositoryMap();" not in bootstrap
+    district = APP[
+        APP.index("  async loadRepositoryCatalog({"):
+        APP.index("\n  refreshOpenRepositoryPanel() {")
+    ]
+    assert "this.world?.beginRepositoryDistrictReveal?.(reason);" in district
+    assert 'this.fetchJSON("/api/repositories", { auth: hasSession }),' in district
+    assert "void this.autoLoadFlagshipRepositoryMap();" in district
+    assert "void this.hydrateHostedRepositorySizeMaps();" in district
+    # The scene is told to play the arrival in before the requests go out, so
+    # the portals rise rather than appearing fully formed.
     assert (
-        bootstrap.index("this.world = createWorldScene({")
-        < bootstrap.index("void this.autoLoadFlagshipRepositoryMap();")
+        district.index("this.world?.beginRepositoryDistrictReveal?.(reason);")
+        < district.index('this.fetchJSON("/api/repositories"')
     )
 
     catalog = APP[

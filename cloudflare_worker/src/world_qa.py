@@ -16,7 +16,7 @@ def _bind_runtime(runtime):
             namespace[name] = value
 
 
-WORLD_QA_DECK_REVISION = "2026-08-01-open-account-access-30"
+WORLD_QA_DECK_REVISION = "2026-08-06-debug-live-telemetry-strip-31"
 # The physical desk paints only five cards per page, but its catalog must
 # include every bounded source: built-ins, dynamically routed QA items, and
 # the organization's encrypted QA-ready tasks. Organization tasks are capped
@@ -24,6 +24,15 @@ WORLD_QA_DECK_REVISION = "2026-08-01-open-account-access-30"
 # response ceiling rather than an arbitrary visible-card truncation.
 WORLD_QA_MAX_CARDS = 4096
 WORLD_QA_CARDS = (
+    ("world-debug-live-telemetry-strip",
+     "DEBUG live telemetry strip",
+     "Open the World and hover DEBUG. Confirm the strip charts the nine health "
+     "dots in the orb's own order, then TRIS, CPU, P95, JANK, ANIM, and AVTR, "
+     "with MEM across the bottom. DRAW must read draw calls per frame and TRIS "
+     "the triangle count, each with its own moving trace. Walk into a busy "
+     "district and confirm every trace updates once a second and turns yellow "
+     "or red on its own threshold. Hide the tab, return, and confirm the "
+     "renderer traces gap for the paused seconds instead of dipping to zero."),
     ("world-compact-debug-chat-orbs",
      "Compact debug and unified activity orbs",
      "Open the World on desktop and mobile. Confirm DEBUG and CHAT are "
