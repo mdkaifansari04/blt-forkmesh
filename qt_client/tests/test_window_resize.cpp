@@ -39,6 +39,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSemaphore>
 #include <QSet>
 #include <QThread>
@@ -756,6 +757,97 @@ void checkCloudLogMonitorAlert(MainWindow &window)
     window.testResetNetworkLog();
     window.testResetLoggedErrorAlerts();
     QApplication::processEvents();
+}
+
+// adhoc #1626: the cloud icon used to open a small modal box of text. The Worker
+// tail now reads like the app's own full log screen — its own window, an
+// activity chart of the errors over time above the stream, and a Pause control,
+// because a log that scrolls out from under the pointer cannot be read.
+void checkCloudflareLogWindow(MainWindow &window)
+{
+    window.testOpenCloudflareLogWindow();
+    QApplication::processEvents();
+
+    QWidget *viewer = window.testCloudflareLogWindow();
+    QWidget *chart =
+        viewer ? viewer->findChild<QWidget *>(
+                     QStringLiteral("cloudflareWorkerLogsChart"))
+               : nullptr;
+    auto *pane = viewer ? viewer->findChild<QPlainTextEdit *>(
+                              QStringLiteral("cloudflareWorkerLiveLogs"))
+                        : nullptr;
+    auto *pause = viewer ? viewer->findChild<QPushButton *>(
+                               QStringLiteral("cloudflareWorkerLogsPause"))
+                         : nullptr;
+    check(viewer && viewer->isWindow() && chart && pane && pause,
+          QStringLiteral("the Worker log viewer opens as a window of its own, "
+                         "with an activity chart and a pause control"));
+    if (!viewer || !pane || !pause)
+        return;
+
+    // Counts are read as deltas: the monitor checks above have already put a
+    // few events on the same timeline.
+    const int errorsBefore = window.testCloudflareLogTimelineCount();
+    window.testSetCloudflareLogErrorsOnly(false);
+    const int eventsBefore = window.testCloudflareLogTimelineCount();
+    window.testSetCloudflareLogErrorsOnly(true);
+
+    constexpr int kLines = 240;
+    for (int index = 0; index < kLines; ++index) {
+        window.testCloudflareLogLine(
+            QStringLiteral("GET https://forkmesh.com/api/status - %1 @ line %2")
+                .arg(index % 6 == 0 ? QStringLiteral("500 Exception Thrown")
+                                    : QStringLiteral("200 Ok"))
+                .arg(index),
+            index % 6 == 0);
+    }
+    QApplication::processEvents();
+    check(window.testCloudflareLogText().contains(QStringLiteral("line 239")) &&
+              window.testCloudflareLogAtBottom(),
+          QStringLiteral("the live stream renders into the pane and follows the "
+                         "tail while nobody has stopped it"));
+    check(window.testCloudflareLogTimelineCount() - errorsBefore == kLines / 6,
+          QStringLiteral("the chart plots the Worker's errors over time, not "
+                         "every request it served"));
+    window.testSetCloudflareLogErrorsOnly(false);
+    check(window.testCloudflareLogTimelineCount() - eventsBefore == kLines &&
+              window.testCloudflareLogTimelineSummary().contains(
+                  QStringLiteral("event")),
+          QStringLiteral("unticking Errors only charts every Worker event"));
+    window.testSetCloudflareLogErrorsOnly(true);
+
+    pause->click();
+    QApplication::processEvents();
+    const int held = pane->verticalScrollBar()->value();
+    for (int index = 0; index < 40; ++index) {
+        window.testCloudflareLogLine(
+            QStringLiteral("GET https://forkmesh.com/api/sync - 200 Ok @ held %1")
+                .arg(index),
+            false);
+    }
+    QApplication::processEvents();
+    check(window.testCloudflareLogPaused() &&
+              pane->verticalScrollBar()->value() == held &&
+              !window.testCloudflareLogAtBottom() &&
+              window.testCloudflareLogText().contains(
+                  QStringLiteral("held 39")) &&
+              window.testCloudflareLogStatusText().contains(
+                  QStringLiteral("paused")),
+          QStringLiteral("pausing stops the pane scrolling while the lines "
+                         "themselves keep arriving"));
+
+    pause->click();
+    QApplication::processEvents();
+    check(!window.testCloudflareLogPaused() &&
+              window.testCloudflareLogAtBottom() &&
+              !window.testCloudflareLogStatusText().contains(
+                  QStringLiteral("paused")),
+          QStringLiteral("resuming jumps back to the tail"));
+
+    viewer->close();
+    QApplication::processEvents();
+    check(!window.testCloudflareLogWindow(),
+          QStringLiteral("closing the viewer takes its window with it"));
 }
 
 // adhoc #1444: the alert stack has to hug its own content and read as one evenly
@@ -1546,6 +1638,7 @@ int main(int argc, char *argv[])
         QApplication::processEvents();
         checkLoggedErrorAlert(window);
         checkCloudLogMonitorAlert(window);
+        checkCloudflareLogWindow(window);
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
@@ -2460,6 +2553,7 @@ int main(int argc, char *argv[])
 
     checkLoggedErrorAlert(window);
     checkCloudLogMonitorAlert(window);
+    checkCloudflareLogWindow(window);
 
     // adhoc #1389: notification actions are caption-height controls, not the
     // full-height buttons shown in the reference screenshot. The queued cards
