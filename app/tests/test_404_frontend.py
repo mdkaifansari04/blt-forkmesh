@@ -55,7 +55,8 @@ def test_cloudflare_assets_use_404_page_for_unknown_paths():
 
     assert WRANGLER["assets"]["html_handling"] == "auto-trailing-slash"
     assert WRANGLER["assets"]["not_found_handling"] == "404-page"
-    assert "/ /index.html 200" in redirects
+    assert "/ /index.html 200" not in redirects
+    assert (PUBLIC / "index.html").is_file()
 
 
 if __name__ == "__main__":

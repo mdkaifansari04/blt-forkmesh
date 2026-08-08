@@ -21,7 +21,6 @@ import static_routes  # noqa: E402
 
 
 WWW_PAGE_ROUTES = {
-    "/": "/index.html",
     "/homev2": "/homev2.html",
     "/new-home": "/new-home.html",
     "/blog": "/blog.html",
@@ -55,6 +54,8 @@ def _redirect_rules():
 def test_www_redirects_only_rewrite_www_owned_pages():
     rules = _redirect_rules()
     assert len({source for source, _, _ in rules}) == len(rules)
+    assert all(source != "/" for source, _, _ in rules)
+    assert (WWW_PUBLIC / "index.html").is_file()
     rewrites = {
         source: target
         for source, target, status in rules
