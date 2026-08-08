@@ -132,9 +132,11 @@ class RelaySpeedDot;
 class ActionRunStrip;
 class BackgroundTaskChip;
 class ElidingStatusLabel;
+class VerticalIconButton;
 }
 using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
+using forkmesh::ui::VerticalIconButton;
 using forkmesh::ui::AgentDotMatrix;
 using forkmesh::ui::BusySpinner;
 using forkmesh::ui::ElidingStatusLabel;
@@ -5661,6 +5663,9 @@ private:
     // the chip's corner badge.
     int logFilterChipCount(const QString &category) const;
     void updateLogFilterChipCounts(); // refresh the counts without rebuilding
+    // The Cloud chip that rides the same row (adhoc #1636): not a category, so
+    // it is excluded from the exclusive filter group and refreshed on its own.
+    void updateCloudLogFilterChip();
     void refreshLogTimelineChart();
     void appendLogTimelineEntry(const QString &storedLine);
     void setLogTimelinePresetHours(int hours);
@@ -6453,13 +6458,15 @@ private:
     QPushButton *m_debugLogTailButton = nullptr;
     int m_debugLogTailHeight = 0; // the strip the window grows by, in pixels
     bool m_debugLogTailShown = false;
-    // Debug bar's "Monitor" checkbox and the background Wrangler tail it owns
-    // (adhoc #1615). While it runs, every Worker exception/5xx reaches the log
-    // as an ERROR line, which raises the same toast as any other failure. The
-    // token lives in the child environment only, never in argv or QSettings.
-    QCheckBox *m_cloudLogMonitorCheck = nullptr;
-    // Settings' mirror of that box, so the monitor can still be switched off on
-    // a node that keeps the debug bar closed. The two stay in step.
+    // The Log page's "Cloud" chip, one of the quick-filter row's tiles rather
+    // than a category (adhoc #1636): it owns the background Wrangler tail
+    // (adhoc #1615), checked exactly while that tail is live. While it runs,
+    // every Worker exception/5xx reaches the log as an ERROR line, which
+    // raises the same toast as any other failure. The token lives in the
+    // child environment only, never in argv or QSettings.
+    QPointer<VerticalIconButton> m_cloudLogFilterChip;
+    // Settings' mirror of that chip, so the monitor can still be switched off
+    // on a node that never opens the Log page. The two stay in step.
     QCheckBox *m_cloudLogMonitorSettingCheck = nullptr;
     QProcess *m_cloudLogMonitorProcess = nullptr;
     QByteArray m_cloudLogMonitorBuffer; // partial tail record across reads

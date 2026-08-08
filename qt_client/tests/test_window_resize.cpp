@@ -173,21 +173,10 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("clicking the footer version reveals debug activity "
                              "and the enlarged four-resource chart"));
 
-        // The cloud log's Monitor toggle rides beside the Cloud button that
-        // opens the same tail (adhoc #1615). Ticked at startup (adhoc #1632),
-        // but the tail itself is deferred, so building the window must not have
-        // spawned one.
-        auto *cloudButton = window.findChild<QPushButton *>(
-            QStringLiteral("cloudflareWorkerLogsButton"));
-        auto *cloudMonitor = window.findChild<QCheckBox *>(
-            QStringLiteral("cloudLogMonitorCheck"));
-        check(cloudButton && cloudMonitor &&
-                  cloudMonitor->isVisibleTo(debugBar) &&
-                  cloudMonitor->isChecked() &&
-                  !window.testCloudLogMonitorRunning() &&
-                  cloudMonitor->toolTip().contains(QStringLiteral("alert")),
-              QStringLiteral("the debug bar's cloud log monitor is on by "
-                             "default, with its tail deferred past startup"));
+        // The cloud log monitor now lives on the Log page's quick-filter row
+        // as the Cloud chip rather than a button-plus-checkbox pair in this
+        // bar (adhoc #1636); see the Log page checks further down for its
+        // on-by-default, tail-deferred-past-startup behavior.
 
         const quint64 gitCountBefore = lights->countFor(QStringLiteral("GIT"));
         lights->pulse(QStringLiteral("GIT"));
@@ -2534,12 +2523,20 @@ int main(int argc, char *argv[])
           QStringLiteral("API token tab lists the required permissions up front"));
     window.testShowLogSection();
     QApplication::processEvents();
-    check(window.findChild<QPushButton *>(
-              QStringLiteral("cloudflareWorkerLogsButton")) != nullptr &&
+    // The Cloud chip rides the quick-filter row now (adhoc #1636), checked
+    // exactly while the tail is actually running rather than from the stored
+    // preference alone — which is on by default, but the tail itself is
+    // deferred, so building the window must not have spawned one.
+    auto *cloudChip = window.findChild<QPushButton *>(
+        QStringLiteral("cloudLogFilterChip"));
+    check(cloudChip &&
               window.findChild<QPushButton *>(
-                  QStringLiteral("logPopoutButton")) != nullptr,
-          QStringLiteral("the debug strip keeps the Cloudflare live-log viewer "
-                         "and the Log page pops the whole log out"));
+                  QStringLiteral("logPopoutButton")) != nullptr &&
+              !cloudChip->isChecked() && !window.testCloudLogMonitorRunning() &&
+              cloudChip->toolTip().contains(QStringLiteral("alert")),
+          QStringLiteral("the Log page's Cloud chip shows the tail's actual, "
+                         "not-yet-running state, and the page still pops the "
+                         "whole log out"));
     check(window.findChild<QTableWidget *>(
               QStringLiteral("controlPermissionsTable")) != nullptr &&
               window.findChild<QPushButton *>(
@@ -2745,27 +2742,27 @@ int main(int argc, char *argv[])
         }
 
         // The cloud monitor runs by default now, so its off switch has to be
-        // reachable without opening the debug bar. Settings mirrors the bar's
-        // own Monitor box, and unticking either one is what gets remembered.
+        // reachable without opening the Log page. Settings mirrors the stored
+        // preference the Log page's Cloud chip also reads (adhoc #1636), and
+        // unticking either one is what gets remembered.
         auto *monitorSetting = window.findChild<QCheckBox *>(
             QStringLiteral("cloudLogMonitorSettingCheck"));
-        auto *barMonitor = window.findChild<QCheckBox *>(
-            QStringLiteral("cloudLogMonitorCheck"));
-        check(monitorSetting && barMonitor && monitorSetting->isChecked() &&
-                  barMonitor->isChecked(),
+        check(monitorSetting && monitorSetting->isChecked() &&
+                  QSettings()
+                      .value(QStringLiteral("diagnostics/cloudLogMonitor"), true)
+                      .toBool(),
               QStringLiteral("Settings mirrors the on-by-default cloud log "
-                             "monitor"));
-        if (monitorSetting && barMonitor) {
+                             "monitor preference"));
+        if (monitorSetting) {
             monitorSetting->setChecked(false);
             QApplication::processEvents();
-            check(!barMonitor->isChecked() &&
-                      !window.testCloudLogMonitorRunning() &&
+            check(!window.testCloudLogMonitorRunning() &&
                       !QSettings()
                            .value(QStringLiteral("diagnostics/cloudLogMonitor"),
                                   true)
                            .toBool(),
-                  QStringLiteral("unticking the Settings copy switches the "
-                                 "debug bar's monitor off and remembers it"));
+                  QStringLiteral("unticking the Settings copy stops the "
+                                 "monitor and remembers the preference"));
             QSettings().remove(QStringLiteral("diagnostics/cloudLogMonitor"));
         }
     }
