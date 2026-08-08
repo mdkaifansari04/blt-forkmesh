@@ -1548,6 +1548,12 @@ bool MainWindow::selectBranchRow(const QString &branch)
 // reload rebuild the table underneath it.
 void MainWindow::reportBranchNotFound(const QString &branch)
 {
+#ifdef FORKMESH_WINDOW_TESTS
+    // QMessageBox::exec() waits for a click that a headless run can never
+    // deliver, so this dialog parked the whole window-test suite here — every
+    // check after it simply never ran. Report and carry on instead.
+    qWarning().noquote() << "branch not found:" << branch;
+#else
     QTimer::singleShot(0, this, [this, branch] {
         QMessageBox::information(
             this, QStringLiteral("Branch not found"),
@@ -1555,6 +1561,7 @@ void MainWindow::reportBranchNotFound(const QString &branch)
                            "It may have been merged and deleted.")
                 .arg(branch));
     });
+#endif
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -3241,6 +3248,19 @@ QWidget *MainWindow::buildBranchRangePane()
     connect(m_branchDiffView, &QTextBrowser::anchorClicked, this,
             &MainWindow::onBranchDiffAnchorClicked);
     registerDiffView(m_branchDiffView);
+    // Selection outline for the file CHANGES points at. Created before the
+    // sticky header so the header, which is raised on every update, keeps
+    // painting over it rather than under it.
+    m_branchDiffActiveOutline = new QFrame(m_branchDiffView->viewport());
+    m_branchDiffActiveOutline->setObjectName("diffActiveOutline");
+    m_branchDiffActiveOutline->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_branchDiffActiveOutline->setStyleSheet(
+        QStringLiteral("#diffActiveOutline{background:transparent;"
+                       "border:2px solid #2da44e;border-radius:6px;}"));
+    m_branchDiffActiveOutline->hide();
+    // Both overlays are sized against the viewport, which changes width when the
+    // splitter moves without any scroll to trigger a refresh.
+    m_branchDiffView->viewport()->installEventFilter(this);
     // Sticky header overlay pinned over the diff viewport — same form as the PR
     // viewer's: filename + Pac-Man read-progress + percent + a Viewed toggle.
     m_branchDiffSticky = new QFrame(m_branchDiffView->viewport());
@@ -3296,8 +3316,10 @@ QWidget *MainWindow::buildBranchRangePane()
             &MainWindow::applyBranchAutoMarkViewedOnScroll);
     connect(m_branchDiffView->verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this] {
-                // Cheap, every-tick: sticky header / Pac-Man / list follow.
+                // Cheap, every-tick: sticky header / Pac-Man / list follow, and
+                // the selected file's outline riding along with the document.
                 updateBranchDiffSticky();
+                updateBranchDiffActiveOutline();
                 // Heavy, debounced: collapse fully-seen files into "Viewed".
                 if (m_branchAutoViewedDebounce)
                     m_branchAutoViewedDebounce->start();
@@ -5327,6 +5349,10 @@ void MainWindow::beginBranchDiffTransition(QString branch)
     // through the switch and leave a phantom entry in the Back/Forward trail.
     m_branchDiffFilePaths.clear();
     m_branchDiffFileAnchors.clear();
+    m_branchStickyLabelHtml.clear();
+    m_branchActiveFile.clear();
+    if (m_branchDiffActiveOutline)
+        m_branchDiffActiveOutline->hide();
     clearRangeFilesInSourceControl();
     setDiffHtml(m_branchDiffView,
                 QString::fromUtf8("<p style='color:#8b949e'>Reading changes on "
@@ -5647,11 +5673,13 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
                                         anchorFile, notes, viewed);
     m_branchDiffFilePaths.clear();
     m_branchDiffFileAnchors.clear();
+    m_branchStickyLabelHtml.clear();
     QStringList rangeStatuses;
     for (const DiffFileEntry &f : files) {
         m_branchDiffFilePaths.append(f.path);
         m_branchDiffFileAnchors.append(f.anchor);
         rangeStatuses.append(f.status);
+        m_branchStickyLabelHtml.insert(f.path, diffStickyLabelHtml(f));
     }
     showRangeFilesInSourceControl(m_branchDiffFilePaths, rangeStatuses);
 
@@ -5672,7 +5700,11 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
     // the last batch lands. Either way this covers whatever is currently shown.
     m_branchFileTops.clear(); // positions change on re-render; force a recompute
     m_branchStickyFile.clear();
+    // A file that is no longer part of the range cannot stay outlined.
+    if (!m_branchDiffFilePaths.contains(m_branchActiveFile))
+        m_branchActiveFile.clear();
     rebuildBranchDiffSpans();
+    updateBranchDiffActiveOutline();
     // The document was just replaced; an open find bar's cursors died with it.
     if (m_branchDiffSearchBar && m_branchDiffSearchBar->isVisible())
         branchDiffSearchRecompute();
@@ -7012,8 +7044,14 @@ void MainWindow::updateBranchDiffSticky()
     const bool isViewed = loadDiffViewed(viewedContext).contains(cur);
     if (cur != m_branchStickyFile) {
         m_branchStickyFile = cur;
-        if (m_branchStickyPath)
-            m_branchStickyPath->setText(diffStickyPathHtml(cur));
+        if (m_branchStickyPath) {
+            // Prefer the labelled form (status word + octicon + +/- counts); the
+            // bare path is the fallback for a span whose entry did not survive a
+            // re-render.
+            const QString label = m_branchStickyLabelHtml.value(cur);
+            m_branchStickyPath->setText(label.isEmpty() ? diffStickyPathHtml(cur)
+                                                        : label);
+        }
     }
     if (m_branchStickyViewed)
         m_branchStickyViewed->setText(isViewed
@@ -7040,6 +7078,72 @@ void MainWindow::updateBranchDiffSticky()
     m_branchDiffSticky->show();
     m_branchDiffSticky->raise();
 }
+
+// Draw the green selection outline around the extent of the file CHANGES points
+// at, so the stroke on the row and the stroke on its diff section read as one
+// selection. Runs on every scroll tick, so it only reads the cached file tops.
+void MainWindow::updateBranchDiffActiveOutline()
+{
+    if (!m_branchDiffView || !m_branchDiffActiveOutline)
+        return;
+    const int index = m_branchActiveFile.isEmpty()
+                          ? -1
+                          : m_branchDiffFilePaths.indexOf(m_branchActiveFile);
+    QScrollBar *vbar = m_branchDiffView->verticalScrollBar();
+    if (index < 0 || !vbar || m_branchDiffFileSpans.isEmpty()) {
+        m_branchDiffActiveOutline->hide();
+        return;
+    }
+    if (m_branchFileTops.size() != m_branchDiffFileSpans.size())
+        computeBranchFileTops();
+    // The span list can lag the path list while a streamed diff is still
+    // landing; there is nothing to outline until its position is known.
+    if (index >= m_branchFileTops.size() || m_branchFileTops.at(index) < 0) {
+        m_branchDiffActiveOutline->hide();
+        return;
+    }
+    const int docHeight =
+        m_branchDiffView->document()->documentLayout()->documentSize().height();
+    const int top = m_branchFileTops.at(index);
+    const int bottom = (index + 1 < m_branchFileTops.size() &&
+                        m_branchFileTops.at(index + 1) >= 0)
+                           ? m_branchFileTops.at(index + 1)
+                           : docHeight;
+
+    const int viewTop = vbar->value();
+    const int height = m_branchDiffView->viewport()->height();
+    // Wholly scrolled past in either direction: nothing to draw.
+    if (bottom - viewTop <= 0 || top - viewTop >= height) {
+        m_branchDiffActiveOutline->hide();
+        return;
+    }
+    // Qt clips a child to its parent, so an outline taller than the viewport can
+    // simply hang off both edges — the side borders stay visible and the top or
+    // bottom one falls out of view, which is exactly the wanted "continues past
+    // here" reading.
+    m_branchDiffActiveOutline->setGeometry(
+        1, top - viewTop, qMax(0, m_branchDiffView->viewport()->width() - 2),
+        qMax(1, bottom - top));
+    m_branchDiffActiveOutline->show();
+    m_branchDiffActiveOutline->raise();
+    if (m_branchDiffSticky && m_branchDiffSticky->isVisible())
+        m_branchDiffSticky->raise(); // header stays above the outline
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testBranchOutlinedFile() const
+{
+    return m_branchDiffActiveOutline && m_branchDiffActiveOutline->isVisible()
+               ? m_branchActiveFile
+               : QString();
+}
+
+QRect MainWindow::testBranchOutlineRect() const
+{
+    return m_branchDiffActiveOutline ? m_branchDiffActiveOutline->geometry()
+                                     : QRect();
+}
+#endif
 
 // Debounced off the branch diff's scrollbar: mark every file scrolled fully
 // through (its end reached the viewport bottom) as Viewed, re-render once for
