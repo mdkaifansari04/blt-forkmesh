@@ -39,6 +39,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSemaphore>
 #include <QSet>
 #include <QThread>
@@ -69,6 +70,7 @@ QString linkifyIssueRefs(const QString &escaped);
 bool isTemporaryChatGuest(const MemberInfo &m);
 QString agentModelLabel(const QString &model);
 bool agentModelIsClaudeStyle(const QString &model);
+bool agentModelIsCloudflareStyle(const QString &model);
 bool agentModelMatchesProvider(const QString &provider, const QString &model);
 MirrorBranchTip mirrorPrimaryBranchTip(const QString &mirrorPath,
                                        const QString &workTree);
@@ -157,10 +159,10 @@ void checkFooterOverlayGeometry(MainWindow &window)
         QStringLiteral("statusVersionButton"));
     check(dock && log && prompt && lights && header && debugBar && version &&
               !log->isVisible() && !debugBar->isVisible() && lights->isDebug() &&
-              lights->lightCount() == 32 &&
+              lights->lightCount() == 33 &&
               prompt->geometry().center().x() > dock->rect().center().x() &&
               prompt->geometry().bottom() == dock->rect().bottom(),
-          QStringLiteral("all 32 labeled log categories start collapsed in the "
+          QStringLiteral("all 33 labeled log categories start collapsed in the "
                          "version-controlled debug bar"));
     if (version && debugBar) {
         version->click();
@@ -170,6 +172,11 @@ void checkFooterOverlayGeometry(MainWindow &window)
                       QStringLiteral("debugResourceChart")) != nullptr,
               QStringLiteral("clicking the footer version reveals debug activity "
                              "and the enlarged four-resource chart"));
+
+        // The cloud log monitor now lives on the Log page's quick-filter row
+        // as the Cloud chip rather than a button-plus-checkbox pair in this
+        // bar (adhoc #1636); see the Log page checks further down for its
+        // on-by-default, tail-deferred-past-startup behavior.
 
         const quint64 gitCountBefore = lights->countFor(QStringLiteral("GIT"));
         lights->pulse(QStringLiteral("GIT"));
@@ -295,6 +302,24 @@ void checkFooterOverlayGeometry(MainWindow &window)
                         .isValid()),
               QStringLiteral("each status dot opens its own page: /status, the "
                              "API host, the flagship repository, the site"));
+
+        // adhoc #1616: the click is also "check this again, now". Every dot
+        // re-reads the relay's status payload, and a dot with a desktop-side
+        // check behind it — its own row, or the relay row that check merged
+        // into — re-measures it from this machine as well.
+        check(window.testWebsiteRecheckProbes(QStringLiteral("website")) ==
+                  QStringList{QStringLiteral("desktop_website")} &&
+                  window.testWebsiteRecheckProbes(
+                      QStringLiteral("desktop_website")) ==
+                      QStringList{QStringLiteral("desktop_website")} &&
+                  window.testWebsiteRecheckProbes(
+                      QStringLiteral("status_page")) ==
+                      QStringList{QStringLiteral("desktop_status_page")} &&
+                  window.testWebsiteRecheckProbes(QStringLiteral("api"))
+                      .isEmpty(),
+              QStringLiteral("clicking a dot re-runs the desktop-side check "
+                             "behind it, whether it has its own row or merged "
+                             "into the relay's"));
 
         // A host with no link of its own reports grey rather than a false
         // outage, so an offline test machine is allowed that verdict here.
@@ -517,6 +542,13 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   prompt->height() > dragged.height(),
               QStringLiteral("the corner grip resizes the floating prompt"));
 
+        // The text area itself has to absorb the extra height, not just leave
+        // blank space above the toolbar (adhoc #1625).
+        auto *promptText =
+            window.findChild<QPlainTextEdit *>(QStringLiteral("issueQuickAdd"));
+        check(promptText && promptText->height() > promptText->minimumHeight(),
+              QStringLiteral("resizing the prompt taller grows the text input itself"));
+
         promptDetach->click();
         QApplication::processEvents();
         auto *detachWindow =
@@ -534,6 +566,30 @@ void checkFooterOverlayGeometry(MainWindow &window)
               QStringLiteral("pressing detach again brings the prompt back "
                              "inside the app"));
 
+        // The panel is still floating/resized from the drag+grip gestures above
+        // (adhoc #1625): the explicit reset button is a discoverable alternative
+        // to the handle's double-click gesture and should snap it back the same
+        // way.
+        auto *promptReset =
+            window.findChild<QPushButton *>(QStringLiteral("promptResetButton"));
+        check(promptReset != nullptr,
+              QStringLiteral("the prompt has an explicit reset-placement button"));
+        if (promptReset) {
+            promptReset->click();
+            QApplication::processEvents();
+            check(prompt->parentWidget() == dock &&
+                      prompt->geometry().bottom() == dock->rect().bottom(),
+                  QStringLiteral("the reset button snaps the prompt back to the "
+                                 "footer anchor"));
+        }
+
+        // Re-float it once more so the handle's own double-click gesture (the
+        // longer-standing affordance) is still exercised too.
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-80, -100));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease, grabAt + QPoint(-80, -100));
+        QApplication::processEvents();
+
         QMouseEvent snapBack(QEvent::MouseButtonDblClick,
                              QPointF(promptHandle->width() / 2.0,
                                      promptHandle->height() / 2.0),
@@ -545,17 +601,57 @@ void checkFooterOverlayGeometry(MainWindow &window)
                   prompt->geometry().bottom() == dock->rect().bottom(),
               QStringLiteral("double-clicking the handle snaps the prompt back "
                              "to the footer anchor"));
+
+        // Growing the main window should carry a floating composer along with
+        // the corner it's parked near, not leave it stranded at its old
+        // absolute position (adhoc #1625). Re-float it once more for this
+        // check, done last so it can't perturb the pixel-exact anchor checks
+        // above with any offscreen-platform resize rounding.
+        sendMouse(promptHandle, QEvent::MouseButtonPress, grabAt);
+        sendMouse(promptHandle, QEvent::MouseMove, grabAt + QPoint(-120, -160));
+        sendMouse(promptHandle, QEvent::MouseButtonRelease, grabAt + QPoint(-120, -160));
+        QApplication::processEvents();
+        if (auto *overlayHost = prompt->parentWidget(); overlayHost != dock) {
+            const QSize originalWindowSize = window.size();
+            const int marginRightBefore =
+                overlayHost->width() - (prompt->x() + prompt->width());
+            const int marginBottomBefore =
+                overlayHost->height() - (prompt->y() + prompt->height());
+            window.resize(window.width() + 160, window.height() + 140);
+            QApplication::processEvents();
+            const int marginRightAfter =
+                overlayHost->width() - (prompt->x() + prompt->width());
+            const int marginBottomAfter =
+                overlayHost->height() - (prompt->y() + prompt->height());
+            check(marginRightAfter == marginRightBefore &&
+                      marginBottomAfter == marginBottomBefore,
+                  QString("growing the window keeps the floating prompt pinned "
+                          "to the same corner (right margin %1 -> %2, bottom "
+                          "margin %3 -> %4)")
+                      .arg(marginRightBefore)
+                      .arg(marginRightAfter)
+                      .arg(marginBottomBefore)
+                      .arg(marginBottomAfter));
+            // Restore the window to its prior size: later checks in this suite
+            // assume the standard test window dimensions.
+            window.resize(originalWindowSize);
+            QApplication::processEvents();
+        }
+        if (promptReset) {
+            promptReset->click();
+            QApplication::processEvents();
+        }
     }
 
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
     check(log && lights && header && log->isVisible() && lights->isVisible() &&
-              header->isVisible() && header->lightCount() == 32 &&
+              header->isVisible() && header->lightCount() == 33 &&
               log->geometry().center().x() < dock->rect().center().x() &&
               log->geometry().bottom() == dock->rect().bottom() &&
               header->geometry().top() >= log->rect().top(),
           QStringLiteral("the compact log opens at the lower-left with its "
-                         "expanded 31-category header"));
+                         "expanded 33-category header"));
 
     window.testShowLogSection();
     QApplication::processEvents();
@@ -621,6 +717,336 @@ void checkLoggedErrorAlert(MainWindow &window)
               window.testTopMessageRaw().contains(QStringLiteral("Clone failed")),
           QStringLiteral("a reported failure flashes the window and is shown "
                          "exactly once"));
+
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
+// adhoc #1629: a card that slides off screen after five seconds used to be the
+// whole record of an alert. Every popup this app raises — toast, modal, OS
+// notification — is now filed on the Pings page, and each row says where it
+// stands with the cloud: an alert raised with nothing to reach the relay with
+// is "Offline" and never sent, while a routine confirmation is "Local only"
+// because it was never going anywhere. This window is signed out, which is
+// exactly the case the offline marking exists for.
+void checkFiledPingSyncState(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    window.testFlashMessage(
+        QStringLiteral("Mirror push rejected by the gateway"), true);
+    QApplication::processEvents();
+    check(window.testNotificationsTitled(
+              QStringLiteral("Mirror push rejected")) == 1,
+          QStringLiteral("an error toast is filed on the Pings page, not just "
+                         "shown for a few seconds"));
+    check(window.testPingStatusFor(QStringLiteral("Mirror push rejected"))
+                  == QStringLiteral("Offline"),
+          QStringLiteral("an alert this node could not report is marked offline, "
+                         "so the page is visibly its only record"));
+
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    window.testFlashMessage(QStringLiteral("Copied the clone address"), false);
+    QApplication::processEvents();
+    check(window.testPingStatusFor(QStringLiteral("Copied the clone address"))
+                  == QStringLiteral("Local only"),
+          QStringLiteral("a routine confirmation is filed as local-only, not as "
+                         "something that failed to sync"));
+
+    // The toast a filed ping raises for itself must not come back through the
+    // funnel as a second row.
+    const int before = window.testNotificationsTitled(
+        QStringLiteral("Ping funnel check"));
+    window.testAddNotification(QStringLiteral("Ping funnel check"),
+                               QStringLiteral("one event, one row"), false);
+    QApplication::processEvents();
+    check(window.testNotificationsTitled(QStringLiteral("Ping funnel check"))
+                  == before + 1,
+          QStringLiteral("a ping and the toast it raises are one row"));
+
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
+// adhoc #1630: a run finishing is the result the user has been waiting on, and
+// it used to land in silence. It now raises its own card — the agent's icon, a
+// headline naming the run, and the summary the agent signed off with — and
+// pulses the window green, once per run however many times completion fires.
+void checkAgentDoneCelebration(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    AgentSession finished;
+    finished.id = 133894;
+    finished.owner = QStringLiteral("me");
+    finished.name = QStringLiteral("forkmesh");
+    finished.issueNumber = 4242;
+    finished.provider = QStringLiteral("claude-code");
+    finished.prompt = QStringLiteral("Agent-done fixture");
+    finished.status = AgentStatus::Success;
+    finished.startedAtMs = 1'000'000;
+    finished.finishedAtMs = 1'125'000; // 2m 05s
+    finished.costUsd = 0.42;
+    window.testAddAgentSession(finished);
+
+    const QString summary =
+        QStringLiteral("Fixed the login redirect and added a regression test.");
+    window.testNotifyAgentDone(finished.id, summary);
+    QApplication::processEvents();
+
+    const QString headline = window.testTopMessageAgentHeadline();
+    check(window.testTopMessageRaw() == summary &&
+              headline.contains(QStringLiteral("Agent #133894 is done!")) &&
+              headline.contains(QStringLiteral("#4242")) &&
+              headline.contains(QStringLiteral("forkmesh")) &&
+              headline.contains(QStringLiteral("2m 05s")) &&
+              headline.contains(QStringLiteral("$0.42")) &&
+              window.testTopMessageAgentIconShown() &&
+              window.testCelebrationBorderVisible(),
+          QStringLiteral("a finished agent celebrates with its icon, the run's "
+                         "figures and the summary it signed off with"));
+
+    // Completion can be reached more than once for the same run (a re-fired
+    // signal, a requeue); the card must not pile up behind itself.
+    const int queuedAfterFirst = window.testTopMessageQueueDepth();
+    window.testNotifyAgentDone(finished.id, summary);
+    QApplication::processEvents();
+    check(window.testTopMessageQueueDepth() == queuedAfterFirst,
+          QStringLiteral("a completion reported twice celebrates once"));
+
+    window.testRemoveAgentSession(finished.id);
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    QApplication::processEvents();
+}
+
+// adhoc #1612: a chat message's alert says who is talking before its text is
+// read — the card wears the sender's face, in its own lane, and the message is
+// wrapped inside what is left rather than running underneath it. Events that
+// are nobody's in particular (a build, a push) keep the full width.
+void checkChatPingAvatar(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    window.testDeliverChatMessage(QStringLiteral("#general"),
+                                  QStringLiteral("peer-avatar-fixture"),
+                                  QStringLiteral("Ada"),
+                                  QStringLiteral("the mirror is back up"));
+    QApplication::processEvents();
+
+    // Measuring the bubble is what lays its content row out, so let that settle
+    // before reading the lane's geometry back.
+    const QRect withAvatar = window.testTopMessageRect();
+    QApplication::processEvents();
+    check(window.testTopMessageAvatarShown() &&
+              window.testTopMessageRaw().contains(QStringLiteral("Ada")) &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("the mirror is back up")),
+          QStringLiteral("a chat alert shows the avatar of the person "
+                         "chatting"));
+
+    QLabel *avatar =
+        window.findChild<QLabel *>(QStringLiteral("topMessageAvatar"));
+    QWidget *toastText =
+        window.findChild<QWidget *>(QStringLiteral("topMessageScroll"));
+    check(avatar && toastText && avatar->isVisible() &&
+              avatar->geometry().right() <= toastText->geometry().left() &&
+              withAvatar.height() >= avatar->height(),
+          QStringLiteral("the chat alert's avatar sits beside the message, "
+                         "never over it"));
+
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    window.testFlashMessage(QStringLiteral("Mirror push rejected"), true);
+    QApplication::processEvents();
+    check(!window.testTopMessageAvatarShown() && (!avatar || !avatar->isVisible()),
+          QStringLiteral("an alert that is nobody's in particular wears no "
+                         "face"));
+
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
+// adhoc #1615: with the debug bar's Monitor box ticked, a Worker failure has to
+// reach the same red card as any other failure — and the healthy traffic around
+// it must not, or the app's own log would drown in Worker hits. Lines are fed in
+// as the tail's process would deliver them.
+void checkCloudLogMonitorAlert(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    window.testCloudLogMonitorLine(QStringLiteral(
+        "{\"outcome\":\"ok\",\"eventTimestamp\":1000,\"event\":{\"request\":{"
+        "\"method\":\"GET\",\"url\":\"https://forkmesh.com/api/status\","
+        "\"headers\":{\"user-agent\":\"Mozilla/5.0 (X11; Linux) Chrome/126\"}},"
+        "\"response\":{\"status\":200}}}"));
+    QApplication::processEvents();
+    const QStringList afterHealthyHit = window.testNetworkLog();
+    check(!window.testErrorBorderVisible() &&
+              window.testCloudLogMonitorEvents() == 1 &&
+              afterHealthyHit.size() == 1 &&
+              afterHealthyHit.constFirst().contains(
+                  QStringLiteral("Cloud hit: GET https://forkmesh.com/api/"
+                                 "status")) &&
+              afterHealthyHit.constFirst().contains(
+                  QStringLiteral("UA Mozilla/5.0 (X11; Linux) Chrome/126")) &&
+              window.testLogFilterChipCount(QStringLiteral("CLOUD")) == 1,
+          QStringLiteral("a healthy Worker hit lands in the app's own log, with "
+                         "its user agent, under the CLOUD category"));
+
+    window.testCloudLogMonitorLine(QStringLiteral(
+        "{\"outcome\":\"exception\",\"eventTimestamp\":2000,\"event\":{"
+        "\"request\":{\"method\":\"POST\",\"url\":\"https://forkmesh.com/api/"
+        "sync\",\"headers\":{\"user-agent\":\"ForkMesh/0.6.3\"}}},"
+        "\"exceptions\":[{\"name\":\"TypeError\",\"message\":\"x is not a "
+        "function\"}]}"));
+    QApplication::processEvents();
+    check(window.testErrorBorderVisible() &&
+              window.testCloudLogMonitorErrors() == 1 &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("TypeError: x is not a function")) &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("UA ForkMesh/0.6.3")),
+          QStringLiteral("a Worker exception raises the same alert as any other "
+                         "error, naming the agent that hit it"));
+
+    // adhoc #1623: the real stream is not one event per line. Wrangler
+    // pretty-prints it, and a read boundary can fall mid-event — which is what
+    // dropped the whole expanded object into the log and left the monitor
+    // raising nothing. Fed here exactly as the process delivers it.
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+    const int errorsBefore = window.testCloudLogMonitorErrors();
+    const int eventsBefore = window.testCloudLogMonitorEvents();
+    window.testCloudLogMonitorChunk(QByteArray(
+        "{\n"
+        "    \"outcome\": \"exception\",\n"
+        "    \"eventTimestamp\": 3000,\n"
+        "    \"event\": {\n"
+        "        \"request\": {\n"
+        "            \"method\": \"GET\",\n"
+        "            \"url\": \"https://forkmesh.com/api/repos\",\n"
+        "            \"headers\": {\n"
+        "                \"user-agent\": \"curl/8.5.0\"\n"));
+    QApplication::processEvents();
+    check(window.testCloudLogMonitorEvents() == eventsBefore &&
+              window.testCloudLogMonitorErrors() == errorsBefore &&
+              !window.testErrorBorderVisible(),
+          QStringLiteral("half an event is not rendered or alerted on"));
+    window.testCloudLogMonitorChunk(QByteArray(
+        "            }\n"
+        "        }\n"
+        "    },\n"
+        "    \"logs\": [],\n"
+        "    \"exceptions\": [\n"
+        "        {\n"
+        "            \"name\": \"RangeError\",\n"
+        "            \"message\": \"stack overflow\"\n"
+        "        }\n"
+        "    ]\n"
+        "}\n"));
+    QApplication::processEvents();
+    const QStringList afterSplitEvent = window.testNetworkLog();
+    check(window.testCloudLogMonitorEvents() == eventsBefore + 1 &&
+              window.testCloudLogMonitorErrors() == errorsBefore + 1 &&
+              window.testErrorBorderVisible() &&
+              !afterSplitEvent.isEmpty() &&
+              afterSplitEvent.constLast().contains(
+                  QStringLiteral("UA curl/8.5.0")) &&
+              !afterSplitEvent.constLast().contains(
+                  QStringLiteral("\"outcome\"")) &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("RangeError: stack overflow")),
+          QStringLiteral("a pretty-printed Worker exception spanning two reads "
+                         "renders as one line and raises the alert"));
+
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
+// adhoc #1613: the Worker tail has no window of its own any more. Its traffic is
+// this log's CLOUD category, and the cloud icon is that category's chip in the
+// quick-filter row — a filter like every other chip beside it, which also
+// reports whether the background tail is actually running.
+void checkCloudLogMerged(MainWindow &window)
+{
+    window.testShowLogSection();
+    window.testResetNetworkLog();
+    QApplication::processEvents();
+
+    for (int index = 0; index < 12; ++index) {
+        window.testCloudLogMonitorLine(
+            QStringLiteral(
+                "{\"outcome\":\"ok\",\"eventTimestamp\":%1,\"event\":{"
+                "\"request\":{\"method\":\"GET\",\"url\":\"https://"
+                "forkmesh.com/api/error_log?n=%2\",\"headers\":{"
+                "\"user-agent\":\"curl/8.5.0\"}},\"response\":{"
+                "\"status\":200}}}")
+                .arg(4000 + index)
+                .arg(index));
+    }
+    QApplication::processEvents();
+
+    // A healthy hit on a URL that spells "error" is still a healthy hit: the
+    // red badge — and the alert riding on it — belongs to the Worker's own
+    // failures alone.
+    check(window.testLogFilterChipCount(QStringLiteral("CLOUD")) == 12 &&
+              window.testLogFilterChipCount(QStringLiteral("ERROR")) == 0 &&
+              !window.testErrorBorderVisible(),
+          QStringLiteral("Worker traffic lands in the app log as CLOUD, even "
+                         "when the URL it names contains \"error\""));
+
+    // One failure among them, which does earn the red badge — so the filter
+    // below has something to leave out.
+    window.testCloudLogMonitorLine(QStringLiteral(
+        "{\"outcome\":\"exception\",\"eventTimestamp\":5000,\"event\":{"
+        "\"request\":{\"method\":\"GET\",\"url\":\"https://forkmesh.com/api/"
+        "sync\",\"headers\":{\"user-agent\":\"curl/8.5.0\"}}},"
+        "\"exceptions\":[{\"name\":\"TypeError\",\"message\":\"boom\"}]}"));
+    QApplication::processEvents();
+
+    QPushButton *cloudChip = window.testLogFilterChip(QStringLiteral("CLOUD"));
+    check(cloudChip && !window.testCloudLogMonitorRunning() &&
+              cloudChip->toolTip().contains(QStringLiteral("not monitoring")),
+          QStringLiteral("the cloud icon sits in the log's own chip row and "
+                         "reports the tail's actual, not-yet-running state"));
+    if (cloudChip) {
+        cloudChip->click();
+        QApplication::processEvents();
+        QTextBrowser *view = window.testNetworkLogView();
+        const QString filtered = view ? view->toPlainText() : QString();
+        check(filtered.contains(QStringLiteral("Cloud hit:")) &&
+                  !filtered.contains(QStringLiteral("Worker error")),
+              QStringLiteral("clicking it filters the log to the Worker's own "
+                             "traffic, like every other chip in the row"));
+        // Back to the unfiltered view for whatever the suite checks next.
+        if (QPushButton *all = window.testLogFilterChip(QString())) {
+            all->click();
+            QApplication::processEvents();
+        }
+    }
 
     window.testDismissTopMessage();
     window.testResetNetworkLog();
@@ -733,6 +1159,32 @@ void checkAlertStackLayout(MainWindow &window)
         window.grab(stack).save(
             qEnvironmentVariable("FORKMESH_ALERT_SHOT"));
     }
+
+    // A finished run parked behind another card still offers the run itself:
+    // its caption button is "View agent", not the generic "Send to prompt", so
+    // the transcript is one click away without waiting out the countdown.
+    window.testFlashMessage(QStringLiteral("Committed the fix and stopped there."),
+                            /*error=*/false, QStringLiteral("fm:agent:12"),
+                            forkmesh::ui::kAgentDoneToastKind);
+    settleAnimations();
+    QWidget *doneCard = nullptr;
+    const QList<QWidget *> cards =
+        queue ? queue->findChildren<QWidget *>(
+                    QStringLiteral("topMessageQueueCard"))
+              : QList<QWidget *>();
+    for (QWidget *candidate : cards) {
+        auto *body =
+            candidate->findChild<QLabel *>(QStringLiteral("topMessageQueueText"));
+        if (body && body->text().contains(QStringLiteral("stopped there")))
+            doneCard = candidate;
+    }
+    auto *doneAction =
+        doneCard
+            ? doneCard->findChild<QPushButton *>(QStringLiteral("topMessageAction"))
+            : nullptr;
+    check(doneAction && doneAction->text() == QStringLiteral("View agent"),
+          QStringLiteral("a queued agent-done card opens the agent instead of "
+                         "the prompt composer"));
 
     window.testDismissTopMessage();
     QApplication::processEvents();
@@ -1269,6 +1721,96 @@ int main(int argc, char *argv[])
     qInstallMessageHandler(startupPrevious);
     g_capturedMessages = nullptr;
 
+    // The shared branch/PR/working-tree renderer leaves room to scroll the
+    // final changed lines clear of the viewport and ends with an explicit dark
+    // terminator (adhoc #1450).
+    QList<forkmesh::ui::DiffFileEntry> footerFiles;
+    const QString footerHtml = forkmesh::ui::renderDiffHtmlSplit(
+        false,
+        QStringLiteral("diff --git a/a.txt b/a.txt\n"
+                       "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"),
+        footerFiles, QString(), QStringLiteral("main"),
+        QStringLiteral("feature"), QString(), {}, {});
+    check(footerHtml.contains(QStringLiteral("class='diffendspacer'")) &&
+              footerHtml.endsWith(
+                  QStringLiteral("<div class='diffend'>END OF DIFF</div>")),
+          QStringLiteral("diffs have bottom review space and an explicit end bar"));
+    // Every caller reads an empty render as "nothing to show" and substitutes
+    // its own notice, so an empty patch must stay empty rather than becoming a
+    // terminator bar under a diff that never began.
+    QList<forkmesh::ui::DiffFileEntry> emptyFooterFiles;
+    check(forkmesh::ui::renderDiffHtmlSplit(
+              false, QString(), emptyFooterFiles, QString(),
+              QStringLiteral("main"), QStringLiteral("feature"), QString(), {},
+              {})
+              .isEmpty(),
+          QStringLiteral("an empty diff renders no end bar, so the caller's "
+                         "own empty-state notice still shows"));
+
+    // The changed-file list owns keyboard focus after a click: Up/Down must
+    // select the adjacent file, scroll its diff section into place, and update
+    // the floating header with the same file metadata.
+    {
+        QTextBrowser navDiff;
+        navDiff.resize(420, 140);
+        QListWidget navList;
+        auto *first = new QListWidgetItem(QStringLiteral("one.cpp"), &navList);
+        auto *second = new QListWidgetItem(QStringLiteral("two.cpp"), &navList);
+        first->setData(Qt::UserRole, QStringLiteral("file-0"));
+        second->setData(Qt::UserRole, QStringLiteral("file-1"));
+        QList<forkmesh::ui::DiffFileEntry> navFiles;
+        forkmesh::ui::DiffFileEntry one;
+        one.path = QStringLiteral("one.cpp");
+        one.anchor = QStringLiteral("file-0");
+        one.adds = 1;
+        forkmesh::ui::DiffFileEntry two;
+        two.path = QStringLiteral("two.cpp");
+        two.anchor = QStringLiteral("file-1");
+        two.adds = 2;
+        navFiles << one << two;
+        QString navHtml =
+            QStringLiteral("<a name=\"file-0\"></a><div>one.cpp</div>");
+        for (int i = 0; i < 80; ++i)
+            navHtml += QStringLiteral("<div>line %1</div>").arg(i);
+        navHtml += QStringLiteral("<a name=\"file-1\"></a><div>two.cpp</div>");
+        // The renderer leaves a scroll runway past the last file (see the end-bar
+        // check above). Without it the jump to the final file only reaches the
+        // scrollbar's maximum, leaving the *previous* file at the top edge — so
+        // the fixture has to carry the same trailing room the real diff does.
+        for (int i = 0; i < 20; ++i)
+            navHtml += QStringLiteral("<div>&nbsp;</div>");
+        navDiff.setHtml(navHtml);
+        forkmesh::ui::DiffFileNavigator navigator(
+            &navDiff, &navList, Qt::UserRole, &navDiff);
+        navigator.rebuild(navFiles, 12);
+        // The sticky header is a child of the diff's viewport, so it only ever
+        // reports itself visible once that top-level widget is shown.
+        navDiff.show();
+        QApplication::processEvents();
+        navList.setCurrentRow(0);
+        navList.setFocus();
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+        QApplication::sendEvent(&navList, &down);
+        QApplication::processEvents();
+        auto *sticky = navDiff.findChild<QLabel *>(
+            QStringLiteral("diffStickyHeader"));
+        check(navList.currentRow() == 1 && sticky && sticky->isVisible() &&
+                  sticky->text().contains(QStringLiteral("two.cpp")),
+              QString("file-list Down selects the next file and updates its "
+                      "header (row=%1, sticky=%2, scroll=%3, names=%4)")
+                  .arg(navList.currentRow())
+                  .arg(!sticky ? QStringLiteral("missing")
+                               : sticky->isVisible() ? QStringLiteral("visible")
+                                                     : QStringLiteral("hidden"))
+                  .arg(navDiff.verticalScrollBar()->value())
+                  .arg(!sticky ? QStringLiteral("-")
+                               : QStringLiteral("one=%1 two=%2")
+                                     .arg(sticky->text().contains(
+                                         QStringLiteral("one.cpp")))
+                                     .arg(sticky->text().contains(
+                                         QStringLiteral("two.cpp")))));
+    }
+
     // Prompt shortcut headers can dedicate a fresh run to one exact CLI model.
     // Those routing fields configure the launcher and must not leak into the
     // task text the model receives.
@@ -1415,6 +1957,9 @@ int main(int argc, char *argv[])
         window.show();
         QApplication::processEvents();
         checkLoggedErrorAlert(window);
+        checkFiledPingSyncState(window);
+        checkCloudLogMonitorAlert(window);
+        checkCloudLogMerged(window);
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
@@ -2129,12 +2674,20 @@ int main(int argc, char *argv[])
           QStringLiteral("API token tab lists the required permissions up front"));
     window.testShowLogSection();
     QApplication::processEvents();
-    check(window.findChild<QPushButton *>(
-              QStringLiteral("cloudflareWorkerLogsButton")) != nullptr &&
+    // The Worker tail is a category of this log now (adhoc #1613), so its chip
+    // is in the quick-filter row with the rest — and it reports whether the
+    // tail is actually running rather than what the stored preference says.
+    // That preference is on by default, but the tail itself is deferred, so
+    // building the window must not have spawned one.
+    auto *cloudChip = window.testLogFilterChip(QStringLiteral("CLOUD"));
+    check(cloudChip &&
               window.findChild<QPushButton *>(
-                  QStringLiteral("logPopoutButton")) != nullptr,
-          QStringLiteral("the debug strip keeps the Cloudflare live-log viewer "
-                         "and the Log page pops the whole log out"));
+                  QStringLiteral("logPopoutButton")) != nullptr &&
+              !cloudChip->isChecked() && !window.testCloudLogMonitorRunning() &&
+              cloudChip->toolTip().contains(QStringLiteral("not monitoring")),
+          QStringLiteral("the Log page's Cloud chip shows the tail's actual, "
+                         "not-yet-running state, and the page still pops the "
+                         "whole log out"));
     check(window.findChild<QTableWidget *>(
               QStringLiteral("controlPermissionsTable")) != nullptr &&
               window.findChild<QPushButton *>(
@@ -2295,7 +2848,75 @@ int main(int argc, char *argv[])
                   QLatin1String("perPr"),
           QStringLiteral("legacy Worker-held PR bounty preference migrates to a "
                          "disabled non-custodial placeholder"));
+
     window.show();
+    QApplication::processEvents();
+
+    // adhoc #1632: the footer's debug bar can open itself at launch. The box
+    // shows the account's default with nothing stored — off here, because this
+    // window is not an admin — and toggling it both records the choice and
+    // applies it to the window on the spot.
+    {
+        auto *startupCheck = window.findChild<QCheckBox *>(
+            QStringLiteral("debugBarStartupCheck"));
+        auto *strip = window.findChild<QWidget *>(QStringLiteral("debugBar"));
+        auto *versionToggle = window.findChild<QPushButton *>(
+            QStringLiteral("statusVersionButton"));
+        // The open bar widens the window's minimum, which a later laptop-width
+        // check measures — so put its state back exactly as it was found.
+        const bool barWasOpen = versionToggle && versionToggle->isChecked();
+        check(startupCheck && strip && versionToggle &&
+                  !startupCheck->isChecked() &&
+                  !QSettings().contains(
+                      QStringLiteral("ui/showDebugBarOnStartup")),
+              QStringLiteral("the debug-bar-at-startup box is off for a "
+                             "non-admin with no preference stored"));
+        if (startupCheck && strip && versionToggle) {
+            startupCheck->setChecked(true);
+            QApplication::processEvents();
+            const bool opened =
+                strip->isVisible() && versionToggle->isChecked() &&
+                QSettings()
+                    .value(QStringLiteral("ui/showDebugBarOnStartup"))
+                    .toBool();
+            startupCheck->setChecked(false);
+            QApplication::processEvents();
+            check(opened && !strip->isVisible() &&
+                      !QSettings()
+                           .value(QStringLiteral("ui/showDebugBarOnStartup"))
+                           .toBool(),
+                  QStringLiteral("toggling the startup box opens and closes "
+                                 "the debug bar and stores the choice"));
+            QSettings().remove(QStringLiteral("ui/showDebugBarOnStartup"));
+            versionToggle->setChecked(barWasOpen);
+            QApplication::processEvents();
+        }
+
+        // The cloud monitor runs by default now, and the Log page's chip
+        // filters rather than switches it (adhoc #1613), so Settings is where
+        // it is turned off — and unticking it is what gets remembered.
+        auto *monitorSetting = window.findChild<QCheckBox *>(
+            QStringLiteral("cloudLogMonitorSettingCheck"));
+        check(monitorSetting && monitorSetting->isChecked() &&
+                  QSettings()
+                      .value(QStringLiteral("diagnostics/cloudLogMonitor"), true)
+                      .toBool(),
+              QStringLiteral("Settings mirrors the on-by-default cloud log "
+                             "monitor preference"));
+        if (monitorSetting) {
+            monitorSetting->setChecked(false);
+            QApplication::processEvents();
+            check(!window.testCloudLogMonitorRunning() &&
+                      !QSettings()
+                           .value(QStringLiteral("diagnostics/cloudLogMonitor"),
+                                  true)
+                           .toBool(),
+                  QStringLiteral("unticking the Settings copy stops the "
+                                 "monitor and remembers the preference"));
+            QSettings().remove(QStringLiteral("diagnostics/cloudLogMonitor"));
+        }
+    }
+
     QApplication::processEvents();
 
     // A rebuild/restart can continue in the background while the initiating
@@ -2328,6 +2949,11 @@ int main(int argc, char *argv[])
     runLogTimelineChecks(window);
 
     checkLoggedErrorAlert(window);
+    checkFiledPingSyncState(window);
+    checkAgentDoneCelebration(window);
+    checkChatPingAvatar(window);
+    checkCloudLogMonitorAlert(window);
+    checkCloudLogMerged(window);
 
     // adhoc #1389: notification actions are caption-height controls, not the
     // full-height buttons shown in the reference screenshot. The queued cards
@@ -3416,7 +4042,99 @@ int main(int argc, char *argv[])
                   QStringLiteral("fix/stall-filter-test-isolation"),
           QStringLiteral("opening a cross-node head diffs the branch portion, not "
                          "the cache-socket node label"));
+    // The pull conversation is the whole activity feed, not only the signed
+    // review events: the commits behind the pull and the lifecycle of an agent
+    // working its branch interleave with the comments in time order. Without
+    // this a pull opened from an agent branch showed nothing but its opening
+    // card, which is what made the page look empty.
+    {
+        PullRequest activity;
+        activity.number = 406;
+        activity.base = QStringLiteral("main");
+        // Reuse the cross-node branch above rather than inventing one: the head
+        // stays decorated "<node>:<branch>" while the session records the plain
+        // branch it ran on, so this also covers agentSessionForPull() matching
+        // the branch portion instead of the label.
+        activity.head =
+            QStringLiteral("cache-socket-2632:fix/stall-filter-test-isolation");
+        activity.author = QStringLiteral("jett");
+        activity.authorName = QStringLiteral("jett");
+        activity.title = QStringLiteral("fix: add clear network log");
+        activity.description = QStringLiteral("Drain queued MetaCalls.");
+        activity.ts = 1000;
+        PullEvent comment;
+        comment.type = QStringLiteral("comment");
+        comment.author = QStringLiteral("reviewer");
+        comment.authorName = QStringLiteral("reviewer");
+        comment.body = QStringLiteral("Looks good.");
+        comment.ts = 3000;
+        activity.events = {comment};
+
+        AgentSession working;
+        working.id = 91510;
+        working.owner = QStringLiteral("me");
+        working.name = QStringLiteral("r");
+        working.provider = QStringLiteral("claude-code");
+        working.branchName = QStringLiteral("fix/stall-filter-test-isolation");
+        working.status = AgentStatus::Running;
+        working.createdAtMs = 1500;
+        working.startedAtMs = 2500;
+        window.testAddAgentSession(working);
+
+        // Stands in for renderPullCommits()' base..head walk. The second commit
+        // lands after the pull was opened — the case that matters, because it is
+        // the agent still pushing to the branch.
+        window.testSeedPullActivityCommits(
+            activity.number,
+            {{QStringLiteral("bbbbccccddddeeee"), QStringLiteral("original commit"),
+              QStringLiteral("jett"), QStringLiteral("2026-08-05 12:00"), 2,
+              QString()},
+             {QStringLiteral("ccccddddeeeeffff"), QStringLiteral("agent follow-up"),
+              QStringLiteral("agent"), QStringLiteral("2026-08-05 18:00"), 4,
+              QStringLiteral("claude-code")}});
+        window.testRenderPullThread(activity);
+        const QStringList cards = window.testPullThreadCardHeaders();
+
+        check(cards.size() == 7,
+              QStringLiteral("the pull conversation carries every activity card "
+                             "(got %1)").arg(cards.size()));
+        if (cards.size() == 7) {
+            check(cards.at(0).contains(QStringLiteral("opened this pull request")) &&
+                      cards.at(1).contains(QStringLiteral("was queued")) &&
+                      cards.at(2).contains(QStringLiteral("bbbbccccdddd")) &&
+                      cards.at(3).contains(QStringLiteral("started working")) &&
+                      cards.at(4).contains(QStringLiteral("commented")) &&
+                      cards.at(5).contains(QStringLiteral("ccccddddeeee")),
+                  QStringLiteral("commits and agent transitions interleave with the "
+                                 "review events in time order"));
+            // The live status pins to the bottom: it is where the run is now,
+            // not a transition that already happened.
+            check(cards.at(6).contains(QStringLiteral("is <b>running</b>")),
+                  QStringLiteral("a working agent's current status closes the feed"));
+            // The agent cards exist at all only because the decorated head
+            // matched the plain branch the session ran on. The header carries a
+            // bounded label (a long branch there would set the window's minimum
+            // width), so match its leading portion.
+            check(cards.at(6).contains(QStringLiteral("fix/stall-filter")) &&
+                      !cards.at(6).contains(QStringLiteral("cache-socket-2632")),
+                  QStringLiteral("a cross-node head still finds its agent, and the "
+                                 "card names the branch not the node label"));
+        }
+        check(cards.join(QLatin1Char('\n'))
+                  .contains(QStringLiteral("as claude-code")),
+              QStringLiteral("an agent-authored commit says so on its card"));
+        check(window.testPullActivityExtraCards() == 5,
+              QStringLiteral("the Conversation badge counts the commits and agent "
+                             "cards alongside the review items"));
+        window.testRemoveAgentSession(working.id);
+        // Leave the conversation empty: these cards would otherwise stay mounted
+        // for the rest of the suite, and the window's minimum width is the
+        // widest page's (issue #369 budgets that at 900px).
+        window.testRenderPullThread(PullRequest());
+    }
+
     window.testSwitchToWorktreeGitBranch(QStringLiteral("main"));
+
 
     // adhoc #55: the status strip names the commit the open branch is on —
     // short SHA, date, subject and author. The read is detached (it must not
@@ -3887,6 +4605,59 @@ int main(int argc, char *argv[])
                              "fails with a reason instead of requeuing forever"));
         window.testRemoveAgentSession(pastRun.id);
     }
+    // Everything the composer parks for a session that has no process must still
+    // be there when one finally starts (adhoc #1618). Two things used to lose it.
+    // The park itself was a plain overwrite, so typing a second instruction while
+    // the first was still waiting simply erased it. And a launch that consumed
+    // the parked message and then died before starting a turn took the message
+    // with it: the automatic retry resumed with a bare "Continue where you left
+    // off." and whatever the user actually asked for was gone. Pressing add
+    // repeatedly — which is what a person does when nothing appears to happen —
+    // therefore delivered at most one of those prompts, and often none.
+    {
+        AgentSession parked;
+        parked.id = 133897;
+        parked.owner = QStringLiteral("me");
+        parked.name = QStringLiteral("r");
+        parked.provider = QStringLiteral("claude-code");
+        parked.prompt = QStringLiteral("Queued follow-up fixture");
+        parked.status = AgentStatus::Failed;
+        window.testAddAgentSession(parked);
+        window.testSeedResumeConversationId(
+            parked.id, QStringLiteral("22222222-3333-4444-5555-666666666666"),
+            /*codex=*/false);
+        window.testQueueAgentSteerMessage(parked.id,
+                                          QStringLiteral("Continue where you left off."));
+        window.testQueueAgentSteerMessage(parked.id,
+                                          QStringLiteral("Continue where you left off."));
+        window.testQueueAgentSteerMessage(parked.id,
+                                          QStringLiteral("also fix the migration"));
+        const QString parkedText = window.testPendingSteerMessage(parked.id);
+        const bool bothKept =
+            parkedText.contains(QStringLiteral("Continue where you left off.")) &&
+            parkedText.contains(QStringLiteral("also fix the migration")) &&
+            parkedText.count(QStringLiteral("Continue where you left off.")) == 1;
+        // The run starts, takes the message, and dies before starting a turn.
+        const QString handedToLaunch = window.testTakeSteerMessageForLaunch(parked.id);
+        const bool consumed = window.testPendingSteerMessage(parked.id).isEmpty();
+        const QString outcome =
+            window.testReplayCliExitsWithoutResult(parked.id, /*codex=*/false, 1);
+        const bool restored =
+            window.testPendingSteerMessage(parked.id) == handedToLaunch;
+        // A launch that gets as far as the CLI's announcement did deliver it, so
+        // it is not owed back — otherwise the next restart would repeat an
+        // instruction the agent has already been given.
+        window.testTakeSteerMessageForLaunch(parked.id);
+        window.testMarkAgentSessionRunning(parked.id);
+        window.testReplayCliExitsWithoutResult(parked.id, /*codex=*/false, 1);
+        const bool notRepeated = window.testPendingSteerMessage(parked.id).isEmpty();
+        check(bothKept && !handedToLaunch.isEmpty() && consumed &&
+                  outcome == QStringLiteral("q") && restored && notRepeated,
+              QStringLiteral("follow-up prompts accumulate while a session is "
+                             "down and survive a launch that dies before the "
+                             "agent reads them"));
+        window.testRemoveAgentSession(parked.id);
+    }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
     // own "Updated" column) and the title, which is the column that flexes — so
@@ -4248,6 +5019,24 @@ int main(int argc, char *argv[])
                       QStringLiteral("commit-waiting.txt")),
               QStringLiteral("clicking a working-tree file pins its sticky filename "
                              "at the top of the diff"));
+        // The same two marks as the branch range: a stroke on the row and an
+        // outline around that file's section of the combined diff.
+        check(window.testScmStrokedRowFile() ==
+                  QStringLiteral("commit-waiting.txt"),
+              QString("the working-tree file's CHANGES row carries the green "
+                      "stroke (stroked = \"%1\")")
+                  .arg(window.testScmStrokedRowFile()));
+        check(window.testScmOutlinedFile() ==
+                      QStringLiteral("commit-waiting.txt") &&
+                  window.testScmOutlineRect().width() > 0 &&
+                  window.testScmOutlineRect().height() > 0,
+              QString("the working-tree diff outlines the active file's section "
+                      "(outlined = \"%1\", rect = %2x%3)")
+                  .arg(window.testScmOutlinedFile().isEmpty()
+                           ? QStringLiteral("<none>")
+                           : window.testScmOutlinedFile())
+                  .arg(window.testScmOutlineRect().width())
+                  .arg(window.testScmOutlineRect().height()));
 
         // …and once that change is committed the row hands itself back to Sync,
         // which is the behaviour the swap was there for in the first place.
@@ -4926,6 +5715,74 @@ int main(int argc, char *argv[])
                   window.testCommitWorkspacePage() == 2,
               QStringLiteral("clicking a branch file in CHANGES scrolls the "
                              "right-hand range diff to that file"));
+        // Having clicked a file, Up/Down must keep reviewing from the tree: the
+        // click may not hand the keyboard to the diff pane, and the arrows step
+        // over the "Changes against main" group header rather than stalling on
+        // it. The sticky diff header names whichever file the walk lands on.
+        {
+            const QStringList reviewFiles = window.testSourceControlPaths();
+            check(reviewFiles.size() >= 2,
+                  QString("the branch range lists enough files to review with "
+                          "the keyboard (files = %1)")
+                      .arg(reviewFiles.join(QStringLiteral(", "))));
+            if (reviewFiles.size() >= 2) {
+                // Walk to the top of the list, then down through every file.
+                for (int i = 0; i < reviewFiles.size(); ++i)
+                    window.testArrowOnSourceControl(/*down=*/false);
+                const QString first = window.testArrowOnSourceControl(false);
+                check(first == reviewFiles.first(),
+                      QString("Up stops on the first changed file instead of "
+                              "selecting the group header (landed on \"%1\")")
+                          .arg(first.isEmpty() ? QStringLiteral("<none>") : first));
+                QStringList walked;
+                for (int i = 1; i < reviewFiles.size(); ++i)
+                    walked << window.testArrowOnSourceControl(/*down=*/true);
+                check(walked == reviewFiles.mid(1),
+                      QString("Down walks the branch review file by file "
+                              "(walked = %1, expected = %2)")
+                          .arg(walked.join(QStringLiteral(", ")),
+                               reviewFiles.mid(1).join(QStringLiteral(", "))));
+                check(window.testLastSourceControlDiffPath() == reviewFiles.last(),
+                      QString("each arrow step scrolls the range diff to the "
+                              "newly selected file (diff at \"%1\", tree at "
+                              "\"%2\")")
+                          .arg(window.testLastSourceControlDiffPath(),
+                               reviewFiles.last()));
+                // One more Down at the end must not wrap or clear the review.
+                const QString past = window.testArrowOnSourceControl(true);
+                check(past == reviewFiles.last(),
+                      QString("Down past the last file keeps it selected "
+                              "(landed on \"%1\")")
+                          .arg(past.isEmpty() ? QStringLiteral("<none>") : past));
+
+                // The selection reads as one thing in two places: a green
+                // stroke on the CHANGES row, and a green outline around that
+                // file's section of the diff.
+                check(window.testScmStrokedRowFile() == reviewFiles.last(),
+                      QString("the current file's CHANGES row carries the green "
+                              "stroke (stroked = \"%1\", current = \"%2\")")
+                          .arg(window.testScmStrokedRowFile(),
+                               reviewFiles.last()));
+                check(window.testBranchOutlinedFile() == reviewFiles.last() &&
+                          window.testBranchOutlineRect().width() > 0 &&
+                          window.testBranchOutlineRect().height() > 0,
+                      QString("the range diff outlines the active file's section "
+                              "(outlined = \"%1\", rect = %2x%3)")
+                          .arg(window.testBranchOutlinedFile().isEmpty()
+                                   ? QStringLiteral("<none>")
+                                   : window.testBranchOutlinedFile())
+                          .arg(window.testBranchOutlineRect().width())
+                          .arg(window.testBranchOutlineRect().height()));
+                // Stepping back moves both marks together.
+                const QString back = window.testArrowOnSourceControl(false);
+                check(window.testScmStrokedRowFile() == back &&
+                          window.testBranchOutlinedFile() == back,
+                      QString("stroke and outline follow the walk together "
+                              "(file = \"%1\", stroke = \"%2\", outline = \"%3\")")
+                          .arg(back, window.testScmStrokedRowFile(),
+                               window.testBranchOutlinedFile()));
+            }
+        }
         // Every diff keeps the same universal source-control composer and
         // changes tree above the branch's commit graph. The global prompt stays
         // visible below it, so an agent can be launched directly from Git.
@@ -5239,6 +6096,76 @@ int main(int argc, char *argv[])
                                  "it off the pattern (adhoc #1594)"));
         }
 
+        // adhoc #1615: a merged-and-deleted branch used to leave one grey line in
+        // the range pane. It now leaves a congratulation that names who landed
+        // the branch and lists every other merge of the day beside it, so the
+        // credit survives the cleanup that deletes the agent session.
+        {
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Merge agent/adhoc-1615-nice into main")) ==
+                      QStringLiteral("agent/adhoc-1615-nice"),
+                  QStringLiteral("the app's own merge subject names its branch "
+                                 "(adhoc #1615)"));
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Merge branch 'fix/pill' of git@host:o/r")) ==
+                      QStringLiteral("fix/pill"),
+                  QStringLiteral("git's own merge subject names its branch "
+                                 "(adhoc #1615)"));
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Merge pull request #7 from owner/agent/x")) ==
+                      QStringLiteral("agent/x"),
+                  QStringLiteral("a pull-request merge names the head branch, "
+                                 "slashes and all (adhoc #1615)"));
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Fix the branch list")).isEmpty(),
+                  QStringLiteral("an ordinary commit subject is not read as a "
+                                 "branch name (adhoc #1615)"));
+
+            forkmesh::ui::MergeCelebrationRow landed;
+            landed.branch = QStringLiteral("agent/adhoc-1615-nice");
+            landed.mergeCommit = QString(40, QLatin1Char('a'));
+            landed.whenSecs = QDateTime::currentSecsSinceEpoch() - 60;
+            landed.files = 3;
+            landed.insertions = 412;
+            landed.deletions = 37;
+            landed.actor = QStringLiteral("Opus 5");
+            landed.detail = QStringLiteral("Agent #1615");
+            landed.byAgent = true;
+            landed.current = true;
+            forkmesh::ui::MergeCelebrationRow kept;
+            kept.branch = QStringLiteral("fix/pill");
+            kept.mergeCommit = QString(40, QLatin1Char('b'));
+            kept.branchStillExists = true;
+            kept.actor = QStringLiteral("Jett");
+            const QString html = forkmesh::ui::mergeCelebrationHtml(
+                landed, QStringLiteral("main"), {landed, kept}, 4, 2);
+            check(html.contains(QStringLiteral("Merged!")) &&
+                      html.contains(landed.branch) &&
+                      html.contains(QStringLiteral("Opus 5")) &&
+                      html.contains(QStringLiteral("Agent #1615")),
+                  QStringLiteral("the celebration credits the agent that landed "
+                                 "the branch (adhoc #1615)"));
+            check(html.contains(QStringLiteral("MERGED INTO MAIN TODAY &#183; 4")),
+                  QString("today's count covers the rows dropped past the display "
+                          "cap as well (adhoc #1615, html = %1)")
+                      .arg(html.section(QStringLiteral("MERGED"), 1, 1).left(40)));
+            check(html.contains(QStringLiteral("2 earlier merges today are not "
+                                               "listed")),
+                  QStringLiteral("a truncated day says what it left out rather "
+                                 "than reading as the whole day (adhoc #1615)"));
+            check(html.contains(QStringLiteral("href='fmbranch:fix%2Fpill'")),
+                  QString("a branch that still exists is opened by name, "
+                          "percent-encoded (adhoc #1615, html = %1)")
+                      .arg(html.section(QStringLiteral("fmbranch"), 1, 1).left(40)));
+            check(html.contains(QStringLiteral("href='fmcommit:") +
+                                landed.mergeCommit),
+                  QStringLiteral("a branch that was deleted with its merge is "
+                                 "opened by its merge commit (adhoc #1615)"));
+            check(html.contains(QStringLiteral("href='fmbranch:main'")),
+                  QStringLiteral("the celebration links back to the base branch "
+                                 "(adhoc #1615)"));
+        }
+
         // Leave the fixture as the branch/merge tests below expect it.
         runGitChecked(wtRepo.path(),
                       {"worktree", "remove", "--force", swapPath});
@@ -5246,11 +6173,9 @@ int main(int argc, char *argv[])
         window.testReloadBranchesPanel();
         QApplication::processEvents();
 
-        // adhoc #119: merging from the comparison ends it — the branch's work
-        // is in main, so leaving its diff open only shows the user something
-        // they're finished with. Re-open the branch, then let its "Merge to
-        // main" button run: the Git view must go back to the working tree exactly
-        // as if the pane's ✕ had been clicked.
+        // A merge-and-cleanup must not move the user away from the review they
+        // initiated it from. The completed comparison stays on screen, including
+        // when cleanup removes the branch and its worktree.
         //
         // This fixture's linked worktree lives inside the parent checkout, so git
         // reports it as untracked content and the merge would refuse ("the checkout
@@ -5261,6 +6186,13 @@ int main(int argc, char *argv[])
             excludeFile.write("wt-keep/\n");
             excludeFile.close();
         }
+        // The scenarios above left the branch's own worktree dirty (the staged
+        // base-delete.txt deletion, the restored auto-stash overlap edit), and
+        // the cleanup merge rightly refuses to delete a worktree holding
+        // uncommitted changes. Give it the clean worktree a finished review
+        // would have.
+        runGitChecked(wtPath, {"reset", "--hard", "HEAD"});
+        runGitChecked(wtPath, {"clean", "-fd"});
         window.testSwitchToBranchImmediateSelection(
             QStringLiteral("feature/keep-selected"));
         QApplication::processEvents();
@@ -5286,15 +6218,15 @@ int main(int argc, char *argv[])
                   .arg(window.testCompareIndicatorText().isEmpty()
                            ? QStringLiteral("<hidden>")
                            : window.testCompareIndicatorText()));
-        const bool mergeClicked = window.testClickBranchReviewMerge(false);
+        const bool mergeClicked = window.testClickBranchReviewMerge(true);
         QApplication::processEvents();
         const QString mainTip =
             gitOutput(wtRepo.path(), {"log", "--oneline", "-1", "main"});
-        check(mergeClicked && window.testCommitWorkspacePage() == 0 &&
+        check(mergeClicked && window.testCommitWorkspacePage() == 2 &&
                   window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("merging from the branch comparison closes it and hands the "
-                      "Git view back to the working tree (adhoc #119, clicked = "
+              QString("merging and cleaning up from a branch comparison keeps the "
+                      "current Git review in place (clicked = "
                       "%1, page = %2, files slot = %3, history slot = %4, main "
                       "tip = %5)")
                   .arg(mergeClicked ? QStringLiteral("yes") : QStringLiteral("no"))
@@ -5302,13 +6234,21 @@ int main(int argc, char *argv[])
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage())
                   .arg(mainTip.trimmed()));
+        // The deleted branch can't stay selected — adhoc #15 leaves its row's
+        // animated check and selects nothing — so the compare header retires
+        // while the completed review itself stays on the page.
         check(window.testCompareIndicatorText().isEmpty(),
-              QString("closing the comparison hides the compare indicator "
-                      "(adhoc #16, base = %1)")
+              QString("cleanup retires the compare header of the deleted branch "
+                      "(base = %1)")
                   .arg(window.testCompareIndicatorText()));
         check(mainTip.contains(QStringLiteral("Merge feature/keep-selected into main")),
-              QString("the comparison's merge button really merged the branch "
-                      "(adhoc #119, main tip = %1)").arg(mainTip.trimmed()));
+              QString("the comparison's cleanup button really merged the branch "
+                      "(main tip = %1)").arg(mainTip.trimmed()));
+        check(gitOutput(wtRepo.path(),
+                        {"branch", "--list", "feature/keep-selected"})
+                  .trimmed()
+                  .isEmpty(),
+              QStringLiteral("merge and cleanup removes the reviewed source branch"));
 
         // The merge path reloads the persistent agent store, while this fixture
         // was injected in memory only. Restore it before exercising the separate
@@ -5878,7 +6818,8 @@ int main(int argc, char *argv[])
         }
         // Every active Workers AI fallback must appear as its own selectable
         // composer row. Selecting each row updates the same hidden provider and
-        // model controls quickAddIssue() reads when it sends /api/ai/ask.
+        // model controls quickAddIssue() reads when it starts the Workers AI
+        // agent (adhoc #1634).
         bool allCloudflareModelsSelectable = quickAgentModel && canonicalModel;
         QStringList selectedCloudflareModels;
         for (const auto &choice :
@@ -6580,6 +7521,40 @@ int main(int argc, char *argv[])
         check(agentModelMatchesProvider(QStringLiteral("claude-api"),
                                         QStringLiteral("opus")),
               QStringLiteral("the opus alias matches a Claude API provider"));
+
+        // adhoc #1634: Workers AI ids bind to the cloudflare-ai provider only.
+        // "@cf/..." is not Claude-style, so without its own family check it
+        // would silently pass as a Codex/OpenAI model.
+        using forkmesh::ui::agentModelIsCloudflareStyle;
+        check(agentModelIsCloudflareStyle(
+                  QStringLiteral("@cf/meta/llama-3.3-70b-instruct-fp8-fast")),
+              QStringLiteral("a @cf/ id is Cloudflare-style"));
+        check(!agentModelIsCloudflareStyle(QStringLiteral("gpt-5.5")),
+              QStringLiteral("a gpt-* id is not Cloudflare-style"));
+        check(agentModelMatchesProvider(
+                  QStringLiteral("cloudflare-ai"),
+                  QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast")),
+              QStringLiteral("a @cf/ model matches the Cloudflare AI provider"));
+        check(agentModelMatchesProvider(QStringLiteral("cloudflare-ai"),
+                                        QString()),
+              QStringLiteral(
+                  "an empty model matches Cloudflare AI (uses its default)"));
+        check(!agentModelMatchesProvider(QStringLiteral("cloudflare-ai"),
+                                         QStringLiteral("claude-opus-4-8")),
+              QStringLiteral(
+                  "a Claude model does not match the Cloudflare AI provider"));
+        check(!agentModelMatchesProvider(QStringLiteral("cloudflare-ai"),
+                                         QStringLiteral("gpt-5.5")),
+              QStringLiteral(
+                  "a gpt model does not match the Cloudflare AI provider"));
+        check(!agentModelMatchesProvider(
+                  QStringLiteral("codex"),
+                  QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast")),
+              QStringLiteral("a @cf/ model does not match the Codex provider"));
+        check(!agentModelMatchesProvider(
+                  QStringLiteral("openai"),
+                  QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast")),
+              QStringLiteral("a @cf/ model does not match the OpenAI provider"));
     }
 
     // adhoc #191: the issue looper (and per-issue agent assignment) must work on

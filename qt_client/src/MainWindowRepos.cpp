@@ -9,6 +9,7 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 #include "ControlNode.h"
+#include "MirrorGatewayHealth.h"
 #include "MirrorPushOutcome.h"
 #include "NodeEventSocket.h"
 #include "PrivateMirrorRuntime.h"
@@ -27,6 +28,8 @@
 using namespace forkmesh::ui;
 
 namespace {
+QString mirrorRefsDigest(const QString &mirrorPath);
+
 constexpr qint64 kCatalogPublishDebounceMs = 1000;
 constexpr qint64 kCatalogPublishMinIntervalMs = 30LL * 1000;
 // An unchanged record is still re-published this often so its catalog row
@@ -875,6 +878,10 @@ void MainWindow::loadRepositories()
             settings.value("actionsAutoApprove", true).toBool();
         repo.requirePeerApproval =
             settings.value("requirePeerApproval", true).toBool();
+        repo.mergeQueueEnabled =
+            settings.value("mergeQueueEnabled", false).toBool();
+        repo.mergeQueuePaused = settings.value("mergeQueuePaused", false).toBool();
+        repo.mergeQueue = settings.value("mergeQueue").toStringList();
         repo.externallyManagedActions =
             settings.value("externallyManagedActions", false).toBool();
         repo.externalActionsSource =
@@ -1015,6 +1022,9 @@ void MainWindow::saveRepositories() const
         settings.setValue("actionsEnabled", repo.actionsEnabled);
         settings.setValue("actionsAutoApprove", repo.actionsAutoApprove);
         settings.setValue("requirePeerApproval", repo.requirePeerApproval);
+        settings.setValue("mergeQueueEnabled", repo.mergeQueueEnabled);
+        settings.setValue("mergeQueuePaused", repo.mergeQueuePaused);
+        settings.setValue("mergeQueue", repo.mergeQueue);
         settings.setValue("externallyManagedActions",
                           repo.externallyManagedActions);
         settings.setValue("externalActionsSource",
@@ -1414,6 +1424,15 @@ void MainWindow::refreshMirrorAdverts()
             advert.commit = primaryTip.commit;
             if (advert.commit.isEmpty())
                 continue;
+            // The same heads+tags hash the relay pins, so a forkmesh/pulls
+            // advance changes this advert even though HEAD does not. It covers
+            // only refs/heads and refs/tags — the refs propagation actually
+            // transports — so local refs/pr/ materializations cannot make two
+            // converged peers look permanently different.
+            // Called qualified because this runs on the advert worker thread,
+            // which captures no `this`; mirrorStateHash is static for that.
+            advert.refsFingerprint =
+                MainWindow::mirrorStateHash(repo.mirrorPath);
             advert.commitIdentity = mirrorCommitIdentity(
                 repo.mirrorPath, repo.localPath, advert.commit);
             advert.updatedMs = repo.lastSyncMs;
@@ -2106,27 +2125,58 @@ QStringList MainWindow::importAuthGitArgs(const QString &url) const
                 QString::fromLatin1(basic)};
 }
 
+void MainWindow::setImportStatus(const QString &text, bool error)
+{
+    if (!m_importStatus)
+        return;
+    m_importStatus->setText(text);
+    m_importStatus->setStyleSheet(error ? QStringLiteral("color:#f85149;")
+                                        : QString());
+    m_importStatus->setVisible(!text.isEmpty());
+}
+
+void MainWindow::setImportControlsEnabled(bool enabled)
+{
+    if (m_importButton)
+        m_importButton->setEnabled(enabled);
+    if (m_importUrlEdit)
+        m_importUrlEdit->setEnabled(enabled);
+}
+
 void MainWindow::importRemoteRepository()
 {
     if (!m_importUrlEdit || !m_importButton)
         return;
     const QString url = m_importUrlEdit->text().trimmed();
-    auto setStatus = [this](const QString &text, bool error) {
-        if (!m_importStatus)
-            return;
-        m_importStatus->setText(text);
-        m_importStatus->setStyleSheet(error ? QStringLiteral("color:#f85149;")
-                                            : QString());
-        m_importStatus->setVisible(!text.isEmpty());
-    };
 
     const QUrl parsed(url);
     if (url.isEmpty() || !parsed.isValid() ||
         (parsed.scheme() != QLatin1String("https") &&
          parsed.scheme() != QLatin1String("http"))) {
-        setStatus("Enter an https URL to a GitHub or GitLab repository.", true);
+        setImportStatus(
+            "Enter an https URL to a GitHub or GitLab repository, or a GitLab "
+            "group to import the whole organization.", true);
         return;
     }
+
+    // A GitLab group path and a project path look identical, so ask GitLab
+    // which it is before choosing between importing one repository and
+    // importing the entire organization.
+    const QString groupPath = gitlabGroupPathFor(parsed);
+    if (!groupPath.isEmpty()) {
+        probeGitlabGroup(url, groupPath);
+        return;
+    }
+    importSingleRemoteRepository(url);
+}
+
+void MainWindow::importSingleRemoteRepository(const QString &url)
+{
+    if (!m_importUrlEdit || !m_importButton)
+        return;
+    auto setStatus = [this](const QString &text, bool error) {
+        setImportStatus(text, error);
+    };
 
     const QString name = repoNameFromUrl(url);
     if (repoIndexFor(accountOwner(), name) >= 0) {
@@ -2218,6 +2268,375 @@ void MainWindow::importRemoteRepository()
     trackProcessActivity(process, QStringLiteral("clone"),
                          QStringLiteral("Cloning %1").arg(url));
     process->start();
+}
+
+namespace {
+// Same shape the relay's importer accepts: a path segment that cannot smuggle
+// a traversal, a query, or another host into the GitLab API request built from
+// it. Rejecting here keeps the desktop's API calls as narrow as the Worker's.
+bool safeGitlabSegment(const QString &segment)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^[A-Za-z0-9_.-]{1,100}$"));
+    return pattern.match(segment).hasMatch();
+}
+
+// GitLab's own reserved first segments. Without this, "gitlab.com/explore" or
+// "gitlab.com/help" would be probed as if they named an organization.
+bool reservedGitlabRoot(const QString &segment)
+{
+    static const QStringList reserved{
+        QStringLiteral("explore"),   QStringLiteral("help"),
+        QStringLiteral("dashboard"), QStringLiteral("projects"),
+        QStringLiteral("groups"),    QStringLiteral("users"),
+        QStringLiteral("admin"),     QStringLiteral("search"),
+        QStringLiteral("api"),       QStringLiteral("-"),
+    };
+    return reserved.contains(segment, Qt::CaseInsensitive);
+}
+} // namespace
+
+QString MainWindow::gitlabGroupPathFor(const QUrl &url) const
+{
+    if (url.scheme() != QLatin1String("https"))
+        return {};
+    const QString host = url.host().toLower();
+    if (host != QLatin1String("gitlab.com") &&
+        host != QLatin1String("www.gitlab.com"))
+        return {};
+    if (url.port(443) != 443 || url.hasQuery() || url.hasFragment() ||
+        !url.userInfo().isEmpty())
+        return {};
+    QString path = url.path();
+    if (path.endsWith(QLatin1String(".git")))
+        path.chop(4);
+    const QStringList parts =
+        path.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    // A group may nest subgroups, so any depth can name one; the probe decides
+    // whether this particular path is a group or a project.
+    if (parts.isEmpty() || parts.size() > 20 ||
+        reservedGitlabRoot(parts.first()))
+        return {};
+    for (const QString &part : parts) {
+        if (!safeGitlabSegment(part))
+            return {};
+    }
+    return parts.join(QLatin1Char('/'));
+}
+
+void MainWindow::probeGitlabGroup(const QString &url, const QString &groupPath)
+{
+    if (!m_networkAccess) {
+        // Without a network stack the group question cannot be answered; a
+        // single-repository clone is the honest fallback and still works.
+        importSingleRemoteRepository(url);
+        return;
+    }
+    setImportControlsEnabled(false);
+    setImportStatus(QStringLiteral("Checking whether %1 is a GitLab group…")
+                        .arg(groupPath),
+                    false);
+
+    QUrl api(QStringLiteral("https://gitlab.com/api/v4/groups/") +
+             QString::fromUtf8(QUrl::toPercentEncoding(groupPath)));
+    QNetworkRequest request(api);
+    request.setTransferTimeout(15000);
+    request.setRawHeader(QByteArrayLiteral("Accept"),
+                         QByteArrayLiteral("application/json"));
+    const QString token =
+        QSettings().value(kGitlabTokenSetting).toString().trimmed();
+    if (!token.isEmpty())
+        request.setRawHeader(QByteArrayLiteral("PRIVATE-TOKEN"),
+                             token.toUtf8());
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, url, groupPath] {
+                reply->deleteLater();
+                const int status =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                const bool isGroup =
+                    reply->error() == QNetworkReply::NoError && status == 200;
+                if (!isGroup) {
+                    setImportControlsEnabled(true);
+                    setImportStatus(QString(), false);
+                    importSingleRemoteRepository(url);
+                    return;
+                }
+                logSystem("Import: " + groupPath +
+                          " is a GitLab group; listing its projects.");
+                m_gitlabGroupImport = GitlabGroupImport{};
+                m_gitlabGroupImport.group = groupPath;
+                fetchGitlabGroupProjects(groupPath, 1);
+            });
+}
+
+void MainWindow::fetchGitlabGroupProjects(const QString &groupPath, int page)
+{
+    if (!m_networkAccess) {
+        finishGitlabGroupImport();
+        return;
+    }
+    // One page per request, bounded: an organization larger than this is
+    // reported rather than silently truncated, and the node never spends an
+    // unbounded number of requests on a single button press.
+    constexpr int kPerPage = 100;
+    constexpr int kMaxPages = 10;
+    setImportStatus(
+        QStringLiteral("Listing %1 — %2 projects found so far…")
+            .arg(groupPath)
+            .arg(m_gitlabGroupImport.cloneUrls.size()),
+        false);
+
+    QUrl api(QStringLiteral("https://gitlab.com/api/v4/groups/") +
+             QString::fromUtf8(QUrl::toPercentEncoding(groupPath)) +
+             QStringLiteral("/projects"));
+    QUrlQuery query;
+    // include_subgroups is what makes this the *entire* organization rather
+    // than only the projects sitting at the group's top level.
+    query.addQueryItem(QStringLiteral("include_subgroups"),
+                       QStringLiteral("true"));
+    query.addQueryItem(QStringLiteral("archived"), QStringLiteral("false"));
+    query.addQueryItem(QStringLiteral("order_by"), QStringLiteral("path"));
+    query.addQueryItem(QStringLiteral("sort"), QStringLiteral("asc"));
+    query.addQueryItem(QStringLiteral("per_page"), QString::number(kPerPage));
+    query.addQueryItem(QStringLiteral("page"), QString::number(page));
+    api.setQuery(query);
+
+    QNetworkRequest request(api);
+    request.setTransferTimeout(20000);
+    request.setRawHeader(QByteArrayLiteral("Accept"),
+                         QByteArrayLiteral("application/json"));
+    const QString token =
+        QSettings().value(kGitlabTokenSetting).toString().trimmed();
+    if (!token.isEmpty())
+        request.setRawHeader(QByteArrayLiteral("PRIVATE-TOKEN"),
+                             token.toUtf8());
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, groupPath, page] {
+                reply->deleteLater();
+                const QByteArray raw = reply->readAll();
+                const int status =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                if (reply->error() != QNetworkReply::NoError || status != 200) {
+                    if (m_gitlabGroupImport.cloneUrls.isEmpty()) {
+                        setImportControlsEnabled(true);
+                        setImportStatus(
+                            QStringLiteral("Could not list %1 (HTTP %2). A "
+                                           "private group needs a GitLab token "
+                                           "in Settings.")
+                                .arg(groupPath)
+                                .arg(status),
+                            true);
+                        logSystem("Import: listing " + groupPath +
+                                  " failed with HTTP " +
+                                  QString::number(status) + ".");
+                        return;
+                    }
+                    // Some pages already landed: import them rather than
+                    // discarding an organization over one bad page.
+                    logSystem("Import: listing " + groupPath +
+                              " stopped early at page " +
+                              QString::number(page) + ".");
+                    cloneNextGitlabGroupProject();
+                    return;
+                }
+                const QJsonArray rows =
+                    QJsonDocument::fromJson(raw).array();
+                for (const QJsonValue &value : rows) {
+                    const QJsonObject project = value.toObject();
+                    const QString cloneUrl =
+                        project.value(QStringLiteral("http_url_to_repo"))
+                            .toString()
+                            .trimmed();
+                    if (cloneUrl.isEmpty() ||
+                        !cloneUrl.startsWith(QLatin1String("https://")))
+                        continue;
+                    // Subgroups can hold same-named projects, so a colliding
+                    // leaf name falls back to its full path within the group.
+                    const QString fullPath =
+                        project.value(QStringLiteral("path_with_namespace"))
+                            .toString();
+                    QString name = repoNameFromUrl(cloneUrl);
+                    if (name.isEmpty())
+                        continue;
+                    const bool taken =
+                        repoIndexFor(accountOwner(), name) >= 0 ||
+                        m_gitlabGroupImport.names.contains(name);
+                    if (taken && !fullPath.isEmpty()) {
+                        QString flattened = fullPath;
+                        flattened.replace(QLatin1Char('/'), QLatin1Char('-'));
+                        name = repoSegment(flattened,
+                                           QStringLiteral("repository"));
+                    }
+                    if (repoIndexFor(accountOwner(), name) >= 0 ||
+                        m_gitlabGroupImport.names.contains(name)) {
+                        logSystem("Import: skipping " + cloneUrl +
+                                  " — a repository named \"" + name +
+                                  "\" already exists.");
+                        m_gitlabGroupImport.failed += 1;
+                        continue;
+                    }
+                    m_gitlabGroupImport.cloneUrls.append(cloneUrl);
+                    m_gitlabGroupImport.names.append(name);
+                }
+                if (rows.size() == kPerPage && page < kMaxPages) {
+                    fetchGitlabGroupProjects(groupPath, page + 1);
+                    return;
+                }
+                if (rows.size() == kPerPage)
+                    logSystem("Import: " + groupPath + " has more than " +
+                              QString::number(kPerPage * kMaxPages) +
+                              " projects; importing the first pages only.");
+                if (m_gitlabGroupImport.cloneUrls.isEmpty()) {
+                    setImportControlsEnabled(true);
+                    setImportStatus(
+                        QStringLiteral("%1 has no new projects to import.")
+                            .arg(groupPath),
+                        true);
+                    return;
+                }
+                // The destination is chosen once for the whole organization;
+                // each project becomes a folder inside it.
+                const QString parent = QFileDialog::getExistingDirectory(
+                    this,
+                    QStringLiteral("Choose where to clone the %1 group (%2 "
+                                   "repositories)")
+                        .arg(groupPath)
+                        .arg(m_gitlabGroupImport.cloneUrls.size()),
+                    QDir::homePath());
+                if (parent.isEmpty()) {
+                    m_gitlabGroupImport = GitlabGroupImport{};
+                    setImportControlsEnabled(true);
+                    setImportStatus(QString(), false);
+                    return;
+                }
+                m_gitlabGroupImport.parentDir = parent;
+                m_gitlabGroupImport.total =
+                    m_gitlabGroupImport.cloneUrls.size();
+                logSystem("Import: cloning " +
+                          QString::number(m_gitlabGroupImport.total) +
+                          " projects from the GitLab group " + groupPath +
+                          " into " + parent + ".");
+                cloneNextGitlabGroupProject();
+            });
+}
+
+void MainWindow::cloneNextGitlabGroupProject()
+{
+    if (m_gitlabGroupImport.cloneUrls.isEmpty() ||
+        m_gitlabGroupImport.parentDir.isEmpty()) {
+        finishGitlabGroupImport();
+        return;
+    }
+    const QString url = m_gitlabGroupImport.cloneUrls.takeFirst();
+    const QString name = m_gitlabGroupImport.names.takeFirst();
+    const QString dest = QDir(m_gitlabGroupImport.parentDir).filePath(name);
+    // Derived from what is left in the queue, not from the imported/failed
+    // tallies: those also count projects skipped while listing, before the
+    // queue existed.
+    const int position =
+        m_gitlabGroupImport.total - m_gitlabGroupImport.cloneUrls.size();
+    setImportStatus(QStringLiteral("Cloning %1 (%2 of %3)…")
+                        .arg(name)
+                        .arg(position)
+                        .arg(m_gitlabGroupImport.total),
+                    false);
+
+    if (QDir(dest).exists() && !QDir(dest).isEmpty()) {
+        logSystem("Import: skipping " + url + " — " + dest +
+                  " already exists and is not empty.");
+        m_gitlabGroupImport.failed += 1;
+        // Continue on the event loop rather than recursing: a large group
+        // whose folders all exist would otherwise nest hundreds of frames.
+        QTimer::singleShot(0, this,
+                           [this] { cloneNextGitlabGroupProject(); });
+        return;
+    }
+
+    const QStringList args =
+        importAuthGitArgs(url) + QStringList{"clone", url, dest};
+    auto *process = new QProcess(this);
+    process->setProgram(QStringLiteral("git"));
+    process->setArguments(args);
+    connect(process, &QProcess::finished, this,
+            [this, process, dest, name, url](int exitCode, QProcess::ExitStatus) {
+                const QString errors =
+                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                process->deleteLater();
+                if (exitCode != 0) {
+                    m_gitlabGroupImport.failed += 1;
+                    logSystem("Import: clone failed for " + url + ": " +
+                              errors.right(300));
+                    cloneNextGitlabGroupProject();
+                    return;
+                }
+
+                RepositoryRecord repo;
+                repo.localPath = dest;
+                repo.name = name;
+                repo.owner = accountOwner();
+                repo.solanaAddress = savedSolanaAddress();
+                repo.publishToNetwork = true;
+                repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+                repo.mirrorPath =
+                    repositoryMirrorRoot() + "/" +
+                    repoSegment(repo.owner, QStringLiteral("owner")) + "-" +
+                    repoSegment(repo.name, QStringLiteral("repository")) + ".git";
+
+                m_repositories.append(repo);
+                saveRepositories();
+                refreshRepositoryList();
+                if (m_backend)
+                    m_backend->addChannel(repositoryChannel(repo));
+                publishRepositoryAfterMirrorRefresh(m_repositories.size() - 1,
+                                                    false);
+                m_gitlabGroupImport.imported += 1;
+                logSystem("Import: cloned " + url + " as " + repo.owner + "/" +
+                          repo.name + ".");
+                cloneNextGitlabGroupProject();
+            });
+    trackProcessActivity(process, QStringLiteral("clone"),
+                         QStringLiteral("Cloning %1").arg(url));
+    process->start();
+}
+
+void MainWindow::finishGitlabGroupImport()
+{
+    const GitlabGroupImport summary = m_gitlabGroupImport;
+    m_gitlabGroupImport = GitlabGroupImport{};
+    setImportControlsEnabled(true);
+    if (summary.group.isEmpty())
+        return;
+    if (!summary.imported) {
+        setImportStatus(QStringLiteral("No repositories were imported from %1.")
+                            .arg(summary.group),
+                        true);
+    } else {
+        setImportStatus(
+            QStringLiteral("Imported %1 of %2 repositories from %3%4 — "
+                           "mirroring and publishing now.")
+                .arg(summary.imported)
+                .arg(summary.total ? summary.total : summary.imported)
+                .arg(summary.group,
+                     summary.failed
+                         ? QStringLiteral(" (%1 skipped)").arg(summary.failed)
+                         : QString()),
+            false);
+        if (m_importUrlEdit)
+            m_importUrlEdit->clear();
+    }
+    logSystem(QStringLiteral(
+                  "Import: GitLab group %1 finished — %2 imported, %3 skipped.")
+                  .arg(summary.group)
+                  .arg(summary.imported)
+                  .arg(summary.failed));
+    if (summary.imported)
+        flashMessage(QStringLiteral("Imported %1 repositories from %2.")
+                         .arg(summary.imported)
+                         .arg(summary.group));
 }
 
 QString MainWindow::repositoryWebUrl(const QString &owner,
@@ -2830,6 +3249,29 @@ QWidget *MainWindow::buildRepoSettingsTab()
     pullHint->setWordWrap(true);
     automationCol->addWidget(pullHint);
 
+    m_settingsMergeQueueCheck = new QCheckBox("Enable the merge queue");
+    m_settingsMergeQueueCheck->setObjectName(
+        QStringLiteral("repoMergeQueueCheck"));
+    m_settingsMergeQueueCheck->setCursor(Qt::PointingHandCursor);
+    m_settingsMergeQueueCheck->setToolTip(
+        "Let pull requests be handed to a queue instead of merged by hand. "
+        "ForkMesh works through the queue in order: each pull request is brought "
+        "up to date with the base branch first, then merged, so they land one "
+        "after the next even though every merge moves the base.");
+    connect(m_settingsMergeQueueCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setRepoMergeQueueEnabled(on); });
+    automationCol->addWidget(m_settingsMergeQueueCheck);
+
+    auto *mergeQueueHint = new QLabel(
+        "The queue appears under the pull-request list, where it can be "
+        "reordered, paused, and have entries taken back out. It keeps every "
+        "other merge rule: a pull request that conflicts, or that still needs "
+        "the peer approval required above, waits in the queue instead of "
+        "merging. The queue advances while this repository is open.");
+    mergeQueueHint->setObjectName("statusLine");
+    mergeQueueHint->setWordWrap(true);
+    automationCol->addWidget(mergeQueueHint);
+
     automationCol->addSpacing(10);
 
     // --- Secret scanning --------------------------------------------------
@@ -3156,6 +3598,12 @@ void MainWindow::refreshRepoSettings()
         m_settingsRequirePeerApprovalCheck->setChecked(
             !haveRepo ||
             m_repositories.at(m_repoDetailIndex).requirePeerApproval);
+    }
+    if (m_settingsMergeQueueCheck) {
+        QSignalBlocker block(m_settingsMergeQueueCheck);
+        m_settingsMergeQueueCheck->setEnabled(haveRepo);
+        m_settingsMergeQueueCheck->setChecked(
+            haveRepo && m_repositories.at(m_repoDetailIndex).mergeQueueEnabled);
     }
     if (m_secretScanCheck) {
         QSignalBlocker block(m_secretScanCheck);
@@ -3688,8 +4136,25 @@ void MainWindow::startNodeEventSocket()
     });
     connect(m_nodeEventSocket, &NodeEventSocket::eventReceived, this,
             [this](const QString &topic, const QString &repo) {
-                Q_UNUSED(topic);
                 Q_UNUSED(repo);
+                // This DO is per ACCOUNT, so it now carries account-scoped
+                // topics alongside the repo ones — and the browser tabs of the
+                // same person share the channel. Those topics answer a
+                // different question than the repo sync does, so handle them
+                // here and return rather than letting a direct message drag a
+                // signed /api/sync along behind it.
+                if (topic == QLatin1String("pings")) {
+                    // The only thing that moves the bell's unread count, which
+                    // is why that inbox is read once at launch, never on a
+                    // timer.
+                    refreshWebAlerts(true);
+                    return;
+                }
+                if (topic == QLatin1String("direct-messages")) {
+                    // Web-only for now: the desktop's own chat unread comes
+                    // from its room sockets, so there is nothing to refresh.
+                    return;
+                }
                 // New inbox work also outdates the cached /pending tallies
                 // behind the toolbar badges; zeroing clientFetchedAt lets the
                 // badge refresh refetch them (fetchMirrorPendingCounts is
@@ -3705,9 +4170,13 @@ void MainWindow::startNodeEventSocket()
                 // One catch-up sync per (re)connect drains anything queued
                 // while the channel was down. That catch-up is the whole
                 // missed-event story: there is no fallback poll behind the
-                // socket (docs/operations/polling-elimination.md).
-                if (connected)
+                // socket (docs/operations/polling-elimination.md). The ping
+                // inbox rides the same catch-up, since a ping raised while the
+                // channel was down pushed its frame into the void.
+                if (connected) {
                     scheduleRelaySync();
+                    refreshWebAlerts(true);
+                }
             });
     connect(m_nodeEventSocket, &NodeEventSocket::systemMessage, this,
             [this](const QString &text) { logSystem(text); });
@@ -5262,7 +5731,11 @@ void MainWindow::syncMirrorsBehindRoster()
     // already current.
     const QString selfAccount = accountOwner().trimmed().toLower();
     for (int i = 0; i < m_repositories.size(); ++i) {
-        const RepositoryRecord &repo = m_repositories.at(i);
+        // By value: mirrorArtifactCount/mirrorStateHash/mirrorHasCommit below
+        // all pump the GUI event loop, and m_repositories can be reallocated
+        // while they do — a reference here would dangle (the git-pump UAF
+        // family, adhoc #106/#119/#124/#149).
+        const RepositoryRecord repo = m_repositories.at(i);
         if (repo.previewOnly || m_syncingRepos.contains(i))
             continue;
         // Holding the source of truth used to end the story here ("nothing
@@ -5289,6 +5762,11 @@ void MainWindow::syncMirrorsBehindRoster()
                                "/" + repoSegment(repo.name, QStringLiteral("repository"));
         const QString legacy = repo.owner + "/" + repo.name;
         const int localArtifactCount = mirrorArtifactCount(repo.mirrorPath);
+        // Computed on first use only: this runs on every peer hello, and
+        // hashing every repo's refs up front would spawn a git process per
+        // repo per tick even when no peer advertises a fingerprint to compare.
+        QString localRefsFingerprint;
+        bool localRefsFingerprintDone = false;
         bool behind = false;
         bool artifactsBehind = false;
         for (const MemberInfo &node : std::as_const(m_homeRoster)) {
@@ -5298,10 +5776,36 @@ void MainWindow::syncMirrorsBehindRoster()
                 if (m.source != source && m.ownerName != canonical &&
                     m.ownerName != legacy)
                     continue;
-                // A peer advertises a commit our mirror lacks → we are behind.
-                if (!m.commit.isEmpty() &&
-                    !mirrorHasCommit(repo.mirrorPath, m.commit))
+                // A peer advertises transported refs our mirror lacks → behind.
+                // HEAD does not move when forkmesh/pulls changes. New peers
+                // advertise all refs as one fingerprint so a PR/review wakes
+                // every node even when each already has the advertised HEAD.
+                // Retain the commit probe as compatibility for older peers.
+                if (!m.refsFingerprint.isEmpty()) {
+                    if (!localRefsFingerprintDone) {
+                        localRefsFingerprint = mirrorStateHash(repo.mirrorPath);
+                        localRefsFingerprintDone = true;
+                    }
+                    // React once per distinct advertised value, not once per
+                    // hello. A mismatch only proves the two ref sets differ —
+                    // it does not prove we are the stale side — so a node that
+                    // is ahead of this peer would otherwise re-sync forever
+                    // against a difference no fetch can close.
+                    if (m.refsFingerprint != localRefsFingerprint) {
+                        const QString peerKey =
+                            canonical + QLatin1Char('\x1f') +
+                            (node.nodeName.isEmpty() ? node.id : node.nodeName);
+                        if (m_mirrorRefsFingerprintActed.value(peerKey) !=
+                            m.refsFingerprint) {
+                            m_mirrorRefsFingerprintActed.insert(
+                                peerKey, m.refsFingerprint);
+                            behind = true;
+                        }
+                    }
+                } else if (!m.commit.isEmpty() &&
+                           !mirrorHasCommit(repo.mirrorPath, m.commit)) {
                     behind = true;
+                }
                 if (m.artifactCount > localArtifactCount)
                     artifactsBehind = true;
                 break; // one advert per node for this repo
@@ -5505,18 +6009,15 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     // of waiting for its next hello (the source of the >30s lag).
     applyPeerMirrorCommit(ownerName, peerName, commit);
 
-    // The signal named the exact new commit. If our mirror already holds it we
-    // are already converged — close the round trip instantly by reporting back
-    // that we are up to date, with no redundant fetch.
-    const QString target = commit.trimmed();
     const RepositoryRecord &matched = m_repositories.at(matchIndex);
-    if (!target.isEmpty() && !matched.mirrorPath.trimmed().isEmpty() &&
-        mirrorHasCommit(matched.mirrorPath, target)) {
-        if (m_backend)
-            m_backend->notifyMirrorSynced(ownerName, target);
-        return;
-    }
 
+    // This used to return early when our mirror already contained `commit`.
+    // That skipped the fetch for exactly the case this signal exists to carry:
+    // `commit` is only the peer's primary HEAD, and a pull request advances
+    // forkmesh/pulls while leaving HEAD untouched. Every peer therefore "already
+    // had" the named commit and none of them fetched, so the PR stayed on the
+    // one node that took it in. An announcement now always schedules the fetch.
+    //
     // Converge promptly: pull the peer's advance into our own mirror now instead
     // of waiting for the next safety sync. This fetches
     // refs/heads/* and refs/tags/*, so issues and pull requests (which live on
@@ -5708,11 +6209,14 @@ void MainWindow::applyRepoMentions(const RepositoryRecord &repo,
         const QString body =
             QString::fromUtf8("%1 mentioned you in %2 %3: \xE2\x80\x9C%4\xE2\x80\x9D")
                 .arg(who, repoKey, humanLocator, snippet);
+        // The page row first, then the OS notification for the same mention:
+        // postNotification files anything it is not already the toast for, and
+        // recognises this pairing by the text they share (adhoc #1629).
+        addNotification(QStringLiteral("Mention"), body, false, link);
         if (notifyEnabled(kMentionAlertSetting)) {
             QApplication::alert(this, 0);
             postNotification(who + QStringLiteral(" mentioned you"), body);
         }
-        addNotification(QStringLiteral("Mention"), body, false, link);
     };
     // Issues/PRs: preserve the existing "<repo>#<kind><number>:<eventId>" dedup
     // key (so upgrades don't re-fire historical mentions) and "<kind> #<n>"
@@ -6870,6 +7374,12 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
 // Best-effort and fully async; runs immediately for source changes and after
 // every successful mirror sync, so the five-second safety pass also self-heals
 // a push the gateway missed.
+//
+// The fleet is not fixed: nodes are retired while their remotes stay
+// configured. A gateway that stops answering therefore rotates out of the
+// automatic pass for a growing cooldown (MirrorGatewayHealth) rather than
+// costing a TCP connect timeout and an identical red log line every pass. A
+// user-initiated release fan-out still tries every configured gateway.
 void MainWindow::pushToSshMirrorRemotes(int index)
 {
     (void)pushToSshMirrorRemotes(index, /*userInitiated=*/false, QString());
@@ -6900,7 +7410,16 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
                        {QStringLiteral("remote"), QStringLiteral("-v")},
                        &remotesOut, nullptr))
         return 0;
-    QStringList urls;
+    // The remote's own name travels with its URL: when a gateway has been
+    // silent for a day, naming the remote is the difference between "something
+    // is broken" and a one-line fix the operator can paste.
+    struct MirrorRemote {
+        QString name;
+        QString url;
+        QString host;
+    };
+    QList<MirrorRemote> remotes;
+    QSet<QString> seenUrls;
     for (const QString &line :
          QString::fromUtf8(remotesOut).split(QLatin1Char('\n'))) {
         const QString simplified = line.simplified();
@@ -6909,11 +7428,33 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
         const QStringList parts = simplified.split(QLatin1Char(' '));
         if (parts.size() < 2)
             continue;
+        // "<name>\t<url> (push)" survives simplified() as "<name> <url> (push)".
         const QString url = parts.at(1);
-        if (url.startsWith(QLatin1String("ssh://")) && !urls.contains(url))
-            urls.append(url);
+        if (!url.startsWith(QLatin1String("ssh://")) ||
+            seenUrls.contains(url))
+            continue;
+        seenUrls.insert(url);
+        remotes.append({parts.at(0), url, QUrl(url).host()});
     }
-    if (urls.isEmpty())
+    if (remotes.isEmpty())
+        return 0;
+    // Rotate past the gateways that are still cooling down after failing to
+    // answer, so one retired node cannot slow the pass for the fleet that is
+    // up: each unreachable gateway costs a full TCP connect timeout, and this
+    // runs every five seconds. A user-initiated push (a release rollout) skips
+    // nothing — an operator asking for the fan-out gets every gateway tried
+    // and an honest count back.
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    QList<MirrorRemote> targets;
+    for (const MirrorRemote &remote : remotes) {
+        if (userInitiated ||
+            m_sshMirrorHealth.readyToPush(remote.host, nowMs))
+            targets.append(remote);
+    }
+    // Every gateway is inside its cooldown: nothing to do this pass. Silent by
+    // design — the outage was already logged, and the cooldown caps at fifteen
+    // minutes, so a fleet that comes back is picked up on its own.
+    if (targets.isEmpty())
         return 0;
     if (m_sshMirrorPushing.contains(repoKey)) {
         m_sshMirrorPushPending.insert(repoKey);
@@ -6923,11 +7464,11 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
                     "A mirror push is already running for %1; the newest "
                     "release state is queued next.")
                     .arg(repoKey));
-        return urls.size();
+        return targets.size();
     }
 
     m_sshMirrorPushing.insert(repoKey);
-    auto remaining = std::make_shared<int>(urls.size());
+    auto remaining = std::make_shared<int>(targets.size());
     auto failures = std::make_shared<int>(0);
     // Remotes that took every ref they safely could but kept one ahead of this
     // checkout. Not a failure, yet not silent either: an operator watching a
@@ -6935,7 +7476,7 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
     auto divergent = std::make_shared<int>(0);
     const auto finishPush =
         [this, repoKey, remaining, failures, divergent, userInitiated,
-         releaseTag, remoteCount = urls.size()](bool ok, bool diverged) {
+         releaseTag, remoteCount = targets.size()](bool ok, bool diverged) {
         if (!ok)
             ++*failures;
         else if (diverged)
@@ -6993,9 +7534,10 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
         flashMessage(
             QStringLiteral("Pushing %1 to %2 SSH mirror%3\xE2\x80\xA6")
                 .arg(releaseTag.trimmed().isEmpty() ? repoKey : releaseTag)
-                .arg(urls.size())
-                .arg(urls.size() == 1 ? QString() : QStringLiteral("s")));
-    for (const QString &url : urls) {
+                .arg(targets.size())
+                .arg(targets.size() == 1 ? QString() : QStringLiteral("s")));
+    for (const MirrorRemote &remote : targets) {
+        const QString url = remote.url;
         auto *process = new QProcess(this);
         // Never let an unreachable/unauthorized gateway hang the push on an
         // interactive credential or host-key prompt: this runs unattended.
@@ -7005,10 +7547,11 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
             env.insert(QStringLiteral("GIT_SSH_COMMAND"),
                        QStringLiteral("ssh -oBatchMode=yes"));
         process->setProcessEnvironment(env);
-        const QString gatewayHost = QUrl(url).host();
+        const QString gatewayHost = remote.host;
+        const QString gatewayRemote = remote.name;
         connect(process, &QProcess::finished, this,
-                [this, process, repoKey, finishPush, gatewayHost](
-                    int exitCode, QProcess::ExitStatus) {
+                [this, process, repoKey, finishPush, gatewayHost,
+                 gatewayRemote](int exitCode, QProcess::ExitStatus) {
                     const QString output =
                         QString::fromUtf8(process->readAllStandardOutput());
                     const QString errors =
@@ -7032,16 +7575,57 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
                                     QLatin1String("hint:")))
                                 detail.append(line.trimmed());
                         }
+                        const QString reason = detail.join(QLatin1Char(' '))
+                                                   .trimmed()
+                                                   .left(300);
+                        // A gateway that never answered is rotated out of the
+                        // fan-out for a growing cooldown and said once, not on
+                        // every five-second pass. Everything else (a hook
+                        // denial, a refused key) still speaks every time: it
+                        // answered, and a human has to act on it.
+                        if (mirrorGatewayUnreachable(errors)) {
+                            const MirrorGatewayHealth::Notice notice =
+                                m_sshMirrorHealth.noteUnreachable(
+                                    gatewayHost,
+                                    QDateTime::currentMSecsSinceEpoch());
+                            if (notice.announce)
+                                logSystem(
+                                    QStringLiteral(
+                                        "Mirror: SSH gateway %1 did not answer "
+                                        "for %2: %3. Skipping it for about %4 "
+                                        "minute%5 while the rest of the fleet "
+                                        "keeps syncing.")
+                                        .arg(gatewayHost, repoKey, reason)
+                                        .arg(qMax<qint64>(
+                                            1, notice.cooldownMs / 60000))
+                                        .arg(notice.cooldownMs < 120000
+                                                 ? QString()
+                                                 : QStringLiteral("s")));
+                            if (notice.retired)
+                                logSystem(
+                                    QStringLiteral(
+                                        "Mirror: SSH gateway %1 has not "
+                                        "answered for over a day. If that node "
+                                        "was retired, drop it from the fan-out "
+                                        "with \"git remote remove %2\" in the "
+                                        "working copy.")
+                                        .arg(gatewayHost, gatewayRemote));
+                            finishPush(false, false);
+                            return;
+                        }
                         logSystem(QStringLiteral(
                                       "Mirror: SSH mirror push of %1 to %2 "
                                       "failed: %3")
-                                      .arg(repoKey, gatewayHost,
-                                           detail.join(QLatin1Char(' '))
-                                               .trimmed()
-                                               .left(300)));
+                                      .arg(repoKey, gatewayHost, reason));
                         finishPush(false, false);
                         return;
                     }
+                    // It answered: back into the normal rotation, and say so
+                    // once if this node had been reported as unreachable.
+                    if (m_sshMirrorHealth.noteReachable(gatewayHost))
+                        logSystem(QStringLiteral("Mirror: SSH gateway %1 is "
+                                                 "answering again.")
+                                      .arg(gatewayHost));
                     // Only speak up when something actually moved, so the quiet
                     // auto-sync cadence doesn't spam the log.
                     if (!outcome.updated.isEmpty())
@@ -7116,7 +7700,7 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
                         url, QStringLiteral("refs/heads/*:refs/heads/*"),
                         QStringLiteral("refs/tags/*:refs/tags/*")});
     }
-    return urls.size();
+    return targets.size();
 }
 
 void MainWindow::syncRepository(int index, bool quiet)
@@ -7472,8 +8056,9 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // Tell connected peers that also mirror this repo that it
                         // advanced from its source of truth. Only for real mirrors
                         // that already existed (an actual update, not a first clone).
-                        // Carry the new HEAD so peers see exactly which commit is
-                        // different and can confirm once they reach it.
+                        // Carry the primary HEAD for status compatibility. The
+                        // update itself means the served ref set changed, so
+                        // peers fetch even when that primary commit is unchanged.
                         const QString mirrorId =
                             catalogOwner(repo) + "/" +
                             repoSegment(repo.name, QStringLiteral("repository"));

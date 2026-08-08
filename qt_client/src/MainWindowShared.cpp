@@ -985,14 +985,38 @@ QString diffStickyStyleSheet(int fontPt)
         .arg(qBound(8, fontPt, 28));
 }
 
+// Every sticky filename bar shares the same one-line contract: rich text never
+// wraps, and the path label may be clipped by the layout instead of widening the
+// bar past the viewport (which pushed the Viewed button out of reach).
+void configureDiffStickyPathLabel(QLabel *label)
+{
+    if (!label)
+        return;
+    label->setWordWrap(false);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+}
+
+// The sticky filename bar is one line and stays one line, so a path too long for
+// it has to be shortened rather than left to wrap the bar open or push the Viewed
+// button off its right edge. Keep the tail — the basename is what identifies the
+// file — behind a leading ellipsis. The label carries the full path as a tooltip.
+QString diffStickyPathText(const QString &path)
+{
+    constexpr int kMaxChars = 72;
+    if (path.size() <= kMaxChars)
+        return path;
+    return QString::fromUtf8("\xE2\x80\xA6") + path.right(kMaxChars - 1);
+}
+
 // Render a path with the directory dimmed and the basename bold, the way
 // diffFileLabelHtml sets one. Used where a sticky bar has only the path and not
 // the file entry the full header row is built from.
-QString diffStickyPathHtml(const QString &path)
+QString diffStickyPathHtml(const QString &fullPath)
 {
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
     const QString dirFg = dark ? QStringLiteral("#8b949e") : QStringLiteral("#6e7781");
     const QString nameFg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    const QString path = diffStickyPathText(fullPath);
     const int slash = path.lastIndexOf(QLatin1Char('/'));
     if (slash >= 0)
         return QStringLiteral("<span style='color:%1'>%2</span>"
@@ -1393,8 +1417,11 @@ QString diffFileLabelHtml(const DiffFileEntry &f, bool viewed)
                   .arg(QString::number(f.adds), QString::number(f.dels), bar);
 
     // What happened to the file in words, plus the total the +/- pair alone
-    // leaves you to add up. The status used to be a tooltip on the octicon,
-    // which is invisible while scanning a long diff (adhoc #223).
+    // leaves you to add up — on the *same* line as the path. It used to sit on
+    // a second line under it (adhoc #223), which made the header two rows tall
+    // and the one-line sticky bar that replaces it a different height again.
+    // The status word still has to be visible rather than a tooltip on the
+    // octicon, so it rides along inline.
     QString metaHtml =
         QStringLiteral("<span style='font-family:monospace;color:%1;"
                        "font-weight:700;letter-spacing:1px;font-size:11px'>"
@@ -1543,8 +1570,9 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
                "<a name=\"%1\"></a><div class='fileblock%4'>"
                "<table class='fileheader' width='100%' cellspacing='0' "
                "cellpadding='0'><tr>"
-               "<td valign='middle' style='padding:9px 4px 9px 12px'>%2</td>"
-               "<td align='right' valign='middle' "
+               "<td class='fpathcell' valign='middle' "
+               "style='padding:9px 4px 9px 12px'>%2</td>"
+               "<td class='fctlcell' align='right' valign='middle' "
                "style='padding:9px 12px 9px 4px'>%3</td>"
                "</tr></table>")
         .arg(f.anchor, diffFileLabelHtml(f, viewed),
@@ -2013,10 +2041,15 @@ void setDiffSplitPref(bool split)
 // Defaults off, matching GitHub's same-named setting.
 bool autoMarkViewedOnScrollPref()
 {
-    // On by default (adhoc #56): reaching a file's bottom while scrolling
-    // auto-checks its Viewed box — the behaviour the sticky header's Pac-Man
-    // chart visualises. The eye toggle in the Files header opts out.
-    return QSettings().value(QStringLiteral("view/autoMarkViewedOnScroll"), true).toBool();
+    // Off by default: scrolling no longer checks files off behind the reviewer's
+    // back (it collapsed files that had merely flown past, and the re-render it
+    // triggered moved the diff underneath them). Viewed is a deliberate click on
+    // the sticky header now; the sticky header's Pac-Man chart still shows how
+    // much of the file has gone by. The eye toggle in the working-tree Changes
+    // header opts back in.
+    return QSettings()
+        .value(QStringLiteral("view/autoMarkViewedOnScroll"), false)
+        .toBool();
 }
 void setAutoMarkViewedOnScrollPref(bool on)
 {
@@ -2056,6 +2089,12 @@ void applyDiffSearchHighlights(QTextBrowser *diff,
                                         .arg(matches.size()));
 }
 
+// Blank lines of scroll runway between the last diff line and the terminator
+// bar. Roughly a third of a typical pane: enough that the final hunk can be
+// read away from the very bottom edge, not so much that reaching the end feels
+// like a separate scroll.
+constexpr int kDiffEndRunwayLines = 14;
+
 // Dispatch to the split or unified renderer. Neither reads GUI state, so this
 // half is safe to run on a worker thread as long as the split/unified preference
 // (a QSettings read) is resolved by the caller — that is what the *Split
@@ -2067,10 +2106,41 @@ QString renderDiffHtmlSplit(bool split, const QString &patch,
                             const QHash<QString, QString> &lineNotes,
                             const QSet<QString> &viewedFiles)
 {
-    return split ? renderSplitDiffHtml(patch, files, dir, base, head,
-                                       anchorFile, lineNotes, viewedFiles)
-                 : renderUnifiedDiffHtml(patch, files, dir, base, head,
-                                         anchorFile, lineNotes, viewedFiles);
+    QString html =
+        split ? renderSplitDiffHtml(patch, files, dir, base, head,
+                                    anchorFile, lineNotes, viewedFiles)
+              : renderUnifiedDiffHtml(patch, files, dir, base, head,
+                                      anchorFile, lineNotes, viewedFiles);
+    // An empty render is how every caller detects "nothing to show" before
+    // substituting its own notice ("(no changes)", "Reading changes on X…").
+    // Terminating that would both hide the notice and put an END OF DIFF bar
+    // under a diff that never began.
+    if (html.isEmpty())
+        return html;
+    // A deliberate review runway after the final file, so its last lines can be
+    // scrolled clear of the viewport's bottom edge instead of being pinned
+    // there, then an unmistakable terminator.
+    //
+    // Qt's rich-text engine honours neither a CSS height on a block nor a
+    // `height` attribute on an otherwise empty table cell, so a spacer element
+    // collapses to nothing; blank lines do carry their line height, which is
+    // what the runway is made of.
+    //
+    // Both stay <div>s on purpose. splitDiffFileFragments() locates a file
+    // block's table by its *last* `</table>`, so a trailing table here would be
+    // mistaken for the end of the diff table whenever the final file is large
+    // enough to be fragmented. A block-level div already fills the pane's
+    // width, which is all the bar needs.
+    //
+    // Emitted by the shared renderer, so the branch, PR, commit and
+    // working-tree diffs all end the same way.
+    QString runway;
+    for (int i = 0; i < kDiffEndRunwayLines; ++i)
+        runway += QStringLiteral("&nbsp;<br>");
+    html += QStringLiteral("<div class='diffendspacer'>%1</div>"
+                           "<div class='diffend'>END OF DIFF</div>")
+                .arg(runway);
+    return html;
 }
 
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
@@ -2099,7 +2169,7 @@ QString diffStyleSheet(int fontPt)
     const QString gutterBg = dark ? "#0d1117" : "#f6f8fa";
     const QString fg = dark ? "#e6edf3" : "#1f2328";
     return QStringLiteral(
-               ".fileblock { margin:0; }"
+               ".fileblock { margin:0 0 14px 0; }"
                // The header row is a table (see diffFileHeaderHtml) and its
                // padding sits on the cells: that is where Qt's rich text
                // actually honours a background and an inset. No border — Qt
@@ -2110,6 +2180,11 @@ QString diffStyleSheet(int fontPt)
                ".fileheader { background:%1; font-family:monospace; "
                "font-size:13px; }"
                ".fileheader td { background:%1; }"
+               // Both cells are nowrap so a long path clips
+               // against the controls instead of folding the
+               // row open to a second line.
+               "td.fpathcell { white-space:nowrap; }"
+               "td.fctlcell { white-space:nowrap; }"
                // Everything inside that row — octicon, path, +/- stat, status
                // word, read meter, Viewed pill — is styled inline by
                // diffFileLabelHtml / diffRowControlsHtml instead of by classes
@@ -2160,7 +2235,12 @@ QString diffStyleSheet(int fontPt)
                "background:%1; font-size:11px; font-style:italic; }"
                ".suggestion { background:%9; border:1px solid %7; color:%8; "
                "padding:8px; margin-top:6px; white-space:pre; }"
-               ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }")
+               ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }"
+               // Scroll runway after the last file, then the terminator bar.
+               ".diffendspacer { background:%9; }"
+               ".diffend { background:#000000; color:#ffffff; "
+               "font-family:sans-serif; font-size:11px; font-weight:700; "
+               "letter-spacing:2px; text-align:center; padding:10px; }")
         .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg, border, fg, gutterBg)
         .arg(qBound(8, fontPt, 28));
 }

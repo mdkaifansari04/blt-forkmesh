@@ -6,10 +6,18 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import re
+import shutil
+import subprocess
+import sys
+import threading
 import tomllib
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import quote
+
+import pytest
 
 from worker_test_helpers import json_from_request_double
 
@@ -97,6 +105,14 @@ FUNCS = {
     "forkbot_models_handler",
     "ai_ask_handler",
     "_ai_ask_rate_check",
+    "ai_agent_handler",
+    "_ai_agent_rate_check",
+    "_forkbot_run_ai_agent",
+    "_ai_agent_normalized_result",
+    "_ai_agent_clean_messages",
+    "_ai_agent_clean_tools",
+    "_ai_agent_clean_tool_calls",
+    "_ai_agent_tool_arguments",
     "valid_node_name",
     "_forkbot_ai_issue_fields",
     "_forkbot_ai_interpret",
@@ -122,6 +138,14 @@ CONSTANTS = {
     "AI_ASK_RATE_WINDOW_MS",
     "AI_ASK_MAX_PER_WINDOW",
     "AI_ASK_SYSTEM_PROMPT",
+    "AI_AGENT_MAX_MESSAGES",
+    "AI_AGENT_MAX_CONTENT",
+    "AI_AGENT_MAX_TOOLS",
+    "AI_AGENT_MAX_TOKENS",
+    "AI_AGENT_MAX_REPLY",
+    "AI_AGENT_TICKET_MAX_AGE_MS",
+    "AI_AGENT_RATE_WINDOW_MS",
+    "AI_AGENT_MAX_PER_WINDOW",
     "LOGIN_MAX_SKEW_MS",
     "NODE_NAME_RE",
     "FORKBOT_CONTEXT_MAX_MESSAGES",
@@ -373,11 +397,16 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
         "safe_segment": lambda value: str(value or ""),
     }
     if host is not None:
-        runtime["js_fetch"] = host.fetch
+        gateway_fetch = host.fetch
     else:
-        async def offline_fetch(_url):
+        async def gateway_fetch(_url):
             raise RuntimeError("gateway offline")
-        runtime["js_fetch"] = offline_fetch
+    # The gateway read is bounded by a Workers-native AbortSignal rather than
+    # asyncio.wait_for (see tests/test_worker_task_concurrency.py), so the
+    # helper — not the bare fetch — is what forkbot calls.
+    async def js_fetch_with_timeout(url, _init, _timeout_seconds):
+        return await gateway_fetch(url)
+    runtime["js_fetch_with_timeout"] = js_fetch_with_timeout
     ns = _load_forkbot(runtime)
     return _Env(), calls, ns
 
@@ -1046,12 +1075,14 @@ def test_ai_ask_reports_model_not_found_apart_from_other_failures():
     assert response["status"] == 502
     assert response["data"]["error"] == "model_not_found"
 
-    # The desktop maps that error to its own wording, and keeps a bare 404
-    # (a relay that predates /api/ai/ask) out of the model-not-found story.
-    chat = (ROOT.parent / "qt_client" / "src" / "MainWindowChat.cpp").read_text(
-        encoding="utf-8")
-    assert 'error == QLatin1String("model_not_found")' in chat
-    assert "this relay does not answer AI prompts " in chat
+    # The desktop consumer of these errors is now the bundled agent script
+    # (adhoc #1634): it keeps a bare 404 — a relay that predates the agent
+    # endpoint — distinct from auth failures instead of blaming the model.
+    script = (ROOT.parent / "qt_client" / "src" /
+              "CloudflareAgentScript.h").read_text(encoding="utf-8")
+    assert "err.code == 404" in script
+    assert "does not run AI agents yet" in script
+    assert "err.code in (401, 403)" in script
 
 
 def test_ai_ask_refuses_unsigned_stale_and_unverified_callers():
@@ -1125,37 +1156,463 @@ def test_ai_ask_route_and_rate_table_are_wired():
     assert "CREATE TABLE IF NOT EXISTS ai_ask_rate" in schema
 
 
-def test_qt_composer_picks_a_cloudflare_model_for_the_prompt():
+# --- /api/ai/agent: tool-use turns for the desktop's Workers AI coding agent
+#     (adhoc #1634). One request per model turn: full conversation in, the
+#     model's reply plus normalized toolCalls out.
+
+
+def _signed_agent_body(ns, messages, model="", account="jett", ts=None,
+                       tools=None, max_tokens=None):
+    body = {
+        "nodeName": account,
+        "messages": messages,
+        "model": model,
+        "ts": str(ts if ts is not None else _Date.now()),
+        "sig": "sig-" + account,
+    }
+    if tools is not None:
+        body["tools"] = tools
+    if max_tokens is not None:
+        body["max_tokens"] = max_tokens
+    return body
+
+
+AGENT_BASH_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "bash",
+        "description": "Run a shell command in the worktree.",
+        "parameters": {"type": "object",
+                       "properties": {"command": {"type": "string"}},
+                       "required": ["command"]},
+    },
+}]
+
+
+def test_ai_agent_turn_passes_tools_and_returns_tool_calls():
+    # Legacy Workers AI shape: top-level "response" text with parsed
+    # "tool_calls" beside it.
+    class _AI:
+        async def run(self, model, payload):
+            self.model = model
+            self.payload = payload
+            return {
+                "response": "Let me look around first.",
+                "tool_calls": [{"name": "bash",
+                                "arguments": {"command": "ls"}}],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 30},
+            }
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(ai=ai)
+    response = asyncio.run(ns["ai_agent_handler"](env, _ask_request(
+        _signed_agent_body(
+            ns, [{"role": "user", "content": "fix the flaky test"}],
+            "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+            tools=AGENT_BASH_TOOL))))
+
+    assert response["status"] == 200
+    assert response["data"]["model"] == (
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+    assert response["data"]["reply"] == "Let me look around first."
+    assert response["data"]["toolCalls"] == [
+        {"id": "call_0", "name": "bash", "arguments": {"command": "ls"}}]
+    assert response["data"]["usage"] == {"inputTokens": 120,
+                                         "outputTokens": 30}
+    # The tool declaration reached the model, rebuilt (not passed through).
+    assert ai.payload["tools"] == [{
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "description": "Run a shell command in the worktree.",
+            "parameters": AGENT_BASH_TOOL[0]["function"]["parameters"],
+        },
+    }]
+    assert ai.payload["max_tokens"] == ns["AI_AGENT_MAX_TOKENS"]
+    # The run ticket covers the account and launch timestamp only (the
+    # conversation grows every turn, so it cannot be digest-bound like ask's).
+    _owner, _sig, canonical = calls["signed"][0]
+    assert canonical.split("\n") == ["forkmesh-ai-agent-v1", "jett",
+                                    str(_Date.now())]
+    # Metered on the account's agent window, not the composer ask window.
+    assert calls["aiAskRate"] == ["bi:jett:agent"]
+
+
+def test_ai_agent_turn_reads_openai_tool_call_shape():
+    # Current chat-completions shape: tool_calls under choices[].message with
+    # JSON-string arguments, which come back parsed for the script.
+    class _AI:
+        async def run(self, _model, _payload):
+            return {"choices": [{"message": {
+                "content": "Running git status.",
+                "tool_calls": [{
+                    "id": "chatcmpl-tool-1",
+                    "type": "function",
+                    "function": {"name": "bash",
+                                 "arguments": '{"command": "git status"}'},
+                }],
+            }}]}
+
+    env, _calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_agent_handler"](env, _ask_request(
+        _signed_agent_body(
+            ns, [{"role": "user", "content": "what changed?"}],
+            tools=AGENT_BASH_TOOL))))
+    assert response["status"] == 200
+    assert response["data"]["reply"] == "Running git status."
+    assert response["data"]["toolCalls"] == [{
+        "id": "chatcmpl-tool-1", "name": "bash",
+        "arguments": {"command": "git status"}}]
+
+
+def test_ai_agent_turn_replays_history_and_drops_junk():
+    class _AI:
+        async def run(self, _model, payload):
+            self.payload = payload
+            return {"response": "All done.", "tool_calls": []}
+
+    ai = _AI()
+    env, _calls, ns = _env_and_calls(ai=ai)
+    response = asyncio.run(ns["ai_agent_handler"](env, _ask_request(
+        _signed_agent_body(ns, [
+            {"role": "user", "content": "fix it"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "call_0", "function": {
+                 "name": "bash",
+                 "arguments": {"command": "ls"}}}]},
+            {"role": "tool", "tool_call_id": "call_0", "name": "bash",
+             "content": "(exit code 0)\nREADME.md"},
+            {"role": "wizard", "content": "not a chat role"},
+            "not even a dict",
+        ]))))
+    assert response["status"] == 200
+    sent = ai.payload["messages"]
+    assert [m["role"] for m in sent] == ["user", "assistant", "tool"]
+    # Echoed assistant tool_calls go to the model in the OpenAI wire shape:
+    # arguments re-serialized as a JSON string.
+    assert sent[1]["tool_calls"] == [{
+        "id": "call_0", "type": "function",
+        "function": {"name": "bash", "arguments": '{"command": "ls"}'}}]
+    assert sent[2]["tool_call_id"] == "call_0"
+
+
+def test_ai_agent_ticket_outlives_ask_skew_but_not_the_run_window():
+    class _AI:
+        async def run(self, _model, _payload):
+            return {"response": "ok"}
+
+    env, calls, ns = _env_and_calls(ai=_AI())
+    messages = [{"role": "user", "content": "hello"}]
+    # A mid-run turn signed at launch: far older than ask's skew window, still
+    # inside the run ticket's own window.
+    mid_run = _signed_agent_body(
+        ns, messages, ts=_Date.now() - ns["LOGIN_MAX_SKEW_MS"] - 1)
+    assert asyncio.run(ns["ai_agent_handler"](
+        env, _ask_request(mid_run)))["status"] == 200
+    # Beyond the run window (or from the future) the ticket is dead.
+    expired = _signed_agent_body(
+        ns, messages, ts=_Date.now() - ns["AI_AGENT_TICKET_MAX_AGE_MS"] - 1)
+    assert asyncio.run(ns["ai_agent_handler"](
+        env, _ask_request(expired)))["data"]["error"] == "stale_signature"
+    future = _signed_agent_body(
+        ns, messages, ts=_Date.now() + ns["LOGIN_MAX_SKEW_MS"] + 1)
+    assert asyncio.run(ns["ai_agent_handler"](
+        env, _ask_request(future)))["data"]["error"] == "stale_signature"
+    # No signature, wrong method, no conversation.
+    unsigned = _signed_agent_body(ns, messages)
+    unsigned.pop("sig")
+    assert asyncio.run(ns["ai_agent_handler"](
+        env, _ask_request(unsigned)))["status"] == 401
+    assert asyncio.run(ns["ai_agent_handler"](
+        env, _ask_request(_signed_agent_body(ns, messages), method="GET")
+    ))["status"] == 405
+    assert asyncio.run(ns["ai_agent_handler"](
+        env, _ask_request(_signed_agent_body(ns, []))
+    ))["data"]["error"] == "messages_required"
+
+    # An untrusted key never runs (or bills) a turn.
+    bad_env, bad_calls, bad_ns = _env_and_calls(
+        ai=object(), signature_ok=False)
+    denied = asyncio.run(bad_ns["ai_agent_handler"](
+        bad_env, _ask_request(_signed_agent_body(bad_ns, messages))))
+    assert denied["status"] == 401
+    assert denied["data"]["error"] == "unauthorized"
+    assert bad_calls["aiAskRate"] == []
+
+
+def test_ai_agent_holds_its_own_larger_rate_window():
+    ns = _load_forkbot()
+    # Agent loops make many turns per task, so their window must be roomier
+    # than the composer's one-shot ask allowance.
+    assert ns["AI_AGENT_MAX_PER_WINDOW"] > ns["AI_ASK_MAX_PER_WINDOW"]
+
+    class _AI:
+        async def run(self, _model, _payload):
+            return {"response": "ok"}
+
+    env, calls, loaded = _env_and_calls(
+        ai=_AI(), ai_ask_used=ns["AI_AGENT_MAX_PER_WINDOW"])
+    response = asyncio.run(loaded["ai_agent_handler"](env, _ask_request(
+        _signed_agent_body(loaded,
+                           [{"role": "user", "content": "one more"}]))))
+    assert response["status"] == 429
+    assert response["data"]["error"] == "rate_limited"
+    assert response["data"]["retryAfterMs"] > 0
+    # The agent window keys on its own suffixed row, leaving ask's untouched.
+    assert calls["aiAskRate"] == ["bi:jett:agent"]
+
+
+def test_ai_agent_caps_the_output_tokens_a_client_may_request():
+    class _AI:
+        async def run(self, _model, payload):
+            self.payload = payload
+            return {"response": "ok"}
+
+    ai = _AI()
+    env, _calls, ns = _env_and_calls(ai=ai)
+    assert asyncio.run(ns["ai_agent_handler"](env, _ask_request(
+        _signed_agent_body(ns, [{"role": "user", "content": "hi"}],
+                           max_tokens=999999))))["status"] == 200
+    assert ai.payload["max_tokens"] == ns["AI_AGENT_MAX_TOKENS"]
+
+
+def test_ai_agent_route_is_wired():
+    assert '"/api/ai/agent"' in ENTRY_TEXT
+    assert "return await ai_agent_handler(self.env, request)" in ENTRY_TEXT
+    assert 'ai_agent_handler = _forkbot.export("ai_agent_handler")' \
+        in ENTRY_TEXT
+
+
+def test_qt_composer_runs_cloudflare_models_as_agents():
+    # adhoc #1634: picking a Workers AI model in the composer starts a real
+    # agent session (worktree, branch, PR) instead of the old one-shot
+    # /api/ai/ask answer.
     qt = ROOT.parent / "qt_client" / "src"
     internal = (qt / "MainWindowInternal.h").read_text(encoding="utf-8")
     chat = (qt / "MainWindowChat.cpp").read_text(encoding="utf-8")
     issues = (qt / "MainWindowIssues.cpp").read_text(encoding="utf-8")
+    agents = (qt / "MainWindowAgents.cpp").read_text(encoding="utf-8")
+    script = (qt / "CloudflareAgentScript.h").read_text(encoding="utf-8")
     # The composer's combined agent+model menu carries the Workers AI models as
-    # their own group, and the provider survives a restart.
+    # their own group, and cloudflare-ai is a first-class agent provider.
     assert 'kCloudflareAiProvider = QStringLiteral("cloudflare-ai")' in internal
-    assert "agentIsCloudflareAiProvider(value)" in internal
+    assert "agentIsCloudflareAiProvider(provider);" in internal
     assert "populateCloudflareAiModelCombo" in internal
     assert "populateCloudflareAiModelCombo(&cloudflareModels)" in chat
     assert "addItem(QStringLiteral(\"CF AI\")" in chat
     # The relay owns the allowlist, so the picker asks it and caches the answer.
     assert '"/api/forkbot/models"' in chat
     assert "kCloudflareAiModelsCacheSetting" in chat
-    # Sending signs the account, model and prompt digest, and posts to the ask
-    # endpoint — never to an agent session.
-    assert '"/api/ai/ask"' in chat
-    assert "forkmesh-ai-ask-v1" in chat
-    assert "QCryptographicHash::Sha256" in chat
-    assert "responseModel" in chat and "answeringModel" in chat
-    assert "Cloudflare AI fell back from %1 to %2" in chat
-    # The quick-add submit path answers instead of starting an agent.
-    assert "agentIsCloudflareAiProvider(quickAddProvider)" in issues
-    assert "if (!sendPromptToCloudflareAi(title, model))" in issues
+    # A "@cf/..." model binds to the cloudflare-ai provider only — it must
+    # never leak into a Codex/OpenAI run just because it is not Claude-style.
+    assert "agentModelIsCloudflareStyle" in internal
+    assert 'startsWith(QLatin1String("@cf/"))' in internal
+    # The quick-add submit path hands the pick to the agent launch like any
+    # other provider, model included.
+    assert "agentIsCloudflareAiProvider(provider)" in issues
+    assert "sendPromptToCloudflareAi" not in issues
+    # The launch config runs the bundled Workers AI agent script and signs the
+    # per-run relay ticket the endpoint verifies (same canonical string).
+    assert "defaultCloudflareAiCommand()" in agents
+    assert "FORKMESH_AI_AGENT_AUTH" in agents
+    assert "forkmesh-ai-agent-v1" in agents
+    assert "forkmesh-ai-agent-v1" in ENTRY_TEXT
+    assert '"/api/ai/agent"' in agents
+    # The bundled script drives an OpenAI-format tool loop against the relay.
+    assert "forkmesh_cloudflare_agent.py" in internal
+    assert "FORKMESH_AI_AGENT_AUTH" in script
+    assert '"tools": TOOLS' in script
+    assert "tool_call_id" in script
     # Every static fallback id is one the relay's allowlist actually offers.
     ns = _load_forkbot()
     allowed = {entry[0] for entry in ns["FORKBOT_AI_MODEL_CHOICES"]}
     fallback = re.findall(r'QStringLiteral\("(@cf/[^"]+)"\)', internal)
     assert fallback
     assert set(fallback) == allowed
+
+
+# --- The bundled Workers AI agent script, run for real (adhoc #1622).
+#     The models behind this provider are small enough to loop on one command
+#     forever, so the script's guards are worth exercising rather than
+#     grepping: extract the Python out of the header and drive it against a
+#     stub relay in a throwaway git repo.
+
+
+def _cloudflare_agent_script(tmp_path):
+    header = (ROOT.parent / "qt_client" / "src" /
+              "CloudflareAgentScript.h").read_text(encoding="utf-8")
+    body = re.search(r'R"PYAGENT\((.*)\)PYAGENT"', header, re.S)
+    assert body, "CloudflareAgentScript.h no longer holds a PYAGENT literal"
+    path = tmp_path / "forkmesh_cloudflare_agent.py"
+    path.write_text(body.group(1), encoding="utf-8")
+    return path
+
+
+def _run_cloudflare_agent(tmp_path, turns, steer=None):
+    """Run the bundled script against a stub /api/ai/agent.
+
+    `turns` is called with (turn number, conversation) and returns that turn's
+    toolCalls; returning [] ends the run the way a finished model does. Returns
+    (stdout, exit code, worktree, fake HOME, conversations) with the git identity
+    configured only in the fake HOME's ~/.gitconfig, so a run that reaches for
+    `git config --global` is caught.
+    """
+    if not shutil.which("git"):
+        pytest.skip("git is not installed")
+
+    script = _cloudflare_agent_script(tmp_path)
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            size = int(self.headers.get("content-length") or 0)
+            body = json.loads(self.rfile.read(size))
+            seen.append(body["messages"])
+            calls = turns(len(seen), body["messages"])
+            payload = json.dumps({
+                "ok": True,
+                "model": body.get("model"),
+                "reply": "" if calls else "Done.",
+                "toolCalls": calls,
+                "usage": {"inputTokens": 1, "outputTokens": 1},
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text(
+        "[user]\n\tname = Real Person\n\temail = real@example.com\n",
+        encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = dict(os.environ, HOME=str(home))
+    env.pop("GIT_CONFIG_GLOBAL", None)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)],
+                   env=env, check=True)
+    (repo / "README.md").write_text("# Title\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, env=env,
+                   check=True)
+
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("add the note", encoding="utf-8")
+    env["FORKMESH_AI_AGENT_AUTH"] = json.dumps({
+        "url": "http://127.0.0.1:%d/api/ai/agent" % server.server_address[1],
+        "node": "jett", "ts": "1", "sig": "sig"})
+    env["FORKMESH_AGENT_MODEL"] = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    proc = subprocess.Popen(
+        [sys.executable, str(script), str(prompt)], cwd=repo, env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True)
+    if steer:
+        proc.stdin.write(steer)
+        proc.stdin.flush()
+    out = proc.stdout.read()
+    code = proc.wait(timeout=180)
+    server.shutdown()
+    return out, code, repo, home, seen
+
+
+UNTOUCHED_GITCONFIG = "[user]\n\tname = Real Person\n\temail = real@example.com\n"
+
+
+def test_cloudflare_agent_script_stops_a_model_that_repeats_one_command(
+        tmp_path):
+    # The shipped failure: llama-3.3 answered every turn with the same
+    # `echo ... >> README.md`, appending the line once per turn for as long as
+    # anyone let it run.
+    append = 'echo "edited by llama" >> README.md'
+    out, code, repo, home, seen = _run_cloudflare_agent(
+        tmp_path,
+        lambda turn, messages: [
+            {"id": "c%d" % turn, "name": "bash",
+             "arguments": {"command": append}}])
+
+    # The command lands once, however many times it is asked for, and the run
+    # ends by itself well inside the turn budget.
+    assert (repo / "README.md").read_text(encoding="utf-8") == \
+        "# Title\nedited by llama\n"
+    assert "Not run again: this is the command from turn 1" in out
+    assert "re-running commands it had already run" in out
+    assert out.count("request #") <= 5
+    # Exit 0: whatever the run did commit is still worth capturing as a patch.
+    assert code == 0
+    # Every turn carries the agent rules these small models need spelled out.
+    assert seen[0][0]["role"] == "system"
+    assert "stop calling tools" in seen[0][0]["content"]
+    assert (home / ".gitconfig").read_text(encoding="utf-8") == \
+        UNTOUCHED_GITCONFIG
+
+
+def test_cloudflare_agent_script_works_the_task_and_takes_steering(tmp_path):
+    commands = [
+        "tail -n 2 README.md",
+        'grep -qF "edited by llama" README.md || '
+        'echo "edited by llama" >> README.md',
+        "tail -n 2 README.md",  # a legitimate re-read, not a stalled repeat
+        'git config --global user.email "llama@cloudflare.com" && '
+        "git add -A && git commit -qm note",
+    ]
+    state = {"steered": False}
+
+    def turns(turn, messages):
+        # The steering arrives on stdin before the first turn; the script drains
+        # stdin at every turn boundary, so answer it once and then work through
+        # the command list.
+        pending = any(
+            message["role"] == "user" and "STEER" in (message.get("content") or "")
+            for message in messages)
+        if pending and not state["steered"]:
+            state["steered"] = True
+            return [{"id": "s", "name": "bash",
+                     "arguments": {"command": 'echo "STEERED" >> README.md'}}]
+        index = turn - (1 if state["steered"] else 0)
+        if index <= len(commands):
+            return [{"id": "c%d" % turn, "name": "bash",
+                     "arguments": {"command": commands[index - 1]}}]
+        return []
+
+    out, code, repo, home, _seen = _run_cloudflare_agent(
+        tmp_path, turns,
+        steer="\n\nAdditional user instruction:\nSTEER: add a second line\n")
+
+    assert code == 0
+    assert "==> Agent finished." in out
+    # The steering ForkMesh writes to the running script's stdin reaches the
+    # model instead of being swallowed (the prompt itself is a file argument, so
+    # nothing used to read stdin at all).
+    assert "==> Steering:" in out
+    assert "STEERED" in (repo / "README.md").read_text(encoding="utf-8")
+    # Re-reading a file the run read earlier is not treated as a stall.
+    assert "re-running commands it had already run" not in out
+    assert out.count("$ tail -n 2 README.md") == 2
+    # `git config --global` is sandboxed into the run, not the user's identity.
+    assert (home / ".gitconfig").read_text(encoding="utf-8") == \
+        UNTOUCHED_GITCONFIG
+    # The work is committed, so ForkMesh can stamp provenance and open a PR.
+    assert "note" in subprocess.run(
+        ["git", "log", "-1", "--pretty=%s"], cwd=repo, capture_output=True,
+        text=True).stdout
+
+
+def test_agent_runner_does_not_call_a_user_stop_a_crash():
+    # Stopping a session terminates the child, so Qt reports Crashed for a run
+    # the user ended on purpose — "!! Process crashed" beside "Stopped." read as
+    # a bug in the agent (adhoc #1622).
+    runner = (ROOT.parent / "qt_client" / "src" /
+              "AgentRunner.cpp").read_text(encoding="utf-8")
+    assert "if (!m_stopping)\n                    emitLog(QStringLiteral(\"!! \") + " \
+        "m_process->errorString());" in runner
 
 
 def test_web_composers_offer_the_cloudflare_model_picker():

@@ -26,6 +26,7 @@ import {
   issueTitleFromMessage,
   loadIssueRepositories,
 } from "./chat-issue-filing.js";
+import { createAccountEventChannel } from "./account-events.js";
 import { createChatRoomTransport } from "./chat-room-transport.js";
 import { moderateChatPlain, moderateChatText } from "./chat-moderation.js";
 import { createThreadStore } from "./chat-thread-model.js";
@@ -61,7 +62,6 @@ const PUBLIC_WORLD_CHAT_WS_PATH =
   "/api/repo/mainnode/forkmesh/rooms/world-general/ws";
 const PRIVATE_CHANNELS_ENDPOINT = "/api/chat/channels";
 const DIRECT_MESSAGES_ENDPOINT = "/api/chat/direct-messages";
-const PRIVATE_CHANNEL_REFRESH_MS = 30000;
 const FORKBOT_ENDPOINT = "/api/forkbot/chat";
 // Cloudflare Workers AI models ForkBot can be pointed at, plus the picked one.
 // The pick is per-browser (not per-room): it only decides which model this
@@ -1336,6 +1336,48 @@ function loadMoreDirectMessages() {
   });
 }
 
+// The page's one authenticated push channel. It replaces the 30s re-read of
+// the conversation list: an unread count only ever changes because somebody
+// wrote to this account, and the relay says so the moment it happens.
+let accountEvents = null;
+let accountEventsConnectedOnce = false;
+
+function startAccountEventChannel() {
+  // Guests have no conversations to be unread, and no session to trade for a
+  // ticket. Signing in reloads the page, which is where this runs.
+  if (!userSession()?.sessionToken) return;
+  if (accountEvents) {
+    accountEvents.restart();
+    return;
+  }
+  accountEvents = createAccountEventChannel({
+    sessionToken: () => userSession()?.sessionToken || "",
+    onTopic: (topic) => {
+      // A new message in a conversation this browser is not sitting in, or a
+      // conversation/channel that appeared because somebody else invited or
+      // messaged us. Both lists used to be re-read every 30s to find these.
+      if (topic === "direct-messages") {
+        refreshDirectMessages({ preserve: true, selectSaved: false });
+      } else if (topic === "private-channels") {
+        refreshPrivateChannels();
+      }
+    },
+    // One catch-up per RE-connect: a DM that arrived while the channel was
+    // down pushed its frame into the void, and there is no fallback poll
+    // behind this socket (docs/operations/polling-elimination.md). The first
+    // connect needs no catch-up — the caller has just read both lists.
+    onConnected: () => {
+      if (!accountEventsConnectedOnce) {
+        accountEventsConnectedOnce = true;
+        return;
+      }
+      refreshPrivateChannels();
+      refreshDirectMessages({ preserve: true, selectSaved: false });
+    },
+  });
+  accountEvents.start();
+}
+
 async function markDirectMessageRead(channelKey) {
   const direct = directMessageForKey(channelKey);
   if (!direct || directReadPending.has(direct.id)) return;
@@ -1766,10 +1808,23 @@ async function refreshUsersDirectory() {
 // Record the current activity counters as "seen" so the chat icon in the site
 // header (site-header.js reads the same key) shows no badge for what's on
 // screen right now.
+//
+// This read is ABSOLUTE — it takes the server's counters rather than nudging
+// the stored ones — which is what makes it the correction for any drift the
+// incremental bumps below accumulate (two chat tabs each advance the one shared
+// localStorage baseline for the same message). It used to run every 60s for
+// that reason; it now runs when the page opens and when the reader leaves it,
+// which is exactly when the baseline has to be right.
+let chatActivitySeenAtMs = 0;
+
 async function markChatActivitySeen() {
+  chatActivitySeenAtMs = Date.now();
   try {
     const res = await fetch(CHAT_ACTIVITY_ENDPOINT, {
       headers: { accept: "application/json" },
+      // The read on the way out races the page unload; keepalive is what lets
+      // it (and the localStorage write below) still land.
+      keepalive: true,
     });
     if (!res.ok) return;
     const data = await res.json().catch(() => null);
@@ -1782,12 +1837,14 @@ async function markChatActivitySeen() {
   } catch (_) {}
 }
 
-// You have obviously already read your own message, so it must never light the
-// header's chat badge. That badge is a delta between the retained #general
-// count and this browser's stored baseline, so every retained line we send
-// advances the baseline by one. Without this, talking in the World or the
-// dashboard left an unread pill on every other page of the site.
-function noteOwnChatActivity() {
+// You have obviously already read your own message, and — with the chat page
+// open in front of you — everything that arrives in it too. So neither must
+// light the header's chat badge. That badge is a delta between the retained
+// #general count and this browser's stored baseline, so every retained line
+// that crosses this page advances the baseline by one. Doing it here, off the
+// socket, is what lets the page stop re-reading the counters on a timer:
+// re-baselining used to mean a GET /api/chat/activity every minute.
+function noteSeenChatActivity() {
   try {
     const raw = localStorage.getItem(CHAT_ACTIVITY_SEEN_KEY);
     if (!raw) return; // no baseline yet: the header seeds one silently
@@ -1799,6 +1856,22 @@ function noteOwnChatActivity() {
       at: Date.now(),
     }));
   } catch (_) {}
+}
+
+// Leaving the chat page is the moment the header badge starts mattering again,
+// so re-baseline absolutely on the way out. Not a timer: it fires on the
+// reader's own navigation or tab switch, with a floor so flicking between tabs
+// cannot turn it into one.
+const CHAT_ACTIVITY_REBASELINE_FLOOR_MS = 5000;
+
+function rebaselineChatActivityOnLeave(event) {
+  // visibilitychange fires on the way in as well; pagehide only ever fires on
+  // the way out, and does so while the document is still visible.
+  if (event?.type === "visibilitychange" && !document.hidden) return;
+  if (Date.now() - chatActivitySeenAtMs < CHAT_ACTIVITY_REBASELINE_FLOOR_MS) {
+    return;
+  }
+  markChatActivitySeen();
 }
 
 function renderPeople() {
@@ -3112,6 +3185,19 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
   // announce themselves (hello/presence) without accountKind, and the people
   // pane should still show them with their online status.
   noteRoster(plain);
+  // A live retained #general line is one the reader is looking at right now, so
+  // it advances the header badge's baseline exactly like a line they sent. This
+  // is the socket half of what used to be a GET /api/chat/activity every
+  // minute. Replayed "history" is deliberately excluded: the baseline read when
+  // the page opened already counted it.
+  if (
+    scope === "public-world-general" &&
+    type !== "history" &&
+    DURABLE_TYPES.has(type) &&
+    !plain.file
+  ) {
+    noteSeenChatActivity();
+  }
   if (scope === "public-world-general" &&
       (type === "hello" || type === "channel")) ensureChannel("#general");
   const sender = (plain.sender || "peer").slice(0, MAX_NAME);
@@ -3222,7 +3308,7 @@ function send(plain) {
   // Only retained #general frames reach the counter behind the header badge,
   // and oversized file frames are dropped before retention.
   if (envelope.persist && scope === "public-world-general" && !plain.file) {
-    noteOwnChatActivity();
+    noteSeenChatActivity();
   }
   return roomTransport.send(plain, { persist: envelope.persist });
 }
@@ -4035,18 +4121,25 @@ async function initChat() {
   renderRooms();
   renderPeople();
   // Fill the people pane with every registered user (and thereafter pick up
-  // brand-new signups), and baseline the header badge counters for this visit.
+  // brand-new signups — accounts that have never spoken have no socket frame
+  // to announce them, so this one stays on its edge-cached tick).
   refreshUsersDirectory();
   loadForkbotModels();
+  // Once on open, then again when the reader leaves. In between, every
+  // retained line that crosses this page advances the baseline locally off the
+  // socket (noteSeenChatActivity), which keeps the header badge at zero while
+  // chat is the page in front of you; the read on the way out is what corrects
+  // the drift two open tabs would otherwise accumulate.
   markChatActivitySeen();
-  setInterval(() => {
-    refreshUsersDirectory();
-    markChatActivitySeen();
-  }, USERS_DIRECTORY_REFRESH_MS);
-  setInterval(() => {
-    refreshPrivateChannels();
-    refreshDirectMessages({ preserve: true, selectSaved: false });
-  }, PRIVATE_CHANNEL_REFRESH_MS);
+  document.addEventListener("visibilitychange", rebaselineChatActivityOnLeave);
+  window.addEventListener("pagehide", rebaselineChatActivityOnLeave);
+  setInterval(refreshUsersDirectory, USERS_DIRECTORY_REFRESH_MS);
+  // Conversations and their unread counts were read once above; from here they
+  // are push-driven. A DM that lands in a conversation this browser is not
+  // sitting in is the one case the room sockets cannot report, and the relay
+  // pushes a payload-free "direct-messages" frame for exactly that
+  // (notify_account_event).
+  startAccountEventChannel();
   // Public World #general connects for everyone. Private channels remain
   // session-gated and each uses its own ticketed room and current key version.
   if (canJoinChannel()) {

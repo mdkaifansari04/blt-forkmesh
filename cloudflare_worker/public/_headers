@@ -19,6 +19,14 @@
 /chat-moderation.js
   Cache-Control: no-store, max-age=0, must-revalidate
 
+# Same shape: the account event channel is imported by /chat.js AND by
+# /world/world.js. Everything under /world/* is no-store so a refresh can never
+# reuse an older module graph, and this module is part of that graph despite
+# living outside the tree (the world Worker only routes /world/*, so it resolves
+# on the relay). It has to revalidate with the rest of them.
+/account-events.js
+  Cache-Control: no-store, max-age=0, must-revalidate
+
 /assets/forkmesh-mark.svg
   Cache-Control: public, max-age=31536000, immutable
 

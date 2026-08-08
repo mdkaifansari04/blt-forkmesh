@@ -135,12 +135,15 @@ bool ClientErrorReports::defer(const Report &report)
     return true;
 }
 
-QList<ClientErrorReports::Report> ClientErrorReports::takeDeferred(qint64 nowMs)
+QList<ClientErrorReports::Report> ClientErrorReports::takeDeferred(
+    qint64 nowMs, QList<Report> *expiredOut)
 {
     QList<Report> ready;
     for (const Report &report : m_deferred) {
         if (nowMs - report.tsMs <= kMaxDeferralMs)
             ready.append(report);
+        else if (expiredOut)
+            expiredOut->append(report);
     }
     m_deferred.clear();
     return ready;

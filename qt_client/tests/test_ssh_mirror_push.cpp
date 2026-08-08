@@ -1,3 +1,4 @@
+#include "MirrorGatewayHealth.h"
 #include "MirrorPushOutcome.h"
 
 #include <QCoreApplication>
@@ -42,6 +43,31 @@ bool pushFailed(const MirrorPushOutcome &outcome, int exitCode)
 {
     return exitCode != 0 && !outcome.onlyHeldBack;
 }
+
+// The gateways pushToSshMirrorRemotes would actually spawn a `git push` for on
+// one pass. Mirrored here for the same reason as pushFailed: the rotation rule
+// is a property of the fan-out, not of the health tracker alone — a release
+// rollout deliberately ignores every cooldown.
+QStringList rotationTargets(const MirrorGatewayHealth &health,
+                            const QStringList &hosts, qint64 nowMs,
+                            bool userInitiated = false)
+{
+    QStringList targets;
+    for (const QString &host : hosts) {
+        if (userInitiated || health.readyToPush(host, nowMs))
+            targets.append(host);
+    }
+    return targets;
+}
+
+// The reported outage, verbatim: mirror13 was decommissioned, its remote stayed
+// configured, and every five-second safety pass paid a full TCP connect timeout
+// to it and logged the same red line.
+const QString kRetiredGatewayStderr = QStringLiteral(
+    "ssh: connect to host 149.28.230.243 port 22: Connection timed out\r\n"
+    "fatal: Could not read from remote repository.\n"
+    "Please make sure you have the correct access rights\n"
+    "and the repository exists.");
 
 bool git(const QString &path, const QStringList &arguments,
          QByteArray *output = nullptr, int *exitCode = nullptr)
@@ -190,6 +216,142 @@ void testFramingLinesAreIgnored()
           "a clean exit with no refs is not a failure");
 }
 
+// A retired node still listed as a push remote must not define the fan-out's
+// cadence: it rotates out, the rest of the fleet keeps syncing on the pass it
+// always used.
+void testRetiredGatewayRotatesOutOfTheFanOut()
+{
+    const QStringList fleet = {QStringLiteral("forkmesh-mirror10-sync"),
+                               QStringLiteral("forkmesh-mirror13-sync"),
+                               QStringLiteral("forkmesh-mirror14-sync")};
+    check(mirrorGatewayUnreachable(kRetiredGatewayStderr),
+          "a connect timeout is the gateway never answering");
+
+    MirrorGatewayHealth health;
+    const qint64 start = 1'700'000'000'000LL;
+    check(rotationTargets(health, fleet, start) == fleet,
+          "every gateway is tried before anything has failed");
+
+    health.noteUnreachable(QStringLiteral("forkmesh-mirror13-sync"), start);
+    const QStringList next = rotationTargets(health, fleet, start + 5'000);
+    check(next == QStringList{QStringLiteral("forkmesh-mirror10-sync"),
+                              QStringLiteral("forkmesh-mirror14-sync")},
+          "the retired gateway sits out the next pass");
+    check(rotationTargets(health, fleet, start + 5'000,
+                          /*userInitiated=*/true) == fleet,
+          "a release rollout still tries every configured gateway");
+}
+
+// The cooldown grows so a dead node is probed less and less, but stays bounded
+// so a gateway that comes back is picked up within the quarter hour.
+void testUnreachableCooldownGrowsAndCaps()
+{
+    MirrorGatewayHealth health;
+    const QString host = QStringLiteral("forkmesh-mirror13-sync");
+    qint64 now = 1'700'000'000'000LL;
+    const MirrorGatewayHealth::Notice first =
+        health.noteUnreachable(host, now);
+    check(first.cooldownMs >= MirrorGatewayHealth::kBaseCooldownMs,
+          "the first failure holds the gateway off for at least a pass");
+
+    qint64 previous = first.cooldownMs;
+    bool grew = false;
+    for (int i = 0; i < 3; ++i) {
+        now += previous + 1;
+        const MirrorGatewayHealth::Notice notice =
+            health.noteUnreachable(host, now);
+        grew = grew || notice.cooldownMs > previous;
+        previous = notice.cooldownMs;
+    }
+    check(grew, "repeated silence widens the retry interval");
+
+    for (int i = 0; i < 10; ++i) {
+        now += previous + 1;
+        previous = health.noteUnreachable(host, now).cooldownMs;
+    }
+    // NetworkBackoff adds up to an eighth of the delay as jitter so separately
+    // failing gateways do not all retry on the same tick.
+    check(previous <= MirrorGatewayHealth::kMaxCooldownMs * 9 / 8,
+          "the cooldown never grows past the ceiling");
+}
+
+// Rotating out is not giving up: the gateway is tried again when its cooldown
+// expires, and one success puts it straight back on the normal pass.
+void testGatewayReturnsToRotationAfterItsCooldown()
+{
+    MirrorGatewayHealth health;
+    const QString host = QStringLiteral("forkmesh-mirror13-sync");
+    const qint64 start = 1'700'000'000'000LL;
+    const qint64 cooldown = health.noteUnreachable(host, start).cooldownMs;
+    check(!health.readyToPush(host, start + cooldown / 2),
+          "the gateway is skipped while it is cooling down");
+    check(health.cooldownRemainingMs(host, start + cooldown / 2) > 0,
+          "the caller can say how long it is held off");
+    check(health.readyToPush(host, start + cooldown + 1),
+          "it is retried once the cooldown expires");
+
+    check(health.noteReachable(host),
+          "the recovery is worth reporting after an outage was reported");
+    check(health.readyToPush(host, start + cooldown + 2),
+          "one success restores the normal cadence");
+    check(!health.noteReachable(host),
+          "a gateway that never failed reports no recovery");
+}
+
+// A gateway that answers and then refuses is a different failure: someone has
+// to fix it, so it must never be quietly rotated out.
+void testAnsweredRefusalsAreNotRotatedOut()
+{
+    check(!mirrorGatewayUnreachable(QStringLiteral(
+              "git@gateway: Permission denied (publickey).\n"
+              "fatal: Could not read from remote repository.")),
+          "a refused key answered; it is not an unreachable gateway");
+    check(!mirrorGatewayUnreachable(QStringLiteral(
+              "remote: pre-receive hook declined\n"
+              "! [remote rejected] main -> main (pre-receive hook declined)")),
+          "a hook denial answered; it is not an unreachable gateway");
+    check(!mirrorGatewayUnreachable(QString()),
+          "no stderr at all is not evidence of an unreachable gateway");
+    check(mirrorGatewayUnreachable(QStringLiteral(
+              "ssh: Could not resolve hostname forkmesh-mirror13-sync: "
+              "Name or service not known")),
+          "a hostname that no longer resolves is a removed node");
+}
+
+// The log line is the point of the whole exercise: say it when it happens, then
+// once an hour, and after a full day say what to do about it — once.
+void testUnreachableIsAnnouncedOnceAnHourThenNamedRetired()
+{
+    MirrorGatewayHealth health;
+    const QString host = QStringLiteral("forkmesh-mirror13-sync");
+    const qint64 start = 1'700'000'000'000LL;
+    check(health.noteUnreachable(host, start).announce,
+          "the first failure is reported");
+    check(!health.noteUnreachable(host, start + 60'000).announce,
+          "the next pass does not repeat it");
+    const MirrorGatewayHealth::Notice hourly = health.noteUnreachable(
+        host, start + MirrorGatewayHealth::kRepeatNoticeMs + 1);
+    check(hourly.announce, "a still-dead gateway is repeated once an hour");
+    check(!hourly.retired, "an hour of silence is not yet a retired node");
+
+    const MirrorGatewayHealth::Notice day = health.noteUnreachable(
+        host, start + MirrorGatewayHealth::kRetiredAfterMs + 1);
+    check(day.retired && day.downForMs >= MirrorGatewayHealth::kRetiredAfterMs,
+          "a day of silence suggests dropping the remote");
+    check(!health
+               .noteUnreachable(
+                   host, start + MirrorGatewayHealth::kRetiredAfterMs +
+                             MirrorGatewayHealth::kRepeatNoticeMs + 2)
+               .retired,
+          "the removal hint is given once per outage, not every hour");
+
+    health.noteReachable(host);
+    const MirrorGatewayHealth::Notice fresh = health.noteUnreachable(
+        host, start + MirrorGatewayHealth::kRetiredAfterMs + 3);
+    check(fresh.announce && !fresh.retired,
+          "a new outage starts its own streak");
+}
+
 // End to end against real git: reproduce the reported outage — the gateway
 // advanced a branch this checkout has not consumed — and prove the fan-out's
 // own push arguments still deliver main while the outcome reads as healthy.
@@ -286,6 +448,11 @@ int main(int argc, char *argv[])
     testUnreachableGatewayIsAFailure();
     testUpToDatePushIsSilent();
     testFramingLinesAreIgnored();
+    testRetiredGatewayRotatesOutOfTheFanOut();
+    testUnreachableCooldownGrowsAndCaps();
+    testGatewayReturnsToRotationAfterItsCooldown();
+    testAnsweredRefusalsAreNotRotatedOut();
+    testUnreachableIsAnnouncedOnceAnHourThenNamedRetired();
     testAgainstRealGit();
     if (failures == 0)
         std::fprintf(stderr, "ssh mirror push tests passed\n");

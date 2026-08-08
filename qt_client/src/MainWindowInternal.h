@@ -19,6 +19,7 @@
 #include "FileTreeSupport.h"
 #include "GuiPump.h"
 #include "ClaudeAgentScript.h"
+#include "CloudflareAgentScript.h"
 #include "ClaudeIdeBridge.h"
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
@@ -343,7 +344,13 @@ void applyDiffSearchHighlights(QTextBrowser *diff,
                                const QList<QTextCursor> &matches, int activeIndex,
                                QLabel *countLabel, bool termEmpty);
 QString diffStickyStyleSheet(int fontPt);
-QString diffStickyPathHtml(const QString &path);
+QString diffStickyPathHtml(const QString &fullPath);
+// A path shortened (leading ellipsis, basename kept) to what one line of the
+// sticky filename bar holds, so the bar never wraps or squeezes its buttons out.
+QString diffStickyPathText(const QString &path);
+// Keep a sticky filename label to a single line: no word wrap, and a size policy
+// that lets it clip rather than force the bar's controls off the right edge.
+void configureDiffStickyPathLabel(QLabel *label);
 QString agentCostText(double usd);
 QString agentStatusText(const QString &status);
 QColor agentStatusColor(const QString &status);
@@ -359,9 +366,17 @@ public:
                       QObject *parent)
         : QObject(parent), m_diff(diff), m_list(list), m_anchorRole(anchorRole)
     {
+        // QListWidget normally handles these keys itself, but keeping the
+        // behavior here makes file navigation consistent even when a themed
+        // delegate or a parent event filter consumes the view's default key
+        // handling. The list remains the keyboard home after a mouse click.
+        m_list->setFocusPolicy(Qt::StrongFocus);
+        m_list->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_list->installEventFilter(this);
         m_sticky = new QLabel(m_diff->viewport());
         m_sticky->setObjectName(QStringLiteral("diffStickyHeader"));
         m_sticky->setTextFormat(Qt::RichText);
+        configureDiffStickyPathLabel(m_sticky);
         m_sticky->hide();
         QObject::connect(m_diff->verticalScrollBar(), &QScrollBar::valueChanged,
                          this, [this] {
@@ -394,14 +409,41 @@ public:
     void rebuild(const QList<DiffFileEntry> &files, int fontPt)
     {
         m_files = files;
+        m_filesByAnchor.clear();
+        for (const DiffFileEntry &file : m_files)
+            m_filesByAnchor.insert(file.anchor, file);
         m_sticky->setStyleSheet(diffStickyStyleSheet(fontPt));
         rebuildSpans();
     }
 
 private:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == m_list && event->type() == QEvent::KeyPress) {
+            const auto *key = static_cast<QKeyEvent *>(event);
+            if ((key->key() == Qt::Key_Up || key->key() == Qt::Key_Down) &&
+                !(key->modifiers() &
+                  (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+                const int delta = key->key() == Qt::Key_Up ? -1 : 1;
+                int row = m_list->currentRow();
+                if (row < 0)
+                    row = delta > 0 ? -1 : m_list->count();
+                do {
+                    row += delta;
+                } while (row >= 0 && row < m_list->count() &&
+                         m_list->item(row)->isHidden());
+                if (row >= 0 && row < m_list->count()) {
+                    m_list->setCurrentRow(row);
+                    m_list->scrollToItem(m_list->item(row));
+                }
+                return true;
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
     struct Span {
         int pos;
-        int fileIndex;
         QString path;
         QString anchor;
     };
@@ -418,7 +460,7 @@ private:
              b = b.next()) {
             const int at = b.text().indexOf(m_files.at(idx).path);
             if (at >= 0) {
-                m_spans.append({b.position() + at, idx, m_files.at(idx).path,
+                m_spans.append({b.position() + at, m_files.at(idx).path,
                                 m_files.at(idx).anchor});
                 ++idx;
             }
@@ -447,9 +489,10 @@ private:
         if (syncSelection)
             selectByAnchor(cur->anchor);
         // Same row the file's own header carries, so pinning it is invisible.
-        m_sticky->setText(cur->fileIndex >= 0 && cur->fileIndex < m_files.size()
-                              ? diffFileLabelHtml(m_files.at(cur->fileIndex), false)
-                              : diffStickyPathHtml(cur->path));
+        const auto file = m_filesByAnchor.constFind(cur->anchor);
+        m_sticky->setText(file == m_filesByAnchor.constEnd()
+                              ? diffStickyPathHtml(cur->path)
+                              : diffFileLabelHtml(file.value(), false));
         m_sticky->setGeometry(0, 0, m_diff->viewport()->width(),
                               m_sticky->sizeHint().height());
         m_sticky->show();
@@ -475,6 +518,7 @@ private:
     int m_anchorRole = Qt::UserRole;
     bool m_ignoreScroll = false;
     QList<DiffFileEntry> m_files;
+    QHash<QString, DiffFileEntry> m_filesByAnchor;
     QList<Span> m_spans;
 };
 // Models offered for inline commit-message / X-post generation, with per-million
@@ -517,6 +561,16 @@ constexpr int kToastStackGap = 6;
 // inside that gap and no frame of the motion can cover the composer.
 constexpr int kToastEntryRise = 14;
 constexpr int kToastEntryMs = 180;
+// The agent glyph on an "agent finished" card's headline row (adhoc #1630).
+// Larger than the 16px list icon: this card is the celebration, and the icon is
+// what identifies whose run just landed.
+constexpr int kToastAgentIconPx = 20;
+// The sender's face on a chat card, in its own lane to the left of the message
+// — the same avatar the transcript draws, so a card that arrives while another
+// section is open says who is talking before its text is read.
+constexpr int kToastAvatarPx = 28;
+// Between that lane and the message beside it.
+constexpr int kToastAvatarGap = 8;
 // How long the whole column takes to glide to its new anchor when a card
 // arrives or leaves. Short enough to feel immediate, long enough to read as
 // the stack sliding up rather than jumping.
@@ -1847,6 +1901,71 @@ private:
     bool m_unreachable = false; // relay failed to answer the last probe
 };
 
+// The three chrome-line grids — agent sessions, mesh nodes, action runs — each
+// carry a caption naming the group in the smallest legible face, so the dots say
+// what they are without waiting on a tooltip. Shared here so all three grids
+// keep the same height and their captions sit on one baseline.
+namespace ChromeDotGrid {
+
+// Every grid is three deep in 7px cells, column-major, so the groups line up
+// row for row across their dividers.
+constexpr int kRows = 3;
+constexpr int kPitch = 7;
+constexpr int kGridHeight = kRows * kPitch;
+
+// Font is fixed at startup, so a once-computed static is safe. Painted rather
+// than set on a widget: the theme's global QWidget font-size rule would
+// override setFont(), and a QPainter face is immune to it.
+inline QFont captionFont()
+{
+    static const QFont font = [] {
+        QFont f = QGuiApplication::font();
+        f.setWeight(QFont::Normal);
+        f.setPixelSize(8); // as small as the caption can go and still read
+        return f;
+    }();
+    return font;
+}
+
+// The caption line under a grid: a hair of air above it, and enough below that
+// the descender in "Agents" is not shaved off by the widget's own edge.
+inline int captionHeight()
+{
+    static const int height = QFontMetrics(captionFont()).height() + 3;
+    return height;
+}
+
+inline int captionWidth(const QString &text)
+{
+    return QFontMetrics(captionFont()).horizontalAdvance(text);
+}
+
+// Grid plus its caption: what a chrome grid (and the divider beside it) is tall.
+inline int totalHeight() { return kGridHeight + captionHeight(); }
+
+// Paint the caption along the bottom of `widget`, left-aligned with the grid
+// above it and dimmed so it never competes with the dots it names.
+inline void paintCaption(QPainter &p, const QWidget *widget,
+                         const QString &text)
+{
+    QColor ink = widget->palette().color(QPalette::WindowText);
+    ink.setAlpha(170);
+    p.save();
+    p.setPen(ink);
+    p.setFont(captionFont());
+    p.drawText(QRect(0, kGridHeight, widget->width(), captionHeight()),
+               Qt::AlignLeft | Qt::AlignVCenter, text);
+    p.restore();
+}
+
+// What a grid this wide has to be: the dots, or the caption if it is wider.
+inline int widthFor(int columns, const QString &caption)
+{
+    return columns <= 0 ? 0 : qMax(columns * kPitch, captionWidth(caption));
+}
+
+} // namespace ChromeDotGrid
+
 // A matrix of tiny squares on the window-chrome line, one per agent session,
 // sitting immediately right of the "Agents (N)" button. Each square is painted
 // in the same colour as that session's status icon in the agents list, so the
@@ -1872,10 +1991,12 @@ public:
         double throughput = 0.0;
     };
 
+    static constexpr const char *kCaption = "Agents";
+
     explicit AgentDotMatrix(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedHeight(kRows * kPitch);
+        setFixedHeight(ChromeDotGrid::totalHeight());
         setFixedWidth(0); // nothing to show until the first setDots()
         setCursor(Qt::PointingHandCursor);
         hide();
@@ -1896,7 +2017,8 @@ public:
     {
         m_dots = dots;
         const int columns = (m_dots.size() + kRows - 1) / kRows;
-        setFixedWidth(columns * kPitch);
+        setFixedWidth(
+            ChromeDotGrid::widthFor(columns, QLatin1String(kCaption)));
         bool anyRunning = false;
         for (const Dot &d : std::as_const(m_dots))
             anyRunning = anyRunning || d.running;
@@ -1967,6 +2089,7 @@ protected:
                        side),
                 1.2, 1.2);
         }
+        ChromeDotGrid::paintCaption(p, this, QLatin1String(kCaption));
     }
 
 private:
@@ -1990,8 +2113,8 @@ private:
         return index < m_dots.size() ? index : -1;
     }
 
-    static constexpr int kRows = 3;        // squares stacked per column
-    static constexpr int kPitch = 7;       // cell size, including its gap
+    static constexpr int kRows = ChromeDotGrid::kRows;   // squares per column
+    static constexpr int kPitch = ChromeDotGrid::kPitch; // cell, including gap
     static constexpr double kSide = 4.5;   // painted square
     static constexpr double kSweepStep = 0.06; // per-square offset of the sweep
 
@@ -2018,10 +2141,12 @@ public:
         bool self = false; // this machine, ringed so it's findable
     };
 
+    static constexpr const char *kCaption = "Nodes";
+
     explicit NodeDotMatrix(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedHeight(kRows * kPitch);
+        setFixedHeight(ChromeDotGrid::totalHeight());
         setFixedWidth(0); // nothing to show until the first setDots()
         setCursor(Qt::PointingHandCursor);
         hide();
@@ -2035,7 +2160,8 @@ public:
     {
         m_dots = dots.mid(0, kRows * kMaxColumns);
         const int columns = (m_dots.size() + kRows - 1) / kRows;
-        setFixedWidth(columns * kPitch);
+        setFixedWidth(
+            ChromeDotGrid::widthFor(columns, QLatin1String(kCaption)));
         update();
     }
 
@@ -2081,6 +2207,7 @@ protected:
                 p.drawEllipse(center, kRadius + 1.0, kRadius + 1.0);
             }
         }
+        ChromeDotGrid::paintCaption(p, this, QLatin1String(kCaption));
     }
 
 private:
@@ -2104,8 +2231,8 @@ private:
         return index < m_dots.size() ? index : -1;
     }
 
-    static constexpr int kRows = 3;        // dots stacked per column
-    static constexpr int kPitch = 7;       // cell size, including its gap
+    static constexpr int kRows = ChromeDotGrid::kRows;   // dots per column
+    static constexpr int kPitch = ChromeDotGrid::kPitch; // cell, including gap
     static constexpr double kRadius = 2.3; // painted dot
     static constexpr int kMaxColumns = 12; // ~36 nodes before the tooltip takes over
 
@@ -2131,15 +2258,16 @@ public:
         bool running = false;
     };
 
-    static constexpr int kRows = 3;       // squares stacked per column
+    static constexpr int kRows = ChromeDotGrid::kRows; // squares per column
     static constexpr int kMaxColumns = 6; // before the tooltip takes over
     // How many runs the strip shows before the tooltip takes over.
     static constexpr int kMaxCells = kRows * kMaxColumns;
+    static constexpr const char *kCaption = "Actions";
 
     explicit ActionRunStrip(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedHeight(kRows * kPitch);
+        setFixedHeight(ChromeDotGrid::totalHeight());
         setFixedWidth(0); // nothing to show until the first setCells()
         setCursor(Qt::PointingHandCursor);
         hide();
@@ -2159,7 +2287,8 @@ public:
     {
         m_cells = cells.mid(0, kMaxCells);
         const int columns = (m_cells.size() + kRows - 1) / kRows;
-        setFixedWidth(columns * kPitch);
+        setFixedWidth(
+            ChromeDotGrid::widthFor(columns, QLatin1String(kCaption)));
         bool anyRunning = false;
         for (const Cell &c : std::as_const(m_cells))
             anyRunning = anyRunning || c.running;
@@ -2212,6 +2341,7 @@ protected:
                                      center.y() - kSide / 2.0, kSide, kSide),
                               1.2, 1.2);
         }
+        ChromeDotGrid::paintCaption(p, this, QLatin1String(kCaption));
     }
 
 private:
@@ -2235,7 +2365,7 @@ private:
         return index < m_cells.size() ? index : -1;
     }
 
-    static constexpr int kPitch = 7;     // cell size, including its gap
+    static constexpr int kPitch = ChromeDotGrid::kPitch; // cell, including gap
     static constexpr double kSide = 4.5; // painted square
     static constexpr double kPulseStep = 0.09; // per-square offset of the pulse
 
@@ -3205,6 +3335,10 @@ const QString kInAppNotificationDurationSetting =
 // Every ERROR-badged log line flashes the window border and shows itself as a
 // card. On by default: a failure nobody sees is the thing this exists to stop.
 const QString kErrorLogAlertSetting = QStringLiteral("notifications/errorLogFlash");
+// The "System alert" ping (kind operational_alert: a mesh system going down or
+// recovering, per webPingKindLabel). On by default like kErrorLogAlertSetting —
+// this only gates the toast/border flash, the Pings page logs it regardless.
+const QString kSystemAlertSetting = QStringLiteral("notifications/systemAlert");
 const QString kEmailNotifyMentionSetting = QStringLiteral("notifications/email/mention");
 const QString kEmailNotifySubscribedSetting = QStringLiteral("notifications/email/subscribed");
 const QString kEmailNotifyPullSubmittedSetting = QStringLiteral("notifications/email/pullSubmitted");
@@ -3258,6 +3392,19 @@ const QString kSolanaLastBalanceSettingPrefix =
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 // Opt-in: show a small rebuild+restart button in the top nav (off by default).
 const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton");
+// Reveal the footer's debug bar at launch instead of waiting for a click on the
+// version button (adhoc #1632). Unset means "follow this account": admins get
+// the bar, everybody else does not, and either can say otherwise in Settings.
+const QString kShowDebugBarOnStartupSetting =
+    QStringLiteral("ui/showDebugBarOnStartup");
+// On by default: the debug bar's Monitor checkbox holds a background Wrangler
+// tail open so a deployed-Worker failure raises its red card without anybody
+// switching it on first (adhoc #1632). Stored, so switching it off sticks.
+const QString kCloudLogMonitorSetting =
+    QStringLiteral("diagnostics/cloudLogMonitor");
+// Launch is busy enough without npx: the monitor's tail starts this long after
+// the window is built rather than during construction.
+constexpr int kCloudLogMonitorStartupDelayMs = 5000;
 // Opt-in: log every HTTP request that flows through the shared network manager
 // to the network log (method + status + URL). Off by default; a diagnostic aid
 // for spotting chatty background traffic (adhoc #74).
@@ -3835,6 +3982,11 @@ const QString kAccountAlertDeleteProof =
 // in entry.py.
 const QString kAccountAlertClearProof =
     QStringLiteral("forkmesh-account-alert-clear-v1");
+// The ping inbox is read once per run and thereafter only when the relay
+// pushes a "pings" event frame. A write path can raise several pings in one
+// go (a mention plus a thread subscription), so coalesce the resulting burst
+// of pushes into one read rather than one read per frame.
+constexpr qint64 kWebAlertPushFloorMs = 5000;
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
@@ -3869,6 +4021,23 @@ constexpr int kDebugLogTailLines = 5;
 
 const QString kCodexProvider = QStringLiteral("codex");
 
+// Toast `kind` carried by the celebration a finished agent raises (adhoc
+// #1630). It rides the ordinary notification path — so the card queues, logs
+// and badges like any other — and renderTopMessage() keys the headline row,
+// the agent's icon and the brighter styling off exactly this value. The click
+// target is "fm:agent:<id>", which is also where the renderer reads the
+// session back from once a queued card reaches the front.
+const QString kAgentDoneToastKind = QStringLiteral("agent-done");
+// How much of the agent's closing summary that card shows. Enough for a real
+// conclusion (a few sentences), short of pasting an entire final message into
+// the corner of the window — the whole thing is a click away in the transcript.
+constexpr int kAgentDoneSummaryChars = 400;
+// Gates the native OS notification (tray/notify-send) notifyAgentDone() raises
+// when the window is inactive. On by default, matching the always-on behavior
+// this had before the toggle existed; the in-app celebration card above is
+// unaffected and always shows.
+const QString kAgentDoneAlertSetting = QStringLiteral("notifications/agentDone");
+
 // Provider family helpers. The Anthropic-backed "Claude API" script (plus the
 // legacy "claude"/"claude-code" values) shares usage windows, spend tracking and
 // iconography. Codex uses the logged-in Codex CLI account; OpenAI API uses the
@@ -3900,11 +4069,12 @@ inline bool agentUsesOpenAiKey(const QString &provider)
     return provider == QLatin1String("openai");
 }
 
-// Cloudflare Workers AI: picking one of these models in the composer sends the
-// typed prompt to the relay's Workers AI binding (POST /api/ai/ask) and shows
-// the answer. Deliberately NOT an agent provider — it starts no CLI, touches no
-// working tree, and opens no PR — but it shares the one composer model picker,
-// so every "is this an agent?" branch must exclude it explicitly.
+// Cloudflare Workers AI: a real agent provider since adhoc #1634. Picking one
+// of these models runs the bundled Workers AI agent script (see
+// CloudflareAgentScript.h) through AgentRunner — its own worktree and branch,
+// a bash tool, commits, and a PR — with the model itself running on the
+// relay's Workers AI binding (POST /api/ai/agent). It used to be a
+// composer-only chat choice whose prompt went to POST /api/ai/ask.
 const QString kCloudflareAiProvider = QStringLiteral("cloudflare-ai");
 
 inline bool agentIsCloudflareAiProvider(const QString &provider)
@@ -3927,7 +4097,8 @@ inline bool agentProviderIsKnown(const QString &provider)
     return agentIsCodexProvider(provider) ||
            provider == QLatin1String("openai") ||
            provider == QLatin1String("claude-api") ||
-           provider == QLatin1String("claude-code");
+           provider == QLatin1String("claude-code") ||
+           agentIsCloudflareAiProvider(provider);
 }
 
 inline QString defaultAgentProvider()
@@ -3946,10 +4117,9 @@ inline QString quickAddAgentProvider()
         QSettings().value(kQuickAddAgentProviderSetting).toString().trimmed();
     // "Manual (create issue)" is a quick-add-only pseudo-provider (adhoc #29): it
     // files an issue instead of running an agent, so it's not in the known-agent
-    // set but must still be restorable across launches. Cloudflare AI is the
-    // same kind of composer-only choice — it answers the prompt instead of
-    // starting an agent — and must likewise survive a restart.
-    if (value == QLatin1String("manual") || agentIsCloudflareAiProvider(value))
+    // set but must still be restorable across launches. (Cloudflare AI used to
+    // need the same carve-out; it is a known agent provider since adhoc #1634.)
+    if (value == QLatin1String("manual"))
         return value;
     return agentProviderIsKnown(value) ? value : defaultAgentProvider();
 }
@@ -4410,19 +4580,31 @@ inline bool agentModelIsClaudeStyle(const QString &model)
     return false;
 }
 
+// Whether a model id belongs to Cloudflare Workers AI. Every Workers AI model
+// id reads as "@cf/<vendor>/<model>", so the prefix is the whole test. Keeps a
+// "@cf/..." pick bound to the cloudflare-ai provider: it would otherwise pass
+// the "not Claude-style" check below and be handed to the Codex/OpenAI CLIs.
+inline bool agentModelIsCloudflareStyle(const QString &model)
+{
+    return model.trimmed().startsWith(QLatin1String("@cf/"));
+}
+
 // Whether `model` is compatible with `provider`. An empty model always matches
 // (the provider falls back to its own default). Claude providers need a
-// Claude-style model; the Codex/OpenAI CLIs need a non-Claude one. This lets a
-// session be continued by a different provider without the leftover model from
-// the previous provider breaking the run (adhoc #76).
+// Claude-style model, Cloudflare AI a "@cf/..." one; the Codex/OpenAI CLIs
+// need a model from neither family. This lets a session be continued by a
+// different provider without the leftover model from the previous provider
+// breaking the run (adhoc #76).
 inline bool agentModelMatchesProvider(const QString &provider, const QString &model)
 {
     if (model.trimmed().isEmpty())
         return true;
+    if (agentIsCloudflareAiProvider(provider))
+        return agentModelIsCloudflareStyle(model);
     if (provider == QLatin1String("claude-code") ||
         provider.startsWith(QLatin1String("claude")))
         return agentModelIsClaudeStyle(model);
-    return !agentModelIsClaudeStyle(model);
+    return !agentModelIsClaudeStyle(model) && !agentModelIsCloudflareStyle(model);
 }
 
 // Which of the World's seven bot portraits a model is named after, or -1 when
@@ -4947,6 +5129,11 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
     if (!combo)
         return;
     combo->clear();
+    // populateCloudflareAiModelCombo marks the combo non-Claude so the live
+    // /v1/models merge leaves it alone; switching back to a Claude provider
+    // must undo that or the merge skips this combo for the rest of the run.
+    combo->setProperty("claudeModelCombo",
+                       agentIsClaudeProvider(provider));
     if (provider == QLatin1String("claude-code")) {
         combo->addItem(QStringLiteral("Sonnet 5"), QStringLiteral("claude-sonnet-5"));
         combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("claude-opus-4-8"));
@@ -4954,6 +5141,8 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
         combo->addItem(QStringLiteral("Fable 5"), QStringLiteral("claude-fable-5"));
     } else if (agentIsCodexProvider(provider)) {
         populateCodexModelCombo(combo);
+    } else if (agentIsCloudflareAiProvider(provider)) {
+        populateCloudflareAiModelCombo(combo);
     } else if (agentUsesOpenAiKey(provider)) {
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
         combo->addItem(QStringLiteral("GPT-5.5 Codex"),
@@ -5081,6 +5270,43 @@ inline QString claudeAgentScriptPath(const QString &directory = QString())
 inline QString defaultClaudeCommand()
 {
     QString quoted = claudeAgentScriptPath();
+    quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    return QStringLiteral("python3 '%1' {promptFile}").arg(quoted);
+}
+
+// Materialize the bundled Cloudflare Workers AI agent script (adhoc #1634)
+// into the app data dir and return its path. The script drives the tool-use
+// loop against the relay's POST /api/ai/agent using the signed run ticket
+// AgentRunner injects as FORKMESH_AI_AGENT_AUTH, so no CLI or API key is
+// required.
+inline QString cloudflareAgentScriptPath(const QString &directory = QString())
+{
+    const QString dir = directory.isEmpty()
+                            ? QStandardPaths::writableLocation(
+                                  QStandardPaths::AppDataLocation) +
+                                  QStringLiteral("/agents")
+                            : directory;
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/forkmesh_cloudflare_agent.py");
+    const QByteArray wanted = forkmeshCloudflareAgentScript().toUtf8();
+    QFile file(path);
+    bool needsWrite = true;
+    if (file.open(QIODevice::ReadOnly)) {
+        needsWrite = file.readAll() != wanted;
+        file.close();
+    }
+    if (needsWrite && file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(wanted);
+        file.close();
+    }
+    return path;
+}
+
+// Default Cloudflare AI command: run the bundled script with python3, feeding
+// it the prompt file, exactly like defaultClaudeCommand().
+inline QString defaultCloudflareAiCommand()
+{
+    QString quoted = cloudflareAgentScriptPath();
     quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
     return QStringLiteral("python3 '%1' {promptFile}").arg(quoted);
 }
@@ -7112,14 +7338,15 @@ inline QByteArray forkMeshNodeAvatarPng(const QString &seed)
     return png;
 }
 
-// Clip avatar PNG bytes into a rounded-rect pixmap for the nav button. The
-// corner radius is a fraction of the side, so 0.5 gives a full circle (what the
-// website shows for an account's picture).
-inline QPixmap roundedAvatar(const QByteArray &png, int side,
+// Clip an avatar into a rounded-rect pixmap for the nav button. The corner
+// radius is a fraction of the side, so 0.5 gives a full circle (what the
+// website shows for an account's picture). This overload takes an already
+// decoded pixmap — a chat peer's avatar arrives over the wire and is kept as a
+// QPixmap (m_avatars), never as bytes.
+inline QPixmap roundedAvatar(const QPixmap &src, int side,
                              qreal radiusRatio = 0.28)
 {
-    QPixmap src;
-    if (png.isEmpty() || !src.loadFromData(png))
+    if (src.isNull())
         return QPixmap();
     const qreal dpr = iconDevicePixelRatio();
     QPixmap out = crispIconPixmap(side, dpr);
@@ -7136,6 +7363,15 @@ inline QPixmap roundedAvatar(const QByteArray &png, int side,
     scaled.setDevicePixelRatio(dpr);
     p.drawPixmap(0, 0, scaled);
     return out;
+}
+
+inline QPixmap roundedAvatar(const QByteArray &png, int side,
+                             qreal radiusRatio = 0.28)
+{
+    QPixmap src;
+    if (png.isEmpty() || !src.loadFromData(png))
+        return QPixmap();
+    return roundedAvatar(src, side, radiusRatio);
 }
 
 inline QPixmap nodeMachineFavicon(const QString &seed, int side = 36)
@@ -7955,7 +8191,8 @@ protected:
                     tip += QStringLiteral("\nChecking now…");
                 if (onWebsiteClicked)
                     tip += QStringLiteral(
-                        "\nClick to open the related website page.");
+                        "\nClick to check again now and open the related "
+                        "website page.");
                 QToolTip::showText(help->globalPos(), tip, this);
                 return true;
             }
@@ -8057,6 +8294,9 @@ private:
             {"SAVE", "#3fb950", "check-circle"},
             {"CLIP", "#8b949e", "copy"},
             {"NETWORK", "#f2cc60", "broadcast"},
+            // The deployed Cloudflare Worker's live tail, which lands in this
+            // log like any other subsystem's traffic (adhoc #1613).
+            {"CLOUD", "#f6821f", "cloud"},
             {"STALL", "#d29922", "alert"},
             {"ERROR", "#f85149", "x"},
             {"INFO", "#6e7681", "info"},
@@ -8068,7 +8308,7 @@ private:
 
     // One entry per row of categories() above; the per-lane arrays below and the
     // compact grid are both sized from it.
-    static constexpr int kCategoryCount = 32;
+    static constexpr int kCategoryCount = 33;
     static constexpr int categoryCount() { return kCategoryCount; }
     static constexpr int kCompactRows = 3;
     // Enough columns to hold the whole taxonomy in those rows, so adding a
@@ -9990,6 +10230,20 @@ public:
         update();
     }
 
+    // Paint this tile in a category colour instead of the rail's neutral grey.
+    // The log's quick-filter row is the log's own legend (adhoc #1633): each
+    // tile has to carry the accent its badge uses in the log body, or the row
+    // reads as an undifferentiated grey wall. An invalid colour — the default —
+    // keeps the plain rail behaviour every other tile in the app has.
+    void setAccentColor(const QColor &accent)
+    {
+        if (m_accent == accent)
+            return;
+        m_accent = accent;
+        update();
+    }
+    QColor accentColor() const { return m_accent; }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -10008,6 +10262,14 @@ protected:
                       : QColor(isChecked() || hovered ? "#1f2328" : "#656d76");
         if (!isEnabled())
             fg = QColor("#6e7681");
+        // An accented tile keeps its category colour at rest (that is what makes
+        // the row a legend); the caption stays in the rail's grey until the tile
+        // is checked or hovered, so the colour reads as "which category" rather
+        // than "which one is selected".
+        const bool accented = m_accent.isValid() && isEnabled();
+        const QColor glyphColor = accented ? m_accent : fg;
+        const QColor captionColor =
+            accented && (isChecked() || hovered) ? m_accent : fg;
 
         if (m_form == Action) {
             // No resting fill or border: the repo header's actions read as
@@ -10021,7 +10283,8 @@ protected:
             }
         } else if (m_form == Tab && isChecked()) {
             p.fillRect(QRect(0, height() - 2, width(), 2),
-                       QColor(dark ? "#2ea043" : "#1f883d"));
+                       accented ? m_accent
+                                : QColor(dark ? "#2ea043" : "#1f883d"));
         }
 
         const QRect iconRect((width() - kIconPx) / 2, 6, kIconPx, kIconPx);
@@ -10030,13 +10293,13 @@ protected:
                          isEnabled() ? QIcon::Normal : QIcon::Disabled);
         else
             p.drawPixmap(iconRect.topLeft(),
-                         tintedOcticonPixmap(m_iconName, fg, kIconPx));
+                         tintedOcticonPixmap(m_iconName, glyphColor, kIconPx));
 
         QFont f = font();
         f.setPixelSize(10);
         f.setWeight(QFont::DemiBold);
         p.setFont(f);
-        p.setPen(fg);
+        p.setPen(captionColor);
         p.drawText(QRect(2, iconRect.bottom() + 2, width() - 4, 14),
                    Qt::AlignHCenter | Qt::AlignTop,
                    QFontMetrics(f).elidedText(text(), Qt::ElideRight,
@@ -10063,11 +10326,15 @@ protected:
             p.setPen(Qt::NoPen);
             p.setBrush(fill);
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
-            p.setPen(QColor("#ffffff"));
+            // The accents a filter tile can carry include pale ambers and
+            // yellows, on which the badge's usual white digits vanish. Pick the
+            // legible ink for whatever fill this badge actually got.
+            p.setPen(fill.lightness() > 155 ? QColor("#0d1117")
+                                            : QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, badgeText);
             rightEdge = badge.left() - 2;
         };
-        paintBadge(m_badge, QColor("#1f6feb"));
+        paintBadge(m_badge, accented ? m_accent : QColor("#1f6feb"));
         paintBadge(m_alertBadge, QColor(dark ? "#da3633" : "#cf222e"));
     }
 
@@ -10099,6 +10366,7 @@ private:
     qint64 m_badge = 0;
     qint64 m_alertBadge = 0;
     QString m_iconName; // empty: paint the QIcon set by setOcticon instead
+    QColor m_accent;    // invalid: the rail's neutral grey/hover colours
 };
 
 // The repository Ratchet toggle at the right end of the mode row (adhoc #421).
@@ -11678,6 +11946,259 @@ inline QString branchDiffErrorHtml(const QString &branch, const QString &err,
     return html;
 }
 
+// Inline a ready-made pixmap into rich text as a base64 data URI — the same
+// trick octiconMarkup uses, for artwork that is painted rather than named (an
+// agent's portrait, a contributor's identicon). The pixmap is rasterised at
+// size*dpr and drawn at the logical size, so it stays crisp on HiDPI.
+inline QString inlinePixmapMarkup(const QPixmap &pixmap, int size)
+{
+    if (pixmap.isNull())
+        return QString();
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    pixmap.save(&buffer, "PNG");
+    return QStringLiteral("<img src='data:image/png;base64,%1' width='%2' "
+                          "height='%2'>")
+        .arg(QString::fromLatin1(png.toBase64()))
+        .arg(size);
+}
+
+// The branch a merge commit's subject names. ForkMesh writes "Merge X into
+// main" itself, git's own default is "Merge branch 'x'" (optionally "… of
+// <remote>"), and a forge-style merge says "Merge pull request #7 from
+// owner/x". Anything else is left unnamed rather than guessed at — the row
+// then stands on its commit alone.
+inline QString mergedBranchFromMergeSubject(const QString &subject)
+{
+    const QString s = subject.trimmed();
+    if (!s.startsWith(QLatin1String("Merge ")))
+        return QString();
+    if (s.startsWith(QLatin1String("Merge pull request #"))) {
+        const int from = s.indexOf(QLatin1String(" from "));
+        if (from < 0)
+            return QString();
+        const QString head = s.mid(from + 6).trimmed().section(QLatin1Char(' '), 0, 0);
+        // "owner/branch" — the branch is everything after the first slash, so a
+        // ref with slashes of its own (agent/adhoc-1615-…) survives intact.
+        const int slash = head.indexOf(QLatin1Char('/'));
+        return slash < 0 ? head : head.mid(slash + 1);
+    }
+    if (s.startsWith(QLatin1String("Merge branch '"))) {
+        const int end = s.indexOf(QLatin1Char('\''), 14);
+        return end < 0 ? QString() : s.mid(14, end - 14);
+    }
+    // "Merge <branch> into <base>": the branch is everything between, which may
+    // itself contain spaces only if the ref does (it can't), so a plain split
+    // on the last " into " is exact.
+    const int into = s.lastIndexOf(QLatin1String(" into "));
+    if (into <= 6)
+        return QString();
+    return s.mid(6, into - 6).trimmed();
+}
+
+// One landing on the merge celebration screen (below): a branch that reached
+// the base branch, what it carried, and who is credited with it.
+struct MergeCelebrationRow {
+    QString branch;      // empty when the merge subject named no branch
+    QString mergeCommit; // full sha — what the row links to once the branch is gone
+    bool branchStillExists = false;
+    qint64 whenSecs = 0;
+    int files = 0;
+    int insertions = 0;
+    int deletions = 0;
+    QString actor;   // "Opus 5" for an agent, the account/commit name for a person
+    QString detail;  // "Agent #12 · Claude Code · issue #14"
+    QPixmap avatar;  // model portrait or identicon, already sized
+    bool byAgent = false;
+    bool current = false; // the landing being celebrated
+};
+
+// Where one celebration row points: the branch when it is still around (a merge
+// that kept it), otherwise the merge commit it left behind. Both schemes are
+// handled by onBranchDiffAnchorClicked.
+inline QString mergeCelebrationRowHref(const MergeCelebrationRow &row)
+{
+    if (row.branchStillExists && !row.branch.isEmpty())
+        return QLatin1String("fmbranch:") +
+               QString::fromLatin1(QUrl::toPercentEncoding(row.branch));
+    return row.mergeCommit.isEmpty() ? QString()
+                                     : QLatin1String("fmcommit:") + row.mergeCommit;
+}
+
+// The pane a branch's range diff hands over to once that branch has been merged
+// and deleted. It used to be one grey line ("Merged X into main and deleted it.
+// Pick a branch to see its changes.") — a thin reward for the moment work
+// actually lands, and it credited nobody. This is the same information as a
+// congratulation: who landed it, what it carried, every other branch that
+// landed today and who was behind each, and the ways on from here (pick a
+// branch in the list, go back to the base branch, or open the merge commit).
+//
+// `landed` is the branch just merged; `today` is every landing on the base
+// branch since midnight, newest first, with `landed`'s row marked current.
+// `commits` is how many commits the celebrated merge brought (-1 unknown), and
+// `truncated` how many of today's rows were dropped past the display cap — a
+// list that silently stopped short would read as the whole day.
+inline QString mergeCelebrationHtml(const MergeCelebrationRow &landed,
+                                    const QString &base,
+                                    const QList<MergeCelebrationRow> &today,
+                                    int commits, int truncated)
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    const QString fg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    const QString muted = QStringLiteral("#8b949e");
+    const QString heroBg = dark ? QStringLiteral("#0c2318") : QStringLiteral("#eaf6ee");
+    const QString heroBorder =
+        dark ? QStringLiteral("#238636") : QStringLiteral("#8fd0a4");
+    const QString rowBg = dark ? QStringLiteral("#161b22") : QStringLiteral("#f6f8fa");
+    const QString currentBg =
+        dark ? QStringLiteral("#12261c") : QStringLiteral("#e6ffec");
+    const QString link = dark ? QStringLiteral("#58a6ff") : QStringLiteral("#0969da");
+    const QString green = QStringLiteral("#3fb950");
+    const QString escapedBase = base.toHtmlEscaped();
+
+    // Change totals read the same way everywhere in this app: files first, then
+    // the green/red pair.
+    const auto churn = [&](const MergeCelebrationRow &row) {
+        QStringList parts;
+        if (row.files > 0)
+            parts << (row.files == 1 ? QStringLiteral("1 file")
+                                     : QStringLiteral("%1 files").arg(row.files));
+        if (row.insertions > 0)
+            parts << QStringLiteral("<span style='color:#3fb950'>+%1</span>")
+                         .arg(row.insertions);
+        if (row.deletions > 0)
+            parts << QString::fromUtf8("<span style='color:#f85149'>\xE2\x88\x92%1"
+                                       "</span>")
+                         .arg(row.deletions);
+        return parts.join(QStringLiteral(" "));
+    };
+
+    QString html = QStringLiteral("<div style='padding:6px 10px 10px 10px;'>");
+
+    // ---- Hero: who landed what, just now.
+    QStringList credit;
+    if (!landed.actor.isEmpty())
+        credit << QStringLiteral("by <b style='color:%1'>%2</b>")
+                      .arg(fg, landed.actor.toHtmlEscaped());
+    if (!landed.detail.isEmpty())
+        credit << landed.detail.toHtmlEscaped();
+    if (landed.whenSecs > 0)
+        credit << formatIssueRelativeTime(landed.whenSecs * 1000);
+    if (commits > 0)
+        credit << (commits == 1 ? QStringLiteral("1 commit")
+                                : QStringLiteral("%1 commits").arg(commits));
+    const QString landedChurn = churn(landed);
+    if (!landedChurn.isEmpty())
+        credit << landedChurn;
+
+    html += QStringLiteral(
+                "<table width='100%' cellspacing='0' cellpadding='0' "
+                "style='background:%1;border:1px solid %2;'><tr>")
+                .arg(heroBg, heroBorder);
+    if (!landed.avatar.isNull())
+        html += QStringLiteral("<td width='84' align='center' valign='middle' "
+                               "style='padding:16px 0 16px 16px;'>%1</td>")
+                    .arg(inlinePixmapMarkup(landed.avatar, 56));
+    // The check and the separators are written as HTML entities: a QStringLiteral
+    // carries no UTF-8 escape through to the rendered document.
+    html +=
+        QStringLiteral(
+            "<td valign='middle' style='padding:16px;'>"
+            "<div style='font-size:20px;font-weight:700;color:%1;'>"
+            "&#10003; Merged!</div>"
+            "<div style='font-size:15px;color:%2;'>"
+            "<b style='font-family:monospace;'>%3</b> is part of "
+            "<b style='font-family:monospace;'>%4</b> now.</div>"
+            "<div style='font-size:12px;color:%5;'>%6</div></td></tr></table>")
+            .arg(green, fg, landed.branch.toHtmlEscaped(), escapedBase, muted,
+                 credit.join(QString::fromUtf8(" \xC2\xB7 ")));
+
+    // ---- Everything that landed today, and who was behind each one.
+    if (!today.isEmpty()) {
+        html += QStringLiteral(
+                    "<p style='color:%1;font-size:12px;font-weight:700;"
+                    "margin-top:16px;margin-bottom:4px;'>"
+                    "MERGED INTO %2 TODAY &#183; %3</p>")
+                    .arg(muted, escapedBase.toUpper())
+                    .arg(today.size() + truncated);
+        html += QStringLiteral(
+            "<table width='100%' cellspacing='3' cellpadding='0'>");
+        for (const MergeCelebrationRow &row : today) {
+            const QString background = row.current ? currentBg : rowBg;
+            html += QStringLiteral("<tr><td width='38' align='center' "
+                                   "valign='middle' style='background:%1;"
+                                   "padding:7px 0 7px 8px;'>%2</td>")
+                        .arg(background,
+                             row.avatar.isNull()
+                                 ? QString()
+                                 : inlinePixmapMarkup(row.avatar, 22));
+            const QString name = row.branch.isEmpty()
+                                     ? row.mergeCommit.left(8)
+                                     : row.branch;
+            const QString href = mergeCelebrationRowHref(row);
+            const QString title =
+                href.isEmpty()
+                    ? QStringLiteral("<b style='color:%1'>%2</b>")
+                          .arg(fg, name.toHtmlEscaped())
+                    : QStringLiteral("<a href='%1' style='color:%2;"
+                                     "text-decoration:none;font-weight:700;'>%3</a>")
+                          .arg(href, link, name.toHtmlEscaped());
+            QStringList meta;
+            if (!row.actor.isEmpty())
+                meta << row.actor.toHtmlEscaped();
+            if (!row.detail.isEmpty())
+                meta << row.detail.toHtmlEscaped();
+            if (row.whenSecs > 0)
+                meta << QDateTime::fromSecsSinceEpoch(row.whenSecs)
+                            .toString(QStringLiteral("HH:mm"));
+            const QString rowChurn = churn(row);
+            if (!rowChurn.isEmpty())
+                meta << rowChurn;
+            html += QStringLiteral(
+                        "<td valign='middle' style='background:%1;padding:7px 10px;'>"
+                        "%2%3<div style='font-size:11px;color:%4;'>%5</div>"
+                        "</td></tr>")
+                        .arg(background, title,
+                             row.current
+                                 ? QStringLiteral(" <span style='color:%1;"
+                                                  "font-size:11px;'>just now</span>")
+                                       .arg(green)
+                                 : QString(),
+                             muted, meta.join(QString::fromUtf8(" \xC2\xB7 ")));
+        }
+        html += QStringLiteral("</table>");
+        if (truncated > 0)
+            html += QStringLiteral("<p style='color:%1;font-size:11px;'>"
+                                   "%2 earlier %3 today are not listed.</p>")
+                        .arg(muted)
+                        .arg(truncated)
+                        .arg(truncated == 1 ? QStringLiteral("merge")
+                                            : QStringLiteral("merges"));
+    }
+
+    // ---- The ways on from here.
+    QStringList ways;
+    if (!base.isEmpty())
+        ways << QStringLiteral("go back to <a href='fmbranch:%1' "
+                               "style='color:%2'>%3</a>")
+                    .arg(QString::fromLatin1(QUrl::toPercentEncoding(base)), link,
+                         escapedBase);
+    if (!landed.mergeCommit.isEmpty())
+        ways << QStringLiteral("<a href='fmcommit:%1' style='color:%2'>open the "
+                               "merge commit</a>")
+                    .arg(landed.mergeCommit, link);
+    html += QStringLiteral("<p style='color:%1;margin-top:14px;'>Pick a branch in "
+                           "the list to see its changes%2.</p>")
+                .arg(muted,
+                     ways.isEmpty()
+                         ? QString()
+                         : QStringLiteral(", ") +
+                               ways.join(QStringLiteral(", or ")));
+    html += QStringLiteral("</div>");
+    return html;
+}
+
 // Wait up to 8s for a git subprocess. On the GUI thread, poll in short slices
 // and service the GUI between them so the window stays responsive and spinners
 // animate; off-thread there is no window to keep painted (and pumping would
@@ -12010,8 +12531,8 @@ inline bool worktreeTrackedClean(const QString &workTree)
 }
 
 // Drop any other worktree currently holding `branch` checked out so this working
-// tree can switch to it. Agent sessions run in a temp worktree under
-// /tmp/forkmesh-worktrees/…; one left behind (an app restart skips its cleanup)
+// tree can switch to it. Agent sessions run in their own worktree under
+// <checkout>/.worktrees/…; one left behind (an app restart skips its cleanup)
 // keeps the branch reserved, so `git checkout <branch>` here fails with "is
 // already used by worktree at …". Removing the worktree frees the branch while
 // keeping its ref intact. Returns true if it released something so the caller

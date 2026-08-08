@@ -383,6 +383,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // network_log.txt directly), so no separate crash-file scan is needed.
     traceStep(QStringLiteral("restore persisted network log"),
               [this] { loadNetworkLog(); });
+    // Same reasoning for the Pings journal, and one more besides: the rows that
+    // never reached the cloud (raised offline, or reported and refused) exist
+    // nowhere else, so they have to come back before anything this run raises
+    // pushes them out of the hundred the page keeps (adhoc #1629).
+    traceStep(QStringLiteral("restore filed pings"),
+              [this] { loadNotificationJournal(); });
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logSystem(QStringLiteral("Session started - ForkMesh v" FORKMESH_VERSION "."));
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
@@ -1160,6 +1166,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // spawning the replacement process so the app never pops back up after the
     // user has already chosen to close it (adhoc #1530).
     m_closingDown = true;
+    // Take the cloud log monitor's Wrangler tail down deliberately (adhoc
+    // #1615), while there is still an event loop to wait on it, rather than
+    // leaving ~QProcess to kill it during teardown.
+    setCloudLogMonitorEnabled(false);
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
     // Where the composer was left — free position, dragged size, or the geometry
     // of its popped-out window (adhoc #1536).
@@ -1173,6 +1183,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
                                  QDateTime::currentMSecsSinceEpoch() -
                                  m_connectedAtMs);
     saveChatHistory();
+    // The debounced journal write may still be pending; a ping raised in the
+    // last second and a half is exactly the kind this page exists to keep.
+    saveNotificationJournal();
     // Record this session's stop time, then flush+trim the persisted log.
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logSystem(QStringLiteral("Session ended."));

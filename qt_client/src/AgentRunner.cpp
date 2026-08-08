@@ -1,6 +1,7 @@
 #include "AgentRunner.h"
 
 #include "AgentJail.h"
+#include "AgentWorktree.h"
 #include "VirtualMachineRuntime.h"
 #include "BackgroundActivity.h"
 
@@ -135,12 +136,15 @@ void releaseBranchWorktree(const QString &repoPath, const QString &branch)
 QString providerTitle(const QString &provider)
 {
     // "claude-code" runs the real CLI; other "claude*" sessions are the Claude
-    // API script; "codex" is the local Codex CLI path, and legacy "openai"
-    // sessions keep their old label.
+    // API script; "codex" is the local Codex CLI path; "cloudflare-ai" is the
+    // bundled Workers AI agent script, and legacy "openai" sessions keep their
+    // old label.
     if (provider == QLatin1String("claude-code"))
         return QStringLiteral("Claude Code");
     if (provider == QLatin1String("codex"))
         return QStringLiteral("Codex");
+    if (provider == QLatin1String("cloudflare-ai"))
+        return QStringLiteral("Cloudflare AI");
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
@@ -158,6 +162,10 @@ struct TokenPrice {
 TokenPrice priceFor(const QString &provider, const QString &model)
 {
     const QString m = model.toLower();
+    // Workers AI runs on the relay's Cloudflare account, so a run costs this
+    // desktop nothing — the relay meters it with its own per-account window.
+    if (provider == QLatin1String("cloudflare-ai"))
+        return {0.0, 0.0};
     if (provider.startsWith(QLatin1String("claude"))) {
         if (m.contains(QLatin1String("haiku")))
             return {1.0, 5.0};
@@ -313,14 +321,23 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
     }
     releaseBranchWorktree(m_repoPath, m_session.branchName);
 
+    // The worktree lives inside the project, at <checkout>/.worktrees/agent-<id>-<desc>
+    // (adhoc #1624; AgentWorktree.h explains the layout and the bare-mirror case).
+    // Under KVM it stays on the host directory mounted into the jail instead.
     const QString worktreeBase = forkmesh::vm::active()
                                      ? forkmesh::vm::worktreeRoot()
-                                     : QDir::tempPath();
-    QDir().mkpath(worktreeBase);
-    m_worktree = worktreeBase + QStringLiteral("/forkmesh-agent-") +
-                 QString::number(m_session.id) + QLatin1Char('-') +
-                 QString::number(QDateTime::currentMSecsSinceEpoch());
-    emitLog(QStringLiteral("==> Creating temporary worktree %1").arg(m_worktree));
+                                     : forkmesh::agentwt::root(m_repoPath);
+    forkmesh::agentwt::ensureRoot(worktreeBase);
+    m_worktree = QDir(worktreeBase)
+                     .filePath(forkmesh::agentwt::dirName(m_session.id,
+                                                          m_session.issueTitle));
+    // The path is now per session rather than per start (it used to carry a
+    // timestamp), so a folder left behind by a crashed run of this same session
+    // would make `git worktree add` fail outright. releaseBranchWorktree above
+    // already cleared any tree git still knows about — and saved its in-flight
+    // edits as a patch — so anything still sitting here is a husk.
+    QDir(m_worktree).removeRecursively();
+    emitLog(QStringLiteral("==> Creating worktree %1").arg(m_worktree));
     QStringList args{QStringLiteral("-C"), m_repoPath, QStringLiteral("worktree"),
                      QStringLiteral("add")};
     if (existingSessionBranch) {
@@ -354,22 +371,27 @@ void AgentRunner::stop()
     complete(false, AgentStatus::Stopped, QStringLiteral("Stopped."));
 }
 
-void AgentRunner::steer(const QString &prompt)
+bool AgentRunner::steer(const QString &prompt)
 {
     const QString trimmed = prompt.trimmed();
-    if (trimmed.isEmpty() || !m_busy)
-        return;
+    if (trimmed.isEmpty())
+        return true;
+    if (!m_busy)
+        return false;
     m_session.promptTokens += estimateTokens(trimmed);
     refreshUsage();
     m_store->saveSession(m_session);
     emitLog(QStringLiteral("\n==> User steering prompt\n%1").arg(trimmed));
-    if (m_process && m_process->state() == QProcess::Running) {
+    if (m_process && m_process->state() == QProcess::Running &&
+        m_process->isWritable()) {
         const QString text =
             QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(trimmed);
-        m_process->write(text.toUtf8());
-    } else {
-        emitLog(QStringLiteral("==> Agent process is not accepting input right now."));
+        if (m_process->write(text.toUtf8()) >= 0)
+            return true;
     }
+    emitLog(QStringLiteral("==> Agent process is not accepting input right now; "
+                           "the message is held for the next run."));
+    return false;
 }
 
 void AgentRunner::launch(Phase phase, const QString &program,
@@ -475,7 +497,12 @@ void AgentRunner::launch(Phase phase, const QString &program,
                     m_noOutputTimer->stop();
                 if (!m_process)
                     return;
-                emitLog(QStringLiteral("!! ") + m_process->errorString());
+                // stop() terminates (then kills) the child, so Qt reports
+                // QProcess::Crashed for a run the user ended on purpose. The
+                // "Stopped." line already says what happened; "!! Process
+                // crashed" beside it only reads as a bug (adhoc #1622).
+                if (!m_stopping)
+                    emitLog(QStringLiteral("!! ") + m_process->errorString());
                 if (error == QProcess::FailedToStart)
                     complete(false, AgentStatus::Failed, m_process->errorString());
             });
@@ -808,6 +835,8 @@ QString AgentRunner::providerDisplayName(const QString &provider)
         return QStringLiteral("CC");
     if (provider == QLatin1String("codex"))
         return QStringLiteral("Codex");
+    if (provider == QLatin1String("cloudflare-ai"))
+        return QStringLiteral("Cloudflare AI");
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
@@ -946,6 +975,29 @@ QString AgentRunner::detectAuthIssue(const QString &chunk)
         return QStringLiteral(
             "Claude reports the credit balance is too low. Top up the Anthropic "
             "account for this API key, then click Continue.");
+    }
+    if (m_session.provider == QLatin1String("cloudflare-ai")) {
+        // The bundled Workers AI agent script's own failure lines (see
+        // CloudflareAgentScript.h): a rejected run ticket or a missing one.
+        // A Cloudflare edge block answers 403 before the relay Worker runs, so
+        // check it first — it is not a sign-in problem (adhoc #1619).
+        if (has("cloudflare's edge blocked this request") ||
+            has("error code: 1010")) {
+            m_attentionRaised = true;
+            return QStringLiteral(
+                "Cloudflare's edge blocked this node's AI agent request before "
+                "it reached the relay, so the account sign-in is fine. Update "
+                "ForkMesh to a build that identifies agent turns as ForkMesh, "
+                "then restart the session.");
+        }
+        if (has("not authorized to sign for the account") ||
+            has("no signed relay ticket")) {
+            m_attentionRaised = true;
+            return QStringLiteral(
+                "The relay rejected this node's Cloudflare AI run ticket. Sign "
+                "in to this node's account, then restart the session.");
+        }
+        return QString();
     }
     if (!claude && (has("401 unauthorized") || has("invalid api key"))) {
         m_attentionRaised = true;
