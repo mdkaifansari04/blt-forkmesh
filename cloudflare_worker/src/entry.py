@@ -654,6 +654,7 @@ def _mirror_ms(*args, **kwargs): return _mirrors._mirror_ms(*args, **kwargs)
 def accepted_mirror_requests(*args, **kwargs): return _mirrors.accepted_mirror_requests(*args, **kwargs)
 def ack_mirror_requests(*args, **kwargs): return _mirrors.ack_mirror_requests(*args, **kwargs)
 def add_mirror_request(*args, **kwargs): return _mirrors.add_mirror_request(*args, **kwargs)
+def admission_override_pins(*args, **kwargs): return _mirrors.admission_override_pins(*args, **kwargs)
 def agent_provider_target_decision(*args, **kwargs): return _mirrors.agent_provider_target_decision(*args, **kwargs)
 def browse_mirror_candidates(*args, **kwargs): return _mirrors.browse_mirror_candidates(*args, **kwargs)
 def build_repo_mirrors_payload(*args, **kwargs): return _mirrors.build_repo_mirrors_payload(*args, **kwargs)
@@ -28205,6 +28206,8 @@ async def accounts_handler(env, request):
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
         return await _admin_verify_email(env, request)
+    if url.path == "/api/mirrors/admission-override" and method == "POST":
+        return await _admin_set_admission_override(env, request)
     admin_unverified_prefix = "/api/accounts/admin-unverified/"
     if (
             url.path.startswith(admin_unverified_prefix)
@@ -39248,6 +39251,88 @@ async def _hosted_repository_import_route(env, owner, repo):
     return None
 
 
+# --- Source-of-truth admission override -------------------------------------
+# A mirror whose served state falls out of the signed pin window can no longer
+# serve clones — and, because its own re-sync fetch is that same gated clone
+# route, it cannot catch up either, so the repository goes dark. The repo's
+# operator (the source-of-truth node, authenticated by its admin key) can flip a
+# short-lived override that admits the group's mirrors at the states they are
+# actually advertising until they converge. The flag lives in KV with a native
+# TTL, so admission always heals back to the strict pin policy on its own — and
+# it is consulted ONLY on the would-be-503 path (see _https_mirror_public_context),
+# never on the healthy hot clone path.
+ADMISSION_OVERRIDE_PREFIX = "admission-override:"
+ADMISSION_OVERRIDE_DEFAULT_TTL = 30 * 60
+ADMISSION_OVERRIDE_MAX_TTL = 6 * 60 * 60
+
+
+async def _admission_override_active(env, repo_bi):
+    repo_bi = str(repo_bi or "")
+    if not repo_bi:
+        return False
+    namespace = getattr(env, "REPOSITORY_METADATA", None)
+    if namespace is None:
+        return False
+    try:
+        raw = await namespace.get(ADMISSION_OVERRIDE_PREFIX + repo_bi)
+    except Exception:
+        return False
+    return raw is not None
+
+
+async def _admission_override_set(env, repo_bi, ttl_seconds):
+    repo_bi = str(repo_bi or "")
+    namespace = getattr(env, "REPOSITORY_METADATA", None)
+    if namespace is None or not repo_bi:
+        return 0
+    try:
+        ttl = int(ttl_seconds if ttl_seconds is not None
+                  else ADMISSION_OVERRIDE_DEFAULT_TTL)
+    except (TypeError, ValueError):
+        ttl = ADMISSION_OVERRIDE_DEFAULT_TTL
+    ttl = max(60, min(ttl, ADMISSION_OVERRIDE_MAX_TTL))
+    try:
+        await namespace.put(
+            ADMISSION_OVERRIDE_PREFIX + repo_bi,
+            str(int(Date.now())),
+            to_js({"expirationTtl": ttl}),
+        )
+    except Exception:
+        return 0
+    return ttl
+
+
+async def _admin_set_admission_override(env, request):
+    # Signed source-of-truth override: an admin proves control of their node key
+    # (the same auth as every other admin mutation) and opens a bounded window
+    # during which the group's mirrors are admitted at their advertised states,
+    # so a repo deadlocked out of the pin window recovers instead of staying
+    # unavailable. The window auto-expires via the KV TTL.
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+    owner = clean_string(data.get("owner", ""), MAX_NODE_NAME).lower()
+    repo = clean_string(data.get("repo", ""), MAX_REPO_SEGMENT).strip().lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(owner) or not safe_segment(repo):
+        return json_response({"error": "invalid_repo"}, status=400)
+    canonical = ("forkmesh-admission-override-v1\n" + node + "\n"
+                 + owner + "/" + repo + "\n" + ts).encode()
+    if not await _admin_authorized(env, node, ts, sig, canonical):
+        return json_response({"error": "unauthorized"}, status=401)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    ttl = await _admission_override_set(env, repo_bi, data.get("ttlSeconds"))
+    await _audit_sensitive_action(
+        env, node, "admin.admission_override", "repository",
+        owner + "/" + repo, "success" if ttl else "error",
+        {"ttlSeconds": ttl})
+    return json_response(
+        {"ok": bool(ttl), "repo": owner + "/" + repo, "ttlSeconds": ttl})
+
+
 async def _https_mirror_public_context(env, owner, repo):
     """Return canonical public repo identity and integrity-approved node set."""
     owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
@@ -39431,7 +39516,37 @@ async def _https_mirror_public_context(env, owner, repo):
             ):
                 source = record
         if not allowed:
-            return None
+            # Deadlocked out of the pin window: no live node serves a state the
+            # source-of-truth attested. If the repo's operator is holding a
+            # source-of-truth override open, admit the group's mirrors at the
+            # states they currently advertise so the repo recovers instead of
+            # going dark. Consulted ONLY here (never on the healthy path that
+            # already found an eligible node) so ordinary clones pay nothing,
+            # and only ever widens an existing real pin set — a repo with no
+            # source attestation (pins is None above) is never force-opened.
+            if not (pins and await _admission_override_active(
+                    env, target_row.get("key_bi"))):
+                return None
+            pins = set(pins) | admission_override_pins(members)
+            for row in members:
+                record = row.get("data") or {}
+                node = clean_string(
+                    record.get("machineName") or record.get("owner", ""),
+                    MAX_NODE_NAME).lower()
+                if not valid_node_name(node):
+                    continue
+                state = clean_string(record.get("stateHash", ""), 64).lower()
+                endpoint_state = quorum.get("nodeDigests", {}).get(node, "")
+                if state in pins or endpoint_state in pins:
+                    allowed.add(node)
+                    if (
+                        source is None
+                        and str(record.get("source") or "local-node")
+                        == "local-node"
+                    ):
+                        source = record
+            if not allowed:
+                return None
         canonical = source or target
         canonical_owner = clean_string(
             canonical.get("owner", ""), MAX_NODE_NAME).lower()
