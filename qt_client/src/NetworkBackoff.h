@@ -31,6 +31,13 @@ public:
         return m_channels.value(channel).nextAllowedMs <= nowMs;
     }
 
+    // How long this channel is still held off, in milliseconds (0 once it is
+    // ready). Lets a caller say "try again in ~2m" instead of only "not now".
+    qint64 msUntilReady(const QString &channel, qint64 nowMs) const
+    {
+        return qMax<qint64>(0, m_channels.value(channel).nextAllowedMs - nowMs);
+    }
+
     // A request succeeded: clear the failure streak so the next poll fires on
     // the normal schedule.
     void noteSuccess(const QString &channel)
@@ -42,8 +49,12 @@ public:
     // A request failed: extend the cooldown. The nth consecutive failure holds
     // the channel off for min(baseMs · 2^(n-1), capMs), plus a little jitter so
     // independently-failing channels don't all retry on the exact same tick.
+    // retryAfterMs, when the server told us explicitly (HTTP Retry-After on a
+    // 429), floors the delay so a guessed exponential curve never retries
+    // *sooner* than the server asked — still clamped to capMs so a server
+    // asking for an absurd wait can't wedge the channel indefinitely.
     void noteFailure(const QString &channel, qint64 nowMs, qint64 baseMs,
-                     qint64 capMs)
+                     qint64 capMs, qint64 retryAfterMs = 0)
     {
         if (channel.isEmpty())
             return;
@@ -54,6 +65,8 @@ public:
         for (int i = 1; i < s.failures && delay < capMs; ++i)
             delay <<= 1;
         delay = qMin(delay, capMs);
+        if (retryAfterMs > 0)
+            delay = qMin(qMax(delay, retryAfterMs), capMs);
         const quint32 span = static_cast<quint32>(qMax<qint64>(1, delay / 8));
         s.nextAllowedMs =
             nowMs + delay + QRandomGenerator::global()->bounded(span);

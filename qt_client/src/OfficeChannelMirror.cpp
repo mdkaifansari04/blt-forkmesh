@@ -7,6 +7,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QTimer>
 #include <QUrlQuery>
@@ -15,9 +16,19 @@
 
 namespace {
 
-// Cadence of the retained-history safety poll. Active sends/receives use the
-// room socket; this slower pass fills gaps after sleep or disconnects.
-constexpr int kPollIntervalMs = 30000;
+// Rooms this client keeps a receiving socket on. Every office room the account
+// can read would otherwise mean a socket (plus its presence beat) per room, and
+// the site allows a hundred channels. Rooms past the budget still show their
+// startup backlog and still connect when the user sends into them.
+constexpr int kMaxLiveRooms = 16;
+// Reconnect ramp for a dropped room socket: 2s, 4s, 8s ... capped at 5 minutes.
+// The ticket in the socket URL expires in 60s, so every attempt re-fetches room
+// access rather than reusing the old endpoint.
+constexpr int kReconnectBaseDelayMs = 2000;
+constexpr int kReconnectMaxDelayMs = 5 * 60 * 1000;
+// Floor between two user-triggered refreshes (opening Chat), so hammering the
+// section button cannot turn a user action back into a poll.
+constexpr int kMinRefreshIntervalMs = 10000;
 constexpr int kMaxChannels = 50;
 constexpr int kMaxTextChars = 16000;
 constexpr int kMaxDisplayNameChars = 32;
@@ -134,9 +145,6 @@ OfficeChannelMirror::OfficeChannelMirror(QNetworkAccessManager *network,
                                          QObject *parent)
     : QObject(parent), m_network(network)
 {
-    m_timer = new QTimer(this);
-    m_timer->setInterval(kPollIntervalMs);
-    connect(m_timer, &QTimer::timeout, this, &OfficeChannelMirror::poll);
 }
 
 void OfficeChannelMirror::setSigner(std::function<QString(const QByteArray &)> signer)
@@ -148,13 +156,15 @@ void OfficeChannelMirror::setIdentity(const QString &account, const QString &sel
                                       const QString &displayName)
 {
     const QString normalized = account.trimmed().toLower();
-    if (normalized != m_account) {
+    const bool switched = normalized != m_account;
+    if (switched) {
         // A different account sees a different set of office rooms.
         for (auto it = m_rooms.begin(); it != m_rooms.end(); ++it) {
             failPending(it.value(), QStringLiteral("chat account changed"));
             discardSender(it.value());
         }
         m_rooms.clear();
+        m_socketBudgetNoted = false;
         if (!m_conversations.isEmpty()) {
             m_conversations.clear();
             emit conversationsChanged(m_conversations);
@@ -163,6 +173,10 @@ void OfficeChannelMirror::setIdentity(const QString &account, const QString &sel
     m_account = normalized;
     m_selfId = selfId;
     m_displayName = displayName.trimmed().left(kMaxDisplayNameChars);
+    // Nothing re-lists on a timer any more, so the account switch that just
+    // emptied the sidebar has to fill it again itself.
+    if (switched && m_active && ready())
+        fetchChannels();
 }
 
 void OfficeChannelMirror::setConnectionAuthorizer(
@@ -188,15 +202,16 @@ bool OfficeChannelMirror::ready() const
 
 void OfficeChannelMirror::start()
 {
-    if (!ready() || m_timer->isActive())
+    // Called from the 60s account heartbeat: one pass per run, never a beat.
+    if (!ready() || m_active)
         return;
-    m_timer->start();
-    poll();
+    m_active = true;
+    fetchChannels();
 }
 
 void OfficeChannelMirror::stop()
 {
-    m_timer->stop();
+    m_active = false;
     for (auto it = m_rooms.begin(); it != m_rooms.end(); ++it)
         discardSender(it.value());
     m_rooms.clear();
@@ -208,7 +223,19 @@ void OfficeChannelMirror::stop()
 
 bool OfficeChannelMirror::isActive() const
 {
-    return m_timer && m_timer->isActive();
+    return m_active;
+}
+
+void OfficeChannelMirror::refresh()
+{
+    if (!ready() || !m_active)
+        return;
+    // Clicking Chat is a user action, but clicking it four times a second is
+    // not four requests' worth of intent.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_lastListMs > 0 && now - m_lastListMs < kMinRefreshIntervalMs)
+        return;
+    fetchChannels();
 }
 
 QStringList OfficeChannelMirror::conversations() const
@@ -286,20 +313,11 @@ QUrl OfficeChannelMirror::signedUrl(const QString &path, const QString &ts,
     return url;
 }
 
-void OfficeChannelMirror::poll()
-{
-    if (!ready())
-        return;
-    fetchChannels();
-    const QStringList ids = m_rooms.keys();
-    for (const QString &id : ids)
-        fetchHistory(id);
-}
-
 void OfficeChannelMirror::fetchChannels()
 {
     if (m_listing)
         return;
+    m_lastListMs = QDateTime::currentMSecsSinceEpoch();
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QUrl url = signedUrl(QStringLiteral("/api/chat/channels"), ts,
                                forkmesh::office::channelListProof(m_account, ts));
@@ -354,13 +372,24 @@ void OfficeChannelMirror::fetchChannels()
                 room.privateRoom != privateRoom || room.members != members;
             room.privateRoom = privateRoom;
             room.members = members;
+            room.order = int(conversations.size());
+            room.wantsSocket = room.order < kMaxLiveRooms;
             conversations.append(conversation);
             live.insert(id);
             if (membersChanged)
                 emit roomMembersChanged(conversation, members);
         }
+        if (conversations.size() > kMaxLiveRooms && !m_socketBudgetNoted) {
+            m_socketBudgetNoted = true;
+            emit sendActivity(
+                QStringLiteral("Office chat: watching the first %1 of %2 rooms "
+                               "live; the rest load when you open or send to "
+                               "them.")
+                    .arg(kMaxLiveRooms)
+                    .arg(conversations.size()));
+        }
         // Rooms the account can no longer read (removed from a private channel)
-        // stop being polled; their already-shown messages stay in the view.
+        // stop being mirrored; their already-shown messages stay in the view.
         const QStringList known = m_rooms.keys();
         for (const QString &id : known) {
             if (!live.contains(id)) {
@@ -375,11 +404,54 @@ void OfficeChannelMirror::fetchChannels()
             m_conversations = conversations;
             emit conversationsChanged(m_conversations);
         }
-        // The poll that launched this list request could not yet know the room
-        // ids. Fetch immediately after discovery instead of making first paint
-        // wait for the next 30-second timer tick.
-        for (const QString &id : std::as_const(live))
+        // The pass that launched this list request could not yet know the room
+        // ids: this is where each room's one backlog fetch starts, and where a
+        // room whose socket is down (or never opened) gets it back.
+        for (const QString &id : std::as_const(live)) {
             fetchHistory(id);
+            ensureReceiver(id);
+        }
+    });
+}
+
+void OfficeChannelMirror::ensureReceiver(const QString &channelId)
+{
+    if (!m_active || !m_rooms.contains(channelId))
+        return;
+    Room &room = m_rooms[channelId];
+    if (!room.wantsSocket || room.sender || room.accessFetching ||
+        room.reconnectPending)
+        return;
+    fetchRoomAccess(channelId);
+}
+
+void OfficeChannelMirror::scheduleReconnect(const QString &channelId)
+{
+    if (!m_active || !m_rooms.contains(channelId))
+        return;
+    Room &room = m_rooms[channelId];
+    if (room.reconnectPending || room.sender || room.accessFetching)
+        return;
+    if (!room.wantsSocket && room.pendingTexts.isEmpty())
+        return; // an out-of-budget room only connects to send
+    const int shift = qMin(room.reconnectAttempts, 8);
+    ++room.reconnectAttempts;
+    int delay = int(qMin<qint64>(qint64(kReconnectBaseDelayMs) << shift,
+                                 kReconnectMaxDelayMs));
+    // Jitter so a fleet of desktops does not re-ticket in lockstep after a
+    // relay deploy drops every room socket at once.
+    delay += int(QRandomGenerator::global()->bounded(delay / 4 + 250));
+    room.reconnectPending = true;
+    QTimer::singleShot(delay, this, [this, channelId] {
+        if (!m_rooms.contains(channelId))
+            return;
+        Room &liveRoom = m_rooms[channelId];
+        liveRoom.reconnectPending = false;
+        if (!m_active || liveRoom.sender)
+            return;
+        if (!liveRoom.wantsSocket && liveRoom.pendingTexts.isEmpty())
+            return; // an out-of-budget room only connects to send
+        fetchRoomAccess(channelId);
     });
 }
 
@@ -395,9 +467,12 @@ void OfficeChannelMirror::fetchRoomAccess(const QString &channelId)
         QStringLiteral("/api/chat/channels/%1/room-access").arg(channelId), ts,
         forkmesh::office::channelAccessProof(m_account, channelId, ts));
     room.accessFetching = true;
-    emit sendActivity(QStringLiteral("Office chat: requesting encrypted room access "
-                                     "for %1.")
-                          .arg(room.conversation));
+    // Only narrate the ticket the user is waiting on. Every mirrored room now
+    // takes one of these on connect, and that is background work.
+    if (!room.pendingTexts.isEmpty())
+        emit sendActivity(QStringLiteral("Office chat: requesting encrypted room access "
+                                         "for %1.")
+                              .arg(room.conversation));
     QNetworkReply *reply = m_network->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
             [this, reply, channelId]() {
@@ -417,6 +492,10 @@ void OfficeChannelMirror::fetchRoomAccess(const QString &channelId)
                         failed ? networkError
                                : payload.value(QStringLiteral("error"))
                                      .toString(QStringLiteral("room access denied")));
+                    // A refused ticket is usually transient (relay redeploy,
+                    // quota). Nothing polls this room any more, so the retry is
+                    // what keeps its messages arriving at all.
+                    scheduleReconnect(channelId);
                     return;
                 }
                 openSender(channelId, payload);
@@ -442,6 +521,7 @@ void OfficeChannelMirror::openSender(const QString &channelId,
         (endpoint.scheme() != QLatin1String("ws") &&
          endpoint.scheme() != QLatin1String("wss"))) {
         failPending(room, QStringLiteral("relay returned invalid room access"));
+        scheduleReconnect(channelId);
         return;
     }
 
@@ -476,17 +556,23 @@ void OfficeChannelMirror::openSender(const QString &channelId,
                 Room &liveRoom = m_rooms[channelId];
                 liveRoom.senderConnected = connected;
                 if (connected) {
-                    emit sendActivity(
-                        QStringLiteral("Office chat: encrypted socket ready for %1.")
-                            .arg(liveRoom.conversation));
+                    liveRoom.reconnectAttempts = 0;
+                    if (!liveRoom.pendingTexts.isEmpty())
+                        emit sendActivity(
+                            QStringLiteral("Office chat: encrypted socket ready "
+                                           "for %1.")
+                                .arg(liveRoom.conversation));
                     flushPending(liveRoom);
+                    // Catch-up, not a poll: one history read per (re)connect
+                    // drains whatever the room retained while this socket was
+                    // down (and re-seeds the key if the room was re-keyed).
+                    fetchHistory(channelId);
                     return;
                 }
                 liveRoom.sender = nullptr;
                 sender->shutdown();
                 sender->deleteLater();
-                if (!liveRoom.pendingTexts.isEmpty())
-                    fetchRoomAccess(channelId);
+                scheduleReconnect(channelId);
             });
     connect(sender, &ChatBackend::systemMessage, this,
             [this, channelId](const QString &message) {
@@ -500,11 +586,13 @@ void OfficeChannelMirror::openSender(const QString &channelId,
         room.sender = nullptr;
         sender->deleteLater();
         failPending(room, QStringLiteral("could not start encrypted room socket"));
+        scheduleReconnect(channelId);
         return;
     }
 
-    // A ticket or edge failure must not leave queued text stuck forever. A later
-    // send gets a fresh ticket instead of reusing a stale reconnect URL.
+    // A ticket or edge failure must not leave queued text stuck forever, nor
+    // leave the room without a live path. A later attempt gets a fresh ticket
+    // instead of reusing a stale reconnect URL.
     QTimer::singleShot(20000, this, [this, channelId, sender] {
         if (!m_rooms.contains(channelId))
             return;
@@ -515,6 +603,7 @@ void OfficeChannelMirror::openSender(const QString &channelId,
         sender->shutdown();
         sender->deleteLater();
         failPending(liveRoom, QStringLiteral("encrypted room connection timed out"));
+        scheduleReconnect(channelId);
     });
 }
 

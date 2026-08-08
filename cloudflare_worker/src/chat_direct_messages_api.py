@@ -179,6 +179,9 @@ async def _start_conversation(runtime, account_bi, actor, data):
                 retry_after_ms=retry_after_ms,
             )
         raise
+    # The target now has a conversation they did not create. Their chat page
+    # reads that list once when it opens and never on a timer (adhoc #1604).
+    await runtime.notify_account(target, "direct-messages")
     row = {
         "conversation_id": conversation_id,
         "updated_at": now,

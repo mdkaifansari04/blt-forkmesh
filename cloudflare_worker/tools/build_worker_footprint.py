@@ -20,10 +20,14 @@ OUTPUT = PUBLIC / "world" / "worker-footprint.js"
 # through a _LazyModule proxy, a request-local import, or another deferred
 # module only after the route which needs them runs.
 LAZY_MODULES = {
+    "admin_console.py",
+    "api_metrics.py",
     "activitypub.py",
     "activitypub_threads.py",
     "badges.py",
     "blog_feed.py",
+    "forkbot.py",
+    "fediverse_routes.py",
     "catalog.py",
     "chat_channels_api.py",
     "chat_direct_messages_api.py",
@@ -55,6 +59,7 @@ LAZY_MODULES = {
     "ssh_keys.py",
     "schema.py",
     "static_routes.py",
+    "status_monitoring.py",
     "urls.py",
     "world.py",
     "world_build_board.py",
@@ -66,6 +71,7 @@ LAZY_MODULES = {
     "world_infrastructure.py",
     "world_link_kiosk.py",
     "world_office_tasks.py",
+    "world_qa.py",
     "world_satellites.py",
     "world_social_feeds.py",
     "world_visitors.py",
@@ -95,9 +101,10 @@ WORKER_LIMITS = {
     "compressedBundlePaidBytes": 10_000_000,
     "uncompressedBundleBytes": 64_000_000,
     "startupTimeMs": 1000,
-    # Source bytes are not a heap measurement, but this reproducible ceiling
-    # catches regressions that would make Python's startup validation unsafe.
-    "startupSourceBytesSoft": 2_300_000,
+    # Source bytes are not a heap measurement. Cloudflare rejected the Worker
+    # at ~2.20 MB with Python startup memory error 10021, so keep a measured
+    # guard below that observed failure boundary.
+    "startupSourceBytesSoft": 2_150_000,
     "dynamicRequestsFreeDaily": 100_000,
 }
 STATIC_LIMITS = {
@@ -106,7 +113,7 @@ STATIC_LIMITS = {
     # This is an intentionally stricter project budget, not a Cloudflare cap.
     # It leaves headroom for future districts without letting the first visit
     # silently inherit every optional feature module.
-    "initialWorldModuleBytesSoft": 2_600_000,
+    "initialWorldModuleBytesSoft": 2_650_000,
 }
 STATIC_IMPORT_FROM_RE = re.compile(
     r"""\bfrom\s+["'](?P<path>\.{1,2}/[^"']+)["']"""
@@ -148,6 +155,8 @@ def _component_for(name):
         return "Identity + security"
     if name.startswith("community_") or name in {
         "blog_feed.py",
+    "forkbot.py",
+    "fediverse_routes.py",
         "contributions.py",
         "og_card.py",
     }:

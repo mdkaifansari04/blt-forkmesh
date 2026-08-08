@@ -6,7 +6,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
-TEXT = ENTRY.read_text(encoding="utf-8")
+ADMIN_CONSOLE = ROOT / "src" / "admin_console.py"
+TEXT = (
+    ENTRY.read_text(encoding="utf-8") + "\n"
+    + ADMIN_CONSOLE.read_text(encoding="utf-8")
+)
 
 
 def _function_source(name):

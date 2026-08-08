@@ -24,15 +24,8 @@
     {
       "owner": "forkmesh",
       "name": "forkmesh",
-      "path": "mirror2/forkmesh.git",
-      "access": "read-write",
-      "maxStorageBytes": 17179869184
-    },
-    {
-      "owner": "mirror2",
-      "name": "forkmesh",
-      "path": "mirror2/forkmesh.git",
-      "access": "read-write",
+      "path": "forkmesh-forkmesh.git",
+      "access": "read-only",
       "maxStorageBytes": 17179869184
     }
   ]

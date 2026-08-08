@@ -665,6 +665,15 @@ QWidget *MainWindow::buildSourceControlPanel()
     // splitter's own minimum.
     m_scmTree->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
     m_scmTree->setMinimumHeight(0);
+    // Right-click a file for the operations the hover actions have no room for —
+    // edit it, ignore it, delete it — in the working-tree groups and in the
+    // "Changes against <base>" range list alike (adhoc #1594). Each row carries a
+    // ScmFileRow item widget; a context-menu event on one propagates up to the
+    // viewport and arrives here in viewport coordinates, same as a click on the
+    // empty area below the rows.
+    m_scmTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_scmTree, &QWidget::customContextMenuRequested, this,
+            &MainWindow::showScmFileMenu);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *item, QTreeWidgetItem *previous) {
                 if (previous) {
@@ -996,6 +1005,9 @@ void MainWindow::showSourceControlLoading(const QString &branch)
 
 void MainWindow::refreshSourceControl(bool force)
 {
+    if (deferUiRefresh(force ? UiRefreshSourceControlForce
+                             : UiRefreshSourceControl))
+        return;
     if (!m_scmTree)
         return;
     // A manual refresh should also recheck commits pending sync (the top "Sync"
@@ -2358,6 +2370,162 @@ void MainWindow::scmDiscardPath(const QString &path, bool untracked)
     refreshSourceControl();
 }
 
+// Reject anything that isn't a plain path inside the checkout. The tree's rows
+// come from git's own porcelain/diff output, so this is a belt-and-braces guard
+// before a delete or an ignore rule is built from one.
+static bool scmRelPathIsSafe(const QString &path)
+{
+    const QString clean = QDir::cleanPath(path);
+    return clean == path && !clean.isEmpty() && clean != QLatin1String(".") &&
+           !clean.startsWith(QLatin1String("../")) &&
+           !clean.contains(QLatin1String("/../")) &&
+           !QDir::isAbsolutePath(clean) && clean != QLatin1String(".git") &&
+           !clean.startsWith(QLatin1String(".git/"));
+}
+
+void MainWindow::showScmFileMenu(const QPoint &pos)
+{
+    if (!m_scmTree)
+        return;
+    QTreeWidgetItem *item = m_scmTree->itemAt(pos);
+    // Group headers ("Changes (7)", "Changes against main (3)") carry no path.
+    const QString path = item ? item->data(0, Qt::UserRole).toString() : QString();
+    if (path.isEmpty() || !scmRelPathIsSafe(path))
+        return;
+    const QString dir = sourceControlGitDir();
+    if (dir.isEmpty())
+        return;
+    // Right-clicking a row selects it, so the diff on the right follows the file
+    // the menu is about.
+    if (item != m_scmTree->currentItem())
+        m_scmTree->setCurrentItem(item);
+
+    // A change that *deleted* the file leaves nothing on disk to edit, ignore or
+    // remove, so those entries are shown greyed rather than silently failing.
+    const bool onDisk = QFileInfo(QDir(dir).filePath(path)).isFile();
+
+    QMenu menu(this);
+    QAction *edit = menu.addAction(QStringLiteral("Edit"));
+    menu.addSeparator();
+    QAction *ignore = menu.addAction(QStringLiteral("Add to .gitignore"));
+    QAction *remove = menu.addAction(QStringLiteral("Delete file"));
+    for (QAction *action : {edit, ignore, remove})
+        action->setEnabled(onDisk);
+
+    QAction *chosen = menu.exec(m_scmTree->viewport()->mapToGlobal(pos));
+    if (chosen == edit)
+        openWorkingTreeFile(dir, path);
+    else if (chosen == ignore)
+        scmIgnorePath(path);
+    else if (chosen == remove)
+        scmDeletePath(path);
+}
+
+void MainWindow::scmIgnorePath(const QString &path)
+{
+    const QString dir = sourceControlGitDir();
+    if (dir.isEmpty() || !scmRelPathIsSafe(path))
+        return;
+    const QString rule = gitignoreRuleForPath(path);
+    const QString ignoreFile = QDir(dir).filePath(QStringLiteral(".gitignore"));
+
+    QStringList lines;
+    QFile file(ignoreFile);
+    if (file.exists()) {
+        if (!file.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, "Add to .gitignore",
+                                 QStringLiteral("Could not read %1.").arg(ignoreFile));
+            return;
+        }
+        lines = QString::fromUtf8(file.readAll()).split(QLatin1Char('\n'));
+        file.close();
+        // Already listed — as the anchored rule we would write, or as the bare
+        // path someone typed by hand. Broader patterns that happen to match are
+        // git's business, not ours, so those still get an explicit rule.
+        for (const QString &line : std::as_const(lines)) {
+            const QString trimmed = line.trimmed();
+            if (trimmed == rule || trimmed == path) {
+                flashMessage(QStringLiteral("%1 is already in .gitignore.").arg(path));
+                return;
+            }
+        }
+    }
+
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        QMessageBox::warning(this, "Add to .gitignore",
+                             QStringLiteral("Could not write %1.").arg(ignoreFile));
+        return;
+    }
+    QByteArray out;
+    // split() leaves a trailing empty element when the file ends in a newline; a
+    // non-empty last element means it doesn't, and the rule needs its own line.
+    if (!lines.isEmpty() && !lines.constLast().isEmpty())
+        out.append('\n');
+    out.append(rule.toUtf8());
+    out.append('\n');
+    const bool wrote = file.write(out) == out.size();
+    file.close();
+    if (!wrote) {
+        QMessageBox::warning(this, "Add to .gitignore",
+                             QStringLiteral("Could not write %1.").arg(ignoreFile));
+        return;
+    }
+
+    // An ignore rule does nothing for a file git already tracks: it would keep
+    // appearing in this very list, leaving the menu item looking broken. Offer
+    // the one extra step that makes the rule bite, without touching the file.
+    const bool tracked = runGitCapture(
+        dir, {"ls-files", "--error-unmatch", "--", path}, nullptr, nullptr);
+    if (tracked &&
+        QMessageBox::question(
+            this, QStringLiteral("Add to .gitignore"),
+            QStringLiteral("\"%1\" is tracked by git, so the new rule has no "
+                           "effect until git stops tracking it.\n\nStop tracking "
+                           "it? The file stays on disk.")
+                .arg(path),
+            QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
+        QString err;
+        // --cached never touches the working tree; -f only waives the
+        // up-to-date check that staged changes would otherwise trip.
+        if (!runSourceControlMutation(dir, {"rm", "--cached", "-f", "-q", "--", path},
+                                      nullptr, &err))
+            QMessageBox::warning(this, "Add to .gitignore",
+                                 err.isEmpty() ? QStringLiteral("git rm --cached failed.")
+                                               : err.left(240));
+    }
+    flashMessage(QStringLiteral("Added %1 to .gitignore.").arg(path));
+    refreshSourceControl(true);
+}
+
+void MainWindow::scmDeletePath(const QString &path)
+{
+    const QString dir = sourceControlGitDir();
+    if (dir.isEmpty() || !scmRelPathIsSafe(path))
+        return;
+    if (QMessageBox::warning(
+            this, "Delete file",
+            QStringLiteral("Delete \"%1\" from the working tree?\n\nA tracked file "
+                           "becomes a deletion you can still discard; an untracked "
+                           "one is gone for good.")
+                .arg(path),
+            QMessageBox::Yes | QMessageBox::Cancel) != QMessageBox::Yes)
+        return;
+    const QString abs = QDir(dir).absoluteFilePath(path);
+    if (!QFile::remove(abs)) {
+        QMessageBox::warning(this, "Delete file",
+                             QStringLiteral("Could not delete %1.").arg(abs));
+        return;
+    }
+    // Any editor tab still on this file would otherwise offer to save it back.
+    // All three of m_openFileTabs' key forms can name it: the ref-backed tab is
+    // keyed by the relative path, the filesystem explorer's read-only one by the
+    // absolute path, and the editable working-tree tab by that behind a marker.
+    for (const QString &key : {path, abs, worktreeTabKey(abs)})
+        closeRepoFileTabsUnder(key, false);
+    logSystem(QStringLiteral("Deleted %1.").arg(abs));
+    refreshSourceControl(true);
+}
+
 void MainWindow::scmStageAll()
 {
     const QString dir = sourceControlGitDir();
@@ -2390,11 +2558,21 @@ void MainWindow::scmDiscardAll()
 
 bool MainWindow::performScmCommit()
 {
+    const QString msg =
+        m_scmMessage ? m_scmMessage->toPlainText().trimmed() : QString();
+    if (!commitWorkingTree(msg))
+        return false;
+    if (m_scmMessage)
+        m_scmMessage->clear();
+    return true;
+}
+
+bool MainWindow::commitWorkingTree(const QString &message)
+{
     const QString dir = sourceControlGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree())
         return false;
-    const QString msg =
-        m_scmMessage ? m_scmMessage->toPlainText().trimmed() : QString();
+    const QString msg = message.trimmed();
     if (msg.isEmpty()) {
         QMessageBox::information(this, "Commit", "Enter a commit message first.");
         return false;
@@ -2423,8 +2601,6 @@ bool MainWindow::performScmCommit()
                              err.isEmpty() ? "git commit failed." : err.left(300));
         return false;
     }
-    if (m_scmMessage)
-        m_scmMessage->clear();
     logSystem(QStringLiteral("Committed: %1").arg(msg.section('\n', 0, 0)));
     loadCommits(); // refresh history + the working-changes panel
     if (m_repoDetailIndex >= 0)
@@ -3282,10 +3458,8 @@ QWidget *MainWindow::buildRepoSecurityTab()
         const QString path = item->data(Qt::UserRole).toString();
         if (path.isEmpty())
             return;
-        // Switch to the Code tab (index 0) so the highlighted line is visible;
-        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
-        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-            m_repoDetailTabs->button(0)->click();
+        // openRepoFileAtLine opens the Files section itself (adhoc #1590), so
+        // the highlighted line is on screen without picking a repo tab first.
         openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
@@ -3911,10 +4085,8 @@ QWidget *MainWindow::buildRepoQualityTab()
         const QString path = item->data(Qt::UserRole).toString();
         if (path.isEmpty())
             return;
-        // Switch to the Code tab (index 0) so the highlighted line is visible;
-        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
-        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-            m_repoDetailTabs->button(0)->click();
+        // openRepoFileAtLine opens the Files section itself (adhoc #1590), so
+        // the highlighted line is on screen without picking a repo tab first.
         openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
@@ -4293,31 +4465,17 @@ void MainWindow::chooseSizeMapFolder()
     QString start = sizeMapRoot();
     if (start.isEmpty() || !QDir(start).exists())
         start = QDir::homePath();
-    // Qt's own dialog rather than the platform one: the portal/GTK pickers
-    // bury the filesystem root behind "Other Locations" and refuse to hand
-    // back "/" itself, which is exactly the folder people want to size
-    // (adhoc #21). This one returns whatever directory is open when Choose is
-    // pressed, so "/" — and every mount — is selectable.
-    QFileDialog dialog(this, "Choose a folder to size", start);
-    dialog.setFileMode(QFileDialog::Directory);
-    dialog.setOption(QFileDialog::ShowDirsOnly, true);
-    dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-    dialog.setFilter(QDir::AllDirs | QDir::Drives | QDir::NoDotAndDotDot |
-                     QDir::Hidden);
-    QList<QUrl> sidebar{QUrl::fromLocalFile(QDir::rootPath()),
-                        QUrl::fromLocalFile(QDir::homePath())};
-    for (const QStorageInfo &volume : sizeMapVolumes()) {
-        const QUrl url = QUrl::fromLocalFile(volume.rootPath());
-        if (!sidebar.contains(url))
-            sidebar.append(url);
-    }
-    dialog.setSidebarUrls(sidebar);
-    if (dialog.exec() != QDialog::Accepted)
+    // Every mounted volume joins the picker's sidebar, on top of the root and
+    // home entries chooseExistingDirectory always adds. That shared picker is
+    // also what makes "/" selectable at all (adhoc #21) — see its comment.
+    QList<QUrl> sidebar;
+    for (const QStorageInfo &volume : sizeMapVolumes())
+        sidebar.append(QUrl::fromLocalFile(volume.rootPath()));
+    const QString chosen = chooseExistingDirectory(
+        this, QStringLiteral("Choose a folder to size"), start, sidebar);
+    if (chosen.isEmpty())
         return;
-    const QStringList chosen = dialog.selectedFiles();
-    if (chosen.isEmpty() || chosen.first().isEmpty())
-        return;
-    setSizeMapRootOverride(chosen.first());
+    setSizeMapRootOverride(chosen);
 }
 
 void MainWindow::setSizeMapRootOverride(const QString &path)

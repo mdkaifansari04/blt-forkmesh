@@ -18,7 +18,15 @@ from _dashboard_bundle import assembled_dashboard_js
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+ENTRY_TEXT = (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+)
 URLS_TEXT = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
 DASHBOARD_JS = assembled_dashboard_js()
 
@@ -80,24 +88,40 @@ def test_pending_endpoint_counts_all_three_collaboration_inboxes_in_one_round_tr
     async def ap_org_alias_owner(_env, owner, _repo):
         return owner
 
+    edge = {"puts": [], "gets": []}
+
+    async def edge_cache_match(key):
+        edge["gets"].append(key)
+        return None
+
+    async def edge_cache_put(key, resp):
+        edge["puts"].append(key)
+
     ns = _load()
     ns.update({
         "ensure_schema": noop, "blind_index": blind_index,
         "d1_all": d1_all, "json_response": json_response,
         "_ap_org_alias_owner": ap_org_alias_owner,
+        "edge_cache_match": edge_cache_match,
+        "edge_cache_put": edge_cache_put,
+        "quote": lambda value: str(value),
     })
     resp = asyncio.run(
         ns["repo_pending_counts_handler"](object(), _Request(), "o", "r"))
     assert resp["status"] == 200
     assert captured["pending"] == {
         "issues": 3, "pulls": 0, "discussions": 1}
-    # One UNION statement, not three queries. Counts are never cached: an online
-    # mirror can materialize the row immediately after this read.
+    # One UNION statement, not three queries.
     assert len(queries) == 1
     assert queries[0].count("UNION ALL") == 2
-    assert captured["_cache"] is None
-    assert captured["_cache_control"] == (
-        "no-store, max-age=0, must-revalidate")
+    # The whole fleet polls these badges, so the public 200 is edge-cached
+    # for ten minutes (2026-08-06: repo/*/*/pending was the single largest
+    # request group on the api.forkmesh.com traffic chart). A 30s-stale badge
+    # is an accepted trade; the private 404 path stays uncached.
+    assert captured["_cache_control"] == "public, max-age=600"
+    assert edge["gets"] and edge["puts"]
+    assert edge["gets"][0] == edge["puts"][0]
+    assert "/repo-pending/o/r" in edge["puts"][0]
 
 
 def test_pending_route_is_wired():

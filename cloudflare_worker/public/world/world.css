@@ -7019,6 +7019,130 @@ button.world-element-name:hover .world-element-twisty {
   font-size: 0.6rem;
 }
 
+/* Right-click delete menu. It is positioned over the canvas at the pointer,
+   above the label layer and below the HUD panels, and is only ever built for
+   an administrator or a visitor running the debug panel. */
+.world-object-menu {
+  position: absolute;
+  z-index: 7;
+  min-width: 210px;
+  max-width: min(320px, 80vw);
+  padding: 6px;
+  border: 1px solid var(--world-line);
+  background: var(--world-panel-solid);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+}
+
+.world-object-menu[hidden] {
+  display: none;
+}
+
+.world-object-menu-head {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 4px 6px 6px;
+  border-bottom: 1px solid var(--world-line);
+}
+
+.world-object-menu-head strong {
+  font-size: 0.72rem;
+}
+
+.world-object-menu-head span {
+  color: var(--world-muted);
+  font: 0.58rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-object-menu button {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  background: none;
+  color: var(--world-copy);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.world-object-menu button small {
+  color: var(--world-muted);
+  font: 0.58rem "ForkMesh Mono", monospace;
+}
+
+.world-object-menu button:hover,
+.world-object-menu button:focus-visible {
+  background: #12332a;
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-object-menu-note {
+  margin: 0;
+  padding: 4px 6px;
+  color: var(--world-muted);
+  font-size: 0.58rem;
+}
+
+/* Restore list for everything deleted so far, in the Elements tab. */
+.world-deleted-list {
+  display: grid;
+  gap: 2px;
+  max-height: 200px;
+  margin-top: 8px;
+  overflow-y: auto;
+}
+
+.world-deleted-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  border-top: 1px solid var(--world-line);
+}
+
+.world-deleted-name {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.world-deleted-name strong {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-deleted-name small {
+  color: var(--world-muted);
+  font: 0.56rem "ForkMesh Mono", monospace;
+}
+
+.world-deleted-row button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--world-line);
+  background: #0a1915;
+  color: var(--world-copy);
+  cursor: pointer;
+  font: 0.58rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-deleted-row button:hover,
+.world-deleted-row button:focus-visible {
+  background: #12332a;
+  color: var(--world-mint);
+  outline: none;
+}
+
 .world-object-table {
   margin-top: 10px;
   max-height: 320px;
@@ -9116,11 +9240,19 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   width: 100%;
   height: 56px;
   min-height: 56px;
+  align-items: center;
   justify-content: flex-start;
   gap: 7px;
   padding: 7px 9px;
   border-radius: 28px;
   overflow: visible;
+}
+
+/* The collapsed debug pill is as tall as its chart grid needs rather than one
+   logo-height row, so all nine dot traces are readable without opening it. The
+   chat orb shares the rule above and stays a fixed 56px circle. */
+.world-diagnostics:not(.world-chat-terminal) > summary {
+  height: auto;
 }
 
 .world-diagnostics
@@ -9168,6 +9300,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   width: 34px;
   height: 34px;
   flex: 0 0 auto;
+  align-self: center;
   grid-template-columns: repeat(3, 1fr);
   place-items: center;
   border: 1px solid rgb(139 148 158 / 0.42);
@@ -9178,11 +9311,39 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-diagnostics-orb > span {
-  width: 6px;
-  height: 6px;
+  --world-diagnostics-refresh-progress: 0;
+  position: relative;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: #3fb950;
   box-shadow: 0 0 5px currentColor;
+}
+
+.world-diagnostics-orb > span::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  pointer-events: none;
+  background:
+    conic-gradient(
+      from -90deg,
+      currentColor calc(var(--world-diagnostics-refresh-progress) * 1turn),
+      transparent calc(
+        var(--world-diagnostics-refresh-progress) * 1turn
+      ) 1turn
+    );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(50% - 2px),
+    #000 calc(50% - 2px)
+  );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(50% - 2px),
+    #000 calc(50% - 2px)
+  );
 }
 
 .world-diagnostics-orb > span[data-level="caution"] {
@@ -9200,24 +9361,33 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   background: #3fb950;
 }
 
+/* Nine traces for the nine health dots, three across so the first three rows
+   read in the same order as the 3x3 orb beside them, then two rows of renderer
+   detail no dot owns, with the memory trace spanning the last row. Each cell is
+   short enough that all sixteen still fit the collapsed pill's width without a
+   second breakpoint. */
 .world-diagnostics-chart {
   display: grid;
   min-width: 0;
   flex: 1 1 auto;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
+  gap: 3px;
   font: 700 0.43rem/1 "ForkMesh Mono", ui-monospace, monospace;
 }
 
 .world-diagnostics-chart-metric {
   display: grid;
   min-width: 0;
-  grid-template-rows: auto 16px;
+  grid-template-rows: auto 12px;
   gap: 2px;
   padding: 3px 4px;
   border: 1px solid rgb(139 148 158 / 0.18);
   border-radius: 5px;
   background: rgb(1 4 9 / 0.38);
+}
+
+.world-diagnostics-chart-metric[data-world-diagnostics-chart-metric="memory"] {
+  grid-column: 1 / -1;
 }
 
 .world-diagnostics-chart-metric > span {
@@ -9237,15 +9407,18 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-diagnostics-chart-metric output {
-  flex: 0 0 auto;
+  overflow: hidden;
+  flex: 0 1 auto;
   color: #f0f6fc;
   font: inherit;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .world-diagnostics-chart-metric svg {
   display: block;
   width: 100%;
-  height: 16px;
+  height: 12px;
   overflow: hidden;
   border-radius: 2px;
   background:
@@ -9284,6 +9457,14 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
      Opening DEBUG still takes the full available width because CHAT closes. */
   .world-diagnostics:not(.world-chat-terminal) {
     width: min(310px, calc(100vw - 92px));
+  }
+
+  /* Two extra rows of traces would take a phone's whole lower screen, so the
+     closed pill keeps the nine dot traces plus memory here; opening DEBUG
+     brings the renderer detail traces back. */
+  .world-diagnostics:not([open])
+    .world-diagnostics-chart-metric[data-world-diagnostics-chart-detail] {
+    display: none;
   }
 }
 
@@ -12658,6 +12839,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-error-source--javascript {
   border-color: rgb(163 113 247 / 0.6);
   color: #d2a8ff;
+}
+
+.world-error-source--desktop {
+  border-color: rgb(63 185 80 / 0.6);
+  color: #56d364;
 }
 
 .world-error-sparkline {

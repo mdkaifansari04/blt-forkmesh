@@ -26,7 +26,15 @@ ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
 SCHEMA = ENTRY.parent / "schema.py"
 ENTRY_TEXT = (
-    ENTRY.read_text(encoding="utf-8") + "\n" + CATALOG.read_text(encoding="utf-8")
+    (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+) + "\n" + CATALOG.read_text(encoding="utf-8")
     + "\n" + SCHEMA.read_text(encoding="utf-8"))
 
 FUNCS = {
@@ -151,7 +159,7 @@ def _harness(accounts, notifications=None, repositories=None):
         _, rec = await _account_session_record(_env, request, data)
         return str((rec or {}).get("name") or "").strip().lower()
 
-    async def _account_alert_signed_session(_env, _request):
+    async def _account_alert_signed_session(_env, _request, _resource=""):
         # None of these requests carry the desktop's account-key signature, so
         # the alert inbox's signed fallback resolves to nobody and the session
         # gate below is what decides. The proof itself is pinned separately, in
@@ -209,6 +217,21 @@ def _harness(accounts, notifications=None, repositories=None):
             for r in notifications:
                 if r["recipient_bi"] == recipient_bi and r["dedupe_bi"] == dedupe_bi:
                     r["read_at"] = read_at
+            return
+        if sql == "DELETE FROM notifications WHERE recipient_bi=?":
+            (recipient_bi,) = args
+            notifications[:] = [
+                row for row in notifications
+                if row["recipient_bi"] != recipient_bi]
+            return
+        if sql == (
+                "DELETE FROM notifications "
+                "WHERE recipient_bi=? AND dedupe_bi=?"):
+            recipient_bi, dedupe_bi = args
+            notifications[:] = [
+                row for row in notifications
+                if not (row["recipient_bi"] == recipient_bi and
+                        row["dedupe_bi"] == dedupe_bi)]
             return
         if sql.startswith("UPDATE repositories SET data=?, is_private=?"):
             data, is_private, key_bi = args
@@ -330,6 +353,36 @@ def test_notifications_post_mark_read_requires_matching_session():
         })))
     assert ok["status"] == 200
     assert notes[0]["read_at"] == 1_000_000_000
+
+
+def test_notifications_delete_all_requires_matching_session():
+    accounts = {"alice": _user(), "mallory": _user()}
+    notes = [
+        {"recipient_bi": "bi:alice", "dedupe_bi": "a" * 64, "ts": 5,
+         "read_at": 0, "data": {"kind": "operational_alert"}},
+        {"recipient_bi": "bi:alice", "dedupe_bi": "b" * 64, "ts": 4,
+         "read_at": 0, "data": {"kind": "mention"}},
+        {"recipient_bi": "bi:mallory", "dedupe_bi": "c" * 64, "ts": 3,
+         "read_at": 0, "data": {"kind": "operational_alert"}},
+    ]
+    ns = _harness(accounts, notifications=notes)
+    env = object()
+    url = "https://forkmesh.test/api/notifications"
+
+    denied = asyncio.run(ns["notifications_handler"](
+        env, _Request("DELETE", url, body={"node": "alice", "all": True},
+                      headers=_bearer(ns, env, "mallory"))))
+    assert denied["status"] == 401
+    assert len(notes) == 3
+
+    cleared = asyncio.run(ns["notifications_handler"](
+        env, _Request("DELETE", url, body={
+            "node": "alice", "all": True,
+            "sessionToken": ns["_account_session_token"](env, "alice"),
+        })))
+    assert cleared["status"] == 200
+    assert [row["recipient_bi"] for row in ns["_notifications"]] == [
+        "bi:mallory"]
 
 
 # --- poll digest -------------------------------------------------------------

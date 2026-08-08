@@ -15,7 +15,10 @@ from pathlib import Path
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+ENTRY_TEXT = (
+    ENTRY.read_text(encoding="utf-8") + "\n"
+    + ENTRY.with_name("admin_console.py").read_text(encoding="utf-8")
+)
 
 FUNCS = {
     "_write_error_log",
@@ -133,6 +136,20 @@ def test_browser_and_worker_errors_are_labelled_apart():
     assert sent[0]["meta"]["errorSource"] == "JavaScript"
     asyncio.run(write(env, 500, "GET", "/api/sync", "boom"))
     assert sent[1]["meta"]["errorSource"] == "Worker"
+
+
+def test_desktop_reports_are_their_own_source_of_error_groups():
+    # adhoc #1538: a warning dialog on a machine nobody is watching now reaches
+    # the administrators, and reads as neither a Worker fault nor a browser one.
+    namespace, env, _rows, sent = _harness()
+    write = namespace["_write_error_log"]
+
+    asyncio.run(write(
+        env, 521, "APP", "/desktop-error/headless",
+        "desktop dialog [headless] Sync inbox — relay is rate-limited"))
+    assert sent[0]["meta"]["errorSource"] == "Desktop"
+    assert sent[0]["title"] == "New desktop error group (521)"
+    assert "Sync inbox" in sent[0]["body"]
 
 
 def test_a_failing_notification_never_breaks_error_logging():
