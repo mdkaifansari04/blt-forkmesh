@@ -2851,6 +2851,7 @@ QWidget *MainWindow::buildBranchRangePane()
         m_branchStickyPath = new QLabel(m_branchDiffSticky);
         m_branchStickyPath->setTextFormat(Qt::RichText);
         m_branchStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
+        configureDiffStickyPathLabel(m_branchStickyPath);
         sl->addWidget(m_branchStickyPath, 1);
         m_branchStickyPacman = new PacmanProgress(m_branchDiffSticky);
         m_branchStickyPacman->setToolTip(
@@ -2868,9 +2869,25 @@ QWidget *MainWindow::buildBranchRangePane()
         connect(m_branchStickyViewed, &QPushButton::clicked, this, [this] {
             if (m_branchStickyFile.isEmpty())
                 return;
-            onBranchDiffAnchorClicked(QUrl(
-                QStringLiteral("viewed:") +
-                QString::fromLatin1(QUrl::toPercentEncoding(m_branchStickyFile))));
+            // Where the review goes next, worked out before the toggle
+            // re-renders: marking a file viewed advances to the file after it so
+            // the next Viewed button lands under the same pointer. Un-viewing
+            // holds position — that click is to look at this file again.
+            const QString file = m_branchStickyFile;
+            const QString context =
+                m_branchDiffViewedContext.isEmpty()
+                    ? QStringLiteral("branch/") + m_branchDiffBranch
+                    : m_branchDiffViewedContext;
+            const int at = m_branchDiffFilePaths.indexOf(file);
+            const bool advance = !loadDiffViewed(context).contains(file) &&
+                                 at >= 0 && at + 1 < m_branchDiffFilePaths.size();
+            const QString next =
+                advance ? m_branchDiffFilePaths.at(at + 1) : QString();
+            onBranchDiffAnchorClicked(
+                QUrl(QStringLiteral("viewed:") +
+                     QString::fromLatin1(QUrl::toPercentEncoding(file))));
+            if (!next.isEmpty())
+                scrollBranchDiffToFile(next);
         });
         sl->addWidget(m_branchStickyViewed, 0);
         m_branchDiffSticky->hide();
@@ -6481,8 +6498,20 @@ void MainWindow::updateBranchDiffSticky()
         }
     }
     if (idx < 0) {
-        m_branchDiffSticky->hide();
-        return;
+        // A re-render's layout can trail by an event-loop turn, and a streamed
+        // diff starts with only the visible window's spans. Hold the current
+        // file (or the first one) rather than blanking the filename bar until
+        // positions land on the next tick.
+        for (int i = 0; i < m_branchDiffFileSpans.size(); ++i) {
+            if (m_branchDiffFileSpans.at(i).second == m_branchStickyFile) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0)
+            idx = 0;
+        fileTop = 0;
+        fileBottom = qMax(1, docHeight);
     }
     const QString cur = m_branchDiffFileSpans.at(idx).second;
 
@@ -6498,8 +6527,10 @@ void MainWindow::updateBranchDiffSticky()
     const bool isViewed = loadDiffViewed(viewedContext).contains(cur);
     if (cur != m_branchStickyFile) {
         m_branchStickyFile = cur;
-        if (m_branchStickyPath)
+        if (m_branchStickyPath) {
             m_branchStickyPath->setText(diffStickyPathHtml(cur));
+            m_branchStickyPath->setToolTip(cur); // the bar may elide a long path
+        }
     }
     if (m_branchStickyViewed)
         m_branchStickyViewed->setText(isViewed
@@ -6518,11 +6549,10 @@ void MainWindow::updateBranchDiffSticky()
 
     m_branchDiffSticky->setGeometry(0, 0, m_branchDiffView->viewport()->width(),
                                     m_branchDiffSticky->sizeHint().height());
-    // Do not cover the real per-file header while it is still visible.
-    if (viewTop <= fileTop + m_branchDiffSticky->sizeHint().height()) {
-        m_branchDiffSticky->hide();
-        return;
-    }
+    // Pinned for the whole file, its first screen included: the bar used to
+    // yield while the file's own header was still on screen, so the filename
+    // blinked away at every file boundary. Both headers are a single line now,
+    // so the handover reads as one bar staying put.
     m_branchDiffSticky->show();
     m_branchDiffSticky->raise();
 }

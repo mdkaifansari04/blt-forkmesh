@@ -757,13 +757,13 @@ QWidget *MainWindow::buildPullsTab()
     auto *diffZoomIn = new QPushButton(QStringLiteral("+"));
     diffZoomIn->setToolTip("Larger diff text");
     connect(diffZoomIn, &QPushButton::clicked, this, [this] { adjustDiffFont(1); });
-    // Files are marked viewed automatically once their end reaches the viewport.
-    // Keep the preference object for existing settings compatibility, but the PR
-    // review page now consistently follows the requested read-as-you-scroll
-    // behavior instead of making it contingent on a toolbar toggle.
+    // Auto-mark-viewed is off (autoMarkViewedOnScrollPref defaults false): files
+    // are checked off by clicking Viewed, not by scrolling past them. The setting
+    // — and this hidden button that follows it — stay for the opt-in path (the
+    // working-tree Changes header's eye toggle writes the same key).
     m_pullAutoViewedButton = new QPushButton;
     m_pullAutoViewedButton->setCheckable(true);
-    m_pullAutoViewedButton->setChecked(true);
+    m_pullAutoViewedButton->setChecked(autoMarkViewedOnScrollPref());
     m_pullAutoViewedButton->hide();
     setOcticon(m_pullAutoViewedButton, "eye", 14);
     m_pullAutoViewedButton->setToolTip(
@@ -842,6 +842,7 @@ QWidget *MainWindow::buildPullsTab()
         m_pullStickyPath = new QLabel(m_pullStickyHeader);
         m_pullStickyPath->setTextFormat(Qt::RichText);
         m_pullStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
+        configureDiffStickyPathLabel(m_pullStickyPath);
         sl->addWidget(m_pullStickyPath, 1);
         m_pullStickyPacman = new PacmanProgress(m_pullStickyHeader);
         m_pullStickyPacman->setToolTip(
@@ -862,10 +863,21 @@ QWidget *MainWindow::buildPullsTab()
             const QString context =
                 QStringLiteral("pull/") + QString::number(m_currentPullNumber);
             const QSet<QString> cur = loadDiffViewed(context);
-            setDiffViewed(context, m_pullStickyFile,
-                          !cur.contains(m_pullStickyFile));
+            const QString file = m_pullStickyFile;
+            const bool nowViewed = !cur.contains(file);
+            // Marking a file viewed walks the review on: the next file's header
+            // lands at the top of the viewport, so its Viewed button appears
+            // under the pointer that just clicked this one and the whole PR can
+            // be checked off without moving the mouse. Un-viewing stays put —
+            // the reviewer is reopening that file to look at it again.
+            const int at = m_pullFileOrder.indexOf(file);
+            const QString next =
+                nowViewed && at >= 0 && at + 1 < m_pullFileOrder.size()
+                    ? m_pullFileOrder.at(at + 1)
+                    : file;
+            setDiffViewed(context, file, nowViewed);
             renderPullDiff();
-            scrollPullDiffToFile(m_pullStickyFile);
+            scrollPullDiffToFile(next);
         });
         sl->addWidget(m_pullStickyViewed, 0);
         m_pullStickyHeader->hide();
@@ -2609,8 +2621,16 @@ void MainWindow::updatePullDiffScrollState()
         }
     }
     if (idx < 0) {
-        m_pullStickyHeader->hide();
-        return;
+        // Text layout can lag a re-render by an event-loop turn, and a streamed
+        // diff holds only the visible window's anchors at first. Never let that
+        // transient gap blank the filename bar: keep showing the current file,
+        // or the first one until positions arrive on the next tick (the same
+        // guard the working-tree diff makes).
+        idx = m_pullFileOrder.indexOf(m_pullStickyFile);
+        if (idx < 0)
+            idx = 0;
+        fileTop = 0;
+        fileBottom = qMax(1, docHeight);
     }
     const QString path = m_pullFileOrder.at(idx);
 
@@ -2627,7 +2647,12 @@ void MainWindow::updatePullDiffScrollState()
     const bool isViewed = viewed.contains(path);
     if (path != m_pullStickyFile) {
         m_pullStickyFile = path;
-        m_pullStickyPath->setText(m_pullStickyLabelHtml.value(path));
+        // Fall back to the bare path: a file whose label wasn't cached (a render
+        // still in flight) must still name itself in the bar.
+        m_pullStickyPath->setText(m_pullStickyLabelHtml.contains(path)
+                                      ? m_pullStickyLabelHtml.value(path)
+                                      : diffStickyPathHtml(path));
+        m_pullStickyPath->setToolTip(path);
         // The list follows the scroll: select whichever file is now on screen.
         selectPullFileInList(path);
     }
@@ -2648,14 +2673,11 @@ void MainWindow::updatePullDiffScrollState()
     }
 
     layoutPullStickyHeader();
-    // Do not cover the real per-file header while it is still visible. This is
-    // what produced the doubled filename/Viewed controls in the old top bar.
-    // The compact sticky bar takes over only after the natural header scrolls
-    // away.
-    if (viewTop <= fileTop + m_pullStickyHeader->sizeHint().height()) {
-        m_pullStickyHeader->hide();
-        return;
-    }
+    // Pinned for the whole file, its first screen included. The bar used to
+    // yield while the file's own header was still visible, so the filename
+    // blinked out of existence at every file boundary — exactly where a reviewer
+    // looks for it. Both headers are one line now, so the handover is a swap in
+    // place rather than the doubled two-line block that made it duck out.
     m_pullStickyHeader->show();
     m_pullStickyHeader->raise();
 }
@@ -2671,6 +2693,10 @@ void MainWindow::updatePullDiffScrollState()
 void MainWindow::applyAutoMarkViewedOnScroll()
 {
     if (!m_pullDiff || m_currentPullNumber < 0 || m_pullFileOrder.isEmpty())
+        return;
+    // Off unless explicitly opted back in: scrolling past a file no longer
+    // collapses it out from under the reviewer.
+    if (!autoMarkViewedOnScrollPref())
         return;
     QScrollBar *vbar = m_pullDiff->verticalScrollBar();
     if (!vbar)
