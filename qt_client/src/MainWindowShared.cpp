@@ -11,6 +11,7 @@
 
 #include "ActionStore.h"
 #include "AgentStore.h"
+#include "PacmanProgress.h"
 #include "StartupSplash.h"
 
 namespace forkmesh::ui {
@@ -984,8 +985,9 @@ QString diffStickyStyleSheet(int fontPt)
         .arg(qBound(8, fontPt, 28));
 }
 
-// Render a path with the directory dimmed and the basename bold, matching the
-// diff's .fdir / .fname spans.
+// Render a path with the directory dimmed and the basename bold, the way
+// diffFileLabelHtml sets one. Used where a sticky bar has only the path and not
+// the file entry the full header row is built from.
 QString diffStickyPathHtml(const QString &path)
 {
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
@@ -1289,68 +1291,68 @@ QString diffBinaryRowHtml(const DiffFileEntry &f, int columns)
         .arg(verb);
 }
 
-// Per-file header block shared by the unified and split renderers. The old text
-// badge ("ADDED"/"MODIFIED"/…) is replaced by a status octicon (the word lives
-// on as a tooltip); the path shows its directory dimmed and the basename bold;
-// a five-segment green/red proportion bar mirrors GitHub's diff-stat squares.
-// The right side carries the per-file comment icon (PR view only) and the
-// "Viewed" toggle. Returns the header div only — the caller appends the image
-// preview and opens the diff table itself (and skips both for viewed files).
-QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
+// The status word, its octicon and the octicon's tint for a changed file. One
+// table so the rendered header and the sticky bar can never disagree about how
+// a status looks.
+static void diffFileStatusLook(const DiffFileEntry &f, QString *icon, QColor *tint,
+                               QString *word)
 {
-    QString icon = QStringLiteral("file-diff");
-    QColor tint(QStringLiteral("#d29922"));
-    QString word = QStringLiteral("Modified");
+    *icon = QStringLiteral("file-diff");
+    *tint = QColor(QStringLiteral("#d29922"));
+    *word = QStringLiteral("Modified");
     if (f.status == QLatin1String("added")) {
-        icon = QStringLiteral("diff");
-        tint = QColor(QStringLiteral("#3fb950"));
-        word = QStringLiteral("Added");
+        *icon = QStringLiteral("diff");
+        *tint = QColor(QStringLiteral("#3fb950"));
+        *word = QStringLiteral("Added");
     } else if (f.status == QLatin1String("deleted")) {
-        icon = QStringLiteral("trash");
-        tint = QColor(QStringLiteral("#f85149"));
-        word = QStringLiteral("Removed");
+        *icon = QStringLiteral("trash");
+        *tint = QColor(QStringLiteral("#f85149"));
+        *word = QStringLiteral("Removed");
     } else if (f.status == QLatin1String("renamed")) {
-        icon = QStringLiteral("file-diff");
-        tint = QColor(QStringLiteral("#58a6ff"));
-        word = QStringLiteral("Renamed");
+        *tint = QColor(QStringLiteral("#58a6ff"));
+        *word = QStringLiteral("Renamed");
     }
-    const QString badge =
-        QStringLiteral("<span class='stbadge' title='%1'>%2</span>")
-            .arg(word, octiconMarkup(icon, 16, tint));
+}
 
-    const QString encPath = QString::fromLatin1(QUrl::toPercentEncoding(f.path));
-    // "Viewed" checkbox toggle (the diff is collapsed when checked). It is the
-    // control a reviewer aims at most often on this row, so it gets a real
-    // click target: a boxed pill with an oversized checkbox glyph rather than
-    // the 11px scrap of text it used to be (adhoc #223).
-    const QString viewedLink =
-        QStringLiteral("<a class='viewedtoggle%1' href='viewed:%2' title='%4'>"
-                       "&nbsp;<span class='viewedbox'>%3</span> Viewed&nbsp;</a>")
-            .arg(viewed ? QStringLiteral(" on") : QString(), encPath,
-                 viewed ? QString::fromUtf8("\xE2\x98\x91")
-                        : QString::fromUtf8("\xE2\x98\x90"),
-                 viewed ? QStringLiteral("Reopen this file")
-                        : QStringLiteral("Collapse this file and mark it viewed"));
-    // Per-file comment icon, only in the PR view (anchors enabled).
-    const QString commentIcon =
-        anchors ? QStringLiteral("<a class='filecomment' href='filecomment:%1' "
-                                 "title='Comment on this file'>&nbsp;%2&nbsp;</a>"
-                                 "&nbsp;&nbsp;")
-                      .arg(encPath, QString::fromUtf8("\xF0\x9F\x92\xAC"))
-                : QString();
+// Everything the diff knows about a file, on one line: status octicon, dimmed
+// directory + bold basename, the +/- counts with GitHub's five-block proportion
+// bar, and the status word with its change total (adhoc #423).
+//
+// Styled entirely inline rather than through the diff stylesheet's classes,
+// because this exact markup is also handed to the sticky bar's QLabel — the
+// overlay that replaces the header once it scrolls off. Both surfaces render
+// the same string with the same rich-text engine, so pinning the header is a
+// swap you cannot see.
+QString diffFileLabelHtml(const DiffFileEntry &f, bool viewed)
+{
+    QString icon, word;
+    QColor tint;
+    diffFileStatusLook(f, &icon, &tint, &word);
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    const QString muted = QStringLiteral("#8b949e");
+    const QString fg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    const QString kindFg = tint.name();
 
+    // Every span below names the font family, because a nested span in a QLabel
+    // falls back to the widget's font instead of inheriting its parent's — which
+    // set the sticky's small text in the UI's proportional face and left it a
+    // few pixels narrower than the identical run in the diff document.
+    //
     // Split the path so the directory reads as muted context and the file name
     // stands out.
     QString pathHtml;
     const int slash = f.path.lastIndexOf(QLatin1Char('/'));
     if (slash >= 0)
-        pathHtml = QStringLiteral("<span class='fdir'>%1</span>"
-                                  "<span class='fname'>%2</span>")
-                       .arg(f.path.left(slash + 1).toHtmlEscaped(),
+        pathHtml = QStringLiteral("<span style='font-family:monospace;font-size:13px;"
+                                  "color:%1'>%2</span>"
+                                  "<span style='font-family:monospace;color:%3;"
+                                  "font-weight:700;font-size:14px'>%4</span>")
+                       .arg(muted, f.path.left(slash + 1).toHtmlEscaped(), fg,
                             f.path.mid(slash + 1).toHtmlEscaped());
     else
-        pathHtml = QStringLiteral("<span class='fname'>%1</span>")
-                       .arg(f.path.toHtmlEscaped());
+        pathHtml = QStringLiteral("<span style='font-family:monospace;color:%1;"
+                                  "font-weight:700;font-size:14px'>%2</span>")
+                       .arg(fg, f.path.toHtmlEscaped());
 
     // Five filled-block glyphs split green/red by the additions' share, clamped
     // so any change of a kind shows at least one block.
@@ -1364,84 +1366,190 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
             green = 4;
         const int red = 5 - green;
         if (green > 0)
-            bar += QStringLiteral("<span class='barblk add'>%1</span>")
+            bar += QStringLiteral("<span style='font-family:monospace;"
+                                  "font-size:12px;color:#3fb950;"
+                                  "letter-spacing:-1px'>%1</span>")
                        .arg(QString(green, QChar(0x2588)));
         if (red > 0)
-            bar += QStringLiteral("<span class='barblk del'>%1</span>")
+            bar += QStringLiteral("<span style='font-family:monospace;"
+                                  "font-size:12px;color:#f85149;"
+                                  "letter-spacing:-1px'>%1</span>")
                        .arg(QString(red, QChar(0x2588)));
     }
 
     // Binary files have no line counts; show a "BIN" marker in place of +/-.
     const QString statHtml =
         f.binary
-            ? QStringLiteral("<span class='fstat'> BIN</span>")
-            : QString::fromUtf8("<span class='fstat'> <span class='sadd'>+%1</span> "
-                                "<span class='sdel'>\xE2\x88\x92%2</span> %3</span>")
+            ? QStringLiteral("<span style='font-family:monospace;color:%1;"
+                             "font-size:12px'> BIN</span>")
+                  .arg(muted)
+            : QString::fromUtf8(
+                  "<span style='font-family:monospace;font-size:12px'> "
+                  "<span style='font-family:monospace;font-size:12px;"
+                  "color:#3fb950;font-weight:700'>+%1</span> "
+                  "<span style='font-family:monospace;font-size:12px;"
+                  "color:#f85149;font-weight:700'>\xE2\x88\x92%2</span> "
+                  "%3</span>")
                   .arg(QString::number(f.adds), QString::number(f.dels), bar);
 
-    // Second header line: what happened to the file in words, plus the totals
-    // the +/- pair alone leaves you to add up. The status used to be a tooltip
-    // on the octicon, which is invisible while scanning a long diff (adhoc #223).
-    QString metaHtml = QStringLiteral("<span class='fkind %1'>%2</span>")
-                           .arg(f.status, word.toUpper());
-    if (!f.binary) {
-        metaHtml += QString::fromUtf8("<span class='fmeta'> \xC2\xB7 %1 changed "
-                                      "line%2</span>")
-                        .arg(QString::number(total),
+    // What happened to the file in words, plus the total the +/- pair alone
+    // leaves you to add up. The status used to be a tooltip on the octicon,
+    // which is invisible while scanning a long diff (adhoc #223).
+    QString metaHtml =
+        QStringLiteral("<span style='font-family:monospace;color:%1;"
+                       "font-weight:700;letter-spacing:1px;font-size:11px'>"
+                       "%2</span>")
+            .arg(kindFg, word.toUpper());
+    if (!f.binary)
+        metaHtml += QString::fromUtf8("<span style='font-family:monospace;"
+                                      "color:%1;font-size:11px'>"
+                                      " \xC2\xB7 %2 changed line%3</span>")
+                        .arg(muted, QString::number(total),
                              total == 1 ? QString() : QStringLiteral("s"));
-    } else {
-        metaHtml += QString::fromUtf8("<span class='fmeta'> \xC2\xB7 binary</span>");
-    }
+    else
+        metaHtml += QString::fromUtf8("<span style='font-family:monospace;"
+                                      "color:%1;font-size:11px'>"
+                                      " \xC2\xB7 binary</span>")
+                        .arg(muted);
     if (viewed)
-        metaHtml += QString::fromUtf8("<span class='fmeta'> \xC2\xB7 collapsed</span>");
+        metaHtml += QString::fromUtf8("<span style='font-family:monospace;"
+                                      "color:%1;font-size:11px'>"
+                                      " \xC2\xB7 collapsed</span>")
+                        .arg(muted);
 
-    return QString::fromUtf8(
-               "<a name=\"%1\"></a><div class='fileblock%6'>"
-               "<div class='fileheader'>"
-               "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-               "<td>%2<span class='fpath'>%3</span>%4<br>"
-               "<span class='fmetaline'>%8</span></td>"
-               "<td align='right'>%5%7</td></tr></table></div>")
-        .arg(f.anchor, badge, pathHtml, statHtml, commentIcon,
-             viewed ? QStringLiteral(" viewed") : QString(), viewedLink, metaHtml);
+    return QStringLiteral("<span style='font-family:monospace;font-size:13px'>"
+                          "%1&nbsp;&nbsp;%2%3&nbsp;&nbsp;%4</span>")
+        .arg(octiconMarkup(icon, 16, tint), pathHtml, statHtml, metaHtml);
 }
 
-QString diffStickyLabelHtml(const DiffFileEntry &f)
+// The read meter that rides on the right of that row: the Pac-Man chart plus
+// its "n% read" caption. The rendered header draws it at the file's resting
+// state (nothing read yet, or a full green circle once the file is collapsed)
+// and the sticky bar advances it as the file scrolls past, so the two swap
+// without the row changing shape.
+static QString diffReadMeterHtml(double progress, bool viewed)
 {
-    QString word = QStringLiteral("Modified");
-    if (f.status == QLatin1String("added"))
-        word = QStringLiteral("Added");
-    else if (f.status == QLatin1String("deleted"))
-        word = QStringLiteral("Removed");
-    else if (f.status == QLatin1String("renamed"))
-        word = QStringLiteral("Renamed");
+    const double value = viewed ? 1.0 : qBound(0.0, progress, 1.0);
+    const QColor color = value >= 0.999 ? QColor(0x3f, 0xb9, 0x50)
+                                        : QColor(0x58, 0xa6, 0xff);
+    // Only the resting states appear in a rendered diff and only whole percents
+    // while scrolling, so cache the PNGs: a hundred-file header run rasterises
+    // the chart once, and a scroll re-uses the frame it drew a tick ago. Drawn
+    // into a QImage behind a mutex because the agent view builds its diff HTML
+    // on a worker thread (renderDiffHtmlSplit) — QPixmap is GUI-thread only.
+    static QMutex cacheGuard;
+    static QHash<int, QString> cache;
+    const int percent = qBound(0, qRound(value * 100.0), 100);
+    QMutexLocker locked(&cacheGuard);
+    QString img = cache.value(percent);
+    if (img.isEmpty()) {
+        const qreal dpr = iconDevicePixelRatio();
+        QImage chart(qRound(16 * dpr), qRound(16 * dpr),
+                     QImage::Format_ARGB32_Premultiplied);
+        chart.setDevicePixelRatio(dpr);
+        chart.fill(Qt::transparent);
+        {
+            QPainter painter(&chart);
+            paintPacmanProgress(painter, QRectF(0, 0, 16, 16), value, color);
+        }
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        chart.save(&buffer, "PNG");
+        img = QStringLiteral("<img src='data:image/png;base64,%1' width='16' "
+                             "height='16'>")
+                  .arg(QString::fromLatin1(png.toBase64()));
+        cache.insert(percent, img);
+    }
+    return QStringLiteral("%1&nbsp;<span style='font-family:monospace;font-size:12px;"
+                          "color:#8b949e'>%2%&nbsp;read</span>")
+        .arg(img, QString::number(percent));
+}
+
+// "Viewed" checkbox toggle (the diff is collapsed when checked). It is the
+// control a reviewer aims at most often on this row, so it gets a real click
+// target: a boxed pill with an oversized checkbox glyph rather than the 11px
+// scrap of text it used to be (adhoc #223). Shared with the sticky bar, which
+// renders the same anchor in a QLabel and routes linkActivated() back into the
+// diff's anchor handler.
+static QString diffViewedPillHtml(const QString &path, bool viewed)
+{
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
-    const QString muted = QStringLiteral("#8b949e");
-    const QString fg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    const QString fg = viewed ? QStringLiteral("#3fb950")
+                              : (dark ? QStringLiteral("#e6edf3")
+                                      : QStringLiteral("#1f2328"));
+    const QString pillBg = dark ? QStringLiteral("#21262d") : QStringLiteral("#eaeef2");
+    return QStringLiteral("<a href='viewed:%1' title='%5' style='color:%2;"
+                          "text-decoration:none;font-family:monospace;font-size:13px;"
+                          "font-weight:700;background:%3'>"
+                          "&nbsp;<span style='font-family:monospace;font-size:24px'>%4</span>"
+                          " Viewed&nbsp;"
+                          "</a>")
+        .arg(QString::fromLatin1(QUrl::toPercentEncoding(path)), fg, pillBg,
+             viewed ? QString::fromUtf8("\xE2\x98\x91")
+                    : QString::fromUtf8("\xE2\x98\x90"),
+             viewed ? QStringLiteral("Reopen this file")
+                    : QStringLiteral("Collapse this file and mark it viewed"));
+}
 
-    QString pathHtml;
-    const int slash = f.path.lastIndexOf(QLatin1Char('/'));
-    if (slash >= 0)
-        pathHtml = QStringLiteral(
-                       "<span style='color:%1'>%2</span>"
-                       "<span style='color:%3;font-weight:600'>%4</span>")
-                       .arg(muted, f.path.left(slash + 1).toHtmlEscaped(), fg,
-                            f.path.mid(slash + 1).toHtmlEscaped());
-    else
-        pathHtml = QStringLiteral("<span style='color:%1;font-weight:600'>%2</span>")
-                       .arg(fg, f.path.toHtmlEscaped());
+// Per-file comment icon, only in the PR view (anchors enabled). Shared with the
+// sticky bar for the same reason the pill is.
+static QString diffFileCommentPillHtml(const QString &path)
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    return QStringLiteral("<a href='filecomment:%1' title='Comment on this file' "
+                          "style='color:%2;text-decoration:none;"
+                          "font-family:monospace;font-size:20px;"
+                          "background:%3'>&nbsp;%4&nbsp;</a>")
+        .arg(QString::fromLatin1(QUrl::toPercentEncoding(path)),
+             dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328"),
+             dark ? QStringLiteral("#21262d") : QStringLiteral("#eaeef2"),
+             QString::fromUtf8("\xF0\x9F\x92\xAC"));
+}
 
-    const QString statHtml =
-        f.binary
-            ? QStringLiteral(" <span style='color:%1'>BIN</span>").arg(muted)
-            : QString::fromUtf8(" <span style='color:#3fb950;font-weight:700'>+%1</span> "
-                                "<span style='color:#f85149;font-weight:700'>"
-                                "\xE2\x88\x92%2</span>")
-                  .arg(QString::number(f.adds), QString::number(f.dels));
+// The row's right-hand controls in one run: the PR view's per-file comment icon,
+// the read meter, and the Viewed pill, with the gaps between them set in the
+// row's own font. The rendered header drops this into its right-hand cell and
+// each sticky bar into its right-hand label, so the pinned copy is the same
+// pixels — right down to the width of the spacing (a QLabel resolves an
+// unstyled &nbsp; in the widget's font, the diff document in the header's).
+QString diffRowControlsHtml(const QString &path, double progress, bool viewed,
+                            bool comments)
+{
+    const QString gap = QStringLiteral("&nbsp;&nbsp;");
+    return QStringLiteral("<span style='font-family:monospace;font-size:13px'>"
+                          "%1%2%3%4</span>")
+        .arg(comments ? diffFileCommentPillHtml(path) + gap : QString(),
+             diffReadMeterHtml(progress, viewed), gap,
+             diffViewedPillHtml(path, viewed));
+}
 
-    return QStringLiteral("<span title='%1' style='font-family:monospace;"
-                          "font-size:12px'>%2 &nbsp;%3</span>")
-        .arg(word, pathHtml, statHtml);
+// Per-file header block shared by the unified and split renderers: one line
+// carrying the whole file label on the left and the comment icon (PR view
+// only), read meter and Viewed toggle on the right — the same row, in the same
+// order, that the sticky overlay pins in its place on scroll. Returns the
+// header div only — the caller appends the image preview and opens the diff
+// table itself (and skips both for viewed files).
+QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
+{
+    // The header *is* the table: Qt's rich text lays a div's background out as
+    // its own empty line and drops padding on a block, so wrapping the row in
+    // one left a bare grey band above a header that had no inset at all. The
+    // insets live on the cells, and the sticky bar copies those numbers into
+    // its layout margins to stand exactly where this row does. The meter starts
+    // at the file's resting state — nothing read yet, or full once collapsed —
+    // and the sticky takes it from there.
+    return QString::fromUtf8(
+               "<a name=\"%1\"></a><div class='fileblock%4'>"
+               "<table class='fileheader' width='100%' cellspacing='0' "
+               "cellpadding='0'><tr>"
+               "<td valign='middle' style='padding:9px 4px 9px 12px'>%2</td>"
+               "<td align='right' valign='middle' "
+               "style='padding:9px 12px 9px 4px'>%3</td>"
+               "</tr></table>")
+        .arg(f.anchor, diffFileLabelHtml(f, viewed),
+             diffRowControlsHtml(f.path, 0.0, viewed, anchors),
+             viewed ? QStringLiteral(" viewed") : QString());
 }
 
 QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
@@ -1992,38 +2100,21 @@ QString diffStyleSheet(int fontPt)
     const QString fg = dark ? "#e6edf3" : "#1f2328";
     return QStringLiteral(
                ".fileblock { margin:0; }"
-               ".fileheader { background:%1; padding:9px 12px; font-family:"
-               "monospace; font-size:13px; border:1px solid %7; }"
-               // Status octicon badge (image) sat next to the path.
-               ".stbadge { margin-right:8px; vertical-align:middle; }"
-               ".fpath { vertical-align:middle; }"
-               ".fdir { color:%2; }"
-               ".fname { font-weight:700; color:%8; font-size:14px; }"
-               ".fstat { color:%2; font-size:12px; }"
-               // Second header line: status word + change total (adhoc #223).
-               ".fmetaline { font-size:11px; }"
-               ".fkind { font-weight:700; letter-spacing:1px; color:%2; }"
-               ".fkind.added { color:#3fb950; }"
-               ".fkind.deleted { color:#f85149; }"
-               ".fkind.renamed { color:#58a6ff; }"
-               ".fkind.modified { color:#d29922; }"
-               ".fmeta { color:%2; }"
-               // GitHub-style green/red proportion bar (filled block glyphs).
-               ".barblk { font-family:monospace; letter-spacing:-1px; }"
-               ".barblk.add { color:#3fb950; } .barblk.del { color:#f85149; }"
-               // The Viewed pill and the per-file comment button: both are aimed
-               // at often enough to deserve a real target rather than 11px of
-               // text (adhoc #223). Qt's rich text has no inline border/padding,
-               // so the tap area is made of background + font size, and the
-               // markup pads with &nbsp; either side.
-               ".viewedtoggle { color:%8; text-decoration:none; font-size:13px; "
-               "font-weight:700; background:%9; }"
-               ".viewedtoggle.on { color:#3fb950; }"
-               ".viewedbox { font-size:24px; }"
-               ".filecomment { color:%8; text-decoration:none; font-size:20px; "
-               "background:%9; }"
-               ".sadd { color:#3fb950; font-weight:700; }"
-               ".sdel { color:#f85149; font-weight:700; }"
+               // The header row is a table (see diffFileHeaderHtml) and its
+               // padding sits on the cells: that is where Qt's rich text
+               // actually honours a background and an inset. No border — Qt
+               // draws a table's border on every cell edge, which put a stray
+               // divider down the middle of the row; the band's own colour is
+               // what separates it from the code below, and the sticky bar that
+               // stands in for it is bare for the same reason.
+               ".fileheader { background:%1; font-family:monospace; "
+               "font-size:13px; }"
+               ".fileheader td { background:%1; }"
+               // Everything inside that row — octicon, path, +/- stat, status
+               // word, read meter, Viewed pill — is styled inline by
+               // diffFileLabelHtml / diffRowControlsHtml instead of by classes
+               // here, because the sticky bar hands the very same markup to a
+               // QLabel, which never sees this stylesheet (adhoc #423).
                ".difftable { font-family:monospace; font-size:%10px; width:100%; "
                "border-left:1px solid %7; border-right:1px solid %7; "
                "border-bottom:1px solid %7; }"

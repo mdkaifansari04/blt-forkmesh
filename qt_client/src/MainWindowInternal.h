@@ -299,11 +299,18 @@ QString renderDiffHtmlSplit(bool split, const QString &patch,
                             const QSet<QString> &viewedFiles = {});
 bool diffSplitPref();
 void setDiffSplitPref(bool split);
-// Compact rich-text label (status octicon + muted dir / bold name + coloured
-// +adds/-dels) for a changed file, used by the PR review page's sticky header
-// overlay (adhoc #56). Unlike diffFileHeaderHtml this carries no Viewed toggle
-// or table layout — it renders inline in a QLabel.
-QString diffStickyLabelHtml(const DiffFileEntry &f);
+// The whole file label on one line — status octicon, muted dir + bold name,
+// +adds/-dels with the proportion bar, status word and change total. Rendered
+// inline (no stylesheet classes) so the diff's own header and the sticky
+// overlay that replaces it on scroll are the same pixels (adhoc #56/#423).
+QString diffFileLabelHtml(const DiffFileEntry &f, bool viewed);
+// The right-hand controls of that row, shared by the header and the sticky the
+// same way: the PR view's per-file comment icon (`comments`), the Pac-Man read
+// meter with its "n% read" caption, and the Viewed toggle. The two pills are
+// anchors ("filecomment:<path>" / "viewed:<path>"); a sticky bar renders them
+// in a QLabel and forwards linkActivated() to its diff's anchor handler.
+QString diffRowControlsHtml(const QString &path, double progress, bool viewed,
+                            bool comments);
 // Progressive, continuously scrollable diff rendering. QTextEdit::setHtml()
 // parses, styles and lays out the whole document synchronously on the GUI
 // thread, so large files are split at row boundaries and their small fragments
@@ -394,6 +401,7 @@ public:
 private:
     struct Span {
         int pos;
+        int fileIndex;
         QString path;
         QString anchor;
     };
@@ -410,7 +418,7 @@ private:
              b = b.next()) {
             const int at = b.text().indexOf(m_files.at(idx).path);
             if (at >= 0) {
-                m_spans.append({b.position() + at, m_files.at(idx).path,
+                m_spans.append({b.position() + at, idx, m_files.at(idx).path,
                                 m_files.at(idx).anchor});
                 ++idx;
             }
@@ -438,7 +446,10 @@ private:
         }
         if (syncSelection)
             selectByAnchor(cur->anchor);
-        m_sticky->setText(diffStickyPathHtml(cur->path));
+        // Same row the file's own header carries, so pinning it is invisible.
+        m_sticky->setText(cur->fileIndex >= 0 && cur->fileIndex < m_files.size()
+                              ? diffFileLabelHtml(m_files.at(cur->fileIndex), false)
+                              : diffStickyPathHtml(cur->path));
         m_sticky->setGeometry(0, 0, m_diff->viewport()->width(),
                               m_sticky->sizeHint().height());
         m_sticky->show();

@@ -2479,7 +2479,7 @@ int main(int argc, char *argv[])
             const QString scmSource =
                 scmOpened ? QString::fromUtf8(scmFile.readAll()) : QString();
             const int fadeStart = scmSource.indexOf(QStringLiteral(
-                "new QGraphicsOpacityEffect(m_scmStickyViewed)"));
+                "new QGraphicsOpacityEffect(m_scmStickyControls)"));
             const int fadeEnd =
                 scmSource.indexOf(QStringLiteral("animation->start("), fadeStart);
             QString fadeHandler;
@@ -2499,7 +2499,7 @@ int main(int argc, char *argv[])
                       fadeHandler.contains(QStringLiteral(
                           "QPointer<QGraphicsEffect>(effect)")) &&
                       fadeHandler.contains(QStringLiteral(
-                          "button->graphicsEffect() == faded")),
+                          "pill->graphicsEffect() == faded")),
                   "sticky Viewed fade deletes its opacity effect once, guarded by QPointer");
 
             RepoContributionPublicationCache scanCapacityCache(8, 2);

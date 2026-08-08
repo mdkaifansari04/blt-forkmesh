@@ -138,7 +138,6 @@ using forkmesh::ui::BusySpinner;
 using forkmesh::ui::ElidingStatusLabel;
 using forkmesh::ui::NodeDotMatrix;
 using forkmesh::ui::RelaySpeedDot;
-class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
 class ClaudeStreamSession;
@@ -7205,14 +7204,15 @@ private:
     // worktree this lets the one Git view include committed, staged, unstaged,
     // and untracked changes rather than only the branch tip.
     QString m_branchDiffWorkDir;
-    // Sticky header pinned over the branch/PR diff (same form as the PR viewer's:
-    // filename, Pac-Man read-progress chart, percent label and a Viewed toggle).
+    // Sticky header pinned over the branch/PR diff: the current file's own
+    // header row, two rich-text labels wide — the file label, and the controls
+    // (comment icon, Pac-Man read meter, Viewed pill) — both built by the same
+    // helpers that render the header itself (adhoc #423).
     QFrame *m_branchDiffSticky = nullptr;
     QLabel *m_branchStickyPath = nullptr;
-    PacmanProgress *m_branchStickyPacman = nullptr;
-    QLabel *m_branchStickyPercent = nullptr;
-    QPushButton *m_branchStickyViewed = nullptr;
+    QLabel *m_branchStickyControls = nullptr;
     QString m_branchStickyFile; // file the sticky bar currently mirrors
+    QHash<QString, QString> m_branchStickyLabelHtml; // path -> header label
     QList<QPair<int, QString>> m_branchDiffFileSpans;
     // Ordered file paths of the diff currently in the branch view, so the
     // sticky-bar span map can be rebuilt once the whole diff has landed (the
@@ -7599,11 +7599,11 @@ private:
     // reload and repo-update sweep, so this ran far more often than the working
     // tree actually changed.
     QString m_scmDiffSourceKey;
+    // The working-tree diff's sticky bar: the current file's own header row —
+    // its one-line label, and the read meter + Viewed pill (adhoc #423).
     QFrame *m_scmStickyHeader = nullptr;
     QLabel *m_scmStickyPath = nullptr;
-    PacmanProgress *m_scmStickyPacman = nullptr;
-    QLabel *m_scmStickyPercent = nullptr; // "42%" read-through of this file
-    QPushButton *m_scmStickyViewed = nullptr;
+    QLabel *m_scmStickyControls = nullptr;
     QString m_scmStickySection;      // section key shown in the sticky header
     QTimer *m_scmAutoViewedDebounce = nullptr;
     int m_scmLastAutoViewedScrollValue = 0;
@@ -7871,17 +7871,17 @@ private:
     // while scrolling the PR diff, mirroring GitHub's same-named setting).
     QPushButton *m_pullAutoViewedButton = nullptr;
     QTimer *m_pullAutoViewedDebounce = nullptr;
-    // Sticky diff header overlay (adhoc #56): floats a copy of the current
-    // file's header at the top of the scrolling diff so the filename / +/- stat
-    // / Viewed controls stay visible, with a Pac-Man progress chart that fills
-    // as the file scrolls past and auto-checks Viewed once the bottom is seen.
+    // Sticky diff header overlay (adhoc #56): floats the current file's own
+    // header row at the top of the scrolling diff so the filename / +/- stat /
+    // Viewed controls stay visible, with a Pac-Man read meter that fills as the
+    // file scrolls past and auto-checks Viewed once the bottom is seen. Two
+    // rich-text labels — file label and controls — carrying the very markup the
+    // rendered header uses (adhoc #423).
     QFrame *m_pullStickyHeader = nullptr;
     QLabel *m_pullStickyPath = nullptr;
-    PacmanProgress *m_pullStickyPacman = nullptr;
-    QLabel *m_pullStickyPercent = nullptr;
-    QPushButton *m_pullStickyViewed = nullptr;
+    QLabel *m_pullStickyControls = nullptr;
     QString m_pullStickyFile; // file path currently shown in the sticky header
-    // path -> compact rich-text label (icon + dir/name + +/-) for that header.
+    // path -> the one-line rich-text label that file's header was rendered with.
     QHash<QString, QString> m_pullStickyLabelHtml;
     // Absolute document y-position of each file header, aligned to
     // m_pullFileOrder (-1 if not located). Cached because locating anchors walks

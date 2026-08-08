@@ -8,7 +8,6 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
-#include "PacmanProgress.h"
 
 #include <QComboBox>
 #include <QDateTime>
@@ -2879,49 +2878,37 @@ QWidget *MainWindow::buildBranchRangePane()
     connect(m_branchDiffView, &QTextBrowser::anchorClicked, this,
             &MainWindow::onBranchDiffAnchorClicked);
     registerDiffView(m_branchDiffView);
-    // Sticky header overlay pinned over the diff viewport — same form as the PR
-    // viewer's: filename + Pac-Man read-progress + percent + a Viewed toggle.
+    // Sticky header overlay pinned over the diff viewport — the file's own
+    // header row, held in place once it scrolls off: the same one-line label on
+    // the left and the same comment icon / Pac-Man read meter / Viewed pill on
+    // the right, built by the same helpers the rendered header uses, so the
+    // hand-off between the two is invisible (adhoc #423).
     m_branchDiffSticky = new QFrame(m_branchDiffView->viewport());
     m_branchDiffSticky->setObjectName("diffStickyHeader");
     {
         const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
         m_branchDiffSticky->setStyleSheet(
-            QStringLiteral(
-                "#diffStickyHeader{background:%1;border-bottom:1px solid %2;}"
-                "#diffStickyHeader QLabel{background:transparent;}"
-                "#diffStickyHeader QPushButton{background:transparent;border:none;"
-                "color:%3;font-size:11px;padding:2px 4px;}"
-                "#diffStickyHeader QPushButton:hover{color:#3fb950;}")
-                .arg(dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
-                     dark ? "#8b949e" : "#57606a"));
+            QStringLiteral("#diffStickyHeader{background:%1;border:none;}"
+                           "#diffStickyHeader QLabel{background:transparent;}")
+                .arg(dark ? "#161b22" : "#f6f8fa"));
         auto *sl = new QHBoxLayout(m_branchDiffSticky);
-        sl->setContentsMargins(10, 4, 8, 4);
-        sl->setSpacing(8);
+        // Matches the rendered header's padding (9px 12px) so the pinned row is
+        // the same height as the one it stands in for.
+        sl->setContentsMargins(12, 9, 12, 9);
+        sl->setSpacing(0);
         m_branchStickyPath = new QLabel(m_branchDiffSticky);
         m_branchStickyPath->setTextFormat(Qt::RichText);
         m_branchStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
         sl->addWidget(m_branchStickyPath, 1);
-        m_branchStickyPacman = new PacmanProgress(m_branchDiffSticky);
-        m_branchStickyPacman->setToolTip(
-            QStringLiteral("How much of this file you've scrolled through"));
-        sl->addWidget(m_branchStickyPacman, 0);
-        m_branchStickyPercent = new QLabel(QStringLiteral("0% read"),
-                                           m_branchDiffSticky);
-        m_branchStickyPercent->setObjectName("hintLabel");
-        m_branchStickyPercent->setMinimumWidth(52);
-        m_branchStickyPercent->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        sl->addWidget(m_branchStickyPercent, 0);
-        m_branchStickyViewed = new QPushButton(m_branchDiffSticky);
-        m_branchStickyViewed->setCursor(Qt::PointingHandCursor);
-        m_branchStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
-        connect(m_branchStickyViewed, &QPushButton::clicked, this, [this] {
-            if (m_branchStickyFile.isEmpty())
-                return;
-            onBranchDiffAnchorClicked(QUrl(
-                QStringLiteral("viewed:") +
-                QString::fromLatin1(QUrl::toPercentEncoding(m_branchStickyFile))));
-        });
-        sl->addWidget(m_branchStickyViewed, 0);
+        m_branchStickyControls = new QLabel(m_branchDiffSticky);
+        m_branchStickyControls->setTextFormat(Qt::RichText);
+        m_branchStickyControls->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+        m_branchStickyControls->setCursor(Qt::PointingHandCursor);
+        connect(m_branchStickyControls, &QLabel::linkActivated, this,
+                [this](const QString &link) {
+                    onBranchDiffAnchorClicked(QUrl(link));
+                });
+        sl->addWidget(m_branchStickyControls, 0);
         m_branchDiffSticky->hide();
     }
     // Debounce the auto-mark-viewed sweep off scroll ticks, exactly as the PR
@@ -5201,11 +5188,16 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
                                         anchorFile, notes, viewed);
     m_branchDiffFilePaths.clear();
     m_branchDiffFileAnchors.clear();
+    m_branchStickyLabelHtml.clear();
     QStringList rangeStatuses;
     for (const DiffFileEntry &f : files) {
         m_branchDiffFilePaths.append(f.path);
         m_branchDiffFileAnchors.append(f.anchor);
         rangeStatuses.append(f.status);
+        // The sticky bar pins this file's own header row, so it reuses the very
+        // label that header was rendered with (adhoc #423).
+        m_branchStickyLabelHtml.insert(f.path,
+                                       diffFileLabelHtml(f, viewed.contains(f.path)));
     }
     showRangeFilesInSourceControl(m_branchDiffFilePaths, rangeStatuses);
 
@@ -6547,23 +6539,15 @@ void MainWindow::updateBranchDiffSticky()
     const bool isViewed = loadDiffViewed(viewedContext).contains(cur);
     if (cur != m_branchStickyFile) {
         m_branchStickyFile = cur;
+        // The label the file's own header carries, built once per render.
         if (m_branchStickyPath)
-            m_branchStickyPath->setText(diffStickyPathHtml(cur));
+            m_branchStickyPath->setText(m_branchStickyLabelHtml.value(cur));
     }
-    if (m_branchStickyViewed)
-        m_branchStickyViewed->setText(isViewed
-                                          ? QString::fromUtf8("\xE2\x98\x91 Viewed")
-                                          : QString::fromUtf8("\xE2\x98\x90 Viewed"));
-    if (m_branchStickyPacman) {
-        m_branchStickyPacman->setColor(progress >= 0.999 || isViewed
-                                           ? QColor(0x3f, 0xb9, 0x50)
-                                           : QColor(0x58, 0xa6, 0xff));
-        m_branchStickyPacman->setProgress(isViewed ? 1.0 : progress);
-    }
-    if (m_branchStickyPercent) {
-        const int percent = isViewed ? 100 : qBound(0, qRound(progress * 100.0), 100);
-        m_branchStickyPercent->setText(QStringLiteral("%1% read").arg(percent));
-    }
+    // The right-hand controls carry the read meter, so they refresh every tick.
+    // Comment icon only in PR mode, exactly as the rendered header does it.
+    if (m_branchStickyControls)
+        m_branchStickyControls->setText(diffRowControlsHtml(
+            cur, progress, isViewed, m_branchDiffPullNumber >= 0));
 
     m_branchDiffSticky->setGeometry(0, 0, m_branchDiffView->viewport()->width(),
                                     m_branchDiffSticky->sizeHint().height());
