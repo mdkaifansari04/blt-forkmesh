@@ -5913,9 +5913,19 @@ private:
     // to its new anchor (a card arrived or left) instead of snapping it there.
     void positionTopMessageBubble(bool animate = false);
     QRect topMessageBubbleRect(); // calculates the prompt-anchored stack geometry
+    // The composer the stack hangs above: the prompt frame, or the collapsed
+    // avatar that stands in for it. Null while it is popped out into its own
+    // window, which is not part of this window's geometry at all.
+    QWidget *topMessagePromptAnchor() const;
+    // Highest y the stack may occupy, so it cannot climb over the toolbars every
+    // page keeps along its top edge (adhoc #1621).
+    int topMessageStackCeiling(int promptTop, int margin) const;
     // Height the stacked bubble lines need at a given text width, measured line
     // by line rather than from the container's own sizeHint.
     int topMessageBodyHeight(int textWidth) const;
+    // How far below its anchor a card starts its rise, kept inside the gap above
+    // the prompt so no frame of the motion covers the composer.
+    int topMessageEntryRise(const QRect &target) const;
     // Park the queued-card column under the active toast, optionally gliding.
     void placeTopMessageQueue(const QRect &bubble, bool animate);
     // Slide a freshly shown bubble up into its anchor.
@@ -6498,6 +6508,10 @@ private:
     QPropertyAnimation *m_topMessageFlight = nullptr;
     // Same motion for the queued column beneath it, so the two move as one stack.
     QPropertyAnimation *m_topMessageQueueFlight = nullptr;
+    // Top edge of the composer in this window's coordinates, refreshed by every
+    // topMessageBubbleRect(). The entry motion clamps its rise to what is left
+    // above this line so no frame of it paints over the prompt (adhoc #1621).
+    int m_topMessagePromptFloor = -1;
     bool m_topMessageSlidingOut = false;  // countdown finished; bubble is easing off the right edge
     bool m_topMessageEntering = false;    // wait for the entry glide before starting its countdown
     bool m_topMessageShifting = false;    // gliding up/down because the queue changed depth

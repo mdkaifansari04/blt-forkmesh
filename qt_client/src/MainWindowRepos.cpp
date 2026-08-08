@@ -8176,7 +8176,7 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         /*error=*/true);
             });
     trackProcessActivity(process, QStringLiteral("sync"),
-                         QStringLiteral("git ") + args.join(QLatin1Char(' ')));
+                         gitArgsCrumb(QStringLiteral("git"), args));
     process->start("git", args);
 }
 

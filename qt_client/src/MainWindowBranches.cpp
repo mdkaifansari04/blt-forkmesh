@@ -969,8 +969,7 @@ void startDetachedGit(DetachedGitRequest request)
             git->kill(); // finished() follows and releases the slot
     });
     trackProcessActivity(git, QStringLiteral("git"),
-                         QStringLiteral("git ") +
-                             request.args.join(QLatin1Char(' ')));
+                         gitArgsCrumb(QStringLiteral("git"), request.args));
     git->start(QStringLiteral("git"), request.args);
     // These reads never feed the child stdin; closing the channel now returns a
     // descriptor per in-flight process instead of holding it open until exit.

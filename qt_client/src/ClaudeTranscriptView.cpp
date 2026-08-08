@@ -1680,9 +1680,16 @@ bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringLi
     // the number too so we can require a real 1, 2, 3, … sequence.
     static const QRegularExpression item(
         QStringLiteral("(?m)^[ \\t]{0,3}(\\d{1,2})[.)][ \\t]+(.+)$"));
+    // A clarifying question offers a handful of short answers. These bounds are
+    // what separates it from a numbered *report* — "what changed: 1. … 2. … 3. …"
+    // — which is the agent talking, not asking (adhoc #1626).
+    static constexpr int kMaxOptions = 6;      // more than this is a list, not a choice
+    static constexpr int kMaxOptionChars = 160; // an answer is a phrase, not a paragraph
+    static constexpr int kMaxTrailerChars = 200; // room for a closing "which one?"
     QStringList found;
     QList<int> numbers;
     int prevEnd = -1;
+    int firstStart = -1;
     int lastEnd = -1;
     bool contiguous = true;
     auto it = item.globalMatch(markdown);
@@ -1695,12 +1702,15 @@ bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringLi
             && !QStringView(markdown).mid(prevEnd, m.capturedStart(0) - prevEnd)
                     .trimmed().isEmpty())
             contiguous = false;
+        if (firstStart < 0)
+            firstStart = m.capturedStart(0);
         numbers << m.captured(1).toInt();
         found << m.captured(2).trimmed();
         prevEnd = lastEnd = m.capturedEnd(0);
     }
-    // Require at least two options so a lone numbered line isn't a "choice".
-    if (found.size() < 2 || !contiguous)
+    // Require at least two options so a lone numbered line isn't a "choice", and
+    // cap the count so a long enumeration reads as prose.
+    if (found.size() < 2 || found.size() > kMaxOptions || !contiguous)
         return false;
     // The options must be numbered sequentially from 1 (1, 2, 3, …). Scattered
     // or restarting numbers are ordinary prose that merely begins with a digit.
@@ -1708,19 +1718,39 @@ bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringLi
         if (numbers.at(i) != i + 1)
             return false;
     }
-    // Treat plain lists as choices when they look like a clarifying question.
-    // Prefer an explicit question mark before the list, but also accept intent
-    // phrases like "choose", "select", "want to", and "should" when the
-    // prompt is obvious but not punctuated as a question. Also keep these
-    // around when output-style prompts omitted punctuation (for example:
-    // "output: 1) ... 2) ...").
-    const QString leadIn = QStringView(markdown).left(lastEnd).toString();
-    if (!leadIn.contains(QLatin1Char('?'))) {
+    // An answer the user can click is short. A numbered paragraph — a bolded
+    // heading plus its rationale — is a section of a report.
+    for (const QString &opt : std::as_const(found)) {
+        if (opt.size() > kMaxOptionChars)
+            return false;
+    }
+    // The list has to end the turn. Prose continuing past it ("Verification —
+    // …") means the agent had more to say and is not blocked on an answer; only
+    // a short closing line ("Which would you prefer?") belongs after a question.
+    const QString trailer = QStringView(markdown).mid(lastEnd).toString().trimmed();
+    if (trailer.size() > kMaxTrailerChars)
+        return false;
+    // Finally, something has to actually ask. The prompt is the line right above
+    // the list (an earlier paragraph's question mark belongs to an earlier
+    // thought) or the short closing line below it. The cues stay narrow on
+    // purpose: "can", "should", "want" and friends match ordinary prose — a
+    // report saying "an entry rise that can't cross it" is not a question.
+    QString prompt;
+    const QStringList leadInLines =
+        QStringView(markdown).left(qMax(firstStart, 0)).toString().split(QLatin1Char('\n'));
+    for (int i = leadInLines.size() - 1; i >= 0; --i) {
+        if (!leadInLines.at(i).trimmed().isEmpty()) {
+            prompt = leadInLines.at(i).trimmed();
+            break;
+        }
+    }
+    const QString ask = prompt + QLatin1Char('\n') + trailer;
+    if (!ask.contains(QLatin1Char('?'))) {
         static const QRegularExpression cue(QStringLiteral(
-            "(?i)\\b(choose|select|pick|decide|option|should|would|could|can|"
-            "let's|let us|want|would you|can you|should we|output|result|message|"
-            "which one|pick one|select one|choose from|please)\\b"));
-        if (!cue.match(leadIn).hasMatch())
+            "(?i)\\b(which|choose|choice|choices|select|pick|prefer|"
+            "do you want|would you like|want me to|should i|shall i|should we|"
+            "let me know|your call|tell me|option|options)\\b"));
+        if (!cue.match(ask).hasMatch())
             return false;
     }
 
