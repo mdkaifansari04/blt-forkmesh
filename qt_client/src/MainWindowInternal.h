@@ -309,8 +309,11 @@ QString diffStickyLabelHtml(const DiffFileEntry &f);
 // parses, styles and lays out the whole document synchronously on the GUI
 // thread, so large files are split at row boundaries and their small fragments
 // stream one event-loop turn at a time. No diff rows are discarded.
+// `endCap` off suppresses the end-of-diff bar for documents that carry no diff
+// (plain notices, the merge celebration) — there it is only a black line drawn
+// across the pane (adhoc #1631).
 void renderDiffStreamed(QTextEdit *view, const QString &html,
-                        const QString &styleSheet);
+                        const QString &styleSheet, bool endCap = true);
 // Repaint the streamed document with a new stylesheet (diff zoom/theme
 // changes) without retaining a second copy of the complete source HTML on the
 // widget.
@@ -12110,6 +12113,64 @@ inline QString mergeCelebrationRowHref(const MergeCelebrationRow &row)
                                      : QLatin1String("fmcommit:") + row.mergeCommit;
 }
 
+// One agent's whole day on the base branch, summed across every branch they
+// landed. Only agents with more than one landing get a tally: a "1 merge" line
+// would only restate the row it came from.
+struct MergeActorTally {
+    QString actor;
+    QPixmap avatar;
+    int merges = 0;
+    int files = 0;
+    int insertions = 0;
+    int deletions = 0;
+};
+
+// The day's repeat mergers, busiest first (ties broken by name so the order
+// doesn't shuffle between renders). Feed this the whole day, not the
+// display-capped list below it: an agent whose landings were cut from the list
+// still counted them.
+inline QList<MergeActorTally> mergeCelebrationTallies(
+    const QList<MergeCelebrationRow> &today)
+{
+    QList<MergeActorTally> tallies;
+    for (const MergeCelebrationRow &row : today) {
+        if (row.actor.isEmpty())
+            continue; // an unattributed landing belongs to nobody's tally
+        int at = -1;
+        for (int i = 0; i < tallies.size(); ++i) {
+            if (tallies.at(i).actor == row.actor) {
+                at = i;
+                break;
+            }
+        }
+        if (at < 0) {
+            MergeActorTally fresh;
+            fresh.actor = row.actor;
+            tallies.append(fresh);
+            at = tallies.size() - 1;
+        }
+        MergeActorTally &tally = tallies[at];
+        ++tally.merges;
+        tally.files += qMax(0, row.files);
+        tally.insertions += qMax(0, row.insertions);
+        tally.deletions += qMax(0, row.deletions);
+        if (tally.avatar.isNull())
+            tally.avatar = row.avatar;
+    }
+    tallies.erase(std::remove_if(tallies.begin(), tallies.end(),
+                                 [](const MergeActorTally &tally) {
+                                     return tally.merges < 2;
+                                 }),
+                  tallies.end());
+    std::sort(tallies.begin(), tallies.end(),
+              [](const MergeActorTally &a, const MergeActorTally &b) {
+                  if (a.merges != b.merges)
+                      return a.merges > b.merges;
+                  return a.actor.localeAwareCompare(b.actor) < 0;
+              });
+    return tallies;
+}
+
 // The pane a branch's range diff hands over to once that branch has been merged
 // and deleted. It used to be one grey line ("Merged X into main and deleted it.
 // Pick a branch to see its changes.") — a thin reward for the moment work
@@ -12122,11 +12183,14 @@ inline QString mergeCelebrationRowHref(const MergeCelebrationRow &row)
 // branch since midnight, newest first, with `landed`'s row marked current.
 // `commits` is how many commits the celebrated merge brought (-1 unknown), and
 // `truncated` how many of today's rows were dropped past the display cap — a
-// list that silently stopped short would read as the whole day.
+// list that silently stopped short would read as the whole day. `tallies` is
+// the day summed per agent for everyone who landed more than one branch
+// (mergeCelebrationTallies over the *whole* day, before the cap).
 inline QString mergeCelebrationHtml(const MergeCelebrationRow &landed,
                                     const QString &base,
                                     const QList<MergeCelebrationRow> &today,
-                                    int commits, int truncated)
+                                    int commits, int truncated,
+                                    const QList<MergeActorTally> &tallies = {})
 {
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
     const QString fg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
@@ -12143,19 +12207,22 @@ inline QString mergeCelebrationHtml(const MergeCelebrationRow &landed,
 
     // Change totals read the same way everywhere in this app: files first, then
     // the green/red pair.
-    const auto churn = [&](const MergeCelebrationRow &row) {
+    const auto churn = [&](int files, int insertions, int deletions) {
         QStringList parts;
-        if (row.files > 0)
-            parts << (row.files == 1 ? QStringLiteral("1 file")
-                                     : QStringLiteral("%1 files").arg(row.files));
-        if (row.insertions > 0)
+        if (files > 0)
+            parts << (files == 1 ? QStringLiteral("1 file")
+                                 : QStringLiteral("%1 files").arg(files));
+        if (insertions > 0)
             parts << QStringLiteral("<span style='color:#3fb950'>+%1</span>")
-                         .arg(row.insertions);
-        if (row.deletions > 0)
+                         .arg(insertions);
+        if (deletions > 0)
             parts << QString::fromUtf8("<span style='color:#f85149'>\xE2\x88\x92%1"
                                        "</span>")
-                         .arg(row.deletions);
+                         .arg(deletions);
         return parts.join(QStringLiteral(" "));
+    };
+    const auto rowChurnOf = [&](const MergeCelebrationRow &row) {
+        return churn(row.files, row.insertions, row.deletions);
     };
 
     QString html = QStringLiteral("<div style='padding:6px 10px 10px 10px;'>");
@@ -12172,7 +12239,7 @@ inline QString mergeCelebrationHtml(const MergeCelebrationRow &landed,
     if (commits > 0)
         credit << (commits == 1 ? QStringLiteral("1 commit")
                                 : QStringLiteral("%1 commits").arg(commits));
-    const QString landedChurn = churn(landed);
+    const QString landedChurn = rowChurnOf(landed);
     if (!landedChurn.isEmpty())
         credit << landedChurn;
 
@@ -12197,6 +12264,48 @@ inline QString mergeCelebrationHtml(const MergeCelebrationRow &landed,
             "<div style='font-size:12px;color:%5;'>%6</div></td></tr></table>")
             .arg(green, fg, landed.branch.toHtmlEscaped(), escapedBase, muted,
                  credit.join(QString::fromUtf8(" \xC2\xB7 ")));
+
+    // ---- The day per agent, for everyone who landed more than one branch: a
+    // single merge is already a row below, but a run of them is the day's story
+    // and the list alone makes you count it out by hand (adhoc #1631).
+    if (!tallies.isEmpty()) {
+        html += QStringLiteral(
+                    "<p style='color:%1;font-size:12px;font-weight:700;"
+                    "margin-top:16px;margin-bottom:4px;'>"
+                    "MORE THAN ONE TODAY</p>")
+                    .arg(muted);
+        html += QStringLiteral(
+            "<table width='100%' cellspacing='3' cellpadding='0'>");
+        for (const MergeActorTally &tally : tallies) {
+            html += QStringLiteral("<tr><td width='38' align='center' "
+                                   "valign='middle' style='background:%1;"
+                                   "padding:7px 0 7px 8px;'>%2</td>")
+                        .arg(rowBg,
+                             tally.avatar.isNull()
+                                 ? QString()
+                                 : inlinePixmapMarkup(tally.avatar, 22));
+            const QString tallyChurn =
+                churn(tally.files, tally.insertions, tally.deletions);
+            html += QStringLiteral(
+                        "<td valign='middle' style='background:%1;"
+                        "padding:7px 10px;'>"
+                        "<b style='color:%2'>%3</b>"
+                        "<div style='font-size:11px;color:%4;'>%5</div></td>")
+                        .arg(rowBg, fg, tally.actor.toHtmlEscaped(), muted,
+                             tallyChurn);
+            // The count is the point of this section, so it gets its own
+            // right-hand column rather than a clause in the muted line.
+            html += QStringLiteral(
+                        "<td width='90' align='right' valign='middle' "
+                        "style='background:%1;padding:7px 10px 7px 0;'>"
+                        "<b style='color:%2;font-size:16px;'>%4</b>"
+                        "<span style='color:%3;font-size:11px;'> merges</span>"
+                        "</td></tr>")
+                        .arg(rowBg, green, muted)
+                        .arg(tally.merges);
+        }
+        html += QStringLiteral("</table>");
+    }
 
     // ---- Everything that landed today, and who was behind each one.
     if (!today.isEmpty()) {
@@ -12236,7 +12345,7 @@ inline QString mergeCelebrationHtml(const MergeCelebrationRow &landed,
             if (row.whenSecs > 0)
                 meta << QDateTime::fromSecsSinceEpoch(row.whenSecs)
                             .toString(QStringLiteral("HH:mm"));
-            const QString rowChurn = churn(row);
+            const QString rowChurn = rowChurnOf(row);
             if (!rowChurn.isEmpty())
                 meta << rowChurn;
             html += QStringLiteral(

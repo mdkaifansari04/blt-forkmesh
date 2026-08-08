@@ -54,6 +54,7 @@
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTextBlock>
 #include <QTextBrowser>
 #include <QWidget>
 
@@ -6417,6 +6418,75 @@ int main(int argc, char *argv[])
             check(html.contains(QStringLiteral("href='fmbranch:main'")),
                   QStringLiteral("the celebration links back to the base branch "
                                  "(adhoc #1615)"));
+
+            // adhoc #1631: the day per agent, for everyone who landed more than
+            // one branch. A single landing is already its own row below, so a
+            // tally of one would only restate it.
+            forkmesh::ui::MergeCelebrationRow second = landed;
+            second.branch = QStringLiteral("agent/adhoc-1631-more");
+            second.mergeCommit = QString(40, QLatin1Char('c'));
+            second.current = false;
+            second.files = 2;
+            second.insertions = 30;
+            second.deletions = 5;
+            const QList<forkmesh::ui::MergeActorTally> tallies =
+                forkmesh::ui::mergeCelebrationTallies({landed, second, kept});
+            check(tallies.size() == 1 &&
+                      tallies.first().actor == QStringLiteral("Opus 5") &&
+                      tallies.first().merges == 2 &&
+                      tallies.first().files == 5 &&
+                      tallies.first().insertions == 442 &&
+                      tallies.first().deletions == 42,
+                  QString("an agent's day is summed across its landings, and a "
+                          "single landing raises no tally (adhoc #1631, %1 "
+                          "tallies)").arg(tallies.size()));
+
+            const QString withTallies = forkmesh::ui::mergeCelebrationHtml(
+                landed, QStringLiteral("main"), {landed, second, kept}, 4, 0,
+                tallies);
+            check(withTallies.contains(QStringLiteral("MORE THAN ONE TODAY")) &&
+                      withTallies.contains(
+                          QStringLiteral("font-size:16px;'>2</b>")) &&
+                      withTallies.contains(QStringLiteral(" merges</span>")),
+                  QString("the celebration shows how many each repeat merger "
+                          "landed today (adhoc #1631, html = %1)")
+                      .arg(withTallies.section(QStringLiteral("MORE THAN ONE"), 1, 1)
+                               .left(200)));
+            check(forkmesh::ui::mergeCelebrationTallies({landed, kept}).isEmpty() &&
+                      !html.contains(QStringLiteral("MORE THAN ONE TODAY")),
+                  QStringLiteral("a day where everyone landed one branch raises "
+                                 "no tallies, so the section is absent rather "
+                                 "than empty (adhoc #1631)"));
+
+            // The end-of-diff bar is drawn as an image cap appended to the
+            // rendered document. Under a page carrying no diff — this
+            // celebration, or a plain notice — it was just a black line across
+            // the pane, so the renderer can be asked to leave it off.
+            const auto endCapDrawn = [](const QTextEdit &view) {
+                for (QTextBlock block = view.document()->begin(); block.isValid();
+                     block = block.next())
+                    for (QTextBlock::iterator it = block.begin(); !it.atEnd();
+                         ++it)
+                        if (it.fragment().isValid() &&
+                            it.fragment().charFormat().isImageFormat())
+                            return true;
+                return false;
+            };
+            const QString notice =
+                QStringLiteral("<p style='color:#8b949e'>Merged it.</p>");
+            QTextBrowser barred;
+            forkmesh::ui::renderDiffStreamed(&barred, notice,
+                                             forkmesh::ui::diffStyleSheet(12));
+            check(endCapDrawn(barred),
+                  QStringLiteral("a diff still ends in its end-of-diff bar "
+                                 "(adhoc #1631)"));
+            QTextBrowser bare;
+            forkmesh::ui::renderDiffStreamed(&bare, notice,
+                                             forkmesh::ui::diffStyleSheet(12),
+                                             /*endCap=*/false);
+            check(!endCapDrawn(bare),
+                  QStringLiteral("a page with no diff on it draws no bar under "
+                                 "itself (adhoc #1631)"));
         }
 
         // Leave the fixture as the branch/merge tests below expect it.

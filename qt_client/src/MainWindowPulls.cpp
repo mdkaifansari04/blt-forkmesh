@@ -2230,11 +2230,11 @@ void MainWindow::registerDiffView(QTextEdit *view)
 // Set a diff viewer's HTML. The streamer owns the only retained rendered
 // fragments; this avoids duplicating a large source string on the widget solely
 // for later zoom changes.
-void MainWindow::setDiffHtml(QTextEdit *view, const QString &html)
+void MainWindow::setDiffHtml(QTextEdit *view, const QString &html, bool endCap)
 {
     if (!view)
         return;
-    renderDiffStreamed(view, html, diffStyleSheet(m_diffFontPt));
+    renderDiffStreamed(view, html, diffStyleSheet(m_diffFontPt), endCap);
 }
 
 // A diff view's document is complete (nothing left streaming): refresh the state

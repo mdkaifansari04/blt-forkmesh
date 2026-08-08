@@ -4556,7 +4556,10 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
                                      "changes.</p>")
                           .arg(m_branchMergedFlashBranch.toHtmlEscaped(),
                                base.toHtmlEscaped())
-                    : m_branchMergedFlashHtml);
+                    : m_branchMergedFlashHtml,
+                // No diff on this page, so no end-of-diff bar: it drew a black
+                // line under the celebration (adhoc #1631).
+                /*endCap=*/false);
         return;
     }
 
@@ -4833,12 +4836,16 @@ QString MainWindow::mergedBranchCelebrationHtml(const QString &branch,
             commits = QString::fromUtf8(out).trimmed().toInt();
     }
 
+    // Per-agent totals come off the whole day, before the display cap: an agent
+    // whose landings were cut from the list still merged them (adhoc #1631).
+    const QList<MergeActorTally> tallies = mergeCelebrationTallies(rows);
+
     int truncated = 0;
     if (rows.size() > kMergeCelebrationRowLimit) {
         truncated = rows.size() - kMergeCelebrationRowLimit;
         rows = rows.mid(0, kMergeCelebrationRowLimit);
     }
-    return mergeCelebrationHtml(landed, base, rows, commits, truncated);
+    return mergeCelebrationHtml(landed, base, rows, commits, truncated, tallies);
 }
 
 // Drop the check. Deliberately doesn't repaint the panel: the row disappears at
