@@ -6162,6 +6162,42 @@ int MainWindow::topMessageBodyHeight(int textWidth) const
     return hfw > 0 ? hfw : layout->sizeHint().height();
 }
 
+// The widget the stack hangs above. Normally the composer frame; when the
+// composer is collapsed to its round avatar the host is that button, and the
+// stack has to clear it too rather than sitting on top of it. A popped-out
+// composer lives in its own top-level window — it is not in this window's
+// hierarchy, so mapTo() would walk off the end of it — and then there is nothing
+// down there to avoid.
+QWidget *MainWindow::topMessagePromptAnchor() const
+{
+    for (QWidget *candidate : {static_cast<QWidget *>(m_promptWrapper),
+                               static_cast<QWidget *>(m_promptOverlayHost)}) {
+        if (candidate && candidate->isVisible() && isAncestorOf(candidate))
+            return candidate;
+    }
+    return nullptr;
+}
+
+// Highest y the stack may reach. Below the window chrome, and no further up than
+// kToastStackHeightShare of the band between the content area and the prompt, so
+// a burst of tall cards stays in the lower band beside the composer instead of
+// climbing over the toolbars a page keeps along its top edge (adhoc #1621).
+int MainWindow::topMessageStackCeiling(int promptTop, int margin) const
+{
+    int contentTop = margin;
+    if (m_globalOverlayHost && isAncestorOf(m_globalOverlayHost))
+        contentTop = qMax(contentTop,
+                          m_globalOverlayHost->mapTo(this, QPoint()).y() + margin);
+    const int band = qMax(0, promptTop - contentTop);
+    int ceiling = promptTop - qRound(band * kToastStackHeightShare);
+    // A window too short for that share to hold one readable card keeps the card:
+    // reaching a little higher beats a stack nothing can be read in.
+    ceiling = qMin(ceiling, promptTop - kToastMinStackHeight);
+    // 40px is the shortest bubble the layout below will produce, so the ceiling
+    // can never be pushed past the point where even that would not fit.
+    return qBound(margin, ceiling, qMax(margin, promptTop - 40));
+}
+
 // Calculate a readable floating-bubble rectangle directly above the prompt.
 // The prompt can be reparented into another page (for example Git's commit
 // view), so its current geometry — not the window bottom — is the anchor.
@@ -6174,13 +6210,23 @@ QRect MainWindow::topMessageBubbleRect()
     const int desired = 460;
     const int bubbleWidth = qMin(available, desired);
     m_topMessageContainer->setFixedWidth(bubbleWidth);
-    // The bubble may grow until it would run past the top of the window; only
-    // beyond that does the text scroll.
-    int promptTop = height() - margin;
-    if (m_promptWrapper && m_promptWrapper->isVisible())
-        promptTop = m_promptWrapper->mapTo(this, QPoint()).y() - margin;
-    const int roomForBubble = qMax(40, promptTop - margin);
-    const int maxBubbleHeight = qBound(40, roomForBubble, qMax(40, height() - 2 * margin));
+    // Floor: the composer's top edge, less the gap the stack keeps clear of it.
+    // With no composer on screen the window's own bottom edge stands in.
+    m_topMessagePromptFloor = height();
+    if (QWidget *anchor = topMessagePromptAnchor())
+        m_topMessagePromptFloor = anchor->mapTo(this, QPoint()).y();
+    const int promptTop = m_topMessagePromptFloor - kToastPromptGap;
+    // Ceiling: the stack grows upward from the floor until it reaches this, and
+    // only beyond it does the text scroll.
+    const int ceiling = topMessageStackCeiling(promptTop, margin);
+    const int roomForBubble = qMax(40, promptTop - ceiling);
+    int maxBubbleHeight = qBound(40, roomForBubble, qMax(40, height() - 2 * margin));
+    // Cards are waiting behind this one: leave them their share of the stack
+    // rather than letting one long failure fill it and hide the column.
+    if (!m_topMessageQueue.isEmpty())
+        maxBubbleHeight =
+            qBound(qMin(kToastMinActiveCard, maxBubbleHeight),
+                   qRound(roomForBubble * kToastActiveCardShare), maxBubbleHeight);
     auto *column = m_topMessageContainer->layout();
     int bubbleHeight = 0;
     if (column && m_topMessage && m_topMessageScroll) {
@@ -6257,9 +6303,20 @@ QRect MainWindow::topMessageBubbleRect()
     } else if (m_topMessageQueueScroll) {
         m_topMessageQueueScroll->hide();
     }
-    const int y = qMax(margin, promptTop - bubbleHeight - queueHeight -
-                                   (queueHeight > 0 ? kToastStackGap : 0));
+    const int y = qMax(ceiling, promptTop - bubbleHeight - queueHeight -
+                                    (queueHeight > 0 ? kToastStackGap : 0));
     return QRect(x, y, bubbleWidth, bubbleHeight);
+}
+
+// How far a card may be dropped below its anchor to rise back into it. The whole
+// point of the motion is that it happens in the gap the anchor keeps above the
+// prompt, so a card that would be pushed past the composer's top edge rises from
+// wherever is left instead — no frame of the entry ever covers the prompt.
+int MainWindow::topMessageEntryRise(const QRect &target) const
+{
+    if (m_topMessagePromptFloor < 0)
+        return kToastEntryRise;
+    return qBound(0, m_topMessagePromptFloor - 1 - target.bottom(), kToastEntryRise);
 }
 
 // Park the queued column immediately under the active toast. Animated, it rises
@@ -6281,7 +6338,7 @@ void MainWindow::placeTopMessageQueue(const QRect &bubble, bool animate)
     // first card rises out of the gap the prompt anchor reserves beneath it.
     const bool hadColumn = m_topMessageQueue.size() > 1 && current.isValid();
     const QRect source =
-        hadColumn ? current : target.translated(0, kToastEntryRise);
+        hadColumn ? current : target.translated(0, topMessageEntryRise(target));
     if (animate && m_topMessageQueueFlight && source != target) {
         m_topMessageQueueScroll->setGeometry(source);
         m_topMessageQueueFlight->setStartValue(source);
@@ -6348,7 +6405,7 @@ void MainWindow::animateTopMessageEntry(const QRect &target)
     m_topMessageSlidingOut = false;
     m_topMessageEntering = false;
     m_topMessageShifting = false;
-    const QRect source = target.translated(0, kToastEntryRise);
+    const QRect source = target.translated(0, topMessageEntryRise(target));
     m_topMessageContainer->setGeometry(source);
     m_topMessageContainer->show();
     m_topMessageContainer->raise();

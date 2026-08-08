@@ -548,11 +548,34 @@ constexpr int kToastRowSpacing = 4;
 // Between cards in the stack, and between the active toast and the first
 // queued card, so the whole column reads as one evenly spaced list.
 constexpr int kToastStackGap = 6;
-// Cards rise into place from just below their anchor rather than appearing.
-// The prompt anchor reserves a 16px gap beneath the stack, so the rise stays
-// inside that gap and no frame of the motion can cover the composer.
+// Clear band the anchor keeps between the bottom of the stack and the top of
+// the prompt composer (or, when the composer is collapsed, its avatar button).
+// Cards rise into place from just below their anchor rather than appearing, and
+// this is the gap that motion borrows: the rise is clamped to what is left above
+// the composer, so no frame of it can paint over the prompt (adhoc #1621).
+constexpr int kToastPromptGap = 18;
 constexpr int kToastEntryRise = 14;
+static_assert(kToastEntryRise < kToastPromptGap,
+              "the entry rise has to fit inside the gap above the prompt");
 constexpr int kToastEntryMs = 180;
+// Ceiling for the whole stack. The alert stack is an overlay painted over
+// whichever page is open, and every page keeps controls along its top edge — a
+// commit's Side-by-side / Prev / Next row, a table's filter row, the window
+// chrome above them all. A burst of tall error cards used to climb straight over
+// the lot (adhoc #1621), so the stack is confined to the lower band it shares
+// with the prompt: it may claim at most this share of the distance from the top
+// of the content area down to the prompt. Anything past that scrolls — both the
+// active bubble's text and the queued column already do.
+constexpr double kToastStackHeightShare = 0.5;
+// ...except on a window too short for that share to hold one readable card, where
+// an unreadable toast would be worse than one reaching a little higher.
+constexpr int kToastMinStackHeight = 140;
+// With cards waiting behind it, the active one may claim only this much of that
+// allowance. A single enormous failure (a Worker's whole HTML error page, say)
+// would otherwise fill the stack on its own and push the queued column off
+// screen; its own text scrolls instead, and the list stays a list.
+constexpr double kToastActiveCardShare = 0.6;
+constexpr int kToastMinActiveCard = 100;
 // The agent glyph on an "agent finished" card's headline row (adhoc #1630).
 // Larger than the 16px list icon: this card is the celebration, and the icon is
 // what identifies whose run just landed.
