@@ -1589,6 +1589,93 @@ async def test_agent_status_batch_reports_a_whole_fleet_in_one_write():
 
 
 @run_async_test
+async def test_hand_opened_task_accepts_the_run_a_desktop_starts_on_it():
+    """The Tasks page's "Start agent with prompt settings" button binds a local
+    run to a task that already exists, so that task has no run provenance when
+    the first state arrives. Seeding it is what lets the board answer "who is
+    working this?" for a task nobody launched from a prompt."""
+
+    runtime = FakeRuntime()
+    opened = await tasks_api.handle(
+        runtime.use("POST", "wendy", {
+            "title": "Written by hand on the board",
+            "details": "No agent ran when this was filed",
+            "department": "engineering",
+            "repository": "forkmesh/forkmesh",
+            "assigneeKind": "agent",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert opened["status"] == 201
+    task = opened["data"]["task"]
+    assert task["agent"] is None
+
+    started = await tasks_api.handle(
+        runtime.use("POST", "wendy", {"statuses": [{
+            "task": task["id"],
+            "status": "running",
+            "agent": {
+                "provider": "claude-code",
+                "startedBy": "claude-code@Workstation",
+                "model": "opus",
+                "mode": "Auto",
+                "strength": "HIGH",
+                "sessionId": "1515",
+                # A status smuggled into the provenance never wins over the
+                # state the entry actually reports.
+                "status": "success",
+            },
+        }]}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert started["status"] == 200
+    assert started["data"]["results"][0]["ok"] is True
+    current = await tasks_api.handle(
+        runtime.use("GET", "wendy", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}",
+    )
+    agent = current["data"]["task"]["agent"]
+    assert agent["provider"] == "claude-code"
+    assert agent["startedBy"] == "claude-code@workstation"
+    assert agent["model"] == "opus"
+    assert agent["mode"] == "Auto"
+    assert agent["strength"] == "high"
+    assert agent["sessionId"] == "1515"
+    assert agent["status"] == "running"
+
+    # A later state keeps the launch stamp rather than blanking it.
+    finished = await tasks_api.handle(
+        runtime.use("POST", "wendy", {"statuses": [
+            {"task": task["id"], "status": "success"},
+        ]}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert finished["status"] == 200
+    settled = await tasks_api.handle(
+        runtime.use("GET", "wendy", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}",
+    )
+    assert settled["data"]["task"]["agent"]["sessionId"] == "1515"
+    assert settled["data"]["task"]["agent"]["status"] == "success"
+
+    # Seeding provenance is not a way around the ownership gate.
+    denied = await tasks_api.handle(
+        runtime.use("POST", "carol", {"statuses": [{
+            "task": task["id"],
+            "status": "failed",
+            "agent": {"provider": "codex", "sessionId": "77"},
+        }]}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert denied["data"]["results"][0]["error"] == "forbidden"
+    unchanged = await tasks_api.handle(
+        runtime.use("GET", "wendy", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}",
+    )
+    assert unchanged["data"]["task"]["agent"]["sessionId"] == "1515"
+
+
+@run_async_test
 async def test_agent_run_provenance_is_bounded_and_edit_safe():
     runtime = FakeRuntime()
     opened = await tasks_api.handle(

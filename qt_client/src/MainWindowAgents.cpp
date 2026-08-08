@@ -360,14 +360,30 @@ constexpr int kMaxAgentRelaunchAttempts = 2;
 
 QIcon agentStatusPillIcon(const AgentSession &session)
 {
-    if (session.merged || session.status == AgentStatus::Success) {
-        const QIcon done = agentDoneImageIcon(kAgentStatusPillIconPx);
-        if (!done.isNull())
-            return done;
-        return themedOcticon("check-circle", QColor("#3fb950"),
-                             kAgentStatusPillIconPx);
-    }
-    return agentControlIcon(agentStatusModelIconIndex(session));
+    const QIcon avatar = agentControlIcon(agentStatusModelIconIndex(session));
+    if (!(session.merged || session.status == AgentStatus::Success))
+        return avatar;
+
+    // The avatar stays the pill's primary mark once a session finishes (adhoc
+    // #1636), but swapping it out for a bare checkmark lost the done signal
+    // entirely — so it comes back as a small corner badge on the portrait
+    // instead of replacing it.
+    constexpr int kBadgePx = 20;
+    QPixmap out = crispIconPixmap(kAgentStatusPillIconPx, kAgentStatusPillIconPx,
+                                  iconDevicePixelRatio());
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.drawPixmap(QRect(0, 0, kAgentStatusPillIconPx, kAgentStatusPillIconPx),
+                avatar.pixmap(kAgentStatusPillIconPx, kAgentStatusPillIconPx));
+    const QRect badgeRect(kAgentStatusPillIconPx - kBadgePx,
+                          kAgentStatusPillIconPx - kBadgePx, kBadgePx, kBadgePx);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor("#0d1117"));
+    p.drawEllipse(badgeRect.adjusted(-2, -2, 0, 0));
+    themedOcticon(QStringLiteral("check-circle"), QColor("#3fb950"), kBadgePx)
+        .paint(&p, badgeRect);
+    p.end();
+    return QIcon(out);
 }
 
 QString agentStatusBadgeTone(const AgentSession &session)
@@ -9172,7 +9188,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr,
                                        const QString &model,
                                        const QString &titleOverride, bool genie,
-                                       bool switchToTab)
+                                       bool switchToTab,
+                                       const QString &orgTaskId)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -9199,8 +9216,12 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     // by itself (adhoc #12).
     session.yolo = false;
     // Every prompt opens an organization task (adhoc #18, no longer optional
-    // since adhoc #120).
+    // since adhoc #120) — unless the caller started from a task that already
+    // exists, in which case the run is bound to that one. openOrgTaskForSession
+    // below leaves a session that already names a task alone, so the board gets
+    // this run's live status and completion note instead of a duplicate row.
     session.orgTask = true;
+    session.orgTaskId = orgTaskId.trimmed();
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
     // Genie (adhoc #38): stamped at launch, so a resumed run still reads as a
@@ -9536,19 +9557,34 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree,
         const RepositoryRecord repo = m_repositories.at(repoIndex);
         IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
                               m_userName);
-        if (!issueStore.canWrite()) {
-            flashMessage("Only the host can delete an agent session from the issue.",
-                         true);
-            return false;
+        // An issue that no longer exists has no agent event to clear. Treating a
+        // stale reference as a hard failure stranded the session — and, worse,
+        // silently aborted the whole merge-and-cleanup that was deleting it
+        // (worktree and branch survived with no visible reason). Skip missing
+        // issues exactly like closeIssuesForMerge does.
+        bool issueExists = false;
+        for (const Issue &issue : issueStore.loadAll()) {
+            if (issue.number == snapshot.issueNumber) {
+                issueExists = true;
+                break;
+            }
         }
-        QString error;
-        if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
-                                    AgentStatus::Cleared, &error)) {
-            flashMessage(error.isEmpty()
-                             ? QStringLiteral("Could not clear the issue agent.")
-                             : error,
-                         true);
-            return false;
+        if (issueExists) {
+            if (!issueStore.canWrite()) {
+                flashMessage(
+                    "Only the host can delete an agent session from the issue.",
+                    true);
+                return false;
+            }
+            QString error;
+            if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
+                                        AgentStatus::Cleared, &error)) {
+                flashMessage(error.isEmpty()
+                                 ? QStringLiteral("Could not clear the issue agent.")
+                                 : error,
+                             true);
+                return false;
+            }
         }
     }
 
@@ -14575,6 +14611,20 @@ void MainWindow::flushOrgTaskAgentStatus()
         statuses.append(QJsonObject{
             {QStringLiteral("task"), session->orgTaskId},
             {QStringLiteral("status"), it.value()},
+            // A run bound to a task that already existed (the Tasks page's
+            // "Start agent" button) never went through the open-a-task call
+            // that records who is running it, so the provenance rides along
+            // with the state instead. The relay layers it onto whatever the
+            // task already holds, so a task opened by a launch is unaffected.
+            {QStringLiteral("agent"),
+             QJsonObject{
+                 {QStringLiteral("provider"), session->provider},
+                 {QStringLiteral("startedBy"), session->startedByBot},
+                 {QStringLiteral("model"), session->model},
+                 {QStringLiteral("mode"), session->mode},
+                 {QStringLiteral("strength"), session->strength},
+                 {QStringLiteral("sessionId"), QString::number(session->id)},
+             }},
         });
         sent.append({it.key(), it.value()});
     }

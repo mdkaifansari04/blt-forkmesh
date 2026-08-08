@@ -5774,11 +5774,9 @@ int main(int argc, char *argv[])
         window.testReloadBranchesPanel();
         QApplication::processEvents();
 
-        // adhoc #119: merging from the comparison ends it — the branch's work
-        // is in main, so leaving its diff open only shows the user something
-        // they're finished with. Re-open the branch, then let its "Merge to
-        // main" button run: the Git view must go back to the working tree exactly
-        // as if the pane's ✕ had been clicked.
+        // A merge-and-cleanup must not move the user away from the review they
+        // initiated it from. The completed comparison stays on screen, including
+        // when cleanup removes the branch and its worktree.
         //
         // This fixture's linked worktree lives inside the parent checkout, so git
         // reports it as untracked content and the merge would refuse ("the checkout
@@ -5789,6 +5787,13 @@ int main(int argc, char *argv[])
             excludeFile.write("wt-keep/\n");
             excludeFile.close();
         }
+        // The scenarios above left the branch's own worktree dirty (the staged
+        // base-delete.txt deletion, the restored auto-stash overlap edit), and
+        // the cleanup merge rightly refuses to delete a worktree holding
+        // uncommitted changes. Give it the clean worktree a finished review
+        // would have.
+        runGitChecked(wtPath, {"reset", "--hard", "HEAD"});
+        runGitChecked(wtPath, {"clean", "-fd"});
         window.testSwitchToBranchImmediateSelection(
             QStringLiteral("feature/keep-selected"));
         QApplication::processEvents();
@@ -5814,15 +5819,15 @@ int main(int argc, char *argv[])
                   .arg(window.testCompareIndicatorText().isEmpty()
                            ? QStringLiteral("<hidden>")
                            : window.testCompareIndicatorText()));
-        const bool mergeClicked = window.testClickBranchReviewMerge(false);
+        const bool mergeClicked = window.testClickBranchReviewMerge(true);
         QApplication::processEvents();
         const QString mainTip =
             gitOutput(wtRepo.path(), {"log", "--oneline", "-1", "main"});
-        check(mergeClicked && window.testCommitWorkspacePage() == 0 &&
+        check(mergeClicked && window.testCommitWorkspacePage() == 2 &&
                   window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("merging from the branch comparison closes it and hands the "
-                      "Git view back to the working tree (adhoc #119, clicked = "
+              QString("merging and cleaning up from a branch comparison keeps the "
+                      "current Git review in place (clicked = "
                       "%1, page = %2, files slot = %3, history slot = %4, main "
                       "tip = %5)")
                   .arg(mergeClicked ? QStringLiteral("yes") : QStringLiteral("no"))
@@ -5830,13 +5835,21 @@ int main(int argc, char *argv[])
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage())
                   .arg(mainTip.trimmed()));
+        // The deleted branch can't stay selected — adhoc #15 leaves its row's
+        // animated check and selects nothing — so the compare header retires
+        // while the completed review itself stays on the page.
         check(window.testCompareIndicatorText().isEmpty(),
-              QString("closing the comparison hides the compare indicator "
-                      "(adhoc #16, base = %1)")
+              QString("cleanup retires the compare header of the deleted branch "
+                      "(base = %1)")
                   .arg(window.testCompareIndicatorText()));
         check(mainTip.contains(QStringLiteral("Merge feature/keep-selected into main")),
-              QString("the comparison's merge button really merged the branch "
-                      "(adhoc #119, main tip = %1)").arg(mainTip.trimmed()));
+              QString("the comparison's cleanup button really merged the branch "
+                      "(main tip = %1)").arg(mainTip.trimmed()));
+        check(gitOutput(wtRepo.path(),
+                        {"branch", "--list", "feature/keep-selected"})
+                  .trimmed()
+                  .isEmpty(),
+              QStringLiteral("merge and cleanup removes the reviewed source branch"));
 
         // The merge path reloads the persistent agent store, while this fixture
         // was injected in memory only. Restore it before exercising the separate

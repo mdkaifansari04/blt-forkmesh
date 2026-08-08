@@ -160,10 +160,55 @@ def test_qt_task_detail_can_add_the_task_to_the_prompt_box():
     body = QT_TASKS[QT_TASKS.index("void MainWindow::addOrganizationTaskToPrompt("):]
     body = body[:body.index("\nvoid MainWindow::")]
     assert "appendTextToActivePrompt(" in body
-    assert '"[task:%1] %2"' in body
+    # The prompt text itself is shared with the one-click launch below, so the
+    # hand-edited prompt and the one an agent is handed cannot drift apart.
+    assert "organizationTaskPromptText(task)" in body
+    prompt_text = QT_TASKS[QT_TASKS.index("QString organizationTaskPromptText("):]
+    prompt_text = prompt_text[:prompt_text.index("\n}\n")]
+    assert '"[task:%1] %2"' in prompt_text
+    assert '"Repository: %1"' in prompt_text
+    assert '"How to test: %1"' in prompt_text
     # Copying text out of the board mutates nothing, so it needs a selection
     # only — not the manage right the writes require.
     assert "m_organizationTaskPromptButton->setEnabled(selected);" in QT_TASKS
+
+
+def test_qt_task_detail_starts_an_agent_with_the_prompt_box_settings():
+    # One click from a task to a running agent: the task is attached to the
+    # prompt box, the run takes that box's live settings, and the session is
+    # bound back to the task so status and completion report against it.
+    assert "Start agent with prompt settings" in QT_TASKS
+    assert (
+        "actions->addWidget(m_organizationTaskStartAgentButton, 3, 0, 1, 3);"
+        in QT_TASKS
+    )
+    assert "&MainWindow::startOrganizationTaskAgentFromPrompt" in QT_TASKS
+    body = QT_TASKS[
+        QT_TASKS.index("void MainWindow::startOrganizationTaskAgentFromPrompt("):
+    ]
+    body = body[:body.index("\nvoid MainWindow::")]
+    # The task goes into the prompt box first, and the box is what gets sent:
+    # anything already typed there rides along and the operator is left looking
+    # at exactly what the agent was handed.
+    assert "addOrganizationTaskToPrompt();" in body
+    assert "m_issueQuickAdd->toPlainText().trimmed()" in body
+    # Every setting comes from the prompt box rather than a fixed default.
+    assert "m_quickAddAgentProvider" in body
+    assert "selectedModelComboValue(m_quickAddClaudeModel)" in body
+    assert "m_quickAddCreatePr->isChecked()" in body
+    assert "m_quickAddImages" in body
+    # Neither of the two non-agent prompt modes can work a task.
+    assert 'provider == QLatin1String("manual")' in body
+    assert "agentIsCloudflareAiProvider(provider)" in body
+    # And the run is bound to this task instead of opening a second one.
+    assert "/*orgTaskId=*/id" in body
+    agents = (QT_SRC / "MainWindowAgents.cpp").read_text(encoding="utf-8")
+    launch = agents[agents.index("int MainWindow::startAdHocAgentForRepo("):]
+    launch = launch[:launch.index("\n}\n")]
+    assert "session.orgTaskId = orgTaskId.trimmed();" in launch
+    # The reverse link: the detail names the desktop run carrying this task.
+    assert "localAgentRunLabelForTask(" in QT_TASKS
+    assert "session.orgTaskId != taskId" in QT_TASKS
 
 
 def test_dashboard_tasks_page_never_renders_private_task_text_unescaped():

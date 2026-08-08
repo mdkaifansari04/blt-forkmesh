@@ -2145,6 +2145,16 @@ private:
     void createQuickAddOrganizationTask();
     void createOrganizationTaskFollowUp();
     void addOrganizationTaskToPrompt();
+    // One click from the task detail to a running agent: the task is attached to
+    // the footer prompt box and launched with that box's live settings
+    // (repository, provider, model, permission mode, effort, attachments), and
+    // the run it starts is bound back to this task instead of opening a second
+    // one — so status and completion report against the task the operator was
+    // looking at.
+    void startOrganizationTaskAgentFromPrompt();
+    // The desktop run bound to a task ("#42 claude-code, running"), or empty
+    // when no local session carries this task's id.
+    QString localAgentRunLabelForTask(const QString &taskId) const;
     void refreshOrganizationTaskQueue();
     void moveQueuedAgentItemToTasks();
     void editOrganizationTask();
@@ -4382,9 +4392,6 @@ private:
     bool mergeWorktreeIntoMain(const QString &branch,
                                const QString &worktreePath = QString(),
                                bool deleteAgent = false);
-    // Leave the branch review after one of its merge buttons landed the branch,
-    // returning the Git view to the working tree (adhoc #119).
-    void closeBranchDiffAfterMerge();
     // The same merge for an agent session's branch, but bound to that session's
     // repository first — the Agents tab is global, so the repo the detail view
     // holds is often not the session's. False when the bind didn't take.
@@ -6265,6 +6272,7 @@ private:
     QPushButton *m_organizationTaskReturnButton = nullptr;
     QPushButton *m_organizationTaskDeleteButton = nullptr;
     QPushButton *m_organizationTaskPromptButton = nullptr;
+    QPushButton *m_organizationTaskStartAgentButton = nullptr;
     QPushButton *m_organizationTaskPrevPageButton = nullptr;
     QPushButton *m_organizationTaskNextPageButton = nullptr;
     QLabel *m_organizationTaskPageLabel = nullptr;
@@ -9204,11 +9212,17 @@ private:
     // meaningless there — a genie run's opening line is MCP setup, not a task
     // (adhoc #49). genie marks the run as a genie (adhoc #38), so it keeps its
     // own sparkle status glyph for as long as it is working.
+    // orgTaskId binds the run to an organization task that already exists (the
+    // Tasks page's "Start agent" button) instead of letting the launch open a
+    // fresh mirror task: openOrgTaskForSession() skips a session that already
+    // names one, while the live-status and completion reports key off the same
+    // field and so land on the caller's task.
     int startAdHocAgentForRepo(int repoIndex, const QString &task,
                                const QString &provider, bool createPr,
                                const QString &model = QString(),
                                const QString &titleOverride = QString(),
-                               bool genie = false, bool switchToTab = true);
+                               bool genie = false, bool switchToTab = true,
+                               const QString &orgTaskId = QString());
     // Save a clipboard image to a stable temp file so a launched agent can read it
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
