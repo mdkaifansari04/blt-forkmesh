@@ -5111,11 +5111,11 @@ void MainWindow::updateCloudLogFilterChip()
                       .arg(m_cloudLogMonitorErrors)
                       .arg(m_cloudLogMonitorErrors == 1 ? QString()
                                                         : QStringLiteral("s"))
-        : m_cloudLogMonitorAwaitingToken
+        : !m_cloudLogMonitorIdleReason.isEmpty()
                 ? QStringLiteral(
                       "Show only the deployed Worker's traffic \xC2\xB7 not "
-                      "monitoring: waiting for a Cloudflare API token "
-                      "(Settings > Secrets)")
+                      "monitoring: %1")
+                      .arg(m_cloudLogMonitorIdleReason)
                 : QStringLiteral(
                       "Show only the deployed Worker's traffic \xC2\xB7 not "
                       "monitoring (Settings > Watch the Cloudflare Worker log)"));

@@ -2006,6 +2006,9 @@ private:
     // default (adhoc #1632), so the automatic start has to be able to stay quiet
     // on a node that has no token rather than greeting every launch with a toast.
     bool cloudLogMonitorTokenAvailable() const;
+    // The one sentence to show when no installed Node can run the pinned
+    // Wrangler (adhoc #1617).
+    QString cloudLogMonitorNodeRequirement() const;
     void startCloudLogMonitorIfConfigured();
     // Take the monitor down after a failed start or a tail that died, without
     // recording the climb-down as the user's preference — the stored choice is
@@ -6473,10 +6476,12 @@ private:
     int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
     int m_cloudLogMonitorEvents = 0;     // Worker events seen since then
     bool m_cloudLogMonitorStopping = false; // a deliberate stop, not a crash
-    // Ticked, but with no Cloudflare token to tail with (adhoc #1632). The
-    // automatic start says so in the tooltip rather than unticking the box or
-    // writing a line into the log on every launch of a node that never deploys.
-    bool m_cloudLogMonitorAwaitingToken = false;
+    // Ticked, but with nothing to tail with: no Cloudflare token (adhoc #1632),
+    // or no Node new enough for Wrangler (adhoc #1617). The automatic start says
+    // which in the tooltip rather than unticking the box or writing a line into
+    // the log on every launch of a node that never deploys. Empty when the
+    // monitor is running or was never asked to.
+    QString m_cloudLogMonitorIdleReason;
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;

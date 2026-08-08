@@ -614,6 +614,103 @@ int main(int argc, char **argv)
               QStringLiteral("/usr/bin/npx")).program.isEmpty(),
           "Cloudflare tail rejects malformed account IDs");
 
+    // --- Node selection (adhoc #1617). Wrangler exits 1 on Node < 22, so the
+    // monitor has to find a new enough interpreter itself and put it in front of
+    // the child's PATH: npx and the wrangler bin it spawns are both
+    // `#!/usr/bin/env node`, and would otherwise pick the old node right back up.
+    check(forkmesh::control::nodeMajorVersionFromText(
+              QStringLiteral("v22.23.1\n")) == 22 &&
+              forkmesh::control::nodeMajorVersionFromText(
+                  QStringLiteral("v20.19.2")) == 20 &&
+              forkmesh::control::nodeMajorVersionFromText(
+                  QStringLiteral("not a version")) == 0,
+          "Node versions are read out of `node --version` output");
+
+    QTemporaryDir nodeRoot;
+    check(nodeRoot.isValid(), "node toolchain fixture root is valid");
+    // A version manager's tree: two installs side by side, only one of which
+    // Wrangler will run on.
+    const auto makeNodeInstall = [&nodeRoot](const QString &relativeBin,
+                                             const QString &version,
+                                             bool withNpx) {
+        const QString bin = nodeRoot.filePath(relativeBin);
+        QDir().mkpath(bin);
+        const QString node = QDir(bin).absoluteFilePath(QStringLiteral("node"));
+        QFile nodeFile(node);
+        nodeFile.open(QIODevice::WriteOnly);
+        nodeFile.write(QStringLiteral("#!/bin/sh\necho %1\n")
+                           .arg(version)
+                           .toUtf8());
+        nodeFile.close();
+        QFile::setPermissions(node, QFile::ReadOwner | QFile::WriteOwner |
+                                        QFile::ExeOwner);
+        if (withNpx) {
+            const QString npx =
+                QDir(bin).absoluteFilePath(QStringLiteral("npx"));
+            QFile npxFile(npx);
+            npxFile.open(QIODevice::WriteOnly);
+            npxFile.write("#!/bin/sh\nexit 0\n");
+            npxFile.close();
+            QFile::setPermissions(npx, QFile::ReadOwner | QFile::WriteOwner |
+                                           QFile::ExeOwner);
+        }
+        return QFileInfo(bin).canonicalFilePath();
+    };
+    const QString oldNodeBin = makeNodeInstall(
+        QStringLiteral("versions/node/v20.19.2/bin"), QStringLiteral("v20.19.2"),
+        true);
+    const QString newNodeBin = makeNodeInstall(
+        QStringLiteral("versions/node/v22.23.1/bin"), QStringLiteral("v22.23.1"),
+        true);
+    // A Node install with no npx is not a candidate at all.
+    makeNodeInstall(QStringLiteral("versions/node/v24.0.0/bin"),
+                    QStringLiteral("v24.0.0"), false);
+
+    const QByteArray savedNvmDir = qgetenv("NVM_DIR");
+    const QByteArray savedNodeBin = qgetenv("FORKMESH_NODE_BIN");
+    qputenv("NVM_DIR", nodeRoot.path().toUtf8());
+    qunsetenv("FORKMESH_NODE_BIN");
+    QStringList candidates = forkmesh::control::nodeBinDirectoryCandidates();
+    check(candidates.contains(newNodeBin) && candidates.contains(oldNodeBin) &&
+              candidates.indexOf(newNodeBin) < candidates.indexOf(oldNodeBin),
+          "managed Node installs are offered newest first");
+    check(!candidates.contains(
+              QFileInfo(nodeRoot.filePath(
+                            QStringLiteral("versions/node/v24.0.0/bin")))
+                  .canonicalFilePath()),
+          "a Node install without npx is not a candidate");
+
+    qputenv("FORKMESH_NODE_BIN", oldNodeBin.toUtf8());
+    candidates = forkmesh::control::nodeBinDirectoryCandidates();
+    check(!candidates.isEmpty() && candidates.first() == oldNodeBin,
+          "an explicit FORKMESH_NODE_BIN override is tried first");
+
+    qunsetenv("FORKMESH_NODE_BIN");
+    const auto toolchain = forkmesh::control::findNodeToolchain(22);
+    check(toolchain.isValid() && toolchain.binDir == newNodeBin &&
+              toolchain.majorVersion == 22 &&
+              toolchain.npx ==
+                  QDir(newNodeBin).absoluteFilePath(QStringLiteral("npx")),
+          "the newest Node that satisfies Wrangler is the one selected");
+    check(!forkmesh::control::findNodeToolchain(99).isValid(),
+          "a machine with no new enough Node reports no toolchain");
+
+    const auto pinnedTail = forkmesh::control::buildCloudflareTailCommand(
+        tailToken, QStringLiteral("account_123"),
+        QDir(newNodeBin).absoluteFilePath(QStringLiteral("npx")), newNodeBin);
+    check(pinnedTail.environment.value(QStringLiteral("PATH"))
+              .startsWith(newNodeBin + QDir::listSeparator()),
+          "the tail runs with its own Node at the front of PATH");
+
+    if (savedNvmDir.isEmpty())
+        qunsetenv("NVM_DIR");
+    else
+        qputenv("NVM_DIR", savedNvmDir);
+    if (savedNodeBin.isEmpty())
+        qunsetenv("FORKMESH_NODE_BIN");
+    else
+        qputenv("FORKMESH_NODE_BIN", savedNodeBin);
+
     // --- Tail rendering (adhoc #1615): the viewer parses Wrangler's JSON so it
     // can show the user agent behind each hit and tell a failure from a hit.
     const auto okTail = forkmesh::control::parseCloudflareTailLine(
