@@ -307,6 +307,16 @@ func (d *Daemon) cycle(parent context.Context, fetch bool) {
 			if repo.Owner != d.config.PublishOwner {
 				continue
 			}
+			// Advertise the canonical source URL this node mirrors so the relay
+			// groups every mirror of the repo together instead of under this
+			// node's own name (build_repo_mirrors_payload -> clone_target). The
+			// first configured upstream is that source (e.g.
+			// https://forkmesh.com/forkmesh/forkmesh).
+			if upstreams := d.upstreamsFor(repo); len(upstreams) > 0 {
+				publisher.CloneURL = upstreams[0]
+			} else {
+				publisher.CloneURL = ""
+			}
 			if err := publisher.Publish(ctx, repo, states[repositoryKey(repo)]); err != nil {
 				failures = append(failures, "catalog "+repositoryKey(repo)+": "+err.Error())
 			} else {
