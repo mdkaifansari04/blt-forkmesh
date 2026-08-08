@@ -1164,6 +1164,12 @@ bool MainWindow::selectBranchRow(const QString &branch)
 // reload rebuild the table underneath it.
 void MainWindow::reportBranchNotFound(const QString &branch)
 {
+#ifdef FORKMESH_WINDOW_TESTS
+    // QMessageBox::exec() waits for a click that a headless run can never
+    // deliver, so this dialog parked the whole window-test suite here — every
+    // check after it simply never ran. Report and carry on instead.
+    qWarning().noquote() << "branch not found:" << branch;
+#else
     QTimer::singleShot(0, this, [this, branch] {
         QMessageBox::information(
             this, QStringLiteral("Branch not found"),
@@ -1171,6 +1177,7 @@ void MainWindow::reportBranchNotFound(const QString &branch)
                            "It may have been merged and deleted.")
                 .arg(branch));
     });
+#endif
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
