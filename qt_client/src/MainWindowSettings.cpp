@@ -5691,7 +5691,7 @@ void MainWindow::queueTopMessage(const QString &text, bool error,
                                   : topMessageSecondsFor(kind, error);
     m_topMessageQueue.append(
         {m_nextTopMessageQueueId++, trimmed, error, clickHref, entryDuration,
-         kind, actionRunId});
+         kind, actionRunId, m_pendingToastAvatar});
     while (m_topMessageQueue.size() > kToastQueueLimit)
         m_topMessageQueue.removeFirst();
     renderTopMessageQueue();
@@ -5743,7 +5743,27 @@ void MainWindow::renderTopMessageQueue()
                                           : QString::fromUtf8("\xE2\x9C\x93");
         label->setText(QStringLiteral("<span style='color:%1'>%2 %3</span>")
                            .arg(color, glyph, entry.text.toHtmlEscaped()));
-        column->addWidget(label);
+        if (entry.avatar.isNull()) {
+            column->addWidget(label);
+        } else {
+            // A waiting chat card keeps the sender it arrived with, in the same
+            // left lane the active toast uses, so the stack reads as one list.
+            auto *messageRow = new QWidget(card);
+            messageRow->setObjectName("topMessageQueueContentRow");
+            auto *messageLayout = new QHBoxLayout(messageRow);
+            messageLayout->setContentsMargins(0, 0, 0, 0);
+            messageLayout->setSpacing(kToastAvatarGap);
+            auto *face = new QLabel(messageRow);
+            face->setObjectName("topMessageQueueAvatar");
+            face->setFocusPolicy(Qt::NoFocus);
+            face->setFixedSize(kToastAvatarPx, kToastAvatarPx);
+            face->setScaledContents(false);
+            face->setAlignment(Qt::AlignCenter);
+            face->setPixmap(entry.avatar);
+            messageLayout->addWidget(face, 0, Qt::AlignTop);
+            messageLayout->addWidget(label, 1);
+            column->addWidget(messageRow);
+        }
 
         auto *actions = new QWidget(card);
         actions->setObjectName("topMessageQueueActions");
@@ -5925,6 +5945,13 @@ bool MainWindow::testTopMessageAgentIconShown() const
 {
     return m_topMessageAgentIcon && !m_topMessageAgentIcon->pixmap().isNull();
 }
+
+bool MainWindow::testTopMessageAvatarShown() const
+{
+    return m_topMessageAvatar && m_topMessageContainer &&
+           m_topMessageAvatar->isVisibleTo(m_topMessageContainer) &&
+           !m_topMessageAvatar->pixmap().isNull();
+}
 #endif
 
 // (Re)paint the prompt-anchored bubble from m_topMessageRaw. Every message is
@@ -5934,6 +5961,12 @@ void MainWindow::renderTopMessage()
 {
     if (!m_topMessage)
         return;
+    // Whoever this card is about, in the lane down its left edge (adhoc #1612).
+    // Only a chat ping fills it; everything else keeps the full bubble width.
+    if (m_topMessageAvatar) {
+        m_topMessageAvatar->setPixmap(m_topMessageAvatarPixmap);
+        m_topMessageAvatar->setVisible(!m_topMessageAvatarPixmap.isNull());
+    }
     // Green for success, red for failure.
     const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
     const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
@@ -6124,7 +6157,15 @@ QRect MainWindow::topMessageBubbleRect()
             m_topMessageActions->isVisibleTo(m_topMessageContainer))
             chrome += m_topMessageActions->sizeHint().height() + column->spacing();
         const int roomForText = qMax(18, maxBubbleHeight - chrome);
-        int textWidth = qMax(40, bubbleWidth - pad.left() - pad.right());
+        // A chat card's avatar lane takes its width from the message beside it,
+        // so the text has to be wrapped inside what is left (adhoc #1612).
+        const bool wearingAvatar =
+            m_topMessageAvatar &&
+            m_topMessageAvatar->isVisibleTo(m_topMessageContainer);
+        const int avatarLane =
+            wearingAvatar ? kToastAvatarPx + kToastAvatarGap : 0;
+        int textWidth =
+            qMax(40, bubbleWidth - pad.left() - pad.right() - avatarLane);
         int textHeight = 0;
         if (m_topMessageBody) {
             m_topMessageBody->setFixedWidth(textWidth);
@@ -6149,7 +6190,10 @@ QRect MainWindow::topMessageBubbleRect()
         textHeight = qBound(18, textHeight, roomForText);
         m_topMessageScroll->setFixedHeight(textHeight);
         column->activate();
-        bubbleHeight = textHeight + chrome;
+        // A one-line chat message is shorter than the face beside it; the row
+        // is as tall as the taller of the two, or the avatar would be clipped.
+        bubbleHeight =
+            qMax(textHeight, wearingAvatar ? kToastAvatarPx : 0) + chrome;
     }
     if (bubbleHeight <= 0)
         bubbleHeight = m_topMessageContainer->sizeHint().height();
@@ -6359,6 +6403,9 @@ void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId,
         m_topMessagePromptImagePaths = promptAttachedImagePaths(sent);
     m_topMessageError = false;
     m_topMessageIsPromptBubble = true;
+    // A prompt confirmation is the user's own words, not a message from anyone:
+    // clear any face the card it replaces was wearing.
+    m_topMessageAvatarPixmap = QPixmap();
     m_topMessageRaw = sent;
     m_topMessageHovering = false;
     m_topMessageEntering = false;
@@ -6484,6 +6531,9 @@ void MainWindow::showTopMessage(const QString &text, bool error,
                         actionRunId);
         return;
     }
+    // Whose face this card wears, from the ping that raised it (adhoc #1612).
+    // renderTopMessage below puts it on screen.
+    m_topMessageAvatarPixmap = m_pendingToastAvatar;
     // Carry an optional click target so the whole toast can act as a link (e.g. an
     // "agent is waiting for you" toast jumps to that agent). Cleared by default so
     // an ordinary toast is never left clickable from a previous message.
@@ -6595,6 +6645,11 @@ void MainWindow::dismissTopMessage()
         m_topMessagePromptStatusLabel->hide();
     if (m_topMessageAgentRow)
         m_topMessageAgentRow->hide();
+    m_topMessageAvatarPixmap = QPixmap();
+    if (m_topMessageAvatar) {
+        m_topMessageAvatar->clear();
+        m_topMessageAvatar->hide();
+    }
     renderTopMessagePromptImages();
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     m_topMessageKind.clear();
@@ -6652,9 +6707,14 @@ void MainWindow::advanceTopMessageQueue()
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
     // Present only — this card was already logged (and, if it was an error,
-    // already flashed the window) when it first arrived.
+    // already flashed the window) when it first arrived. It reaches the top
+    // wearing the face it queued with, restored the same way the raising path
+    // sets it (adhoc #1612).
+    const QPixmap previousPendingAvatar = m_pendingToastAvatar;
+    m_pendingToastAvatar = next.avatar;
     showTopMessage(next.text, next.error, next.clickHref, next.durationSeconds,
                    next.kind, next.actionRunId);
+    m_pendingToastAvatar = previousPendingAvatar;
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)

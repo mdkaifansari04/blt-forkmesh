@@ -84,6 +84,7 @@ struct MirrorSelfSnapshot {
     qint64 gatheredMs = 0;
 };
 
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFutureWatcher>
@@ -548,6 +549,27 @@ public:
     // Defined in MainWindowSettings.cpp: QLabel is only forward-declared here.
     QString testTopMessageAgentHeadline() const;
     bool testTopMessageAgentIconShown() const;
+    // adhoc #1612: whether the card on screen is wearing a chat sender's face,
+    // and how wide that lane is — the message has to be measured around it.
+    // Same reason as above for living in MainWindowSettings.cpp.
+    bool testTopMessageAvatarShown() const;
+    // Deliver one chat message exactly as the backend would, so the ping it
+    // raises (and the avatar its card wears) can be checked without a relay.
+    void testDeliverChatMessage(const QString &conversation,
+                                const QString &senderId,
+                                const QString &senderName, const QString &text)
+    {
+        static int seq = 0;
+        ChatMessage message;
+        // Unique per call: onMessage drops a message whose id it has seen.
+        message.id = QStringLiteral("test-chat-%1").arg(++seq);
+        message.conversation = conversation;
+        message.senderId = senderId;
+        message.senderName = senderName;
+        message.text = text;
+        message.timestampMs = QDateTime::currentMSecsSinceEpoch();
+        onMessage(message);
+    }
     bool testCelebrationBorderVisible() const
     {
         return m_celebrationBorderOverlay &&
@@ -3853,6 +3875,15 @@ private:
     // so new events are visible without opening a page. An error ping shows
     // immediately (preempting a routine toast) and flashes the red app border.
     void flashNotification(const AppNotification &item);
+    // The face this ping's card wears, or a null pixmap for the events that are
+    // nobody's in particular (a push landing, a build failing). Today only a
+    // chat ping names a person, so only a chat ping gets one (adhoc #1612).
+    QPixmap pingActorAvatar(const AppNotification &item) const;
+    // One chat participant's avatar at `side` px: the one they broadcast if this
+    // node has it, otherwise the initial-on-a-tile the transcript falls back to,
+    // in the very colour their name is drawn in there.
+    QPixmap chatActorAvatar(const QString &senderId, const QString &senderName,
+                            int side) const;
     // Flash a red border around the whole window for a moment — the desktop
     // twin of the World's world-admin-error-arrival effect (adhoc #77).
     void flashErrorBorder();
@@ -6278,6 +6309,22 @@ private:
     QLabel *m_topMessageAgentHeadline = nullptr;
     QWidget *m_topMessagePromptImages = nullptr; // submitted image thumbnails
     QStringList m_topMessagePromptImagePaths;
+    // The face of whoever the card is about, in its own lane down the left of
+    // the bubble (adhoc #1612). Only a chat ping fills it: a message arriving
+    // while another section is open should say who is talking before a word of
+    // it is read. m_topMessageContentRow is that lane plus the message beside
+    // it, held so the bubble's width/height maths can account for it.
+    QWidget *m_topMessageContentRow = nullptr;
+    QLabel *m_topMessageAvatar = nullptr;
+    // The face the card on screen is wearing; null for the events that are
+    // nobody's. Held rather than read off the label so every render path
+    // (notification, queued replay, prompt confirmation) agrees on it.
+    QPixmap m_topMessageAvatarPixmap;
+    // The avatar the *next* raised card should wear. Set around the flashMessage
+    // call that raises a filed ping (the same trick m_pingToastId uses to say
+    // which row a toast belongs to), because the ping funnel between the two is
+    // shared by every kind of event and carries no widgetry of its own.
+    QPixmap m_pendingToastAvatar;
     // Queued notifications are visible beneath the active bubble. As new ones
     // arrive, this stack grows upward from the prompt rather than hiding
     // messages behind a "+N more" counter.
@@ -6324,6 +6371,10 @@ private:
         int durationSeconds = 0; // its full countdown starts when it reaches the top
         QString kind;
         int actionRunId = -1;
+        // Carried rather than looked up again: by the time a queued chat card
+        // reaches the top, the sender's avatar may have been replaced or the
+        // peer may be gone, and the card would change face while it waited.
+        QPixmap avatar;
     };
     QList<TopMessageQueueEntry> m_topMessageQueue;
     quint64 m_nextTopMessageQueueId = 1;
@@ -8293,6 +8344,12 @@ private:
         // the same way (adhoc #77).
         QString kind;   // "issue" | "chat" | "action" | … (defaults from link)
         QString actor;  // who caused it, when known
+        // That person's node id, when the event came from one (a chat message
+        // carries its sender's). Only the avatar lookup uses it — m_avatars is
+        // keyed by node id, and a display name alone cannot find a face
+        // (adhoc #1612). Not shown as a column and not journalled: it exists to
+        // draw the card that is going up right now.
+        QString actorId;
         QString repo;   // "owner/name", when it is about a repository
         qint64 id = 0;  // stable row identity, so one row can be deleted
         // Where this ping stands with the cloud (adhoc #1629). One raised while
