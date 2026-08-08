@@ -711,6 +711,41 @@ int main(int argc, char **argv)
     else
         qputenv("FORKMESH_NODE_BIN", savedNodeBin);
 
+    // --- The tail ending is normal, not terminal (adhoc #1623). Cloudflare
+    // expires a tail session after roughly an hour and Wrangler exits 0 when the
+    // server closes it, so a monitor that stops there leaves the Log page with
+    // no Worker traffic at all for the rest of the session.
+    const auto expired = forkmesh::control::planCloudflareTailRestart(
+        0, forkmesh::control::kCloudTailHealthyUptimeMs + 1);
+    check(expired.restart && !expired.giveUp && expired.delayMs > 0 &&
+              expired.delayMs <= 5000,
+          "a tail that had been streaming is replaced almost at once");
+    // A tail that had been up for an hour is worth restarting however many
+    // short-lived ones preceded it — the counter is about starts that never
+    // took, and this one plainly did.
+    check(forkmesh::control::planCloudflareTailRestart(
+              99, forkmesh::control::kCloudTailHealthyUptimeMs)
+              .restart,
+          "a long-lived tail restarts whatever came before it");
+
+    const auto firstFailure = forkmesh::control::planCloudflareTailRestart(0, 400);
+    const auto secondFailure =
+        forkmesh::control::planCloudflareTailRestart(1, 400);
+    check(firstFailure.restart && secondFailure.restart &&
+              secondFailure.delayMs > firstFailure.delayMs &&
+              firstFailure.delayMs >= 1000,
+          "a tail that dies young is retried on a widening backoff");
+    int attempts = 0;
+    while (forkmesh::control::planCloudflareTailRestart(attempts, 400).restart &&
+           attempts < 50) {
+        ++attempts;
+    }
+    const auto exhausted =
+        forkmesh::control::planCloudflareTailRestart(attempts, 400);
+    check(attempts > 1 && attempts < 10 && !exhausted.restart &&
+              exhausted.giveUp,
+          "a run of tails that never start gives up rather than spinning");
+
     // --- Tail rendering (adhoc #1615): the viewer parses Wrangler's JSON so it
     // can show the user agent behind each hit and tell a failure from a hit.
     const auto okTail = forkmesh::control::parseCloudflareTailLine(

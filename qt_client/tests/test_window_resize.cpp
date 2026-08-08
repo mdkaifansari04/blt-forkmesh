@@ -980,6 +980,50 @@ void checkCloudLogMonitorAlert(MainWindow &window)
           QStringLiteral("a pretty-printed Worker exception spanning two reads "
                          "renders as one line and raises the alert"));
 
+    // adhoc #1623: Wrangler's tail is not a forever stream. Cloudflare expires a
+    // tail session after about an hour and Wrangler exits 0 the moment the
+    // server closes it — so a monitor that treats that exit as the end of
+    // monitoring simply stops showing the Worker's traffic mid-session, which is
+    // indistinguishable from no cloud logs ever arriving.
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+    const int afterExpiry = window.testCloudLogMonitorTailEnded(0, 90 * 60 * 1000);
+    QApplication::processEvents();
+    const QStringList expiryLog = window.testNetworkLog();
+    check(afterExpiry > 0 && !window.testErrorBorderVisible() &&
+              !expiryLog.isEmpty() &&
+              expiryLog.constLast().contains(QStringLiteral("tail ended")) &&
+              window.testLogFilterChipCount(QStringLiteral("CLOUD")) == 1 &&
+              window.testLogFilterChipCount(QStringLiteral("ERROR")) == 0,
+          QStringLiteral("an expired tail session schedules a new tail and says "
+                         "so as a CLOUD line, not a red alert"));
+
+    // A tail that never gets going is a different matter: after a run of them
+    // there is nothing left to retry, and that failure does earn the card.
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+    int shortLived = 0;
+    while (window.testCloudLogMonitorTailEnded(1, 200) > 0 && shortLived < 20)
+        ++shortLived;
+    QApplication::processEvents();
+    check(shortLived > 0 && shortLived < 20 &&
+              window.testLogFilterChipCount(QStringLiteral("ERROR")) == 1,
+          QStringLiteral("a tail that keeps dying young stops for good and "
+                         "reports it once, as an error"));
+    // Giving up unticks the Settings box (without recording it as the stored
+    // preference). Put the box back so the Settings checks later in this suite
+    // still find the run's own state — silently, or re-ticking it would start a
+    // real Wrangler.
+    if (auto *monitorSetting = window.findChild<QCheckBox *>(
+            QStringLiteral("cloudLogMonitorSettingCheck"))) {
+        monitorSetting->blockSignals(true);
+        monitorSetting->setChecked(true);
+        monitorSetting->blockSignals(false);
+    }
+
     window.testDismissTopMessage();
     window.testResetNetworkLog();
     window.testResetLoggedErrorAlerts();

@@ -4237,6 +4237,13 @@ const Rule kNetworkLogRules[] = {
         // circuits on the same prefix ahead of the error scan; the entry here is
         // what gives the CLOUD chip its colour.
         {"cloud hit: ", "#f6821f", "CLOUD"},
+        // The monitor's own status lines — started watching, tail ended,
+        // stopped — belong in the same chip as the traffic they bracket, so the
+        // CLOUD filter shows why there is a gap in it (adhoc #1623). Its
+        // genuine failures never reach here: the error scan above this loop
+        // claims anything saying "could not"/"failed" first, which is exactly
+        // what the red card is for.
+        {"cloud: ", "#f6821f", "CLOUD"},
         // App start/stop/rebuild-restart markers — keep above "fork" so
         // "ForkMesh" in the start line doesn't get tagged FORK.
         {"session started", "#f2cc60", "SESSION"},
