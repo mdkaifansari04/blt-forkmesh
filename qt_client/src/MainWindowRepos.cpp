@@ -878,6 +878,10 @@ void MainWindow::loadRepositories()
             settings.value("actionsAutoApprove", true).toBool();
         repo.requirePeerApproval =
             settings.value("requirePeerApproval", true).toBool();
+        repo.mergeQueueEnabled =
+            settings.value("mergeQueueEnabled", false).toBool();
+        repo.mergeQueuePaused = settings.value("mergeQueuePaused", false).toBool();
+        repo.mergeQueue = settings.value("mergeQueue").toStringList();
         repo.externallyManagedActions =
             settings.value("externallyManagedActions", false).toBool();
         repo.externalActionsSource =
@@ -1018,6 +1022,9 @@ void MainWindow::saveRepositories() const
         settings.setValue("actionsEnabled", repo.actionsEnabled);
         settings.setValue("actionsAutoApprove", repo.actionsAutoApprove);
         settings.setValue("requirePeerApproval", repo.requirePeerApproval);
+        settings.setValue("mergeQueueEnabled", repo.mergeQueueEnabled);
+        settings.setValue("mergeQueuePaused", repo.mergeQueuePaused);
+        settings.setValue("mergeQueue", repo.mergeQueue);
         settings.setValue("externallyManagedActions",
                           repo.externallyManagedActions);
         settings.setValue("externalActionsSource",
@@ -3242,6 +3249,29 @@ QWidget *MainWindow::buildRepoSettingsTab()
     pullHint->setWordWrap(true);
     automationCol->addWidget(pullHint);
 
+    m_settingsMergeQueueCheck = new QCheckBox("Enable the merge queue");
+    m_settingsMergeQueueCheck->setObjectName(
+        QStringLiteral("repoMergeQueueCheck"));
+    m_settingsMergeQueueCheck->setCursor(Qt::PointingHandCursor);
+    m_settingsMergeQueueCheck->setToolTip(
+        "Let pull requests be handed to a queue instead of merged by hand. "
+        "ForkMesh works through the queue in order: each pull request is brought "
+        "up to date with the base branch first, then merged, so they land one "
+        "after the next even though every merge moves the base.");
+    connect(m_settingsMergeQueueCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setRepoMergeQueueEnabled(on); });
+    automationCol->addWidget(m_settingsMergeQueueCheck);
+
+    auto *mergeQueueHint = new QLabel(
+        "The queue appears under the pull-request list, where it can be "
+        "reordered, paused, and have entries taken back out. It keeps every "
+        "other merge rule: a pull request that conflicts, or that still needs "
+        "the peer approval required above, waits in the queue instead of "
+        "merging. The queue advances while this repository is open.");
+    mergeQueueHint->setObjectName("statusLine");
+    mergeQueueHint->setWordWrap(true);
+    automationCol->addWidget(mergeQueueHint);
+
     automationCol->addSpacing(10);
 
     // --- Secret scanning --------------------------------------------------
@@ -3568,6 +3598,12 @@ void MainWindow::refreshRepoSettings()
         m_settingsRequirePeerApprovalCheck->setChecked(
             !haveRepo ||
             m_repositories.at(m_repoDetailIndex).requirePeerApproval);
+    }
+    if (m_settingsMergeQueueCheck) {
+        QSignalBlocker block(m_settingsMergeQueueCheck);
+        m_settingsMergeQueueCheck->setEnabled(haveRepo);
+        m_settingsMergeQueueCheck->setChecked(
+            haveRepo && m_repositories.at(m_repoDetailIndex).mergeQueueEnabled);
     }
     if (m_secretScanCheck) {
         QSignalBlocker block(m_secretScanCheck);

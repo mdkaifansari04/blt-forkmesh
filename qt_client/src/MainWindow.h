@@ -15,6 +15,7 @@
 #include "ProjectStore.h"
 #include "PullStore.h"
 #include "PullReviewModel.h"
+#include "MergeQueue.h"
 #include "CoveStore.h"
 #include "ActionStore.h"
 #include "ActionFile.h"
@@ -289,6 +290,15 @@ struct RepositoryRecord {
     // This is a repository policy (rather than a global preference) and stays
     // on by default for existing and newly added repositories.
     bool requirePeerApproval = true;
+    // Merge queue (off by default): when on, pull requests can be handed to the
+    // queue instead of merged by hand, and ForkMesh lands them one after the
+    // next — updating each head branch from the base branch it just moved before
+    // it merges. mergeQueue is the ordered queue itself, serialized by
+    // MergeQueue::toRows(); mergeQueuePaused holds the runner without losing the
+    // order the owner arranged.
+    bool mergeQueueEnabled = false;
+    bool mergeQueuePaused = false;
+    QStringList mergeQueue;
     // A gateway-managed serving repository must keep its own post-receive hook
     // and object database isolated from workflow-created objects. The remote
     // Actions helper therefore maintains a separate local bare mirror and this
@@ -3195,6 +3205,13 @@ private:
     QHash<QString, QString> buildPullLineNotes(const PullRequest &pr);
     void updateCurrentPullBranch();
     void mergeCurrentPull();
+    // Everything that follows a successful PullStore::mergePull: close the
+    // issues the PR resolves, settle bounties, refresh the views the new commit
+    // invalidates and publish the merge when auto-sync-on-merge is on. Takes the
+    // pre-merge copy of the PR by value — it pumps the event loop, and callers
+    // hold references into m_currentPulls, which a nested reload reassigns
+    // (adhoc #119). Shared by the Merge button and the merge queue runner.
+    void afterPullMerged(PullRequest pr);
     void resolveCurrentPullConflicts(); // open the per-conflict merge editor
     // Shared modal merge-conflict editor (used by the PR and branch merge flows).
     // Returns true if the user committed the resolution, false if they cancelled.
@@ -3295,6 +3312,52 @@ private:
     void submitPullEventToInbox(int number, const PullEvent &ev);
     void updatePullActionState();
     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
+
+    // ---- Merge queue (MainWindowMergeQueue.cpp) ---------------------------
+    // Hand pull requests to ForkMesh instead of merging them by hand: the queue
+    // walks its entries in order and, for each, brings the head branch up to
+    // date with the base branch before merging it, so a queue drains one PR
+    // after the next even though every merge moves the base under the ones
+    // behind it. The queue belongs to the repository (it is persisted with the
+    // record) and advances while that repository is open.
+    QWidget *buildMergeQueuePanel();   // the editable queue in the Pulls pane
+    void refreshMergeQueuePanel();     // repaint it from the open repo's queue
+    bool mergeQueueEnabledForOpenRepo() const;
+    void setRepoMergeQueueEnabled(bool on);   // repository Settings toggle
+    void setMergeQueuePaused(bool paused);
+    // Queue membership. addPullToMergeQueue reports through the repo-detail
+    // notice, so it is also the entry point for the branch and PR buttons.
+    void addPullToMergeQueue(int number);
+    void removePullFromMergeQueue(int number);
+    void toggleCurrentPullInMergeQueue(); // the PR header's "Queue" tile
+    void moveMergeQueueSelection(int delta);
+    void removeMergeQueueSelection();
+    void clearMergeQueue();
+    // Send a branch to the queue: queues the open pull request for that branch,
+    // opening one first when the branch has none (adhoc: "send branches to the
+    // queue"). Reports through the repo-detail notice.
+    void queueBranchForMerge(const QString &branch);
+    // Runner. scheduleMergeQueueRun coalesces wake-ups (a later request never
+    // pushes an earlier one back); processMergeQueue performs at most one merge
+    // per pass and reschedules itself while work remains.
+    void scheduleMergeQueueRun(int delayMs);
+    void processMergeQueue();
+    // The queue of the repository currently open in the detail view, and the
+    // way back. Persisting names the repo by owner/name rather than by index
+    // because every git step in a pass pumps the GUI event loop, and the user
+    // may have switched repositories (or edited the queue) meanwhile.
+    MergeQueue openRepoMergeQueue() const;
+    MergeQueue mergeQueueFor(const QString &owner, const QString &name) const;
+    void saveMergeQueue(const QString &owner, const QString &name,
+                        const MergeQueue &queue);
+    // Single-entry edits the runner makes between pumping git steps. Each one
+    // re-reads the stored queue first, so a pass in flight can never write back
+    // an order the user has since changed or resurrect an entry they removed.
+    void setMergeQueueEntryState(const QString &owner, const QString &name,
+                                 int number, const QString &state,
+                                 const QString &detail);
+    void dropMergeQueueEntry(const QString &owner, const QString &name,
+                             int number);
     // Agent sessions tab: local OpenAI API / Claude API runs assigned from issues.
     QWidget *buildAgentsTab();
     void initAgents();
@@ -4535,7 +4598,10 @@ private:
     // Refresh the detail-pane action bar (Open in Codium / Pull / Fix with agent /
     // Create PR / Merge to main) for the currently selected branch.
     void updateBranchDetailActions(const QString &branch);
-    void createPullFromBranch(const QString &branch);
+    // Returns the new PR's number, or -1 when nothing was created (no changes,
+    // the title prompt was cancelled, …) so the merge queue can enqueue the PR
+    // it just opened for a branch.
+    int createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
     void updateBranchDiffSticky();
     QString diffViewedScope(const QString &context) const;
@@ -7707,6 +7773,10 @@ private:
     QComboBox *m_branchFixAgentCombo = nullptr;
     QComboBox *m_branchFixModelCombo = nullptr;
     QPushButton *m_branchPrButton = nullptr;    // "Create PR" from the branch
+    // "Queue merge": send this branch to the merge queue — queues its open PR,
+    // opening one first when it has none. Only shown for repositories with the
+    // merge queue switched on.
+    QPushButton *m_branchQueueButton = nullptr;
     QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
     // "Merge & delete all": the same merge, then tears down everything the branch
     // owned — its agent session(s), the branch itself and its worktree (adhoc #428).
@@ -8270,10 +8340,29 @@ private:
     QPushButton *m_pullDeleteButton = nullptr;
     QPushButton *m_pullDeleteBranchButton = nullptr; // delete the PR and its head branch
     QPushButton *m_pullMergeDeleteButton = nullptr;  // merge, then delete the PR + branch
+    QPushButton *m_pullQueueButton = nullptr;        // add/remove this PR in the merge queue
     QPushButton *m_pullPreviewButton = nullptr;      // build the PR and launch the app
     QDialog *m_pullPreviewDialog = nullptr;          // live build log for the preview
     bool m_pullDeleteConfirmPending = false;
     bool m_pullDeleteInProgress = false; // a deletePull worker thread is running
+
+    // Merge queue panel, under the pull-request list (MainWindowMergeQueue.cpp).
+    // The whole section is hidden for repositories with the queue switched off.
+    QWidget *m_mergeQueuePanel = nullptr;
+    QLabel *m_mergeQueueSummary = nullptr;
+    QListWidget *m_mergeQueueList = nullptr;
+    QPushButton *m_mergeQueuePauseButton = nullptr;
+    QPushButton *m_mergeQueueUpButton = nullptr;
+    QPushButton *m_mergeQueueDownButton = nullptr;
+    QPushButton *m_mergeQueueRemoveButton = nullptr;
+    QPushButton *m_mergeQueueClearButton = nullptr;
+    // Coalesced wake-up for the runner; single-shot, restarted with the earliest
+    // pending delay (see scheduleMergeQueueRun).
+    QTimer *m_mergeQueueTimer = nullptr;
+    // A pass is running. Every git step in it pumps the GUI event loop, so a
+    // timer tick, a pull reload or a click can re-enter processMergeQueue()
+    // mid-merge; this makes the re-entry reschedule instead of merging twice.
+    bool m_mergeQueueBusy = false;
     QListWidget *m_pullFiles = nullptr;
     // Files-changed authorship filter (issue #365): All / Agent-authored /
     // Human-authored, driven by m_pullFileAuthorship. Hidden unless the PR mixes
@@ -8590,6 +8679,10 @@ private:
     QCheckBox *m_actionsAutoApproveCheck = nullptr;
     QCheckBox *m_settingsAutoApproveCheck = nullptr;
     QCheckBox *m_settingsRequirePeerApprovalCheck = nullptr;
+    // Per-repo "merge queue" toggle, driven by setRepoMergeQueueEnabled(). The
+    // queue panel in the Pulls pane and the PR/branch "Queue" tiles only appear
+    // while it is on.
+    QCheckBox *m_settingsMergeQueueCheck = nullptr;
     QCheckBox *m_secretScanCheck = nullptr;
     // Per-repo visibility toggle: when checked the repo is private (hidden from
     // the public catalog; browse/clone gated on the owner's view token).
