@@ -15024,7 +15024,16 @@ void MainWindow::updateMirrorFleetCountdownLabel()
         return;
     }
     // Round up so a freshly armed five-minute window reads 5:00, not 4:59.
-    const int seconds = (remainingMs + 999) / 1000;
+    //
+    // Clamp to the interval first. Qt gives any timer of 2s or more the
+    // Qt::CoarseTimer type, which is free to push the expiry out by up to 5% so
+    // the wakeup can coalesce with others, so remainingTime() right after
+    // start() reads *more* than the nominal five minutes (300187ms here). The
+    // round-up then turned that into "5:01" — a countdown that starts above the
+    // interval it is counting down, and a value that moves with whatever else
+    // the event loop has pending.
+    const int intervalMs = m_mirrorFleetCheckTimer->interval();
+    const int seconds = (qMin(remainingMs, intervalMs) + 999) / 1000;
     const QString countdown =
         QStringLiteral("next healthy-node check in %1:%2")
             .arg(seconds / 60)
