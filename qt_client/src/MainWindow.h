@@ -3095,7 +3095,9 @@ private:
     // Set a diff viewer's HTML. renderDiffStreamed retains bounded fragments and
     // streams them into one continuously scrollable document; font-size changes
     // repaint those fragments without retaining another full HTML copy.
-    void setDiffHtml(QTextEdit *view, const QString &html);
+    // `endCap` off for documents that are not a diff (notices, the merge
+    // celebration): the end-of-diff bar under one is just a black line.
+    void setDiffHtml(QTextEdit *view, const QString &html, bool endCap = true);
     // Hook run when a diff view has fully streamed; refreshes state derived from
     // its document (sticky file positions and search).
     void onDiffStreamFinished(QTextEdit *view);

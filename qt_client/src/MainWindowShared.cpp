@@ -433,6 +433,10 @@ struct DiffStreamState {
     int endCapPosition = -1;
     bool endCapResizePending = false;
     bool endCapResizeFilterInstalled = false;
+    // Off for documents that are not a diff (notices, the merge celebration):
+    // an end-of-diff bar under a page with no diff on it is just a black line
+    // across the pane (adhoc #1631).
+    bool endCap = true;
     QList<std::function<void()>> finishedHooks;
 };
 
@@ -556,7 +560,7 @@ void installDiffEndCapResizeFilter(QTextEdit *view)
 
 void appendDiffEndCap(QTextEdit *view, DiffStreamState &state)
 {
-    if (!view || state.endCapPosition >= 0)
+    if (!view || !state.endCap || state.endCapPosition >= 0)
         return;
     QTextCursor cursor(view->document());
     cursor.movePosition(QTextCursor::End);
@@ -665,11 +669,12 @@ void scheduleDiffStreamBatch(QTextEdit *view, int gen)
 } // namespace
 
 void renderDiffStreamed(QTextEdit *view, const QString &html,
-                        const QString &styleSheet)
+                        const QString &styleSheet, bool endCap)
 {
     if (!view)
         return;
     DiffStreamState &state = diffStreamState(view);
+    state.endCap = endCap;
     if (!state.endCapResizeFilterInstalled) {
         installDiffEndCapResizeFilter(view);
         state.endCapResizeFilterInstalled = true;
