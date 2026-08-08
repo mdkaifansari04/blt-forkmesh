@@ -378,11 +378,16 @@ def repo_clone_online(rec, served_groups):
     return repo_mirror_group_key(rec) in (served_groups or set())
 
 
-def build_repo_mirrors_payload(
-    owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms,
-    history=None, linked_canonical=False, reachable_nodes=None,
-    routing_verified_nodes=None,
-):
+def repo_mirror_group_selection(owner, repo, rows):
+    """Resolve <owner>/<repo> to (target, members, public_rows), or None.
+
+    The mirror group of a repo is a small subset of the public catalog, but the
+    only way to find it is to look at every catalog record. Callers that need
+    just the group's key set — to scope a per-repo D1 read instead of reading
+    the whole table — share this selection with build_repo_mirrors_payload so
+    the two can never disagree about who is in the group.
+    """
+
     def clone_target(rec):
         raw = str((rec or {}).get("cloneUrl") or "").strip()
         if not raw:
@@ -448,7 +453,6 @@ def build_repo_mirrors_payload(
             },
         }
 
-    group_key = repo_mirror_group_key(target["data"])
     if inferred_target:
         members = [
             r for r in public_rows
@@ -458,6 +462,70 @@ def build_repo_mirrors_payload(
         members = [
             r for r in public_rows if repo_mirror_same_group(target["data"], r["data"])
         ]
+    return target, members, public_rows
+
+
+def repo_mirror_group_keys(members):
+    """Deduplicated catalog key_bi values for a resolved mirror group.
+
+    Lets a route read only this group's rows out of a per-repo table
+    (repo_first_hosted) instead of scanning it for every public repository on
+    every request.
+    """
+    keys = []
+    for row in members or []:
+        key = str((row or {}).get("key_bi") or "")
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def repo_mirror_pin_history_keys(members, public_rows):
+    """key_bi values whose attested pin history can affect this group's verdicts.
+
+    Group members, plus any working-copy holder they are grouped WITH. That
+    second set is not always a subset of the first: clone_state_pins validates
+    each member against the local-node rows grouped with IT, and grouping is not
+    strictly transitive — a record published without a root commit groups by
+    name (see repo_mirror_same_group), so a source can supply pins to a mirror
+    without landing in the requested repo's own group. Bounded to the catalog
+    rows that can actually contribute, so the caller reads repo_state_history
+    for those keys rather than for every public repository.
+    """
+    keys = repo_mirror_group_keys(members)
+    seen = set(keys)
+    for row in public_rows or []:
+        key = str((row or {}).get("key_bi") or "")
+        if not key or key in seen:
+            continue
+        rec = (row or {}).get("data") or {}
+        if str(rec.get("source") or "local-node").strip().lower() != "local-node":
+            continue
+        if not any(
+            repo_mirror_same_group((member or {}).get("data") or {}, rec)
+            for member in members or []
+        ):
+            continue
+        seen.add(key)
+        keys.append(key)
+    return keys
+
+
+def build_repo_mirrors_payload(
+    owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms,
+    history=None, linked_canonical=False, reachable_nodes=None,
+    routing_verified_nodes=None, selection=None,
+):
+    # Resolving the group means a pass over every public catalog record. A
+    # caller that already ran repo_mirror_group_selection — to scope its D1
+    # reads to the group — passes it back in rather than paying for a second
+    # identical pass on a route whose failure mode is the CPU limit.
+    if selection is None:
+        selection = repo_mirror_group_selection(owner, repo, rows)
+    if selection is None:
+        return None
+    target, members, public_rows = selection
+    group_key = repo_mirror_group_key(target["data"])
 
     def exact_state_hash(rec):
         value = str((rec or {}).get("stateHash") or "").strip().lower()

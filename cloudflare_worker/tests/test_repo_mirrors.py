@@ -37,6 +37,9 @@ def _load(*names, extra_globals=None):
     build_repo_mirrors_payload,
     clone_state_pins,
     repo_mirror_group_key,
+    repo_mirror_group_keys,
+    repo_mirror_group_selection,
+    repo_mirror_pin_history_keys,
     repo_mirror_same_group,
 ) = _load(
     "_mirror_ms",
@@ -45,6 +48,9 @@ def _load(*names, extra_globals=None):
     "build_repo_mirrors_payload",
     "clone_state_pins",
     "repo_mirror_group_key",
+    "repo_mirror_group_keys",
+    "repo_mirror_group_selection",
+    "repo_mirror_pin_history_keys",
     "repo_mirror_same_group",
 )
 
@@ -1003,22 +1009,33 @@ def _response(data, status=200, **_kwargs):
     return {"status": status, "data": data}
 
 
+class _Calls(list):
+    """Recorded SQL, plus the bindings each statement was issued with."""
+
+    def __init__(self):
+        super().__init__()
+        self.bindings = []
+
+
 def _load_handler(
     *, rows, first_hosted=None,
     linked_canonical=False, endpoint_nodes=None, endpoint_records=None,
     serve_counts=None,
 ):
-    calls = []
+    calls = _Calls()
 
     async def ensure_schema(_env):
         calls.append("schema")
 
     async def d1_all(_env, sql, *args):
         calls.append(sql)
-        if "FROM repositories" in sql:
-            return rows
+        calls.bindings.append((sql, args))
         if "FROM repo_first_hosted" in sql:
-            return first_hosted or []
+            keys = set(args)
+            return [
+                row for row in (first_hosted or [])
+                if not keys or row.get("repo_bi") in keys
+            ]
         if "FROM mirror_https_endpoints" in sql:
             if endpoint_records is not None:
                 return endpoint_records
@@ -1051,6 +1068,16 @@ def _load_handler(
     async def decrypt_row(_env, data):
         return data
 
+    async def _decrypted_public_catalog(_env, _now):
+        # The real helper is the shared per-isolate memo over
+        # "SELECT ... FROM repositories" + decrypt_row; the handler must read the
+        # catalog through it instead of running its own scan.
+        calls.append("_decrypted_public_catalog FROM repositories")
+        return rows
+
+    async def _mirror_owner_user(_env, _node_name, _now):
+        return ""
+
     async def edge_cache_match(_key):
         return None  # always a miss in these unit tests
 
@@ -1075,6 +1102,8 @@ def _load_handler(
         "d1_all": d1_all,
         "d1_first": d1_first,
         "decrypt_row": decrypt_row,
+        "_decrypted_public_catalog": _decrypted_public_catalog,
+        "_mirror_owner_user": _mirror_owner_user,
         "_is_blocked_catalog_identity": lambda _env, _owner, _name: False,
         "json_response": _response,
         "edge_cache_match": edge_cache_match,
@@ -1086,6 +1115,9 @@ def _load_handler(
         "method_name",
         "_mirror_ms",
         "repo_mirror_group_key",
+        "repo_mirror_group_keys",
+        "repo_mirror_group_selection",
+        "repo_mirror_pin_history_keys",
         "repo_mirror_same_group",
         "build_repo_mirrors_payload",
         "clone_state_pins",
@@ -1130,6 +1162,207 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
     # its clone-integrity verdict.
     assert any("FROM repo_state_history" in call for call in calls)
     assert all("integrity" in mirror for mirror in response["data"]["mirrors"])
+
+
+def test_repo_mirrors_handler_reads_catalog_through_the_shared_memo():
+    # adhoc #1630: this poll-heavy route ran its own "SELECT ... FROM
+    # repositories" plus a sequential decrypt_row() over the whole public
+    # catalog on every edge-cache miss. That unbounded per-request pass is what
+    # wedges an isolate ("Cannot enter into task" / CpuLimitExceeded), so the
+    # catalog must come from the shared 5s memo instead.
+    handler, calls = _load_handler(
+        rows=[
+            {"key_bi": "a", "data": _row(
+                "a", "mainnode", "forkmesh", root="abc")["data"]},
+        ],
+    )
+
+    asyncio.run(handler(object(), _Request("GET"), "mainnode", "forkmesh"))
+
+    assert "_decrypted_public_catalog FROM repositories" in calls
+    assert not any(
+        "FROM repositories" in sql for sql, _args in calls.bindings
+    )
+    body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def repo_mirrors_handler")
+        : ENTRY_TEXT.index("\n\n\n", ENTRY_TEXT.index(
+            "async def repo_mirrors_handler"))
+    ]
+    assert "await _decrypted_public_catalog(env, now)" in body
+    assert not [
+        line for line in body.splitlines()
+        if "FROM repositories" in line and not line.lstrip().startswith("#")
+    ]
+
+
+def test_repo_mirrors_handler_scopes_per_repo_reads_to_the_mirror_group():
+    # The pin-history and first-hosted reads were keyed by EVERY public repo,
+    # so each poll pulled unrelated repositories' rows — and one sequential D1
+    # round-trip per 80 catalog rows — to build a payload about one group.
+    handler, calls = _load_handler(
+        rows=[
+            {"key_bi": "a", "data": _row(
+                "a", "mainnode", "forkmesh", root="abc")["data"]},
+            {"key_bi": "b", "data": _row(
+                "b", "kaif-node", "forkmesh", root="abc",
+                source="remote-clone")["data"]},
+            {"key_bi": "c", "data": _row(
+                "c", "othernode", "unrelated", root="zzz")["data"]},
+            {"key_bi": "d", "data": _row(
+                "d", "thirdnode", "alsounrelated", root="yyy")["data"]},
+        ],
+        first_hosted=[
+            {"repo_bi": "b", "ts": 500_000},
+            {"repo_bi": "c", "ts": 400_000},
+        ],
+    )
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "mainnode", "forkmesh"))
+
+    assert response["status"] == 200
+    scoped = [
+        (sql, args) for sql, args in calls.bindings
+        if "FROM repo_state_history" in sql
+        or "FROM repo_first_hosted" in sql
+    ]
+    assert scoped, "group reads must still happen"
+    for sql, args in scoped:
+        assert " IN (" in sql
+        assert set(args) == {"a", "b"}
+
+
+def test_repo_mirrors_handler_resolves_the_group_once_per_request():
+    # Group resolution is a pass over EVERY public catalog record. The handler
+    # needs it up front to scope its D1 reads, so it must hand that selection to
+    # build_repo_mirrors_payload instead of letting it repeat the same pass —
+    # this route's failure mode is the CPU limit (adhoc #1630).
+    handler, _calls = _load_handler(
+        rows=[
+            {"key_bi": "a", "data": _row(
+                "a", "mainnode", "forkmesh", root="abc")["data"]},
+            {"key_bi": "b", "data": _row(
+                "b", "kaif-node", "forkmesh", root="abc",
+                source="remote-clone")["data"]},
+        ],
+    )
+    namespace = handler.__globals__
+    resolved = []
+    original = namespace["repo_mirror_group_selection"]
+
+    def counting(*args, **kwargs):
+        resolved.append(args[:2])
+        return original(*args, **kwargs)
+
+    namespace["repo_mirror_group_selection"] = counting
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "mainnode", "forkmesh"))
+
+    assert response["status"] == 200
+    assert len(response["data"]["mirrors"]) == 2
+    assert len(resolved) == 1
+
+
+def test_pin_history_keys_keep_a_rootless_mirrors_named_source():
+    # clone_state_pins validates a mirror against the local-node rows grouped
+    # with IT, and a record published without a root commit groups by name. The
+    # named source is therefore an attestation this payload depends on even
+    # though it is not in the requested repo's own group — narrowing the pin
+    # history to group members alone would silently drop its history and could
+    # flip a lagging mirror to "rejected".
+    members = [
+        {"key_bi": "a", "data": _row(
+            "a", "mainnode", "forkmesh", root="abc")["data"]},
+        {"key_bi": "b", "data": _row(
+            "b", "kaif-node", "forkmesh", source="remote-clone")["data"]},
+    ]
+    public_rows = members + [
+        {"key_bi": "c", "data": _row(
+            "c", "othernode", "forkmesh", root="zzz")["data"]},
+        {"key_bi": "d", "data": _row(
+            "d", "thirdnode", "unrelated", root="yyy")["data"]},
+        {"key_bi": "e", "data": _row(
+            "e", "fourthnode", "forkmesh", root="zzz",
+            source="remote-clone")["data"]},
+    ]
+
+    keys = repo_mirror_pin_history_keys(members, public_rows)
+
+    # "c" groups with the rootless mirror "b" by name; "d" is a different repo
+    # and "e" is not a working-copy holder, so neither can supply a pin.
+    assert keys == ["a", "b", "c"]
+    assert repo_mirror_group_keys(members) == ["a", "b"]
+
+
+def test_repo_mirrors_handler_404s_unknown_repo_before_further_reads():
+    handler, calls = _load_handler(
+        rows=[
+            {"key_bi": "c", "data": _row(
+                "c", "othernode", "unrelated", root="zzz")["data"]},
+        ],
+    )
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "mainnode", "forkmesh"))
+
+    assert response == {"status": 404, "data": {"error": "not_found"}}
+    assert not any("FROM repo_state_history" in call for call in calls)
+    assert not any("FROM repo_first_hosted" in call for call in calls)
+    assert not any("FROM org_repos" in call for call in calls)
+
+
+def test_mirror_owner_user_memoizes_the_account_lookup_per_isolate():
+    # Resolving the human owner behind each headless mirror is a blind_index
+    # plus up to two D1 reads and a decrypt, run once per mirror in the group on
+    # every uncached poll. A growing fleet turned that into dozens of sequential
+    # round-trips, so the resolved link is memoized per isolate.
+    lookups = []
+
+    async def _account_row(_env, name):
+        lookups.append(name)
+        return "bi", {"kind": "node", "owner": "jett"}
+
+    namespace = {
+        "_account_row": _account_row,
+        "_account_kind": lambda rec: rec.get("kind"),
+        "_MIRROR_OWNER_USER_MEMO": {},
+        "MIRROR_OWNER_USER_MEMO_TTL_MS": 300_000,
+        "MIRROR_OWNER_USER_MEMO_MAX": 512,
+    }
+    resolve, *_ = _load("_mirror_owner_user", extra_globals=namespace)
+
+    assert asyncio.run(resolve(object(), "mirror9", 1_000_000)) == "jett"
+    assert asyncio.run(resolve(object(), "mirror9", 1_000_100)) == "jett"
+    assert lookups == ["mirror9"]
+    # The memo expires, so a re-linked node is picked up without a redeploy.
+    assert asyncio.run(resolve(object(), "mirror9", 1_400_000)) == "jett"
+    assert lookups == ["mirror9", "mirror9"]
+
+
+def test_mirror_owner_user_memoizes_unlinked_nodes_and_bounds_the_memo():
+    lookups = []
+
+    async def _account_row(_env, name):
+        lookups.append(name)
+        return None, None
+
+    memo = {}
+    namespace = {
+        "_account_row": _account_row,
+        "_account_kind": lambda rec: (rec or {}).get("kind"),
+        "_MIRROR_OWNER_USER_MEMO": memo,
+        "MIRROR_OWNER_USER_MEMO_TTL_MS": 300_000,
+        "MIRROR_OWNER_USER_MEMO_MAX": 2,
+    }
+    resolve, *_ = _load("_mirror_owner_user", extra_globals=namespace)
+
+    assert asyncio.run(resolve(object(), "mirror9", 1_000_000)) == ""
+    assert asyncio.run(resolve(object(), "mirror9", 1_000_100)) == ""
+    assert lookups == ["mirror9"]  # an unlinked node is not re-resolved either
+    asyncio.run(resolve(object(), "mirror14", 1_000_200))
+    asyncio.run(resolve(object(), "mirror15", 1_000_300))
+    assert len(memo) <= 2
 
 
 def test_repo_mirrors_handler_aggregates_traffic_across_group_aliases():
