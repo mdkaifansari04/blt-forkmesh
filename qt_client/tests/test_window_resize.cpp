@@ -79,6 +79,7 @@ bool isTransientGitError(const QString &err);
 QString branchDiffErrorHtml(const QString &branch, const QString &err,
                             int attempts);
 QString gitignoreRuleForPath(const QString &relPath);
+QString gitArgsCrumb(const QString &program, const QStringList &args);
 }
 } // namespace forkmesh
 
@@ -1190,6 +1191,66 @@ void checkAlertStackLayout(MainWindow &window)
     QApplication::processEvents();
     check(container && !container->isVisible() && queue && !queue->isVisible(),
           QStringLiteral("dismissing clears the whole alert stack"));
+
+    // adhoc #1621: the stack is an overlay over whatever page is open, and a
+    // burst of long failures used to grow it right to the top of the window —
+    // the reference screenshot has three error cards covering a commit's
+    // Side-by-side / Prev / Next row. It now stays in the lower band it shares
+    // with the prompt, and no part of it (at rest or mid-entry) reaches the
+    // composer.
+    auto *prompt = window.findChild<QWidget *>(QStringLiteral("promptWrapper"));
+    const int promptTop = prompt && prompt->isVisible()
+                              ? prompt->mapTo(&window, QPoint()).y()
+                              : window.height();
+    const QString wall =
+        QStringLiteral("net GET ERR 500 [body: <!DOCTYPE html> <!--[if lt IE 7]> "
+                       "<html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]--> "
+                       "<title>Worker threw exception | forkmesh.com | Cloudflare "
+                       "</title> https://forkmesh.com/ ");
+    for (int i = 0; i < 4; ++i)
+        window.testFlashMessage(wall.repeated(6) + QString::number(i), true);
+    settleAnimations();
+    const QRect burst = window.testTopMessageRect();
+    const QRect burstStack =
+        queue && queue->isVisible() ? burst.united(queue->geometry()) : burst;
+    // Half the height above the composer is the loose form of the ceiling: the
+    // real one is measured from the top of the content area, so it lands a little
+    // lower still. Before adhoc #1621 this stack reached the window's top margin.
+    check(burstStack.top() >= promptTop / 2,
+          QStringLiteral("a burst of long failures stays in the lower band beside "
+                         "the prompt instead of climbing over the page's toolbar"));
+    check(burstStack.bottom() < promptTop,
+          QStringLiteral("the whole stack rests clear of the composer"));
+    check(queue && queue->isVisible() && queue->height() > 0 &&
+              burst.height() < burstStack.height(),
+          QStringLiteral("one long failure scrolls its own text instead of "
+                         "filling the stack and hiding the cards behind it"));
+
+    // The whole window this time, not just the stack: what adhoc #1621 is about
+    // is where the stack sits relative to the page underneath it.
+    if (!qEnvironmentVariableIsEmpty("FORKMESH_ALERT_SHOT")) {
+        qInfo("ALERTSHOT burst stack=%d,%d %dx%d promptTop=%d window=%dx%d",
+              burstStack.x(), burstStack.y(), burstStack.width(),
+              burstStack.height(), promptTop, window.width(), window.height());
+        window.grab().save(qEnvironmentVariable("FORKMESH_ALERT_SHOT") +
+                           QStringLiteral(".burst.png"));
+    }
+
+    // The entry rise borrows the gap above the prompt, so even the first frame
+    // of an arriving card stays off it.
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    window.testFlashMessage(
+        QStringLiteral("Push rejected: remote has newer commits on main"), true);
+    QApplication::processEvents();
+    check(container && container->isVisible() &&
+              container->geometry().bottom() < promptTop,
+          QStringLiteral("an arriving card rises inside that gap rather than "
+                         "flying in over the prompt"));
+    settleAnimations();
+
+    window.testDismissTopMessage();
+    QApplication::processEvents();
 }
 
 QString widgetPath(QWidget *widget)
@@ -1603,6 +1664,8 @@ int main(int argc, char *argv[])
         app.arguments().contains(QStringLiteral("--footer-overlay-only"));
     const bool errorAlertOnly =
         app.arguments().contains(QStringLiteral("--error-alert-only"));
+    const bool alertStackOnly =
+        app.arguments().contains(QStringLiteral("--alert-stack-only"));
     const bool updateIsolationOnly =
         app.arguments().contains(QStringLiteral("--update-isolation-only"));
 
@@ -1915,7 +1978,7 @@ int main(int argc, char *argv[])
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
     if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly &&
-        !mirrorFleetOnly && !errorAlertOnly)
+        !mirrorFleetOnly && !errorAlertOnly && !alertStackOnly)
         check(detailedStartupSteps >= 7 &&
               startupLog.contains(QStringLiteral(
                   "BEGIN MainWindow: read connection state and cached model list")) &&
@@ -2041,6 +2104,15 @@ int main(int argc, char *argv[])
         window.show();
         QApplication::processEvents();
         checkFooterOverlayGeometry(window);
+        return failures == 0 ? 0 : 1;
+    }
+
+    if (alertStackOnly) {
+        window.resize(1200, 720);
+        window.show();
+        QApplication::processEvents();
+        checkAlertStackLayout(window);
+        stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
 
@@ -6168,6 +6240,58 @@ int main(int argc, char *argv[])
                                  "it off the pattern (adhoc #1594)"));
         }
 
+        // adhoc #1620: the background strip and the stall log name the git
+        // command that is running. A diff scoped to the whole changed-file set
+        // passes hundreds of pathspecs, so the pathspec list is summarised
+        // rather than pasted (or blindly chopped two files in).
+        {
+            QStringList many{"-C", "/home/f/projects/forkmesh", "diff", "main",
+                             "--"};
+            for (int i = 0; i < 291; ++i)
+                many << QStringLiteral(":(literal)cloudflare_worker/tests/"
+                                       "test_world_%1.py")
+                            .arg(i);
+            const QString crumb =
+                forkmesh::ui::gitArgsCrumb(QStringLiteral("git"), many);
+            check(crumb == QStringLiteral(
+                               "git diff main -- test_world_0.py, "
+                               "test_world_1.py, test_world_2.py, "
+                               "test_world_3.py, test_world_4.py +286 more "
+                               "(forkmesh)"),
+                  QString("a pathspec flood collapses to a few names and a count "
+                          "(adhoc #1620, crumb = %1)").arg(crumb));
+            check(crumb.size() < 200,
+                  QString("the crumb stays one readable log line (adhoc #1620, "
+                          "%1 chars)").arg(crumb.size()));
+
+            const QString few = forkmesh::ui::gitArgsCrumb(
+                QStringLiteral("git"),
+                {"-C", "/repos/forkmesh", "diff", "main", "--", "docs/a.md"});
+            check(few == QStringLiteral("git diff main -- docs/a.md (forkmesh)"),
+                  QString("a short pathspec list is still shown verbatim "
+                          "(crumb = %1)").arg(few));
+
+            // A private-repo fetch carries the signed view token as a "-c
+            // http.extraHeader=…" override, and a crumb reaches the log file and
+            // actions.jsonl — so the key survives and the credential does not.
+            const QString authed = forkmesh::ui::gitArgsCrumb(
+                QStringLiteral("git"),
+                {"-c", "http.extraHeader=Authorization: Basic c2VjcmV0OnRva2Vu",
+                 "-C", "/repos/forkmesh", "fetch", "--prune", "origin"});
+            check(!authed.contains(QStringLiteral("c2VjcmV0OnRva2Vu")) &&
+                      authed.startsWith(QString::fromUtf8(
+                          "git -c http.extraHeader=\xE2\x80\xA6 fetch")) &&
+                      authed.endsWith(QStringLiteral("(forkmesh)")),
+                  QString("the crumb keeps the config key but never logs the "
+                          "view token (adhoc #1620, crumb = %1)").arg(authed));
+
+            const QString noPaths = forkmesh::ui::gitArgsCrumb(
+                QStringLiteral("git"), {"log", "--numstat", "-n", "5"});
+            check(noPaths == QStringLiteral("git log --numstat -n 5"),
+                  QString("a command with no pathspecs is untouched (crumb = %1)")
+                      .arg(noPaths));
+        }
+
         // adhoc #1615: a merged-and-deleted branch used to leave one grey line in
         // the range pane. It now leaves a congratulation that names who landed
         // the branch and lists every other merge of the day beside it, so the
@@ -8301,6 +8425,42 @@ int main(int argc, char *argv[])
                   window.testLogBadgeFor(stored.last()) == QStringLiteral("BGBLOCK"),
               QStringLiteral("work that was not backgrounded badges as BGBLOCK, "
                              "its own category"));
+
+        // adhoc #1620: the crumb an outcome line quotes is a git command, and a
+        // pathspec list names whatever files the read was scoped to — including
+        // this repo's own test_client_error_reporting.py. The substring error
+        // scan claimed the line and painted a healthy run red.
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 2, 224,
+            QStringLiteral("git diff main -- test_client_error_reporting.py, "
+                           "test_offline_ci_workflow.py +286 more (forkmesh)"),
+            /*backgrounded=*/true));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) ==
+                      QStringLiteral("BGTASK"),
+              QStringLiteral("a ✓ outcome line keeps its BGTASK badge when the "
+                             "command it quotes names a file with \"error\" in "
+                             "it (adhoc #1620)"));
+
+        // The ✕ half is likewise classified from its own marker, not from the
+        // vocabulary of the crumb.
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 1, 900,
+            QStringLiteral("git log --grep failed -- error_log.py"),
+            /*backgrounded=*/false));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) ==
+                      QStringLiteral("BGBLOCK"),
+              QStringLiteral("a ✕ outcome line stays BGBLOCK rather than being "
+                             "reclassified as a failure (adhoc #1620)"));
+
+        window.testResetNetworkLog();
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 1, 48, QString(), /*backgrounded=*/true));
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 3, 1400, QString(), /*backgrounded=*/false));
 
         // adhoc #1594: a line that only mentions background work is not a
         // finished run, and counting it as one is what made the BGTASK tally

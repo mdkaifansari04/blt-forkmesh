@@ -4323,7 +4323,7 @@ void MainWindow::noteBackgroundActivity(quint64 id, const QString &kind,
         m_backgroundTaskCounts.insert(word, count);
         if (count == 1)
             m_backgroundTaskSince.insert(word, QDateTime::currentMSecsSinceEpoch());
-        const QString note = detail.trimmed();
+        const QString note = forkmesh::backgroundDetailNote(detail);
         if (!note.isEmpty())
             m_backgroundTaskDetails.insert(word, note);
     } else {
