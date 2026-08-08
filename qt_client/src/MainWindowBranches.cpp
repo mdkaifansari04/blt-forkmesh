@@ -288,6 +288,351 @@ static QString branchConflictKey(const QString &dir, const QString &baseSha,
         return QString();
     return dir + QLatin1Char('\n') + baseSha + QLatin1Char('\n') + branchSha;
 }
+
+// ---- Merge celebration -----------------------------------------------------
+//
+// What the range pane shows once a branch has been merged and deleted (see
+// mergeCelebrationHtml). Credit is the hard part: by the time that screen
+// renders, the branch is gone, "Merge & clean up" has deleted the agent session
+// that produced it, and git records only this desktop's own identity as the
+// author of every merge commit. So the credit is captured at merge time, while
+// the session still exists, and replayed here.
+
+// Where the merge log lives. A line per landing, read only when a merge lands or
+// the celebration renders, so QSettings is storage enough — no store, no schema.
+static const QString kMergeNotesSetting = QStringLiteral("branches/mergeNotes");
+
+// Notes outlive their day so a merge landed just before midnight can still name
+// its agent in the morning, and are dropped after that: the screen only ever
+// looks at today.
+static constexpr qint64 kMergeNoteLifetimeMs = 48LL * 60 * 60 * 1000;
+
+// A busy day is truncated rather than turned into a scroll of rows. What was cut
+// is stated on screen rather than silently dropped.
+static constexpr int kMergeCelebrationRowLimit = 12;
+
+// Who was responsible for one landing, in the terms the app knows them by.
+struct MergeNote {
+    QString mergeCommit; // ties the note back to the merge commit exactly
+    QString branch;
+    qint64 mergedAtMs = 0;
+    bool byAgent = false;
+    QString actor;    // "Opus 5" for an agent, the account name for a person
+    QString detail;   // "Agent #12 · Claude Code · issue #14"
+    QString provider; // provider + model pick the agent's portrait
+    QString model;
+};
+
+static QList<MergeNote> loadMergeNotes()
+{
+    const QJsonArray stored =
+        QJsonDocument::fromJson(
+            QSettings().value(kMergeNotesSetting).toString().toUtf8())
+            .array();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QList<MergeNote> notes;
+    for (const QJsonValue &value : stored) {
+        const QJsonObject object = value.toObject();
+        MergeNote note;
+        note.mergeCommit = object.value(QStringLiteral("commit")).toString();
+        note.branch = object.value(QStringLiteral("branch")).toString();
+        note.mergedAtMs =
+            static_cast<qint64>(object.value(QStringLiteral("at")).toDouble());
+        note.byAgent = object.value(QStringLiteral("agent")).toBool();
+        note.actor = object.value(QStringLiteral("actor")).toString();
+        note.detail = object.value(QStringLiteral("detail")).toString();
+        note.provider = object.value(QStringLiteral("provider")).toString();
+        note.model = object.value(QStringLiteral("model")).toString();
+        if (note.mergeCommit.isEmpty() ||
+            now - note.mergedAtMs > kMergeNoteLifetimeMs)
+            continue;
+        notes.append(note);
+    }
+    return notes;
+}
+
+static void saveMergeNotes(const QList<MergeNote> &notes)
+{
+    QJsonArray stored;
+    for (const MergeNote &note : notes)
+        stored.append(QJsonObject{
+            {QStringLiteral("commit"), note.mergeCommit},
+            {QStringLiteral("branch"), note.branch},
+            {QStringLiteral("at"), double(note.mergedAtMs)},
+            {QStringLiteral("agent"), note.byAgent},
+            {QStringLiteral("actor"), note.actor},
+            {QStringLiteral("detail"), note.detail},
+            {QStringLiteral("provider"), note.provider},
+            {QStringLiteral("model"), note.model}});
+    QSettings().setValue(
+        kMergeNotesSetting,
+        QString::fromUtf8(QJsonDocument(stored).toJson(QJsonDocument::Compact)));
+}
+
+// The session that produced `branch`, preferring a live one over a cleared one
+// and then the most recent run — the same choice the worktrees list makes when a
+// branch has been worked more than once.
+static const AgentSession *sessionForMergedBranch(
+    const QList<AgentSession> &sessions, const QString &branch,
+    const QString &repoOwner, const QString &repoName)
+{
+    const AgentSession *best = nullptr;
+    for (const AgentSession &session : sessions) {
+        if (session.branchName != branch)
+            continue;
+        if (!repoOwner.isEmpty() &&
+            (session.owner != repoOwner || session.name != repoName))
+            continue;
+        if (!best) {
+            best = &session;
+            continue;
+        }
+        const bool live = session.status != AgentStatus::Cleared;
+        const bool bestLive = best->status != AgentStatus::Cleared;
+        if ((live && !bestLive) || (live == bestLive && session.id > best->id))
+            best = &session;
+    }
+    return best;
+}
+
+// How an agent session is named on the celebration screen: the model it ran as
+// (that is what its portrait shows), with the session number, the CLI behind it
+// and the issue it was working as the second line.
+static void creditFromSession(const AgentSession &session, QString *actor,
+                              QString *detail)
+{
+    const QString model = agentModelLabel(session.model);
+    const QString provider = cliProviderLabel(session.provider);
+    *actor = !model.isEmpty() ? model
+                              : (!provider.isEmpty() ? provider
+                                                     : QStringLiteral("Agent"));
+    QStringList parts;
+    parts << QStringLiteral("Agent #%1").arg(session.id);
+    if (!provider.isEmpty() && provider != *actor)
+        parts << provider;
+    if (session.issueNumber > 0)
+        parts << QStringLiteral("issue #%1").arg(session.issueNumber);
+    *detail = parts.join(QString::fromUtf8(" \xC2\xB7 "));
+}
+
+// Record who landed `branch`. Called from the merge path the moment git reports
+// the branch contained in the base branch, and deliberately before any agent
+// teardown runs — after that there is nothing left to credit.
+static void rememberMergedBranch(const QString &dir, const QString &branch,
+                                 const QList<AgentSession> &sessions,
+                                 const QString &repoOwner, const QString &repoName,
+                                 const QString &personName)
+{
+    if (dir.isEmpty() || branch.isEmpty())
+        return;
+    QByteArray head;
+    if (!runGitCapture(dir, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")},
+                       &head, nullptr))
+        return;
+    MergeNote note;
+    note.mergeCommit = QString::fromUtf8(head).trimmed();
+    if (note.mergeCommit.isEmpty())
+        return;
+    note.branch = branch;
+    note.mergedAtMs = QDateTime::currentMSecsSinceEpoch();
+    if (const AgentSession *session =
+            sessionForMergedBranch(sessions, branch, repoOwner, repoName)) {
+        note.byAgent = true;
+        note.provider = session->provider;
+        note.model = session->model;
+        creditFromSession(*session, &note.actor, &note.detail);
+    } else {
+        note.actor = personName.trimmed().isEmpty() ? QStringLiteral("You")
+                                                    : personName.trimmed();
+        note.detail = QStringLiteral("merged by hand");
+    }
+    QList<MergeNote> notes = loadMergeNotes();
+    // A fast-forward-shaped re-merge can land on the same commit; the newest
+    // credit for it wins rather than being listed twice.
+    notes.removeIf([&note](const MergeNote &existing) {
+        return existing.mergeCommit == note.mergeCommit;
+    });
+    notes.append(note);
+    // A fleet that lands hundreds of branches a day would otherwise grow the
+    // settings entry unbounded within the lifetime window; only the newest
+    // notes can still be shown.
+    constexpr int kMergeNoteLimit = 200;
+    if (notes.size() > kMergeNoteLimit)
+        notes = notes.mid(notes.size() - kMergeNoteLimit);
+    saveMergeNotes(notes);
+}
+
+// One merge commit on the base branch, as git reports it.
+struct MergeLanding {
+    QString sha;
+    QString branch; // from the subject; empty when it named none
+    QString author;
+    qint64 whenSecs = 0;
+    int files = 0;
+    int insertions = 0;
+    int deletions = 0;
+};
+
+// Every merge that landed on `base` since local midnight, newest first. One git
+// read for the lot: the record separator starts each commit, the unit separator
+// splits its fields, and --shortstat appends the first-parent change totals.
+static QList<MergeLanding> mergesLandedToday(const QString &dir,
+                                             const QString &base)
+{
+    QList<MergeLanding> landings;
+    if (dir.isEmpty() || base.isEmpty())
+        return landings;
+    const QString midnight =
+        QDateTime(QDate::currentDate(), QTime(0, 0)).toString(Qt::ISODate);
+    QByteArray out;
+    if (!runGitCapture(dir,
+                       {QStringLiteral("log"), QStringLiteral("--merges"),
+                        QStringLiteral("--first-parent"),
+                        QStringLiteral("--diff-merges=first-parent"),
+                        QStringLiteral("--shortstat"),
+                        QStringLiteral("--since=%1").arg(midnight),
+                        QStringLiteral("--pretty=format:%x1e%H%x1f%ct%x1f%an%x1f%s"),
+                        base},
+                       &out, nullptr))
+        return landings;
+    static const QRegularExpression shortstat(
+        QStringLiteral("(\\d+) files? changed"
+                       "(?:, (\\d+) insertions?\\(\\+\\))?"
+                       "(?:, (\\d+) deletions?\\(-\\))?"));
+    const QStringList records = QString::fromUtf8(out).split(QChar(0x1e),
+                                                             Qt::SkipEmptyParts);
+    for (const QString &record : records) {
+        const QStringList lines = record.split(QLatin1Char('\n'));
+        const QStringList fields = lines.value(0).split(QChar(0x1f));
+        if (fields.size() < 4)
+            continue;
+        MergeLanding landing;
+        landing.sha = fields.at(0);
+        landing.whenSecs = fields.at(1).toLongLong();
+        landing.author = fields.at(2);
+        landing.branch = mergedBranchFromMergeSubject(fields.at(3));
+        for (int i = 1; i < lines.size(); ++i) {
+            const QRegularExpressionMatch match = shortstat.match(lines.at(i));
+            if (!match.hasMatch())
+                continue;
+            landing.files = match.captured(1).toInt();
+            landing.insertions = match.captured(2).toInt();
+            landing.deletions = match.captured(3).toInt();
+            break;
+        }
+        landings.append(landing);
+    }
+    return landings;
+}
+
+// The artwork one landing is credited with: the model's portrait for an agent
+// (what the Agents list and the World draw it as), and the person's own picture
+// or their deterministic identicon otherwise.
+static QPixmap mergeCreditAvatar(bool byAgent, const QString &provider,
+                                 const QString &model, const QString &person,
+                                 const QString &me, const QByteArray &myAvatarPng,
+                                 int size)
+{
+    if (byAgent) {
+        // "Auto" has no fixed model, so a session still on the sentinel wears
+        // the auto glyph rather than one model's portrait — as it does
+        // everywhere else.
+        const int index =
+            model.trimmed().compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
+                ? 7
+                : agentModelFaceIconIndex(provider, model);
+        return agentControlIcon(index).pixmap(QSize(size, size),
+                                              iconDevicePixelRatio());
+    }
+    const QString seed = person.trimmed().toLower();
+    // Nobody to draw: an identicon of the empty string would put a face on a
+    // landing that names no one.
+    if (seed.isEmpty())
+        return QPixmap();
+    if (!me.trimmed().isEmpty() && !myAvatarPng.isEmpty() &&
+        person.trimmed().compare(me.trimmed(), Qt::CaseInsensitive) == 0)
+        return roundedAvatar(myAvatarPng, size, 0.5);
+    return roundedAvatar(forkMeshAvatarPng(seed), size, 0.5);
+}
+
+// Turn the day's merge commits into celebration rows, crediting each one from
+// the best evidence available: the note written when it landed, then a stored
+// agent session still naming that branch (an ordinary "Merge to main" keeps its
+// session), and finally the commit's own author.
+//
+// The celebrated landing's artwork is rasterised at the hero size it is also
+// drawn at up top; the img tags carry their own logical size, so the same
+// pixmap serves both places without a second raster.
+static QList<MergeCelebrationRow> mergeCelebrationRows(
+    const QString &dir, const QString &base, const QList<MergeLanding> &landings,
+    const QList<AgentSession> &sessions, const QString &repoOwner,
+    const QString &repoName, const QString &me, const QByteArray &myAvatarPng,
+    const QString &celebrated, int avatarSize, int heroAvatarSize)
+{
+    QHash<QString, MergeNote> notesByCommit;
+    QHash<QString, MergeNote> notesByBranch;
+    for (const MergeNote &note : loadMergeNotes()) {
+        notesByCommit.insert(note.mergeCommit, note);
+        if (!note.branch.isEmpty())
+            notesByBranch.insert(note.branch, note);
+    }
+    QSet<QString> liveBranches;
+    QByteArray refs;
+    if (runGitCapture(dir,
+                      {QStringLiteral("for-each-ref"),
+                       QStringLiteral("--format=%(refname:short)"),
+                       QStringLiteral("refs/heads")},
+                      &refs, nullptr))
+        for (const QString &ref : QString::fromUtf8(refs).split(QLatin1Char('\n'),
+                                                                Qt::SkipEmptyParts))
+            liveBranches.insert(ref.trimmed());
+
+    QList<MergeCelebrationRow> rows;
+    for (const MergeLanding &landing : landings) {
+        MergeCelebrationRow row;
+        row.branch = landing.branch;
+        row.mergeCommit = landing.sha;
+        row.branchStillExists = !landing.branch.isEmpty() &&
+                                landing.branch != base &&
+                                liveBranches.contains(landing.branch);
+        row.whenSecs = landing.whenSecs;
+        row.files = landing.files;
+        row.insertions = landing.insertions;
+        row.deletions = landing.deletions;
+        row.current = !celebrated.isEmpty() && landing.branch == celebrated;
+
+        QString provider;
+        QString model;
+        const auto note = notesByCommit.constFind(landing.sha);
+        const auto branchNote = landing.branch.isEmpty()
+                                    ? notesByBranch.constEnd()
+                                    : notesByBranch.constFind(landing.branch);
+        if (note != notesByCommit.constEnd() || branchNote != notesByBranch.constEnd()) {
+            const MergeNote &credit =
+                note != notesByCommit.constEnd() ? note.value() : branchNote.value();
+            row.byAgent = credit.byAgent;
+            row.actor = credit.actor;
+            row.detail = credit.detail;
+            provider = credit.provider;
+            model = credit.model;
+        } else if (const AgentSession *session = sessionForMergedBranch(
+                       sessions, landing.branch, repoOwner, repoName)) {
+            row.byAgent = true;
+            provider = session->provider;
+            model = session->model;
+            creditFromSession(*session, &row.actor, &row.detail);
+        } else {
+            row.actor = landing.author;
+        }
+        row.avatar =
+            mergeCreditAvatar(row.byAgent, provider, model, row.actor, me,
+                              myAvatarPng,
+                              row.current ? heroAvatarSize : avatarSize);
+        rows.append(row);
+    }
+    return rows;
+}
+
 // Worktrees tab (next to Branches): lists this repo's git worktrees — the main
 // checkout plus each agent's isolated worktree+branch — with open/remove/prune.
 QWidget *MainWindow::buildWorktreesTab()
@@ -1830,6 +2175,25 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         runGitCapture(dir, {"merge-base", "--is-ancestor", branch, "HEAD"}, nullptr,
                       nullptr);
     if (merged && !hasConflicts && branchInBase) {
+        // Credit the landing now, while there is still something to credit: the
+        // teardown below deletes the agent session that produced the branch, and
+        // git records only this desktop's own identity as the merge author, so
+        // this note is all the celebration screen (and the rest of today's list)
+        // has to name who did the work (adhoc #1615).
+        {
+            QString owner;
+            QString name;
+            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+                owner = m_repositories.at(m_repoDetailIndex).owner;
+                name = m_repositories.at(m_repoDetailIndex).name;
+            }
+            // By value: the git read inside pumps the event loop, and a queued
+            // reloadAgents() would otherwise reseat m_agentSessions underneath
+            // the reference (the git-pump family, adhoc #106/#149).
+            const QList<AgentSession> sessions = m_agentSessions;
+            rememberMergedBranch(dir, branch, sessions, owner, name,
+                                 topBarUserName());
+        }
         // adhoc #23: an agent's branch just landed in the base branch, so close any
         // issue attached to the session(s) that produced it — mirroring the
         // PR-merge flow's closeIssuesLinkedFromPull. Read the attachments now, while
@@ -1921,9 +2285,17 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     // the neighbour renders a diff the user didn't ask for, and re-selecting a
     // branch that no longer exists falls back to the checked-out one. Leave an
     // animated check in its row instead and select nothing.
-    if (branchDeleted)
+    if (branchDeleted) {
+        // Build the celebration here, on the merge path, rather than inside the
+        // panel rebuild that shows it: every git wait on the GUI thread pumps
+        // the event loop (adhoc #101), and renderBranchesPanel runs with the
+        // table's signals blocked mid-rebuild — pumping there re-enters the very
+        // handlers it is rebuilding for. This function already reads git under a
+        // keep-alive, so three more reads are at home in it.
         flashMergedBranchRow(branch);
-    else if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()) {
+        if (!m_branchMergedFlashBranch.isEmpty())
+            m_branchMergedFlashHtml = mergedBranchCelebrationHtml(branch, base, dir);
+    } else if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()) {
         const QString next = neighbourBranchInList(branch);
         if (!next.isEmpty())
             m_branchDiffBranch = next;
@@ -4135,13 +4507,20 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         // Table signals are blocked across the rebuild, so blank the diff pane
         // ourselves rather than leaving the deleted branch's diff on screen.
         showBranchDiff(QString());
+        // The branch is gone, so this pane has no diff to show. Rather than one
+        // grey line saying so, it shows the congratulation the merge path built
+        // for this landing — who was behind it and every other merge of the day
+        // (adhoc #1615). Only a flash raised without one falls back to the line.
         if (m_branchDiffView)
-            setDiffHtml(m_branchDiffView,
-                        QStringLiteral("<p style='color:#8b949e'>Merged %1 into %2 "
-                                       "and deleted it. Pick a branch to see its "
-                                       "changes.</p>")
-                            .arg(m_branchMergedFlashBranch.toHtmlEscaped(),
-                                 base.toHtmlEscaped()));
+            setDiffHtml(
+                m_branchDiffView,
+                m_branchMergedFlashHtml.isEmpty()
+                    ? QStringLiteral("<p style='color:#8b949e'>Merged %1 into %2 "
+                                     "and deleted it. Pick a branch to see its "
+                                     "changes.</p>")
+                          .arg(m_branchMergedFlashBranch.toHtmlEscaped(),
+                               base.toHtmlEscaped())
+                    : m_branchMergedFlashHtml);
         return;
     }
 
@@ -4355,6 +4734,77 @@ void MainWindow::flashMergedBranchRow(const QString &branch)
     });
 }
 
+// The pane that replaces a merged-and-deleted branch's diff: a congratulation
+// naming who landed it, beside every other branch that reached the base branch
+// today and who was behind each. Assembling it is three cheap git reads (the
+// day's merge commits with their change totals, the live branch list, and the
+// merge's commit count) plus whatever credit was recorded at merge time; the
+// layout itself is mergeCelebrationHtml. Called from the merge path and held in
+// m_branchMergedFlashHtml — those reads pump the event loop, which the panel
+// rebuild that paints the result cannot afford.
+QString MainWindow::mergedBranchCelebrationHtml(const QString &branch,
+                                                const QString &base,
+                                                const QString &dir)
+{
+    // Both sizes are rasterised for HiDPI and drawn at their logical size.
+    constexpr int kRowAvatarPx = 22;
+    constexpr int kHeroAvatarPx = 56;
+    QString owner;
+    QString name;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        owner = m_repositories.at(m_repoDetailIndex).owner;
+        name = m_repositories.at(m_repoDetailIndex).name;
+    }
+    const QString me = topBarUserName();
+    const QByteArray myAvatar = effectiveUserAvatar();
+    // By value: the git reads below pump the event loop, and a queued
+    // reloadAgents() would reseat m_agentSessions underneath a reference to it
+    // (the git-pump family, adhoc #106/#149).
+    const QList<AgentSession> sessions = m_agentSessions;
+    QList<MergeCelebrationRow> rows = mergeCelebrationRows(
+        dir, base, mergesLandedToday(dir, base), sessions, owner, name, me,
+        myAvatar, branch, kRowAvatarPx, kHeroAvatarPx);
+
+    // The landing being celebrated leads the screen. It is normally the newest
+    // row; a merge that left no merge commit on the base branch (a
+    // fast-forward, or one already reported by an earlier pass) has nothing in
+    // the list, so its hero is built from the same credit lookup over a landing
+    // that names only the branch.
+    MergeCelebrationRow landed;
+    const auto current = std::find_if(
+        rows.cbegin(), rows.cend(),
+        [](const MergeCelebrationRow &row) { return row.current; });
+    if (current != rows.cend()) {
+        landed = *current;
+    } else {
+        MergeLanding synthetic;
+        synthetic.branch = branch;
+        synthetic.whenSecs = QDateTime::currentSecsSinceEpoch();
+        const QList<MergeCelebrationRow> heroOnly = mergeCelebrationRows(
+            dir, base, {synthetic}, sessions, owner, name, me, myAvatar, branch,
+            kRowAvatarPx, kHeroAvatarPx);
+        if (!heroOnly.isEmpty())
+            landed = heroOnly.first();
+    }
+
+    int commits = -1;
+    if (!landed.mergeCommit.isEmpty()) {
+        QByteArray out;
+        if (runGitCapture(dir,
+                          {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                           QStringLiteral("%1^1..%1").arg(landed.mergeCommit)},
+                          &out, nullptr))
+            commits = QString::fromUtf8(out).trimmed().toInt();
+    }
+
+    int truncated = 0;
+    if (rows.size() > kMergeCelebrationRowLimit) {
+        truncated = rows.size() - kMergeCelebrationRowLimit;
+        rows = rows.mid(0, kMergeCelebrationRowLimit);
+    }
+    return mergeCelebrationHtml(landed, base, rows, commits, truncated);
+}
+
 // Drop the check. Deliberately doesn't repaint the panel: the row disappears at
 // the next natural rebuild, so retiring it never moves anything under the cursor.
 void MainWindow::clearMergedBranchFlash()
@@ -4362,6 +4812,7 @@ void MainWindow::clearMergedBranchFlash()
     m_branchMergedFlashBranch.clear();
     m_branchMergedFlashDir.clear();
     m_branchMergedFlashRow = -1;
+    m_branchMergedFlashHtml.clear();
 }
 
 // Prune every branch that's fully merged into the default branch (0 behind and
@@ -6459,6 +6910,25 @@ void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
             renderBranchScopeDiff();
         if (m_branchDiffView)
             m_branchDiffView->verticalScrollBar()->setValue(scroll);
+        return;
+    }
+    // The merge celebration's own links (adhoc #1615): one of today's branches
+    // that still exists, the base branch it lists at the bottom, or — for a
+    // branch that was deleted with its merge — the merge commit it left behind.
+    if (url.scheme() == QLatin1String("fmbranch")) {
+        const QString target = url.path();
+        if (!target.isEmpty()) {
+            clearMergedBranchFlash();
+            switchToBranch(target);
+        }
+        return;
+    }
+    if (url.scheme() == QLatin1String("fmcommit")) {
+        const QString sha = url.path();
+        if (!sha.isEmpty()) {
+            showOverviewCommits();
+            showCommit(sha);
+        }
         return;
     }
     // "Retry" on the failure pane (adhoc #1384): re-run the read from scratch.

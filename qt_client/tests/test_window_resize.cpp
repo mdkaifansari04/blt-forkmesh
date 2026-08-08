@@ -5978,6 +5978,76 @@ int main(int argc, char *argv[])
                                  "it off the pattern (adhoc #1594)"));
         }
 
+        // adhoc #1615: a merged-and-deleted branch used to leave one grey line in
+        // the range pane. It now leaves a congratulation that names who landed
+        // the branch and lists every other merge of the day beside it, so the
+        // credit survives the cleanup that deletes the agent session.
+        {
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Merge agent/adhoc-1615-nice into main")) ==
+                      QStringLiteral("agent/adhoc-1615-nice"),
+                  QStringLiteral("the app's own merge subject names its branch "
+                                 "(adhoc #1615)"));
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Merge branch 'fix/pill' of git@host:o/r")) ==
+                      QStringLiteral("fix/pill"),
+                  QStringLiteral("git's own merge subject names its branch "
+                                 "(adhoc #1615)"));
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Merge pull request #7 from owner/agent/x")) ==
+                      QStringLiteral("agent/x"),
+                  QStringLiteral("a pull-request merge names the head branch, "
+                                 "slashes and all (adhoc #1615)"));
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Fix the branch list")).isEmpty(),
+                  QStringLiteral("an ordinary commit subject is not read as a "
+                                 "branch name (adhoc #1615)"));
+
+            forkmesh::ui::MergeCelebrationRow landed;
+            landed.branch = QStringLiteral("agent/adhoc-1615-nice");
+            landed.mergeCommit = QString(40, QLatin1Char('a'));
+            landed.whenSecs = QDateTime::currentSecsSinceEpoch() - 60;
+            landed.files = 3;
+            landed.insertions = 412;
+            landed.deletions = 37;
+            landed.actor = QStringLiteral("Opus 5");
+            landed.detail = QStringLiteral("Agent #1615");
+            landed.byAgent = true;
+            landed.current = true;
+            forkmesh::ui::MergeCelebrationRow kept;
+            kept.branch = QStringLiteral("fix/pill");
+            kept.mergeCommit = QString(40, QLatin1Char('b'));
+            kept.branchStillExists = true;
+            kept.actor = QStringLiteral("Jett");
+            const QString html = forkmesh::ui::mergeCelebrationHtml(
+                landed, QStringLiteral("main"), {landed, kept}, 4, 2);
+            check(html.contains(QStringLiteral("Merged!")) &&
+                      html.contains(landed.branch) &&
+                      html.contains(QStringLiteral("Opus 5")) &&
+                      html.contains(QStringLiteral("Agent #1615")),
+                  QStringLiteral("the celebration credits the agent that landed "
+                                 "the branch (adhoc #1615)"));
+            check(html.contains(QStringLiteral("MERGED INTO MAIN TODAY &#183; 4")),
+                  QString("today's count covers the rows dropped past the display "
+                          "cap as well (adhoc #1615, html = %1)")
+                      .arg(html.section(QStringLiteral("MERGED"), 1, 1).left(40)));
+            check(html.contains(QStringLiteral("2 earlier merges today are not "
+                                               "listed")),
+                  QStringLiteral("a truncated day says what it left out rather "
+                                 "than reading as the whole day (adhoc #1615)"));
+            check(html.contains(QStringLiteral("href='fmbranch:fix%2Fpill'")),
+                  QString("a branch that still exists is opened by name, "
+                          "percent-encoded (adhoc #1615, html = %1)")
+                      .arg(html.section(QStringLiteral("fmbranch"), 1, 1).left(40)));
+            check(html.contains(QStringLiteral("href='fmcommit:") +
+                                landed.mergeCommit),
+                  QStringLiteral("a branch that was deleted with its merge is "
+                                 "opened by its merge commit (adhoc #1615)"));
+            check(html.contains(QStringLiteral("href='fmbranch:main'")),
+                  QStringLiteral("the celebration links back to the base branch "
+                                 "(adhoc #1615)"));
+        }
+
         // Leave the fixture as the branch/merge tests below expect it.
         runGitChecked(wtRepo.path(),
                       {"worktree", "remove", "--force", swapPath});
