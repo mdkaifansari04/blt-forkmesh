@@ -889,6 +889,10 @@ void checkChatPingAvatar(MainWindow &window)
 // as the tail's process would deliver them.
 void checkCloudLogMonitorAlert(MainWindow &window)
 {
+    // Silence the real tail first: where Wrangler can run, this window started
+    // one at launch and the live Worker's own hits would be counted alongside
+    // the events fed in below.
+    window.testResetCloudLogMonitor();
     window.testDismissTopMessage();
     window.testResetNetworkLog();
     window.testResetLoggedErrorAlerts();
@@ -981,6 +985,58 @@ void checkCloudLogMonitorAlert(MainWindow &window)
           QStringLiteral("a pretty-printed Worker exception spanning two reads "
                          "renders as one line and raises the alert"));
 
+    // adhoc #1623: Wrangler's tail is not a forever stream. Cloudflare expires a
+    // tail session after about an hour and Wrangler exits 0 the moment the
+    // server closes it — so a monitor that treats that exit as the end of
+    // monitoring simply stops showing the Worker's traffic mid-session, which is
+    // indistinguishable from no cloud logs ever arriving.
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+    // Counted as deltas, not totals: on a machine that can actually run
+    // Wrangler this suite's own monitor is tailing the live Worker alongside
+    // it, and its hits land in the same log.
+    const int cloudBefore = window.testLogFilterChipCount(QStringLiteral("CLOUD"));
+    const int redBefore = window.testLogFilterChipCount(QStringLiteral("ERROR"));
+    const int afterExpiry = window.testCloudLogMonitorTailEnded(0, 90 * 60 * 1000);
+    QApplication::processEvents();
+    const QString expiryLog = window.testNetworkLog().join(QChar(u'\n'));
+    check(afterExpiry > 0 &&
+              expiryLog.contains(
+                  QStringLiteral("the Worker log tail ended (exit 0)")) &&
+              !expiryLog.contains(QStringLiteral("could not stay connected")) &&
+              window.testLogFilterChipCount(QStringLiteral("CLOUD")) >
+                  cloudBefore &&
+              window.testLogFilterChipCount(QStringLiteral("ERROR")) == redBefore,
+          QStringLiteral("an expired tail session schedules a new tail and says "
+                         "so as a CLOUD line, not a red alert"));
+
+    // A tail that never gets going is a different matter: after a run of them
+    // there is nothing left to retry, and that failure does earn the card.
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+    int shortLived = 0;
+    while (window.testCloudLogMonitorTailEnded(1, 200) > 0 && shortLived < 20)
+        ++shortLived;
+    QApplication::processEvents();
+    const QString giveUpLog = window.testNetworkLog().join(QChar(u'\n'));
+    check(shortLived > 0 && shortLived < 20 &&
+              giveUpLog.count(QStringLiteral("could not stay connected")) == 1,
+          QStringLiteral("a tail that keeps dying young stops for good and "
+                         "reports it once, as an error"));
+    // Giving up unticks the Settings box (without recording it as the stored
+    // preference). Put the box back so the Settings checks later in this suite
+    // still find the run's own state — silently, or re-ticking it would start a
+    // real Wrangler.
+    if (auto *monitorSetting = window.findChild<QCheckBox *>(
+            QStringLiteral("cloudLogMonitorSettingCheck"))) {
+        monitorSetting->blockSignals(true);
+        monitorSetting->setChecked(true);
+        monitorSetting->blockSignals(false);
+    }
+
     window.testDismissTopMessage();
     window.testResetNetworkLog();
     window.testResetLoggedErrorAlerts();
@@ -993,6 +1049,7 @@ void checkCloudLogMonitorAlert(MainWindow &window)
 // reports whether the background tail is actually running.
 void checkCloudLogMerged(MainWindow &window)
 {
+    window.testResetCloudLogMonitor();
     window.testShowLogSection();
     window.testResetNetworkLog();
     QApplication::processEvents();

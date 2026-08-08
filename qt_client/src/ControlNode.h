@@ -410,6 +410,35 @@ QStringList takeCloudflareTailRecords(QByteArray *buffer);
 // text collapsed to one line in `summary`, so callers can pass it through.
 CloudflareTailEvent parseCloudflareTailLine(const QString &line);
 
+// A tail that streamed for at least this long was working, whatever ended it.
+// Below it, the child never really got going.
+constexpr qint64 kCloudTailHealthyUptimeMs = 60'000;
+
+// What the monitor should do about its tail ending without being asked to.
+struct CloudTailRestartPlan {
+    bool restart = false;  // start another tail
+    int delayMs = 0;       // after waiting this long
+    bool giveUp = false;   // retrying cannot help: stop, and say so once
+};
+
+// Wrangler's tail is not a stream that runs forever. Cloudflare expires a tail
+// session after about an hour and Wrangler exits 0 the moment the server closes
+// one normally; it reconnects a dropped socket itself and exits 1 only once
+// those attempts run out. Treating either exit as the end of monitoring is how
+// the cloud log went quiet mid-session and stayed quiet until the next launch
+// (adhoc #1623) — which reads, from the Log page, as no Worker logs coming in
+// at all.
+//
+// `uptimeMs` is how long the tail that just ended had been running and
+// `consecutiveFailures` how many short-lived ones came before it. A tail that
+// lived long enough to have been working comes straight back; a short-lived one
+// backs off; and a run of short-lived ones is a machine-level problem — a
+// revoked token, a Worker that no longer exists — that no amount of retrying
+// fixes, so the monitor stops and reports it once instead of filling the log
+// with restarts.
+CloudTailRestartPlan planCloudflareTailRestart(int consecutiveFailures,
+                                               qint64 uptimeMs);
+
 // Decode the bootstrapper's bounded, non-secret machine result. Human log
 // output may surround the sentinel line; malformed or duplicate results fail
 // closed.
