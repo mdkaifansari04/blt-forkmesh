@@ -14,7 +14,6 @@ from js import fetch as js_fetch
 from pyodide.ffi import jsnull
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
-from workers import waitUntil as workers_wait_until
 
 
 class _LazyModule:
@@ -41397,7 +41396,7 @@ async def _https_mirror_proxy(
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
-        workers_wait_until(_cron_runner_kick_promise(self.env))
+        self.ctx.waitUntil(_cron_runner_kick_promise(self.env))
 
     async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
         # Cron trigger (every minute, see [triggers] in wrangler.toml).

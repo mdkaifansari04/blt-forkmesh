@@ -113,7 +113,7 @@ def test_trigger_kicks_the_alarm_runner_without_awaiting_in_python():
                    for node in ast.walk(scheduled_node))
     assert scheduled == (
         "async def scheduled(self, controller, env, ctx):\n"
-        "    workers_wait_until(_cron_runner_kick_promise(self.env))"
+        "    self.ctx.waitUntil(_cron_runner_kick_promise(self.env))"
     )
     promise = ast.unparse(next(
         node for node in tree.body
