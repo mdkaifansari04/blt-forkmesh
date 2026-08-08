@@ -360,13 +360,10 @@ constexpr int kMaxAgentRelaunchAttempts = 2;
 
 QIcon agentStatusPillIcon(const AgentSession &session)
 {
-    if (session.merged || session.status == AgentStatus::Success) {
-        const QIcon done = agentDoneImageIcon(kAgentStatusPillIconPx);
-        if (!done.isNull())
-            return done;
-        return themedOcticon("check-circle", QColor("#3fb950"),
-                             kAgentStatusPillIconPx);
-    }
+    // The list's leading cell already carries the run-state glyph (adhoc
+    // #1636), so the detail header's pill stays the agent's portrait in every
+    // state — merged/done included — rather than swapping to a generic
+    // checkmark once the run finishes.
     return agentControlIcon(agentStatusModelIconIndex(session));
 }
 
