@@ -1,6 +1,7 @@
 #include "ActionFile.h"
 #include "ActionRunner.h"
 #include "ActionStore.h"
+#include "SystemStats.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -15,6 +16,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 
 #include <cstdio>
@@ -194,6 +196,41 @@ RunResult runWorkflow(const QString &repository, const QString &commit,
             result.persisted = saved;
     result.log = store->readLog(run);
     return result;
+}
+
+bool destroyWorkflowDuringCheckout(const QString &repository,
+                                   const QString &commit,
+                                   const QString &content,
+                                   ActionStore *store, int runId,
+                                   const ActionSandboxLimits &limits)
+{
+    ActionRun run;
+    run.id = runId;
+    run.owner = QStringLiteral("security");
+    run.name = QStringLiteral("destructor");
+    run.workflowPath = QStringLiteral(".forkmesh/security.yml");
+    run.workflowName = QStringLiteral("Destructor test");
+    run.workflowContent = content;
+    run.commit = commit;
+    run.ref = QStringLiteral("refs/heads/main");
+    QString digestError;
+    if (!ActionStore::repositoryStateDigest(
+            repository, commit, &run.repositoryTree,
+            &run.executionDigest, &digestError))
+        return false;
+    const ActionWorkflow workflow =
+        ActionFile::parse(run.workflowPath, content);
+    if (!workflow.valid)
+        return false;
+
+    ActionRunner runner(store);
+    runner.setSandboxLimitsForTesting(limits);
+    runner.start(run, workflow, repository, QString(),
+                 QMap<QString, QString>{});
+    // Returning destroys the runner immediately while its asynchronous checkout
+    // QProcess is still Starting/Running. The destructor must disconnect, stop,
+    // reap, and delete that child without dispatching an output callback.
+    return runner.busy();
 }
 
 } // namespace
@@ -439,6 +476,7 @@ int main(int argc, char **argv)
         ActionStore store(temp.filePath(QStringLiteral("actions")));
         ActionSandboxLimits limits;
         limits.maxMemoryBytes = 512LL * 1024 * 1024;
+        limits.maxScopeMemoryBytes = 512LL * 1024 * 1024;
         limits.maxFileBytes = 8LL * 1024 * 1024;
         limits.maxWorkspaceBytes = 128LL * 1024 * 1024;
         limits.maxProcesses = 32;
@@ -533,6 +571,59 @@ int main(int argc, char **argv)
                   budget.log.contains(QStringLiteral("budget ok")),
               "steps see the sandbox CPU and memory budget they must build "
               "within");
+
+        // ...and those two budgets must stay consistent with each other. A
+        // step sizes -j from FORKMESH_ACTIONS_CPUS, so a memory ceiling that
+        // does not grow with the CPU quota turns extra cores into an OOM kill:
+        // the flat 4 GiB default ran this repository's own Qt build at -j8 on a
+        // 36-core node and systemd stopped the scope mid-compile (adhoc #1582).
+        ActionSandboxLimits productionLimits;
+        const qint64 derivedScope = actionScopeMemoryBytes(productionLimits);
+        const qint64 hostBytes = SystemStats::totalMemoryBytes();
+        const int grantedCpus = qMax(1, actionCpuQuotaPercent() / 100);
+        const qint64 perCpuBytes = 3LL * 1024 * 1024 * 1024 / 2;
+        check(derivedScope >= productionLimits.maxMemoryBytes,
+              "the sandbox memory budget is never below one process's own "
+              "address-space cap");
+        check(derivedScope >= qMin(qint64(grantedCpus) * perCpuBytes,
+                                   hostBytes > 0 ? hostBytes / 2
+                                                 : qint64(grantedCpus) *
+                                                       perCpuBytes),
+              "the sandbox memory budget scales with the CPU quota it grants "
+              "the same step");
+        // On a host too small for even one process's cap the floor wins; that
+        // is the only case allowed past half the host's RAM.
+        check(hostBytes <= 0 ||
+                  derivedScope <= qMax(hostBytes / 2,
+                                       productionLimits.maxMemoryBytes),
+              "the sandbox memory budget never claims more than half the "
+              "host's RAM");
+        ActionSandboxLimits pinnedLimits;
+        pinnedLimits.maxMemoryBytes = 256LL * 1024 * 1024;
+        pinnedLimits.maxScopeMemoryBytes = 768LL * 1024 * 1024;
+        check(actionScopeMemoryBytes(pinnedLimits) == 768LL * 1024 * 1024,
+              "an explicitly configured memory budget overrides the "
+              "CPU-derived one");
+
+        // The same argument applies to TasksMax, which counts threads: a step
+        // runs one tool per granted CPU and each tool sizes its own thread pool
+        // from the host's cores, because the quota is invisible inside the
+        // sandbox. The flat 128 killed the Qt build at -j8 with
+        // pthread_create's EAGAIN once make had six AUTOMOC drivers up at once
+        // (adhoc #1586).
+        const int derivedTasks = actionScopeTasksMax(productionLimits);
+        const int hostThreads = qMax(1, QThread::idealThreadCount());
+        check(derivedTasks >= grantedCpus * hostThreads,
+              "the sandbox task ceiling covers one host-sized thread pool per "
+              "job the CPU quota grants");
+        check(derivedTasks <= 4096,
+              "the sandbox task ceiling stays bounded against a runaway fork "
+              "loop");
+        ActionSandboxLimits pinnedTasks;
+        pinnedTasks.maxProcesses = 32;
+        check(actionScopeTasksMax(pinnedTasks) == 32,
+              "an explicitly configured task ceiling overrides the CPU-derived "
+              "one");
 
         // /usr/bin/awk, cc, c++ and friends are symlinks into
         // /etc/alternatives on Debian-family hosts. When that farm is outside
@@ -651,6 +742,10 @@ int main(int argc, char **argv)
                   reentrant.terminalRefreshCompleted &&
                   reentrant.log.contains(QStringLiteral("final process output")),
               "terminal pull-check refresh cannot outlive the finished process");
+        check(destroyWorkflowDuringCheckout(
+                  repository, reentrantCommit, reentrantWorkflow,
+                  &store, 110, limits),
+              "destroying a runner safely reaps an in-flight checkout process");
         QDir(liveTree).removeRecursively();
     }
 

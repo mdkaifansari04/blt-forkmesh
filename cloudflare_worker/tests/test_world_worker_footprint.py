@@ -37,6 +37,10 @@ def test_worker_footprint_budgets_match_current_source_tree():
     assert "world/world-office-tasks.js" not in data["initialWorldModules"]
     assert "world/world-discord-panel.js" not in data["initialWorldModules"]
     assert "qr.js" not in data["initialWorldModules"]
+    assert "world/world-scene.js" not in data["initialWorldModules"]
+    # Reachable only through the scene builder, so they leave with it.
+    assert "world/world-sky.js" not in data["initialWorldModules"]
+    assert "world/worker-footprint.js" not in data["initialWorldModules"]
     assert any(
         item["name"] == "repository_imports.py"
         and item["phase"] == "on-demand"
@@ -56,13 +60,13 @@ def test_worker_footprint_budgets_match_current_source_tree():
         "compressedBundlePaidBytes": 10_000_000,
         "uncompressedBundleBytes": 64_000_000,
         "startupTimeMs": 1000,
-        "startupSourceBytesSoft": 2_500_000,
+        "startupSourceBytesSoft": 2_150_000,
         "dynamicRequestsFreeDaily": 100_000,
     }
     assert data["staticLimits"] == {
         "assetCount": 20_000,
         "maxAssetBytes": 25 * 1024 * 1024,
-        "initialWorldModuleBytesSoft": 2_600_000,
+        "initialWorldModuleBytesSoft": 2_650_000,
     }
 
 
@@ -105,19 +109,28 @@ def test_optional_python_route_modules_are_deferred_from_global_scope():
         "activitypub_threads",
         "badges",
         "blog_feed",
+        "catalog",
         "chat_channels_api",
         "chat_direct_messages_api",
         "community_ads_api",
         "contributions",
         "edge_routing",
+        "events",
         "fediverse_digest",
         "fediverse_mentions_api",
+        "git_http",
+        "notes",
         "og_card",
         "organization_discord",
         "organization_succession_api",
+        "polar_integration",
+        "releases",
         "reward_policy",
         "security_controls",
         "security_scan_ingest",
+        "solana",
+        "static_routes",
+        "urls",
         "schema",
         "world",
         "world_build_board",
@@ -134,6 +147,25 @@ def test_optional_python_route_modules_are_deferred_from_global_scope():
     for module in deferred:
         assert f'_LazyModule("{module}")' in eager_imports
         assert f"import {module}" not in eager_imports
+    assert '_LazyModule("admin_console")' in ENTRY
+    assert "import admin_console" not in ENTRY
+
+
+def test_heavy_stdlib_modules_are_deferred_from_global_scope():
+    """Pyodide must not allocate optional stdlib modules during validation."""
+    eager_imports = ENTRY[: ENTRY.index("MAX_ROOM_NAME =")]
+    for module in (
+        "base64", "gzip", "io", "ipaddress", "math", "struct", "time",
+        "asyncio", "hashlib", "hmac", "json", "traceback", "urllib.parse",
+    ):
+        assert f'_LazyModule("{module}")' in eager_imports
+    for statement in (
+        "import asyncio", "import base64", "import gzip", "import hashlib",
+        "import hmac", "import io", "import ipaddress", "import json",
+        "import math", "import struct", "import time", "import traceback",
+        "from urllib.parse import",
+    ):
+        assert statement not in eager_imports
 
 
 def test_infrastructure_room_renders_detailed_honest_footprint_chart():
@@ -161,6 +193,25 @@ def test_office_runtime_is_outside_the_initial_world_module_graph():
     assert 'from "./world-office-meeting.js"' not in world
     assert 'from "./world-office-tasks.js"' not in world
     assert 'from "./world-office.js"' not in SCENE
+
+
+def test_scene_builder_streams_beside_three_instead_of_blocking_the_shell():
+    """The renderer cannot run before three.js, so it must not block first paint."""
+    world = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
+    assert 'const WORLD_SCENE_MODULE = import("./world-scene.js");' in world
+    assert 'from "./world-scene.js"' not in world
+    # Started on the same tick as three.js, and awaited together with it.
+    assert world.index("const WORLD_SCENE_MODULE") > world.index(
+        "const THREE_MODULE = import(THREE_MODULE_URL);"
+    )
+    assert "Promise.all([THREE_MODULE, WORLD_SCENE_MODULE])" in world
+    assert "this.world = scene.createWorldScene({" in world
+    # The account badge paints behind the loading curtain, so its painter stays
+    # in the shell's own graph rather than dragging the scene back in with it.
+    assert (
+        'import { proceduralAvatarFaceDataURL } from "./world-avatar-face.js";'
+        in world
+    )
 
 
 def test_wallet_qr_encoder_is_outside_the_initial_world_module_graph():

@@ -182,14 +182,11 @@ QPushButton#ghostButton:hover { color: #e6edf3; }
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
+/* The chips are custom-painted icon-over-caption tiles (adhoc #1633), so this
+   only has to keep the QSS box out of their way — a max-height here would
+   squash the stacked layout. */
 QPushButton#logFilterChip {
-    background: transparent; border: 1px solid #30363d; color: #8b949e;
-    font-weight: 600; font-size: 11px; padding: 2px 10px; border-radius: 11px;
-    min-height: 20px; max-height: 24px;
-}
-QPushButton#logFilterChip:hover { color: #e6edf3; border-color: #6e7681; }
-QPushButton#logFilterChip:checked {
-    background-color: #21262d; color: #e6edf3; border-color: #2ea043;
+    background: transparent; border: none; padding: 0;
 }
 
 /* --- Quick-add bar extras: social + donate buttons --- */
@@ -227,6 +224,13 @@ QPushButton#socialIconButton:hover { border-color: #6e7681; }
 #debugBarScroll, #debugBarContent { background: transparent; border: none; }
 #debugBarSeparator { color: #30363d; }
 #debugBarScroll QScrollBar:horizontal { height: 7px; }
+/* Right-hand tool cluster (Restart / Resize / Log). The items paint themselves
+   like every other rail entry, so the host only holds them off the edge. */
+#debugBarTools { background: transparent; }
+#debugLogTail {
+    background-color: #0d1117; border-top: 1px solid #30363d;
+    color: #8b949e; padding: 2px 8px;
+}
 /* Background-work chips (adhoc #1389): the chips paint themselves, so the host
    only has to stay out of the way of the strip's own fill. */
 #statusBackgroundTasks { background: transparent; }
@@ -275,6 +279,9 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected, #repoSettingsTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
+/* Settings carries eleven tabs: a small caption behind an octicon keeps the
+   whole strip on one row of a laptop screen (adhoc #1533). */
+#settingsTabs QTabBar::tab { padding: 6px 5px; font-size: 11px; }
 #codeEditor {
     background-color: #0d1117; border: none; color: #e6edf3;
     font-family: monospace; font-size: 12px;
@@ -422,7 +429,9 @@ QPushButton#topNavButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #8b949e; font-size: 13px; font-weight: 600; padding: 5px 12px;
 }
-QPushButton#topNavButton:hover { background-color: #161b22; color: #e6edf3; }
+QPushButton#topNavButton:hover {
+    background-color: #161b22; color: #e6edf3;
+}
 QPushButton#topNavButton:checked {
     background-color: #21262d; color: #e6edf3; border-color: #30363d;
 }
@@ -496,12 +505,32 @@ QPushButton#agentsMagicButton:checked {
 #topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
-#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptStatus { font-weight: 500; font-size: 11px; }
+/* "🎉 Agent #12 is done!" — the headline of a finished run's celebration
+   (adhoc #1630). A step up from the ordinary message so the good news reads as
+   an event rather than another line of status. */
+#topMessageAgentRow, #topMessageAgentIcon { background: transparent; border: none; }
+#topMessageAgentHeadline {
+    background: transparent; border: none; font-size: 13px; font-weight: 700;
+}
+/* The chat sender's face on an alert card, and the lane it sits in beside the
+   message (adhoc #1612). The avatar is a pixmap of its own — anything painted
+   behind it would show through the rounded corners of the tile. */
+#topMessageContentRow, #topMessageAvatar,
+#topMessageQueueContentRow, #topMessageQueueAvatar {
+    background: transparent; border: none;
+}
 #topMessagePromptImage {
     background: rgba(48,54,61,0.35); border: 1px solid #30363d;
     border-radius: 5px; padding: 3px;
 }
 #topMessagePromptImage:hover { border-color: #58a6ff; }
+/* The agent detail header's attachment strip, above the title (adhoc #1598). */
+#agentPromptImage {
+    background: rgba(48,54,61,0.35); border: 1px solid #30363d;
+    border-radius: 6px; padding: 2px;
+}
+#agentPromptImage:hover { border-color: #58a6ff; }
 #topMessageQueue { background: transparent; border: none; }
 #topMessageQueueContent { background: transparent; }
 #topMessageQueueCard { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
@@ -657,6 +686,21 @@ QPushButton#memberDeleteButton:hover {
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
+/* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
+#promptDragHandle { background: transparent; border: none; }
+#promptDragPill {
+    background-color: rgba(139,148,158,0.55); border: none; border-radius: 1px;
+}
+#promptResizeGrip {
+    background-color: rgba(139,148,158,0.5); border: none; border-radius: 2px;
+}
+#promptResizeGrip:hover { background-color: rgba(57,211,83,0.65); }
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
+    background: transparent; border: none; padding: 0;
+}
+#promptDetachWindow { background-color: #010409; }
 #footerLogPanel {
     background-color: #0d1117;
     border: 1px solid rgba(57,211,83,0.55);
@@ -693,9 +737,9 @@ QPushButton#agentQueueLimitDecreaseButton:disabled {
     font-weight: 700;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(139,148,158,0.3); border-radius: 4px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(139,148,158,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #3fb950;
     padding: 4px; border-radius: 4px;
@@ -779,6 +823,10 @@ QPushButton#quickAddGenieButton:hover {
 }
 #chatHeader QLabel { background: transparent; }
 #channelTitle { font-size: 16px; font-weight: 700; }
+#agentPromptTitle {
+    font-size: 16px; font-weight: 700;
+    padding-bottom: 8px; border-bottom: 1px solid #30363d;
+}
 #encryptionLabel { color: #8b949e; font-size: 12px; }
 
 /* --- Node profile control panel --- */
@@ -905,7 +953,7 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #0f2a1a; border: 1px solid #238636; border-radius: 10px;
     color: #3fb950; padding: 2px 8px; font-size: 11px; font-weight: 700;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #010409; border: none;
     color: #8b949e; font-family: monospace; font-size: 12px;
 }
@@ -1050,7 +1098,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     color: #6e7681;
     font-size: 11px;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #010409;
     border: none;
     color: #8b949e;
@@ -1078,16 +1126,31 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
+/* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
+#promptDragHandle { background: transparent; border: none; }
+#promptDragPill {
+    background-color: rgba(139,148,158,0.55); border: none; border-radius: 1px;
+}
+#promptResizeGrip {
+    background-color: rgba(139,148,158,0.5); border: none; border-radius: 2px;
+}
+#promptResizeGrip:hover { background-color: rgba(57,211,83,0.65); }
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
+    background: transparent; border: none; padding: 0;
+}
+#promptDetachWindow { background-color: #010409; }
 #footerLogPanel {
     background-color: #0d1117;
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 8px;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(139,148,158,0.3); border-radius: 4px;
     min-height: 38px; max-height: 38px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(139,148,158,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #3fb950;
     padding: 4px; border-radius: 4px;
@@ -1449,13 +1512,15 @@ QPlainTextEdit#actionLog {
 QToolButton#agentStatusPill {
     background-color: transparent;
     border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 2px 7px 2px 4px;
+    border-radius: 24px;
+    padding: 0px 10px 0px 3px;
     font-size: 11px;
     font-weight: 600;
-    color: #1f2937;
+    /* Primer dark foreground: this rule lives in the dark sheet, where the
+       light-theme grey it used to carry read as near-black on the pane. */
+    color: #e6edf3;
 }
-QToolButton#agentStatusPill:hover { background-color: #f3f4f6; }
+QToolButton#agentStatusPill:hover { background-color: #21262d; }
 QToolButton#agentStatusPill[outcomeTone="success"] { border-color: #3fb950; }
 QToolButton#agentStatusPill[outcomeTone="failure"] { border-color: #f85149; }
 QToolButton#agentStatusPill[outcomeTone="pending"] { border-color: #e3742f; }
@@ -1622,14 +1687,9 @@ QPushButton#ghostButton:hover { color: #1f2328; }
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
+/* Custom-painted tiles — see the dark theme's note above. */
 QPushButton#logFilterChip {
-    background: transparent; border: 1px solid #d0d7de; color: #656d76;
-    font-weight: 600; font-size: 11px; padding: 2px 10px; border-radius: 11px;
-    min-height: 20px; max-height: 24px;
-}
-QPushButton#logFilterChip:hover { color: #1f2328; border-color: #afb8c1; }
-QPushButton#logFilterChip:checked {
-    background-color: #eaeef2; color: #1f2328; border-color: #1f883d;
+    background: transparent; border: none; padding: 0;
 }
 
 /* --- Nav rail --- */
@@ -1676,6 +1736,9 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected, #repoSettingsTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
+/* Settings carries eleven tabs: a small caption behind an octicon keeps the
+   whole strip on one row of a laptop screen (adhoc #1533). */
+#settingsTabs QTabBar::tab { padding: 6px 5px; font-size: 11px; }
 #codeEditor {
     background-color: #ffffff; border: none; color: #1f2328;
     font-family: monospace; font-size: 12px;
@@ -1846,7 +1909,9 @@ QPushButton#topNavButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #656d76; font-size: 13px; font-weight: 600; padding: 5px 12px;
 }
-QPushButton#topNavButton:hover { background-color: #eaeef2; color: #1f2328; }
+QPushButton#topNavButton:hover {
+    background-color: #eaeef2; color: #1f2328;
+}
 QPushButton#topNavButton:checked {
     background-color: #eaeef2; color: #1f2328; border-color: #d0d7de;
 }
@@ -1908,12 +1973,28 @@ QPushButton#agentsMagicButton:checked {
 #topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
     background: transparent; border: none; font-size: 12px; font-weight: 600;
 }
-#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptStatus { font-weight: 500; font-size: 11px; }
+/* See the dark rules: a finished agent's celebration headline. */
+#topMessageAgentRow, #topMessageAgentIcon { background: transparent; border: none; }
+#topMessageAgentHeadline {
+    background: transparent; border: none; font-size: 13px; font-weight: 700;
+}
+/* See the dark rules: the chat sender's face and the lane it sits in. */
+#topMessageContentRow, #topMessageAvatar,
+#topMessageQueueContentRow, #topMessageQueueAvatar {
+    background: transparent; border: none;
+}
 #topMessagePromptImage {
     background: #f6f8fa; border: 1px solid #d0d7de;
     border-radius: 5px; padding: 3px;
 }
 #topMessagePromptImage:hover { border-color: #0969da; }
+/* See the dark rules: the agent detail header's attachment strip. */
+#agentPromptImage {
+    background: #f6f8fa; border: 1px solid #d0d7de;
+    border-radius: 6px; padding: 2px;
+}
+#agentPromptImage:hover { border-color: #0969da; }
 #topMessageQueue { background: transparent; border: none; }
 #topMessageQueueContent { background: transparent; }
 #topMessageQueueCard { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
@@ -2062,6 +2143,21 @@ QPushButton#memberDeleteButton:hover {
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
+/* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
+#promptDragHandle { background: transparent; border: none; }
+#promptDragPill {
+    background-color: rgba(87,96,106,0.55); border: none; border-radius: 1px;
+}
+#promptResizeGrip {
+    background-color: rgba(87,96,106,0.5); border: none; border-radius: 2px;
+}
+#promptResizeGrip:hover { background-color: rgba(26,127,55,0.65); }
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
+    background: transparent; border: none; padding: 0;
+}
+#promptDetachWindow { background-color: #f6f8fa; }
 #footerLogPanel {
     background-color: #ffffff;
     border: 1px solid rgba(26,127,55,0.5);
@@ -2098,9 +2194,9 @@ QPushButton#agentQueueLimitDecreaseButton:disabled {
     font-weight: 700;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(87,96,106,0.3); border-radius: 4px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(87,96,106,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #1a7f37;
     padding: 4px; border-radius: 4px;
@@ -2162,6 +2258,10 @@ QPushButton#quickAddGenieButton:hover {
 }
 #chatHeader QLabel { background: transparent; }
 #channelTitle { font-size: 16px; font-weight: 700; }
+#agentPromptTitle {
+    font-size: 16px; font-weight: 700;
+    padding-bottom: 8px; border-bottom: 1px solid #d0d7de;
+}
 #encryptionLabel { color: #656d76; font-size: 12px; }
 
 /* --- Node profile control panel --- */
@@ -2289,7 +2389,7 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #dafbe1; border: 1px solid #2da44e; border-radius: 10px;
     color: #1a7f37; padding: 2px 8px; font-size: 11px; font-weight: 700;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #ffffff; border: none;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
@@ -2317,6 +2417,12 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #debugBarScroll, #debugBarContent { background: transparent; border: none; }
 #debugBarSeparator { color: #d0d7de; }
 #debugBarScroll QScrollBar:horizontal { height: 7px; }
+/* See the dark rule: the tool items are painted, the host is just a layout. */
+#debugBarTools { background: transparent; }
+#debugLogTail {
+    background-color: #ffffff; border-top: 1px solid #d0d7de;
+    color: #57606a; padding: 2px 8px;
+}
 /* See the dark rule: the chips are painted, the host is just a layout. */
 #statusBackgroundTasks { background: transparent; }
 
@@ -2451,7 +2557,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     color: #6e7681;
     font-size: 11px;
 }
-#networkLog {
+#networkLog, #networkLogPopoutView {
     background-color: #ffffff;
     border: none;
     color: #1f2328;
@@ -2479,16 +2585,31 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
+/* Composer placement strip (adhoc #1536): grip resizes, pill drags, the
+   reset button snaps it back to default (adhoc #1625), and the last button
+   pops the prompt out into its own window. */
+#promptDragHandle { background: transparent; border: none; }
+#promptDragPill {
+    background-color: rgba(87,96,106,0.55); border: none; border-radius: 1px;
+}
+#promptResizeGrip {
+    background-color: rgba(87,96,106,0.5); border: none; border-radius: 2px;
+}
+#promptResizeGrip:hover { background-color: rgba(26,127,55,0.65); }
+QPushButton#promptDetachButton, QPushButton#promptResetButton {
+    background: transparent; border: none; padding: 0;
+}
+#promptDetachWindow { background-color: #f6f8fa; }
 #footerLogPanel {
     background-color: #ffffff;
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 8px;
 }
 #promptWrapper #issueQuickAdd {
-    background: transparent; border: none; border-radius: 0;
+    background: transparent; border: 1px solid rgba(87,96,106,0.3); border-radius: 4px;
     min-height: 38px; max-height: 38px;
 }
-#promptWrapper #issueQuickAdd:focus { border: none; }
+#promptWrapper #issueQuickAdd:focus { border: 1px solid rgba(87,96,106,0.3); }
 QPushButton#quickAddSendIcon {
     background: transparent; border: none; color: #1a7f37;
     padding: 4px; border-radius: 4px;
@@ -2844,8 +2965,8 @@ QPlainTextEdit#actionLog {
 QToolButton#agentStatusPill {
     background-color: transparent;
     border: 1px solid #d0d7de;
-    border-radius: 12px;
-    padding: 2px 7px 2px 4px;
+    border-radius: 24px;
+    padding: 0px 10px 0px 3px;
     font-size: 11px;
     font-weight: 600;
 }

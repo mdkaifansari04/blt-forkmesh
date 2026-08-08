@@ -3,6 +3,8 @@
 #include <QHash>
 #include <QList>
 #include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QStringList>
 #include <QUrl>
 
@@ -84,6 +86,17 @@ public:
     // git-subprocess mirror fetches — honour the same host-wide backpressure
     // and skip a round instead of hammering an already rate-limited relay.
     bool hostInCooldown(const QString &host) const;
+    // Milliseconds left on that cooldown (0 when the host is not cooling down),
+    // so a call site can tell the reader when the relay is worth asking again.
+    qint64 hostCooldownRemainingMs(const QString &host) const;
+
+    // Stamped on the synthetic reply createRequest() answers with while a host
+    // is cooling down. A call site that wants to treat "the relay is busy, this
+    // request never left the machine" differently from a real transport failure
+    // checks isBackoffSuppressed() rather than matching the error string.
+    static constexpr QNetworkRequest::Attribute kBackoffSuppressedAttribute =
+        QNetworkRequest::User;
+    static bool isBackoffSuppressed(const QNetworkReply *reply);
 
     static QString canonicalFirewallRule(const QString &rule);
     static QString firewallRuleForUrl(const QUrl &url, bool includePort = false);

@@ -17,7 +17,10 @@ HEADERS = (ROOT / "public" / "_headers").read_text(encoding="utf-8")
 
 def test_one_worker_owns_world_marketing_assets_and_api():
     assert WRANGLER["name"] == "forkmesh-relay"
-    assert WRANGLER["assets"]["directory"] == "./public"
+    # public/ remains the single source tree; the relay ships the staged
+    # public_relay/ copy that drops only what the split Workers own (see
+    # tools/build_split_assets.py and tests/test_split_workers.py).
+    assert WRANGLER["assets"]["directory"] == "./public_relay"
     assert "/" in WRANGLER["assets"]["run_worker_first"]
     assert "routes" not in WRANGLER
     assert not LEGACY_MARKETING.exists()
@@ -70,6 +73,7 @@ def test_world_refreshes_cannot_reuse_an_older_application_graph():
     for asset in (
         "world.js",
         "world-data.js",
+        "world-avatar-face.js",
         "world-scene.js",
         "world-mirror-nodes.js",
         "world-pull-review.js",

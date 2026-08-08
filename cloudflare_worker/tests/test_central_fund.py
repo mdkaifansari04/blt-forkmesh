@@ -537,6 +537,9 @@ def test_source_contract_is_read_only_and_external_signer_only():
     assert "CREATE TABLE IF NOT EXISTS chain_intents" in ENTRY_TEXT
     assert "privateKeyStoredByWorker" in ENTRY_TEXT
     assert '"external-local-signer"' in ENTRY_TEXT
-    import_block = ENTRY_TEXT.split("from solana import (", 1)[1].split(")", 1)[0]
+    import_block = ENTRY_TEXT[
+        ENTRY_TEXT.index('_solana = _LazyModule("solana")'):
+        ENTRY_TEXT.index("MAX_ROOM_NAME =", ENTRY_TEXT.index('_solana ='))
+    ]
     assert "_solana_sign_message" not in import_block
     assert "_solana_send_transaction" not in import_block

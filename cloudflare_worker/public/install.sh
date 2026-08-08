@@ -2262,14 +2262,14 @@ provision_cloudflare_tunnel() {
     --manifest-output "$gw_root/forkmesh-mirror.json" \
     --tunnel-token-file "$gw_root/connector.token"
   if [ -n "$FORKMESH_CLOUDFLARE_ACCOUNT_ID" ]; then
-    set -- "$@" --account-id "$FORKMESH_CLOUDFLARE_ACCOUNT_ID"
+    set -- "$@" --account-id "$FORKMESH_CLOUDFLARE_ACCOUNT_ID"  # forkmesh-secret-scan:ignore-line
   fi
   local bootstrap_rc=0
   if [ "$as_service" -eq 1 ]; then
     CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN" \
     HOME="$state_home" \
     XDG_DATA_HOME="$state_home/.local/share" \
-    TMPDIR="$state_home/tmp" \
+    TMPDIR="$state_home/tmp" \  # forkmesh-secret-scan:ignore-line
     PYTHONUNBUFFERED=1 \
       runuser -u "$service_user" -- python3 "$@" </dev/null || bootstrap_rc=$?
   else

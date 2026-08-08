@@ -14,10 +14,21 @@ class QProcess;
 class QTimer;
 
 struct ActionSandboxLimits {
+    // Address space a *single* process in the step may map (RLIMIT_AS).
     qint64 maxMemoryBytes = 4LL * 1024 * 1024 * 1024;
+    // Memory the step's whole cgroup may use (systemd MemoryMax). 0 derives it
+    // from the CPU quota the same step is granted — see
+    // actionScopeMemoryBytes(). Steps size their parallelism from that quota,
+    // so a ceiling that does not grow with it is a ceiling that turns extra
+    // cores into an OOM kill (adhoc #1582).
+    qint64 maxScopeMemoryBytes = 0;
     qint64 maxFileBytes = 1024LL * 1024 * 1024;
     qint64 maxWorkspaceBytes = 2LL * 1024 * 1024 * 1024;
-    int maxProcesses = 128;
+    // Tasks (processes *and* threads) the step's whole cgroup may hold
+    // (systemd TasksMax). 0 derives it from the CPU quota the same step is
+    // granted — see actionScopeTasksMax(). A flat ceiling is a ceiling that
+    // turns extra cores into pthread_create failures (adhoc #1586).
+    int maxProcesses = 0;
     int maxOpenFiles = 256;
     int maxCpuSeconds = 20 * 60;
     // A release step compiles the whole desktop client from scratch inside the
@@ -26,6 +37,20 @@ struct ActionSandboxLimits {
     int stepTimeoutMs = 90 * 60 * 1000;
     int jobTimeoutMs = 4 * 60 * 60 * 1000;
 };
+
+// Memory a sandboxed step's cgroup may use under `limits`, with the
+// derive-from-CPU-quota default (maxScopeMemoryBytes == 0) resolved. Never
+// below the per-process address-space cap, and never more than half the host's
+// RAM so a second run and the node itself still fit beside it.
+qint64 actionScopeMemoryBytes(const ActionSandboxLimits &limits);
+
+// Tasks a sandboxed step's cgroup may hold, with the derive-from-CPU-quota
+// default (maxProcesses == 0) resolved. Threads count too, so this scales with
+// both the granted CPU quota and the host's core count, and stays bounded.
+int actionScopeTasksMax(const ActionSandboxLimits &limits);
+
+// CPU share a sandboxed step may use, as a systemd CPUQuota percentage.
+int actionCpuQuotaPercent();
 
 // Executes a single approved workflow run. On Linux, every step runs fail-closed
 // inside a bubblewrap user/PID/mount/IPC/UTS namespace as uid 65534, with the
@@ -40,6 +65,7 @@ class ActionRunner : public QObject
     Q_OBJECT
 public:
     explicit ActionRunner(ActionStore *store, QObject *parent = nullptr);
+    ~ActionRunner() override;
 
     bool busy() const { return m_busy; }
     // The id of the run currently executing, or -1 when idle.
@@ -87,7 +113,7 @@ private:
     bool verifyWorkspaceSnapshot(QString *reason = nullptr) const;
     bool workspaceWithinQuota(QString *reason = nullptr) const;
     void terminateCurrentProcess(bool timedOut);
-    void onProcessFinished(int exitCode);
+    void onProcessFinished(int exitCode, bool crashed);
     void runNextStep();
     void emitLog(const QString &text);
     void emitProcessOutput(const QByteArray &bytes);

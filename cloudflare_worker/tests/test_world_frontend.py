@@ -999,7 +999,11 @@ def test_mobile_world_chat_composer_stays_above_safe_area_and_terminal_bars():
 
 
 def test_world_receives_private_notifications_and_global_announcements():
-    assert "WORLD_NOTIFICATION_POLL_MS = 60 * 1000" in APP
+    # Pings are pushed, not polled: the surviving constant is a short cache
+    # max-age that collapses a burst of pushes, not an interval.
+    assert "WORLD_NOTIFICATION_DIGEST_MAX_AGE_MS = 2000" in APP
+    assert "WORLD_NOTIFICATION_POLL_MS" not in APP
+    assert "startNotificationChannel()" in APP
     assert "normalizeWorldNotifications" in APP
     assert "/api/notifications?node=${encodeURIComponent(" in APP
     assert 'this.fetchJSON("/api/world/events"' in APP
@@ -1020,7 +1024,8 @@ def test_world_receives_private_notifications_and_global_announcements():
     assert "this.refreshOpenEventsPanel()" in APP
     assert 'window.addEventListener("storage", this.handleStorage)' in APP
     assert 'window.removeEventListener("storage", this.handleStorage)' in APP
-    assert "window.clearInterval(this.notificationsTimer)" in APP
+    # The timer it used to tear down is gone; teardown now closes the socket.
+    assert "this.notificationChannel?.dispose()" in APP
     assert ".world-notification-button [data-world-notification-count]" in CSS
     assert '.world-notification-list article[data-unread="true"]' in CSS
     assert ".world-event-list article p" in CSS
@@ -1198,7 +1203,15 @@ def test_world_boot_defers_optional_repository_star_and_security_fanout():
         APP.index("\n  handleVisibility =", APP.index("  async bootstrap() {"))
     ]
     assert ".slice(0, 48)" not in bootstrap
-    assert "Do not fan out a star request" in bootstrap
+    # The whole repository district is deferred now: boot neither reads the
+    # catalog nor fans a star request out over its portals. The note about the
+    # star fan-out moved with the requests into the arrival-triggered loader.
+    assert "/api/repositories" not in bootstrap
+    district = APP[
+        APP.index("  async loadRepositoryCatalog({"):
+        APP.index("\n  refreshOpenRepositoryPanel() {")
+    ]
+    assert "Do not fan out a star request" in district
     loader = APP[
         APP.index("  async loadRepositoryMap("):
         APP.index(
@@ -1294,6 +1307,36 @@ def test_admin_error_button_opens_a_sortable_in_world_error_table():
     assert 'data-world-activity-sort="errors"' in APP
 
 
+def test_new_error_notice_opens_the_exact_error_detail():
+    refresh = APP[
+        APP.index("  async refreshAdminErrors() {"):
+        APP.index("\n  startAdminErrorPolling()", APP.index("  async refreshAdminErrors() {"))
+    ]
+    assert "const announcedErrorId = this.adminErrorLatestId;" in refresh
+    assert "onActivate: () =>" in refresh
+    assert "this.openAdminErrors(null, announcedErrorId)" in refresh
+    assert "data-world-admin-error-detail=" in APP
+    assert "openAdminErrorDetail(errorId)" in APP
+    assert "data-world-admin-error-detail-panel" in APP
+
+
+def test_ping_board_exposes_a_full_detail_view():
+    assert 'data-world-notification-detail="${escapeHTML(item.id)}"' in APP
+    assert "data-world-notification-detail-panel" in APP
+    assert '"Destination", selected.destination || "—"' in APP
+    assert '"Received",' in APP
+    assert "selected.errorSource || selected.source" in APP
+    assert "notificationBoardDetailId" in APP
+
+
+def test_touch_debug_pill_clears_the_thumbstick():
+    assert "--world-touch-control-size: 94px;" in CSS
+    assert "--world-touch-control-size: 86px;" in CSS
+    assert "--world-touch-control-size: 82px;" in CSS
+    assert "var(--safe-bottom) + var(--world-touch-control-size) + 12px" in CSS
+    assert ".world-touch-controls {\n    bottom: var(--safe-bottom);" in CSS
+
+
 def test_world_task_button_and_inactive_avatar_visibility_contracts():
     assert "data-world-tasks-open" in APP
     assert "data-world-task-count" in APP
@@ -1357,15 +1400,23 @@ def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
         APP.index("\n  handleVisibility =", APP.index("  async bootstrap() {"))
     ]
     assert "await Promise.allSettled([contextPromise, dataPromise]);" in bootstrap
-    assert "void this.autoLoadFlagshipRepositoryMap();" in bootstrap
-    assert (
-        bootstrap.index("await Promise.allSettled([contextPromise, dataPromise]);")
-        < bootstrap.index("void this.autoLoadFlagshipRepositoryMap();")
-    )
     assert "this.world = createWorldScene({" in bootstrap
+    # The flagship map is no longer a boot request. It rides the deferred
+    # district read, which only runs once a character reaches the circle.
+    assert "void this.autoLoadFlagshipRepositoryMap();" not in bootstrap
+    district = APP[
+        APP.index("  async loadRepositoryCatalog({"):
+        APP.index("\n  refreshOpenRepositoryPanel() {")
+    ]
+    assert "this.world?.beginRepositoryDistrictReveal?.(reason);" in district
+    assert 'this.fetchJSON("/api/repositories", { auth: hasSession }),' in district
+    assert "void this.autoLoadFlagshipRepositoryMap();" in district
+    assert "void this.hydrateHostedRepositorySizeMaps();" in district
+    # The scene is told to play the arrival in before the requests go out, so
+    # the portals rise rather than appearing fully formed.
     assert (
-        bootstrap.index("this.world = createWorldScene({")
-        < bootstrap.index("void this.autoLoadFlagshipRepositoryMap();")
+        district.index("this.world?.beginRepositoryDistrictReveal?.(reason);")
+        < district.index('this.fetchJSON("/api/repositories"')
     )
 
     catalog = APP[

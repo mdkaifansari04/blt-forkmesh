@@ -66,6 +66,7 @@ def test_worker_exposes_first_class_notifications_route_and_schema():
     assert "idx_notifications_recipient_ts" in ENTRY_TEXT
     assert "if method == \"DELETE\":" in ENTRY_TEXT
     assert "WHERE recipient_bi=? AND dedupe_bi=?" in ENTRY_TEXT
+    assert "DELETE FROM notifications WHERE recipient_bi=?" in ENTRY_TEXT
     assert '"allow": "GET, POST, DELETE"' in ENTRY_TEXT
 
 
@@ -84,10 +85,25 @@ def test_world_notification_table_has_owner_scoped_direct_delete():
         :ENTRY_TEXT.index("async def mirror_requests_handler")
     ]
     # The owner is proven either by a session (browser) or by an account-key
-    # signature that names this exact row (desktop, adhoc #77).
+    # signature that names this exact row or explicit all-inbox deletion
+    # (desktop, adhoc #77).
     assert "_alert_inbox_account_name(" in delete_block
-    assert "resource=item_id) != node" in delete_block
+    assert 'resource=("all" if clear_all else item_id)' in delete_block
     assert "recipient_bi=? AND dedupe_bi=?" in delete_block
+    assert "DELETE FROM notifications WHERE recipient_bi=?" in delete_block
+
+
+def test_desktop_clear_removes_remote_operational_pings_instead_of_reading_them():
+    actions = (ROOT.parents[0] / "qt_client" / "src" /
+               "MainWindowActions.cpp").read_text(encoding="utf-8")
+    clear = actions[
+        actions.index("void MainWindow::clearWebAlerts()"):
+        actions.index("void MainWindow::showNotifications()")
+    ]
+    assert 'kAccountAlertClearProof,\n                                    QStringLiteral("all")' in clear
+    assert 'QByteArrayLiteral("DELETE")' in clear
+    assert 'm_webAlerts = QJsonArray();' in clear
+    assert "markWebAlertsRead" not in actions
 
 
 
@@ -213,10 +229,13 @@ def test_heartbeat_reports_credits_refilled_from_the_node_itself():
         'credits_kind in ("5h", "weekly")',
         'await enqueue_notification(\n            env, name, "credits_refilled"',
         'dedupe="credits_refilled:" + credits_kind',
-        "HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS",
-        "asyncio.wait_for(\n                _solana_balance_lamports(env, wallet)",
+        # The balance probe is bounded by _solana_rpc_call's native
+        # AbortSignal.timeout, never by asyncio.wait_for: cancelling a
+        # JS-backed await leaves a Pyodide task pending and wedges the isolate.
+        "balance_lamports = await _solana_balance_lamports(env, wallet)",
     ):
         assert marker in heartbeat_body
+    assert "await asyncio.wait_for(" not in heartbeat_body
 
     qt_src = ROOT.parent / "qt_client" / "src"
     qt_text = "\n".join(

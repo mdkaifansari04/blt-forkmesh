@@ -1181,3 +1181,29 @@ def clone_state_pins(target, target_key, rows, history=None):
     if source_pins:
         return source_pins
     return _pins_for(target_key, target) or None
+
+
+def admission_override_pins(members):
+    """Every valid state hash currently advertised by a group member.
+
+    Used ONLY under an authenticated, short-lived source-of-truth admission
+    override (see _admission_override_active in entry.py). A mirror can fall out
+    of the signed pin window and then be unable to re-sync — its own catch-up
+    fetch is the very same gated clone route — so the whole repo goes dark
+    ("mirror unavailable") with no path to recover on its own. While the repo's
+    operator holds an override open, the accepted-pin set is widened to the
+    states mirrors are actually serving, so they serve (and therefore converge)
+    again until the override's TTL lapses.
+
+    Deliberately bounded: only states that already appear in a published
+    catalog record (a registered node) are returned, never arbitrary input, and
+    callers apply it strictly on TOP of a real source pin set — never when a
+    repo has no source-of-truth attestation at all.
+    """
+    pins = set()
+    for row in members or []:
+        rec = (row or {}).get("data") or {}
+        state = str(rec.get("stateHash") or "").strip().lower()
+        if len(state) == 64 and all(c in "0123456789abcdef" for c in state):
+            pins.add(state)
+    return pins

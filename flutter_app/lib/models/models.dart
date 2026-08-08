@@ -670,6 +670,7 @@ class AgentSession {
     'claude-api' => 'Claude API',
     'openai' => 'OpenAI',
     'codex' => 'Codex',
+    'cloudflare-ai' => 'Cloudflare AI',
     _ => provider.isEmpty ? 'Agent' : _titleCase(provider),
   };
 

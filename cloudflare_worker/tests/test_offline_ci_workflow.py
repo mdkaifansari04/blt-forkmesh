@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".forkmesh" / "ci.yml"
 DEPLOY_WORKFLOW = ROOT / ".forkmesh" / "deploy.yml"
+RELEASE_WORKFLOW = ROOT / ".forkmesh" / "release.yml"
 CRITICAL_RUNNER = ROOT / "tools" / "run_critical_tests.py"
 BROWSER_PACKAGE = ROOT / "cloudflare_worker" / "browser_tests" / "package.json"
 BROWSER_CONFIG = ROOT / "cloudflare_worker" / "browser_tests" / "playwright.config.js"
@@ -43,6 +44,49 @@ def test_critical_suites_have_isolated_workflow_steps():
     assert "- name: Critical Qt client contracts" in source
     assert "Test suites (in parallel)" not in source
     assert "heartbeat()" not in source
+
+
+def test_qt_step_builds_every_binary_the_critical_label_selects():
+    """ctest reports an unbuilt suite as "***Not Run", so a suite promoted to
+    the "critical" label without a matching build target fails CI silently.
+    The workflow builds one aggregate target that CMake derives from the same
+    place it applies the label, so the two lists cannot drift apart."""
+    source = WORKFLOW.read_text(encoding="utf-8")
+    cmake = (ROOT / "qt_client" / "CMakeLists.txt").read_text(encoding="utf-8")
+
+    assert "--target critical-tests" in source
+    # No enumerating suites in the workflow: that is what drifted before.
+    assert "--target forkmesh-" not in source
+    assert "add_custom_target(critical-tests" in cmake
+
+    labelled = _cmake_list(cmake, "FORKMESH_CRITICAL_TESTS")
+    built = _cmake_list(cmake, "FORKMESH_CRITICAL_TEST_TARGETS")
+    assert labelled and built
+    for test in labelled:
+        # forkmesh-mirror-fleet-window-tests is a flag-selected second run of
+        # the forkmesh-window-tests binary; every other name is its own target.
+        target = test.replace("mirror-fleet-window", "window")
+        assert target in built, f"{test} has no binary in critical-tests"
+
+
+def _cmake_list(cmake: str, name: str) -> list[str]:
+    _, _, rest = cmake.partition(f"set({name}\n")
+    body, _, _ = rest.partition(")")
+    return body.split()
+
+
+def test_qt_builds_pin_autogen_pools_to_the_sandbox_budget():
+    """CMake's AUTOGEN_PARALLEL default (AUTO) sizes each AUTOMOC driver's
+    thread pool from the host's core count, which no step can see from inside
+    the Actions cgroup. One such pool per -j slot exhausted the scope's task
+    ceiling and the build died on pthread_create's "Resource temporarily
+    unavailable" (adhoc #1586). Both Qt builds pin the pools to the same job
+    count the compiles are sized from."""
+    for workflow in (WORKFLOW, RELEASE_WORKFLOW):
+        source = workflow.read_text(encoding="utf-8")
+        assert '-DCMAKE_AUTOGEN_PARALLEL="$jobs"' in source, workflow.name
+        # Sizing the pools from $jobs only works if $jobs is already computed.
+        assert source.index("jobs=") < source.index("-DCMAKE_AUTOGEN_PARALLEL")
 
 
 def test_critical_suites_enforce_sub_minute_deadlines():

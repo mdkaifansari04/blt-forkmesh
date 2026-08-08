@@ -9,7 +9,15 @@ the dashboard profile flow after account creation.
 from pathlib import Path
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+ENTRY_TEXT = (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+)
 URLS = ENTRY.parent / "urls.py"
 URLS_TEXT = URLS.read_text(encoding="utf-8")
 SCHEMA = ENTRY.parent / "schema.py"
@@ -26,7 +34,7 @@ QT_TEXT = "\n".join(
 
 def test_worker_routes_public_profile_contributions_before_account_lookup():
     assert "ACCOUNT_CONTRIBUTIONS_RE" in URLS_TEXT
-    assert "ACCOUNT_CONTRIBUTIONS_RE," in ENTRY_TEXT
+    assert '"ACCOUNT_CONTRIBUTIONS_RE"' in ENTRY_TEXT
     routes = ENTRY_TEXT[ENTRY_TEXT.index("async def accounts_handler"):]
     assert routes.index("ACCOUNT_CONTRIBUTIONS_RE.match(url.path)") < routes.index(
         "ACCOUNTS_RE.match(url.path)"
@@ -333,10 +341,16 @@ def test_worker_exposes_public_user_directory_for_chat_without_private_fields():
     assert 'out.sort(key=lambda user: user.get("createdAt", 0))' in body
     assert "last_touch_at" not in body
     assert "FROM accounts" not in body
-    assert '_account_kind(rec) != "user"' in body
-    assert 'rec.get("status") != "active"' in body
+    # The user/active/non-private roster predicate is shared with the chat
+    # badge's member count (adhoc #1617), so it lives in one place rather
+    # than being inlined here.
+    assert "_is_public_roster_member(rec)" in body
+    assert '_account_kind(rec) == "user"' in ENTRY_TEXT
+    assert 'rec.get("status") == "active"' in ENTRY_TEXT
     assert '"avatarPng": rec.get("avatar_png", "")' in body
     assert '"nodes": _owned_nodes(rec)' in body
+    assert 'solana = (rec.get("solana") or "").strip()' in body
+    assert '"solana": solana if SOLANA_RE.match(solana) else ""' in body
     assert '"email"' not in body
     assert '"pubkey"' not in body
     assert '"isAdmin"' not in body

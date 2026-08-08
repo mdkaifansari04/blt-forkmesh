@@ -1,25 +1,4 @@
-import asyncio
-import base64
-import gzip
-import hashlib
-import hmac
-import io
-import ipaddress
-import json
-import math
 import re
-import struct
-import time
-import traceback
-from urllib.parse import (
-    parse_qs,
-    parse_qsl,
-    quote,
-    unquote,
-    urlencode,
-    urlparse,
-    urlunparse,
-)
 
 from js import AbortSignal as JsAbortSignal
 from js import Date
@@ -57,7 +36,16 @@ class _LazyModule:
     def _load(self):
         module = self._module
         if module is None:
-            module = __import__(self._name)
+            # ``fromlist`` makes dotted stdlib names (notably urllib.parse)
+            # resolve to the requested leaf module instead of their package.
+            module = __import__(self._name, fromlist=("*",))
+            bind_runtime = getattr(module, "_bind_runtime", None)
+            if bind_runtime is not None:
+                # Route modules keep their own helpers local while resolving
+                # shared Worker/D1 primitives from this fully initialized
+                # entrypoint. Binding happens only on the first request that
+                # needs that route family, never during version validation.
+                bind_runtime(globals())
             self._module = module
         return module
 
@@ -119,9 +107,55 @@ class _LazyExport:
         return str(self._load())
 
 
+# ---------------------------------------------------------------------------
+# No concurrent asyncio tasks on a request path.
+#
+# The Python Workers runtime snapshot this Worker rides (compatibility_date
+# 2026-08-03, the newest cut that still boots — see wrangler.toml) can
+# step one PyodideTask while another task's step is on the stack. The loop
+# then raises "RuntimeError: Cannot enter into task ... while another task
+# ... is running", the offending task is left pending forever, and from that
+# moment EVERY request the isolate receives dies the same way — a permanently
+# wedged isolate answering Cloudflare 1101 until workerd recycles it. Live
+# tails during the 2026-08-05/06 (issue #555) and 2026-08-07 outages showed
+# 30-85% of relay traffic failing this way, on whatever route happened to be
+# polled: /api/repo/*/*/pending, git info/refs, the world-general room
+# WebSocket, even /health.
+#
+# So: anything that spawns or interleaves a second task inside a request is
+# banned here, however cheap it looks.
+#   - asyncio.gather(...)          -> await the pieces in sequence
+#   - asyncio.wait_for(js_promise) -> js_fetch_with_timeout(), or a native
+#                                     AbortSignal.timeout on the fetch init
+#   - asyncio.ensure_future/create_task on a request path -> just await it
+# The sequential form costs a few milliseconds of added latency per request;
+# the concurrent form costs every request that isolate would have served.
+# tests/test_worker_task_concurrency.py enforces this.
+# ---------------------------------------------------------------------------
+
 # These modules back optional route families.  Do not turn these assignments
 # back into top-level imports: Cloudflare validates Python Worker global scope
 # within a fixed memory budget.
+asyncio = _LazyModule("asyncio")
+base64 = _LazyModule("base64")
+gzip = _LazyModule("gzip")
+hashlib = _LazyModule("hashlib")
+hmac = _LazyModule("hmac")
+io = _LazyModule("io")
+ipaddress = _LazyModule("ipaddress")
+json = _LazyModule("json")
+math = _LazyModule("math")
+struct = _LazyModule("struct")
+time = _LazyModule("time")
+traceback = _LazyModule("traceback")
+_urllib_parse = _LazyModule("urllib.parse")
+parse_qs = _urllib_parse.export("parse_qs")
+parse_qsl = _urllib_parse.export("parse_qsl")
+quote = _urllib_parse.export("quote")
+unquote = _urllib_parse.export("unquote")
+urlencode = _urllib_parse.export("urlencode")
+urlparse = _urllib_parse.export("urlparse")
+urlunparse = _urllib_parse.export("urlunparse")
 organization_discord = _LazyModule("organization_discord")
 notes = _LazyModule("notes")
 polar_integration = _LazyModule("polar_integration")
@@ -129,12 +163,11 @@ polar_integration = _LazyModule("polar_integration")
 # Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
 # lives in its own module. Wallet signing is intentionally not imported into the
 # Worker: reward transfers are prepared as intents for a local external signer.
-from solana import (
-    _base58_encode,
-    _b64url_encode,
-    _solana_rpc,
-    _solana_rpc_write,
-)
+_solana = _LazyModule("solana")
+_base58_encode = _solana.export("_base58_encode")
+_b64url_encode = _solana.export("_b64url_encode")
+_solana_rpc = _solana.export("_solana_rpc")
+_solana_rpc_write = _solana.export("_solana_rpc_write")
 
 MAX_ROOM_NAME = 80
 MAX_CONNECTIONS = 128
@@ -246,6 +279,28 @@ CLIENT_ERROR_SURFACES = frozenset({
 # without pagehide (GPU/OOM kill, tab discard) or a lost WebGL context, with
 # the last heartbeat's diagnostics in the message.
 CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection", "crash"})
+# Desktop-app failures the Qt client used to only ever show to itself: a warning
+# modal on a machine nobody is sitting in front of, a red toast on a headless
+# node. They join the same operational error_log as browser and Worker errors, so
+# the first sighting of a distinct failure raises the existing administrator
+# "new error group" ping (adhoc #1538) instead of dying on one screen.
+#
+# Admission differs from the browser collector: a Qt client has no Origin header
+# and no session cookie, so a report is stored only when it carries the same
+# signed owner token as GET /api/sync. Anonymous desktop reports are refused
+# rather than opening a second unauthenticated write path into D1.
+DESKTOP_ERROR_MAX_BODY = 8 * 1024
+DESKTOP_ERROR_RATE_WINDOW_MS = 60 * 1000
+DESKTOP_ERROR_RATE_PER_OWNER = 6
+DESKTOP_ERROR_RATE_GLOBAL = 60
+# Which kind of install hit it, never a free-text label: it becomes the
+# error_log path, which the admin view and the ping dedupe both group on. The
+# split is the one that changes what the report means — a modal on a headless
+# mirror is a node parked until somebody clicks OK, while the same modal on a
+# desktop is a person reading it.
+DESKTOP_ERROR_SURFACES = frozenset({"app", "headless"})
+# How the failure reached the operator: a modal dialog or the in-app error toast.
+DESKTOP_ERROR_KINDS = frozenset({"dialog", "toast"})
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
@@ -510,137 +565,80 @@ GENERAL_CHAT_EMAIL_INTERVAL_MS = 24 * 60 * 60 * 1000
 GENERAL_CHAT_EMAIL_LOOKBACK_MS = 24 * 60 * 60 * 1000
 GENERAL_CHAT_EMAIL_MAX_RECIPIENTS = 200
 # HTTP route patterns (git smart-HTTP, repo APIs, accounts) live in urls.py so the
-# router's match table is one small, scannable module instead of buried in this
-# 11k-line file. The Worker runtime bundles sibling modules in src/, so this
-# import resolves both on Cloudflare and in the test suite (which parses urls.py
-# the same way it parses this file).
-from urls import (  # noqa: E402
-    ROOM_RE,
-    REPO_ROOM_RE,
-    CHAT_CHANNELS_RE,
-    CHAT_CHANNEL_MEMBERS_RE,
-    CHAT_CHANNEL_ROOM_ACCESS_RE,
-    CHAT_CHANNEL_HISTORY_RE,
-    CHAT_CHANNEL_WS_RE,
-    CHAT_DIRECT_MESSAGES_RE,
-    CHAT_DIRECT_MESSAGE_USERS_RE,
-    CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE,
-    CHAT_DIRECT_MESSAGE_READ_RE,
-    CHAT_DIRECT_MESSAGE_WS_RE,
-    REPO_ISSUES_RE,
-    REPO_PULLS_RE,
-    REPO_PULL_MERGE_RE,
-    REPO_ACTION_RUNS_RE,
-    REPO_DISCUSSIONS_RE,
-    REPO_PENDING_RE,
-    REPO_SUBSCRIBE_RE,
-    REPO_BOUNTY_RE,
-    REPO_SHARES_RE,
-    REPO_SECURITY_SCANS_RE,
-    REPO_MIRRORS_RE,
-    REPO_MIRROR_REACHABILITY_RE,
-    REPO_ABOUT_RE,
-    REPO_LOGO_RE,
-    REPO_LOGO_SUGGESTIONS_RE,
-    REPO_AGENTS_RE,
-    REPO_AGENTS_LIST_RE,
-    REPO_AGENTS_ACK_RE,
-    REPO_AGENTS_PROMPT_RE,
-    REPO_AGENTS_TRANSCRIPT_RE,
-    ORG_AGENT_BOTS_RE,
-    ORG_AGENT_BOT_RE,
-    REPO_ORG_AGENT_JOBS_RE,
-    REPO_ORG_AGENT_JOB_RESULT_RE,
-    REPO_PRIVACY_RE,
-    PRIVATE_REPLICA_ACCESS_RE,
-    REPO_HOST_RE,
-    RELEASE_BLOB_RE,
-    REPO_RELEASE_DOWNLOADS_RE,
-    GIT_INFO_RE,
-    GIT_PACK_RE,
-    GIT_RECEIVE_RE,
-    ACCOUNTS_RE,
-    ACCOUNT_CONTRIBUTIONS_RE,
-    ACCOUNT_FOLLOW_RE,
-    REFERRAL_LINK_RE,
-    REFERRAL_CARD_RE,
-    ORGS_RE,
-    ORG_RE,
-    ORG_MEMBERS_RE,
-    ORG_TEAMS_RE,
-    ORG_TEAM_MEMBERS_RE,
-    ORG_REPOS_RE,
-    ORG_BOT_TOKENS_RE,
-    ORG_DISCORD_RE,
-    DISCORD_OAUTH_CALLBACK_RE,
-    MAILTRAP_WEBHOOK_RE,
-    POLAR_INTEGRATION_RE,
-    BOT_SESSION_RE,
-    ORG_SUCCESSION_RE,
-    ORG_FEDIVERSE_RE,
-    BADGES_RE,
-    BADGE_ACCOUNT_RE,
-    REPO_API_PREFIX_RE,
-    AP_USER_RE,
-    AP_USER_SUB_RE,
-    AP_REPO_RE,
-    AP_REPO_SUB_RE,
-    AP_OBJECT_RE,
-    AP_OBJECT_MEDIA_RE,
-    REPO_FEDI_COMMENTS_RE,
-    REPO_AP_PUBLISH_RE,
-    REPO_AP_DIGEST_RE,
-    REPO_AP_POSTS_RE,
-    REPO_CARD_RE,
-    REPO_MEDIA_RE,
-    REPO_STAR_RE,
+# router's match table is one small, scannable module instead of buried here.
+# Keep its many compiled regexes out of deployment validation; the first routed
+# request resolves these transparent exports from the bundled sibling module.
+_urls = _LazyModule("urls")
+_URL_EXPORT_NAMES = (
+    "ROOM_RE", "REPO_ROOM_RE", "CHAT_CHANNELS_RE",
+    "CHAT_CHANNEL_MEMBERS_RE", "CHAT_CHANNEL_ROOM_ACCESS_RE",
+    "CHAT_CHANNEL_HISTORY_RE", "CHAT_CHANNEL_WS_RE",
+    "CHAT_DIRECT_MESSAGES_RE", "CHAT_DIRECT_MESSAGE_USERS_RE",
+    "CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE", "CHAT_DIRECT_MESSAGE_READ_RE",
+    "CHAT_DIRECT_MESSAGE_WS_RE", "REPO_ISSUES_RE", "REPO_PULLS_RE",
+    "REPO_PULL_MERGE_RE", "REPO_ACTION_RUNS_RE", "REPO_DISCUSSIONS_RE",
+    "REPO_PENDING_RE", "REPO_SUBSCRIBE_RE", "REPO_BOUNTY_RE",
+    "REPO_SHARES_RE", "REPO_SECURITY_SCANS_RE", "REPO_MIRRORS_RE",
+    "REPO_MIRROR_REACHABILITY_RE", "REPO_ABOUT_RE", "REPO_LOGO_RE",
+    "REPO_LOGO_SUGGESTIONS_RE", "REPO_AGENTS_RE", "REPO_AGENTS_LIST_RE",
+    "REPO_AGENTS_ACK_RE", "REPO_AGENTS_PROMPT_RE",
+    "REPO_AGENTS_TRANSCRIPT_RE", "ORG_AGENT_BOTS_RE", "ORG_AGENT_BOT_RE",
+    "REPO_ORG_AGENT_JOBS_RE", "REPO_ORG_AGENT_JOB_RESULT_RE",
+    "REPO_PRIVACY_RE", "PRIVATE_REPLICA_ACCESS_RE", "REPO_HOST_RE",
+    "RELEASE_BLOB_RE", "REPO_RELEASE_DOWNLOADS_RE", "GIT_INFO_RE",
+    "GIT_PACK_RE", "GIT_RECEIVE_RE", "ACCOUNTS_RE",
+    "ACCOUNT_CONTRIBUTIONS_RE", "ACCOUNT_FOLLOW_RE", "REFERRAL_LINK_RE",
+    "REFERRAL_CARD_RE", "ORGS_RE", "ORG_RE", "ORG_MEMBERS_RE",
+    "ORG_TEAMS_RE", "ORG_TEAM_MEMBERS_RE", "ORG_REPOS_RE",
+    "ORG_BOT_TOKENS_RE", "ORG_DISCORD_RE", "DISCORD_OAUTH_CALLBACK_RE",
+    "MAILTRAP_WEBHOOK_RE", "POLAR_INTEGRATION_RE", "BOT_SESSION_RE",
+    "ORG_SUCCESSION_RE", "ORG_FEDIVERSE_RE", "BADGES_RE",
+    "BADGE_ACCOUNT_RE", "REPO_API_PREFIX_RE", "AP_USER_RE",
+    "AP_USER_SUB_RE", "AP_REPO_RE", "AP_REPO_SUB_RE", "AP_OBJECT_RE",
+    "AP_OBJECT_MEDIA_RE", "REPO_FEDI_COMMENTS_RE", "REPO_AP_PUBLISH_RE",
+    "REPO_AP_DIGEST_RE", "REPO_AP_POSTS_RE", "REPO_CARD_RE",
+    "REPO_MEDIA_RE", "REPO_STAR_RE",
 )
+for _url_export_name in _URL_EXPORT_NAMES:
+    globals()[_url_export_name] = _urls.export(_url_export_name)
+del _url_export_name
+del _URL_EXPORT_NAMES
 
-# Static route ownership rules: repo shortcuts are Python-owned so hard refresh
-# on /owner/repo serves the dashboard shell; direct implementation-file URLs
-# such as /login.html stay non-public.
-from static_routes import (  # noqa: E402
-    BLOCKED_STATIC_HTML_PATHS,
-    DASHBOARD_PAGE_ASSETS,
-    DASHBOARD_REPO_ASSET,
-    dashboard_section_redirect,
-    looks_like_repo_route,
-)
+# Static route ownership is only consulted once an HTTP request reaches the
+# application router. Compiling its route tables during validation wastes
+# startup memory, so keep the module behind the same lazy boundary as the
+# optional API domains below. The one string constant is cheaper to repeat than
+# to wrap because call sites concatenate it directly.
+_static_routes = _LazyModule("static_routes")
+BLOCKED_STATIC_HTML_PATHS = _static_routes.export("BLOCKED_STATIC_HTML_PATHS")
+DASHBOARD_PAGE_ASSETS = _static_routes.export("DASHBOARD_PAGE_ASSETS")
+DASHBOARD_REPO_ASSET = "dashboard/repo.html"
+dashboard_section_redirect = _static_routes.export("dashboard_section_redirect")
+looks_like_repo_route = _static_routes.export("looks_like_repo_route")
 
-# Release manifest + content-addressed blob helpers (tag/asset validation, the
-# CAS blob path layout, the canonical signable manifest body, semver ordering)
-# live in releases.py — another pure, js-free sibling module the runtime bundles
-# and the test suite imports directly. Only verify_release_manifest stays below,
-# since it reaches into this file's Ed25519/sha256 crypto.
-from releases import (  # noqa: E402
-    RELEASE_TAG_RE,
-    RELEASE_SEMVER_RE,
-    SHA256_HEX_RE,
-    valid_release_tag,
-    valid_asset_name,
-    valid_sha256_hex,
-    cas_blob_relpath,
-    release_asset_line,
-    release_manifest_content,
-    release_signing_message,
-    generate_shasums,
-    release_semver_key,
-    resolve_latest_release,
-    asset_upload_decision,
-)
+# Release helpers are needed only by repository release routes.
+_releases = _LazyModule("releases")
+valid_release_tag = _releases.export("valid_release_tag")
+valid_asset_name = _releases.export("valid_asset_name")
+valid_sha256_hex = _releases.export("valid_sha256_hex")
+cas_blob_relpath = _releases.export("cas_blob_relpath")
+release_asset_line = _releases.export("release_asset_line")
+release_manifest_content = _releases.export("release_manifest_content")
+release_signing_message = _releases.export("release_signing_message")
+generate_shasums = _releases.export("generate_shasums")
+release_semver_key = _releases.export("release_semver_key")
+resolve_latest_release = _releases.export("resolve_latest_release")
+asset_upload_decision = _releases.export("asset_upload_decision")
 
-# Git smart-HTTP wire helpers (pkt-line, ref-advertisement canonicalization,
-# request-body decoding) and the repo-blob content-type/filename mapping live
-# in their own stdlib-only module — see git_http.py.
-from git_http import (  # noqa: E402
-    REPO_BLOB_CONTENT_TYPES,
-    advertised_refs_canonical,
-    decode_git_request_body,
-    git_advert_cache_key,
-    pkt_line,
-    repo_blob_content_type,
-    repo_blob_filename,
-)
+# Git wire helpers pull in gzip/io and are used only by clone/blob routes.
+_git_http = _LazyModule("git_http")
+REPO_BLOB_CONTENT_TYPES = _git_http.export("REPO_BLOB_CONTENT_TYPES")
+advertised_refs_canonical = _git_http.export("advertised_refs_canonical")
+decode_git_request_body = _git_http.export("decode_git_request_body")
+git_advert_cache_key = _git_http.export("git_advert_cache_key")
+pkt_line = _git_http.export("pkt_line")
+repo_blob_content_type = _git_http.export("repo_blob_content_type")
+repo_blob_filename = _git_http.export("repo_blob_filename")
 
 # SSH key parsing is only used by account/repository key routes.
 ssh_auth = _LazyModule("ssh_keys")
@@ -656,6 +654,7 @@ def _mirror_ms(*args, **kwargs): return _mirrors._mirror_ms(*args, **kwargs)
 def accepted_mirror_requests(*args, **kwargs): return _mirrors.accepted_mirror_requests(*args, **kwargs)
 def ack_mirror_requests(*args, **kwargs): return _mirrors.ack_mirror_requests(*args, **kwargs)
 def add_mirror_request(*args, **kwargs): return _mirrors.add_mirror_request(*args, **kwargs)
+def admission_override_pins(*args, **kwargs): return _mirrors.admission_override_pins(*args, **kwargs)
 def agent_provider_target_decision(*args, **kwargs): return _mirrors.agent_provider_target_decision(*args, **kwargs)
 def browse_mirror_candidates(*args, **kwargs): return _mirrors.browse_mirror_candidates(*args, **kwargs)
 def build_repo_mirrors_payload(*args, **kwargs): return _mirrors.build_repo_mirrors_payload(*args, **kwargs)
@@ -671,42 +670,34 @@ def set_mirror_request_status(*args, **kwargs): return _mirrors.set_mirror_reque
 def select_clone_fallback(*args, **kwargs): return _mirrors.select_clone_fallback(*args, **kwargs)
 def served_mirror_groups(*args, **kwargs): return _mirrors.served_mirror_groups(*args, **kwargs)
 
-# Catalog-record sanitization (string cleaning, path-segment validation, the
-# public catalog-record builder) lives in catalog.py -- another pure, js-free
-# sibling module the runtime bundles and the test suite parses directly.
-from catalog import (  # noqa: E402
-    MAX_REPO_SEGMENT,
-    clean_string,
-    safe_catalog_record,
-    safe_contribution_transport,
-    safe_segment,
-)
+# Catalog sanitizers load on the first route that needs user/catalog input.
+# Keep the tiny public length limit local because it is passed as a concrete
+# integer throughout this module.
+MAX_REPO_SEGMENT = 80
+_catalog = _LazyModule("catalog")
+clean_string = _catalog.export("clean_string")
+safe_catalog_record = _catalog.export("safe_catalog_record")
+safe_contribution_transport = _catalog.export("safe_contribution_transport")
+safe_segment = _catalog.export("safe_segment")
 contributions = _LazyModule("contributions")
 
 # The D1 table/index DDL list is only needed when a request or cron first
 # ensures storage.  It is large enough to keep out of Python global scope.
 schema = _LazyModule("schema")
 
-# Signed-event crypto + canonicalization -- the Ed25519/SHA-256 verify
-# primitives and the per-event canonical-content builders (which must
-# byte-match the desktop client's *Store contentForSigning/canonicalString)
-# live in events.py, another one-directional sibling module (adhoc #279).
-from events import (  # noqa: E402
-    DISCUSSION_CATEGORIES,
-    DISCUSSION_CATEGORY_MAP,
-    b64url_decode,
-    discussion_event_content,
-    ed25519_verify,
-    issue_event_content,
-    normalized_discussion_category,
-    pull_comment_content,
-    sha256_hex,
-    verify_discussion_event,
-    verify_issue_event,
-    verify_pull_comment_event,
-    verify_pull_event,
-    verify_release_manifest,
-)
+# Signed-event crypto is needed only when a signed mutation is handled. It also
+# imports WebCrypto bridge objects, so deferring it saves more than source bytes.
+_events = _LazyModule("events")
+b64url_decode = _events.export("b64url_decode")
+discussion_event_content = _events.export("discussion_event_content")
+ed25519_verify = _events.export("ed25519_verify")
+issue_event_content = _events.export("issue_event_content")
+sha256_hex = _events.export("sha256_hex")
+verify_discussion_event = _events.export("verify_discussion_event")
+verify_issue_event = _events.export("verify_issue_event")
+verify_pull_comment_event = _events.export("verify_pull_comment_event")
+verify_pull_event = _events.export("verify_pull_event")
+verify_release_manifest = _events.export("verify_release_manifest")
 
 # ActivityPub federation protocol spine (WebFinger/NodeInfo/actor/Note builders,
 # draft-cavage HTTP-signature strings, the Digest header format, remote-document
@@ -1651,11 +1642,19 @@ async def repository_metadata_cache_put(env, cache_key, response, status):
             },
         }))
         namespace = getattr(env, "REPOSITORY_METADATA", None)
-        writes = [js_caches.default.put(cache_key, cacheable)]
+        # Sequential on purpose — see the no-concurrent-tasks rule at the top
+        # of this module. Two awaits of single-digit milliseconds on the
+        # repository-read hot path, versus a gather that can wedge the isolate.
+        try:
+            await js_caches.default.put(cache_key, cacheable)
+        except Exception:
+            pass
         if namespace is not None:
             # No expiration: commit/ref changes address a brand-new key.
-            writes.append(namespace.put(cache_key, raw))
-        await asyncio.gather(*writes, return_exceptions=True)
+            try:
+                await namespace.put(cache_key, raw)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -1691,16 +1690,19 @@ def request_bypasses_repository_metadata_cache(request):
 
 
 async def purge_catalog_related_caches():
-    # One concurrent sweep instead of four sequential awaits — this runs on
-    # every catalog write, inside the request's critical path.
-    await asyncio.gather(*(
-        edge_cache_delete(key)
-        for key in (
+    # Sequential on purpose. This runs on every catalog publish (each mirror
+    # node, every 30s), and gathering the deletes was the wedge site of the
+    # 2026-08-05/06 outage: the Pyodide runtime re-entered a concurrently
+    # scheduled task mid-`caches.delete` ("Cannot enter into task ...",
+    # issue #555), permanently poisoning the isolate. Four sequential cache
+    # deletes cost single-digit ms; a wedged isolate 500s until recycled.
+    for key in (
             CATALOG_CACHE_KEY,
             NETWORK_STATS_CACHE_KEY,
             NETWORK_LEADERBOARDS_CACHE_KEY,
             NETWORK_OVERVIEW_CACHE_KEY,
-        )), return_exceptions=True)
+    ):
+        await edge_cache_delete(key)
 
 
 # Versioned so neither the fail-closed visibility contract nor signed-endpoint
@@ -1772,13 +1774,75 @@ async def notify_repo_host(env, owner, repo, topic):
     try:
         node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
         node_object = env.FORKMESH_NODES.get(node_id)
-        await asyncio.wait_for(
-            node_object.fetch(
-                "https://forkmesh.internal/api/nodes/notify"
-                "?topic=" + quote(topic or "") +
-                "&repo=" + quote(owner + "/" + repo)
-            ),
-            timeout=HOST_COUNT_TIMEOUT_MS / 1000,
+        # Awaited directly, NOT under asyncio.wait_for: cancelling a JS-backed
+        # await leaves the underlying Pyodide task pending forever, which is
+        # how a single slow push wedges the isolate for every later request
+        # (see the no-concurrent-tasks rule at the top of this module). The
+        # frame is payload-free and the Durable Object answers immediately;
+        # the platform's own subrequest limits bound the wait.
+        await node_object.fetch(
+            "https://forkmesh.internal/api/nodes/notify"
+            "?topic=" + quote(topic or "") +
+            "&repo=" + quote(owner + "/" + repo)
+        )
+    except Exception:
+        pass
+
+
+# Per-isolate coalescing window for account event pushes. One write path
+# routinely enqueues several notifications for the same person in the same
+# request (an @mention plus a thread subscription, say), and every one of them
+# is answered by the same single signed read on the client. Collapsing the
+# duplicates costs the user nothing and keeps a fan-out inside the Worker's
+# subrequest budget.
+_ACCOUNT_EVENT_PUSH_MEMO = {}
+ACCOUNT_EVENT_PUSH_COALESCE_MS = 2000
+ACCOUNT_EVENT_PUSH_MEMO_MAX = 512
+
+
+async def notify_account_event(env, owner, topic):
+    """Push a payload-free "your <topic> changed" frame to one account.
+
+    Same channel and same contract as notify_repo_host — the per-owner
+    ForkMeshNodes Durable Object — but for account-scoped state that belongs
+    to no repository: the ping inbox and direct-message unread counts. Desktop
+    nodes already hold this socket; browsers open the same one with a
+    short-lived account event ticket. Clients read those counts exactly once
+    at startup and thereafter only when a frame like this arrives, so this
+    push is what replaces their old "any unread yet?" poll
+    (docs/operations/polling-elimination.md).
+
+    Best-effort, like every other push on this channel: a failure here must
+    never fail the write that triggered it, and the worst case is that a badge
+    waits until the reader opens the page it lives on (or the channel
+    reconnects). That is also the safety valve for a wide fan-out — one comment
+    on a heavily-subscribed thread calls this once per subscriber, and if that
+    exhausts the invocation's subrequest budget the remaining pushes fail
+    quietly instead of failing the comment.
+    """
+    owner = safe_segment(owner)
+    topic = clean_string(topic or "", 40)
+    if not owner or not topic:
+        return
+    now = int(Date.now())
+    memo_key = owner + "\n" + topic
+    last = _ACCOUNT_EVENT_PUSH_MEMO.get(memo_key, 0)
+    if last and now - last < ACCOUNT_EVENT_PUSH_COALESCE_MS:
+        return
+    _ACCOUNT_EVENT_PUSH_MEMO[memo_key] = now
+    if len(_ACCOUNT_EVENT_PUSH_MEMO) > ACCOUNT_EVENT_PUSH_MEMO_MAX:
+        cutoff = now - ACCOUNT_EVENT_PUSH_COALESCE_MS
+        for stale in [key for key, ts in _ACCOUNT_EVENT_PUSH_MEMO.items()
+                      if ts < cutoff]:
+            _ACCOUNT_EVENT_PUSH_MEMO.pop(stale, None)
+    try:
+        node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
+        node_object = env.FORKMESH_NODES.get(node_id)
+        # Awaited directly — see notify_repo_host above for why this must not
+        # be wrapped in asyncio.wait_for.
+        await node_object.fetch(
+            "https://forkmesh.internal/api/nodes/notify"
+            "?topic=" + quote(topic)
         )
     except Exception:
         pass
@@ -1831,22 +1895,112 @@ async def notify_repo_mirrors(env, owner, repo, topic):
         await notify_repo_host(env, target, repo, topic)
 
 
+# A browser cannot set headers on a WebSocket upgrade, so it proves its
+# account the way the World already does: exchange the session for a
+# short-lived, HMAC-signed ticket over ordinary authenticated HTTPS and put
+# only that in the upgrade URL. A leaked ticket buys sixty seconds of
+# payload-free "something changed" frames for one account — never the session
+# token, and never any content.
+ACCOUNT_EVENT_TICKET_TTL_MS = 60 * 1000
+
+
+def _account_event_ticket_signature(env, payload):
+    return hmac.new(
+        _account_session_secret(env),
+        b"forkmesh-account-events-ticket-v1\n" + payload.encode(),
+        "sha256",
+    ).hexdigest()
+
+
+def _account_event_ticket_encode(env, claim):
+    payload = base64.urlsafe_b64encode(
+        json.dumps(claim, separators=(",", ":"), sort_keys=True).encode()
+    ).decode().rstrip("=")
+    return payload + "." + _account_event_ticket_signature(env, payload)
+
+
+def _account_event_ticket_owner(env, ticket):
+    """The account name proven by an unexpired event ticket, else ""."""
+    value = clean_string(ticket or "", 1024).strip()
+    if "." not in value:
+        return ""
+    payload, signature = value.rsplit(".", 1)
+    if not payload or not re.fullmatch(r"[A-Za-z0-9_-]+", payload):
+        return ""
+    if not hmac.compare_digest(
+            signature, _account_event_ticket_signature(env, payload)):
+        return ""
+    try:
+        padded = payload + "=" * ((4 - len(payload) % 4) % 4)
+        claim = json.loads(base64.urlsafe_b64decode(padded).decode())
+    except Exception:
+        return ""
+    if not isinstance(claim, dict):
+        return ""
+    now = int(Date.now())
+    try:
+        issued = int(claim.get("issuedAt", 0) or 0)
+        expires = int(claim.get("expiresAt", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    if issued <= 0 or expires <= now or issued > now + 5000:
+        return ""
+    if expires - issued > ACCOUNT_EVENT_TICKET_TTL_MS:
+        return ""
+    return safe_segment(clean_string(claim.get("name", ""), MAX_NODE_NAME))
+
+
+async def account_event_ticket_handler(env, request):
+    """GET /api/accounts/event-ticket — session -> account event ticket."""
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET"})
+    name = safe_segment(await _authed_account_name(env, request))
+    if not name:
+        return json_response(
+            {"ok": True, "authenticated": False, "ticket": "", "expiresAt": 0},
+            cache_control="no-store, max-age=0, must-revalidate")
+    now = int(Date.now())
+    expires = now + ACCOUNT_EVENT_TICKET_TTL_MS
+    return json_response(
+        {
+            "ok": True,
+            "authenticated": True,
+            "name": name,
+            "expiresAt": expires,
+            "ticket": _account_event_ticket_encode(
+                env, {"name": name, "issuedAt": now, "expiresAt": expires}),
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"})
+
+
 async def node_events_handler(env, request):
     # GET /api/nodes/events?owner=&ts=&sig= (WebSocket upgrade only) — a
     # desktop/headless node's live event channel. Auth reuses the same signed
     # forkmesh-issues-pull-v1 drain token as GET /api/sync (_authorize_owner),
-    # checked here BEFORE any Durable Object is selected. The socket only ever
-    # receives payload-free {"type":"event","topic"} frames; all data still
-    # flows through the existing signed HTTPS sync, so this adds no new
+    # checked here BEFORE any Durable Object is selected. A browser instead
+    # presents ?ticket= from /api/accounts/event-ticket, which proves the same
+    # account from an ordinary session; either way the socket only ever
+    # receives payload-free {"type":"event","topic"} frames, so all data still
+    # flows through the existing signed HTTPS routes and this adds no new
     # repository byte or control transport (the retired-tunnel contracts in
     # test_https_mirror_routing_integration.py are unaffected).
     upgrade = (request.headers.get("upgrade") or "").lower()
     if upgrade != "websocket":
         return json_response({"error": "upgrade_required"}, status=426)
     params = parse_qs(urlparse(request.url).query)
-    owner = safe_segment(params.get("owner", [""])[0])
-    if not owner or not await _authorize_owner(env, request, owner):
-        return json_response({"error": "unauthorized"}, status=401)
+    ticket = params.get("ticket", [""])[0]
+    if ticket:
+        owner = _account_event_ticket_owner(env, ticket)
+        if not owner:
+            return json_response({"error": "unauthorized"}, status=401)
+    else:
+        owner = safe_segment(params.get("owner", [""])[0])
+        if not owner or not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
     node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
     # Same retry-twice guard as the chat room router: a platform abort of the
     # DO is transient, and the upgrade request carries no body so re-driving
@@ -1882,6 +2036,11 @@ async def node_events_handler(env, request):
 _LIVE_HOST_PROBE_MEMO = {}
 LIVE_HOST_PROBE_MEMO_TTL_MS = 30 * 1000
 HYDRATE_PROBE_MAX = 8
+# The probes run one after another (never gathered), so the count cap is not
+# on its own a latency bound: eight dead mirrors would cost eight
+# HOST_COUNT_TIMEOUT_MS waits. Stop the pass once it has spent this long and
+# let the next request continue from the memo.
+HYDRATE_PROBE_BUDGET_MS = 1500
 
 
 async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
@@ -1927,26 +2086,35 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
                     presence.pop(key, None)
             continue
         stale.append((key, rec))
-    # Probe concurrently (each already bounded by HOST_COUNT_TIMEOUT_MS inside
-    # repo_live_host_count, so the whole batch costs one timeout, not one per
-    # mirror) and capped per request. Members beyond the cap keep their stale
-    # presence this request; because probed members land in the memo, the next
-    # request's stale list starts where this one stopped, so a large group is
-    # covered across a few requests instead of hanging any single one.
+    # Probe SEQUENTIALLY, capped per request and under a wall-clock budget.
+    # These were gathered until the Pyodide task-reentrancy wedge (see the
+    # no-concurrent-tasks rule at the top of this module) — a fan-out of
+    # Durable Object subrequests on the /mirrors and catalog paths is exactly
+    # the shape that leaves an isolate answering 1101 forever. Serialized, the
+    # cap alone is worth HYDRATE_PROBE_MAX × HOST_COUNT_TIMEOUT_MS in the
+    # worst case, so HYDRATE_PROBE_BUDGET_MS stops the loop early instead.
+    # Members left unprobed simply keep their stale presence this request;
+    # because probed members land in the memo, the next request's stale list
+    # starts where this one stopped, so a large group is covered across a few
+    # requests instead of hanging any single one.
     probes = stale[:HYDRATE_PROBE_MAX]
-    results = await asyncio.gather(*(
-        repo_live_host_count(env, rec.get("owner"), rec.get("name"))
-        for _key, rec in probes), return_exceptions=True)
-    for (key, _rec), hosts in zip(probes, results):
+    probe_deadline = int(Date.now()) + HYDRATE_PROBE_BUDGET_MS
+    for key, rec in probes:
+        try:
+            hosts = await repo_live_host_count(
+                env, rec.get("owner"), rec.get("name"))
+        except Exception:
+            hosts = None
         if not isinstance(hosts, int):
             hosts = None  # failed/timed-out probe: memoized, presence untouched
         _LIVE_HOST_PROBE_MEMO[key] = {"ts": now, "hosts": hosts}
-        if hosts is None:
-            continue
-        if hosts > 0:
-            presence[key] = now
-        else:
-            presence.pop(key, None)
+        if hosts is not None:
+            if hosts > 0:
+                presence[key] = now
+            else:
+                presence.pop(key, None)
+        if int(Date.now()) >= probe_deadline:
+            break
     return presence
 
 
@@ -3633,251 +3801,21 @@ async def _cron_runner_kick(env):
         raise RuntimeError("cron runner rejected trigger kick")
 
 
-async def _record_status_monitor_transitions(
-        env, ok, reason, now, status_systems=None):
-    """Deduplicate outage/recovery mail for every system shown on /status."""
-    status_systems = status_systems or STATUS_SYSTEMS
-    rows = await d1_all(
-        env,
-        "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state,"
-        "pinged_state,reason FROM repository_monitor_state "
-        "WHERE monitor_id LIKE 'status:%'",
-    )
-    prior = {str(row.get("monitor_id") or ""): row for row in (rows or [])}
-    alert_owner, _, alert_repo = FLAGSHIP_MONITOR_ID.partition("/")
-    alert_settings = await _repo_alert_settings_get(
-        env, alert_owner, alert_repo)
-    pending = []
-    ping_pending = []
-    values = []
-    for system_id, label in status_systems:
-        monitor_id = "status:" + system_id
-        is_up = bool(ok.get(system_id, True))
-        state = "up" if is_up else "down"
-        row = prior.get(monitor_id)
-        previous_up = bool(row.get("is_up")) if row else True
-        previous_changed_at = (
-            int(row.get("changed_at") or now) if row else int(now))
-        prior_outage = (
-            int(row.get("outage_started_at") or 0) if row else 0)
-        prior_notified = (
-            str(row.get("notified_state") or "") if row else "")
-        prior_pinged = (
-            str(row.get("pinged_state") or "") if row else "")
-        changed = not row or previous_up != is_up
-        changed_at = int(now) if changed else previous_changed_at
-        outage_started_at = (
-            0 if is_up else int(now) if not row or previous_up
-            else prior_outage or previous_changed_at)
-        notified = (
-            ("up" if is_up else "") if not row else
-            "" if previous_up != is_up else
-            prior_notified)
-        pinged = (
-            ("up" if is_up else "") if not row else
-            "" if previous_up != is_up else
-            prior_pinged)
-        should_notify = notified != state
-        should_ping = pinged != state
-        continual_ping = (
-            not is_up
-            and _status_monitor_alert_setting(
-                alert_settings, system_id, "continual")
-            and int(now) // STATUS_ALERT_CONTINUAL_INTERVAL_MS !=
-                (int(now) - STATUS_SAMPLE_WINDOW_MS) //
-                STATUS_ALERT_CONTINUAL_INTERVAL_MS
-        )
-        should_ping = should_ping or continual_ping
-        if system_id == "flagship_repository":
-            if (
-                not is_up
-                and int(now) - int(outage_started_at)
-                < STATUS_DEPLOY_GRACE_MS
-            ):
-                # Wait for a sustained failure. This also protects the handoff
-                # from the retiring Worker version, which cannot see the new
-                # deployment timestamp yet.
-                should_notify = False
-                should_ping = False
-            elif is_up and row and not previous_up:
-                # A probe that recovered inside the grace window never paged,
-                # so it must not send a confusing recovery-only alert. Each
-                # channel answers that for itself: mail being off is not a
-                # reason to swallow the recovery ping for an outage that was
-                # pinged, and vice versa.
-                if prior_notified != "down":
-                    notified = "up"
-                    should_notify = False
-                if prior_pinged != "down":
-                    pinged = "up"
-                    should_ping = False
-        if should_notify or should_ping:
-            alert = {
-                "system": system_id, "label": label, "state": state,
-                "is_up": is_up, "reason": clean_string(
-                    reason.get(system_id, "") or "", 240),
-                "outage_started_at": outage_started_at,
-                "previous_changed_at": previous_changed_at,
-                "changed_at": changed_at,
-                # The last failure this system recorded. On a recovery the
-                # current sample has no reason of its own, so this is the only
-                # description of what actually went wrong.
-                "prior_reason": clean_string(
-                    (str(row.get("reason") or "") if row else ""), 240),
-                # The outage this sample closed, on the flip itself and never
-                # on a later re-send of an undelivered recovery.
-                "recovered_outage_started_at": (
-                    (prior_outage or previous_changed_at)
-                    if is_up and row and not previous_up else 0),
-                # Set only when a sampled outage closes without its own ping
-                # having been delivered (a failed enqueue during the incident,
-                # or Pings switched on mid-outage).
-                "missed_outage_started_at": (
-                    prior_outage
-                    if is_up and prior_pinged != "down" and prior_outage
-                    else 0),
-                "continual": bool(continual_ping),
-            }
-            if should_notify:
-                pending.append(alert)
-            if should_ping:
-                ping_pending.append(alert)
-        values.extend([
-            monitor_id, 1 if is_up else 0, changed_at, outage_started_at,
-            int(now), clean_string(reason.get(system_id, "") or "", 240),
-            notified, pinged,
-        ])
+# The /status sampler and its public history projection live in an
+# on-demand module: the sampler runs from the Cron Trigger / cron-runner
+# alarm and the projection only serves the /status page, so compiling them
+# here spent scarce Pyodide startup memory on every isolate (see
+# admin_console for the same pattern).
+# /api traffic diagnostics: the api.forkmesh.com landing page and its
+# summary endpoint (src/api_metrics.py). Lazy for the same startup-memory
+# reason as the sampler below; bound on the first served /api response.
+_api_metrics = _LazyModule("api_metrics")
 
-    # Eight parameters per system crosses D1's ~100-bound-parameter ceiling as
-    # soon as the public fleet grows beyond twelve rows. The status samples are
-    # intentionally persisted before this follow-up, so that failure looked
-    # like a healthy sampler with mysteriously absent outage pings. Keep each
-    # transition upsert to ten systems / eighty parameters.
-    for offset in range(0, len(values), 80):
-        batch = values[offset:offset + 80]
-        count = len(batch) // 8
-        await d1_run(
-            env,
-            "INSERT INTO repository_monitor_state "
-            "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
-            "notified_state,pinged_state) VALUES "
-            + ", ".join(["(?,?,?,?,?,?,?,?)"] * count) + " "
-            "ON CONFLICT(monitor_id) DO UPDATE SET "
-            "is_up=excluded.is_up,changed_at=excluded.changed_at,"
-            "outage_started_at=excluded.outage_started_at,"
-            "checked_at=excluded.checked_at,reason=excluded.reason,"
-            "notified_state=excluded.notified_state,"
-            "pinged_state=excluded.pinged_state",
-            *batch,
-        )
-    if ping_pending:
-        try:
-            if await _enqueue_operational_alert_pings(env, ping_pending, now):
-                # Same rule as the mail path: only a delivered transition is
-                # recorded, so a deployment with Pings switched off still gets
-                # one alert for whatever is red when it switches them on.
-                await _record_operational_alert_pings_sent(env, ping_pending)
-        except BaseException:
-            # Pings are a secondary delivery channel and must never block status
-            # sampling or the independently configured email path.
-            pass
-    if not pending:
-        return
-    # notified_state is deliberately left untouched while alert mail is off:
-    # whatever is red when an admin turns it on gets one email then, instead
-    # of the switch silently swallowing the transition that is still current.
-    pending = [
-        alert for alert in pending
-        if _status_monitor_alert_setting(
-            alert_settings, alert.get("system", ""), "emails")
-    ]
-    if not pending:
-        return
-    recipients = await _repository_monitor_admin_emails(env)
-    if not recipients:
-        return
-    attention_log_tail = None
-    if any(not alert["is_up"] for alert in pending):
-        attention_log_tail = await _cloudflare_attention_log_tail(env, now)
-    for alert in pending:
-        system_id = alert["system"]
-        label = alert["label"]
-        if system_id.startswith(STATUS_MIRROR_PREFIX):
-            mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
-            where, fix = (
-                "the signed direct-HTTPS health record for " + mirror_name,
-                "Check the node process and tunnel, then confirm its signed "
-                "health proof is fresh, integrity is ok, and forkmesh/forkmesh "
-                "matches an accepted source revision.",
-            )
-        else:
-            where, fix = STATUS_MONITOR_GUIDANCE.get(
-                system_id,
-                ("Cloudflare Worker logs", "Inspect the failing check."))
-        if alert["is_up"]:
-            duration = _flagship_monitor_duration(
-                int(now) - (
-                    alert["outage_started_at"] or
-                    alert["previous_changed_at"]))
-            subject = "[ForkMesh recovered] " + label + " is green"
-            lead = label + " is passing again after " + duration + "."
-            text = (
-                lead + "\n\nThe current /status probe is green.\n\n"
-                "Status: https://forkmesh.com/status")
-            heading = label + " recovered"
-            body = (
-                "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
-                "border-radius:8px;background:#fafafa;padding:14px;"
-                "margin:0 0 18px\"><p class=\"fm-item-title\" style=\"margin:0;"
-                "color:#18181b;font-size:14px;font-weight:800\">Outage "
-                "duration</p><p class=\"fm-item-body\" style=\"margin:6px 0 0;"
-                "color:#3f3f46;font-size:14px\">" +
-                _html_escape(duration) + "</p></div>")
-        else:
-            observed = alert["reason"] or "The current health check failed."
-            subject = "[ForkMesh outage] " + label + " is not green"
-            lead = label + " failed its /status health check."
-            text = (
-                lead + "\n\nObserved: " + observed + "\n\nLook here: " +
-                where + "\n\nSuggested first step: " + fix +
-                "\n\nA recovery email will be sent when this check is green "
-                "again.\n\nStatus: https://forkmesh.com/status")
-            heading = label + " needs attention"
-            body = (
-                "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
-                "border-radius:8px;background:#fafafa;padding:14px;"
-                "margin:0 0 12px\"><p class=\"fm-item-title\" style=\"margin:0;"
-                "color:#18181b;font-size:14px;font-weight:800\">Observed</p>"
-                "<p class=\"fm-item-body\" style=\"margin:6px 0 0;color:#3f3f46;"
-                "font-size:14px\">" + _html_escape(observed) + "</p></div>"
-                "<p class=\"fm-text\" style=\"margin:0 0 8px;color:#3f3f46;"
-                "font-size:14px\"><strong>Look here:</strong> " +
-                _html_escape(where) + "</p><p class=\"fm-text\" style=\"margin:"
-                "0 0 18px;color:#3f3f46;font-size:14px\"><strong>Suggested "
-                "first step:</strong> " + _html_escape(fix) + "</p>")
-        html = _forkmesh_email_card_html(
-            _html_escape(heading), _html_escape(lead), body,
-            "<p class=\"fm-muted\" style=\"margin:20px 0 0;color:#71717a;"
-            "font-size:12px\"><a class=\"fm-link\" style=\"color:#15803d\" "
-            "href=\"https://forkmesh.com/status\">Open ForkMesh status</a>"
-            "</p>")
-        if not alert["is_up"]:
-            text, html = _attention_email_with_logs(
-                text, html, attention_log_tail)
-        text, html = _email_with_status_alert_manage_link(
-            env, text, html, system_id)
-        delivered = True
-        for email in recipients:
-            delivered = bool(await _send_email(
-                env, email, subject, text, html)) and delivered
-        if delivered:
-            await d1_run(
-                env,
-                "UPDATE repository_monitor_state SET notified_state=? "
-                "WHERE monitor_id=? AND is_up=?",
-                alert["state"], "status:" + system_id,
-                1 if alert["is_up"] else 0,
-            )
+_status_monitoring = _LazyModule("status_monitoring")
+_record_status_monitor_transitions = _status_monitoring.export(
+    "_record_status_monitor_transitions")
+record_status_sample = _status_monitoring.export("record_status_sample")
+status_history = _status_monitoring.export("status_history")
 
 
 def _status_expected_checks_for_hour(hour_ts, now):
@@ -4071,7 +4009,7 @@ async def _record_status_deploy_sample(env, now):
     )
 
 
-async def _claim_status_sample_minute(env, now):
+async def _claim_status_sample_minute(env, now, source="trigger"):
     """At-most-once gate for this minute's /status health sample.
 
     Two independent schedulers call record_status_sample: the platform Cron
@@ -4093,6 +4031,10 @@ async def _claim_status_sample_minute(env, now):
         claim = "".join("%02x" % int(rnd[i]) for i in range(16))
     except Exception:
         claim = ("%032x" % int(Date.now()))[-32:]
+    # The prefix records WHICH scheduler landed the minute, so the trigger
+    # can skip its expensive direct probe run while the runner is provably
+    # alive (see _runner_status_sample_is_stale).
+    claim = str(source or "trigger") + "-" + claim
     try:
         await d1_run(
             env,
@@ -4110,6 +4052,59 @@ async def _claim_status_sample_minute(env, now):
         return True
     winner = str((row or {}).get("claim") or "")
     return (not winner) or winner == claim
+
+
+# The runner's liveness heartbeat rides the claim table as one sentinel row.
+# Its minute_ts sits far above any real minute (year 9999) because retention
+# prunes `minute_ts < cutoff`; a low sentinel would be deleted every sweep.
+RUNNER_HEARTBEAT_SENTINEL_TS = 253402300800000
+
+
+async def _record_runner_status_heartbeat(env):
+    """Prove the alarm runner's batch ran, independent of the sample claim.
+
+    The runner usually LOSES the per-minute sample claim to the Cron
+    Trigger (which fires at second :00 while the alarm lands mid-minute),
+    so claim rows alone cannot show the runner is alive — the trigger would
+    keep probing directly forever. This sentinel row is updated on every
+    batch regardless of who won the minute.
+    """
+    await d1_run(
+        env,
+        "INSERT INTO system_status_sample_claim "
+        "(minute_ts, claim, claimed_at) VALUES (?, 'runner-heartbeat', ?) "
+        "ON CONFLICT(minute_ts) DO UPDATE SET "
+        "claimed_at=excluded.claimed_at",
+        RUNNER_HEARTBEAT_SENTINEL_TS, int(Date.now()),
+    )
+
+
+async def _runner_status_sample_is_stale(env, now):
+    """True when the alarm runner has not heartbeated for three minutes.
+
+    The Cron Trigger's direct sample exists so a wedged/over-quota Durable
+    Object subsystem cannot leave multi-hour fake-downtime gaps on /status.
+    But the direct probe run holds the scheduled wrapper open for ~25s of
+    awaited I/O every minute inside serving isolates, and overlapping a
+    request wrapper that long re-triggers the Pyodide "Cannot enter into
+    task" wedge that poisoned isolates on the git clone path (2026-08-06).
+    So the trigger only probes directly while the runner is provably NOT
+    running (heartbeat older than three minutes — at most a three-minute
+    sample gap once, exactly when the independent watchdog already emails).
+    One cheap D1 read replaces the probe run in the steady state; any claim
+    infrastructure error fails open into the direct sample.
+    """
+    try:
+        row = await d1_first(
+            env,
+            "SELECT claimed_at FROM system_status_sample_claim "
+            "WHERE minute_ts = ?",
+            RUNNER_HEARTBEAT_SENTINEL_TS,
+        )
+    except Exception:
+        return True
+    last = int((row or {}).get("claimed_at") or 0)
+    return int(now) - last > 3 * STATUS_SAMPLE_WINDOW_MS
 
 
 async def _email_delivery_status(env, now):
@@ -4192,759 +4187,6 @@ async def _status_page_api_probe(env):
     return True, ""
 
 
-async def record_status_sample(env):
-    # Called once a minute by the platform Cron Trigger (scheduled()) and by
-    # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
-    # exactly one of them record each minute. Best-effort per system so one
-    # failing check can't blank the rest of the page.
-    await ensure_schema(env)
-    now = int(Date.now())
-    if not await _claim_status_sample_minute(env, now):
-        return
-    if await _status_deploy_semaphore_active(env, now):
-        await _record_status_deploy_sample(env, now)
-        return
-    day_ts = (now // 86400000) * 86400000
-    hour_ts = (now // 3600000) * 3600000
-    minute_ts = (now // 60000) * 60000
-    ok = {}
-    reason = {}
-
-    try:
-        website_ok, website_reason = await _homepage_status_probe(env)
-        ok["website"] = website_ok
-        if not website_ok:
-            reason["website"] = website_reason
-    except Exception as exc:
-        ok["website"] = False
-        reason["website"] = "Homepage probe failed: " + str(exc)[:160]
-
-    try:
-        status_page_ok, status_page_reason = await _status_page_api_probe(env)
-        ok["status_page"] = status_page_ok
-        if not status_page_ok:
-            reason["status_page"] = status_page_reason
-    except Exception as exc:
-        ok["status_page"] = False
-        reason["status_page"] = "Status API probe failed: " + str(exc)[:160]
-
-    try:
-        await d1_first(env, "SELECT 1 AS ok")
-        ok["database"] = True
-    except Exception as exc:
-        ok["database"] = False
-        reason["database"] = "Database query failed: " + str(exc)[:160]
-
-    try:
-        email_ok, email_reason = await _email_delivery_status(env, now)
-        ok["email"] = email_ok
-        if not email_ok:
-            reason["email"] = email_reason
-    except Exception as exc:
-        ok["email"] = False
-        reason["email"] = (
-            "Email delivery health query failed: " + str(exc)[:160])
-
-    try:
-        repository_ok, repository_reason = await _flagship_repository_probe(env)
-        if (
-            not repository_ok
-            and _deployment_status_grace_active(env, now)
-        ):
-            repository_ok = True
-            repository_reason = ""
-        ok["flagship_repository"] = repository_ok
-        if not repository_ok:
-            reason["flagship_repository"] = repository_reason
-    except Exception as exc:
-        if _deployment_status_grace_active(env, now):
-            ok["flagship_repository"] = True
-        else:
-            ok["flagship_repository"] = False
-            reason["flagship_repository"] = (
-                "Repository availability probe failed: " + str(exc)[:160])
-
-    try:
-        installer_ok, installer_reason = await _installer_delivery_status(
-            env, now)
-        ok["installer"] = installer_ok
-        if not installer_ok:
-            reason["installer"] = installer_reason
-    except Exception as exc:
-        ok["installer"] = False
-        reason["installer"] = (
-            "Installer delivery probe failed: " + str(exc)[:160])
-
-    try:
-        cutoff = now - HTTPS_MIRROR_STATUS_FRESH_MS
-        row = await d1_first(
-            env,
-            "SELECT COUNT(*) AS n FROM mirror_https_endpoints "
-            "WHERE checked_at>=? AND forkmesh_verified_at>=? "
-            "AND healthy=1 AND forkmesh_active=1 "
-            "AND integrity='ok' AND abuse_blocked=0",
-            cutoff, cutoff,
-        )
-        ok["git_hosting"] = int((row or {}).get("n", 0) or 0) > 0
-        if not ok["git_hosting"]:
-            reason["git_hosting"] = (
-                "No healthy direct HTTPS mirror has supplied a valid ForkMesh "
-                "repository proof within the last 10 minutes")
-    except Exception as exc:
-        ok["git_hosting"] = False
-        reason["git_hosting"] = (
-            "Direct HTTPS mirror health query failed: " + str(exc)[:160])
-
-    try:
-        rows = await d1_all(
-            env, "SELECT path, status, message FROM error_log WHERE ts >= ?",
-            now - STATUS_SAMPLE_WINDOW_MS,
-        )
-        buckets = (
-            "website", "api", "errors", "realtime", "durable_objects")
-        failed = {bucket: False for bucket in buckets}
-        first_hit = {bucket: None for bucket in buckets}
-        hit_count = {bucket: 0 for bucket in buckets}
-        for row in rows:
-            path = str(row.get("path") or "")
-            message = str(row.get("message") or "")
-            try:
-                row_status = int(row.get("status") or 0)
-            except (TypeError, ValueError):
-                row_status = 0
-            # A DO duration-cap abort is a real room failure, so it still
-            # counts toward "realtime" below — but it also gets its own
-            # bucket so free-tier plan-limit aborts have a dedicated, visible
-            # history instead of being buried among other realtime incidents.
-            # Matches legacy tagged 503 rows and raw AbortError tracebacks from
-            # before expected aborts moved to their minute aggregate (same
-            # substring the doDurationAborts24h snapshot below keys on).
-            if "Exceeded allowed duration" in message:
-                failed["durable_objects"] = True
-                hit_count["durable_objects"] += 1
-                if first_hit["durable_objects"] is None:
-                    first_hit["durable_objects"] = (row.get("status"), path, message.strip())
-            # 502/503/504 on a direct-mirror content path (release blob, repo
-            # browse, git clone) means the selected endpoint is unreachable —
-            # upstream availability, which the signed HTTPS health check
-            # (the git_hosting signal) already tracks. It is not evidence the
-            # Worker/API is down, and a single offline node's blob being
-            # re-requested every few minutes used to paint the whole "api"
-            # system red on /status. A 500 on the same path still counts.
-            if row_status in (502, 503, 504) and (
-                    RELEASE_BLOB_RE.match(path) or REPO_HOST_RE.match(path) or
-                    GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
-                continue
-            failed["errors"] = True
-            hit_count["errors"] += 1
-            if first_hit["errors"] is None:
-                first_hit["errors"] = (
-                    row.get("status"), path, message.strip())
-            if (path.rstrip("/") == "/api/world/ws" or
-                    ROOM_RE.match(path) or REPO_ROOM_RE.match(path) or
-                    GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
-                bucket = "realtime"
-            elif path.startswith("/api/"):
-                bucket = "api"
-            else:
-                bucket = "website"
-            failed[bucket] = True
-            hit_count[bucket] += 1
-            if first_hit[bucket] is None:
-                first_hit[bucket] = (row.get("status"), path, message.strip())
-
-        # Expected platform aborts are intentionally kept out of error_log:
-        # every reconnecting room client can see the same DO failure, and one
-        # actionable error row per client obscures real Worker bugs. Preserve
-        # the operational signal with one content-free aggregate row per
-        # minute. Sample the completed preceding minute so an abort that lands
-        # just before this cron tick is neither missed nor counted again by the
-        # next tick.
-        abort_rows = await d1_all(
-            env,
-            "SELECT aborts,duration_aborts "
-            "FROM durable_object_abort_minute WHERE minute_ts=?",
-            minute_ts - STATUS_SAMPLE_WINDOW_MS,
-        )
-        abort_count = sum(
-            max(0, int(row.get("aborts") or 0)) for row in abort_rows)
-        duration_abort_count = sum(
-            max(0, int(row.get("duration_aborts") or 0))
-            for row in abort_rows)
-        if abort_count:
-            summary = "%d Durable Object request%s aborted" % (
-                abort_count, "" if abort_count == 1 else "s")
-            if duration_abort_count:
-                summary += " (%d exceeded allowed duration)" % (
-                    duration_abort_count)
-            for bucket in ("durable_objects", "realtime"):
-                failed[bucket] = True
-                # The summary already carries the aggregate event count; this
-                # is one status signal, not N separate error rows.
-                hit_count[bucket] += 1
-                if first_hit[bucket] is None:
-                    first_hit[bucket] = (
-                        503, "/durable-object-rooms", summary)
-        ok["website"] = bool(ok.get("website", False)) and not failed["website"]
-        ok["api"] = not failed["api"]
-        ok["errors"] = not failed["errors"]
-        ok["realtime"] = not failed["realtime"]
-        ok["durable_objects"] = not failed["durable_objects"]
-        for bucket in buckets:
-            if failed[bucket] and first_hit[bucket]:
-                status_code, path, message = first_hit[bucket]
-                text = (str(status_code) + " on " + path) if status_code else path
-                if message:
-                    text += ": " + message[:120]
-                if hit_count[bucket] > 1:
-                    text += " (+%d more)" % (hit_count[bucket] - 1)
-                if bucket != "website" or ok["website"] or not reason.get("website"):
-                    reason[bucket] = text
-    except Exception:
-        # A query hiccup here is not itself evidence of an outage — don't
-        # fabricate a false incident from it.
-        ok["api"] = ok["errors"] = True
-        ok["realtime"] = ok["durable_objects"] = True
-
-    # Every registered mirror* node gets its own /status row, including nodes
-    # that have never managed to publish a valid endpoint proof. The roster is
-    # the union of account-bound node registrations and signed direct-HTTPS
-    # endpoint registrations; chat/user presence can never invent a row.
-    # Missing, stale, unhealthy, and unverified endpoints stay visible as red.
-    status_systems = list(STATUS_SYSTEMS)
-    try:
-        mirror_rows = await d1_all(
-            env,
-            """WITH mirror_names AS (
-                   SELECT lower(name) AS node_name
-                     FROM nodes
-                    WHERE name IS NOT NULL AND lower(name) LIKE 'mirror%'
-                   UNION
-                   SELECT lower(node_name) AS node_name
-                     FROM mirror_https_endpoints
-                    WHERE lower(node_name) LIKE 'mirror%'
-               )
-               SELECT names.node_name,endpoint.checked_at,endpoint.healthy,
-                      endpoint.integrity,endpoint.abuse_blocked,
-                      endpoint.forkmesh_active,endpoint.forkmesh_verified_at
-                 FROM mirror_names names
-                 LEFT JOIN mirror_https_endpoints endpoint
-                   ON lower(endpoint.node_name)=names.node_name
-                ORDER BY names.node_name LIMIT ?""",
-            STATUS_MIRROR_MAX,
-        )
-        seen_mirrors = set()
-        for row in mirror_rows:
-            mirror_name = str(row.get("node_name") or "").strip().lower()
-            if (
-                mirror_name in seen_mirrors
-                or mirror_name in STATUS_RETIRED_MIRRORS
-                or not mirror_name.startswith("mirror")
-                or not re.fullmatch(
-                    r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
-            ):
-                continue
-            seen_mirrors.add(mirror_name)
-            system_id = STATUS_MIRROR_PREFIX + mirror_name
-            status_systems.append(
-                (system_id, "Mirror node — " + mirror_name))
-            checked_at = int(row.get("checked_at") or 0)
-            verified_at = int(row.get("forkmesh_verified_at") or 0)
-            is_fresh = (
-                checked_at >= now - HTTPS_MIRROR_STATUS_FRESH_MS
-                and verified_at >= now - HTTPS_MIRROR_STATUS_FRESH_MS)
-            is_healthy = int(row.get("healthy") or 0) == 1
-            integrity_ok = str(row.get("integrity") or "") == "ok"
-            is_active = int(row.get("forkmesh_active") or 0) == 1
-            is_allowed = int(row.get("abuse_blocked") or 0) == 0
-            mirror_ok = (
-                is_fresh and is_healthy and integrity_ok and is_active
-                and is_allowed)
-            ok[system_id] = mirror_ok
-            if not mirror_ok:
-                if not is_fresh:
-                    reason[system_id] = (
-                        mirror_name + " has not supplied a fresh signed "
-                        "ForkMesh repository proof within the last 10 minutes")
-                elif not is_healthy:
-                    reason[system_id] = (
-                        mirror_name + " failed its signed HTTPS health check")
-                elif not integrity_ok:
-                    reason[system_id] = (
-                        mirror_name + " reported repository integrity " +
-                        (str(row.get("integrity") or "unknown")))
-                elif not is_allowed:
-                    reason[system_id] = (
-                        mirror_name + " is blocked from serving traffic")
-                else:
-                    reason[system_id] = (
-                        mirror_name + " is reachable but is not serving an "
-                        "accepted forkmesh/forkmesh source revision")
-    except Exception as exc:
-        # The aggregate Git-hosting row already reports a registry query
-        # failure. Do not fabricate per-node identities when the authoritative
-        # registry itself could not be read. Workers Logs stays off, so the
-        # failure goes straight to Sentry (best-effort — never let telemetry
-        # sink the sample; an error_log row here would also turn a registry
-        # hiccup into a red "errors" minute).
-        try:
-            await capture_sentry_error(
-                env, 500, "scheduled", "/cron/record-status-sample",
-                "status mirror registry query failed: "
-                + _safe_error_text(exc), error=exc)
-        except BaseException:
-            pass
-
-    # One multi-row upsert per table (3 statements total) instead of the old
-    # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
-    # worker where every awaited D1 round trip counts against tight per-
-    # invocation limits — blowing them killed the whole tick and the /status
-    # page recorded the missing sample as downtime.
-    daily_args = []
-    hourly_args = []
-    minute_args = []
-    for system_id, _label in status_systems:
-        failure = 0 if ok.get(system_id, True) else 1
-        daily_args.extend([day_ts, system_id, failure])
-        # reason is only set when this sample failed; on success it's left NULL
-        # so the COALESCE below keeps whatever failure reason was last recorded
-        # this hour, rather than blanking it out.
-        hourly_args.extend([hour_ts, system_id, failure, reason.get(system_id)])
-        # A minute is the raw sample itself (not a counter): one cron tick per
-        # minute per system, so ON CONFLICT just overwrites in the rare case a
-        # tick somehow re-fires for the same minute.
-        minute_args.extend(
-            [minute_ts, system_id, 0 if failure else 1, reason.get(system_id)])
-    n = len(status_systems)
-    await d1_run(
-        env,
-        "INSERT INTO system_status_daily (day_ts, system, checks, failures) "
-        "VALUES " + ", ".join(["(?, ?, 1, ?)"] * n) + " "
-        "ON CONFLICT(day_ts, system) DO UPDATE SET "
-        "checks = checks + excluded.checks, "
-        "failures = failures + excluded.failures",
-        *daily_args,
-    )
-    await d1_run(
-        env,
-        "INSERT INTO system_status_hourly (hour_ts, system, checks, failures, reason) "
-        "VALUES " + ", ".join(["(?, ?, 1, ?, ?)"] * n) + " "
-        "ON CONFLICT(hour_ts, system) DO UPDATE SET "
-        "checks = checks + excluded.checks, "
-        "failures = failures + excluded.failures, "
-        "reason = COALESCE(excluded.reason, system_status_hourly.reason)",
-        *hourly_args,
-    )
-    await d1_run(
-        env,
-        "INSERT INTO system_status_minute (minute_ts, system, ok, reason) "
-        "VALUES " + ", ".join(["(?, ?, ?, ?)"] * n) + " "
-        "ON CONFLICT(minute_ts, system) DO UPDATE SET "
-        "ok = excluded.ok, reason = excluded.reason",
-        *minute_args,
-    )
-    # Alerts are optional follow-up work. Persist the minute first so a slow
-    # mail provider or notification failure cannot erase public status data.
-    try:
-        await _record_status_monitor_transitions(
-            env, ok, reason, now, status_systems)
-    except Exception as exc:
-        # Same reasoning as the registry read above: Sentry-only visibility,
-        # never an error_log row and never a raised sample.
-        try:
-            await capture_sentry_error(
-                env, 500, "scheduled", "/cron/record-status-sample",
-                "record_status_monitor_transitions failed: "
-                + _safe_error_text(exc), error=exc)
-        except BaseException:
-            pass
-    # Retention prunes only need to run occasionally, not 60x/hour: sweep on
-    # the first sample of each hour.
-    if now - hour_ts < STATUS_SAMPLE_WINDOW_MS:
-        await d1_run(
-            env, "DELETE FROM system_status_daily WHERE day_ts < ?",
-            day_ts - STATUS_HISTORY_RETAIN_MS,
-        )
-        await d1_run(
-            env, "DELETE FROM system_status_hourly WHERE hour_ts < ?",
-            day_ts - STATUS_HISTORY_RETAIN_MS,
-        )
-        await d1_run(
-            env, "DELETE FROM system_status_minute WHERE minute_ts < ?",
-            minute_ts - STATUS_MINUTE_RETAIN_MS,
-        )
-        await d1_run(
-            env,
-            "DELETE FROM system_status_sample_claim WHERE minute_ts < ?",
-            minute_ts - STATUS_MINUTE_RETAIN_MS,
-        )
-        await d1_run(
-            env,
-            "DELETE FROM durable_object_abort_minute WHERE minute_ts < ?",
-            minute_ts - STATUS_HISTORY_RETAIN_MS,
-        )
-
-
-async def status_history(env, view="full"):
-    await ensure_schema(env)
-    now = int(Date.now())
-    cur_day = (now // 86400000) * 86400000
-    start = cur_day - (STATUS_HISTORY_DAYS - 1) * 86400000
-    # Day cells, uptime and coverage all come from the hourly buckets (which
-    # sum to the same recorded counts the daily table holds, with per-hour
-    # granularity the 24h window needs); the daily table remains as the
-    # cron's cheap long-term aggregate.
-    hour_rows = await d1_all(
-        env,
-        "SELECT hour_ts, system, checks, failures, reason FROM system_status_hourly "
-        "WHERE hour_ts >= ?",
-        start,
-    )
-    by_system_hour = {}
-    for row in hour_rows:
-        system_id = str(row.get("system") or "")
-        by_system_hour.setdefault(system_id, {})[int(row["hour_ts"])] = (
-            int(row.get("checks") or 0), int(row.get("failures") or 0),
-            row.get("reason") or None,
-        )
-
-    current_minute = (now // 60000) * 60000
-    minute_start = current_minute - (STATUS_MINUTES_SHOWN - 1) * 60000
-    minute_rows = await d1_all(
-        env,
-        "SELECT minute_ts, system, ok, reason FROM system_status_minute "
-        "WHERE minute_ts >= ?",
-        minute_start,
-    )
-    by_system_minute = {}
-    last_sample_ts = 0
-    for row in minute_rows:
-        system_id = str(row.get("system") or "")
-        by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
-        last_sample_ts = max(last_sample_ts, int(row["minute_ts"]))
-
-    # Start with recorded mirror history, then union current registered
-    # mirror* names so a newly registered but broken node appears immediately
-    # as down instead of disappearing until its first successful proof.
-    recorded_system_ids = set(by_system_hour) | set(by_system_minute)
-    try:
-        registered_mirrors = await d1_all(
-            env,
-            """SELECT lower(name) AS node_name
-                 FROM nodes
-                WHERE name IS NOT NULL AND lower(name) LIKE 'mirror%'
-               UNION
-               SELECT lower(node_name) AS node_name
-                 FROM mirror_https_endpoints
-                WHERE lower(node_name) LIKE 'mirror%'
-               ORDER BY node_name LIMIT ?""",
-            STATUS_MIRROR_MAX,
-        )
-        for row in registered_mirrors or []:
-            mirror_name = str(row.get("node_name") or "").strip().lower()
-            if (
-                mirror_name.startswith("mirror")
-                and mirror_name not in STATUS_RETIRED_MIRRORS
-                and re.fullmatch(
-                    r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
-            ):
-                recorded_system_ids.add(STATUS_MIRROR_PREFIX + mirror_name)
-    except Exception:
-        pass
-    mirror_systems = []
-    for system_id in recorded_system_ids:
-        if not system_id.startswith(STATUS_MIRROR_PREFIX):
-            continue
-        mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
-        if mirror_name in STATUS_RETIRED_MIRRORS or not re.fullmatch(
-                r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name):
-            continue
-        mirror_systems.append(
-            (system_id, "Mirror node — " + mirror_name))
-    mirror_systems.sort(key=lambda item: item[1].lower())
-    status_systems = list(STATUS_SYSTEMS) + mirror_systems
-
-    systems = []
-    for system_id, label in status_systems:
-        # Uptime is computed over RECORDED samples only; expected-but-missing
-        # samples (the sampling cron didn't run) are reported separately as
-        # coverage, never counted as downtime. See _status_effective_hour.
-        days = []
-        total_checks = total_failures = total_expected = 0
-        checks_24h = failures_24h = expected_24h = 0
-        current_hour = (now // STATUS_HOUR_MS) * STATUS_HOUR_MS
-        uptime_24h_start = current_hour - 23 * STATUS_HOUR_MS
-        for i in range(STATUS_HISTORY_DAYS):
-            this_day = start + i * STATUS_DAY_MS
-            day_checks = day_failures = day_expected = 0
-            hours = []
-            elapsed_hours = 0
-            for h in range(24):
-                hour_ts = this_day + h * STATUS_HOUR_MS
-                if hour_ts > now:
-                    break
-                elapsed_hours += 1
-                hour = _status_effective_hour(
-                    hour_ts, now, by_system_hour.get(system_id, {}).get(hour_ts),
-                )
-                day_expected += hour["expectedChecks"]
-                day_checks += hour["checks"]
-                day_failures += hour["failures"]
-                if hour_ts >= uptime_24h_start:
-                    expected_24h += hour["expectedChecks"]
-                    checks_24h += hour["checks"]
-                    failures_24h += hour["failures"]
-                # Thirty days of hourly dictionaries made a cold /api/status
-                # response several megabytes and could exceed the Worker CPU
-                # limit (Cloudflare 1101). Daily aggregates retain the entire
-                # history; only the latest 24 hourly buckets are needed by the
-                # public detail bar and are serialized.
-                if hour_ts >= uptime_24h_start:
-                    hours.append(hour)
-            total_expected += day_expected
-            total_checks += day_checks
-            total_failures += day_failures
-            uptime = (
-                round(((day_checks - day_failures) / day_checks) * 100, 2)
-                if day_checks else None
-            )
-            coverage = (
-                round((min(day_checks, day_expected) / day_expected) * 100, 2)
-                if day_expected else None
-            )
-            days.append({
-                "dayTs": this_day, "checks": day_checks,
-                "failures": day_failures,
-                "expectedChecks": day_expected,
-                "missingChecks": max(0, day_expected - day_checks),
-                "uptimePct": uptime, "coveragePct": coverage,
-                "hours": hours, "hoursElapsed": elapsed_hours,
-                "hoursCompacted": elapsed_hours > len(hours),
-            })
-        # Current state comes from the newest RAW MINUTE probe. An hourly
-        # aggregate answers "did anything fail during this hour?", not "is it
-        # reachable now"; using it for the badge left recovered systems yellow
-        # and displayed an hour-old reason as though it were current. A failed
-        # latest probe is a hard red/down state. A passing latest probe is
-        # green and clears the old reason immediately.
-        latest_minute_row = None
-        minute_records = by_system_minute.get(system_id, {})
-        if minute_records:
-            latest_minute_ts = max(minute_records)
-            latest_minute_row = minute_records[latest_minute_ts]
-        reason_text = reason_ts = None
-        if (
-            latest_minute_row is not None
-            and latest_minute_ts >= current_minute - 2 * STATUS_SAMPLE_WINDOW_MS
-        ):
-            if int(latest_minute_row.get("ok") or 0) == 1:
-                status = "operational"
-            else:
-                status = "down"
-                reason_text = (
-                    latest_minute_row.get("reason")
-                    or "The latest reachability check failed")
-                reason_ts = latest_minute_ts
-        elif latest_minute_row is not None:
-            status = "down"
-            reason_text = (
-                "Monitoring failed: no health sample has been recorded in the "
-                "last two minutes.")
-            reason_ts = latest_minute_ts
-        else:
-            # Backward-compatible fallback for an existing deployment while
-            # minute sampling is first being populated.
-            status = None
-
-        latest_hour = None
-        for d in reversed(days):
-            for h in reversed(d["hours"]):
-                if h["checks"]:
-                    latest_hour = h
-                    break
-            if latest_hour:
-                break
-        if status is None:
-            if latest_hour is not None and (
-                    latest_hour["hourTs"] >= current_hour - STATUS_HOUR_MS):
-                status = latest_hour["status"]
-                if status != "operational":
-                    reason_text = latest_hour.get("reason")
-                    reason_ts = latest_hour.get("hourTs")
-            elif latest_hour is not None:
-                status = "down"
-                reason_text = (
-                    "Monitoring failed: no recent health samples have been "
-                    "recorded.")
-                reason_ts = latest_hour.get("hourTs")
-            else:
-                status = "down"
-                reason_text = (
-                    "Monitoring failed: no health samples have been recorded.")
-        overall_uptime = (
-            round(((total_checks - total_failures) / total_checks) * 100, 2)
-            if total_checks else None
-        )
-        uptime_24h = (
-            round(((checks_24h - failures_24h) / checks_24h) * 100, 2)
-            if checks_24h else None
-        )
-        coverage_30d = (
-            round((min(total_checks, total_expected) / total_expected) * 100, 2)
-            if total_expected else None
-        )
-        coverage_24h = (
-            round((min(checks_24h, expected_24h) / expected_24h) * 100, 2)
-            if expected_24h else None
-        )
-        minutes = [
-            _status_minute(
-                minute_start + i * 60000, current_minute,
-                by_system_minute.get(system_id, {}).get(minute_start + i * 60000),
-            )
-            for i in range(STATUS_MINUTES_SHOWN)
-        ]
-
-        check_description = STATUS_SYSTEM_CHECKS.get(system_id, "")
-        if system_id.startswith(STATUS_MIRROR_PREFIX):
-            mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
-            check_description = (
-                "Checks " + mirror_name + " independently once a minute "
-                "using its account-bound direct HTTPS endpoint. Passes only "
-                "when its signed health and forkmesh/forkmesh repository proof "
-                "are fresh, endpoint health is good, integrity is ok, and the "
-                "served refs match an accepted source revision.")
-        systems.append({
-            "id": system_id, "label": label, "status": status,
-            "checkDescription": check_description,
-            "uptimePct": overall_uptime, "uptime24hPct": uptime_24h,
-            "coveragePct": coverage_30d, "coverage24hPct": coverage_24h,
-            "checks24h": checks_24h, "failures24h": failures_24h,
-            "missing24h": max(0, expected_24h - checks_24h),
-            "days": days, "minutes": minutes,
-            "reason": reason_text,
-            "reasonTs": reason_ts,
-        })
-
-    # Current-state snapshot (issue #356): the headline health metrics rendered
-    # at the top of the page — flagship repository directly reachable, the
-    # distinct online node count (same signal as the /network/ headline),
-    # catalog size, and errors logged in the last 24h. Each
-    # read is best-effort so one failing query can't blank the summary, and it
-    # all rides on the single /api/status fetch a page view already makes.
-    current = {}
-    # When the last recorded health sample was taken. A stale value means the
-    # sampling CRON is down (not the site) — the page uses this to say so
-    # instead of letting missing samples masquerade as an outage. 0 = no
-    # samples in the visible window at all.
-    current["lastCronSampleTs"] = last_sample_ts or None
-    try:
-        repo_row = await d1_first(env, "SELECT COUNT(*) AS n FROM repositories")
-        current["catalogRepos"] = int((repo_row or {}).get("n", 0) or 0)
-    except Exception:
-        current["catalogRepos"] = None
-    try:
-        online = {
-            label for label in (await _live_online_nodes(env, now)).values() if label
-        }
-        current["onlineNodes"] = len(online)
-    except Exception:
-        current["onlineNodes"] = None
-    try:
-        err_row = await d1_first(
-            env, "SELECT COUNT(*) AS n FROM error_log WHERE ts >= ?",
-            now - 24 * 60 * 60 * 1000,
-        )
-        current["errors24h"] = int((err_row or {}).get("n", 0) or 0)
-    except Exception:
-        current["errors24h"] = None
-    try:
-        # Dedicated counter for the platform killing a Durable Object request
-        # mid-flight ("Exceeded allowed duration in Durable Objects free
-        # tier."). Add the new minute aggregates to legacy/raw error rows so
-        # deployments retain a continuous 24-hour total while routine aborts
-        # stop inflating the generic errors24h count.
-        do_row = await d1_first(
-            env,
-            "SELECT "
-            "(SELECT COUNT(*) FROM error_log "
-            " WHERE ts>=? AND message LIKE ?) + "
-            "(SELECT COALESCE(SUM(duration_aborts),0) "
-            " FROM durable_object_abort_minute WHERE minute_ts>=?) AS n",
-            now - 24 * 60 * 60 * 1000, "%Exceeded allowed duration%",
-            now - 24 * 60 * 60 * 1000,
-        )
-        current["doDurationAborts24h"] = int((do_row or {}).get("n", 0) or 0)
-    except Exception:
-        current["doDurationAborts24h"] = None
-    try:
-        # forkmesh_verified_at is written only after an account-bound endpoint
-        # signs a fresh challenge whose refs hash matches the owner-attested
-        # public forkmesh/forkmesh catalog state. This avoids treating a
-        # control WebSocket heartbeat as proof that Git bytes are available.
-        endpoint_row = await d1_first(
-            env,
-            "SELECT MAX(forkmesh_verified_at) AS ts "
-            "FROM mirror_https_endpoints WHERE healthy=1 "
-            "AND forkmesh_active=1 AND integrity='ok' "
-            "AND abuse_blocked=0",
-        )
-        last_ts = int((endpoint_row or {}).get("ts") or 0) or None
-        current["mainnodeLastSeenTs"] = last_ts
-        current["mainnodeOnline"] = (
-            last_ts is not None
-            and now - last_ts < HTTPS_MIRROR_STATUS_FRESH_MS
-        )
-        current["mainnodeStaleMs"] = HTTPS_MIRROR_STATUS_FRESH_MS
-    except Exception:
-        current["mainnodeOnline"] = None
-        current["mainnodeLastSeenTs"] = None
-        current["mainnodeStaleMs"] = HTTPS_MIRROR_STATUS_FRESH_MS
-
-    if view == "world":
-        # The in-world canvas needs the same current state, 30 daily cells,
-        # latest 24 hourly cells, and latest 60 minute cells as /status. It
-        # does not need every hour nested beneath every one of the 30 days.
-        # Projecting that history here cuts the recurring browser payload by
-        # an order of magnitude without weakening the public status page.
-        projected = []
-        for system in systems:
-            days = list(system.get("days") or [])
-            hours = [
-                hour
-                for day in days
-                for hour in (day.get("hours") or [])
-            ][-24:]
-            compact_system = {
-                key: value
-                for key, value in system.items()
-                if key not in ("days", "minutes", "checkDescription")
-            }
-            compact_system["days"] = []
-            for day in days:
-                compact_day = {
-                    key: value
-                    for key, value in day.items()
-                    if key not in ("hours",)
-                }
-                checks = int(day.get("checks") or 0)
-                failures = int(day.get("failures") or 0)
-                compact_day["status"] = (
-                    "unknown" if checks <= 0
-                    else "down" if failures >= checks
-                    else "degraded" if failures
-                    else "operational"
-                )
-                compact_system["days"].append(compact_day)
-            compact_system["hours"] = hours
-            compact_system["minutes"] = list(system.get("minutes") or [])[-60:]
-            projected.append(compact_system)
-        systems = projected
-
-    return json_response(
-        {"ok": True, "now": now, "systems": systems, "current": current},
-        cache_seconds=STATUS_EDGE_CACHE_TTL,
-    )
 
 
 async def cached_status_history(env, view="full"):
@@ -4972,11 +4214,12 @@ LEADERBOARD_LIMIT = 10  # rows returned per board
 
 async def _record_contributor(env, author, kind):
     # Bump a contributor's running activity tally. kind is one of
-    # "issues"/"pulls"/"commits". Called as signed issue/PR/commit events are
+    # "issues"/"pulls"/"commits"/"discussions". Called as signed issue/PR/commit
+    # (and discussion) events are
     # accepted into the inbox; best-effort so a tally failure never blocks the
     # submission. author is the public contributor name.
     name = clean_string(author or "", MAX_NODE_NAME)
-    if not name or kind not in ("issues", "pulls", "commits"):
+    if not name or kind not in ("issues", "pulls", "commits", "discussions"):
         return
     try:
         author_bi = await blind_index(env, name.lower())
@@ -5755,8 +4998,17 @@ async def wallet_leaderboard(env):
     # least fresh members (an unseen wallet sorts at 0 and goes first).
     members.sort(key=lambda m: (stored.get(m["wallet"], (0, 0))[1], m["name"]))
     refresh = members[:WALLET_BALANCE_REFRESH_PER_REBUILD]
-    balances = await asyncio.gather(*[
-        _solana_balance_lamports(env, member["wallet"]) for member in refresh])
+    # Sequential RPC reads (each already bounded by SOLANA_RPC_TIMEOUT_MS via
+    # a native AbortSignal): WALLET_BALANCE_REFRESH_PER_REBUILD is small, and a
+    # gather here is the concurrency the runtime cannot survive — see the
+    # no-concurrent-tasks rule at the top of this module.
+    balances = []
+    for member in refresh:
+        try:
+            balances.append(
+                await _solana_balance_lamports(env, member["wallet"]))
+        except Exception:
+            balances.append(None)
     for member, lamports in zip(refresh, balances):
         # None means the RPC could not answer; keep the last stored reading
         # rather than publishing an unchecked address as zero.
@@ -5820,28 +5072,33 @@ async def leaderboards_overview(env):
     only normalizes their already-public rows so clients cannot drift on which
     boards exist, how they are titled, or which value each board ranks.
     """
-    # These five public sources are independent. Resolve them concurrently so
-    # the combined endpoint costs the slowest cache/database read, not the sum
-    # of all five, which keeps both the page and World island quick at startup.
+    # These five public sources are independent, and they are read ONE AFTER
+    # ANOTHER — deliberately not gathered. Five concurrent tasks (one of them
+    # the users directory's row-decrypt scan) is exactly the fan-out that trips
+    # the Pyodide task-reentrancy wedge and leaves the isolate answering 1101
+    # for every later request; see the no-concurrent-tasks rule at the top of
+    # this module. Each source keeps its own edge cache/memo and this endpoint
+    # is itself cached, so the sum-instead-of-max latency is paid rarely.
+    # Late-bound so an unread source is never left as an orphan coroutine.
     sources = (
-        ("network", network_leaderboards(env)),
-        ("referrals", referral_leaderboard(env)),
-        ("sites", site_referrer_leaderboard(env)),
-        ("users", _account_users_directory(env, None)),
-        ("wallets", wallet_leaderboard(env)),
+        ("network", lambda: network_leaderboards(env)),
+        ("referrals", lambda: referral_leaderboard(env)),
+        ("sites", lambda: site_referrer_leaderboard(env)),
+        ("users", lambda: _account_users_directory(env, None)),
+        ("wallets", lambda: wallet_leaderboard(env)),
     )
-    # return_exceptions on purpose: a bare gather re-raises the first failure,
-    # so one broken source used to 500 the whole hub — the website grid and the
-    # World island both went dark over a board neither of them needed. adhoc
-    # #225 did exactly that from a call-arity mismatch deep inside the users
-    # directory, and the same 500 was logged again here under /api/leaderboards.
-    # A source that fails now costs its own boards and nothing else.
-    settled = await asyncio.gather(
-        *(source for _name, source in sources), return_exceptions=True)
+    # Per-source isolation, which return_exceptions=True used to provide: one
+    # broken source used to 500 the whole hub — the website grid and the World
+    # island both went dark over a board neither of them needed. adhoc #225 did
+    # exactly that from a call-arity mismatch deep inside the users directory,
+    # and the same 500 was logged again here under /api/leaderboards. A source
+    # that fails now costs its own boards and nothing else.
     payloads = []
     degraded = []
-    for (name, _source), result in zip(sources, settled):
-        if isinstance(result, BaseException):
+    for name, source in sources:
+        try:
+            result = await source()
+        except Exception as error:
             degraded.append(name)
             payloads.append({})
             # Workers Logs stays off, so a degraded board would otherwise be
@@ -5851,7 +5108,7 @@ async def leaderboards_overview(env):
                 await capture_sentry_error(
                     env, 500, "GET", "/api/leaderboards",
                     "leaderboards source failed: " + name + ": "
-                    + _safe_error_text(result), error=result)
+                    + _safe_error_text(error), error=error)
             except BaseException:
                 pass
             continue
@@ -7754,25 +7011,28 @@ async def world_social_posts_handler(env, request):
         blog_rss = await _blog_feed_published_document(env, request)
         if blog_rss:
             blog_posts = world_social_feeds.normalize_blog_feed(blog_rss)
-            distributions = await asyncio.gather(*(
-                _blog_post_distribution(env, request, post)
-                for post in blog_posts
-            ), return_exceptions=True)
-            reach_summaries = await asyncio.gather(*(
-                _blog_post_reach_summary(env, post)
-                for post in blog_posts
-            ), return_exceptions=True)
-            for index, distribution in enumerate(distributions):
-                blog_posts[index]["distribution"] = (
+            # One post at a time, never gathered: this endpoint is public and
+            # each post costs its own D1 reads, so the fan-out was two tasks
+            # per published post inside one request — see the
+            # no-concurrent-tasks rule at the top of this module. A failing
+            # post still degrades to the same empty shapes the gathered
+            # return_exceptions=True produced.
+            for post in blog_posts:
+                try:
+                    distribution = await _blog_post_distribution(
+                        env, request, post)
+                except Exception:
+                    distribution = None
+                try:
+                    reach = await _blog_post_reach_summary(env, post)
+                except Exception:
+                    reach = None
+                post["distribution"] = (
                     distribution
                     if isinstance(distribution, dict)
                     else {"known": False, "networks": []}
                 )
-                blog_posts[index]["reach"] = (
-                    reach_summaries[index]
-                    if isinstance(reach_summaries[index], dict)
-                    else {}
-                )
+                post["reach"] = reach if isinstance(reach, dict) else {}
             blog_ok = bool(blog_posts)
     except Exception:
         blog_posts, blog_ok = [], False
@@ -8035,6 +7295,58 @@ async def _chat_direct_message_retained(
             (conversation_id, conversation_id, account_bi),
         ),
     ])
+    # That first UPDATE is exactly what raises the other participant's
+    # unreadCount, so push them a hint now. Their conversation list is read
+    # once when the chat page opens and never on a timer, so a reader who is
+    # not sitting in this particular conversation would otherwise not see the
+    # count move until they reloaded. (A reader who *is* sitting in it already
+    # got the message over this room's socket; the push is then redundant, and
+    # notify_account_event's coalescing window absorbs it.)
+    recipient = await _chat_direct_message_recipient(
+        env, conversation_id, account_bi)
+    if recipient:
+        await notify_account_event(env, recipient, "direct-messages")
+
+
+# conversation_id -> {sender account_bi: peer name}. A direct conversation has
+# exactly two participants and they never change, so this is immutable for the
+# life of the row and worth memoizing per isolate: the alternative is a D1 read
+# plus a row decrypt plus two blind indexes on every retained message.
+_CHAT_DIRECT_PEER_MEMO = {}
+CHAT_DIRECT_PEER_MEMO_MAX = 256
+
+
+async def _chat_direct_message_recipient(env, conversation_id, sender_bi):
+    """The participant of a direct conversation who is not the sender."""
+    memo_key = str(conversation_id) + "\n" + str(sender_bi)
+    if memo_key in _CHAT_DIRECT_PEER_MEMO:
+        return _CHAT_DIRECT_PEER_MEMO[memo_key]
+    peer = ""
+    try:
+        row = await d1_first(
+            env,
+            "SELECT data FROM chat_direct_conversations "
+            "WHERE conversation_id=?",
+            conversation_id,
+        )
+        record = await decrypt_row(env, (row or {}).get("data", ""))
+        participants = (record or {}).get("participants")
+        if not isinstance(participants, list):
+            return ""
+        for value in participants:
+            name = clean_string(value, MAX_NODE_NAME).strip().lower()
+            if not valid_node_name(name):
+                continue
+            if await blind_index(env, name) != sender_bi:
+                peer = name
+                break
+    except Exception:
+        # A transient read failure must not be memoized as "no recipient".
+        return ""
+    if len(_CHAT_DIRECT_PEER_MEMO) >= CHAT_DIRECT_PEER_MEMO_MAX:
+        _CHAT_DIRECT_PEER_MEMO.clear()
+    _CHAT_DIRECT_PEER_MEMO[memo_key] = peer
+    return peer
 
 
 def _office_entry_ticket(env, account_bi):
@@ -9345,6 +8657,15 @@ class _WorldCommunityRuntime:
 
     def now(self):
         return int(Date.now())
+
+    async def notify_account(self, owner, topic):
+        """Tell one account's clients that something of theirs changed.
+
+        Payload-free, best-effort; see notify_account_event. Chat surfaces read
+        their channel and conversation lists once when the page opens, so this
+        is how a list that changed for somebody else's reason reaches them.
+        """
+        await notify_account_event(self.env, owner, topic)
 
     def new_id(self):
         # The random id contains no account, address, time, path, or provider
@@ -10675,870 +9996,12 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-08-01-open-account-access-30"
-# The physical desk paints only five cards per page, but its catalog must
-# include every bounded source: built-ins, dynamically routed QA items, and
-# the organization's encrypted QA-ready tasks. Organization tasks are capped
-# at 2,000 and the routed board is independently bounded, so 4,096 is a hard
-# response ceiling rather than an arbitrary visible-card truncation.
-WORLD_QA_MAX_CARDS = 4096
-WORLD_QA_CARDS = (
-    ("world-compact-debug-chat-orbs",
-     "Compact debug and unified activity orbs",
-     "Open the World on desktop and mobile. Confirm DEBUG and CHAT are "
-     "logo-sized circles while closed. DEBUG must show nine green, yellow, "
-     "or red metric dots and reveal its complete panel on hover or keyboard "
-     "focus. CHAT must show the latest speaker avatar plus unread count and "
-     "open a translucent composer with channel selection, image attachment, "
-     "separate chat and task buttons, and a second task-routing step for "
-     "human or agent plus team. Send chat and task updates, then confirm every "
-     "chat or status notice flows above the composer and fades after ten "
-     "seconds without removing the underlying chat history."),
-    ("world-repository-agent-live-terminals",
-     "Interactive repository agent terminals",
-     "As an Engineering team member, open a repository with a running Claude "
-     "or Codex session. Confirm its small robot screen shows the exact task, "
-     "status, mirror, and latest terminal line. Click it and confirm the exact "
-     "session opens with transcript plus a working secure follow-up prompt. "
-     "Repeat as a non-engineer and confirm the controls remain inaccessible."),
-    ("world-repository-record-view-pads",
-     "Repository list order, footer, and viewing pads",
-     "Open forkmesh/forkmesh in the World. Confirm the PR and Issue boards "
-     "each grow only as tall as the records on the current page, the newest "
-     "record is at the bottom, and the large open count plus pagination sit "
-     "below the list. Click the floor pad beneath each board and confirm the "
-     "World enters first-person at a distance and pitch that frame the complete "
-     "panel; walk away and confirm ordinary first-person controls still work."),
-    ("world-continuous-city-round", "Continuous World city foundation",
-     "Walk between the central nodes, repositories, users, billboards, and "
-     "Office without jumping a gap. Confirm every route rests on one finished "
-     "city foundation with grass and concrete textures and no visible seam."),
-    ("world-start-here-progress", "START HERE destination progress",
-     "Open a fresh World profile and use the START HERE map. Visit the users "
-     "circle, nodes, repository district, Office, and an exploration stop. "
-     "Confirm each bounded step checks once and remains checked after reload."),
-    ("world-roof-jump-seating", "Roof jump and universal seating",
-     "Ride to the Office roof, press Space, clear the perimeter, and confirm "
-     "the avatar returns outdoors with an attendance checkout. Click several "
-     "park benches and chairs and confirm each seats and releases the avatar."),
-    ("world-connected-beach-car", "Connected beach and driveable car",
-     "Follow the eastern road to the beach, drive the car both directions, "
-     "then dismount. Confirm sand, water, the local horizon, and seating load "
-     "without a remote request, invisible wall, or disconnected land."),
-    ("world-perimeter-bike-loop", "Perimeter bicycle route",
-     "Ride both bicycles around the complete outer loop. Confirm the lane "
-     "stays outside activity areas, remains on solid land, and reconnects "
-     "without a narrow bridge or collision stop."),
-    ("world-billboard-circle", "Circular public billboard layout",
-     "Visit the billboard district from the center and perimeter. Confirm all "
-     "public boards form one readable tangent circle, only one leaderboard "
-     "panel exists, and no obsolete center monument remains."),
-    ("world-github-dark-system", "Shared GitHub-dark World controls",
-     "Open the map, settings, account, repository detail, Office task, and "
-     "notice panels. Confirm they share the same dark surfaces, borders, "
-     "button radii, focus states, and readable contrast."),
-    ("world-local-daylight-textures", "Local daylight and optimized textures",
-     "Compare the World at daytime and nighttime or simulate the local clock. "
-     "Confirm sky and sun follow local time, chest time is local, organization "
-     "stars render, and grass, path, and beach textures load from local WebP."),
-    ("world-node-delete-alias-regression", "Canonical World node deletion",
-     "As is_admin, delete a disposable cabinet whose visible machine name, "
-     "account, and node ID differ. Confirm the API resolves the canonical node, "
-     "removes only that cabinet and owner link, and plays the removal effect."),
-    ("world-admin-member-detail-email-state",
-     "Admin member detail and email state",
-     "Open a registered member from their World avatar. Confirm the side "
-     "panel always shows either a green VERIFIED EMAIL check or a red EMAIL "
-     "NOT VERIFIED mark. As is_admin, select Open admin user detail and "
-     "confirm the secret admin console opens directly to only that user's "
-     "record with prefilled password-reset and verification tools. Repeat as "
-     "a non-admin and confirm the link is absent."),
-    ("world-repository-split-panels-agent-dock",
-     "Split repository work panels and agent dock",
-     "Open forkmesh/forkmesh in the World. Confirm pull requests occupy the "
-     "left panel and issues the right panel, each uses one 25-record column, "
-     "shows a star-sized OPEN count, and only bottom controls contain Prev, "
-     "Next, page, and range. Page each side independently and open one card "
-     "from each. Confirm the "
-     "repository name is part of the angled commit-activity pedestal. While "
-     "an Engineering-authorized Claude or Codex session runs for this repo, "
-     "confirm one compact 45-degree robot screen appears in front with its "
-     "provider, live state, task snapshot, and target node; confirm a "
-     "non-Engineering member sees no agent terminal."),
-    ("world-member-click-detail", "Clickable World member information",
-     "Click the body or chest of your own avatar and two other visible users, "
-     "including one inside the Office. Confirm a subtle blue outline follows "
-     "the selected avatar and the side panel shows the privacy-filtered member, "
-     "status, verified-email state, public teams, activity, nodes, and "
-     "Fediverse information. Confirm private IP and full User-Agent never "
-     "appear in this general member panel."),
-    ("world-admin-node-delete-machine-name", "Admin World node deletion",
-     "As is_admin, open a mirror cabinet whose operator account differs from "
-     "its machine name. Confirm the danger zone asks for DELETE plus the mirror "
-     "machine name, rejects a mismatched confirmation, and deletes only after "
-     "the browser confirmation. Confirm the cabinet list force-refreshes and "
-     "the removed mirror disappears; verify a non-admin sees no delete form."),
-    ("world-annotated-cardinal-districts", "Cardinal World district layout",
-     "From an overhead view confirm exactly four broad paved routes leave the "
-     "central live-node plaza. Walk each route and confirm its rounded join is "
-     "seamless: east reaches every fully expanded repository, west reaches all "
-     "bulletins and boards, south reaches the member/campfire circle, and north "
-     "reaches the Office. Confirm no mirror cabinet moved out of the center and "
-     "that old saved board coordinates do not pull a board back into town."),
-    ("world-flagship-always-expanded", "Flagship repository opens without mirror delay",
-     "Open a fresh World tab with normal network throttling. Confirm the "
-     "forkmesh/forkmesh repository wheel expands as soon as its tree arrives "
-     "and never collapses to a flat MIRRORS SYNCING disc while mirror status "
-     "metadata converges. Confirm files remain clickable after the mirror "
-     "details finish loading."),
-    ("world-avatar-identity-refresh", "Immediate avatar flags and verified pin",
-     "Join from a newly verified account with country sharing enabled. From a "
-     "second World tab, confirm its country flag appears without reloading and "
-     "a small green verified check pin is visible on the avatar front. Disable "
-     "country sharing and confirm the country is removed without exposing an "
-     "email address."),
-    ("world-unique-uploaded-faces", "Unique generated and uploaded avatar faces",
-     "Compare several users who have no account photo and confirm each gets a "
-     "stable, visibly different generated face after reload. In World settings "
-     "upload a JPEG, WebP, or PNG and confirm it is center-cropped, reported as "
-     "at most 128px/64 KiB, replaces the generated face, and appears in the "
-     "top-right account button at the same size as neighboring controls."),
-    ("world-cabinet-side-layout", "Cabinet operational and agent side layout",
-     "Walk around a live mirror cabinet. Confirm Actions runs face the "
-     "operational walkway, server information is on the opposite face, Claude "
-     "tasks appear only on the left side, and Codex tasks only on the right. "
-     "Open each panel and confirm its existing authorized detail action works."),
-    ("world-connected-mixed-landscape", "Connected city and woodland landscape",
-     "Walk from Town Square to the repository district and Office. Confirm "
-     "both routes are broad continuous pieces of land with no narrow bridge "
-     "or invisible gap. Look across the Town Square for warm stone plazas, "
-     "edged paths, varied grass pockets, and trees instead of one flat green "
-     "surface. Pull the camera below an island edge and confirm finished dirt "
-     "layers and hanging roots are visible."),
-    ("world-aquarium-control-panel", "Aquarium control panel",
-     "Walk to the Office lobby aquarium and confirm one compact panel is "
-     "attached below its bottom-right base rail, moves with the tank, and stays "
-     "open while each control is hovered. Feed the fish, switch the backdrop "
-     "between opaque and clear, and switch the aquarium light off and on. "
-     "Confirm every button updates immediately, remains keyboard accessible, "
-     "the school-mode row reads standby or the active grouping, and the two "
-     "toggle preferences survive a reload."),
-    ("world-aquarium-user-school", "Users represented by aquarium fish",
-     "Compare the public account directory with the Office aquarium. Confirm "
-     "there is one small, unlabeled fish per public user, each user's color "
-     "and size remain stable after reload, active/recent users swim in upper "
-     "lanes, inactive users stay near the bottom, and the full school fits "
-     "inside the tank without oversized fish. Wait for school mode and confirm "
-     "matching public country, browser, then coarse browser/OS agent groups "
-     "briefly form smooth pods before returning to their individual routes."),
-    ("world-admin-direct-layout", "Admin direct World layout editing",
-     "Sign in as a platform administrator. Drag the visible base of several "
-     "Town Square objects and confirm each follows without a tiny edit handle. "
-     "Right-drag and Shift-drag left/right to rotate, then reload and confirm "
-     "both position and heading persist. Repeat as a non-admin and confirm "
-     "objects retain their normal click behavior and cannot be moved."),
-    ("world-mirror-live-cabinets", "Live green World mirror cabinets",
-     "Open the repository Mirror nodes view and ForkMesh World together. "
-     "Confirm mirror2, mirror3, and mirror6 each have a cabinet and every "
-     "reachable machine has a steady green roof beacon. Open mirror2 detail "
-     "and confirm clone availability and integrity remain truthful even while "
-     "the physical-node beacon reports it alive."),
-    ("qt-mirror-latest-commit-age", "Mirror latest-commit age",
-     "Open the Qt repository Mirror nodes table. Confirm each reported Latest "
-     "commit shows its short hash, branch, and an x-ago age derived from that "
-     "commit's timestamp; hover it and confirm the full commit evidence remains."),
-    ("open-pr-audit", "Open pull-request disposition audit",
-     "Open the PR board and compare every record marked Open with "
-     "docs/operations/open-pull-audit-2026-07-28.md. Confirm PR #52's change "
-     "is present on main and its chat disclosure survives a dashboard asset "
-     "rebuild. Confirm deleted-head PRs show their recorded stale, represented, "
-     "or recover-before-review disposition rather than implying mergeability."),
-    ("mirror-service-counters", "Mirror clone and website counters",
-     "Open the repository Mirror nodes table and the matching World cabinet. "
-     "Confirm mirror6 shows numeric Clones and Websites values, including "
-     "truthful zeroes before its first request. Browse one repository page and "
-     "complete one clone through an eligible direct mirror, wait for its signed "
-     "catalog refresh, and confirm only the corresponding counters increase. "
-     "Provision or restart a mirror and confirm both values remain available."),
-    ("mirror-actions-cabinet", "Mirror cabinet Actions runs",
-     "Sign in as a repository owner or organization writer and walk behind "
-     "the active mirror cabinet. Confirm recent Actions runs show running, "
-     "done, or error plus a bounded redacted log tail. Click the Actions face "
-     "and confirm the full authorized run list opens. Repeat without write "
-     "access and confirm no private run or log data appears."),
-    ("deploy-lifecycle", "World deployment lifecycle",
-     "Start a deployment while the World is open. Confirm the deploy notice "
-     "appears immediately, animates while work is active, and ends with a "
-     "Refresh button without refreshing the page by itself."),
-    ("elevator-camera-lock", "Elevator button camera lock",
-     "Enter the Office elevator from two angles. Confirm the camera frames the "
-     "buttons during the ride, unlocks on the destination floor, and never "
-     "rotates your heading when you step out."),
-    ("build-board-nearby", "Nearby build-board refresh",
-     "Walk away from What we're building, then approach it. Confirm its small "
-     "spinner appears while the latest open tasks load and the scene does not "
-     "refresh or jump."),
-    ("mobile-movement-stability", "Stable mobile movement",
-     "On a signed-in phone, walk continuously for at least two minutes. Confirm "
-     "the page never reloads and your position is not reset."),
-    ("account-world-settings", "Cross-device World preferences",
-     "Change speed or save a view on one signed-in device, then open the World "
-     "on another. Confirm the setting and saved view follow the account."),
-    ("office-doorway", "Smooth Office doorway",
-     "Walk through the Office entrance and back out at normal speed without "
-     "twitching. Confirm there is no ledge, invisible stop, delay, gap, zoom "
-     "jump, or 180-degree turn."),
-    ("sound-toggle", "Master sound button",
-     "Start a World audio item, toggle sound off and on, and confirm active "
-     "playback actually mutes and restores without starting audio automatically."),
-    ("repo-social-orbits", "Repository social avatar orbits",
-     "Open the forkmesh/forkmesh repository circle. Confirm Mastodon follower "
-     "avatars form the outer orbit and individual Git contributor avatars form "
-     "the inner orbit at normal camera angles."),
-    ("bulk-import-retirement", "Bulk repository import retirement",
-     "Open the repository district and catalog. Confirm the 54 repositories "
-     "from the retired mirror2/mirror3 import burst are gone, the temporary "
-     "import island is empty, and forkmesh plus unrelated repositories remain."),
-    ("repo-pr-board", "Pull-request status and mergeability",
-     "Page and scroll through the PR board. Confirm each card shows its actual "
-     "state, mergeability score and evidence, and that 25 records fit each page."),
-    ("repo-issue-workbench", "In-World issue workbench",
-     "Select an issue card. Confirm its full details and comments open in the "
-     "sidebar and authorized management actions match the web issue view."),
-    ("issue-agent-models", "Issue-to-agent model controls",
-     "On an issue card, open both Claude and Codex assignment controls. Confirm "
-     "Claude offers Haiku/Sonnet/Opus/Fable and Codex offers Sol/Luna/Terra, "
-     "with authorization enforced server-side."),
-    ("engineering-agent-access", "Engineering-only agent workspace",
-     "As an Engineering member, open Claude and Codex and verify prompt, "
-     "re-prompt, transcript and runtime details. Repeat as a non-Engineering "
-     "member and confirm neither chat nor controls are visible."),
-    ("mirror-agent-installer", "Mirror Claude/Codex installer",
-     "In Qt Hosts, run Install Claude + Codex on a reachable mirror. Confirm the "
-     "saved managed SSH identity is used, and unreachable versus rejected-key "
-     "failures produce different actionable messages."),
-    ("mirror-agent-provider-routing", "Signed mirror agent-provider routing",
-     "Open Qt Hosts and confirm mirror6 reports both Claude Code and Codex for "
-     "the forkmesh-node service account. Start a Claude task from an Engineering "
-     "account and confirm it targets mirror6; confirm an offline, stale, or "
-     "Claude-missing mirror is never offered or selected."),
-    ("headless-agent-checkout", "Headless mirror agent checkout",
-     "Provision a new headless mirror and confirm its private service-owned "
-     "forkmesh working checkout exists before forkmesh-node starts. Restart the "
-     "service twice and confirm the checkout remains selected, the signed "
-     "catalog stays fresh, and a Claude or Codex job can be claimed without a "
-     "\"no local checkout\" error."),
-    ("mirror-agent-status", "Mirror cabinet agent status",
-     "Inspect each mirror cabinet side. Confirm agent tasks show running, "
-     "stopped, merged, or attention and the authorized detail panel agrees."),
-    ("marketing-room-wall", "Marketing task wall and desks",
-     "Enter the Marketing floor as a Marketing member. Confirm tasks live on "
-     "the wall, only Marketing assignees are offered, each member has a named "
-     "desk and attendance calendar, and the old guide/banner are absent."),
-    ("marketing-table", "Marketing reclaimed-wood table",
-     "Inspect the Marketing room table from above and at seated height. Confirm "
-     "it is round reclaimed wood with the supplied chrome ForkMesh cube image "
-     "embedded beneath a clear epoxy-like surface. Confirm front-window desks "
-     "face outward, chairs face their desks, and names are small desktop plaques."),
-    ("marketing-proof", "Private Marketing proof links",
-     "As a Marketing member, submit an HTTPS social proof link from your own "
-     "desk and confirm it appears there. Verify a non-Marketing account cannot "
-     "read or submit any proof records."),
-    ("general-chat-board", "Recent #general World board",
-     "Open the World beside the event bulletin. Confirm the #general board "
-     "fills from retained and live encrypted chat with author, time, message, "
-     "image thumbnail/file label and reaction count when present. Click it and "
-     "confirm the complete #general chat opens."),
-    ("avatar-team-badges", "Avatar team badges",
-     "View members from the front-left and confirm each authorized team appears "
-     "as a readable badge on the member's left arm, without exposing private "
-     "organization data to outsiders."),
-    ("admin-guest-network", "Admin-only guest network detail",
-     "Join once as a guest. From a verified is_admin account, confirm the "
-     "guest's full IP and user-agent appear on their back and copy exactly. "
-     "From a regular account, confirm neither value exists in UI or presence."),
-    ("http-referrer-board", "HTTP referrer detail",
-     "Open the HTTP referrer board. Confirm domains are grouped, the bottom "
-     "line shows the actual latest safe full URL, and selecting it opens only "
-     "that validated HTTP(S) destination."),
-    ("blog-reach", "Blog reach and sharing details",
-     "Inspect each blog card and post. Confirm views, unique views, referrer "
-     "stats and network distribution are present when available, with bounded "
-     "prefilled Mastodon, X and Reddit share drafts."),
-    ("repository-settings", "Repository Settings tab",
-     "Open a repository. Confirm federation options moved beneath Settings, "
-     "About uses a pencil, and only the owner sees the guarded delete-repository "
-     "danger action."),
-    ("saved-location-share", "Exact saved and shared views",
-     "Save a view, rename it, reopen it, then share a right-click location link. "
-     "Confirm position, perspective, Office check-in state and camera heading "
-     "restore correctly."),
-    ("world-loader", "Live World startup preview",
-     "Hard-load the World on desktop and mobile. Confirm the real scene remains "
-     "visible behind a small animated progress cover and objects do not shift "
-     "noticeably as initial data arrives."),
-    ("dashboard-home-data", "Dashboard home repositories and blog",
-     "Sign in on Dashboard. Confirm Top repositories includes linked "
-     "organization aliases with an organization label, Latest from the blog "
-     "shows current posts and artwork, and either ForkMesh logo cleanly reloads "
-     "the Dashboard."),
-    ("fresh-code-surge", "Fresh Code mirror-push effect",
-     "Keep the World open while a mirror publishes a new verified commit. "
-     "Confirm the cabinet emits the tall green beam and expanding ground "
-     "shockwave once the refreshed signed catalog confirms that commit."),
-    ("chest-fediverse-activity", "Unified chest Fediverse and activity card",
-     "Open your own and another registered member's chest card. Confirm "
-     "Fediverse leaves Loading, the card is slightly larger, no separate "
-     "activity dot remains, and the darker node-style border reflects account "
-     "activity recency."),
-    ("qt-host-live-capabilities", "Qt live host and agent CLI status",
-     "Add or reopen a saved Qt Host. Confirm its row keeps checking while SSH "
-     "comes online, distinguishes provisioning, unreachable, and rejected-key "
-     "states, then shows Claude and Codex as Installed or Not installed."),
-    ("alert-management-link", "Alert email management destination",
-     "Open Manage this alert from a component or scheduled-job email. Confirm "
-     "it opens the secret platform is_admin console, scrolls to Operational "
-     "alerts, and focuses the checkbox used to enable or disable those emails. "
-     "Confirm a non-admin account cannot open or change it."),
-    ("admin-node-delete", "Admin-only permanent node deletion",
-     "As a platform is_admin, open a disposable node cabinet and confirm the "
-     "danger action requires typing DELETE plus the exact node name. Cancel "
-     "once, then delete the disposable node and confirm its cabinet, catalog "
-     "repositories, endpoint, and owner fleet entry disappear. Confirm the "
-     "control is absent for a non-admin."),
-    ("qa-history-routing", "QA history tabs and routing",
-     "Use the physical Cards, Pass, Fail, and Unsure tabs. Page the shared task "
-     "lists, select a task, then as an authorized maintainer send one back to "
-     "What we're building and another into forkmesh/forkmesh issues."),
-    ("qa-history-detail", "QA history full-card review",
-     "Open Pass, Fail, or Unsure, select a prior task, and confirm its full "
-     "title and test instructions appear. Change its verdict with the large "
-     "buttons, then use Back to Cards and confirm shared totals update."),
-    ("elevator-front-camera", "Front-facing elevator camera and controls",
-     "Enter the elevator and confirm its upper-corner security-camera view "
-     "frames the large high-contrast buttons on the right wall while looking "
-     "out into the World, not back into the Office. Confirm the old view "
-     "returns after arrival or exit."),
-    ("marketing-office-hours", "Office-only Marketing attendance",
-     "Spend time in the World outside the building, then enter and leave the "
-     "Office. Confirm Marketing Office Hours increases only for the interval "
-     "between the explicit building entry and exit punches."),
-    ("marketing-furniture", "Marketing window desks and seating",
-     "Visit Marketing and confirm named desks sit against the rear windows "
-     "with chairs, while the raised round sealed-wood table has eight visible "
-     "chairs and no green floor showing through its top."),
-    ("office-landscaping", "Office exterior landscaping",
-     "Walk around and through the Office approach. Confirm flowers, bushes, "
-     "and low-poly trees surround the island without blocking the bridge, "
-     "doorway, or smooth entry and exit."),
-    ("twitter-public-feed", "Twitter/X public board fallback",
-     "Open the Twitter/X board. If public @forkmesh posts exist, confirm their "
-     "text, age, likes, and reposts render. If X returns no public timeline, "
-     "confirm the board explains why and the Engineering Human TODO board "
-     "shows the read-only X API setup action."),
-    ("chest-auth-profile-reload", "Authenticated chest profile reload",
-     "Open the World while signed in and wait for the temporary guest identity "
-     "to become your account. Confirm the chest changes from Loading to your "
-     "actual @account Fediverse details without a page refresh. On a walletless "
-     "self card, select Add Wallet and confirm the payout editor opens."),
-    ("qt-host-plan-cost", "Qt Host provider and plan provenance",
-     "Provision a new Vultr mirror, reopen Hosts, and confirm its status row "
-     "retains Vultr, plan type, region, and expected monthly cost after the "
-     "install finishes and after restarting Qt."),
-    ("marketing-initiatives", "Repository issue Marketing initiatives",
-     "As an organization manager, open a numbered web issue and choose Move "
-     "to Marketing initiatives. Confirm a current Marketing member sees one "
-     "deduplicated card on the private Marketing floor panel and can click it "
-     "to reopen the exact issue. Confirm non-Marketing members cannot read "
-     "the panel or its encrypted issue details."),
-    ("admin-error-analytics", "Admin 24-hour error analytics",
-     "As a platform is_admin, open the secret admin console and select Error "
-     "logs. Confirm the previous-24-hours chart has 24 accessible hourly bars, "
-     "equivalent status/method/path/message rows are grouped with counts, and "
-     "the bounded redacted raw log remains available below."),
-    ("repository-terms-flags", "Repository Terms moderation flags",
-     "As a platform is_admin, apply a Terms flag to a disposable repository "
-     "with a private note. Confirm the repository list, detail page, and World "
-     "portal show a red flag and public category but never the note. Clear it "
-     "and confirm the badges disappear after the catalog refresh."),
-)
-WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
-
-
-async def world_qa_handler(env, request):
-    await ensure_schema(env)
-    method = method_name(request)
-    if method not in ("GET", "POST"):
-        return json_response(
-            {"ok": False, "error": "method_not_allowed"},
-            status=405,
-            extra_headers={"Allow": "GET, POST"},
-        )
-    data = {}
-    if method == "POST":
-        if not _request_same_origin(request):
-            return json_response({"ok": False, "error": "origin_not_allowed"},
-                                 status=403)
-        try:
-            # A failed private task may include one compact screenshot. The
-            # image is validated and encrypted below; keep the whole request
-            # bounded well below the general upload ceiling.
-            data = await bounded_json_request(request, 640 * 1024)
-        except RequestBodyTooLarge:
-            return json_response({"ok": False, "error": "payload_too_large"},
-                                 status=413)
-        except Exception:
-            return json_response({"ok": False, "error": "invalid_json"},
-                                 status=400)
-    dynamic_rows = await d1_all(
-        env,
-        "SELECT item_key,title,how_to_test,added_at FROM world_qa_items "
-        "WHERE active=1 ORDER BY added_at DESC,item_key LIMIT ?",
-        WORLD_QA_MAX_CARDS,
-    )
-    deck_cards = list(WORLD_QA_CARDS)
-    deck_keys = set(WORLD_QA_CARD_KEYS)
-    for row in dynamic_rows or []:
-        key = clean_string(row.get("item_key"), 80)
-        title = clean_string(row.get("title"), 160)
-        how_to_test = clean_string(row.get("how_to_test"), 720)
-        if not key or key in deck_keys or not title or not how_to_test:
-            continue
-        deck_cards.append((key, title, how_to_test))
-        deck_keys.add(key)
-    deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
-    deck_keys = {item[0] for item in deck_cards}
-
-    async def global_qa_snapshot():
-        global_rows = await d1_all(
-            env,
-            "SELECT item_key,verdict,COUNT(*) AS count "
-            "FROM world_qa_reviews GROUP BY item_key,verdict",
-        )
-        global_reviews = {}
-        for row in global_rows or []:
-            key = clean_string(row.get("item_key"), 80)
-            verdict = clean_string(row.get("verdict"), 12).lower()
-            if (
-                key not in deck_keys
-                or verdict not in ("pass", "fail", "unsure")
-            ):
-                continue
-            counts = global_reviews.setdefault(
-                key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0})
-            count = max(0, int(row.get("count") or 0))
-            counts[verdict] += count
-            counts["total"] += count
-        tester_rows = await d1_all(
-            env,
-            "SELECT COUNT(DISTINCT account_bi) AS testers "
-            "FROM world_qa_reviews",
-        )
-        return global_reviews, {
-            "pass": sum(item["pass"] for item in global_reviews.values()),
-            "fail": sum(item["fail"] for item in global_reviews.values()),
-            "unsure": sum(item["unsure"] for item in global_reviews.values()),
-            "reviewed": sum(item["total"] for item in global_reviews.values()),
-            "testers": max(
-                0, int(((tester_rows or [{}])[0]).get("testers") or 0)),
-            "total": len(deck_cards),
-        }
-
-    global_reviews, global_stats = await global_qa_snapshot()
-
-    account_bi, record = await _account_session_record(env, request, data)
-    if not account_bi or not record:
-        return json_response({
-            "ok": True,
-            "authenticated": False,
-            "authorized": False,
-            "requiredTeam": "",
-            "requiresAuthentication": True,
-            "revision": WORLD_QA_DECK_REVISION,
-            "cards": [],
-            "reviews": {},
-            "stats": {"pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                      "total": 0},
-            "globalReviews": {},
-            "globalStats": {
-                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                "testers": 0, "total": 0,
-            },
-            "canRoute": False,
-        }, cache_control="no-store")
-    actor = clean_string(
-        (record or {}).get("name"), MAX_NODE_NAME).strip().lower()
-    can_route = False
-    private_tasks = {}
-    qa_org_bi = ""
-    if actor:
-        org_bi, org_row = await _org_row(env, "forkmesh")
-        if org_row:
-            role = await _org_role(env, org_bi, actor)
-            permission = await _org_permission(env, org_bi, actor)
-            can_route = (
-                role in ("owner", "admin")
-                or permission in ("maintain", "admin")
-            )
-            qa_org_bi = org_bi
-    if qa_org_bi:
-        task_rows = await d1_all(
-            env,
-            "SELECT task_id,department,team,qa_status,qa_reviewed_at,data "
-            "FROM organization_tasks "
-            "WHERE org_bi=? AND qa_requested_at>0 "
-            "ORDER BY qa_requested_at DESC,task_id DESC LIMIT ?",
-            qa_org_bi, WORLD_QA_MAX_CARDS,
-        )
-        for task_row in task_rows or []:
-            task_id = str(task_row.get("task_id") or "").lower()
-            if not re.fullmatch(r"[a-f0-9]{32}", task_id):
-                continue
-            try:
-                task_data = await decrypt_row(env, task_row.get("data"))
-            except Exception:
-                task_data = None
-            if not isinstance(task_data, dict):
-                continue
-            key = "task:" + task_id
-            title = clean_string(task_data.get("title"), 160).strip()
-            how_to_test = clean_string(
-                task_data.get("howToTest"), 720).strip()
-            if not title:
-                continue
-            if not how_to_test:
-                how_to_test = (
-                    "Follow the normal user flow and confirm the requested "
-                    "behavior without regressions."
-                )
-            private_tasks[key] = {
-                "row": task_row,
-                "data": task_data,
-                "title": title,
-                "howToTest": how_to_test,
-            }
-            if key not in deck_keys:
-                deck_cards.append((key, title, how_to_test))
-                deck_keys.add(key)
-    deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
-    deck_keys = {item[0] for item in deck_cards}
-
-    def include_private_task_reviews(global_reviews, global_stats):
-        """Fold each task's authoritative first QA result into the snapshot."""
-        for key, task in private_tasks.items():
-            reviewed_at = max(
-                0, int(task["row"].get("qa_reviewed_at") or 0))
-            if not reviewed_at:
-                continue
-            verdict = {
-                "passed": "pass",
-                "failed": "fail",
-                "unknown": "unsure",
-            }.get(str(task["row"].get("qa_status") or ""))
-            if not verdict:
-                continue
-            counts = {"pass": 0, "fail": 0, "unsure": 0, "total": 1}
-            counts[verdict] = 1
-            global_reviews[key] = counts
-            global_stats[verdict] += 1
-            global_stats["reviewed"] += 1
-        global_stats["total"] = len(deck_cards)
-
-    include_private_task_reviews(global_reviews, global_stats)
-    if method == "POST":
-        item_key = clean_string(data.get("key"), 80)
-        if item_key not in deck_keys:
-            return json_response({"ok": False, "error": "unknown_qa_item"},
-                                 status=400)
-        action = clean_string(data.get("action"), 24).lower()
-        if action in ("route_todo", "route_issue"):
-            if not can_route:
-                return json_response(
-                    {"ok": False, "error": "forbidden"}, status=403)
-            card = next(
-                (item for item in deck_cards if item[0] == item_key),
-                None,
-            )
-            if not card:
-                return json_response(
-                    {"ok": False, "error": "unknown_qa_item"}, status=400)
-            _, title, how_to_test = card
-            now = int(Date.now())
-            if action == "route_todo":
-                task_suffix = re.sub(
-                    r"[^a-z0-9-]+", "-", item_key.lower()).strip("-")
-                task_key = ("task:qa-" + task_suffix)[:53].rstrip("-")
-                peak = await d1_first(
-                    env,
-                    "SELECT COALESCE(MAX(priority),0) AS priority "
-                    "FROM world_build_board_items",
-                )
-                priority = min(
-                    64, max(1, int((peak or {}).get("priority") or 0) + 1))
-                await d1_run(
-                    env,
-                    "INSERT INTO world_build_board_items "
-                    "(item_key,kind,owner,repo,issue_number,title,priority,"
-                    "updated_by_bi,updated_at,completed_at,completed_by_bi) "
-                    "VALUES (?,'task','','',0,?,?,?,?,0,'') "
-                    "ON CONFLICT(item_key) DO UPDATE SET "
-                    "title=excluded.title,priority=excluded.priority,"
-                    "updated_by_bi=excluded.updated_by_bi,"
-                    "updated_at=excluded.updated_at,completed_at=0,"
-                    "completed_by_bi=''",
-                    task_key, title, priority, account_bi, now,
-                )
-                route_result = {
-                    "target": "todo",
-                    "key": task_key,
-                }
-            else:
-                body = (
-                    "QA follow-up requested from the 24-hour World deck.\n\n"
-                    "How to test:\n" + how_to_test
-                )
-                queued, result = await _forkbot_enqueue_issue(
-                    env,
-                    "forkmesh",
-                    "forkmesh",
-                    "QA follow-up: " + title,
-                    body,
-                    actor,
-                    source="qa-deck",
-                    labels=["qa"],
-                )
-                if not queued:
-                    return json_response(
-                        {"ok": False, "error": str(result or "issue_failed")},
-                        status=409,
-                    )
-                route_result = {
-                    "target": "issues",
-                    "number": int((result or {}).get("issueNumber") or 0),
-                }
-            await _audit_sensitive_action(
-                env,
-                actor,
-                "world.qa_" + action,
-                "world_qa_item",
-                item_key,
-                "success",
-                route_result,
-            )
-        else:
-            verdict = clean_string(data.get("verdict"), 12).lower()
-            if verdict not in ("pass", "fail", "unsure"):
-                return json_response(
-                    {"ok": False, "error": "invalid_verdict"}, status=400)
-            if item_key in private_tasks:
-                if not qa_org_bi:
-                    return json_response(
-                        {"ok": False, "error": "qa_task_unavailable"},
-                        status=403,
-                    )
-                task_id = item_key[5:]
-                task_record = private_tasks[item_key]
-                task_verdict = {
-                    "pass": "passed",
-                    "fail": "failed",
-                    "unsure": "unknown",
-                }[verdict]
-                failure_reason = clean_string(
-                    data.get("failureReason"), 1000).strip()
-                failure_screenshot = str(
-                    data.get("screenshot") or "").strip()
-                if verdict == "fail" and not failure_reason:
-                    return json_response(
-                        {"ok": False, "error": "failure_reason_required"},
-                        status=400,
-                    )
-                if failure_screenshot and (
-                    verdict != "fail"
-                    or len(failure_screenshot) > 480_000
-                    or not re.fullmatch(
-                        r"data:image/(?:png|jpeg|webp);base64,"
-                        r"[A-Za-z0-9+/=]+",
-                        failure_screenshot,
-                    )
-                ):
-                    return json_response(
-                        {"ok": False, "error": "invalid_qa_screenshot"},
-                        status=400,
-                    )
-                if verdict != "fail":
-                    failure_reason = ""
-                    failure_screenshot = ""
-                reviewed_at = int(Date.now())
-                review_data = {
-                    "reviewer": actor,
-                    "failureReason": failure_reason,
-                    "failureScreenshot": failure_screenshot,
-                }
-                await d1_run(
-                    env,
-                    "INSERT INTO organization_task_qa_reviews "
-                    "(task_id,org_bi,reviewer_bi,verdict,data,reviewed_at) "
-                    "VALUES (?,?,?,?,?,?) "
-                    "ON CONFLICT(task_id,reviewer_bi) DO UPDATE SET "
-                    "verdict=excluded.verdict,data=excluded.data,"
-                    "reviewed_at=excluded.reviewed_at",
-                    task_id, qa_org_bi, account_bi, task_verdict,
-                    await encrypt_row(env, review_data),
-                    reviewed_at,
-                )
-                task_data = dict(task_record["data"])
-                task_data["qaReviewer"] = actor
-                task_data["qaFailureReason"] = failure_reason
-                task_data["qaFailureScreenshot"] = failure_screenshot
-                await d1_run(
-                    env,
-                    "UPDATE organization_tasks SET qa_status=?,"
-                    "qa_reviewer_bi=?,qa_reviewed_at=?,data=?,updated_at=? "
-                    "WHERE org_bi=? AND task_id=? AND qa_requested_at>0",
-                    task_verdict, account_bi, reviewed_at,
-                    await encrypt_row(env, task_data), reviewed_at,
-                    qa_org_bi, task_id,
-                )
-                task_record["row"] = {
-                    **task_record["row"],
-                    "qa_status": task_verdict,
-                    "qa_reviewed_at": reviewed_at,
-                }
-                task_record["data"] = task_data
-                await _audit_sensitive_action(
-                    env, actor, "organization.task_qa_reviewed",
-                    "organization_task", task_id, "success",
-                    {
-                        "verdict": task_verdict,
-                        "hasFailureReason": bool(failure_reason),
-                        "hasScreenshot": bool(failure_screenshot),
-                    },
-                )
-            else:
-                await d1_run(
-                    env,
-                    "INSERT INTO world_qa_reviews("
-                    "account_bi,item_key,verdict,reviewed_at) VALUES(?,?,?,?) "
-                    "ON CONFLICT(account_bi,item_key) DO UPDATE SET "
-                    "verdict=excluded.verdict,reviewed_at=excluded.reviewed_at",
-                    account_bi, item_key, verdict, int(Date.now()),
-                )
-        global_reviews, global_stats = await global_qa_snapshot()
-        include_private_task_reviews(global_reviews, global_stats)
-    rows = await d1_all(
-        env,
-        "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
-        "WHERE account_bi=? ORDER BY reviewed_at DESC LIMIT ?",
-        account_bi, WORLD_QA_MAX_CARDS,
-    )
-    reviews = {}
-    for row in rows:
-        key = clean_string(row.get("item_key"), 80)
-        verdict = clean_string(row.get("verdict"), 12).lower()
-        if key in deck_keys and verdict in ("pass", "fail", "unsure"):
-            reviews[key] = {
-                "verdict": verdict,
-                "reviewedAt": max(0, int(row.get("reviewed_at") or 0)),
-            }
-    if private_tasks:
-        private_rows = await d1_all(
-            env,
-            "SELECT task_id,verdict,data,reviewed_at "
-            "FROM organization_task_qa_reviews "
-            "WHERE org_bi=? AND reviewer_bi=? "
-            "ORDER BY reviewed_at DESC LIMIT ?",
-            qa_org_bi, account_bi, WORLD_QA_MAX_CARDS,
-        )
-        for row in private_rows or []:
-            key = "task:" + str(row.get("task_id") or "")
-            task_verdict = str(row.get("verdict") or "")
-            if key in private_tasks and task_verdict in (
-                    "passed", "failed", "unknown"):
-                try:
-                    review_data = await decrypt_row(env, row.get("data"))
-                except Exception:
-                    review_data = {}
-                if not isinstance(review_data, dict):
-                    review_data = {}
-                reviews[key] = {
-                    "verdict": {
-                        "passed": "pass",
-                        "failed": "fail",
-                        "unknown": "unsure",
-                    }[task_verdict],
-                    "reviewedAt": max(
-                        0, int(row.get("reviewed_at") or 0)),
-                    "failureReason": clean_string(
-                        review_data.get("failureReason"), 1000).strip(),
-                    "hasFailureScreenshot": bool(
-                        review_data.get("failureScreenshot")),
-                }
-    stats = {
-        "pass": sum(1 for item in reviews.values()
-                    if item["verdict"] == "pass"),
-        "fail": sum(1 for item in reviews.values()
-                    if item["verdict"] == "fail"),
-        "unsure": sum(1 for item in reviews.values()
-                      if item["verdict"] == "unsure"),
-        "reviewed": len(reviews),
-        "total": len(deck_cards),
-    }
-    return json_response({
-        "ok": True,
-        "authenticated": True,
-        "authorized": True,
-        "requiredTeam": "",
-        "requiresAuthentication": True,
-        "revision": WORLD_QA_DECK_REVISION,
-        "cards": [
-            {
-                "key": key,
-                "title": title,
-                "howToTest": how_to_test,
-                "global": global_reviews.get(
-                    key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0}),
-                "reviewedByAnyone": (
-                    int(global_reviews.get(key, {}).get("total") or 0) > 0
-                ),
-                **reviews.get(key, {}),
-                **({
-                    "organizationTask": True,
-                    "department": str(
-                        private_tasks[key]["row"].get("department") or ""),
-                    "team": str(
-                        private_tasks[key]["row"].get("team") or ""),
-                    "taskQaStatus": str(
-                        private_tasks[key]["row"].get("qa_status")
-                        or "unknown"),
-                    "lastReviewer": clean_string(
-                        private_tasks[key]["data"].get("qaReviewer"),
-                        MAX_NODE_NAME,
-                    ).strip().lower(),
-                    "lastReviewedAt": max(
-                        0,
-                        int(private_tasks[key]["row"].get(
-                            "qa_reviewed_at") or 0),
-                    ),
-                    "failureReason": clean_string(
-                        private_tasks[key]["data"].get("qaFailureReason"),
-                        1000,
-                    ).strip(),
-                    "hasFailureScreenshot": bool(
-                        private_tasks[key]["data"].get(
-                            "qaFailureScreenshot")),
-                } if key in private_tasks else {}),
-            }
-            for key, title, how_to_test in deck_cards
-        ],
-        "reviews": reviews,
-        "stats": stats,
-        "globalReviews": global_reviews,
-        "globalStats": global_stats,
-        "canRoute": can_route,
-        "canViewPrivateTasks": bool(qa_org_bi),
-        **({"routeResult": route_result}
-           if method == "POST" and "route_result" in locals() else {}),
-    }, cache_control="no-store")
+# The World QA desk (card catalog + review board handler) lives in its own
+# on-demand module: none of it is needed by public traffic, scheduled work,
+# or Durable Objects, so compiling it here spent scarce Pyodide startup
+# memory on every isolate (see admin_console for the same pattern).
+_world_qa = _LazyModule("world_qa")
+world_qa_handler = _world_qa.export("world_qa_handler")
 
 
 WORLD_PREFERENCES_MAX_BYTES = 320 * 1024
@@ -12160,7 +10623,10 @@ REWARD_POOL_FEE_RESERVE_LAMPORTS = 5000
 # A node counts as online for payouts if it has sent a heartbeat within this
 # window (reuses the host-presence staleness window).
 ACCOUNT_PRESENCE_STALE_MS = 10 * 60 * 1000
-HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS = 1500
+# (HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS is gone: the heartbeat's balance probe
+# is bounded by _solana_rpc_call's native AbortSignal, never by wrapping the
+# await in asyncio.wait_for — see the no-concurrent-tasks rule at the top of
+# this module.)
 # Per-isolate throttle for the heartbeat's optional public balance probe:
 # wallet -> last probe ms. Five minutes avoids an RPC subrequest on every
 # 60-second heartbeat. Balance never gates eligibility.
@@ -12297,6 +10763,7 @@ SCHEMA_ALTER_STATEMENTS = [
     # Operator-settable flag granting a user access to the /outreach console
     # without a roster row (migration 0040). Mirrors is_admin.
     "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE contributor_activity ADD COLUMN discussions INTEGER NOT NULL DEFAULT 0",
     # Early local builds created membership rows before their encrypted display
     # payload was added. Existing blind-index grants remain valid; new writes
     # always provide this ciphertext column.
@@ -12746,12 +11213,20 @@ async def _chat_channel_signed_session(env, request):
     return account_bi, record
 
 
-# Canonical prefixes a desktop signs with its account's Ed25519 key to open and
-# close an organization task for a prompt it just launched. A desktop that
+# Canonical prefixes a desktop signs with its account's Ed25519 key to open,
+# live-update, and close an organization task for a prompt it just launched. A desktop that
 # authenticated silently holds keys and no session token, so without these the
 # Agents composer's Task toggle could never reach the board (adhoc #18).
 ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
 ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
+ORG_TASK_AGENT_STATUS_PROOF = "forkmesh-org-task-agent-status-v1"
+# The same reporting right, exercised for the whole fleet at once. A desktop
+# that restarts has a live state to publish for every session it owns, and one
+# signed POST per session made the relay rate-limit its own client (adhoc
+# #1618). This proof names no task because the batch carries them in its body;
+# each entry still passes the per-task ownership gate inside the task API, so a
+# batched write reaches exactly the rows a task-bound one could.
+ORG_TASK_AGENT_STATUS_BATCH_PROOF = "forkmesh-org-task-agent-status-batch-v1"
 # The same key, reading the board it can already write to. Without this the
 # desktop Tasks tab was empty for every operator who launched normally instead
 # of typing a password, because it had no session token to present (adhoc #52).
@@ -12770,6 +11245,10 @@ ORG_TASK_DELETE_PROOF = "forkmesh-org-task-delete-v1"
 GENIE_CREDENTIAL_PROOF = "forkmesh-genie-credential-v1"
 ORG_TASK_COMPLETE_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/complete/?$")
+ORG_TASK_AGENT_STATUS_RE = re.compile(
+    r"^/api/tasks/([a-f0-9]{32})/agent-status/?$")
+ORG_TASK_AGENT_STATUS_BATCH_RE = re.compile(
+    r"^/api/tasks/agent-status/?$")
 ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
 ORG_TASK_ITEM_RE = re.compile(r"^/api/tasks/([a-f0-9]{32})/?$")
 
@@ -12777,9 +11256,9 @@ ORG_TASK_ITEM_RE = re.compile(r"^/api/tasks/([a-f0-9]{32})/?$")
 async def _org_task_signed_session(env, request):
     """Resolve the account behind a key-signed organization-task request.
 
-    Deliberately narrow: listing the board, opening a task, reporting one
-    finished, and deleting one — the reads and writes a desktop performs for its
-    own agent run, plus the row removal its Tasks tab offers. Editing,
+    Deliberately narrow: listing the board, opening a task, reporting its live
+    agent state or finish, and deleting one — the reads and writes a desktop
+    performs for its own agent run, plus the row removal its Tasks tab offers. Editing,
     starting/stopping another member's timer, and QA verdicts all still require a
     real session. Membership and every other authorization check inside the task
     API applies to a signed caller exactly as to a session-token one, so a signed
@@ -12802,6 +11281,8 @@ async def _org_task_signed_session(env, request):
     if not node or not sig or not _ts_ok(ts):
         return "", None
     complete = ORG_TASK_COMPLETE_RE.match(url.path)
+    agent_status = ORG_TASK_AGENT_STATUS_RE.match(url.path)
+    agent_status_batch = ORG_TASK_AGENT_STATUS_BATCH_RE.match(url.path)
     collection = ORG_TASK_COLLECTION_RE.match(url.path)
     if method == "GET":
         # Reads have no write proof to reuse: a GET signed with the open proof
@@ -12825,6 +11306,15 @@ async def _org_task_signed_session(env, request):
         canonical = (
             ORG_TASK_COMPLETE_PROOF + "\n" + node + "\n"
             + complete.group(1) + "\n" + str(ts)
+        ).encode()
+    elif agent_status:
+        canonical = (
+            ORG_TASK_AGENT_STATUS_PROOF + "\n" + node + "\n"
+            + agent_status.group(1) + "\n" + str(ts)
+        ).encode()
+    elif agent_status_batch:
+        canonical = (
+            ORG_TASK_AGENT_STATUS_BATCH_PROOF + "\n" + node + "\n" + str(ts)
         ).encode()
     elif collection:
         canonical = (
@@ -12897,6 +11387,7 @@ async def _genie_credential_signed_session(env, request):
 ACCOUNT_ALERT_LIST_PROOF = "forkmesh-account-alert-list-v1"
 ACCOUNT_ALERT_READ_PROOF = "forkmesh-account-alert-read-v1"
 ACCOUNT_ALERT_DELETE_PROOF = "forkmesh-account-alert-delete-v1"
+ACCOUNT_ALERT_CLEAR_PROOF = "forkmesh-account-alert-clear-v1"
 ACCOUNT_ALERT_COLLECTION_RE = re.compile(r"^/api/notifications/?$")
 
 
@@ -12904,11 +11395,12 @@ async def _account_alert_signed_session(env, request, resource=""):
     """Resolve the account behind a key-signed alert-inbox request.
 
     Deliberately narrow: reading the account's own notifications, marking them
-    read and deleting one of them — what the desktop Pings page does. Each
-    verb has its own proof string (and the delete proof additionally binds the
-    notification id), so a signed GET can never be replayed as a mutation and a
-    signed delete can never be replayed against a different row. Returns the
-    account name, or "" when nothing valid signed the request.
+    read, deleting one, or clearing the inbox — what the desktop Pings page
+    does. Each operation has its own proof string (and the row-delete proof
+    additionally binds the notification id), so a signed GET can never be
+    replayed as a mutation and a signed delete can never be replayed against a
+    different row. Returns the account name, or "" when nothing valid signed
+    the request.
     """
     method = method_name(request)
     if method not in ("GET", "POST", "DELETE"):
@@ -12927,13 +11419,19 @@ async def _account_alert_signed_session(env, request, resource=""):
     elif method == "POST":
         canonical_prefix = ACCOUNT_ALERT_READ_PROOF + "\n" + node
     else:
-        # The row being deleted is part of what was signed, so a captured
-        # delete cannot be replayed against a different notification.
         item_id = clean_string(resource or "", 160).lower()
-        if not item_id:
+        if item_id == "all":
+            # Clearing is intentionally a separate capability from deleting a
+            # row: a captured single-row delete must never empty the inbox.
+            canonical_prefix = (
+                ACCOUNT_ALERT_CLEAR_PROOF + "\n" + node + "\nall")
+        elif item_id:
+            # The row being deleted is part of what was signed, so a captured
+            # delete cannot be replayed against a different notification.
+            canonical_prefix = (
+                ACCOUNT_ALERT_DELETE_PROOF + "\n" + node + "\n" + item_id)
+        else:
             return ""
-        canonical_prefix = (
-            ACCOUNT_ALERT_DELETE_PROOF + "\n" + node + "\n" + item_id)
     canonical = (canonical_prefix + "\n" + str(ts)).encode()
     pubkey = await _owner_pubkey(env, node)
     if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
@@ -13018,10 +11516,11 @@ CHAT_ACTIVITY_TTL = 30
 
 async def chat_activity_handler(env, request):
     # Lightweight public digest behind the site-wide header chat badge: how many
-    # retained #general messages exist and how many user accounts are registered.
-    # Counts only — chat_history bodies stay encrypted and user rows are never
-    # decrypted (email_bi is only set on email-bearing user accounts, so it
-    # separates users from keyless node reservations without touching `data`).
+    # retained #general messages exist and how many members are registered.
+    # userCount reuses _public_member_count so this badge always agrees with
+    # the World campfire HUD, which quotes the same function (adhoc #1617 —
+    # they used to run two different filters over `users` and could drift by
+    # a few accounts).
     # Edge-cached so every page load across the site collapses to one D1 read
     # pair per colo per TTL.
     del request
@@ -13035,17 +11534,13 @@ async def chat_activity_handler(env, request):
         "WHERE room_key=?",
         FLAGSHIP_ROOM_KEY,
     )
-    user_row = await d1_first(
-        env,
-        "SELECT COUNT(*) AS c FROM users "
-        "WHERE email_bi IS NOT NULL AND email_bi <> ''",
-    )
+    user_count = await _public_member_count(env)
     resp = json_response(
         {
             "ok": True,
             "messageCount": int((msg_row or {}).get("c") or 0),
             "latestMessageTs": int((msg_row or {}).get("latest") or 0),
-            "userCount": int((user_row or {}).get("c") or 0),
+            "userCount": user_count,
         },
         cache_seconds=CHAT_ACTIVITY_TTL,
     )
@@ -13913,6 +12408,57 @@ async def _contribution_language_rows(env, owner_user_bi):
     )
 
 
+async def _contribution_commit_totals(env):
+    """Map subject_user_bi -> lifetime commit count, for every account at once.
+
+    ``contributor_activity`` tallies issues, PRs, and discussions as each
+    signed event reaches an inbox, but nothing ever increments its ``commits``
+    column — commits arrive as whole-repo snapshots, not one event apiece, so
+    that column has always read 0. The real per-author counts live in
+    ``profile_contribution_days``, the same rows the profile contribution
+    graph draws from, so the directory sums them here instead of publishing a
+    commit count stuck at zero.
+
+    Only public projects on public repositories are counted, exactly as the
+    public profile graph does: the directory this feeds is unauthenticated, so
+    it may not expose commit activity a private repo would otherwise hide.
+    One source repo per project wins (latest capture), matching
+    _contribution_language_rows, so a project mirrored across several nodes is
+    not counted once per mirror.
+    """
+    rows = await d1_all(
+        env,
+        """WITH ranked_sources AS (
+               SELECT projects.source_repo_bi,
+                      projects.active_generation_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY projects.project_bi
+                        ORDER BY projects.captured_at DESC,
+                                 projects.source_repo_bi ASC) AS source_rank
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+                  AND projects.active_generation_bi IS NOT NULL
+             ), selected_sources AS (
+               SELECT * FROM ranked_sources WHERE source_rank=1
+             )
+             SELECT days.subject_user_bi AS user_bi,
+                    SUM(days.commits) AS commits
+               FROM selected_sources AS sources
+               JOIN profile_contribution_days AS days
+                 ON days.source_repo_bi=sources.source_repo_bi
+                AND days.generation_bi=sources.active_generation_bi
+              GROUP BY days.subject_user_bi""",
+    )
+    totals = {}
+    for row in rows or []:
+        user_bi = row.get("user_bi")
+        if user_bi:
+            totals[user_bi] = _contribution_tally(row.get("commits"))
+    return totals
+
+
 async def _contribution_coverage_rows(
         env, subject_user_bi, from_value, to_value):
     return await d1_all(
@@ -13996,17 +12542,16 @@ async def _contribution_coverage_rows(
 
 async def _contribution_profile_payload(
         env, profile_bi, profile_name, from_value, to_value):
-    activity_rows, recent_rows, language_rows, coverage_rows = (
-        await asyncio.gather(
-            _contribution_activity_rows(
-                env, profile_bi, from_value, to_value),
-            _contribution_recent_rows(
-                env, profile_bi, from_value, to_value),
-            _contribution_language_rows(env, profile_bi),
-            _contribution_coverage_rows(
-                env, profile_bi, from_value, to_value),
-        )
-    )
+    # Four sequential D1 reads. They were gathered; four concurrent tasks on
+    # the profile/contribution-graph path is the fan-out shape that wedges the
+    # isolate — see the no-concurrent-tasks rule at the top of this module.
+    activity_rows = await _contribution_activity_rows(
+        env, profile_bi, from_value, to_value)
+    recent_rows = await _contribution_recent_rows(
+        env, profile_bi, from_value, to_value)
+    language_rows = await _contribution_language_rows(env, profile_bi)
+    coverage_rows = await _contribution_coverage_rows(
+        env, profile_bi, from_value, to_value)
     summary = next(
         (row for row in activity_rows if row.get("row_kind") == "summary"),
         {},
@@ -14889,6 +13434,19 @@ async def catalog_handler(env, request):
                     record.get("changedFiles", []))
             except Exception:
                 pass
+            # The same moved head is what the mirror fleet waits on: push a
+            # payload-free "commits" event over the node event channel so
+            # mirrors fetch now instead of on a sync poll (the no-polling
+            # policy, docs/operations/polling-elimination.md). Only the
+            # source's own publish notifies — a mirror's "remote-clone"
+            # record echoes the same head after ITS fetch, and notifying on
+            # that would re-wake the fleet in a loop.
+            if record.get("source") == "local-node":
+                try:
+                    await notify_repo_mirrors(
+                        env, owner, record["name"], "commits")
+                except Exception:
+                    pass
         payload = {
             "ok": True,
             "repository": record,
@@ -15404,7 +13962,7 @@ async def _repo_about_public(env, request, owner, repo):
             "followersList": followers_list,
             "settings": ap_settings,
         },
-    }, cache_control="public, max-age=30")
+    }, cache_control="public, max-age=600")
 
 
 async def repo_about_handler(env, request, owner, repo):
@@ -15996,6 +14554,18 @@ def _account_kind(rec):
     if kind in ("user", "node"):
         return kind
     return "user" if rec.get("pass_hash") else "node"
+
+
+def _is_public_roster_member(rec):
+    # The one predicate for "counts as a member" everywhere the site shows a
+    # member figure (site-wide chat badge, World campfire HUD, accounts
+    # directory). Keeping this in one place is the fix for adhoc #1617: the
+    # chat badge and the World roster used to apply different filters over
+    # the same `users` table and could disagree by a few accounts.
+    return bool(rec) and (
+        _account_kind(rec) == "user"
+        and rec.get("status") == "active"
+        and not rec.get("profile_private"))
 
 
 def _account_has_legacy_wallet_key(rec):
@@ -16993,13 +15563,19 @@ async def _delete_account_namespace(env, name_bi, rec):
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
-    await asyncio.gather(
-        purge_catalog_related_caches(),
-        edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name)),
-        edge_cache_delete(USERS_DIRECTORY_CACHE_KEY),
-        edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY),
-        return_exceptions=True,
-    )
+    # Sequential, like purge_catalog_related_caches itself (issue #555): a few
+    # single-digit-millisecond cache deletes, versus a gather that can wedge
+    # the isolate — see the no-concurrent-tasks rule at the top of this module.
+    await purge_catalog_related_caches()
+    for cache_key in (
+        ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name),
+        USERS_DIRECTORY_CACHE_KEY,
+        CHAT_ACTIVITY_CACHE_KEY,
+    ):
+        try:
+            await edge_cache_delete(cache_key)
+        except Exception:
+            pass
 
 
 def _owned_nodes(rec):
@@ -17376,8 +15952,25 @@ def _account_public_last_email(rec):
     }
 
 
-def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
+def _contribution_tally(value):
+    """Coerce one contributor_activity column into a non-negative count.
+
+    The directory LEFT JOINs that table, so an account that has never opened
+    an issue or pushed a commit has no row at all and every tally column
+    arrives as SQL NULL — i.e. Python None, which int() rejects. Swallowing
+    that here keeps a contributor-less account from 500-ing the whole
+    directory read (and with it chat's roster and the World campfire).
+    """
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket="",
+                              issues=0, pulls=0, commits=0, discussions=0):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+    solana = (rec.get("solana") or "").strip()
     return {
         "name": name,
         "status": rec.get("status", "active"),
@@ -17389,6 +15982,15 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
+        # Lifetime contribution tallies, one per kind — the columns the Qt
+        # admin Users page shows next to each account.
+        "issues": _contribution_tally(issues),
+        "pulls": _contribution_tally(pulls),
+        "commits": _contribution_tally(commits),
+        "discussions": _contribution_tally(discussions),
+        # Payout addresses are public profile data, but never pass through a
+        # malformed value from a stored record.
+        "solana": solana if SOLANA_RE.match(solana) else "",
         # Aggregate-only and rounded down to whole minutes. The public
         # directory deliberately exposes neither a last-seen timestamp nor the
         # current activity interval used by an authenticated World tab.
@@ -17432,6 +16034,79 @@ async def _users_directory_cache_get():
     }))
 
 
+# Per-isolate memo for _public_member_count. The badge behind it loads on
+# every page site-wide, so the moment its 30s edge copy lapsed a burst of
+# concurrent requests hit the cold path below — and each running its OWN
+# 1000-row sequential decrypt_row() pass congested the event loop until
+# unrelated requests in the isolate died with "Cannot enter into task"
+# (git-upload-pack info/refs, room websockets) and NoGilError fatals — the
+# same clone-path family as adhoc #144/#153/#167/#183. At most one caller
+# refreshes per TTL; everyone else is served the memo or a cheap approximate
+# count.
+_MEMBER_COUNT_MEMO = {"count": None, "ts": 0, "refresh_ts": 0}
+MEMBER_COUNT_MEMO_TTL_MS = 60 * 1000
+
+
+async def _public_member_count(env):
+    # The one member count every surface should quote (site-wide chat badge,
+    # World campfire HUD): what _is_public_roster_member admits, deduped by
+    # name. Prefers the roster the directory endpoint already cached at the
+    # edge; the decrypt scan runs at most once per isolate per TTL — see
+    # _MEMBER_COUNT_MEMO.
+    now = int(Date.now())
+    memo = _MEMBER_COUNT_MEMO
+    if memo["count"] is not None and now - memo["ts"] < MEMBER_COUNT_MEMO_TTL_MS:
+        return memo["count"]
+    cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
+    if cached is not None:
+        try:
+            payload = json.loads(await cached.text())
+            count = len(payload.get("users") or [])
+            memo["count"] = count
+            memo["ts"] = now
+            return count
+        except Exception:
+            pass
+    # Single-flight refill, the _decrypted_public_catalog pattern: the claim
+    # is atomic (no await between check and claim on the single-threaded
+    # loop) and deliberately NOT a shared future — a request resuming inside
+    # I/O another request started dies with "Cannot perform I/O on behalf of
+    # a different request" (see ensure_schema). Losing callers serve the
+    # stale memo; on a cold isolate with nothing stale they fall back to a
+    # cheap undeduplicated row count instead of piling onto the decrypt scan.
+    if now - memo["refresh_ts"] < MEMBER_COUNT_MEMO_TTL_MS:
+        if memo["count"] is not None:
+            return memo["count"]
+        row = await d1_first(
+            env,
+            "SELECT COUNT(*) AS c FROM users "
+            "WHERE email_bi IS NOT NULL AND email_bi <> ''",
+        )
+        return int((row or {}).get("c") or 0)
+    memo["refresh_ts"] = now
+    try:
+        seen = set()
+        count = 0
+        rows = await d1_all(env, "SELECT data FROM users LIMIT ?", 1000)
+        for row in rows or []:
+            rec = await decrypt_row(env, row.get("data", ""))
+            if not _is_public_roster_member(rec):
+                continue
+            name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            count += 1
+    except BaseException:
+        # Release the slot (covers CancelledError from a canceled request) so
+        # the next caller retries instead of waiting out a phantom refresh.
+        memo["refresh_ts"] = 0
+        raise
+    memo["count"] = count
+    memo["ts"] = now
+    return count
+
+
 async def _account_users_directory(env, request):
     # Public chat roster directory: user profiles only, with no email, password,
     # device, admin, or signature material. Live node presence is still carried
@@ -17449,19 +16124,22 @@ async def _account_users_directory(env, request):
     seen = set()
     rows = await d1_all(
         env,
-        "SELECT u.data,u.user_bi,a.total_active_ms FROM users u "
+        "SELECT u.data,u.user_bi,a.total_active_ms,c.issues,c.pulls,"
+        "c.discussions FROM users u "
         "LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "
+        "LEFT JOIN contributor_activity c ON c.author_bi=u.user_bi "
         "ORDER BY u.username COLLATE NOCASE LIMIT ?",
         1000,
     )
     # A bucket label only, joined in from its own query so this function
     # body never handles the raw touch timestamp behind it.
     activity_buckets = await _world_user_activity_buckets(env)
+    # Commits alone are not event-tallied in contributor_activity; they come
+    # from the contribution snapshots, summed per account in one pass.
+    commit_totals = await _contribution_commit_totals(env)
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
-        if (not rec or _account_kind(rec) != "user"
-                or rec.get("status") != "active"
-                or rec.get("profile_private")):
+        if not _is_public_roster_member(rec):
             continue
         name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
         if not name or name in seen:
@@ -17469,7 +16147,12 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(
             rec, row.get("total_active_ms", 0),
-            activity_buckets.get(row.get("user_bi"), "")))
+            activity_buckets.get(row.get("user_bi"), ""),
+            issues=row.get("issues", 0),
+            pulls=row.get("pulls", 0),
+            commits=commit_totals.get(row.get("user_bi"), 0),
+            discussions=row.get("discussions", 0),
+        ))
 
     # The campfire seats members in this same array order, one bench per
     # account for the session — so this is sorted by join date (oldest
@@ -19118,12 +17801,16 @@ async def _account_profile(env, request):
         # opt-out must stop new public reads immediately in this colo.
         profile_name = clean_string(
             rec.get("name", ""), MAX_NODE_NAME).lower()
-        await asyncio.gather(
-            edge_cache_delete(
-                ACCOUNT_LOOKUP_CACHE_PREFIX + quote(profile_name)),
-            edge_cache_delete(USERS_DIRECTORY_CACHE_KEY),
-            return_exceptions=True,
-        )
+        # Sequential — see the no-concurrent-tasks rule at the top of this
+        # module; two cache deletes never justify a second task.
+        for cache_key in (
+            ACCOUNT_LOOKUP_CACHE_PREFIX + quote(profile_name),
+            USERS_DIRECTORY_CACHE_KEY,
+        ):
+            try:
+                await edge_cache_delete(cache_key)
+            except Exception:
+                pass
         # Fediverse followers of this profile get an Update(Person) so bio
         # changes propagate to remote servers immediately — but only when a
         # federated field actually changed (see fed_before above).
@@ -20509,10 +19196,12 @@ async def _account_heartbeat(env, request):
         if len(_HEARTBEAT_BALANCE_PROBES) > 5000:
             _HEARTBEAT_BALANCE_PROBES.clear()
         try:
-            balance_lamports = await asyncio.wait_for(
-                _solana_balance_lamports(env, wallet),
-                timeout=HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS / 1000,
-            )
+            # No asyncio.wait_for: _solana_rpc_call already bounds every RPC
+            # attempt with a native AbortSignal.timeout, and cancelling a
+            # JS-backed await from Python leaves the task pending forever —
+            # the wedge described at the top of this module, here on the
+            # per-node heartbeat path.
+            balance_lamports = await _solana_balance_lamports(env, wallet)
         except Exception:
             balance_lamports = None
         if balance_lamports is not None:
@@ -20529,7 +19218,13 @@ async def _account_heartbeat(env, request):
     else:
         notification_preferences = dict(
             prefs_rec.get("notification_preferences") or {})
-    is_admin = await _is_admin(env, name)
+    # A desktop heartbeat is signed by the machine node, while administrator
+    # status belongs to its owning user after the users/nodes split. Checking
+    # only `name` leaves an admin's linked desktop looking like a non-admin and
+    # keeps admin-only app navigation (including Users) hidden. Standalone
+    # legacy user-clients still fall back to their own name.
+    admin_account = owner or name
+    is_admin = await _is_admin(env, admin_account)
     response = {"ok": True, "online": True,
                 "hasPayoutAddress": bool(rec.get("solana")),
                 "payoutCustody": "external-self-custodial-public-address",
@@ -29511,6 +28206,8 @@ async def accounts_handler(env, request):
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
         return await _admin_verify_email(env, request)
+    if url.path == "/api/mirrors/admission-override" and method == "POST":
+        return await _admin_set_admission_override(env, request)
     admin_unverified_prefix = "/api/accounts/admin-unverified/"
     if (
             url.path.startswith(admin_unverified_prefix)
@@ -29763,25 +28460,74 @@ AP_BANNER_PATH = "/assets/fediverse-banner.png"
 _AP_RSA_ALG = {"name": "RSASSA-PKCS1-v1_5", "hash": "SHA-256"}
 
 
-def _ap_origin(env, request=None):
-    # Absolute https origin for actor/object ids. PUBLIC_BASE_URL wins (set on
-    # self-hosted relays); otherwise the request's own host; cron falls back to
-    # the canonical production domain.
-    base = (getattr(env, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
-    if base.startswith("https://") or base.startswith("http://"):
-        return base
-    if request is not None:
-        try:
-            host = urlparse(request.url).netloc
-            if host:
-                return "https://" + host
-        except Exception:
-            pass
-    return "https://forkmesh.com"
+_fediverse_routes = _LazyModule("fediverse_routes")
+_ap_origin = _fediverse_routes.export("_ap_origin")
+_ap_domain_of = _fediverse_routes.export("_ap_domain_of")
+_ap_settings = _fediverse_routes.export("_ap_settings")
+_ap_enabled = _fediverse_routes.export("_ap_enabled")
+_ap_domain_blocked = _fediverse_routes.export("_ap_domain_blocked")
+_ap_disabled_response = _fediverse_routes.export("_ap_disabled_response")
+_ap_actor_url = _fediverse_routes.export("_ap_actor_url")
+_ap_uuid = _fediverse_routes.export("_ap_uuid")
+_ap_generate_keypair = _fediverse_routes.export("_ap_generate_keypair")
+_ap_rsa_sign_b64 = _fediverse_routes.export("_ap_rsa_sign_b64")
+_ap_rsa_verify = _fediverse_routes.export("_ap_rsa_verify")
+_ap_actor_bi = _fediverse_routes.export("_ap_actor_bi")
+_ap_local_actor = _fediverse_routes.export("_ap_local_actor")
+_ap_instance_actor = _fediverse_routes.export("_ap_instance_actor")
+_ap_user_federates = _fediverse_routes.export("_ap_user_federates")
+_ap_org_alias_owner = _fediverse_routes.export("_ap_org_alias_owner")
+_ap_repo_is_official_actor = _fediverse_routes.export("_ap_repo_is_official_actor")
+_ap_prune_actor_inventory = _fediverse_routes.export("_ap_prune_actor_inventory")
+_ap_repo_federates = _fediverse_routes.export("_ap_repo_federates")
+_ap_repo_settings_bi = _fediverse_routes.export("_ap_repo_settings_bi")
+_ap_repo_settings_get = _fediverse_routes.export("_ap_repo_settings_get")
+_ap_org_digest_settings_get = _fediverse_routes.export("_ap_org_digest_settings_get")
+_ap_digest_scope_bi = _fediverse_routes.export("_ap_digest_scope_bi")
+_ap_digest_queue_record = _fediverse_routes.export("_ap_digest_queue_record")
+_ap_enqueue_digest_scope = _fediverse_routes.export("_ap_enqueue_digest_scope")
+_ap_enqueue_repo_digest = _fediverse_routes.export("_ap_enqueue_repo_digest")
+_ap_purge_repo_digest_queues = _fediverse_routes.export("_ap_purge_repo_digest_queues")
+_ap_digest_preview = _fediverse_routes.export("_ap_digest_preview")
+_ap_digest_scope_allowed = _fediverse_routes.export("_ap_digest_scope_allowed")
+_ap_publish_digest_row = _fediverse_routes.export("_ap_publish_digest_row")
+_ap_negative_response = _fediverse_routes.export("_ap_negative_response")
+ap_hostmeta_handler = _fediverse_routes.export("ap_hostmeta_handler")
+ap_webfinger_handler = _fediverse_routes.export("ap_webfinger_handler")
+ap_nodeinfo_handler = _fediverse_routes.export("ap_nodeinfo_handler")
+_ap_build_actor_doc = _fediverse_routes.export("_ap_build_actor_doc")
+_ap_actor_doc_response = _fediverse_routes.export("_ap_actor_doc_response")
+_ap_broadcast_actor_update = _fediverse_routes.export("_ap_broadcast_actor_update")
+ap_collection_handler = _fediverse_routes.export("ap_collection_handler")
+ap_object_handler = _fediverse_routes.export("ap_object_handler")
+ap_object_media_handler = _fediverse_routes.export("ap_object_media_handler")
+_ap_signed_request = _fediverse_routes.export("_ap_signed_request")
+_ap_instance_key = _fediverse_routes.export("_ap_instance_key")
+_ap_remote_actor = _fediverse_routes.export("_ap_remote_actor")
+_ap_refresh_follower_profiles = _fediverse_routes.export("_ap_refresh_follower_profiles")
+_ap_deliver_body = _fediverse_routes.export("_ap_deliver_body")
+_ap_drain_outbox = _fediverse_routes.export("_ap_drain_outbox")
+_ap_publish_repo_event = _fediverse_routes.export("_ap_publish_repo_event")
+_ap_forget_remote = _fediverse_routes.export("_ap_forget_remote")
+_ap_resolve_local_target = _fediverse_routes.export("_ap_resolve_local_target")
+_ap_handle_follow = _fediverse_routes.export("_ap_handle_follow")
+_ap_handle_undo = _fediverse_routes.export("_ap_handle_undo")
+_ap_comment_by_remote_id = _fediverse_routes.export("_ap_comment_by_remote_id")
+_ap_reply_parent = _fediverse_routes.export("_ap_reply_parent")
+_ap_activity_is_public = _fediverse_routes.export("_ap_activity_is_public")
+_ap_handle_create = _fediverse_routes.export("_ap_handle_create")
+_ap_handle_update = _fediverse_routes.export("_ap_handle_update")
+_ap_handle_remove = _fediverse_routes.export("_ap_handle_remove")
+_ap_note_repo_mention = _fediverse_routes.export("_ap_note_repo_mention")
+_ap_send_mention_reply = _fediverse_routes.export("_ap_send_mention_reply")
+_ap_handle_repo_mention = _fediverse_routes.export("_ap_handle_repo_mention")
+_ap_handle_delete = _fediverse_routes.export("_ap_handle_delete")
+ap_inbox_handler = _fediverse_routes.export("ap_inbox_handler")
+ap_publish_handler = _fediverse_routes.export("ap_publish_handler")
+ap_digest_handler = _fediverse_routes.export("ap_digest_handler")
+ap_posts_handler = _fediverse_routes.export("ap_posts_handler")
 
 
-def _ap_domain_of(origin):
-    return origin.split("://", 1)[-1]
 
 
 # Operator configuration (admin-managed via /api/accounts/admin-ap*): a global
@@ -29791,252 +28537,38 @@ _AP_SETTINGS_CACHE = {"ts": 0, "enabled": True, "blocked": set()}
 AP_SETTINGS_TTL_MS = 60 * 1000
 
 
-async def _ap_settings(env, fresh=False):
-    now = int(Date.now())
-    if not fresh and now - _AP_SETTINGS_CACHE["ts"] < AP_SETTINGS_TTL_MS:
-        return _AP_SETTINGS_CACHE
-    row = await d1_first(env, "SELECT v FROM ap_settings WHERE k='enabled'")
-    enabled = (row or {}).get("v", "1") != "0"
-    rows = await d1_all(env, "SELECT domain FROM ap_blocked_domains")
-    blocked = {r.get("domain", "") for r in (rows or []) if r.get("domain")}
-    _AP_SETTINGS_CACHE.update({"ts": now, "enabled": enabled,
-                               "blocked": blocked})
-    return _AP_SETTINGS_CACHE
 
 
-async def _ap_enabled(env):
-    return (await _ap_settings(env))["enabled"]
 
 
-async def _ap_domain_blocked(env, host):
-    return ap.domain_blocked_by(host, (await _ap_settings(env))["blocked"])
 
 
-def _ap_disabled_response():
-    return json_response({"error": "not_found"}, status=404)
 
 
-def _ap_actor_url(origin, kind, handle):
-    if kind == AP_ACTOR_INSTANCE:
-        return origin + ap.INSTANCE_ACTOR_PATH
-    if kind == AP_ACTOR_USER:
-        return origin + ap.user_actor_path(handle)
-    owner, _, repo = handle.partition(".")
-    return origin + ap.repo_actor_path(owner, repo)
 
 
-def _ap_uuid():
-    raw = js_crypto.getRandomValues(Uint8Array.new(16))
-    return bytes(raw.to_py()).hex()
 
 
-async def _ap_generate_keypair():
-    params = to_js({"name": "RSASSA-PKCS1-v1_5", "modulusLength": 2048,
-                    "hash": "SHA-256"})
-    params.publicExponent = _to_js(bytes([1, 0, 1]))  # 65537
-    pair = await js_crypto.subtle.generateKey(
-        params, True, _to_js(["sign", "verify"]))
-    spki = await js_crypto.subtle.exportKey("spki", pair.publicKey)
-    pkcs8 = await js_crypto.subtle.exportKey("pkcs8", pair.privateKey)
-    pub_pem = ap.pem_wrap(
-        "PUBLIC KEY",
-        base64.b64encode(bytes(Uint8Array.new(spki).to_py())).decode())
-    priv_b64 = base64.b64encode(bytes(Uint8Array.new(pkcs8).to_py())).decode()
-    return pub_pem, priv_b64
 
 
-async def _ap_rsa_sign_b64(priv_b64, text):
-    key = await js_crypto.subtle.importKey(
-        "pkcs8", _to_js(base64.b64decode(priv_b64)), to_js(_AP_RSA_ALG),
-        False, _to_js(["sign"]))
-    sig = await js_crypto.subtle.sign(
-        to_js({"name": "RSASSA-PKCS1-v1_5"}), key, _to_js(text.encode()))
-    return base64.b64encode(bytes(Uint8Array.new(sig).to_py())).decode()
 
 
-async def _ap_rsa_verify(pub_pem, sig_b64, text):
-    try:
-        der = base64.b64decode(ap.pem_body(pub_pem))
-        signature = base64.b64decode(sig_b64)
-    except Exception:
-        return False
-    try:
-        key = await js_crypto.subtle.importKey(
-            "spki", _to_js(der), to_js(_AP_RSA_ALG), False, _to_js(["verify"]))
-        ok = await js_crypto.subtle.verify(
-            to_js({"name": "RSASSA-PKCS1-v1_5"}), key, _to_js(signature),
-            _to_js(text.encode()))
-        return bool(ok)
-    except Exception:
-        return False
 
 
-async def _ap_actor_bi(env, kind, handle):
-    return await blind_index(env, "ap-actor:%s:%s" % (kind, handle))
 
 
-async def _ap_local_actor(env, kind, handle, create=False):
-    # A local actor's keypair, minted lazily on the first fediverse lookup so
-    # users/repos nobody follows never get a row.
-    actor_bi = await _ap_actor_bi(env, kind, handle)
-    row = await d1_first(
-        env, "SELECT data FROM ap_actors WHERE actor_bi=?", actor_bi)
-    if row:
-        rec = await decrypt_row(env, row.get("data"))
-        if rec and rec.get("privkey") and rec.get("pubkeyPem"):
-            rec["actorBi"] = actor_bi
-            return rec
-    if not create:
-        return None
-    pub_pem, priv_b64 = await _ap_generate_keypair()
-    rec = {"kind": kind, "handle": handle, "pubkeyPem": pub_pem,
-           "privkey": priv_b64, "createdAt": int(Date.now())}
-    await d1_run(
-        env,
-        "INSERT INTO ap_actors (actor_bi, kind, pubkey_pem, data, created_at)"
-        " VALUES (?,?,?,?,?) ON CONFLICT(actor_bi) DO NOTHING",
-        actor_bi, kind, pub_pem, await encrypt_row(env, rec),
-        rec["createdAt"])
-    # Re-read: a concurrent first-lookup may have won the insert race with a
-    # different keypair, and the stored row is the canonical one (the pubkey
-    # is already being served to the remote server that triggered it).
-    row = await d1_first(
-        env, "SELECT data FROM ap_actors WHERE actor_bi=?", actor_bi)
-    stored = await decrypt_row(env, row.get("data")) if row else None
-    rec = stored or rec
-    rec["actorBi"] = actor_bi
-    return rec
 
 
-async def _ap_instance_actor(env, create=False):
-    row = await d1_first(
-        env, "SELECT data FROM ap_service_keys WHERE key_name='instance'")
-    if row:
-        rec = await decrypt_row(env, row.get("data"))
-        if rec and rec.get("privkey") and rec.get("pubkeyPem"):
-            return rec
-    if not create:
-        return None
-    pub_pem, priv_b64 = await _ap_generate_keypair()
-    rec = {
-        "kind": "service",
-        "handle": AP_INSTANCE_HANDLE,
-        "pubkeyPem": pub_pem,
-        "privkey": priv_b64,
-        "createdAt": int(Date.now()),
-    }
-    await d1_run(
-        env,
-        "INSERT INTO ap_service_keys (key_name, pubkey_pem, data, created_at) "
-        "VALUES ('instance',?,?,?) ON CONFLICT(key_name) DO NOTHING",
-        pub_pem, await encrypt_row(env, rec), rec["createdAt"])
-    row = await d1_first(
-        env, "SELECT data FROM ap_service_keys WHERE key_name='instance'")
-    return await decrypt_row(env, row.get("data")) if row else rec
 
 
-async def _ap_user_federates(env, name):
-    # Any active, non-private account federates as a Person — node-owner
-    # accounts included, not just login ("user"-kind) accounts: the node name
-    # is the public authoring identity on issues/PRs, so it is what fediverse
-    # followers expect to find at @name@<domain>. The web follow API
-    # (_account_follow) accepts the same targets.
-    name = (name or "").strip().lower()
-    if not valid_node_name(name):
-        return False
-    _, rec = await _account_row(env, name)
-    return bool(rec and rec.get("status") == "active"
-                and not rec.get("profile_private"))
 
 
-async def _ap_org_alias_owner(env, owner, repo):
-    # Organization repo aliases (issue #388): a fediverse actor is addressed by
-    # the org handle (@org.repo@host), but the backing repo — its repositories
-    # row, media, per-repo AP settings and issue inbox — lives under the linked
-    # node, never under the org name. Resolve org->node for those data reads so
-    # federation keeps working after a repo is fronted by an org, while the
-    # public actor identity (handle, reply author, web URLs) stays the org. A
-    # plain node URL (no alias) resolves to itself, so this is a safe no-op on
-    # every non-org path.
-    node = await _org_repo_node(env, owner, repo)
-    return node or owner
 
 
-async def _ap_repo_is_official_actor(env, owner, repo):
-    # Mirror catalog rows are routing replicas, never their own public social
-    # identities. Official repositories are locally published records or an
-    # organization alias backed by one; remote/external clone records are not.
-    # Do not call _ap_org_alias_owner/_org_repo_node here. Actor inventory
-    # reconciliation runs from ensure_schema(), while _org_repo_node itself
-    # calls ensure_schema(); that recursion makes alias resolution fail closed
-    # during a cold start and used to delete valid org actors plus every
-    # follower row. Read the already-created durable link directly instead.
-    owner_l = str(owner or "").strip().lower()
-    repo_l = str(repo or "").strip().lower()
-    org_bi = await blind_index(env, "org:" + owner_l)
-    alias_row = await d1_first(
-        env,
-        "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
-        org_bi, repo_l)
-    alias_owner = str(
-        (alias_row or {}).get("node_owner") or "").strip().lower()
-    data_owner = (
-        alias_owner
-        if valid_node_name(alias_owner) and alias_owner != owner_l
-        else owner_l
-    )
-    is_org_alias = (
-        data_owner != owner_l
-    )
-    key_bi = await blind_index(env, data_owner + "/" + repo_l)
-    row = await d1_first(
-        env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
-    if not row:
-        return False
-    rec = await decrypt_row(env, row.get("data"))
-    # A durable org link promotes its backing repository to the org's one
-    # official public identity even when the backing catalog row is tagged as
-    # a remote clone. That tag describes the hosting node's copy; it must not
-    # cause startup reconciliation to delete the org actor and its followers.
-    if is_org_alias:
-        return _catalog_record_matches_identity(rec, data_owner, repo_l)
-    source = str((rec or {}).get("source") or "").strip().lower()
-    return source not in ("remote-clone", "external")
 
 
-async def _ap_prune_actor_inventory(env):
-    # Actor visibility is enforced by the public resolution/federation gates,
-    # not by erasing the durable social graph during schema startup. Catalog
-    # records and org aliases can be temporarily unavailable or misclassified;
-    # deleting here previously turned that transient state into permanent loss
-    # of followers, actors, signing identities, and posts. Keep this hook for
-    # callers from older deployments, but make reconciliation non-destructive.
-    return
 
 
-async def _ap_repo_federates(env, owner, repo):
-    # Only published, public repos federate. A missing catalog row means the
-    # repo was never published — unlike the git-clone path (which stays open
-    # for ad-hoc hosts), an unpublished repo has no fediverse presence. The
-    # owner can also switch federation off per repo (web/Qt repo settings).
-    data_owner = await _ap_org_alias_owner(env, owner, repo)
-    official_reader = globals().get("_ap_repo_is_official_actor")
-    if callable(official_reader) and not await official_reader(
-            env, owner, repo):
-        return False
-    privacy_reader = globals().get("_repo_is_private")
-    if callable(privacy_reader):
-        if await privacy_reader(env, data_owner, repo):
-            return False
-    else:
-        # Isolated compatibility harnesses may omit _repo_is_private.
-        # Production always uses its signed-record, fail-closed decision.
-        key_bi = await blind_index(env, data_owner + "/" + repo)
-        row = await d1_first(
-            env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
-        if not row or int(row.get("is_private") or 0):
-            return False
-    return (await _ap_repo_settings_get(env, data_owner, repo))["federate"]
 
 
 # Per-repo fediverse switches the owner manages from the web and Qt repo
@@ -30049,317 +28581,26 @@ AP_REPO_SETTING_DEFAULTS = {
 }
 
 
-async def _ap_repo_settings_bi(env, owner, repo):
-    # Distinct namespace + full lowercasing on both halves: callers reach this
-    # with URL-cased (About handler) and handle-cased (AP gates) names, and
-    # they must all land on the same row. Org-alias handles resolve to the
-    # backing node so a mention gate keys on the same row the owner's repo
-    # settings wrote under the node name (issue #388).
-    owner = await _ap_org_alias_owner(env, owner, repo)
-    return await blind_index(
-        env, "ap-repo-settings:%s/%s" % (str(owner or "").strip().lower(),
-                                         str(repo or "").strip().lower()))
 
 
-async def _ap_repo_settings_get(env, owner, repo):
-    row = await d1_first(
-        env, "SELECT data FROM ap_repo_settings WHERE repo_bi=?",
-        await _ap_repo_settings_bi(env, owner, repo))
-    settings = dict(AP_REPO_SETTING_DEFAULTS)
-    if row:
-        try:
-            stored = json.loads(row.get("data") or "{}")
-        except Exception:
-            stored = {}
-        if isinstance(stored, dict):
-            for key in AP_REPO_SETTING_DEFAULTS:
-                if key in stored:
-                    settings[key] = bool(stored[key])
-    return settings
 
 
-async def _ap_org_digest_settings_get(env, org_bi):
-    """Return the org-alias digest gate.
-
-    Organization controls are deliberately a second, suppress-only gate. The
-    linked repository owner's `federate` and `broadcastEvents` settings must
-    also be enabled before any org-alias event can enter a queue.
-    """
-    row = await d1_first(
-        env, "SELECT data FROM ap_org_digest_settings WHERE org_bi=?", org_bi)
-    controls = fedi_digest.normalize_controls({})
-    if row:
-        try:
-            stored = json.loads(row.get("data") or "{}")
-        except Exception:
-            stored = {}
-        if isinstance(stored, dict):
-            controls = fedi_digest.normalize_controls(stored)
-    return controls
 
 
-async def _ap_digest_scope_bi(env, scope):
-    return await blind_index(
-        env, "ap-digest:" + str(scope or "").strip().lower())
 
 
-async def _ap_digest_queue_record(env, scope):
-    scope_bi = await _ap_digest_scope_bi(env, scope)
-    row = await d1_first(
-        env,
-        "SELECT scope_bi, next_ts, last_published_at, data "
-        "FROM ap_digest_queues WHERE scope_bi=?",
-        scope_bi)
-    if not row:
-        return scope_bi, None, None
-    rec = await decrypt_row(env, row.get("data")) or {}
-    if not isinstance(rec, dict) or rec.get("scope") != scope:
-        # Fail closed if the encrypted payload does not match its blind key.
-        return scope_bi, row, None
-    return scope_bi, row, rec
 
 
-async def _ap_enqueue_digest_scope(
-        env, scope_owner, repo, source_owner, event):
-    """Insert one already-reduced public event into an encrypted scope queue."""
-    scope_owner = clean_string(scope_owner, MAX_NODE_NAME).strip().lower()
-    source_owner = clean_string(source_owner, MAX_NODE_NAME).strip().lower()
-    repo = clean_string(repo, MAX_REPO_SEGMENT).strip()
-    scope = scope_owner + "/" + repo.lower()
-    if (not valid_node_name(scope_owner) or not valid_node_name(source_owner)
-            or not repo or not event):
-        return False
-    scope_bi, row, rec = await _ap_digest_queue_record(env, scope)
-    now = int(Date.now())
-    last_published = int((row or {}).get("last_published_at") or 0)
-    events = fedi_digest.add_event(
-        (rec or {}).get("events") if rec else [], event)
-    if not events:
-        return False
-    # A new queue waits a full cadence so several meaningful events can be
-    # combined. After a prior post, the next due time remains anchored to that
-    # post rather than sliding forward with every incoming event.
-    if row:
-        next_ts = int(row.get("next_ts") or 0)
-        if next_ts <= 0:
-            next_ts = max(now, last_published + fedi_digest.DAY_MS)
-    else:
-        next_ts = now + fedi_digest.DAY_MS
-    payload = {
-        "scope": scope,
-        "scopeOwner": scope_owner,
-        "repo": repo,
-        "sourceOwner": source_owner,
-        "events": events,
-        "lastPublishedAt": last_published,
-    }
-    await d1_run(
-        env,
-        "INSERT INTO ap_digest_queues "
-        "(scope_bi, next_ts, last_published_at, data, updated_at) "
-        "VALUES (?,?,?,?,?) ON CONFLICT(scope_bi) DO UPDATE SET "
-        "next_ts=excluded.next_ts, data=excluded.data, "
-        "updated_at=excluded.updated_at",
-        scope_bi, next_ts, last_published,
-        await encrypt_row(env, payload), now)
-    return True
 
 
-async def _ap_enqueue_repo_digest(
-        env, request, owner, repo, kind, event_type, ref, title, body):
-    """Queue a safe repository event for its repo and enabled org aliases."""
-    if await _repo_is_private(env, owner, repo):
-        return False
-    settings = await _ap_repo_settings_get(env, owner, repo)
-    if not (settings["federate"] and settings["broadcastEvents"]):
-        return False
-    origin = _ap_origin(env, request)
-    timestamp = int(Date.now())
-    canonical = fedi_digest.repository_event(
-        origin, owner, repo, kind, event_type, ref, title, body, timestamp)
-    queued = await _ap_enqueue_digest_scope(
-        env, owner, repo, owner, canonical)
-
-    # An organization alias has its own repo actor/followers and therefore its
-    # own daily cadence. Org admins may suppress that alias, but cannot enable
-    # it when the backing repository owner disabled federation.
-    rows = await d1_all(
-        env,
-        "SELECT r.org_bi AS org_bi, o.name AS name, s.data AS settings "
-        "FROM org_repos r JOIN orgs o ON o.org_bi=r.org_bi "
-        "LEFT JOIN ap_org_digest_settings s ON s.org_bi=r.org_bi "
-        "WHERE r.node_owner=? AND r.repo=? ORDER BY o.name LIMIT ?",
-        str(owner).lower(), str(repo).lower(), MAX_ORGS_PER_ACCOUNT)
-    for linked in rows or []:
-        try:
-            raw_controls = json.loads(linked.get("settings") or "{}")
-        except Exception:
-            raw_controls = {}
-        controls = fedi_digest.normalize_controls(raw_controls)
-        org = clean_string(linked.get("name"), MAX_NODE_NAME).strip().lower()
-        if not controls["enabled"] or not valid_node_name(org):
-            continue
-        org_event = fedi_digest.repository_event(
-            origin, org, repo, kind, event_type, ref, title, body, timestamp)
-        queued = (await _ap_enqueue_digest_scope(
-            env, org, repo, owner, org_event)) or queued
-    return queued
 
 
-async def _ap_purge_repo_digest_queues(env, owner, repo):
-    """Drop queued automatic posts when the repository owner disables them."""
-    scopes = [str(owner).lower() + "/" + str(repo).lower()]
-    rows = await d1_all(
-        env,
-        "SELECT o.name AS name FROM org_repos r "
-        "JOIN orgs o ON o.org_bi=r.org_bi "
-        "WHERE r.node_owner=? AND r.repo=? LIMIT ?",
-        str(owner).lower(), str(repo).lower(), MAX_ORGS_PER_ACCOUNT)
-    scopes.extend(
-        str(row.get("name") or "").lower() + "/" + str(repo).lower()
-        for row in (rows or []) if row.get("name"))
-    for scope in scopes:
-        await d1_run(
-            env, "DELETE FROM ap_digest_queues WHERE scope_bi=?",
-            await _ap_digest_scope_bi(env, scope))
 
 
-async def _ap_digest_preview(env, scope):
-    _, row, rec = await _ap_digest_queue_record(env, scope)
-    events = (rec or {}).get("events") if rec else []
-    digest = fedi_digest.build_digest(events, scope)
-    return {
-        "scope": scope,
-        "pending": len(events or []),
-        "preview": digest,
-        "lastPublishedAt": int((row or {}).get("last_published_at") or 0),
-        "nextPublishAt": int((row or {}).get("next_ts") or 0),
-    }
 
 
-async def _ap_digest_scope_allowed(env, rec):
-    """Revalidate privacy/ownership controls immediately before publishing."""
-    scope_owner = clean_string(
-        (rec or {}).get("scopeOwner"), MAX_NODE_NAME).strip().lower()
-    source_owner = clean_string(
-        (rec or {}).get("sourceOwner"), MAX_NODE_NAME).strip().lower()
-    repo = clean_string((rec or {}).get("repo"), MAX_REPO_SEGMENT).strip()
-    if not scope_owner or not source_owner or not repo:
-        return False
-    if await _repo_is_private(env, source_owner, repo):
-        return False
-    settings = await _ap_repo_settings_get(env, source_owner, repo)
-    if not (settings["federate"] and settings["broadcastEvents"]):
-        return False
-    if scope_owner == source_owner:
-        return True
-    org_bi, org_row = await _org_row(env, scope_owner)
-    if not org_row:
-        return False
-    linked = await d1_first(
-        env,
-        "SELECT 1 AS one FROM org_repos "
-        "WHERE org_bi=? AND repo=? AND node_owner=?",
-        org_bi, repo.lower(), source_owner)
-    if not linked:
-        return False
-    return (await _ap_org_digest_settings_get(env, org_bi))["enabled"]
 
 
-async def _ap_publish_digest_row(env, row):
-    """Durably create one digest Note/outbox fan-out, then consume its events."""
-    scope_bi = str((row or {}).get("scope_bi") or "")
-    rec = await decrypt_row(env, (row or {}).get("data")) or {}
-    scope = str(rec.get("scope") or "")
-    if not scope_bi or not scope or not await _ap_digest_scope_allowed(env, rec):
-        # A repo made private, an owner opt-out, or an unlinked/disabled org
-        # must revoke queued metadata rather than leave it probeable.
-        if scope_bi:
-            await d1_run(
-                env, "DELETE FROM ap_digest_queues WHERE scope_bi=?", scope_bi)
-        return False
-    now = int(Date.now())
-    events = rec.get("events") if isinstance(rec.get("events"), list) else []
-    last_published = int(row.get("last_published_at") or 0)
-    if not fedi_digest.digest_due(events, last_published, now):
-        return False
-    digest = fedi_digest.build_digest(events, scope)
-    if not digest:
-        await d1_run(
-            env, "DELETE FROM ap_digest_queues WHERE scope_bi=?", scope_bi)
-        return False
-
-    origin = _ap_origin(env)
-    scope_owner = str(rec.get("scopeOwner") or "").lower()
-    repo = str(rec.get("repo") or "")
-    handle = ap.repo_handle(scope_owner, repo.lower())
-    local = await _ap_local_actor(env, AP_ACTOR_REPO, handle)
-    if not local:
-        # Preserve lazy actor creation: a repo nobody follows does not mint an
-        # RSA key merely because it had local activity.
-        return False
-    followers = await d1_all(
-        env,
-        "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
-        local["actorBi"])
-    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
-    object_uuid = hashlib.sha256(
-        ("forkmesh-ap-digest-v1\n" + scope + "\n"
-         + "\n".join(digest["eventIds"])).encode()).hexdigest()[:32]
-    object_url = origin + "/ap/o/" + object_uuid
-    web_url = origin + repo_web_href(scope_owner, repo)
-    note = ap.note_doc(
-        object_url, actor_url, actor_url + "/followers",
-        ap.note_html_from_text(digest["text"]), now, web_url=web_url)
-    stored = {
-        "note": note,
-        "context": {
-            "owner": scope_owner, "repo": repo, "kind": "daily_digest",
-            "ref": object_uuid, "key": "digest:" + scope,
-        },
-        "media": [],
-        "automated": True,
-        "eventIds": digest["eventIds"],
-    }
-    body_str = json.dumps(ap.create_activity(note))
-    out_data = await encrypt_row(env, {
-        "body": body_str, "actorKind": AP_ACTOR_REPO,
-        "actorHandle": handle, "actorUrl": actor_url})
-
-    remaining = fedi_digest.remove_published(events, digest["eventIds"])
-    rec["events"] = remaining
-    rec["lastPublishedAt"] = now
-    next_ts = now + fedi_digest.DAY_MS
-    statements = [(
-        "INSERT OR IGNORE INTO ap_objects "
-        "(object_uuid, actor_bi, context_bi, data, published) "
-        "VALUES (?,?,NULL,?,?)",
-        (object_uuid, local["actorBi"], await encrypt_row(env, stored), now),
-    )]
-    seen = set()
-    for follower in followers or []:
-        inbox = ((follower.get("shared_inbox") or "").strip()
-                 or (follower.get("inbox") or "").strip())
-        if not inbox or inbox in seen:
-            continue
-        seen.add(inbox)
-        delivery_bi = await blind_index(
-            env, "ap-digest-delivery:" + object_uuid + ":" + inbox)
-        statements.append((
-            "INSERT OR IGNORE INTO ap_outbox "
-            "(inbox, data, attempts, next_ts, created_at, dedupe_bi) "
-            "VALUES (?,?,0,?,?,?)",
-            (inbox, out_data, now, now, delivery_bi),
-        ))
-    statements.append((
-        "UPDATE ap_digest_queues SET next_ts=?, last_published_at=?, "
-        "data=?, updated_at=? WHERE scope_bi=?",
-        (next_ts, now, await encrypt_row(env, rec), now, scope_bi),
-    ))
-    # D1 batch is transactional: event ids are removed only in the same durable
-    # commit that creates the deterministic Note and retryable outbox rows.
-    await _contribution_run_batch(env, statements)
-    return True
 
 
 async def _ap_process_digest_queues(env, limit=AP_DIGEST_CRON_BATCH):
@@ -30391,96 +28632,10 @@ async def _ap_process_digest_queues(env, limit=AP_DIGEST_CRON_BATCH):
 # to one origin computation per colo per TTL. Keyed by the canonical public
 # URL; only successful (200) documents are stored.
 
-async def _ap_negative_response(cache_key, error="not_found"):
-    # Park a 404 at the edge briefly. Probes for handles that don't federate
-    # (deleted accounts, crawlers, Mastodon re-resolving after a failed
-    # follow) otherwise re-run the full D1 federation gate on every hit, and
-    # they arrive in the same bursts the 200s do.
-    resp = json_response({"error": error}, status=404, cache_seconds=120)
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
-async def ap_hostmeta_handler(env, request):
-    # Mastodon's resolver falls back to GET /.well-known/host-meta whenever a
-    # webfinger lookup fails, so during any failure window each missed
-    # resolution used to cost a SECOND request that walked the entire route
-    # chain into the terminal JSON 404 — a self-amplifying loop. The document
-    # is a constant pointer at our webfinger template: no schema, no D1, and
-    # a day at the edge.
-    if method_name(request) not in ("GET", "HEAD"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    origin = _ap_origin(env, request)
-    cache_key = origin + "/.well-known/host-meta"
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        return cached
-    xrd = ('<?xml version="1.0" encoding="UTF-8"?>\n'
-           '<XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0">'
-           '<Link rel="lrdd" '
-           'template="%s/.well-known/webfinger?resource={uri}"/>'
-           '</XRD>' % origin)
-    resp = Response(xrd, status=200, headers={
-        "content-type": "application/xrd+xml; charset=utf-8",
-        "cache-control": "public, max-age=86400",
-    })
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
-async def ap_webfinger_handler(env, request):
-    if method_name(request) != "GET":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    params = parse_qs(urlparse(request.url).query)
-    handle, domain = ap.parse_acct_resource(params.get("resource", [""])[0])
-    if not handle:
-        return json_response({"error": "invalid_resource"}, status=400)
-    origin = _ap_origin(env, request)
-    our_domain = _ap_domain_of(origin)
-    if domain != our_domain:
-        return json_response({"error": "not_found"}, status=404)
-    # Key on the parsed acct (already lowercase-normalized), so the many
-    # spellings of the same resource share one cache entry.
-    cache_key = ("%s/.well-known/webfinger?resource=acct:%s@%s"
-                 % (origin, handle, domain))
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        try:
-            if int(cached.status) >= 400:
-                return cached
-        except Exception:
-            pass
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    if handle == our_domain:
-        kind, actor_handle, acct_name = (
-            AP_ACTOR_INSTANCE, AP_INSTANCE_HANDLE, our_domain)
-    else:
-        parsed = ap.split_handle(handle)
-        if not parsed:
-            return await _ap_negative_response(cache_key)
-        if parsed[0] == "user":
-            return await _ap_negative_response(cache_key)
-        else:
-            if not await _ap_repo_federates(env, parsed[1], parsed[2]):
-                return await _ap_negative_response(cache_key)
-            kind = AP_ACTOR_REPO
-            actor_handle = ap.repo_handle(parsed[1], parsed[2])
-            acct_name = actor_handle
-    # Resolve visibility before reading edge cache. Otherwise a public actor
-    # document could remain discoverable after its account/repository is made
-    # private, for the remainder of the old cache entry's TTL.
-    if cached is not None:
-        return cached
-    actor_url = _ap_actor_url(origin, kind, actor_handle)
-    doc = ap.webfinger_doc(acct_name + "@" + our_domain, actor_url)
-    resp = json_response(doc, cache_seconds=3600, extra_headers={
-        "content-type": ap.JRD_CONTENT_TYPE,
-        "access-control-allow-origin": "*",
-    })
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
 # NodeInfo usage counts, cached per isolate. Every fediverse server that hears
@@ -30491,727 +28646,36 @@ _NODEINFO_CACHE = {"ts": 0, "users": 0, "posts": 0}
 NODEINFO_CACHE_TTL_MS = 10 * 60 * 1000
 
 
-async def ap_nodeinfo_handler(env, request, index):
-    origin = _ap_origin(env, request)
-    cache_key = origin + ("/.well-known/nodeinfo" if index else "/nodeinfo/2.1")
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        return cached
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    if index:
-        resp = json_response(ap.nodeinfo_index(origin), cache_seconds=3600)
-        await edge_cache_put(cache_key, resp)
-        return resp
-    now = int(Date.now())
-    if now - _NODEINFO_CACHE["ts"] >= NODEINFO_CACHE_TTL_MS:
-        users = await d1_first(env, "SELECT COUNT(*) AS c FROM users")
-        posts = await d1_first(env, "SELECT COUNT(*) AS c FROM ap_objects")
-        _NODEINFO_CACHE.update({
-            "ts": now,
-            "users": (users or {}).get("c", 0) or 0,
-            "posts": (posts or {}).get("c", 0) or 0,
-        })
-    doc = ap.nodeinfo_doc(
-        _build_rev(env)[:12], _NODEINFO_CACHE["users"],
-        _NODEINFO_CACHE["posts"])
-    resp = json_response(doc, cache_seconds=3600)
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
-async def _ap_build_actor_doc(env, origin, kind, handle, rec):
-    """The actor document, shared by the GET endpoint and the Update
-    broadcast (profile/branding changes). Returns None when the actor does
-    not federate (missing/private/blocked account or repo)."""
-    # Brand defaults; repos with uploaded branding override below.
-    icon_url = origin + AP_AVATAR_PATH
-    image_url = origin + AP_BANNER_PATH
-    if kind == AP_ACTOR_INSTANCE:
-        return ap.instance_actor_doc(
-            origin, _ap_domain_of(origin), rec["pubkeyPem"],
-            icon_url=icon_url, image_url=image_url)
-    if kind == AP_ACTOR_USER:
-        if not await _ap_user_federates(env, handle):
-            return None
-        actor_type, display = "Person", handle
-        profile_url = origin + "/@" + handle
-        # Surface the account's own bio as the fediverse summary so the
-        # Mastodon profile card mirrors the /@name page.
-        _, account_rec = await _account_row(env, handle)
-        bio = clean_string(
-            (account_rec or {}).get("profile_bio", "") or "", 500).strip()
-        summary = (ap.note_html_from_text(bio) if bio
-                   else "ForkMesh profile of @%s." % handle)
-    else:
-        owner, _, repo = handle.partition(".")
-        # Org handles read their repo data from the linked node (issue #388),
-        # but display, profile URL and web links stay under the org name below.
-        data_owner = await _ap_org_alias_owner(env, owner, repo)
-        key_bi = await blind_index(env, data_owner + "/" + repo)
-        repo_row = await d1_first(
-            env, "SELECT is_private, data FROM repositories WHERE key_bi=?",
-            key_bi)
-        privacy_reader = globals().get("_repo_is_private")
-        hidden = (
-            await privacy_reader(env, data_owner, repo)
-            if callable(privacy_reader)
-            else bool(int((repo_row or {}).get("is_private") or 0))
-        )
-        if not repo_row or hidden:
-            return None
-        actor_type, display = "Group", owner + "/" + repo
-        repo_web_url = origin + repo_web_href(owner, repo)
-        # The actor's canonical `url` is the repo's fediverse profile page (a
-        # feed of its federated posts), not the raw git-forge page: Mastodon
-        # sends a user who clicks the repo handle — in a mention, or via the
-        # profile's external-link — to this `url`, and dropping them onto a
-        # code page straight from a social timeline is jarring (adhoc #50).
-        # The git page stays one row away ("Repository", below) and is linked
-        # prominently on the profile page itself.
-        profile_url = origin + "/@" + handle
-        # Owner-set About description becomes the fediverse bio.
-        catalog_rec = await decrypt_row(env, repo_row.get("data"))
-        description = clean_string(
-            (catalog_rec or {}).get("description", "") or "", 240).strip()
-        summary = (ap.note_html_from_text(description) if description
-                   else ("ForkMesh repository %s/%s. Follow for new issues, "
-                         "pull requests, discussions and releases.")
-                   % (owner, repo))
-        # Owner-uploaded branding (repo About tab): logo = avatar, banner =
-        # header. updated_at rides along as a cache-buster so Mastodon
-        # refetches when the image changes.
-        media_rows = await d1_all(
-            env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?",
-            key_bi)
-        for media in media_rows or []:
-            media_url = "%s/api/repo/%s/%s/media/%s.png?v=%d" % (
-                origin, quote(owner), quote(repo), media.get("kind", ""),
-                int(media.get("updated_at") or 0))
-            if media.get("kind") == "logo":
-                icon_url = media_url
-            elif media.get("kind") == "banner":
-                image_url = media_url
-        # The native repository logo API always has an original,
-        # locally-generated fallback. Use its real image projection when no
-        # owner-uploaded fediverse logo exists, rather than giving every
-        # repository the instance avatar.
-        if icon_url == origin + AP_AVATAR_PATH:
-            versioner = globals().get("_repository_social_version")
-            logo_version = (
-                versioner(catalog_rec) if callable(versioner) else "")
-            icon_url = "%s/api/repo/%s/%s/logo?image=1" % (
-                origin, quote(owner), quote(repo))
-            if logo_version:
-                icon_url += "&v=" + quote(logo_version, safe="")
-    # Profile metadata rows: the canonical page link (VERIFIABLE — the served
-    # page carries a reciprocal rel="me" back to this same URL, which is also
-    # the actor's `url`, so Mastodon's link verification turns it green) and
-    # the relay this actor lives on (origin-derived, so self-hosted relays
-    # advertise their own domain).
-    # The verified profile row links the human page ("Repository" = a repo's
-    # git page, "Profile" = a user's /@name page). For repos that page is no
-    # longer the actor's `url`, so the reciprocal rel="me" that earns the green
-    # check lives on the git page (see _serve_repo_page), pointing at this actor.
-    web_link = repo_web_url if kind == AP_ACTOR_REPO else profile_url
-    attachments = [
-        ap.property_value(
-            "Repository" if kind == AP_ACTOR_REPO else "Profile", web_link),
-        # Plain text, deliberately: an anchor here made every follower
-        # server's link verifier fetch the worker-served homepage on each
-        # verification round, for a row that can never earn the green check.
-        ap.property_text("Relay", _ap_domain_of(origin)),
-    ]
-    return ap.actor_doc(
-        _ap_actor_url(origin, kind, handle), actor_type, handle, display,
-        summary, profile_url, rec["pubkeyPem"],
-        shared_inbox=origin + "/ap/inbox",
-        published_ms=rec.get("createdAt"),
-        icon_url=icon_url, image_url=image_url,
-        attachments=attachments)
 
 
-async def _ap_actor_doc_response(env, request, kind, handle):
-    if method_name(request) not in ("GET", "HEAD"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    origin = _ap_origin(env, request)
-    # Keyed on the canonical actor URL so every route shape that serves this
-    # document (/ap/users/x, /@x with an ActivityPub Accept header, /ap/actor)
-    # shares one edge entry.
-    cache_key = _ap_actor_url(origin, kind, handle)
-    # Only official repositories are followable local actors. The relay still
-    # has an internal signing identity for secure ActivityPub fetches, but it
-    # does not occupy ap_actors or expose a user/instance actor inventory.
-    if kind == AP_ACTOR_USER:
-        return await _ap_negative_response(cache_key)
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        try:
-            if int(cached.status) >= 400:
-                return cached
-        except Exception:
-            pass
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    if kind != AP_ACTOR_INSTANCE:
-        # Cheap federation gate before minting keys for a 404.
-        parsed = await _ap_resolve_local_target(
-            env, origin, _ap_actor_url(origin, kind, handle))
-        if not parsed:
-            return await _ap_negative_response(cache_key)
-    if cached is not None:
-        return cached
-    rec = (
-        await _ap_instance_actor(env, create=True)
-        if kind == AP_ACTOR_INSTANCE
-        else await _ap_local_actor(env, kind, handle, create=True)
-    )
-    if not rec:
-        return json_response({"error": "unavailable"}, status=503)
-    doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
-    if not doc:
-        return await _ap_negative_response(cache_key)
-    resp = json_response(doc, cache_seconds=300, extra_headers={
-        "content-type": ap.ACTIVITY_CONTENT_TYPE})
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
-async def _ap_broadcast_actor_update(env, request, kind, handle):
-    """Push an Update(actor) to every follower so remote servers refetch the
-    profile (avatar/banner/bio) immediately instead of waiting out their
-    cache — this is how a repo's uploaded logo actually appears on Mastodon
-    next to existing followers' timelines."""
-    if not await _ap_enabled(env):
-        return
-    actor_bi = await _ap_actor_bi(env, kind, handle)
-    rec = await _ap_local_actor(env, kind, handle)
-    if not rec:
-        return  # never followed / fetched — nothing to update
-    origin = _ap_origin(env, request)
-    actor_url = _ap_actor_url(origin, kind, handle)
-    # Drop the edge-cached actor doc so refetches see the new profile — even
-    # with no followers to notify, a remote server may hold the URL and poll
-    # it (best-effort: other colos age out within the TTL). The rel=me page
-    # the actor points at is edge-cached too (_serve_profile_page /
-    # _serve_repo_page), so drop the canonical page keys alongside it.
-    await edge_cache_delete(actor_url)
-    if kind == AP_ACTOR_USER:
-        await edge_cache_delete(origin + "/@" + quote(handle))
-        await edge_cache_delete(origin + "/@" + quote(handle) + "/repositories")
-        await edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(handle))
-        # Toggling "make my followers/following public" (Settings) changes
-        # what ap_collection_handler returns for the same cached URL, so drop
-        # it too — otherwise the old bare-collection response (or stale
-        # items) lingers for the rest of its 300s TTL.
-        await edge_cache_delete(actor_url + "/followers")
-        await edge_cache_delete(actor_url + "/following")
-    elif kind == AP_ACTOR_REPO:
-        page_owner, _, page_repo = handle.partition(".")
-        # The git page carries the rel="me" the green check verifies; the
-        # /@owner.repo profile page is the actor's `url` and its post feed.
-        await edge_cache_delete(origin + repo_web_href(page_owner, page_repo))
-        await edge_cache_delete(origin + "/@" + handle)
-    followers = await d1_all(
-        env, "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
-        actor_bi)
-    if not followers:
-        return
-    doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
-    if not doc:
-        return
-    now = int(Date.now())
-    body_str = json.dumps(ap.update_activity(actor_url, doc, now))
-    out_data = await encrypt_row(env, {
-        "body": body_str, "actorKind": kind, "actorHandle": handle,
-        "actorUrl": actor_url})
-    seen = set()
-    for follower in followers:
-        inbox = ((follower.get("shared_inbox") or "").strip()
-                 or (follower.get("inbox") or "").strip())
-        if not inbox or inbox in seen:
-            continue
-        seen.add(inbox)
-        await d1_run(
-            env,
-            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
-            " created_at) VALUES (?,?,0,?,?)",
-            inbox, out_data, now, now)
-    await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
 
 
-async def ap_collection_handler(env, request, kind, handle, which):
-    if method_name(request) != "GET":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    origin = _ap_origin(env, request)
-    collection_url = _ap_actor_url(origin, kind, handle) + "/" + which
-    cached = await edge_cache_match(collection_url)
-    if cached is not None:
-        try:
-            if int(cached.status) >= 400:
-                return cached
-        except Exception:
-            pass
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    if kind == AP_ACTOR_USER and not await _ap_user_federates(env, handle):
-        return await _ap_negative_response(collection_url)
-    if kind == AP_ACTOR_REPO:
-        owner, _, repo = handle.partition(".")
-        if not await _ap_repo_federates(env, owner, repo):
-            return await _ap_negative_response(collection_url)
-    if cached is not None:
-        return cached
-    actor_bi = await _ap_actor_bi(env, kind, handle)
-    total = 0
-    items = None
-    if which == "followers":
-        row = await d1_first(
-            env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
-            actor_bi)
-        total = (row or {}).get("c", 0) or 0
-        # Repo watchers are already public (the About/Watch popover lists
-        # them), so repo actors always enumerate. User actors only enumerate
-        # when the account owner opted in via Settings — otherwise remote
-        # servers correctly read the bare collection as "not made visible".
-        show_items = True
-        if kind == AP_ACTOR_USER:
-            _, account_rec = await _account_row(env, handle)
-            show_items = bool((account_rec or {}).get(
-                "profile_followers_public"))
-        if show_items and total:
-            rows = await d1_all(
-                env,
-                "SELECT follower_id FROM ap_followers WHERE actor_bi=?"
-                " ORDER BY created_at DESC LIMIT ?",
-                actor_bi, AP_COLLECTION_PAGE_SIZE)
-            items = [r.get("follower_id", "") for r in (rows or [])
-                     if r.get("follower_id")]
-        elif show_items:
-            items = []
-    elif which == "outbox":
-        row = await d1_first(
-            env, "SELECT COUNT(*) AS c FROM ap_objects WHERE actor_bi=?",
-            actor_bi)
-        total = (row or {}).get("c", 0) or 0
-    resp = json_response(
-        ap.collection_doc(collection_url, total, items=items),
-        cache_seconds=300,
-        extra_headers={"content-type": ap.ACTIVITY_CONTENT_TYPE})
-    await edge_cache_put(collection_url, resp)
-    return resp
 
 
-async def ap_object_handler(env, request, object_uuid):
-    if method_name(request) not in ("GET", "HEAD"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    cache_key = _ap_origin(env, request) + "/ap/o/" + object_uuid
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    row = await d1_first(
-        env, "SELECT data FROM ap_objects WHERE object_uuid=?", object_uuid)
-    rec = await decrypt_row(env, row.get("data")) if row else None
-    if not rec or not isinstance(rec.get("note"), dict):
-        return json_response({"error": "not_found"}, status=404)
-    context = rec.get("context") if isinstance(rec.get("context"), dict) else {}
-    segmenter = globals().get("safe_segment")
-    context_owner = (
-        segmenter(context.get("owner", ""))
-        if callable(segmenter) else str(context.get("owner", "") or ""))
-    context_repo = (
-        segmenter(context.get("repo", ""))
-        if callable(segmenter) else str(context.get("repo", "") or ""))
-    privacy_reader = globals().get("_repo_is_private")
-    if (context_owner and context_repo and callable(privacy_reader)
-            and await privacy_reader(env, context_owner, context_repo)):
-        return json_response(
-            {"error": "not_found"}, status=404, cache_control="no-store")
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        return cached
-    doc = dict(rec["note"])
-    doc["@context"] = ap.AS_CONTEXT
-    resp = json_response(doc, cache_seconds=300, extra_headers={
-        "content-type": ap.ACTIVITY_CONTENT_TYPE})
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
-async def ap_object_media_handler(env, request, object_uuid, index):
-    # Re-serves one image that was embedded as a "data:" URL in the source
-    # issue/comment body, at a real URL — remote servers fetch a Note's
-    # attachment URLs directly and can't resolve a data: URI.
-    if method_name(request) not in ("GET", "HEAD"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    # Every remote server that receives the Note fetches its attachment URLs,
-    # and the bytes are immutable — serve the burst from the colo cache.
-    idx = int(index)
-    cache_key = "%s/ap/o/%s/media/%d" % (
-        _ap_origin(env, request), object_uuid, idx)
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    row = await d1_first(
-        env, "SELECT data FROM ap_objects WHERE object_uuid=?", object_uuid)
-    rec = await decrypt_row(env, row.get("data")) if row else None
-    context = rec.get("context") if isinstance((rec or {}).get("context"), dict) \
-        else {}
-    segmenter = globals().get("safe_segment")
-    context_owner = (
-        segmenter(context.get("owner", ""))
-        if callable(segmenter) else str(context.get("owner", "") or ""))
-    context_repo = (
-        segmenter(context.get("repo", ""))
-        if callable(segmenter) else str(context.get("repo", "") or ""))
-    privacy_reader = globals().get("_repo_is_private")
-    if (context_owner and context_repo and callable(privacy_reader)
-            and await privacy_reader(env, context_owner, context_repo)):
-        return json_response(
-            {"error": "not_found"}, status=404, cache_control="no-store")
-    media = (rec or {}).get("media") or []
-    if idx < 0 or idx >= len(media):
-        return json_response({"error": "not_found"}, status=404)
-    cached = await edge_cache_match_media(cache_key, "image/png")
-    if cached is not None:
-        return cached
-    item = media[idx]
-    try:
-        raw = base64.b64decode(item.get("data", ""), validate=True)
-    except Exception:
-        return json_response({"error": "not_found"}, status=404)
-    # Uint8Array.new copies into a JS-owned buffer; a bare _to_js(bytes) view
-    # into WASM memory would be read off the GIL (edge-cache put / client
-    # stream, after this handler returns) and crash the isolate.
-    resp = JsResponse.new(Uint8Array.new(_to_js(bytes(raw))), to_js({
-        "status": 200,
-        "headers": {
-            "content-type": item.get("mediaType", "image/png"),
-            "cache-control": "public, max-age=31536000, immutable",
-        },
-    }))
-    await edge_cache_put(cache_key, resp)
-    return resp
 
 
 # --- Outbound HTTP: signed fetch, remote actors, delivery ---------------------
 
-async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
-                             accept="application/activity+json"):
-    # One signed outbound HTTP request (draft-cavage). GETs sign
-    # (request-target) host date accept; POSTs add digest + content-type.
-    parts = urlparse(url)
-    if parts.scheme != "https" or not parts.netloc:
-        return None
-    path = (parts.path or "/") + (("?" + parts.query) if parts.query else "")
-    headers = {"host": parts.netloc, "date": ap.http_date(int(Date.now())),
-               "accept": accept}
-    names = list(ap.SIGNED_HEADERS_GET)
-    if body_str is not None:
-        headers["digest"] = ap.digest_header_value(body_str.encode())
-        headers["content-type"] = "application/activity+json"
-        names = list(ap.SIGNED_HEADERS_POST)
-    base = ap.signing_string(method, path, headers, names)
-    if base is None:
-        return None
-    signature = await _ap_rsa_sign_b64(priv_b64, base)
-    send_headers = {
-        "date": headers["date"],
-        "accept": accept,
-        "user-agent": "forkmesh-relay/1.0 (+https://forkmesh.com)",
-        "signature": ap.build_signature_header(key_id, names, signature),
-    }
-    init = {"method": method, "headers": send_headers}
-    if body_str is not None:
-        send_headers["digest"] = headers["digest"]
-        send_headers["content-type"] = headers["content-type"]
-        init["body"] = body_str
-    try:
-        return await js_fetch_with_timeout(
-            url, init, CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS)
-    except Exception:
-        return None
 
 
-async def _ap_instance_key(env):
-    origin = _ap_origin(env)
-    rec = await _ap_instance_actor(env, create=True)
-    if not rec:
-        return None, None
-    key_id = _ap_actor_url(origin, AP_ACTOR_INSTANCE,
-                           AP_INSTANCE_HANDLE) + "#main-key"
-    return key_id, rec.get("privkey")
 
 
-async def _ap_remote_actor(env, actor_id, force_refresh=False):
-    # Cached remote actor document (inbox + public key). Fetches are signed
-    # with the instance actor so "secure mode" servers answer.
-    actor_id = (actor_id or "").split("#")[0].rstrip("/")
-    if not actor_id.startswith("https://"):
-        return None
-    if await _ap_domain_blocked(env, urlparse(actor_id).netloc):
-        return None
-    row = await d1_first(
-        env, "SELECT * FROM ap_remote_actors WHERE actor_id=?", actor_id)
-    now = int(Date.now())
-    if (row and not force_refresh and row.get("pubkey_pem")
-            and now - int(row.get("updated_at") or 0) < AP_REMOTE_ACTOR_TTL_MS):
-        return row
-    key_id, priv = await _ap_instance_key(env)
-    if not priv:
-        return row or None
-    resp = await _ap_signed_request(key_id, priv, "GET", actor_id)
-    if resp is None or int(getattr(resp, "status", 0)) >= 400:
-        return row or None
-    try:
-        doc = json.loads(await resp.text())
-    except Exception:
-        return row or None
-    ess = ap.actor_essentials(doc)
-    # The document must describe the URL we fetched (same host at minimum) so
-    # a malicious document can't impersonate another server's actor.
-    if not ess or urlparse(ess["id"]).netloc != urlparse(actor_id).netloc:
-        return row or None
-    handle = ess["preferredUsername"]
-    if handle:
-        handle = handle + "@" + urlparse(ess["id"]).netloc
-    # Public presentation, cached alongside the routing fields: the avatar URL
-    # must be an https media URL (never a data: payload or a private host), and
-    # the bio is untrusted remote HTML flattened to bounded plain text.
-    avatar_url = ap.public_media_url(ess.get("icon"))
-    summary = ap_threads.sanitize_remote_content(ess.get("summary"), 500)
-    await d1_run(
-        env,
-        "INSERT INTO ap_remote_actors (actor_id, inbox, shared_inbox,"
-        " pubkey_pem, handle, display_name, url, updated_at, avatar_url,"
-        " summary) VALUES (?,?,?,?,?,?,?,?,?,?)"
-        " ON CONFLICT(actor_id) DO UPDATE SET inbox=excluded.inbox,"
-        " shared_inbox=excluded.shared_inbox, pubkey_pem=excluded.pubkey_pem,"
-        " handle=excluded.handle, display_name=excluded.display_name,"
-        " url=excluded.url, updated_at=excluded.updated_at,"
-        " avatar_url=excluded.avatar_url, summary=excluded.summary",
-        actor_id, ess["inbox"], ess["sharedInbox"], ess["pubkeyPem"],
-        handle, clean_string(ess["name"], 200), ess["url"], now,
-        avatar_url, summary)
-    return {
-        "actor_id": actor_id, "inbox": ess["inbox"],
-        "shared_inbox": ess["sharedInbox"], "pubkey_pem": ess["pubkeyPem"],
-        "handle": handle, "display_name": clean_string(ess["name"], 200),
-        "url": ess["url"], "updated_at": now, "avatar_url": avatar_url,
-        "summary": summary,
-    }
 
 
-async def _ap_refresh_follower_profiles(env, limit, window=0):
-    """Backfill the cached avatar/bio of accounts that follow a local actor.
-
-    A follower row only carries routing fields; the presentation a "who follows
-    this repository" surface shows comes from the cached actor document, which
-    is otherwise only refreshed when that actor next delivers something (or
-    never, for a quiet follower — and never for any row written before
-    migration 0078). This sweeps the oldest cache entries that are still missing
-    those columns, bounded to one signed GET each.
-
-    The window rotates the selection so a permanently unreachable server — whose
-    row keeps its old updated_at and therefore keeps sorting first — cannot
-    starve every other follower out of the batch."""
-    limit = max(1, int(limit))
-    candidates = (
-        "SELECT actor_id FROM ap_remote_actors"
-        " WHERE actor_id IN (SELECT follower_id FROM ap_followers)"
-        "   AND (avatar_url IS NULL OR summary IS NULL)"
-        " ORDER BY updated_at LIMIT ? OFFSET ?")
-    offset = max(0, int(window)) * limit
-    rows = await d1_all(env, candidates, limit, offset)
-    if not rows and offset:
-        # Backlog smaller than this window: sweep from the front instead of
-        # idling the tick.
-        rows = await d1_all(env, candidates, limit, 0)
-    refreshed = 0
-    for row in rows or []:
-        actor_id = str(row.get("actor_id") or "")
-        if not actor_id:
-            continue
-        if await _ap_remote_actor(env, actor_id, force_refresh=True):
-            refreshed += 1
-    return refreshed
 
 
-async def _ap_deliver_body(env, actor_url, priv_b64, inbox_url, body_str):
-    """Returns (status, retry_after_ms). retry_after_ms is 0 unless the
-    remote answered 429/503 with a parseable Retry-After — the drain uses it
-    as a floor under the normal backoff so a throttling server isn't re-hit
-    sooner than it asked."""
-    resp = await _ap_signed_request(
-        actor_url + "#main-key", priv_b64, "POST", inbox_url,
-        body_str=body_str)
-    if resp is None:
-        return 0, 0
-    status = int(getattr(resp, "status", 0))
-    retry_after_ms = 0
-    if status in (429, 503):
-        try:
-            raw = (resp.headers.get("retry-after") or "").strip()
-        except Exception:
-            raw = ""
-        if raw.isdigit():
-            retry_after_ms = int(raw) * 1000
-        elif raw:
-            when = ap.parse_http_date_ms(raw)
-            if when:
-                retry_after_ms = when - int(Date.now())
-        retry_after_ms = max(0, min(retry_after_ms, 24 * 60 * 60 * 1000))
-    return status, retry_after_ms
 
 
-async def _ap_drain_outbox(env, limit):
-    # Deliver due ap_outbox rows. Success (or a permanently-gone inbox, or the
-    # attempt cap) deletes the row; anything else reschedules with backoff.
-    if not await _ap_enabled(env):
-        return
-    now = int(Date.now())
-    rows = await d1_all(
-        env,
-        "SELECT id, inbox, data, attempts FROM ap_outbox WHERE next_ts<=?"
-        " ORDER BY next_ts ASC LIMIT ?",
-        now, int(limit))
-    for row in rows or []:
-        if await _ap_domain_blocked(
-                env, urlparse(row.get("inbox", "")).netloc):
-            await d1_run(env, "DELETE FROM ap_outbox WHERE id=?", row.get("id"))
-            continue
-        rec = await decrypt_row(env, row.get("data"))
-        attempts = int(row.get("attempts") or 0) + 1
-        status, retry_after_ms = 0, 0
-        if rec and rec.get("body") and rec.get("actorKind"):
-            local = await _ap_local_actor(
-                env, rec["actorKind"], rec["actorHandle"])
-            if local:
-                status, retry_after_ms = await _ap_deliver_body(
-                    env, rec.get("actorUrl", ""), local["privkey"],
-                    row.get("inbox", ""), rec["body"])
-        done = (200 <= status < 400) or status in (404, 410)
-        if done or not rec or attempts >= ap.MAX_DELIVERY_ATTEMPTS:
-            await d1_run(env, "DELETE FROM ap_outbox WHERE id=?", row.get("id"))
-        else:
-            await d1_run(
-                env, "UPDATE ap_outbox SET attempts=?, next_ts=? WHERE id=?",
-                attempts,
-                now + max(ap.retry_backoff_ms(attempts), retry_after_ms),
-                row.get("id"))
 
 
 # --- Outbound publishing -------------------------------------------------------
 
-async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
-                                 ref, title, body, author_name,
-                                 extra_images=None, manual=False):
-    """Queue an automatic repo event, or immediately publish an explicit one.
-
-    Normal issue/PR/discussion/commit/release hooks use the encrypted,
-    deterministic, at-most-daily digest queue. Only an owner-authenticated
-    caller that explicitly passes ``manual=True`` retains the immediate Note
-    path (including its historical repo/user actor fan-out).
-
-    Actor rows remain lazy. Queued digests are published only after a
-    fediverse lookup has created the corresponding repository actor."""
-    owner = (owner or "").strip().lower()
-    repo = (repo or "").strip()
-    if not owner or not repo or kind not in AP_FEDI_KINDS:
-        return
-    if not await _ap_enabled(env):
-        return
-    privacy_reader = globals().get("_repo_is_private")
-    if callable(privacy_reader) and await privacy_reader(env, owner, repo):
-        return
-    if not manual:
-        await _ap_enqueue_repo_digest(
-            env, request, owner, repo, kind, event_type, ref, title, body)
-        return
-    origin = _ap_origin(env, request)
-    web_url = origin + repo_web_href(owner, repo)
-    author = clean_string(author_name or "", MAX_NODE_NAME).lower()
-    # Handles (and thus actor ids) are lowercase-normalized so the same repo
-    # always federates as one stable actor URL regardless of link casing.
-    # The explicit/manual compatibility path preserves its historical actor
-    # fan-out: the repo actor obeys both per-repo switches, while the author's
-    # own actor is governed by that user's federation presence.
-    settings = await _ap_repo_settings_get(env, owner, repo)
-    candidates = []
-    if settings["federate"] and settings["broadcastEvents"]:
-        candidates.append((AP_ACTOR_REPO, ap.repo_handle(owner, repo.lower())))
-    if author and valid_node_name(author):
-        candidates.append((AP_ACTOR_USER, author))
-    # Attached issue/comment images travel as inline "![name](data:...)"
-    # markdown (there's no separate upload channel); pull them out so they
-    # federate as real Image attachments instead of unrenderable base64 text.
-    clean_body, images = ap.extract_body_images(body or "")
-    # Caller-supplied media (the generated pull-request badge PNG, adhoc #44)
-    # leads the attachment list so it becomes the visible preview.
-    images = [img for img in (extra_images or []) if img] + images
-    text = ap.event_note_text(
-        kind, event_type, owner, repo, ref, clean_string(title, 240),
-        clean_body, author, web_url)
-    content_html = ap.note_html_from_text(text)
-    ckey = ap.context_key(owner, repo, kind, ref)
-    context_bi = await blind_index(env, "ap-context:" + ckey)
-    now = int(Date.now())
-    queued = False
-    for actor_kind, handle in candidates:
-        actor_bi = await _ap_actor_bi(env, actor_kind, handle)
-        exists = await d1_first(
-            env, "SELECT kind FROM ap_actors WHERE actor_bi=?", actor_bi)
-        if not exists:
-            continue
-        followers = await d1_all(
-            env,
-            "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
-            actor_bi)
-        if not followers:
-            continue
-        actor_url = _ap_actor_url(origin, actor_kind, handle)
-        object_uuid = _ap_uuid()
-        attachments = [
-            ap.image_object(
-                "%s/ap/o/%s/media/%d" % (origin, object_uuid, i),
-                media_type=img["mediaType"])
-            for i, img in enumerate(images)]
-        note = ap.note_doc(
-            origin + "/ap/o/" + object_uuid, actor_url,
-            actor_url + "/followers", content_html, now, web_url=web_url,
-            attachments=attachments)
-        rec = {"note": note,
-               "context": {"owner": owner, "repo": repo, "kind": kind,
-                           "ref": str(ref), "key": ckey},
-               "media": images}
-        await d1_run(
-            env,
-            "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
-            " published) VALUES (?,?,?,?,?)",
-            object_uuid, actor_bi, context_bi,
-            await encrypt_row(env, rec), now)
-        body_str = json.dumps(ap.create_activity(note))
-        out_data = await encrypt_row(env, {
-            "body": body_str, "actorKind": actor_kind, "actorHandle": handle,
-            "actorUrl": actor_url})
-        seen = set()
-        for follower in followers:
-            inbox = ((follower.get("shared_inbox") or "").strip()
-                     or (follower.get("inbox") or "").strip())
-            if not inbox or inbox in seen:
-                continue
-            seen.add(inbox)
-            await d1_run(
-                env,
-                "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
-                " created_at) VALUES (?,?,0,?,?)",
-                inbox, out_data, now, now)
-            queued = True
-    if queued:
-        await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
 
 
 async def world_profile_social_handler(env, request):
@@ -31437,634 +28901,34 @@ async def world_profile_social_handler(env, request):
 
 # --- Inbound: the shared/actor inbox --------------------------------------------
 
-async def _ap_forget_remote(env, actor_id):
-    await d1_run(env, "DELETE FROM ap_followers WHERE follower_id=?", actor_id)
-    await d1_run(env, "DELETE FROM ap_remote_actors WHERE actor_id=?", actor_id)
 
 
-async def _ap_resolve_local_target(env, origin, url):
-    """Map an activity's object URL to a local actor: returns (kind, handle,
-    notify_recipient, display) or None."""
-    target = ap.parse_local_actor_url(origin, url)
-    if not target or target[0] == "instance":
-        return None
-    if target[0] == "user":
-        if not await _ap_user_federates(env, target[1]):
-            return None
-        return (AP_ACTOR_USER, target[1], target[1], "@" + target[1])
-    owner, repo = target[1], target[2]
-    if not await _ap_repo_federates(env, owner, repo):
-        return None
-    return (AP_ACTOR_REPO, ap.repo_handle(owner, repo), owner,
-            owner + "/" + repo)
 
 
-async def _ap_handle_follow(env, request, activity, remote):
-    origin = _ap_origin(env, request)
-    resolved = await _ap_resolve_local_target(
-        env, origin, ap.activity_object_id(activity.get("object")))
-    if not resolved:
-        return json_response({"error": "not_found"}, status=404)
-    kind, handle, recipient, display = resolved
-    local = await _ap_local_actor(env, kind, handle, create=True)
-    if not local:
-        return json_response({"error": "unavailable"}, status=503)
-    count = await d1_first(
-        env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
-        local["actorBi"])
-    if ((count or {}).get("c", 0) or 0) >= AP_MAX_FOLLOWERS_PER_ACTOR:
-        return json_response({"error": "followers_limit"}, status=429)
-    now = int(Date.now())
-    await d1_run(
-        env,
-        "INSERT INTO ap_followers (actor_bi, follower_id, inbox, shared_inbox,"
-        " follower_handle, created_at) VALUES (?,?,?,?,?,?)"
-        " ON CONFLICT(actor_bi, follower_id) DO UPDATE SET"
-        " inbox=excluded.inbox, shared_inbox=excluded.shared_inbox,"
-        " follower_handle=excluded.follower_handle",
-        local["actorBi"], remote["actor_id"], remote.get("inbox", ""),
-        remote.get("shared_inbox", "") or "", remote.get("handle", "") or "",
-        now)
-    # Auto-accept (no manual follow approval), delivered synchronously — one
-    # subrequest, and Mastodon marks the follow pending until it arrives.
-    actor_url = _ap_actor_url(origin, kind, handle)
-    follow_ref = {
-        "id": str(activity.get("id", "") or ""),
-        "type": "Follow",
-        "actor": remote["actor_id"],
-        "object": actor_url,
-    }
-    accept_body = json.dumps(ap.accept_activity(actor_url, follow_ref))
-    inbox_url = (remote.get("inbox") or "").strip()
-    status, _ = await _ap_deliver_body(
-        env, actor_url, local["privkey"], inbox_url, accept_body)
-    if inbox_url and not (200 <= status < 400) and status not in (404, 410):
-        # The remote server keeps the follow "pending" (spinner) until the
-        # Accept lands, and it does NOT retry a Follow we already 202'd — so
-        # a lost Accept used to leave the follow stuck forever. Queue it for
-        # the cron drain, which retries with the normal backoff.
-        out_data = await encrypt_row(env, {
-            "body": accept_body, "actorKind": kind, "actorHandle": handle,
-            "actorUrl": actor_url})
-        await d1_run(
-            env,
-            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
-            " created_at) VALUES (?,?,1,?,?)",
-            inbox_url, out_data, now, now)
-    follower_label = remote.get("handle") or remote.get("actor_id", "")
-    await _best_effort_inbox_side_effect(enqueue_notification(
-        env, recipient, "subscribed", "New fediverse follower",
-        body="%s is now following %s on the fediverse." % (follower_label,
-                                                           display),
-        source="fediverse",
-        dedupe="ap-follow:%s:%s" % (remote["actor_id"], handle)))
-    return json_response({"ok": True}, status=202)
 
 
-async def _ap_handle_undo(env, request, activity):
-    inner = activity.get("object")
-    if isinstance(inner, dict) and str(inner.get("type", "")) == "Follow":
-        origin = _ap_origin(env, request)
-        target = ap.parse_local_actor_url(
-            origin, ap.activity_object_id(inner.get("object")))
-        if target and target[0] != "instance":
-            if target[0] == "user":
-                kind, handle = AP_ACTOR_USER, target[1]
-            else:
-                kind, handle = AP_ACTOR_REPO, ap.repo_handle(
-                    target[1], target[2])
-            actor_bi = await _ap_actor_bi(env, kind, handle)
-            await d1_run(
-                env,
-                "DELETE FROM ap_followers WHERE actor_bi=? AND follower_id=?",
-                actor_bi, ap.activity_object_id(activity.get("actor")))
-    return json_response({"ok": True}, status=202)
 
 
-async def _ap_comment_by_remote_id(env, remote_id):
-    """Return (row, decrypted record, blind index) for a remote reply."""
-    if not str(remote_id or "").startswith("https://"):
-        return None, None, ""
-    remote_id_bi = await blind_index(env, "ap-comment:" + str(remote_id))
-    row = await d1_first(
-        env,
-        "SELECT context_bi, remote_id_bi, parent_remote_id_bi, lifecycle,"
-        " data, ts FROM ap_comments WHERE remote_id_bi=?",
-        remote_id_bi)
-    rec = await decrypt_row(env, row.get("data")) if row else None
-    return row, rec, remote_id_bi
 
 
-async def _ap_reply_parent(env, origin, parent_url):
-    """Resolve a direct local-object or nested remote-reply parent.
-
-    Remote activities cannot choose a ForkMesh context themselves. Nested
-    Lemmy comments inherit the verified parent's encrypted local context.
-    """
-    parent_uuid = ap.parse_local_object_url(origin, parent_url)
-    if parent_uuid:
-        row = await d1_first(
-            env, "SELECT data, context_bi FROM ap_objects WHERE object_uuid=?",
-            parent_uuid)
-        parent = await decrypt_row(env, row.get("data")) if row else None
-        if parent and isinstance(parent.get("context"), dict):
-            return row.get("context_bi"), parent["context"], ""
-        return None, None, ""
-    row, rec, parent_bi = await _ap_comment_by_remote_id(env, parent_url)
-    if row and rec and isinstance(rec.get("context"), dict):
-        return row.get("context_bi"), rec["context"], parent_bi
-    return None, None, ""
 
 
-def _ap_activity_is_public(activity):
-    """True only when Create/Note addressing explicitly names AS Public."""
-    if not isinstance(activity, dict):
-        return False
-    candidates = [activity]
-    embedded = activity.get("object")
-    if isinstance(embedded, dict):
-        candidates.append(embedded)
-    for candidate in candidates:
-        for key in ("to", "cc", "audience"):
-            values = candidate.get(key, [])
-            if not isinstance(values, list):
-                values = [values]
-            for value in values:
-                target = ap.activity_object_id(value)
-                if target == ap.AS_PUBLIC:
-                    return True
-    return False
 
 
-async def _ap_handle_create(env, request, activity, remote):
-    # A remote reply to one of our published Notes becomes a federated comment
-    # on the underlying thread; a post that @-mentions one of our repo actors
-    # becomes verified public activity awaiting optional, explicit owner
-    # review. Nothing in this inbound path files an issue automatically.
-    # Anything else is acknowledged and dropped (we host repos, not timelines).
-    note = ap.note_essentials(activity.get("object"))
-    if not note:
-        return json_response({"ok": True}, status=202)
-    # HTTP signatures authenticate the sender, not the intended audience.
-    # Direct/private Notes must never enter a public thread or World feed.
-    if not _ap_activity_is_public(activity):
-        return json_response({"ok": True}, status=202)
-    # The note's author must be the signing actor (same host is not enough:
-    # one compromised account must not be able to speak for a whole server).
-    if note["attributedTo"].split("#")[0].rstrip("/") != remote["actor_id"]:
-        return json_response({"error": "author_mismatch"}, status=401)
-    origin = _ap_origin(env, request)
-    context_bi, context, parent_remote_id_bi = await _ap_reply_parent(
-        env, origin, note["inReplyTo"])
-    if not context:
-        mention = _ap_note_repo_mention(origin, note)
-        if mention:
-            return await _ap_handle_repo_mention(
-                env, request, note, remote, mention[0], mention[1])
-        return json_response({"ok": True}, status=202)
-    # Owner switched federated comments (or the whole actor) off: acknowledge
-    # and drop, same as any non-reply — redelivery storms must not 4xx.
-    reply_settings = await _ap_repo_settings_get(
-        env, context.get("owner", ""), context.get("repo", ""))
-    if not reply_settings["federate"] or not reply_settings["acceptComments"]:
-        return json_response({"ok": True}, status=202)
-    existing_row, existing_rec, remote_id_bi = \
-        await _ap_comment_by_remote_id(env, note["id"])
-    if existing_row and existing_rec:
-        return json_response({"ok": True, "duplicate": True}, status=202)
-    count = await d1_first(
-        env, "SELECT COUNT(*) AS c FROM ap_comments WHERE context_bi=?",
-        context_bi)
-    if ((count or {}).get("c", 0) or 0) >= AP_MAX_COMMENTS_PER_THREAD:
-        return json_response({"error": "thread_full"}, status=429)
-    now = int(Date.now())
-    normalized = ap_threads.apply_activity(
-        {}, activity, remote_actor=remote, context=context, received_ms=now)
-    if not normalized.get("ok"):
-        return json_response({"ok": True}, status=202)
-    rec = normalized["record"]
-    # The HTTP delivery signature was verified above, but that is explicitly
-    # not a ForkMesh Ed25519 native-event signature.
-    rec["provenance"]["deliverySignatureVerified"] = True
-    rec["provenance"]["nativeSignatureVerified"] = False
-    await d1_run(
-        env,
-        "INSERT OR IGNORE INTO ap_comments (context_bi, remote_id_bi,"
-        " parent_remote_id_bi, lifecycle, data, ts) VALUES (?,?,?,?,?,?)",
-        context_bi, remote_id_bi, parent_remote_id_bi or None,
-        rec["lifecycle"], await encrypt_row(env, rec), now)
-    if context.get("kind") == "issue":
-        reply_owner = context.get("owner", "")
-        reply_repo = context.get("repo", "")
-        data_owner = await _ap_org_alias_owner(
-            env, reply_owner, reply_repo)
-        if not await _repo_is_private(env, data_owner, reply_repo):
-            public_note = dict(note)
-            public_note["content"] = rec.get("body", "")
-            await fediverse_mentions_api.record_verified(
-                _WorldCommunityRuntime(env, request),
-                note=public_note,
-                remote=remote,
-                actor_owner=reply_owner,
-                data_owner=data_owner,
-                repo=reply_repo,
-                kind="reply",
-                context={
-                    "ref": context.get("ref", ""),
-                    "issueUrl": (
-                        origin
-                        + repo_web_href(reply_owner, reply_repo)
-                        + "/issues/"
-                        + str(context.get("ref", ""))
-                    ),
-                },
-                signature_verified=True,
-                public_activity=True,
-                public_repository=True,
-            )
-    title = "Fediverse reply on %s/%s %s %s" % (
-        context.get("owner", ""), context.get("repo", ""),
-        context.get("kind", ""), context.get("ref", ""))
-    await _best_effort_inbox_side_effect(enqueue_notification(
-        env, context.get("owner", ""), "subscribed", title,
-        body="%s: %s" % (rec["author"], rec["body"][:280]),
-        repo="%s/%s" % (context.get("owner", ""), context.get("repo", "")),
-        href=repo_web_href(context.get("owner", ""), context.get("repo", "")),
-        source="fediverse", dedupe="ap-comment:" + note["id"]))
-    return json_response({"ok": True}, status=202)
 
 
-async def _ap_handle_update(env, activity, remote):
-    note = ap.note_essentials(activity.get("object"))
-    if not note:
-        return json_response({"ok": True}, status=202)
-    row, existing, _ = await _ap_comment_by_remote_id(env, note["id"])
-    if not row or not existing:
-        return json_response({"ok": True}, status=202)
-    result = ap_threads.apply_activity(
-        {note["id"]: existing}, activity, remote_actor=remote,
-        context=existing.get("context"), received_ms=int(Date.now()))
-    if not result.get("ok"):
-        status = 401 if result.get("reason") == "author_mismatch" else 202
-        return json_response({"error": result.get("reason")}, status=status)
-    if result.get("changed"):
-        rec = result["record"]
-        rec["provenance"]["deliverySignatureVerified"] = True
-        rec["provenance"]["nativeSignatureVerified"] = False
-        await d1_run(
-            env,
-            "UPDATE ap_comments SET lifecycle=?, data=?"
-            " WHERE remote_id_bi=?",
-            rec["lifecycle"], await encrypt_row(env, rec),
-            row.get("remote_id_bi"))
-    return json_response(
-        {"ok": True, "duplicate": not result.get("changed")}, status=202)
 
 
-async def _ap_handle_remove(env, activity, remote):
-    target_id = ap.activity_object_id(activity.get("object"))
-    row, existing, _ = await _ap_comment_by_remote_id(env, target_id)
-    if not row or not existing:
-        return json_response({"ok": True}, status=202)
-    # Lemmy community moderators use a different actor from the comment
-    # author. Accept moderation only from the same already-verified instance.
-    actor_host = urlparse(remote.get("actor_id", "")).hostname or ""
-    if actor_host.lower() != existing.get("sourceInstance", "").lower():
-        return json_response({"error": "moderator_instance_mismatch"},
-                             status=401)
-    result = ap_threads.apply_activity(
-        {target_id: existing}, activity, remote_actor=remote,
-        context=existing.get("context"), received_ms=int(Date.now()))
-    if result.get("changed"):
-        rec = result["record"]
-        rec["provenance"]["deliverySignatureVerified"] = True
-        rec["provenance"]["nativeSignatureVerified"] = False
-        await d1_run(
-            env,
-            "UPDATE ap_comments SET lifecycle=?, data=?"
-            " WHERE remote_id_bi=?",
-            rec["lifecycle"], await encrypt_row(env, rec),
-            row.get("remote_id_bi"))
-    return json_response({"ok": True}, status=202)
 
 
-def _ap_note_repo_mention(origin, note):
-    """First Mention tag pointing at one of our repo actors -> (owner, repo)
-    (lowercased), else None. Pure string parsing so the inbox can gate on it
-    before the signature dance."""
-    for href in note.get("mentions", []):
-        target = ap.parse_local_actor_url(origin, href)
-        if target and target[0] == "repo":
-            return target[1], target[2]
-    return None
 
 
-async def _ap_send_mention_reply(env, request, owner, repo, remote, note,
-                                 text, issue_number, dedupe_id="",
-                                 object_uuid=""):
-    """Reply to the mentioning post as the repo actor: a public Note in the
-    author's thread with a Mention tag so their server notifies them. Queued
-    through ap_outbox so a lost delivery retries on the cron drain. The stored
-    object carries the new issue's context, so fediverse replies to OUR reply
-    land as federated comments on that issue."""
-    origin = _ap_origin(env, request)
-    handle = ap.repo_handle(owner, repo)
-    local = await _ap_local_actor(env, AP_ACTOR_REPO, handle, create=True)
-    if not local:
-        return False
-    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
-    now = int(Date.now())
-    if not re.fullmatch(r"[a-f0-9]{32}", str(object_uuid or "")):
-        object_uuid = _ap_uuid()
-    reply = ap.note_doc(
-        origin + "/ap/o/" + object_uuid, actor_url, actor_url + "/followers",
-        ap.note_html_from_text(text), now,
-        web_url=origin + repo_web_href(owner, repo) + "/issues",
-        in_reply_to=note["id"])
-    # Address the author directly (still public, so the exchange is visible
-    # in the thread); the Mention tag is what triggers their notification.
-    reply["to"] = [remote["actor_id"]]
-    reply["cc"] = [ap.AS_PUBLIC, actor_url + "/followers"]
-    tag = {"type": "Mention", "href": remote["actor_id"]}
-    if remote.get("handle"):
-        tag["name"] = "@" + remote["handle"]
-    reply["tag"] = [tag]
-    ckey = ap.context_key(owner, repo, "issue", issue_number)
-    rec = {"note": reply,
-           "context": {"owner": owner, "repo": repo, "kind": "issue",
-                       "ref": str(issue_number), "key": ckey},
-           "media": []}
-    await d1_run(
-        env,
-        "INSERT OR IGNORE INTO ap_objects "
-        "(object_uuid, actor_bi, context_bi, data,"
-        " published) VALUES (?,?,?,?,?)",
-        object_uuid, await _ap_actor_bi(env, AP_ACTOR_REPO, handle),
-        await blind_index(env, "ap-context:" + ckey),
-        await encrypt_row(env, rec), now)
-    inbox = ((remote.get("inbox") or "").strip()
-             or (remote.get("shared_inbox") or "").strip())
-    if not inbox:
-        return False
-    out_data = await encrypt_row(env, {
-        "body": json.dumps(ap.create_activity(reply)),
-        "actorKind": AP_ACTOR_REPO, "actorHandle": handle,
-        "actorUrl": actor_url})
-    if dedupe_id:
-        dedupe_bi = await blind_index(
-            env,
-            "ap-mention-followup:" + str(dedupe_id) + ":" + inbox,
-        )
-        await d1_run(
-            env,
-            "INSERT OR IGNORE INTO ap_outbox "
-            "(inbox, data, attempts, next_ts, created_at, dedupe_bi)"
-            " VALUES (?,?,0,?,?,?)",
-            inbox, out_data, now, now, dedupe_bi)
-    else:
-        await d1_run(
-            env,
-            "INSERT INTO ap_outbox "
-            "(inbox, data, attempts, next_ts, created_at)"
-            " VALUES (?,?,0,?,?)",
-            inbox, out_data, now, now)
-    await _ap_drain_outbox(env, 1)
-    return True
 
 
-async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
-    """A verified fediverse post that @-mentions one of our repo actors
-    ("@owner.repo@host this button is broken ..."). It becomes sanitized
-    public activity in World's manual review feed. It never runs AI, enters an
-    issue inbox, or publishes a reply here. Only a later owner-authorized
-    preview + explicit create action may queue it, and even then it stays
-    pending until the owner node confirms the materialized issue number."""
-    dropped = json_response({"ok": True}, status=202)
-    data_owner = await _ap_org_alias_owner(env, owner, repo)
-    if await _repo_is_private(env, data_owner, repo):
-        return dropped
-    settings = await _ap_repo_settings_get(env, data_owner, repo)
-    if not settings["federate"] or not settings["acceptComments"]:
-        return dropped
-    # A legacy deployment may already have auto-filed this note. Preserve that
-    # historical dedupe marker so a redelivery cannot reintroduce it as a new
-    # manual-review candidate.
-    mention_bi = await blind_index(env, "ap-mention:" + note["id"])
-    seen = await d1_first(
-        env, "SELECT ts FROM ap_mentions WHERE remote_id_bi=?", mention_bi)
-    if seen:
-        return dropped
-    text = ap.sanitize_remote_html(note["content"])
-    text = re.sub(
-        r"(?i)@" + re.escape(ap.repo_handle(owner, repo))
-        + r"(?:@[A-Za-z0-9.-]+)?", " ", text)
-    text = "\n".join(
-        re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n"))
-    text = text.strip()
-    if not text:
-        return dropped
-    public_note = dict(note)
-    public_note["content"] = text
-    await fediverse_mentions_api.record_verified(
-        _WorldCommunityRuntime(env, request),
-        note=public_note,
-        remote=remote,
-        actor_owner=owner,
-        data_owner=data_owner,
-        repo=repo,
-        kind="mention",
-        signature_verified=True,
-        public_activity=True,
-        public_repository=True,
-    )
-    return dropped
 
 
-async def _ap_handle_delete(env, activity, remote=None):
-    object_id = ap.activity_object_id(activity.get("object"))
-    if object_id:
-        row, existing, _ = await _ap_comment_by_remote_id(env, object_id)
-        if not row or not existing:
-            return json_response({"ok": True}, status=202)
-        remote_actor_id = (remote or {}).get("actor_id", "")
-        if remote_actor_id.rstrip("/") != \
-                str(existing.get("authorId", "")).rstrip("/"):
-            return json_response({"error": "author_mismatch"}, status=401)
-        result = ap_threads.apply_activity(
-            {object_id: existing}, activity, remote_actor=remote,
-            context=existing.get("context"), received_ms=int(Date.now()))
-        if not result.get("ok"):
-            return json_response({"error": result.get("reason")},
-                                 status=401)
-        rec = result["record"]
-        rec["provenance"]["deliverySignatureVerified"] = True
-        rec["provenance"]["nativeSignatureVerified"] = False
-        await d1_run(
-            env,
-            "UPDATE ap_comments SET lifecycle=?, data=?"
-            " WHERE remote_id_bi=?",
-            rec["lifecycle"], await encrypt_row(env, rec),
-            row.get("remote_id_bi"))
-    return json_response({"ok": True}, status=202)
 
 
-async def ap_inbox_handler(env, request):
-    # Shared + per-actor ActivityPub inbox: verify the draft-cavage HTTP
-    # signature (keyId fetched from the remote server) and the body digest,
-    # then dispatch on activity type. Processing is synchronous — no queues on
-    # the free plan — and every path is a handful of D1 statements.
-    if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
-    body = await request.text()
-    body_bytes = body.encode()
-    if len(body_bytes) > AP_MAX_INBOX_BYTES:
-        return json_response({"error": "too_large"}, status=413)
-    try:
-        activity = json.loads(body)
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    if not isinstance(activity, dict):
-        return json_response({"error": "invalid_activity"}, status=400)
-    activity_type = str(activity.get("type", "") or "")
-    actor_id = ap.activity_object_id(activity.get("actor")).rstrip("/")
-    origin = _ap_origin(env, request)
-    if not actor_id.startswith("https://") or actor_id.startswith(origin + "/"):
-        return json_response({"error": "invalid_actor"}, status=401)
-    if await _ap_domain_blocked(env, urlparse(actor_id).netloc):
-        return json_response({"error": "domain_blocked"}, status=403)
-    object_id = ap.activity_object_id(activity.get("object")).rstrip("/")
-
-    # Actor self-delete: the remote document is already gone, so the key can
-    # no longer be fetched. Clean up local edges without a wasted subrequest —
-    # a spoofed self-delete can at worst drop a follower edge that re-follows.
-    # Mastodon broadcasts every account deletion to every instance it has ever
-    # seen, so nearly all of these are for actors we don't know: check first
-    # (two indexed reads) instead of always issuing two D1 writes.
-    if activity_type == "Delete" and object_id == actor_id:
-        known = await d1_first(
-            env, "SELECT actor_id FROM ap_remote_actors WHERE actor_id=?",
-            actor_id)
-        if not known:
-            known = await d1_first(
-                env, "SELECT follower_id FROM ap_followers WHERE follower_id=?",
-                actor_id)
-        if known:
-            await _ap_forget_remote(env, actor_id)
-        return json_response({"ok": True}, status=202)
-
-    # Anything we'd acknowledge-and-drop after verifying (Like/Announce/
-    # Accept/...) is dropped before the signature dance instead: the
-    # verify path costs a signed GET back to the sender's server (plus D1
-    # reads/writes to cache its actor), so fediverse-wide Like/boost floods
-    # both melted our origin AND hammered Mastodon with actor refetches —
-    # the "too many requests" loop of issue #416.
-    if activity_type not in (
-            "Follow", "Undo", "Create", "Update", "Delete", "Remove"):
-        return json_response({"ok": True}, status=202)
-    if activity_type == "Create":
-        # Two Note shapes matter: replies to our own /ap/o/<uuid> objects
-        # (federated comments) and posts whose Mention tags point at one of
-        # our repo actors (candidate issue requests). Everything else is
-        # dropped here, before the remote-actor fetch (the handler re-checks
-        # after verification). A nested Lemmy reply also qualifies when its
-        # parent is an already-stored remote reply; that costs one indexed D1
-        # read but avoids verifying unrelated fediverse traffic.
-        note = ap.note_essentials(activity.get("object"))
-        qualifies = bool(note and (
-            ap.parse_local_object_url(origin, note["inReplyTo"])
-            or _ap_note_repo_mention(origin, note)))
-        if note and not qualifies and note["inReplyTo"].startswith("https://"):
-            parent_row, _, _ = await _ap_comment_by_remote_id(
-                env, note["inReplyTo"])
-            qualifies = bool(parent_row)
-        if not qualifies:
-            return json_response({"ok": True}, status=202)
-    elif activity_type == "Update":
-        note = ap.note_essentials(activity.get("object"))
-        if not note:
-            return json_response({"ok": True}, status=202)
-        target_row, _, _ = await _ap_comment_by_remote_id(env, note["id"])
-        if not target_row:
-            return json_response({"ok": True}, status=202)
-    elif activity_type == "Remove":
-        target_id = ap.activity_object_id(activity.get("object"))
-        target_row, _, _ = await _ap_comment_by_remote_id(env, target_id)
-        if not target_row:
-            return json_response({"ok": True}, status=202)
-
-    parsed_sig = ap.parse_signature_header(
-        request.headers.get("signature") or "")
-    if not parsed_sig:
-        return json_response({"error": "signature_required"}, status=401)
-    # The signature must cover the request target and the body digest, or it
-    # proves nothing about this delivery.
-    if ("(request-target)" not in parsed_sig["headers"]
-            or "digest" not in parsed_sig["headers"]):
-        return json_response({"error": "weak_signature"}, status=401)
-    key_url = parsed_sig["keyId"].split("#")[0].rstrip("/")
-    if urlparse(key_url).netloc != urlparse(actor_id).netloc:
-        return json_response({"error": "key_actor_mismatch"}, status=401)
-    if not ap.digest_matches(request.headers.get("digest") or "", body_bytes):
-        return json_response({"error": "digest_mismatch"}, status=401)
-    now = int(Date.now())
-    date_header = (request.headers.get("date")
-                   or request.headers.get("x-date") or "")
-    if date_header:
-        sent = ap.parse_http_date_ms(date_header)
-        if sent and abs(now - sent) > AP_DATE_SKEW_MS:
-            return json_response({"error": "date_skew"}, status=401)
-    elif parsed_sig.get("created") is None:
-        return json_response({"error": "date_required"}, status=401)
-    if (parsed_sig.get("created") is not None
-            and abs(now - parsed_sig["created"] * 1000) > AP_DATE_SKEW_MS):
-        return json_response({"error": "created_skew"}, status=401)
-
-    url = urlparse(request.url)
-    path = url.path + (("?" + url.query) if url.query else "")
-    headers_map = {}
-    for name in parsed_sig["headers"]:
-        if name.startswith("("):
-            continue
-        value = request.headers.get(name)
-        if value is None:
-            return json_response({"error": "missing_header"}, status=401)
-        headers_map[name] = value
-    base = ap.signing_string(
-        "POST", path, headers_map, parsed_sig["headers"],
-        created=parsed_sig.get("created"), expires=parsed_sig.get("expires"))
-    if base is None:
-        return json_response({"error": "bad_signature_params"}, status=401)
-    remote = await _ap_remote_actor(env, key_url)
-    verified = bool(remote and remote.get("pubkey_pem")
-                    and await _ap_rsa_verify(
-                        remote["pubkey_pem"], parsed_sig["signature"], base))
-    if not verified:
-        # The remote key may have rotated since we cached it — refresh once.
-        remote = await _ap_remote_actor(env, key_url, force_refresh=True)
-        verified = bool(remote and remote.get("pubkey_pem")
-                        and await _ap_rsa_verify(
-                            remote["pubkey_pem"], parsed_sig["signature"],
-                            base))
-    if not verified:
-        return json_response({"error": "bad_signature"}, status=401)
-
-    if activity_type == "Follow":
-        return await _ap_handle_follow(env, request, activity, remote)
-    if activity_type == "Undo":
-        return await _ap_handle_undo(env, request, activity)
-    if activity_type == "Create":
-        return await _ap_handle_create(env, request, activity, remote)
-    if activity_type == "Update":
-        return await _ap_handle_update(env, activity, remote)
-    if activity_type == "Delete":
-        return await _ap_handle_delete(env, activity, remote)
-    if activity_type == "Remove":
-        return await _ap_handle_remove(env, activity, remote)
-    # Like/Announce/Accept/... are acknowledged and dropped above.
-    return json_response({"ok": True}, status=202)
 
 
 # --- Client-facing endpoints ----------------------------------------------------
@@ -32327,6 +29191,23 @@ async def repo_star_handler(env, request, owner, repo):
     })
 
 
+# Ciphertext -> decrypted reply, memoized per isolate exactly like
+# _CATALOG_ROW_DECRYPT_MEMO (see its comment for the reasoning). A thread read
+# decrypts up to FEDI_COMMENT_ROW_LIMIT rows, and every one is Pyodide CPU
+# (base64 + a JS-boundary AES-GCM crossing per row) charged to a single
+# request. Every open issue/pull view polls this endpoint, so a busy thread
+# replayed that whole pass per poll and tipped the request over the Workers CPU
+# limit — a 503 "Error 1102: Worker exceeded resource limits" on GET
+# .../fedi-comments, the same family as the info/refs overloads. A reply row's
+# blob is rewritten with a fresh IV on every lifecycle update, so an unchanged
+# blob is byte-identical and its previous plaintext is still valid. Records are
+# shared read-only by the projection below and must not be mutated.
+_FEDI_COMMENT_DECRYPT_MEMO = {}
+FEDI_COMMENT_DECRYPT_MEMO_MAX = 2048
+FEDI_COMMENT_ROW_LIMIT = 200
+FEDI_COMMENTS_CACHE_TTL = 30
+
+
 async def fedi_comments_handler(env, request, owner, repo):
     # Remote fediverse replies for one thread, shown alongside (never inside)
     # the Ed25519-signed event log. Public data — same visibility as the
@@ -32342,17 +29223,41 @@ async def fedi_comments_handler(env, request, owner, repo):
         params.get("number", [""])[0] or params.get("ref", [""])[0], 80)
     if kind not in AP_FEDI_KINDS or not ref:
         return json_response({"error": "kind_and_ref_required"}, status=400)
+    # Collapse the poll burst to one origin computation per colo per TTL: the
+    # privacy gate above already ran (a 404 is never cached), and the body
+    # below is public data keyed entirely by the thread it belongs to.
+    cache_key = (
+        "https://forkmesh.internal/api/repo/%s/%s/fedi-comments?kind=%s&ref=%s"
+        % (quote(owner), quote(repo), kind, quote(ref, safe="")))
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
     context_bi = await blind_index(
         env, "ap-context:" + ap.context_key(owner, repo, kind, ref))
     rows = await d1_all(
         env,
         "SELECT data, ts, lifecycle FROM ap_comments WHERE context_bi=?"
-        " ORDER BY ts ASC LIMIT 200",
+        " ORDER BY ts ASC LIMIT %d" % FEDI_COMMENT_ROW_LIMIT,
         context_bi)
     normalized_records = {}
     legacy_comments = []
+    fresh = {}
+    # Resolve the AES key once for the whole pass instead of per row. Empty
+    # threads (the common poll) skip it, and a placeholder/missing DATA_KEY
+    # stays a per-row decrypt failure rather than becoming a 500 here.
+    data_key = None
+    if rows:
+        try:
+            data_key = await _data_key(env)
+        except Exception:
+            data_key = None
     for row in rows or []:
-        rec = await decrypt_row(env, row.get("data"))
+        blob = str(row.get("data") or "")
+        rec = _FEDI_COMMENT_DECRYPT_MEMO.get(blob)
+        if rec is None:
+            rec = await decrypt_row(env, blob, key=data_key)
+            if rec:
+                fresh[blob] = rec
         if not rec:
             continue
         source_instance = (
@@ -32393,52 +29298,29 @@ async def fedi_comments_handler(env, request, owner, repo):
                     "native event log."),
             },
         })
+    # Threads share one isolate-wide memo, so a read merges its newly decrypted
+    # rows rather than rebuilding from the rows just seen — rebuilding would
+    # evict every other thread's plaintext on each read. Only fresh decrypts
+    # count toward the cap, so a fully memoized thread never triggers a clear;
+    # clearing wholesale keeps the memo bounded without a per-entry eviction
+    # scan (the next read of a live thread simply refills it).
+    if fresh:
+        if len(_FEDI_COMMENT_DECRYPT_MEMO) + len(fresh) > \
+                FEDI_COMMENT_DECRYPT_MEMO_MAX:
+            _FEDI_COMMENT_DECRYPT_MEMO.clear()
+        _FEDI_COMMENT_DECRYPT_MEMO.update(fresh)
     comments = legacy_comments + ap_threads.thread_projection(
         normalized_records)
     comments.sort(key=lambda item: (
         int(item.get("ts", 0) or 0),
         str(item.get("published", "")),
         str(item.get("remoteId", ""))))
-    return json_response({"ok": True, "comments": comments},
-                         cache_control="public, max-age=30")
+    resp = json_response({"ok": True, "comments": comments},
+                         cache_seconds=FEDI_COMMENTS_CACHE_TTL)
+    await edge_cache_put(cache_key, resp)
+    return resp
 
 
-async def ap_publish_handler(env, request, owner, repo):
-    # Owner-node push of canonical announcements the relay never sees through
-    # the signed inboxes (published releases, merged PRs). Same signed-token
-    # gate as the inbox drain, so only the owner's key can speak for the repo.
-    if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    await ensure_schema(env)
-    if not await _authorize_owner(env, request, owner):
-        return json_response({"error": "unauthorized"}, status=401)
-    privacy_reader = globals().get("_repo_is_private")
-    if callable(privacy_reader) and await privacy_reader(env, owner, repo):
-        return json_response({"error": "not_found"}, status=404)
-    try:
-        data = await bounded_json_request(request)
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    kind = clean_string(data.get("kind", ""), 20).lower()
-    if kind not in AP_FEDI_KINDS:
-        return json_response({"error": "invalid_kind"}, status=400)
-    default_type = "publish" if kind == "release" else "open"
-    event_type = clean_string(
-        data.get("eventType", "") or default_type, 20).lower()
-    ref = clean_string(
-        str(data.get("ref", "") or data.get("number", "")
-            or data.get("tag", "")), 80)
-    manual = data.get("manual") is True
-    await _ap_publish_repo_event(
-        env, request, owner, repo, kind, event_type, ref,
-        clean_string(data.get("title", ""), 240),
-        clean_string(data.get("body", ""), 4000),
-        clean_string(data.get("author", "") or owner, MAX_NODE_NAME),
-        manual=manual)
-    return json_response({
-        "ok": True,
-        "mode": "manual_immediate" if manual else "daily_digest",
-    }, status=202)
 
 
 async def _authorize_repo_owner_web(env, request, owner, repo, data):
@@ -32461,122 +29343,8 @@ async def _authorize_repo_owner_web(env, request, owner, repo, data):
     return False
 
 
-async def ap_digest_handler(env, request, owner, repo):
-    """Owner-only preview of the encrypted automatic-update queue."""
-    await ensure_schema(env)
-    method = method_name(request)
-    if method not in ("GET", "POST"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    if await _repo_is_private(env, owner, repo):
-        return json_response({"error": "not_found"}, status=404)
-    data = {}
-    if method == "POST":
-        try:
-            data = await bounded_json_request(request)
-        except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
-    if not await _authorize_repo_owner_web(env, request, owner, repo, data):
-        return json_response({"error": "not_authorized"}, status=403)
-    settings = await _ap_repo_settings_get(env, owner, repo)
-    preview = await _ap_digest_preview(
-        env, str(owner).lower() + "/" + str(repo).lower())
-    preview.update({
-        "ok": True,
-        "enabled": bool(
-            settings["federate"] and settings["broadcastEvents"]),
-        "cadence": "daily",
-        "minimumIntervalMs": fedi_digest.DAY_MS,
-        "automatedLabel": True,
-    })
-    return json_response(preview, cache_control="no-store")
 
 
-async def ap_posts_handler(env, request, owner, repo):
-    # Repo-owner fediverse-post management (dashboard "manage posts" dropdown,
-    # issue #426): list the repo actor's federated posts, or delete one. A
-    # delete broadcasts a Delete(Tombstone) to every follower inbox so the post
-    # disappears from Mastodon timelines, then drops the local object. POST-only
-    # so the session token rides in the body, never a query string / access log.
-    if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    await ensure_schema(env)
-    try:
-        data = await bounded_json_request(request)
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    if not await _authorize_repo_owner_web(env, request, owner, repo, data):
-        return json_response({"error": "not_authorized"}, status=403)
-    action = clean_string(data.get("action", "list"), 12).lower()
-    handle = ap.repo_handle(owner.lower(), repo.lower())
-    actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
-    if action == "list":
-        rows = await d1_all(
-            env,
-            "SELECT object_uuid, data, published FROM ap_objects"
-            " WHERE actor_bi=? ORDER BY published DESC LIMIT 50", actor_bi)
-        posts = []
-        for row in rows or []:
-            rec = await decrypt_row(env, row.get("data"))
-            note = (rec or {}).get("note") or {}
-            posts.append({
-                "id": row.get("object_uuid"),
-                "content": note.get("content") or "",  # our own safe HTML
-                "url": note.get("url") or "",
-                "published": int(row.get("published") or 0),
-            })
-        return json_response({"ok": True, "posts": posts})
-    if action != "delete":
-        return json_response({"error": "bad_action"}, status=400)
-    object_uuid = clean_string(data.get("id", ""), 64).strip()
-    if not object_uuid:
-        return json_response({"error": "missing_id"}, status=400)
-    # Only delete a post the repo actor actually authored: the actor_bi filter
-    # stops one owner's token from reaching another actor's objects.
-    row = await d1_first(
-        env,
-        "SELECT object_uuid FROM ap_objects WHERE object_uuid=? AND actor_bi=?",
-        object_uuid, actor_bi)
-    if not row:
-        return json_response({"error": "not_found"}, status=404)
-    # Drop the local object first: even with federation disabled or zero
-    # followers the owner's intent (remove the post) is honored — /ap/o/<uuid>
-    # starts 404ing and it vanishes from the repo's fediverse profile feed.
-    await d1_run(env, "DELETE FROM ap_objects WHERE object_uuid=?", object_uuid)
-    origin = _ap_origin(env, request)
-    object_url = origin + "/ap/o/" + object_uuid
-    # Drop the edge-parked Note (max-age 300) so the object 404s immediately
-    # rather than lingering a cache TTL after the owner deleted it.
-    await edge_cache_delete(object_url)
-    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
-    now = int(Date.now())
-    queued = False
-    if await _ap_enabled(env):
-        followers = await d1_all(
-            env,
-            "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
-            actor_bi)
-        body_str = json.dumps(ap.delete_activity(
-            actor_url, object_url, actor_url + "/followers", now))
-        out_data = await encrypt_row(env, {
-            "body": body_str, "actorKind": AP_ACTOR_REPO,
-            "actorHandle": handle, "actorUrl": actor_url})
-        seen = set()
-        for follower in followers or []:
-            inbox = ((follower.get("shared_inbox") or "").strip()
-                     or (follower.get("inbox") or "").strip())
-            if not inbox or inbox in seen:
-                continue
-            seen.add(inbox)
-            await d1_run(
-                env,
-                "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
-                " created_at) VALUES (?,?,0,?,?)",
-                inbox, out_data, now, now)
-            queued = True
-        if queued:
-            await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
-    return json_response({"ok": True, "deleted": object_uuid,
-                          "federated": queued})
 
 
 # --- Admin: fediverse configuration ------------------------------------------
@@ -32988,6 +29756,10 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
            )""",
         recipient_bi, recipient_bi, MAX_NOTIFICATIONS_PER_RECIPIENT,
     )
+    # This row is the only thing that moves the recipient's unread ping count,
+    # so it is also the only thing that needs to wake their clients. Desktop
+    # and browser both read the inbox once on open and then sit on this push.
+    await notify_account_event(env, recipient, "pings")
     return True
 
 
@@ -32998,7 +29770,10 @@ async def _promote_hosted_repository_import(env, catalog_record):
         catalog_record.get("owner"), MAX_NODE_NAME).lower()
     repository_name = safe_segment(clean_string(
         catalog_record.get("name"), MAX_REPO_SEGMENT))
-    if mirror_owner not in ("mirror2", "mirror3") or not repository_name:
+    # mirror2 and mirror3 ran the original Codeberg import burst and have both
+    # been retired; any node may carry an imported catalog now, so gate on the
+    # record itself rather than a hard-coded pair of node names.
+    if not mirror_owner or not repository_name:
         return False
     rows = await d1_all(
         env,
@@ -33349,26 +30124,33 @@ async def notifications_handler(env, request):
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+        clear_all = data.get("all") is True
         item_id = clean_string(data.get("id", ""), 160).lower()
-        if not valid_node_name(node) or not re.fullmatch(
-                r"[a-f0-9]{64}", item_id):
+        if not valid_node_name(node) or (
+                not clear_all and not re.fullmatch(r"[a-f0-9]{64}", item_id)):
             return json_response({"error": "bad_request"}, status=400)
         # A notification can only be removed from the authenticated owner's
         # own encrypted inbox. The opaque id is still scoped by recipient_bi,
         # so an id copied from another account cannot delete anything. The
-        # desktop, which holds keys and no session token, signs the id itself
-        # with a proof distinct from the list/read ones (adhoc #77).
+        # desktop, which holds keys and no session token, signs either the id
+        # or the explicit all-inbox operation with distinct proofs.
         if await _alert_inbox_account_name(
-                env, request, data, resource=item_id) != node:
+                env, request, data,
+                resource=("all" if clear_all else item_id)) != node:
             return json_response({"error": "unauthorized"}, status=401)
         recipient_bi = await blind_index(env, node)
-        await d1_run(
-            env,
-            "DELETE FROM notifications "
-            "WHERE recipient_bi=? AND dedupe_bi=?",
-            recipient_bi,
-            item_id,
-        )
+        if clear_all:
+            await d1_run(
+                env, "DELETE FROM notifications WHERE recipient_bi=?",
+                recipient_bi)
+        else:
+            await d1_run(
+                env,
+                "DELETE FROM notifications "
+                "WHERE recipient_bi=? AND dedupe_bi=?",
+                recipient_bi,
+                item_id,
+            )
         return json_response({"ok": True})
 
     return json_response(
@@ -33988,369 +30770,97 @@ async def poll_handler(env, request):
     return json_response(out)
 
 
-def _forkbot_extract_mention_command(message):
-    text = clean_string(message, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return ""
-    match = re.search(
-        r"(?is)(?:^|[^A-Za-z0-9_-])@?forkbot\b[:,]?\s*(.*)$", text)
-    return match.group(1).strip() if match else ""
+_forkbot = _LazyModule("forkbot")
+_forkbot_extract_mention_command = _forkbot.export("_forkbot_extract_mention_command")
+_forkbot_parse_issue_command = _forkbot.export("_forkbot_parse_issue_command")
+_forkbot_command_hints_issue = _forkbot.export("_forkbot_command_hints_issue")
+_forkbot_polite_prefix = _forkbot.export("_forkbot_polite_prefix")
+_forkbot_parse_list_command = _forkbot.export("_forkbot_parse_list_command")
+_forkbot_parse_count_command = _forkbot.export("_forkbot_parse_count_command")
+_forkbot_parse_search_command = _forkbot.export("_forkbot_parse_search_command")
+_forkbot_parse_agent_command = _forkbot.export("_forkbot_parse_agent_command")
+_forkbot_parse_show_command = _forkbot.export("_forkbot_parse_show_command")
+_forkbot_parse_help_command = _forkbot.export("_forkbot_parse_help_command")
+_forkbot_help_message = _forkbot.export("_forkbot_help_message")
+_forkbot_context_text = _forkbot.export("_forkbot_context_text")
+_forkbot_issue_title = _forkbot.export("_forkbot_issue_title")
+_forkbot_fallback_issue_fields = _forkbot.export("_forkbot_fallback_issue_fields")
+_forkbot_json_object_from_text = _forkbot.export("_forkbot_json_object_from_text")
+_forkbot_clean_ai_issue_fields = _forkbot.export("_forkbot_clean_ai_issue_fields")
+_forkbot_ai_default_model = _forkbot.export("_forkbot_ai_default_model")
+_forkbot_ai_model_options = _forkbot.export("_forkbot_ai_model_options")
+_forkbot_resolve_ai_model = _forkbot.export("_forkbot_resolve_ai_model")
+_forkbot_ai_model_not_found_error = _forkbot.export("_forkbot_ai_model_not_found_error")
+_forkbot_ai_fallback_models = _forkbot.export("_forkbot_ai_fallback_models")
+forkbot_models_handler = _forkbot.export("forkbot_models_handler")
+_forkbot_run_ai = _forkbot.export("_forkbot_run_ai")
+ai_agent_handler = _forkbot.export("ai_agent_handler")
+_forkbot_ai_issue_fields = _forkbot.export("_forkbot_ai_issue_fields")
+_forkbot_ai_interpret = _forkbot.export("_forkbot_ai_interpret")
+_forkbot_repo_gateway_json = _forkbot.export("_forkbot_repo_gateway_json")
+_forkbot_missing_tree = _forkbot.export("_forkbot_missing_tree")
+_forkbot_issue_json_path = _forkbot.export("_forkbot_issue_json_path")
+_forkbot_issue_json_candidates = _forkbot.export("_forkbot_issue_json_candidates")
+_forkbot_blob_text = _forkbot.export("_forkbot_blob_text")
+_forkbot_parse_issue_record = _forkbot.export("_forkbot_parse_issue_record")
+_forkbot_recent_issue_numbers = _forkbot.export("_forkbot_recent_issue_numbers")
+_forkbot_load_issue_records = _forkbot.export("_forkbot_load_issue_records")
+_forkbot_search_issues = _forkbot.export("_forkbot_search_issues")
+_forkbot_issue_lines = _forkbot.export("_forkbot_issue_lines")
+_forkbot_next_issue_number = _forkbot.export("_forkbot_next_issue_number")
+_forkbot_attributed_body = _forkbot.export("_forkbot_attributed_body")
+_forkbot_rekey_alias_inbox = _forkbot.export("_forkbot_rekey_alias_inbox")
+_forkbot_enqueue_issue = _forkbot.export("_forkbot_enqueue_issue")
+_forkbot_enqueue_agent_request = _forkbot.export("_forkbot_enqueue_agent_request")
+_forkbot_gateway_offline_reply = _forkbot.export("_forkbot_gateway_offline_reply")
+_forkbot_action_count = _forkbot.export("_forkbot_action_count")
+_forkbot_action_list = _forkbot.export("_forkbot_action_list")
+_forkbot_action_search = _forkbot.export("_forkbot_action_search")
+_forkbot_action_show = _forkbot.export("_forkbot_action_show")
+_forkbot_action_start_agent = _forkbot.export("_forkbot_action_start_agent")
+forkbot_chat_handler = _forkbot.export("forkbot_chat_handler")
 
 
-def _forkbot_parse_issue_command(command):
-    # Fast, offline path for an explicitly phrased request ("create an issue
-    # to ..."). A miss here is NOT a rejection: the handler falls back to the
-    # AI intent classifier (_forkbot_ai_interpret), which recognises the same
-    # intent from natural phrasing ("forkbot can you track the flaky login
-    # test?") and from the surrounding conversation. This regex just spares an
-    # AI round trip for the obvious wording and still works when AI is off.
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    # Verb-first ("create an issue to ...") or noun-first ("issue to ...",
-    # "bug: ...") — both common phrasings, both answerable offline.
-    match = re.match(
-        r"(?is)^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
-        r"pls\s+|plz\s+)*"
-        r"(?:(?:create|open|file|make|report|log|raise|add|track|submit)\s+)?"
-        r"(?:an?\s+|a\s+new\s+)?"
-        r"(?:issue|bug|ticket|task|feature\s+request)\b"
-        r"\s*(?:(?:to|for|about|that|saying|called|titled|re|regarding)\s+|"
-        r"[:\-]\s*)?"
-        r"(.+)$",
-        text,
-    )
-    if not match:
-        return None
-    description = re.sub(r"\s+", " ", match.group(1)).strip(" .:-")
-    if len(description) < 3:
-        return None
-    return {"description": description}
 
 
-def _forkbot_command_hints_issue(command):
-    """Cheap offline signal that a ForkBot mention is about recording work —
-    used ONLY when the AI classifier is unreachable, so an unreachable model
-    degrades to filing the raw request instead of refusing with the help hint
-    (that refusal is exactly what users saw while the AI binding was silently
-    failing)."""
-    return bool(re.search(
-        r"(?i)\b(issues?|bugs?|tickets?|tasks?|todo|feature\s+request|"
-        r"create|open|file|track|log|report)\b",
-        clean_string(command, FORKBOT_MAX_COMMAND)))
 
 
-def _forkbot_polite_prefix():
-    # Shared lead-in the offline parsers strip: "please can you ..." etc.
-    return (r"(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
-            r"pls\s+|plz\s+)*")
 
 
-def _forkbot_parse_list_command(command):
-    """Offline fast path for "list the last N issues" phrasings. Mirrors the
-    create-issue fast path: a miss is NOT a rejection (the AI classifier still
-    gets a shot at natural wording), a hit spares the AI round trip and keeps
-    the feature working when AI is off. Returns {"count": n} or None."""
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    match = re.match(
-        r"(?is)^" + _forkbot_polite_prefix() +
-        r"(?:list|show(?:\s+me)?|display|give\s+me|what\s+are)\s+"
-        r"(?:the\s+)?(?:last|latest|most\s+recent|recent|newest)?\s*"
-        r"(\d{1,3})?\s*(?:few\s+)?issues\b",
-        text,
-    )
-    if not match:
-        return None
-    try:
-        count = int(match.group(1) or FORKBOT_LIST_DEFAULT)
-    except (TypeError, ValueError):
-        count = FORKBOT_LIST_DEFAULT
-    return {"count": max(1, min(count, FORKBOT_LIST_MAX))}
 
 
-def _forkbot_parse_count_command(command):
-    """Offline fast path for "how many issues are there" phrasings. These ask
-    for a total, not a listing, so they must not fall through to the list
-    parser above (which would hand back a few issues and never say how many
-    exist in total). Returns True or None."""
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    match = re.match(
-        r"(?is)^" + _forkbot_polite_prefix() +
-        r"(?:how\s+many\s+issues\b(?:\s+are\s+there|\s+exist|"
-        r"\s+do\s+we\s+have)?|"
-        r"(?:what(?:'s|\s+is)\s+the\s+)?(?:number|count)\s+of\s+issues|"
-        r"issue\s+count)\s*[?.!]*$",
-        text,
-    )
-    return {} if match else None
 
 
-def _forkbot_parse_search_command(command):
-    """Offline fast path for "search issues for X" phrasings. Requires the
-    word issue(s) so a bare "find the bug" still flows to the create/AI paths.
-    Returns {"query": text} or None."""
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    match = re.match(
-        r"(?is)^" + _forkbot_polite_prefix() +
-        r"(?:search|find|look\s+(?:for|up)|grep)\s+"
-        r"(?:the\s+|any\s+|all\s+)?(?:open\s+|closed\s+)?issues?\b\s*"
-        r"(?:(?:for|about|regarding|matching|mentioning|containing|on|with)"
-        r"\s+)?[:\-]?\s*(.+)$",
-        text,
-    )
-    if not match:
-        return None
-    query = re.sub(r"\s+", " ", match.group(1)).strip(" .:-\"'")
-    if len(query) < 2:
-        return None
-    return {"query": query[:100]}
 
 
-def _forkbot_parse_agent_command(command):
-    """Offline fast path for "start an agent on the latest issue / issue #N".
-    Returns {"issueNumber": n} (0 = the most recent issue) or None."""
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    match = re.match(
-        r"(?is)^" + _forkbot_polite_prefix() +
-        r"(?:start|run|launch|kick\s+off|spin\s+up|put|assign|set|sic)\s+"
-        r"(?:an?\s+)?(?:coding\s+|code\s+)?agent\s+"
-        r"(?:on|to|at|for|onto|against)?\s*(?:the\s+)?"
-        r"(?:most\s+recent|latest|newest|last|recent)?\s*"
-        r"issue\s*(?:#\s*)?(\d+)?",
-        text,
-    )
-    if not match:
-        return None
-    try:
-        number = int(match.group(1) or 0)
-    except (TypeError, ValueError):
-        number = 0
-    return {"issueNumber": number}
 
 
-def _forkbot_parse_show_command(command):
-    """Offline fast path for "show issue #N" / "show the latest issue".
-    "open issue ..." intentionally stays with the create-issue parser (there
-    "open" is the filing verb). Returns {"issueNumber": n} (0 = latest) or
-    None."""
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-    if not text:
-        return None
-    match = re.match(
-        r"(?is)^" + _forkbot_polite_prefix() +
-        r"(?:show(?:\s+me)?|view|describe|summarize|"
-        r"what(?:'s|\s+is)\s+(?:in|the\s+status\s+of))\s+"
-        r"(?:the\s+)?(?:most\s+recent\s+|latest\s+|newest\s+|last\s+)?"
-        r"issue\s*(?:#\s*)?(\d+)?\s*$",
-        text,
-    )
-    if not match:
-        return None
-    try:
-        number = int(match.group(1) or 0)
-    except (TypeError, ValueError):
-        number = 0
-    return {"issueNumber": number}
 
 
-def _forkbot_parse_help_command(command):
-    text = clean_string(command, FORKBOT_MAX_COMMAND).strip().lower()
-    if not text:
-        return False
-    return bool(re.match(
-        r"^(?:help|\?+|what\s+can\s+you\s+do|what\s+do\s+you\s+do|"
-        r"commands|usage)\s*[!.?]*$", text))
 
 
-def _forkbot_help_message():
-    # Also the fallback reply for anything ForkBot could not map to an action,
-    # so it doubles as discoverable usage text.
-    return (
-        "I can open an issue from the conversation (\"forkbot open an issue "
-        "for the flaky login test\"), list recent issues (\"forkbot list the "
-        "last 5 issues\" - up to %d), say how many issues there are "
-        "(\"forkbot how many issues are there?\"), search issues (\"forkbot "
-        "search issues for relay retries\"), show one issue (\"forkbot show "
-        "issue #12\"), and - for the repo owner - start a coding agent "
-        "(\"forkbot start an agent on the latest issue\")." % FORKBOT_LIST_MAX
-    )
 
 
-def _forkbot_context_text(context):
-    """Flatten the recent conversation the client forwarded into a short,
-    plain-text transcript for the AI. Each entry is {sender, text}; the client
-    already excludes ForkBot's own lines and caps the count, but we bound it
-    again here so a hostile client can't blow the prompt budget."""
-    if not isinstance(context, list):
-        return ""
-    lines = []
-    for entry in context[-FORKBOT_CONTEXT_MAX_MESSAGES:]:
-        if not isinstance(entry, dict):
-            continue
-        sender = clean_string(entry.get("sender", ""), MAX_NODE_NAME).strip() or "user"
-        text = clean_string(entry.get("text", ""), FORKBOT_CONTEXT_MAX_CHARS).strip()
-        if not text:
-            continue
-        lines.append("%s: %s" % (sender, text))
-    return "\n".join(lines)
 
 
-def _forkbot_issue_title(description):
-    text = re.sub(r"\s+", " ", clean_string(description, 240)).strip(" .:-")
-    if not text:
-        return "Issue from #general"
-    for sep in (". ", "! ", "? "):
-        idx = text.find(sep)
-        if 12 <= idx <= 120:
-            text = text[:idx]
-            break
-    if len(text) > 120:
-        text = text[:117].rstrip() + "..."
-    return text or "Issue from #general"
 
 
-def _forkbot_fallback_issue_fields(description):
-    body = clean_string(description, MAX_ISSUE_BYTES).strip()
-    title = _forkbot_issue_title(body)
-    return {"title": title, "body": body}
 
 
-def _forkbot_json_object_from_text(text):
-    if not isinstance(text, str):
-        return None
-    raw = text.strip()
-    if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            parsed = json.loads(raw[start:end + 1])
-            return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            return None
-    return None
 
 
-def _forkbot_clean_ai_issue_fields(parsed):
-    if not isinstance(parsed, dict):
-        return None
-    title = clean_string(parsed.get("title", ""), 240).strip()
-    body = clean_string(parsed.get("body", ""), MAX_ISSUE_BYTES).strip()
-    if not title or not body:
-        return None
-    return {"title": _forkbot_issue_title(title), "body": body}
 
 
-def _forkbot_ai_default_model(env):
-    """The model used when the caller picks nothing: the deployment's
-    FORKBOT_AI_MODEL var, else the code default."""
-    return clean_string(getattr(env, "FORKBOT_AI_MODEL", ""), 120) or \
-        FORKBOT_AI_DEFAULT_MODEL
 
 
-def _forkbot_ai_model_options(env):
-    """The pickable Workers AI models, default first, for the picker UI.
-
-    The deployment default is always offered even when FORKBOT_AI_MODEL names a
-    model missing from FORKBOT_AI_MODEL_CHOICES — otherwise a self-hosted relay
-    that points the var at its own model would show a picker that cannot select
-    what it is actually running."""
-    default_model = _forkbot_ai_default_model(env)
-    options = []
-    for model_id, label, description in FORKBOT_AI_MODEL_CHOICES:
-        options.append({
-            "id": model_id,
-            "label": label,
-            "description": description,
-            "default": model_id == default_model,
-        })
-    if not any(option["default"] for option in options):
-        options.insert(0, {
-            "id": default_model,
-            "label": default_model.rsplit("/", 1)[-1],
-            "description": "This relay's configured model.",
-            "default": True,
-        })
-    options.sort(key=lambda option: 0 if option["default"] else 1)
-    return options
 
 
-def _forkbot_resolve_ai_model(env, requested=""):
-    """Map a caller-supplied model pick onto an allowed Workers AI model id.
-
-    Unknown, empty, or malformed picks fall back to the deployment default
-    rather than erroring: a stale picker value in someone's browser must not
-    turn ForkBot off for them."""
-    wanted = clean_string(requested or "", 120).strip()
-    if not wanted:
-        return _forkbot_ai_default_model(env)
-    for option in _forkbot_ai_model_options(env):
-        if option["id"] == wanted:
-            return option["id"]
-    return _forkbot_ai_default_model(env)
 
 
-def _forkbot_ai_model_not_found_error(error):
-    text = _safe_error_text(error).lower()
-    if not text:
-        return False
-    return any(marker in text for marker in (
-        "not found",
-        "not_found",
-        "model not found",
-        "unknown model",
-        "does not exist",
-        # What Workers AI actually says for a retired/mistyped id
-        # ("5007: No such model @cf/... or task"); the wordings above never
-        # matched it, so the fallback chain sat unused in production.
-        "no such model",
-        "no such task",
-        "invalid model",
-        "unsupported model",
-    ))
 
 
-def _forkbot_ai_fallback_models(env, requested=""):
-    """Models we can try for one call, in the order they should be billed."""
-    default = _forkbot_ai_default_model(env)
-    fallback = []
-    wanted = clean_string(requested or "", 120).strip()
-    if wanted and wanted not in fallback:
-        fallback.append(wanted)
-    if default and default not in fallback:
-        fallback.append(default)
-    for model_id, _, _ in FORKBOT_AI_MODEL_CHOICES:
-        if model_id not in fallback:
-            fallback.append(model_id)
-    return fallback
 
 
-async def forkbot_models_handler(env, request):
-    """List the Workers AI models a chat client may send its prompt to."""
-    if method_name(request) not in ("GET", "HEAD"):
-        return json_response({"error": "method_not_allowed"}, status=405)
-    options = _forkbot_ai_model_options(env)
-    default_model = _forkbot_ai_default_model(env)
-    return json_response({
-        "ok": True,
-        "provider": "cloudflare-workers-ai",
-        "default": default_model,
-        "models": options,
-    })
 
 
 async def _ai_ask_rate_check(env, account_bi):
@@ -34480,145 +30990,6 @@ async def ai_ask_handler(env, request):
     })
 
 
-async def _forkbot_run_ai(
-    env, system_prompt, user_prompt, schema=None, model="", max_tokens=512,
-    outcome=None,
-):
-    """Run the Workers AI chat model and return the raw response text/object
-    (or None). Shared by the issue-drafting and intent-classification helpers.
-
-    Pass a dict as `outcome` to learn what happened beyond None/not-None:
-    "model" is the id that actually answered (a fallback when the pick was
-    rejected) and "failure" is one of missing_binding / model_not_found /
-    provider_error / unusable_response. POST /api/ai/ask needs
-    model_not_found separated out because that is the one failure the person
-    at the composer can fix by picking another model.
-
-    When `schema` is given, the first attempt requests Workers AI JSON mode
-    (response_format json_schema) so a supporting model MUST return valid
-    JSON; models/plans without JSON mode fall back to a plain prompt-only
-    attempt.
-
-    `model` is an optional caller pick (see _forkbot_resolve_ai_model); an
-    unknown one silently uses the deployment default. Every failure path logs
-    the reason — the original implementation
-    swallowed all exceptions, which left ForkBot silently degraded (raw-echo
-    issue titles, natural requests answered with the help hint) with nothing
-    in the logs to say why."""
-    if outcome is None:
-        outcome = {}
-    ai = getattr(env, "AI", None)
-    if ai is None or js_nullish(ai) or not hasattr(ai, "run"):
-        outcome["failure"] = "missing_binding"
-        await log_error(
-            env, 500, "AI", "forkbot/ai",
-            "ForkBot AI unavailable: env.AI binding is missing")
-        return None
-    model = _forkbot_resolve_ai_model(env, model)
-    candidates = _forkbot_ai_fallback_models(env, model)
-    base_payload = {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "max_tokens": max_tokens,
-    }
-    attempts = []
-    if schema:
-        with_format = dict(base_payload)
-        with_format["response_format"] = {
-            "type": "json_schema", "json_schema": schema,
-        }
-        attempts.append(with_format)
-    attempts.append(base_payload)
-    result = None
-    ran = False
-    last_error = None
-    # Every candidate rejected as "no such model" means the deployment's model
-    # ids are stale, not that inference is broken — worth saying so distinctly
-    # both in the log and to the caller.
-    all_missing = True
-    for candidate in candidates:
-        for payload in attempts:
-            try:
-                result = await ai.run(candidate, to_js(payload))
-                model = candidate
-                ran = True
-                break
-            except Exception as error:
-                last_error = error
-                if _forkbot_ai_model_not_found_error(error):
-                    break
-                all_missing = False
-        if ran:
-            break
-    if not ran:
-        outcome["failure"] = ("model_not_found" if all_missing
-                              else "provider_error")
-        await log_error(
-            env, 500, "AI", "forkbot/ai",
-            "ForkBot AI call failed (%s%s): %s"
-            % (model,
-               ", no listed model exists on this account" if all_missing
-               else "",
-               _safe_error_text(last_error)[:300]))
-        return None
-    outcome["model"] = model
-    try:
-        if hasattr(result, "to_py"):
-            result = result.to_py()
-    except Exception:
-        pass
-    if isinstance(result, dict):
-        for key in ("response", "text", "output"):
-            value = result.get(key)
-            if isinstance(value, str):
-                return value
-            # JSON mode returns the parsed object under "response".
-            if isinstance(value, dict):
-                return value
-        # Current Workers AI chat models such as Llama 4 Scout and Gemma 4
-        # return the OpenAI Chat Completions shape instead of the older
-        # top-level {"response": "..."} shape. Accept the first usable choice
-        # and both content encodings Cloudflare documents: a string or an array
-        # of typed text parts.
-        choices = result.get("choices")
-        if isinstance(choices, list):
-            for choice in choices:
-                if not isinstance(choice, dict):
-                    continue
-                value = choice.get("text")
-                if isinstance(value, str) and value.strip():
-                    return value
-                message = choice.get("message")
-                if not isinstance(message, dict):
-                    continue
-                content = message.get("content")
-                if isinstance(content, str) and content.strip():
-                    return content
-                if isinstance(content, list):
-                    parts = []
-                    for part in content:
-                        if isinstance(part, str):
-                            parts.append(part)
-                        elif isinstance(part, dict):
-                            text = part.get("text")
-                            if isinstance(text, str):
-                                parts.append(text)
-                    joined = "".join(parts)
-                    if joined.strip():
-                        return joined
-        # Some bindings return the parsed object directly rather than a text
-        # field; hand the dict back so the caller can read fields off it.
-        return result
-    if isinstance(result, str):
-        return result
-    outcome["failure"] = "unusable_response"
-    await log_error(
-        env, 500, "AI", "forkbot/ai",
-        "ForkBot AI returned an unusable %s response (%s)"
-        % (type(result).__name__, model))
-    return None
 
 
 # JSON schemas for Workers AI JSON mode: a supporting model is FORCED to emit
@@ -34648,912 +31019,52 @@ FORKBOT_INTENT_SCHEMA = {
 }
 
 
-async def _forkbot_ai_issue_fields(env, description, context_text="", model=""):
-    system_prompt = (
-        "You turn a chat request into a ForkMesh issue. Use the conversation "
-        "context to resolve what the user is referring to. Respond with ONLY "
-        'one JSON object, no other text: {"title":"short summary",'
-        '"body":"what is wrong or what needs doing, with detail from the '
-        'conversation"}.'
-    )
-    user_prompt = clean_string(description, FORKBOT_MAX_COMMAND)
-    if context_text:
-        user_prompt = (
-            "Recent conversation:\n" + context_text +
-            "\n\nRequest: " + user_prompt)
-    result = await _forkbot_run_ai(
-        env, system_prompt, user_prompt, schema=FORKBOT_ISSUE_FIELDS_SCHEMA,
-        model=model)
-    if result is None:
-        return None
-    if isinstance(result, dict):
-        return _forkbot_clean_ai_issue_fields(result)
-    return _forkbot_clean_ai_issue_fields(_forkbot_json_object_from_text(result))
 
 
-async def _forkbot_ai_interpret(env, command, context_text="", model=""):
-    """Decide from meaning (not fixed phrasing) which ForkBot action the user
-    wants — pulling the subject from the recent conversation when the mention
-    itself is only a pointer ("forkbot log that").
-
-    Returns one of:
-      {"intent": "create_issue", "title", "body"}
-      {"intent": "list_issues", "count"}
-      {"intent": "count_issues"}
-      {"intent": "search_issues", "query"}
-      {"intent": "show_issue", "issueNumber"}   (0 = the most recent issue)
-      {"intent": "start_agent", "issueNumber"}  (0 = the most recent issue)
-      {"intent": "help"} / {"intent": "none"}
-    or None when the model is unavailable/unparseable — callers treat None as
-    "AI could not decide" and fall back to a heuristic, NOT as a refusal."""
-    system_prompt = (
-        "You are ForkBot, an assistant in a ForkMesh chat room. Classify what "
-        "the user wants and respond with ONLY one JSON object, no other text. "
-        "Actions: record a bug/task/feature as an issue -> "
-        '{"intent":"create_issue","title":"short summary","body":"the problem '
-        'or task, with detail from the conversation"}; list recent issues -> '
-        '{"intent":"list_issues","count":N} (how many they asked for, 5 if '
-        "unspecified); asking for a TOTAL count of issues rather than a list "
-        '-> {"intent":"count_issues"}; search existing issues for a topic -> '
-        '{"intent":"search_issues","query":"the search words"}; show one '
-        'existing issue -> {"intent":"show_issue","issueNumber":N} (0 for the '
-        "most recent); start a coding agent working on an issue -> "
-        '{"intent":"start_agent","issueNumber":N} (0 for the most recent); '
-        'asking what ForkBot can do -> {"intent":"help"}. When in doubt and '
-        "the message describes a problem, task, or request, treat it as "
-        "create_issue; a greeting or small talk is "
-        '{"intent":"none"}. Examples: "issue to add dark mode" -> '
-        '{"intent":"create_issue","title":"Add dark mode","body":"Add dark '
-        'mode."}; "what came in this week?" -> '
-        '{"intent":"list_issues","count":5}; "how many issues are there?" -> '
-        '{"intent":"count_issues"}; "anything about relay retries?" '
-        '-> {"intent":"search_issues","query":"relay retries"}; "get an '
-        'agent going on that new issue" -> '
-        '{"intent":"start_agent","issueNumber":0}; "hello!" -> '
-        '{"intent":"none"}.'
-    )
-    user_prompt = command
-    if context_text:
-        user_prompt = (
-            "Recent conversation:\n" + context_text +
-            "\n\nMessage to ForkBot: " + command)
-    result = await _forkbot_run_ai(
-        env, system_prompt, user_prompt, schema=FORKBOT_INTENT_SCHEMA,
-        model=model)
-    if result is None:
-        return None
-    parsed = result if isinstance(result, dict) else \
-        _forkbot_json_object_from_text(result)
-    if not isinstance(parsed, dict):
-        return None
-    intent = clean_string(parsed.get("intent", ""), 40).strip().lower()
-    if intent == "list_issues":
-        try:
-            count = int(parsed.get("count", FORKBOT_LIST_DEFAULT)
-                        or FORKBOT_LIST_DEFAULT)
-        except (TypeError, ValueError):
-            count = FORKBOT_LIST_DEFAULT
-        return {"intent": "list_issues",
-                "count": max(1, min(count, FORKBOT_LIST_MAX))}
-    if intent == "count_issues":
-        return {"intent": "count_issues"}
-    if intent == "search_issues":
-        query = clean_string(parsed.get("query", ""), 100).strip()
-        if not query:
-            return None
-        return {"intent": "search_issues", "query": query}
-    if intent in ("show_issue", "start_agent"):
-        try:
-            number = int(parsed.get("issueNumber", 0) or 0)
-        except (TypeError, ValueError):
-            number = 0
-        return {"intent": intent, "issueNumber": max(0, number)}
-    if intent == "help":
-        return {"intent": "help"}
-    if intent not in ("create_issue", "none"):
-        # Some models omit the field but still return title/body when they
-        # decided to draft an issue; treat a usable draft as create_issue.
-        intent = "create_issue" if (parsed.get("title") or parsed.get("body")) \
-            else "none"
-    if intent != "create_issue":
-        return {"intent": "none"}
-    fields = _forkbot_clean_ai_issue_fields(parsed)
-    if not fields:
-        # The model wanted an issue but produced no usable draft — let the
-        # caller's heuristic take over instead of refusing.
-        return None
-    return {"intent": "create_issue", "title": fields["title"],
-            "body": fields["body"]}
 
 
-async def _forkbot_repo_gateway_json(env, owner, repo, action_query):
-    """Read public repository data through the normal HTTPS mirror gateway."""
-    owner = safe_segment(owner)
-    repo = safe_segment(repo)
-    action = clean_string(action_query, 400).lstrip("/")
-    if (
-        not owner or not repo
-        or not re.match(
-            r"^(tree|blobs|blob|raw|history|commit|branches|search|stats|sizes)"
-            r"(?:\?|$)",
-            action,
-        )
-    ):
-        return None
-    try:
-        origin = _public_base_url(env).rstrip("/")
-        response = await asyncio.wait_for(
-            js_fetch(
-                "%s/api/repo/%s/%s/%s"
-                % (origin, quote(owner), quote(repo), action)
-            ),
-            timeout=FORKBOT_GATEWAY_TIMEOUT_MS / 1000,
-        )
-        if int(getattr(response, "status", 0) or 0) != 200:
-            return None
-        data = await response.json()
-        if hasattr(data, "to_py"):
-            data = data.to_py()
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
 
 
-def _forkbot_missing_tree(data):
-    # The host answers "that folder isn't in git yet" in a few git-flavored
-    # ways (same set the dashboard's isMissingMirrorFolder knows); all of them
-    # mean "no issues filed", not "host unreachable".
-    error = str((data or {}).get("error", "")).lower()
-    return any(marker in error for marker in (
-        "not_found", "not a valid object name", "pathspec",
-        "does not exist", "unknown revision"))
 
 
-def _forkbot_issue_json_path(number, subdir=""):
-    # Issues are split by status into .forkmesh/issues/open/<N>/ and
-    # .forkmesh/issues/closed/<N>/ (adhoc #14); pre-split mirrors keep the
-    # numbered folder directly under the root (subdir "").
-    base = ".forkmesh/issues"
-    if subdir:
-        base += "/" + subdir
-    return "%s/%d/issue-%d.json" % (base, int(number), int(number))
 
 
-def _forkbot_issue_json_candidates(number):
-    """Every path issue <number>'s record may live at, most likely first."""
-    return [_forkbot_issue_json_path(number, subdir)
-            for subdir in ("open", "closed", "")]
 
 
-def _forkbot_blob_text(blob):
-    if not isinstance(blob, dict) or not blob.get("ok"):
-        return ""
-    content = blob.get("content", "")
-    if not isinstance(content, str):
-        return ""
-    if blob.get("encoding") == "base64":
-        try:
-            return base64.b64decode(content).decode("utf-8", "replace")
-        except Exception:
-            return ""
-    return content
 
 
-def _forkbot_parse_issue_record(text, number):
-    """Reduce one .forkmesh/issues/<N>/issue-<N>.json blob to the fields a chat
-    line needs. Tolerant of junk: a malformed record still yields a usable
-    "#N" stub rather than dropping the issue from the list."""
-    try:
-        parsed = json.loads(text or "{}")
-    except Exception:
-        parsed = None
-    if not isinstance(parsed, dict):
-        parsed = {}
-    events = parsed.get("events")
-    open_event = {}
-    if isinstance(events, list):
-        for event in events:
-            if isinstance(event, dict) and event.get("type") == "open":
-                open_event = event
-                break
-    title = clean_string(
-        parsed.get("title") or open_event.get("title") or "", 240).strip()
-    return {
-        "number": int(parsed.get("number") or number or 0),
-        "title": title or ("issue #%d" % int(number or 0)),
-        "status": clean_string(
-            parsed.get("status") or parsed.get("state") or "open", 40),
-        "author": clean_string(
-            parsed.get("authorName") or open_event.get("authorName") or
-            parsed.get("author") or open_event.get("author") or "unknown",
-            MAX_NODE_NAME),
-        "body": clean_string(
-            open_event.get("body") or parsed.get("body") or "", 600).strip(),
-    }
 
 
-async def _forkbot_recent_issue_numbers(env, owner, repo):
-    """Issue numbers committed to the live mirror, newest first. Returns None
-    when no host could serve the tree (offline), [] when the repo simply has
-    no issues folder yet. Issues are split into open/ and closed/ status
-    folders (adhoc #14); numbered folders directly under the root are the
-    pre-split legacy layout."""
-    root = await _forkbot_repo_gateway_json(
-        env, owner, repo, "tree?path=" + quote(".forkmesh/issues", safe=""))
-    if root is None:
-        return None
-    entries = root.get("entries")
-    if not isinstance(entries, list):
-        return [] if _forkbot_missing_tree(root) else None
-    numbers = set()
-    subdirs = []
-    for entry in entries:
-        if not isinstance(entry, dict) or entry.get("type") != "tree":
-            continue
-        name = str(entry.get("name", ""))
-        if name.isdigit():
-            numbers.add(int(name))
-        elif name in ("open", "closed"):
-            subdirs.append(name)
-    for subdir in subdirs:
-        tree = await _forkbot_repo_gateway_json(
-            env, owner, repo,
-            "tree?path=" + quote(".forkmesh/issues/" + subdir, safe=""))
-        sub_entries = tree.get("entries") if isinstance(tree, dict) else None
-        if not isinstance(sub_entries, list):
-            continue
-        for entry in sub_entries:
-            if not isinstance(entry, dict) or entry.get("type") != "tree":
-                continue
-            name = str(entry.get("name", ""))
-            if name.isdigit():
-                numbers.add(int(name))
-    return sorted(numbers, reverse=True)
 
 
-async def _forkbot_load_issue_records(env, owner, repo, numbers):
-    """Batched read of the given issues' JSON records over the live tunnel
-    (one /blobs round trip, like the website's issue list). Unreadable issues
-    are skipped; returns records in the order requested."""
-    numbers = [int(n) for n in numbers][:FORKBOT_LIST_MAX]
-    if not numbers:
-        return []
-    # A record lives at open/<N>/, closed/<N>/, or the pre-split legacy <N>/
-    # depending on its status; ask for every candidate in the one batch (3 ×
-    # FORKBOT_LIST_MAX stays within MAX_BLOB_BATCH) and keep whichever answered.
-    query = "&".join(
-        "path=" + quote(path, safe="")
-        for n in numbers for path in _forkbot_issue_json_candidates(n))
-    data = await _forkbot_repo_gateway_json(env, owner, repo, "blobs?" + query)
-    blobs = data.get("blobs") if isinstance(data, dict) else None
-    if not isinstance(blobs, dict):
-        return []
-    records = []
-    for number in numbers:
-        text = ""
-        for path in _forkbot_issue_json_candidates(number):
-            text = _forkbot_blob_text(blobs.get(path))
-            if text:
-                break
-        if not text:
-            continue
-        records.append(_forkbot_parse_issue_record(text, number))
-    return records
 
 
-async def _forkbot_search_issues(env, owner, repo, query):
-    """One host-side git grep over the mirror (the /search tunnel op, issue
-    #360); ForkBot only reads the issues bucket. Returns the matches, or None
-    when no host answered."""
-    data = await _forkbot_repo_gateway_json(
-        env, owner, repo, "search?q=" + quote(query, safe=""))
-    if not isinstance(data, dict) or not data.get("ok"):
-        return None
-    issues = data.get("issues")
-    if not isinstance(issues, list):
-        return []
-    matches = []
-    for hit in issues:
-        if not isinstance(hit, dict):
-            continue
-        try:
-            number = int(hit.get("number", 0) or 0)
-        except (TypeError, ValueError):
-            continue
-        if number <= 0:
-            continue
-        matches.append({
-            "number": number,
-            "title": clean_string(hit.get("title", ""), 240).strip()
-            or ("issue #%d" % number),
-            "snippet": clean_string(hit.get("snippet", ""), 200).strip(),
-        })
-    return matches
 
 
-def _forkbot_issue_lines(records):
-    lines = []
-    for record in records:
-        line = "#%d %s (%s" % (
-            record["number"], record["title"], record["status"])
-        if record.get("author") and record["author"] != "unknown":
-            line += ", by " + record["author"]
-        lines.append(line + ")")
-    return "\n".join(lines)
 
 
-async def _forkbot_next_issue_number(env, repo_bi, owner, repo):
-    """Allocate a proposed issue number for a ForkBot-created issue.
-
-    Desktop nodes assign the authoritative number when they merge the inbox
-    (nextNumber() = highest issue dir + 1) and keep a proposed number when its
-    slot is free, so the goal here is to propose the same number the desktop
-    would — and never propose one twice. We seed/re-anchor a persisted per-repo
-    counter from the catalog's published issueMaxNumber (the desktop's real max
-    at its last publish), then hand out the next value and advance. Best-effort:
-    on any storage hiccup we fall back to 0 (the desktop assigns and the reply
-    just omits a number) rather than failing the issue creation."""
-    seed_next = 1
-    try:
-        row = await d1_first(
-            env, "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
-        rec = await decrypt_row(env, row.get("data")) if row else None
-        if rec:
-            for key in ("issueMaxNumber", "issueCount"):
-                value = rec.get(key)
-                if value in (None, ""):
-                    continue
-                try:
-                    seed_next = max(seed_next, int(value) + 1)
-                    break
-                except (TypeError, ValueError):
-                    continue
-    except Exception:
-        pass
-    try:
-        # Seed on first use / re-anchor upward to the catalog max, never
-        # backward (MAX keeps already-handed-out numbers monotonic).
-        await d1_run(
-            env,
-            "INSERT INTO issue_seq (repo_bi, next_number) VALUES (?, ?) "
-            "ON CONFLICT(repo_bi) DO UPDATE SET "
-            "next_number = MAX(issue_seq.next_number, ?)",
-            repo_bi, seed_next, seed_next,
-        )
-        seq_row = await d1_first(
-            env, "SELECT next_number FROM issue_seq WHERE repo_bi=?", repo_bi)
-        number = int((seq_row or {}).get("next_number", seed_next) or seed_next)
-        await d1_run(
-            env, "UPDATE issue_seq SET next_number=? WHERE repo_bi=?",
-            number + 1, repo_bi)
-        return number
-    except Exception:
-        return 0
 
 
-def _forkbot_attributed_body(body, source, actor):
-    """Append a footer crediting ForkBot and the human who asked for the issue,
-    so a reader of the merged issue can see it came from a chat request rather
-    than assuming a person typed it up. The fediverse path builds its own
-    "Filed from a fediverse mention by ..." attribution before calling in, so
-    only the default chat source gets the footer here (avoids double-crediting).
-    """
-    if source != "forkbot":
-        return body
-    if actor and actor != FORKBOT_AUTHOR:
-        footer = "Filed by ForkBot at @%s's request via chat." % actor
-    else:
-        footer = "Filed by ForkBot via chat."
-    body = (body or "").rstrip()
-    if not body:
-        return "_%s_" % footer
-    return "%s\n\n---\n_%s_" % (body, footer)
 
 
-async def _forkbot_rekey_alias_inbox(env, alias_owner, host_owner, repo,
-                                     repo_bi):
-    """Recover issue-inbox rows an earlier release filed under an organization
-    alias's blind index. No drain ever looked there (see _forkbot_enqueue_issue),
-    so those submissions are stranded; move them onto the backing node's key so
-    the next sync delivers them. Idempotent (the alias key ends up empty) and
-    best-effort — a hiccup here must never fail the new submission. The stored
-    item carries no owner binding, so re-keying it is a pure routing fix."""
-    if not host_owner or host_owner == alias_owner:
-        return
-    try:
-        alias_bi = await blind_index(env, alias_owner + "/" + repo)
-        if alias_bi and alias_bi != repo_bi:
-            await d1_run(
-                env, "UPDATE issue_inbox SET repo_bi=? WHERE repo_bi=?",
-                repo_bi, alias_bi)
-    except Exception:
-        pass
 
 
-async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
-                                 source="forkbot", labels=None,
-                                 attachments=None,
-                                 federated_mention_id="",
-                                 federated_remote_url=""):
-    """Queue a relay-authored issue for the owner's desktop node. ForkBot chat
-    requests use the defaults. A manually reviewed fediverse item can reuse
-    this path with its random review id so the owner node can later confirm
-    the exact issue it materialized; inbound posts never call this directly."""
-    await ensure_schema(env)
-    # ForkBot names the repo by its PUBLIC url (forkmesh/forkmesh), which is an
-    # organization alias. Every drain path — the node's per-repo GET and the
-    # consolidated GET /api/sync — reads the inbox under the backing node's
-    # blind index, because /api/repo/... is org_alias_rewrite'd before routing
-    # and /api/sync selects the repositories rows the account actually owns.
-    # Keying the insert on the alias therefore dead-letters the row: it sits in
-    # issue_inbox forever and never reaches the repository. Resolve org->node
-    # for the storage key and the owner-directed notifications (a no-op for a
-    # plain node name); public strings/URLs stay on the alias in the caller.
-    host_owner = await _ap_org_alias_owner(env, owner, repo)
-    repo_bi = await blind_index(env, host_owner + "/" + repo)
-    await _forkbot_rekey_alias_inbox(env, owner, host_owner, repo, repo_bi)
-    count = await d1_first(
-        env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi)
-    if count and int(count.get("c", 0) or 0) >= MAX_PENDING_ISSUES:
-        return False, "inbox_full"
-    submitter_bi = await blind_index(env, FORKBOT_AUTHOR)
-    if await _inbox_author_over_quota(env, "issue_inbox", repo_bi, submitter_bi):
-        return False, "author_quota"
-
-    now = int(Date.now())
-    actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
-    body = _forkbot_attributed_body(body, source, actor)
-    # Proposed number the desktop honors when the slot is free (0 = let the
-    # desktop assign). Allocated before the insert so it lands in the stored
-    # item and can be echoed straight back to the chat.
-    number = await _forkbot_next_issue_number(env, repo_bi, owner, repo)
-    tracked_mention_id = clean_string(federated_mention_id, 32).lower()
-    if not re.fullmatch(r"[a-f0-9]{32}", tracked_mention_id):
-        tracked_mention_id = ""
-    event = {
-        "type": "open",
-        "id": (
-            "fediverse-review-" + tracked_mention_id
-            if tracked_mention_id else "forkbot-%d" % now
-        ),
-        "author": FORKBOT_AUTHOR,
-        "authorName": FORKBOT_NAME,
-        "ts": now,
-        "title": clean_string(title, 240),
-        "body": clean_string(body, MAX_ISSUE_BYTES),
-        "attachments": [entry["name"] for entry in (attachments or [])],
-        "sig": "",
-    }
-    item = {
-        "number": number,
-        "titleIfNew": event["title"],
-        "event": event,
-        "meta": {
-            "labels": list(labels) if labels else ["forkbot"],
-            "milestone": "",
-            "priority": 0,
-            "assignees": [],
-            "wantsAgent": False,
-            "model": "",
-            "provider": "",
-        },
-        "submitter": FORKBOT_AUTHOR,
-        "submittedAt": now,
-        "source": source,
-        "requestedBy": actor,
-        "issueNumber": number,
-    }
-    if tracked_mention_id:
-        item["fediverseMentionId"] = tracked_mention_id
-        item["fediverseRemoteUrl"] = clean_string(
-            federated_remote_url, 1600)
-    if attachments:
-        item["attachmentData"] = [
-            {"name": entry["name"], "data": entry["data"]}
-            for entry in attachments]
-    await d1_run(
-        env,
-        "INSERT INTO issue_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
-        repo_bi, await encrypt_row(env, item), submitter_bi,
-    )
-    await _record_contributor(env, FORKBOT_AUTHOR, "issues")
-    await _best_effort_inbox_side_effect(
-        notify_pending_inbox(
-            env, host_owner, repo, "issue", FORKBOT_AUTHOR,
-            item.get("titleIfNew", ""), number))
-    await _best_effort_inbox_side_effect(
-        notify_mentions(
-            env, host_owner, repo, FORKBOT_AUTHOR, item.get("titleIfNew", ""),
-            event.get("body", ""), repo_web_href(owner, repo), "issue",
-            number=number))
-    # Same push every other inbox write does: the owner's node syncs on the
-    # event frame instead of waiting out the 5-15 minute fallback poll.
-    await notify_repo_host(env, host_owner, repo, "issues")
-    return True, item
 
 
-async def _forkbot_enqueue_agent_request(env, owner, repo, number, requester):
-    """Queue a "start a coding agent on issue #number" request through the
-    same signed-inbox channel as everything else: a ForkBot comment event on
-    the existing issue whose meta carries wantsAgent. The owner's desktop node
-    starts the agent when it merges the inbox — the relay never runs anything
-    itself. Caller has already verified the requester is the repo owner/admin
-    (the same privilege gate issues_handler applies to wantsAgent)."""
-    await ensure_schema(env)
-    # Key the row the way every drain reads it — see _forkbot_enqueue_issue.
-    host_owner = await _ap_org_alias_owner(env, owner, repo)
-    repo_bi = await blind_index(env, host_owner + "/" + repo)
-    await _forkbot_rekey_alias_inbox(env, owner, host_owner, repo, repo_bi)
-    count = await d1_first(
-        env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi)
-    if count and int(count.get("c", 0) or 0) >= MAX_PENDING_ISSUES:
-        return False, "inbox_full"
-    submitter_bi = await blind_index(env, FORKBOT_AUTHOR)
-    if await _inbox_author_over_quota(env, "issue_inbox", repo_bi, submitter_bi):
-        return False, "author_quota"
-
-    now = int(Date.now())
-    actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
-    event = {
-        "type": "comment",
-        "id": "forkbot-agent-%d" % now,
-        "author": FORKBOT_AUTHOR,
-        "authorName": FORKBOT_NAME,
-        "ts": now,
-        "body": "@%s asked ForkBot to start a coding agent on this issue."
-                % actor,
-        "attachments": [],
-        "sig": "",
-    }
-    item = {
-        "number": int(number),
-        "titleIfNew": "",
-        "event": event,
-        "meta": {
-            "labels": [],
-            "milestone": "",
-            "priority": 0,
-            "assignees": [],
-            "wantsAgent": True,
-            "model": "",
-            "provider": "",
-        },
-        "submitter": FORKBOT_AUTHOR,
-        "submittedAt": now,
-        "source": "forkbot",
-        "requestedBy": actor,
-    }
-    await d1_run(
-        env,
-        "INSERT INTO issue_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
-        repo_bi, await encrypt_row(env, item), submitter_bi,
-    )
-    await _best_effort_inbox_side_effect(
-        notify_pending_inbox(
-            env, host_owner, repo, "issue", FORKBOT_AUTHOR,
-            "agent request for issue #%d" % int(number), int(number)))
-    await notify_repo_host(env, host_owner, repo, "issues")
-    return True, item
 
 
-def _forkbot_gateway_offline_reply(owner, repo):
-    return json_response({
-        "ok": True,
-        "action": "issues_unavailable",
-        "botMessage": (
-            "I couldn't reach a live host for %s/%s — issues are served from "
-            "the owner's desktop node. Try again once it's back online."
-        ) % (owner, repo),
-    })
 
 
-async def _forkbot_action_count(env, owner, repo):
-    # A "how many" question wants a total, not a capped listing — reusing
-    # _forkbot_action_list here would silently truncate at FORKBOT_LIST_MAX
-    # and never actually answer the question asked.
-    numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
-    if numbers is None:
-        return _forkbot_gateway_offline_reply(owner, repo)
-    total = len(numbers)
-    if not total:
-        message = "No issues have been filed in %s/%s yet." % (owner, repo)
-    else:
-        message = "There %s %d issue%s in %s/%s." % (
-            "is" if total == 1 else "are", total,
-            "" if total == 1 else "s", owner, repo)
-    return json_response({
-        "ok": True, "action": "issues_counted", "count": total,
-        "botMessage": message,
-    })
 
 
-async def _forkbot_action_list(env, owner, repo, count):
-    numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
-    if numbers is None:
-        return _forkbot_gateway_offline_reply(owner, repo)
-    issue_url = repo_web_href(owner, repo) + "/issues"
-    if not numbers:
-        return json_response({
-            "ok": True, "action": "issues_listed", "issues": [],
-            "botMessage": "No issues have been filed in %s/%s yet."
-                          % (owner, repo),
-        })
-    records = await _forkbot_load_issue_records(env, owner, repo,
-                                                numbers[:count])
-    if not records:
-        return _forkbot_gateway_offline_reply(owner, repo)
-    lines = _forkbot_issue_lines(records)
-    header = "Last %d issue%s in %s/%s:" % (
-        len(records), "" if len(records) == 1 else "s", owner, repo)
-    footer = "Full list: " + issue_url
-    if len(numbers) > len(records):
-        footer = ("Say \"list the last N issues\" for more (up to %d). "
-                  % FORKBOT_LIST_MAX) + footer
-    return json_response({
-        "ok": True,
-        "action": "issues_listed",
-        "owner": owner,
-        "repo": repo,
-        "issues": records,
-        "botMessage": header + "\n" + lines + "\n" + footer,
-    })
 
 
-async def _forkbot_action_search(env, owner, repo, query):
-    matches = await _forkbot_search_issues(env, owner, repo, query)
-    if matches is None:
-        return _forkbot_gateway_offline_reply(owner, repo)
-    if not matches:
-        return json_response({
-            "ok": True, "action": "issues_searched", "query": query,
-            "issues": [],
-            "botMessage": "No issues matching \"%s\" in %s/%s."
-                          % (query, owner, repo),
-        })
-    top = matches[:FORKBOT_SEARCH_MAX]
-    lines = []
-    for hit in top:
-        line = "#%d %s" % (hit["number"], hit["title"])
-        if hit.get("snippet"):
-            line += " — " + hit["snippet"]
-        lines.append(line)
-    header = "Issues matching \"%s\" in %s/%s:" % (query, owner, repo)
-    if len(matches) > len(top):
-        header = "Top %d of %d issues matching \"%s\" in %s/%s:" % (
-            len(top), len(matches), query, owner, repo)
-    return json_response({
-        "ok": True,
-        "action": "issues_searched",
-        "owner": owner,
-        "repo": repo,
-        "query": query,
-        "issues": top,
-        "botMessage": header + "\n" + "\n".join(lines),
-    })
 
 
-async def _forkbot_action_show(env, owner, repo, number):
-    if number <= 0:
-        numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
-        if numbers is None:
-            return _forkbot_gateway_offline_reply(owner, repo)
-        if not numbers:
-            return json_response({
-                "ok": True, "action": "issue_shown", "issue": None,
-                "botMessage": "No issues have been filed in %s/%s yet."
-                              % (owner, repo),
-            })
-        number = numbers[0]
-    records = await _forkbot_load_issue_records(env, owner, repo, [number])
-    if not records:
-        return json_response({
-            "ok": True, "action": "issue_shown", "issue": None,
-            "botMessage": (
-                "I couldn't read issue #%d from a live %s/%s host — it may "
-                "not exist, or the owner's node is offline."
-            ) % (number, owner, repo),
-        })
-    record = records[0]
-    bot_message = "#%d %s (%s, opened by %s)." % (
-        record["number"], record["title"], record["status"], record["author"])
-    if record.get("body"):
-        bot_message += " " + record["body"]
-    return json_response({
-        "ok": True,
-        "action": "issue_shown",
-        "owner": owner,
-        "repo": repo,
-        "issue": record,
-        "botMessage": bot_message,
-    })
 
 
-async def _forkbot_action_start_agent(env, owner, repo, number, sender):
-    # Starting a coding agent on the owner's machine is an immediate,
-    # unreviewed side effect, so it keeps the same privilege gate the web
-    # issue form's wantsAgent has (adhoc #225): the repo owner's account or a
-    # network admin. Chat sender names are client-claimed, matching the trust
-    # model of the web form's ownerAccount field.
-    requester = clean_string(sender, MAX_NODE_NAME).strip().lower()
-    # When the repo is fronted by an organization alias, the account that owns
-    # it (and whose node would run the agent) is the backing node, not the org
-    # name in the URL — check against both so the real owner isn't refused.
-    host_owner = (await _ap_org_alias_owner(env, owner, repo)).lower()
-    authorized = bool(requester) and (
-        requester == owner.lower() or requester == host_owner
-        or await _is_admin(env, requester))
-    if not authorized:
-        return json_response({
-            "ok": True,
-            "action": "agent_denied",
-            "botMessage": (
-                "Starting a coding agent is limited to the repo owner (or a "
-                "network admin) — ask %s to kick it off."
-            ) % owner,
-        })
-    numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
-    if numbers is None:
-        return _forkbot_gateway_offline_reply(owner, repo)
-    if not numbers:
-        return json_response({
-            "ok": True, "action": "agent_denied",
-            "botMessage": "There are no issues in %s/%s to start an agent on."
-                          % (owner, repo),
-        })
-    if number <= 0:
-        number = numbers[0]
-    elif number not in numbers:
-        return json_response({
-            "ok": True, "action": "agent_denied",
-            "botMessage": "Issue #%d isn't in the %s/%s mirror."
-                          % (number, owner, repo),
-        })
-    records = await _forkbot_load_issue_records(env, owner, repo, [number])
-    title = records[0]["title"] if records else ""
-    ok, result = await _forkbot_enqueue_agent_request(
-        env, owner, repo, number, requester)
-    if not ok:
-        return json_response({"error": result}, status=429)
-    bot_message = (
-        "Queued a coding agent for issue #%d%s in %s/%s. The owner's node "
-        "will start it when it next syncs the inbox."
-    ) % (number, (": " + title) if title else "", owner, repo)
-    return json_response({
-        "ok": True,
-        "action": "agent_requested",
-        "owner": owner,
-        "repo": repo,
-        "issueNumber": number,
-        "title": title,
-        "botMessage": bot_message,
-    }, status=201)
 
 
-async def forkbot_chat_handler(env, request):
-    if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    try:
-        data = await bounded_json_request(request)
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    if not isinstance(data, dict):
-        return json_response({"error": "invalid_json"}, status=400)
-
-    message = clean_string(data.get("message", ""), FORKBOT_MAX_COMMAND)
-    command = _forkbot_extract_mention_command(message)
-    if not command:
-        return json_response({"ok": True, "ignored": True})
-
-    # Recent (client-decrypted) conversation the mention sits in, so ForkBot can
-    # resolve "that bug" / "the issue we discussed" instead of only the one line.
-    context_text = _forkbot_context_text(data.get("context"))
-    sender = clean_string(data.get("sender", ""), MAX_NODE_NAME)
-    # Optional Cloudflare Workers AI model pick from the chat composer's model
-    # picker. Only an allowlisted id is honored; anything else (including a
-    # stale picker value) resolves back to the deployment default so ForkBot
-    # keeps working rather than erroring on the caller's behalf.
-    ai_model = _forkbot_resolve_ai_model(env, data.get("model", ""))
-    owner = FORKBOT_DEFAULT_OWNER
-    repo = FORKBOT_DEFAULT_REPO
-
-    # Decide the action. Prefer meaning over fixed wording:
-    #  1. Cheap regexes catch explicitly phrased commands offline (list /
-    #     search / start-agent / show / help / create), sparing an AI round
-    #     trip and keeping every command working when AI is off.
-    #  2. Otherwise the AI classifier reads the command + conversation and
-    #     picks the intent (drafting the issue when one is wanted).
-    #  3. AI unreachable (None — distinct from a confident "none") but the
-    #     message plainly talks about issues/bugs/tracking: file the raw text
-    #     rather than refusing. Only a confident "none" or a message with no
-    #     work-recording signal at all gets the help hint.
-    action = None
-    for intent_name, parser in (
-            ("count_issues", _forkbot_parse_count_command),
-            ("list_issues", _forkbot_parse_list_command),
-            ("search_issues", _forkbot_parse_search_command),
-            ("start_agent", _forkbot_parse_agent_command),
-            ("show_issue", _forkbot_parse_show_command)):
-        parsed_intent = parser(command)
-        if parsed_intent is not None:
-            action = {"intent": intent_name, **parsed_intent}
-            break
-    if action is None and _forkbot_parse_help_command(command):
-        action = {"intent": "help"}
-
-    fields = None
-    if action is None:
-        parsed = _forkbot_parse_issue_command(command)
-        if parsed:
-            action = {"intent": "create_issue"}
-            fields = await _forkbot_ai_issue_fields(
-                env, parsed["description"], context_text, model=ai_model)
-            if not fields:
-                fields = _forkbot_fallback_issue_fields(parsed["description"])
-        else:
-            interpreted = await _forkbot_ai_interpret(
-                env, command, context_text, model=ai_model)
-            if interpreted and interpreted.get("intent") == "create_issue":
-                action = {"intent": "create_issue"}
-                fields = {"title": interpreted["title"],
-                          "body": interpreted["body"]}
-            elif interpreted and interpreted.get("intent") != "none":
-                action = interpreted
-            elif interpreted is None and _forkbot_command_hints_issue(command):
-                action = {"intent": "create_issue"}
-                fields = _forkbot_fallback_issue_fields(command)
-
-    intent = (action or {}).get("intent", "")
-    if intent == "count_issues":
-        return await _forkbot_action_count(env, owner, repo)
-    if intent == "list_issues":
-        return await _forkbot_action_list(env, owner, repo, action["count"])
-    if intent == "search_issues":
-        return await _forkbot_action_search(env, owner, repo, action["query"])
-    if intent == "show_issue":
-        return await _forkbot_action_show(
-            env, owner, repo, int(action.get("issueNumber", 0) or 0))
-    if intent == "start_agent":
-        return await _forkbot_action_start_agent(
-            env, owner, repo, int(action.get("issueNumber", 0) or 0), sender)
-
-    if intent != "create_issue" or not fields or not fields.get("body"):
-        return json_response({
-            "ok": True,
-            "action": "help",
-            "model": ai_model,
-            "botMessage": _forkbot_help_message(),
-        })
-
-    ok, result = await _forkbot_enqueue_issue(
-        env, owner, repo, fields["title"], fields["body"], sender)
-    if not ok:
-        return json_response({"error": result}, status=429)
-    title = result.get("titleIfNew", fields["title"])
-    number = int(result.get("issueNumber", 0) or 0)
-    # /owner/repo/issues is the web route for the repo's issue list; the number
-    # is the proposed one the desktop honors when it merges the inbox.
-    issue_url = repo_web_href(owner, repo) + "/issues"
-    if number > 0:
-        bot_message = (
-            "Opened issue #%d in %s/%s: %s. It'll show at %s once the owner "
-            "node syncs the inbox."
-        ) % (number, owner, repo, title, issue_url)
-    else:
-        bot_message = (
-            "Opened an issue in %s/%s: %s. It'll show at %s once the owner "
-            "node syncs the inbox."
-        ) % (owner, repo, title, issue_url)
-    return json_response({
-        "ok": True,
-        "action": "issue_created",
-        "owner": owner,
-        "repo": repo,
-        "title": title,
-        "issueNumber": number,
-        "issueUrl": issue_url,
-        "model": ai_model,
-        "botMessage": bot_message,
-    }, status=201)
 
 
 def _clean_issue_attachment_data(value):
@@ -35702,6 +31213,63 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
         if await ed25519_verify(public_key, sig, canonical):
             return public_key, node
     return "", ""
+
+
+async def _collaboration_source_online(env, owner, repo):
+    """Return whether the canonical repository device has a fresh endpoint.
+
+    Mirror intake is failover, not a race with the source of truth.  A web
+    submission wakes both kinds of node, and without this preference whichever
+    GET reached D1 first leased and permanently drained the row.  That let one
+    mirror create the authoritative collaboration commit while an online source
+    missed the submission entirely.  Use the same signed endpoint-health facts
+    as public routing; on lookup failure stay available and let a mirror intake.
+
+    Liveness comes from the freshness window, not from trusting the source
+    forever: a wedged or killed node stops renewing its signed health lease, so
+    `checked_at` goes stale within HTTPS_MIRROR_STATUS_FRESH_MS and mirrors
+    resume intake on their own.  That bound is why deferring here cannot strand
+    a submission the way an unbounded "source owns it" rule would.
+    """
+    try:
+        context = await _https_mirror_public_context(env, owner, repo)
+        source_node = clean_string(
+            (context or {}).get("sourceNode", ""), MAX_NODE_NAME
+        ).strip().lower()
+        if not valid_node_name(source_node):
+            return False
+        row = await d1_first(
+            env,
+            "SELECT 1 AS online FROM mirror_https_endpoints "
+            "WHERE lower(node_name)=? AND checked_at>=? AND healthy=1 "
+            "AND integrity='ok' AND abuse_blocked=0 LIMIT 1",
+            source_node,
+            int(Date.now()) - HTTPS_MIRROR_STATUS_FRESH_MS,
+        )
+        return bool(row and row.get("online"))
+    except Exception:
+        return False
+
+
+async def _deferred_mirror_intake(env, owner, repo, signing_key, mirror_node):
+    """Response telling an authorized mirror to stand down, else None.
+
+    Deliberately a 200 with nothing pending rather than a 403: the desktop
+    treats a rejected mirror drain as a misconfiguration, logging "the relay
+    rejected this node's signed mirror issue intake" and slowing retries to
+    hours.  Standing down is the normal, healthy state whenever the source of
+    truth is up, so it must read as an empty queue, not as a refusal.
+    """
+    if not signing_key or not await _collaboration_source_online(
+            env, owner, repo):
+        return None
+    return json_response({
+        "ok": True,
+        "pending": [],
+        "mirrorIntake": True,
+        "mirror": mirror_node,
+        "sourceOnline": True,
+    })
 
 
 async def _claim_issue_inbox(
@@ -36172,6 +31740,13 @@ async def issues_handler(env, request, owner, repo):
             signing_key, mirror_node = (
                 await _authorized_mirror_issue_signing_key(
                     env, request, owner, repo))
+            # The canonical host gets first responsibility while it is online.
+            # Mirrors remain the durable failover once its signed health lease
+            # expires, rather than racing it for (and deleting) this queue.
+            deferred = await _deferred_mirror_intake(
+                env, owner, repo, signing_key, mirror_node)
+            if deferred:
+                return deferred
         else:
             signing_key = await _authorized_repo_inbox_signing_key(
                 env, request, owner, repo)
@@ -36393,6 +31968,10 @@ async def pulls_handler(env, request, owner, repo):
             signing_key, mirror_node = (
                 await _authorized_mirror_issue_signing_key(
                     env, request, owner, repo))
+            deferred = await _deferred_mirror_intake(
+                env, owner, repo, signing_key, mirror_node)
+            if deferred:
+                return deferred
             claimant_bi = await _claim_collaboration_inbox_on_mirror(
                 env, "pull_inbox", repo_bi, signing_key)
             if not claimant_bi:
@@ -36518,6 +32097,7 @@ async def discussions_handler(env, request, owner, repo):
                 env, request, owner, repo, "discussion", event.get("type"),
                 number, item.get("titleIfNew", ""), event.get("body", ""),
                 event.get("authorName", "")))
+        await _record_contributor(env, event.get("author", ""), "discussions")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -36529,6 +32109,10 @@ async def discussions_handler(env, request, owner, repo):
             signing_key, mirror_node = (
                 await _authorized_mirror_issue_signing_key(
                     env, request, owner, repo))
+            deferred = await _deferred_mirror_intake(
+                env, owner, repo, signing_key, mirror_node)
+            if deferred:
+                return deferred
             claimant_bi = await _claim_collaboration_inbox_on_mirror(
                 env, "discussion_inbox", repo_bi, signing_key)
             if not claimant_bi:
@@ -36613,6 +32197,19 @@ async def repo_pending_counts_handler(env, request, owner, repo):
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
+    # The whole fleet polls these badges (plus every open repo page), so a
+    # colo answers from its edge cache for ten minutes and a polling burst
+    # collapses to one D1 UNION per colo per TTL. Ten minutes (not 30s)
+    # because this was still the largest request group on the API traffic
+    # chart at ~900/hour; a badge that lags a drain by minutes is fine,
+    # since the drain itself is not instantaneous. Only the public 200 is cached — the
+    # private/unpublished 404 above stays uncached and instant to reverse.
+    pending_cache_key = (
+        "https://edge-cache.forkmesh.internal/repo-pending/"
+        + quote(owner) + "/" + quote(repo))
+    cached = await edge_cache_match(pending_cache_key)
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     # Count the SAME key the drains read (see _inbox_repo_key), or an aliased
     # repo's badge sticks at "N pending" forever against a queue the owner node
@@ -36630,14 +32227,16 @@ async def repo_pending_counts_handler(env, request, owner, repo):
         repo_bi, repo_bi, repo_bi,
     )
     counts = {str(r.get("k") or ""): int(r.get("c") or 0) for r in rows or []}
-    return json_response({
+    resp = json_response({
         "ok": True,
         "pending": {
             "issues": counts.get("issues", 0),
             "pulls": counts.get("pulls", 0),
             "discussions": counts.get("discussions", 0),
         },
-    }, cache_control="no-store, max-age=0, must-revalidate")
+    }, cache_control="public, max-age=600")
+    await edge_cache_put(pending_cache_key, resp)
+    return resp
 
 
 async def sync_handler(env, request):
@@ -38181,6 +33780,7 @@ ORG_AGENT_MODEL_ALIASES = {
         "fable": "claude-fable-5",
     },
     "codex": {
+        "spark": "gpt-5.3-codex-spark",
         "sol": "gpt-5.6-sol",
         "luna": "gpt-5.6-luna",
         "terra": "gpt-5.6-terra",
@@ -38261,12 +33861,13 @@ async def _org_agent_member_context(env, request, org, repo, data=None):
         org_bi, str(account_bi),
     )
     is_engineering = bool(engineering)
-    if role != "owner" and not is_engineering:
+    if not is_engineering:
         response = _org_agent_error(
             "engineering_team_required",
             (
-                "Only organization owners or members of the Engineering team "
-                "can view or queue repository agents."
+                "Only members of the Engineering team can view or queue "
+                "repository agents. Organization owners must explicitly join "
+                "Engineering before this encrypted workspace is decrypted."
             ),
             403,
             required_action="join_engineering_team",
@@ -38298,9 +33899,7 @@ async def _org_agent_member_context(env, request, org, repo, data=None):
         "actor": actor,
         "role": role,
         "engineeringAccess": is_engineering,
-        "accessBasis": (
-            "organization_owner" if role == "owner" else "engineering_team"
-        ),
+        "accessBasis": "engineering_team",
     }, None
 
 
@@ -38348,6 +33947,7 @@ def _org_agent_info_projection(value):
         "provider": 40,
         "model": 120,
         "mode": 80,
+        "strength": 32,
         "status": 32,
         "branchName": 240,
         "baseRef": 64,
@@ -38570,9 +34170,7 @@ async def org_agent_bots_handler(env, request, org, repo):
             "canViewAgentSessions": True,
             "accessBasis": context["accessBasis"],
             "accessReason": (
-                "Organization owner access for the linked desktop."
-                if context["role"] == "owner"
-                else "Engineering team access for eligible agent mirrors."
+                "Engineering team access for eligible agent mirrors."
             ),
             "providers": list(ORG_AGENT_PROVIDERS),
             "models": {
@@ -38581,7 +34179,7 @@ async def org_agent_bots_handler(env, request, org, repo):
             },
             "sessions": sessions,
             "privacyBoundary": (
-                "organization-owner-or-engineering-encrypted-at-rest"
+                "engineering-team-encrypted-at-rest"
             ),
             "securityGate": "claude-haiku-tool-free-fail-closed",
         }, cache_control="no-store")
@@ -39675,31 +35273,12 @@ async def capture_sentry_cron_check_in(env, status, check_in_id="",
         return False
 
 
-def _consume_background_task(task, label):
-    try:
-        task.result()
-    except BaseException as error:
-        if type(error).__name__ == "CancelledError":
-            return
-
-
-def _fire_and_forget(coro, label="background"):
-    try:
-        task = asyncio.ensure_future(coro)
-    except BaseException:
-        try:
-            close = getattr(coro, "close", None)
-            if close is not None:
-                close()
-        except BaseException:
-            pass
-        return None
-    try:
-        task.add_done_callback(
-            lambda done: _consume_background_task(done, label))
-    except BaseException:
-        pass
-    return task
+# _fire_and_forget/_consume_background_task lived here: they wrapped
+# asyncio.ensure_future so a detached task's exception was observed rather than
+# reaching the loop's default handler. Nothing called them, and a detached task
+# is now banned outright — see the no-concurrent-tasks rule at the top of this
+# module. Telemetry that used to want a background task (Sentry captures, error
+# rows) is awaited inline inside its own try/except instead.
 
 
 async def _error_log_actor(env, request):
@@ -39953,6 +35532,127 @@ async def client_error_handler(env, request):
     )
 
 
+def _desktop_error_fields(payload):
+    """Validate one desktop report and fold it into a single error_log line."""
+    if not isinstance(payload, dict):
+        return None
+    surface = str(payload.get("surface") or "").strip().lower()
+    kind = str(payload.get("kind") or "").strip().lower()
+    if surface not in DESKTOP_ERROR_SURFACES or kind not in DESKTOP_ERROR_KINDS:
+        return None
+    # The dialog title is the operator's own name for the failing operation
+    # ("Sync inbox"), which is most of the triage value in one short string.
+    title = _sanitize_client_error_text(payload.get("title"), 120)
+    message = _sanitize_client_error_text(payload.get("message"), 700)
+    if not message:
+        return None
+    detail = "desktop %s [%s] %s" % (kind, surface, message)
+    if title:
+        detail = "desktop %s [%s] %s — %s" % (kind, surface, title, message)
+    return surface, detail[:1000]
+
+
+async def desktop_error_handler(env, request):
+    """Record a signed desktop client's user-visible failure in error_log.
+
+    The client already deduplicates and rate-limits its own reports, and it
+    holds a report back entirely while the relay is in a 429 cooldown; the
+    bounds here exist because a client is a client — one broken or hostile node
+    must not be able to displace Worker errors or grow D1.
+    """
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            extra_headers={"allow": "POST"},
+        )
+    try:
+        payload = await bounded_json_request(request, DESKTOP_ERROR_MAX_BODY)
+    except RequestBodyTooLarge:
+        return json_response({"error": "payload_too_large"}, status=413)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    fields = _desktop_error_fields(payload)
+    if not fields:
+        return json_response({"error": "invalid_desktop_error"}, status=400)
+    # Same signed owner/ts/sig proof as GET /api/sync, checked before any
+    # bounded-row read: an unsigned report is refused, never stored anonymously.
+    params = parse_qs(urlparse(request.url).query)
+    owner = safe_segment(params.get("owner", [""])[0])
+    if not owner or not await _authorize_owner(env, request, owner):
+        return json_response({"error": "unauthorized"}, status=401)
+    surface, detail = fields
+    now = int(Date.now())
+    try:
+        owner_hash = await blind_index(env, "desktop-error:" + owner)
+    except Exception:
+        owner_hash = "unknown"
+    source_key = "app:" + str(owner_hash)[:32]
+    path = "/desktop-error/" + surface
+    try:
+        await ensure_schema(env)
+        per_owner = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts>=? AND method='APP' AND ray=?",
+            now - DESKTOP_ERROR_RATE_WINDOW_MS,
+            source_key,
+        )
+        global_rate = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts>=? AND method='APP'",
+            now - DESKTOP_ERROR_RATE_WINDOW_MS,
+        )
+        duplicate = await d1_first(
+            env,
+            "SELECT 1 AS one FROM error_log "
+            "WHERE ts>=? AND method='APP' AND path=? AND message=? AND ray=? "
+            "LIMIT 1",
+            now - DESKTOP_ERROR_RATE_WINDOW_MS,
+            path,
+            detail,
+            source_key,
+        )
+        if (
+            duplicate
+            or int((per_owner or {}).get("n") or 0)
+            >= DESKTOP_ERROR_RATE_PER_OWNER
+            or int((global_rate or {}).get("n") or 0)
+            >= DESKTOP_ERROR_RATE_GLOBAL
+        ):
+            return json_response(
+                {"ok": True, "stored": False},
+                status=202,
+                cache_control="no-store",
+            )
+        # 521 rather than the browser collector's 520: the status is part of the
+        # group key and of the ping title, so a desktop failure reads apart from
+        # a browser one without any per-row lookup. The account is the proven
+        # signer, so the admin "related users" column names the node's owner.
+        await _write_error_log(
+            env,
+            521,
+            "APP",
+            path,
+            detail,
+            source_key,
+            owner,
+        )
+    except Exception:
+        # Error reporting must never become a new user-visible error.
+        return json_response(
+            {"ok": True, "stored": False},
+            status=202,
+            cache_control="no-store",
+        )
+    return json_response(
+        {"ok": True, "stored": True},
+        status=202,
+        cache_control="no-store",
+    )
+
+
 async def world_admin_errors_handler(env, request):
     """Return the admin HUD cursor and, on demand, a bounded error table."""
     method = method_name(request)
@@ -40069,6 +35769,24 @@ async def world_admin_errors_handler(env, request):
             "SELECT id,ts,status,method,path,message,ray,actor "
             "FROM error_log ORDER BY id DESC LIMIT 100",
         )
+        # The World arrival notice links to the specific newest record. Keep
+        # that record in the focused detail response even if an unusually busy
+        # error storm has already pushed it just beyond the ordinary 100-row
+        # board window.
+        try:
+            focused_id = max(0, int(query.get("id", ["0"])[0] or 0))
+        except (TypeError, ValueError):
+            focused_id = 0
+        if focused_id and not any(
+                int(row.get("id") or 0) == focused_id for row in rows or []):
+            focused = await d1_first(
+                env,
+                "SELECT id,ts,status,method,path,message,ray,actor "
+                "FROM error_log WHERE id=? LIMIT 1",
+                focused_id,
+            )
+            if focused:
+                rows = (rows or []) + [focused]
         payload["errors"] = rows or []
         grouped_rows = await d1_all(
             env,
@@ -41886,1422 +37604,38 @@ def _admin_href(admin_query, **params):
     return "?" + "&amp;".join(parts)
 
 
-ADMIN_STYLE = """
- /* Palette: GitHub-dark by default, GitHub-light when the site theme engine
-    (site-header.js, shared localStorage keys + OS preference) stamps
-    html.light. All rules below use only these variables.
-    Every element rule is scoped under .ab-root: the universal site header
-    (site-header.js) injects its own bare <header>/<nav>/<button> markup, and
-    unscoped admin rules used to clobber it (and styles.css's centered
-    max-width `main` clobbered the admin layout right back). */
- :root{color-scheme:dark;
-   --ab-bg:#0d1117;--ab-fg:#c9d1d9;--ab-muted:#8b949e;--ab-border:#21262d;
-   --ab-border-2:#30363d;--ab-card:#161b22;--ab-link:#58a6ff;
-   --ab-danger:#f85149;--ab-btn:#238636;--ab-btn-hover:#2ea043;
-   --ab-btn-fg:#ffffff;--ab-ok-bg:#11251a;--ab-ok-fg:#aff5c2}
- html.light{color-scheme:light;
-   --ab-bg:#ffffff;--ab-fg:#1f2328;--ab-muted:#59636e;--ab-border:#d1d9e0;
-   --ab-border-2:#d1d9e0;--ab-card:#f6f8fa;--ab-link:#0969da;
-   --ab-danger:#cf222e;--ab-btn:#1f883d;--ab-btn-hover:#1a7f37;
-   --ab-btn-fg:#ffffff;--ab-ok-bg:#dafbe1;--ab-ok-fg:#116329}
- *{box-sizing:border-box}
- body{font:14px/1.5 system-ui,sans-serif;margin:0;background:var(--ab-bg);color:var(--ab-fg)}
- .ab-root header{padding:12px 24px;border-bottom:1px solid var(--ab-border)}
- .ab-root h1{font-size:18px;margin:0}
- .ab-root .meta{color:var(--ab-muted);font-size:13px;margin-top:4px}
- .ab-root a{color:var(--ab-link);text-decoration:none}
- .ab-root a:hover{text-decoration:underline}
- .ab-root .cards{display:flex;gap:12px;flex-wrap:wrap;padding:12px 24px 0}
- .ab-root .card{background:var(--ab-card);border:1px solid var(--ab-border);border-radius:8px;padding:10px 16px;min-width:110px}
- .ab-root .card .n{font-size:22px;font-weight:600}
- .ab-root .card .l{color:var(--ab-muted);font-size:12px;margin-top:2px}
- .ab-root .card.warn .n{color:var(--ab-danger)}
- .ab-root .tools{padding:10px 24px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
- .ab-root button{background:var(--ab-btn);color:var(--ab-btn-fg);border:1px solid var(--ab-btn-hover);border-radius:6px;
-        padding:6px 12px;font:600 13px system-ui;cursor:pointer}
- .ab-root button:hover{background:var(--ab-btn-hover)}
- .ab-root button[disabled]{background:var(--ab-border-2);border-color:var(--ab-border-2);color:var(--ab-muted);cursor:not-allowed}
- .ab-root input[type=text],.ab-root input[type=password],.ab-root select{background:var(--ab-bg);color:var(--ab-fg);
-        border:1px solid var(--ab-border-2);border-radius:6px;padding:6px 8px;font:13px system-ui}
- .ab-root .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid var(--ab-btn-hover);
-         background:var(--ab-ok-bg);color:var(--ab-ok-fg);white-space:pre-wrap;font:13px ui-monospace,monospace}
- .ab-root .admin-setting{margin:12px 24px 4px;padding:14px 16px;border:1px solid var(--ab-border-2);
-        border-radius:8px;background:var(--ab-card);display:flex;align-items:center;justify-content:space-between;
-        gap:18px;scroll-margin-top:20px;outline:none}
- .ab-root .admin-setting:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--ab-link) 35%,transparent)}
- .ab-root .admin-setting h2{font-size:15px;margin:0 0 4px}
- .ab-root .admin-setting p{color:var(--ab-muted);font-size:12px;margin:0;max-width:760px}
- .ab-root .admin-setting form{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
- .ab-root .admin-setting label{white-space:nowrap;font-size:13px}
- .ab-root .layout{display:flex;align-items:flex-start;width:100%}
- .ab-root nav{width:210px;flex:none;border-right:1px solid var(--ab-border);min-height:60vh;padding:8px 0}
- .ab-root nav a{display:block;padding:5px 20px;color:var(--ab-fg);font-size:13px}
- .ab-root nav a.active{background:var(--ab-card);border-left:3px solid var(--ab-link);font-weight:600}
- .ab-root nav .sec{padding:10px 20px 4px;color:var(--ab-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
- .ab-root nav .navsort{float:right;text-transform:none;letter-spacing:normal;font-size:11px}
- .ab-root main{flex:1;min-width:0;max-width:none;margin:0;overflow-x:auto;padding:4px 0 40px}
- .ab-root table{border-collapse:collapse;width:100%}
- .ab-root th,.ab-root td{text-align:left;padding:5px 10px;border-bottom:1px solid var(--ab-border);vertical-align:top}
- .ab-root th{position:sticky;top:0;background:var(--ab-card);color:var(--ab-muted);font-weight:600;
-        font-size:12px;white-space:nowrap;z-index:1}
- .ab-root th.jcol{font-style:italic;font-weight:500}
- .ab-root td{font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:560px}
- .ab-root table.compact td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-        word-break:normal;max-width:240px}
- .ab-root table.compact td[title]{cursor:help;text-decoration:underline dotted var(--ab-muted);
-        text-underline-offset:3px}
- .ab-root .jsoncell{color:var(--ab-muted)}
- .ab-root .s5{color:var(--ab-danger);font-weight:600}
- .ab-root tbody tr:hover{background:var(--ab-card)}
- .ab-root tr.record-row{cursor:pointer}
- .ab-root tr.record-row:focus{outline:2px solid var(--ab-link);outline-offset:-2px;background:var(--ab-card)}
- .ab-root .empty{padding:32px 24px;color:var(--ab-muted)}
- .ab-root .title{padding:12px 24px 4px;font-weight:600}
- .ab-root .navcount{color:var(--ab-muted);font-size:11px;font-weight:400}
- .ab-root .navlink{color:var(--ab-link)}
- .ab-root nav a .navcount{float:right}
- .ab-root .rowform{padding:8px 24px;max-width:760px}
- .ab-root .rowfield{display:block;margin:10px 0}
- .ab-root .rowfield span{display:block;color:var(--ab-muted);font-size:12px;margin-bottom:4px}
- .ab-root .rowfield input,.ab-root .rowfield textarea{width:100%;background:var(--ab-bg);color:var(--ab-fg);
-        border:1px solid var(--ab-border-2);border-radius:6px;padding:8px;
-        font:13px ui-monospace,monospace}
- .ab-root .record-detail{margin:12px 24px;max-width:980px;border:1px solid var(--ab-border-2);
-        border-radius:8px;background:var(--ab-card);overflow:hidden}
- .ab-root .record-detail dl{margin:0}
- .ab-root .record-detail dl>div{display:block;padding:12px 16px;border-bottom:1px solid var(--ab-border)}
- .ab-root .record-detail dl>div:last-child{border-bottom:0}
- .ab-root .record-detail dt{color:var(--ab-muted);font:600 12px system-ui,sans-serif;margin-bottom:5px}
- .ab-root .record-detail dd{margin:0;color:var(--ab-fg);white-space:pre-wrap;overflow-wrap:anywhere;
-        font:13px/1.55 ui-monospace,monospace}
- .ab-root .tools .navlink{padding:8px 4px}
- .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
- .ab-root .account-kind button{padding:3px 8px;font-size:12px}
- /* The migration cell holds pills + buttons that must all stay visible, so it
-    opts out of the compact table's single-line clip/ellipsis + 240px cap. */
- .ab-root table.compact td.account-cell{max-width:none;overflow:visible;white-space:normal}
- .ab-root .kindpill{border:1px solid var(--ab-border-2);border-radius:999px;padding:2px 8px;
-        color:var(--ab-fg);background:var(--ab-card);font:600 12px system-ui,sans-serif}
- .ab-root .inpill{border:1px solid #1a7f37;border-radius:999px;padding:1px 7px;
-        color:#1a7f37;background:transparent;font:600 11px system-ui,sans-serif;white-space:nowrap}
- .ab-root .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
- .ab-root .diagcol{min-width:240px}
- .ab-root .diagcol h3{font-size:13px;color:var(--ab-muted);margin:8px 0 4px;font-weight:600}
- .ab-root .diagcol table{width:auto;min-width:220px}
- .ab-root .error-analytics{padding:4px 24px 18px}
- .ab-root .error-chart{height:150px;display:grid;grid-template-columns:repeat(24,minmax(8px,1fr));gap:4px;align-items:end;border-bottom:1px solid var(--ab-border);padding-top:12px}
- .ab-root .error-bar{min-height:2px;background:var(--ab-link);border-radius:3px 3px 0 0;position:relative}
- .ab-root .error-bar[data-empty="true"]{background:var(--ab-border)}
- .ab-root .error-bar:focus{outline:2px solid var(--ab-fg);outline-offset:2px}
- .ab-root .error-hours{display:flex;justify-content:space-between;color:var(--ab-muted);font-size:11px;margin-top:6px}
- .ab-root .error-groups{margin-top:16px}
- .ab-root .error-sparkline{width:180px;height:34px;display:grid;grid-template-columns:repeat(24,1fr);
-        gap:2px;align-items:end;border-bottom:1px solid var(--ab-border);padding:2px 0}
- .ab-root .error-sparkline:focus{outline:2px solid var(--ab-link);outline-offset:2px}
- .ab-root .error-spark-bar{display:block;min-height:2px;background:var(--ab-link);
-        border-radius:2px 2px 0 0}
- .ab-root .error-spark-bar[data-empty="true"]{background:var(--ab-border)}
- .ab-root .error-source{display:inline-block;border:1px solid var(--ab-border-2);
-        border-radius:999px;padding:1px 7px;white-space:nowrap;
-        font:600 11px system-ui,sans-serif}
- .ab-root .error-source.javascript{border-color:#8957e5;color:#a371f7}
- .ab-root .error-source.worker{border-color:var(--ab-link);color:var(--ab-link)}
- .ab-root .error-delete{background:transparent;color:var(--ab-danger);
-        border-color:var(--ab-danger);padding:3px 8px;font-size:11px}
- .ab-root .error-delete:hover{background:var(--ab-danger);color:#fff}
- .ab-root .error-group-delete{display:inline;margin:0}
- .ab-root .error-bot{background:transparent;color:var(--ab-link);
-        border-color:var(--ab-link);padding:3px 8px;font-size:11px;white-space:nowrap}
- .ab-root .error-bot:hover{background:var(--ab-link);color:#fff}
- .ab-root .error-bot-task{display:inline;margin:0}
- .ab-root .error-message{display:inline-block;max-width:640px;
-        white-space:pre-wrap;overflow-wrap:anywhere;vertical-align:middle}
- .ab-root .error-copy{background:transparent;color:var(--ab-muted);
-        border-color:var(--ab-border-2);padding:1px 6px;font-size:11px;
-        margin-left:6px;vertical-align:middle}
- .ab-root .error-copy:hover{color:var(--ab-fg);border-color:var(--ab-fg)}
- .ab-root .error-users{color:var(--ab-fg);white-space:nowrap}
- .ab-root .error-anonymous{color:var(--ab-muted)}
- .ab-root .relative-time{color:var(--ab-muted);white-space:nowrap}
-"""
-
-# Cloudflare D1 internal bookkeeping stays out of the browser. The following
-# application tables remain in the inventory but their rows are restricted:
-# platform administration is not a decryption capability and the generic UI is
-# not a least-privilege security-review interface.
-ADMIN_HIDDEN_TABLES = (
-    "_cf_KV",
-    "accounts",
-    "repositories",
-    "repo_shares",
-    "mirror_requests",
-    "repo_agents",
-    "agent_prompts",
-    "owner_encryption_keys",
-    "repo_privacy_policy",
-    "repo_terms_flags",
-    "security_reports",
-    "repo_security_scans",
-    "repo_security_scan_reviews",
-    "role_grants",
-    "sensitive_audit_log",
-    # Succession is governed only by the organization's current roster. The
-    # generic platform-admin table editor must not create approvals, alter
-    # cases, or bypass the append-only history/role-transfer guard.
-    "org_succession_policies",
-    "org_succession_cases",
-    "org_succession_approvals",
-    "org_succession_events",
-    "chain_intents",
-    "pending_rewards",
-    # Legacy tables can contain Worker-held wallet seeds. They remain frozen
-    # for an offline migration, but must never be rendered or edited over HTTP.
-    "central_fund",
-    "bounty_wallet",
-    "issue_bounty",
-    "federated_signup",
-    # Relay identity is not a Solana wallet, but its private signing seed is
-    # likewise outside the generic platform-admin decryption boundary.
-    "relay_self",
-    # Identity, authorization, mirror-routing and reward state are available
-    # only through their purpose-built, audited APIs. A platform administrator
-    # is not implicitly a repository owner, mirror signer, or reward signer.
-    "account_devices",
-    "account_presence",
-    "account_ssh_keys",
-    "nodes",
-    "org_members",
-    "org_repos",
-    "org_team_members",
-    "org_teams",
-    "orgs",
-    "mirror_https_endpoints",
-    "private_mirror_routes",
-    "reward_contribution_intents",
-    "reward_contributions",
-    "reward_node_observations",
-    "reward_rounds",
-    "funds_received",
-    "clone_rr",
-    "edge_route_cursor",
+# The administrator console contains a large HTML/CSS renderer plus generic D1
+# table tooling. None of it is needed by public traffic, scheduled work, or
+# Durable Objects, so compiling it in entry.py spent scarce Pyodide startup
+# memory on every isolate. Keep compatible bindings while loading the
+# implementation only when one of these administrator helpers is first used.
+_admin_console = _LazyModule("admin_console")
+_ADMIN_CONSOLE_EXPORT_NAMES = (
+    "_admin_purge_allowed", "_admin_list_tables",
+    "_admin_contains_wallet_key", "_admin_redact_wallet_keys",
+    "_admin_compact_cell", "_admin_json_cell", "_admin_bulk_form_open",
+    "_admin_select_all_th", "_admin_row_checkbox", "_admin_error_source",
+    "_admin_error_source_badge", "_admin_error_related_users",
+    "_admin_error_users_cell", "_admin_error_row_user_cell",
+    "_admin_error_copy_button", "_admin_error_bot_task_fields",
+    "_admin_error_bot_task_form", "_admin_error_row_delete_button",
+    "_admin_error_row_bot_task_button", "_admin_error_group_delete_form",
+    "_admin_record_row_attrs", "_admin_table_columns", "_render_row_form",
+    "_render_record_detail", "_admin_row_values", "_admin_update_row",
+    "_admin_insert_row", "_admin_selected_rows_have_wallet_keys",
+    "_admin_selected_rows_digest", "_render_diag_breakdown",
+    "_render_install_diag_overview", "_render_table_view",
+    "_render_admin_stats", "_render_admin_operational_alerts",
+    "render_admin_alerts_html", "_render_admin_repo_terms_flags",
+    "_render_admin_nav", "render_admin_html",
 )
+for _admin_console_export_name in _ADMIN_CONSOLE_EXPORT_NAMES:
+    globals()[_admin_console_export_name] = _admin_console.export(
+        _admin_console_export_name)
+del _admin_console_export_name
+del _ADMIN_CONSOLE_EXPORT_NAMES
 
-# The admin navigation is a live inventory of every application table. Tables
-# that hold credentials, encrypted owner data, or audit evidence stay listed so
-# an operator can account for the whole schema, but _render_table_view keeps
-# their contents restricted.
-#
-# Row selection + bulk delete (the same "tick rows, Delete selected" UI as the
-# error log) is available for every table whose rows are actually rendered —
-# i.e. everything not in ADMIN_HIDDEN_TABLES. Sensitive/identity/custody
-# tables stay fully restricted above, so there is no separate purge allowlist
-# to keep in sync as tables are added.
-def _admin_purge_allowed(table):
-    return table not in ADMIN_HIDDEN_TABLES
 
-
-async def _admin_list_tables(env):
-    rows = await d1_all(
-        env,
-        "SELECT name FROM sqlite_master WHERE type='table' "
-        "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name",
-    )
-    return [
-        str(r.get("name", ""))
-        for r in rows
-        if (
-            r.get("name")
-        )
-    ]
-
-
-# Generic-table cells render on a single compact line (CSS ellipsizes long
-# values); anything longer than the preview rides in a hover tooltip so rows
-# stay one line tall.
-ADMIN_CELL_PREVIEW = 120
-ADMIN_CELL_TOOLTIP_MAX = 4000
-# Cap on extra columns expanded from the decrypted `data` JSON blob.
-ADMIN_MAX_JSON_COLS = 24
-
-
-_ADMIN_WALLET_KEY_NAMES = frozenset({
-    "donationsecret",
-    "walletsecret",
-    "walletprivatekey",
-    "solanasecret",
-    "solanaprivatekey",
-    "seedbase64url",
-    "mnemonic",
-    "recoveryphrase",
-})
-
-
-def _admin_contains_wallet_key(value):
-    if isinstance(value, dict):
-        normalized_keys = {
-            re.sub(r"[^a-z0-9]", "", str(key).lower())
-            for key in value
-        }
-        for key, item in value.items():
-            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if normalized in _ADMIN_WALLET_KEY_NAMES:
-                return True
-            # Historical bounty rows used the generic pair {address, secret}.
-            if normalized == "secret" and "address" in normalized_keys:
-                return True
-            if _admin_contains_wallet_key(item):
-                return True
-    elif isinstance(value, list):
-        return any(_admin_contains_wallet_key(item) for item in value)
-    return False
-
-
-def _admin_redact_wallet_keys(value):
-    if isinstance(value, dict):
-        normalized_keys = {
-            re.sub(r"[^a-z0-9]", "", str(key).lower())
-            for key in value
-        }
-        redacted = {}
-        for key, item in value.items():
-            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if (
-                normalized in _ADMIN_WALLET_KEY_NAMES
-                or (normalized == "secret" and "address" in normalized_keys)
-            ):
-                redacted[key] = "<restricted: offline custody migration>"
-            else:
-                redacted[key] = _admin_redact_wallet_keys(item)
-        return redacted
-    if isinstance(value, list):
-        return [_admin_redact_wallet_keys(item) for item in value]
-    return value
-
-
-def _admin_compact_cell(value, extra_class=""):
-    if value is None or value == "":
-        return "<td></td>"
-    if isinstance(value, bool):
-        text = "true" if value else "false"
-    elif isinstance(value, (dict, list)):
-        text = json.dumps(value, sort_keys=True)
-    else:
-        text = str(value)
-    if len(text) > ADMIN_CELL_TOOLTIP_MAX:
-        text = text[:ADMIN_CELL_TOOLTIP_MAX] + "…"
-    shown = text
-    if len(shown) > ADMIN_CELL_PREVIEW:
-        shown = shown[:ADMIN_CELL_PREVIEW] + "…"
-    title = (' title="%s"' % _html_escape(text)) if shown != text else ""
-    cls = (' class="%s"' % extra_class) if extra_class else ""
-    return "<td%s%s>%s</td>" % (cls, title, _html_escape(shown))
-
-
-def _admin_json_cell(decoded):
-    # Collapse the decrypted `data` JSON to a small marker; the full pretty
-    # JSON shows in the hover tooltip.
-    decoded = _admin_redact_wallet_keys(decoded)
-    pretty = json.dumps(decoded, indent=2, sort_keys=True)
-    if len(pretty) > ADMIN_CELL_TOOLTIP_MAX:
-        pretty = pretty[:ADMIN_CELL_TOOLTIP_MAX] + "…"
-    return ('<td class="jsoncell" title="%s">{…} %d key(s)</td>'
-            % (_html_escape(pretty), len(decoded)))
-
-
-# --- Admin bulk select + delete helpers (operate on rowid) -------------------
-
-def _admin_bulk_form_open(table, csrf_field="", admin_query=""):
-    # Per-row buttons ride this form with their own formaction (forms cannot
-    # nest) and run their own confirmation, so the bulk prompt must not also
-    # fire for them — it asked "delete the selected rows?" for a row action
-    # that deletes nothing.
-    return (
-        '<form method="post" action="%s" '
-        'onsubmit="return (event.submitter&&'
-        "event.submitter.hasAttribute('formaction'))||"
-        'confirm(\'Delete the selected '
-        'row(s)? This cannot be undone.\')">'
-        '%s'
-        '<div class="tools">'
-        '<button type="submit">Delete selected</button>'
-        '<span class="meta">Tick rows (or the header box for all) then delete.'
-        '</span></div>'
-    ) % (_admin_href(admin_query, table=table, action="delete_rows"), csrf_field)
-
-
-def _admin_select_all_th():
-    return (
-        '<th><input type="checkbox" title="Select all" '
-        "onclick=\"for(const c of this.closest('table')"
-        ".querySelectorAll('input[name=ids]'))c.checked=this.checked\"></th>"
-    )
-
-
-def _admin_row_checkbox(rowid):
-    return ('<td><input type="checkbox" name="ids" value="%s"></td>'
-            % _html_escape(rowid))
-
-
-def _admin_error_source(method, path):
-    """Stable display classification for the shared operational error log."""
-    is_javascript = (
-        str(method or "").strip().upper() == "JS"
-        or str(path or "").startswith("/client-error/")
-    )
-    return "JavaScript" if is_javascript else "Worker"
-
-
-def _admin_error_source_badge(method, path):
-    source = _admin_error_source(method, path)
-    return (
-        '<span class="error-source %s">%s</span>'
-        % (source.lower(), source)
-    )
-
-
-def _admin_error_related_users(actors, anonymous=0):
-    """Summarize which accounts an error (or error group) actually hit.
-
-    `actors` maps account name -> occurrence count. Anonymous occurrences are
-    counted separately rather than dropped: "3 signed-in users plus anonymous
-    traffic" and "only anonymous traffic" are very different bugs.
-    """
-    ranked = sorted(
-        (actors or {}).items(), key=lambda item: (-item[1], item[0]))
-    parts = ["%s (%d)" % (name, hits) for name, hits in ranked]
-    if int(anonymous or 0):
-        parts.append("anonymous (%d)" % int(anonymous))
-    if not parts:
-        return "—"
-    return ", ".join(parts)
-
-
-def _admin_error_users_cell(actors, anonymous=0):
-    summary = _admin_error_related_users(actors, anonymous)
-    shown = summary if len(summary) <= 60 else summary[:60] + "…"
-    return (
-        '<td class="error-users" title="%s">%s</td>'
-        % (_html_escape(summary), _html_escape(shown))
-    )
-
-
-def _admin_error_row_user_cell(actor):
-    name = str(actor or "").strip().lower()
-    return (
-        '<td class="error-users">%s</td>'
-        % (_html_escape(name) if name
-           else '<span class="error-anonymous">anonymous</span>')
-    )
-
-
-def _admin_error_copy_button(text):
-    """Copy the full (untruncated) error text the cell only previews."""
-    return (
-        '<button type="button" class="error-copy" data-copy="%s" '
-        'title="Copy this message" '
-        'onclick="event.stopPropagation()">Copy</button>'
-        % _html_escape(text or "")
-    )
-
-
-def _admin_error_bot_task_fields(status, method, path, message, users=""):
-    return "".join(
-        '<input type="hidden" name="%s" value="%s">'
-        % (_html_escape(name), _html_escape(value))
-        for name, value in (
-            ("group_status", status),
-            ("group_method", method),
-            ("group_path", path),
-            ("group_message", message),
-            ("group_users", users),
-        )
-    )
-
-
-def _admin_error_bot_task_form(
-        status, method, path, message, users="",
-        csrf_field="", admin_query=""):
-    """Send one error (or equivalent-error group) to the organization tasks."""
-    return (
-        '<form class="error-bot-task" method="post" action="%s" '
-        '>%s%s<button class="error-bot" type="submit">'
-        "Send to task</button></form>"
-        % (
-            _admin_href(
-                admin_query, table="error_log", action="create_bot_task"),
-            csrf_field,
-            _admin_error_bot_task_fields(
-                status, method, path, message, users),
-        )
-    )
-
-
-def _admin_error_row_delete_button(rowid, admin_query=""):
-    return (
-        '<button class="error-delete" type="submit" name="error_id" '
-        'value="%s" formaction="%s" '
-        'onclick="event.stopPropagation();return confirm('
-        "'Delete this error? This cannot be undone.')\">Delete</button>"
-        % (
-            _html_escape(rowid),
-            _admin_href(
-                admin_query, table="error_log", action="delete_error_row"),
-        )
-    )
-
-
-def _admin_error_row_bot_task_button(rowid, admin_query=""):
-    # The raw table's rows already live inside the bulk-delete form, so this
-    # rides that form with its own formaction (forms cannot nest). Only the
-    # row id travels; the server re-reads the stored error itself.
-    return (
-        '<button class="error-bot" type="submit" name="error_id" '
-        'value="%s" formaction="%s" '
-        'onclick="event.stopPropagation()">Send to task</button>'
-        % (
-            _html_escape(rowid),
-            _admin_href(
-                admin_query, table="error_log", action="create_bot_task"),
-        )
-    )
-
-
-def _admin_error_group_delete_form(
-        status, method, path, message, csrf_field="", admin_query=""):
-    fields = "".join(
-        '<input type="hidden" name="%s" value="%s">'
-        % (_html_escape(name), _html_escape(value))
-        for name, value in (
-            ("group_status", status),
-            ("group_method", method),
-            ("group_path", path),
-            ("group_message", message),
-        )
-    )
-    return (
-        '<form class="error-group-delete" method="post" action="%s" '
-        'onsubmit="return confirm('
-        "'Delete every error in this group? This cannot be undone.')\">"
-        "%s%s<button class=\"error-delete\" type=\"submit\">"
-        "Delete group</button></form>"
-        % (
-            _admin_href(
-                admin_query, table="error_log",
-                action="delete_error_group"),
-            csrf_field,
-            fields,
-        )
-    )
-
-
-def _admin_record_row_attrs(admin_query, table, rowid):
-    href = _admin_href(
-        admin_query, table=table, action="detail", rowid=rowid)
-    return (
-        ' class="record-row" tabindex="0" role="link" data-href="%s" '
-        'onclick="if(!event.target.closest(\'input,button,a,label\'))'
-        'location.href=this.dataset.href" '
-        'onkeydown="if(event.key===\'Enter\')location.href=this.dataset.href"'
-        % _html_escape(href)
-    )
-
-
-async def _admin_table_columns(env, table):
-    # Real column names for the table (table name is validated by the caller).
-    rows = await d1_all(env, "PRAGMA table_info(" + table + ")")
-    return [str(r.get("name", "")) for r in rows if r.get("name")]
-
-
-async def _render_row_form(env, table, rowid, csrf_field="", admin_query=""):
-    # Retained as a fail-closed target for old admin edit/new bookmarks.
-    # Generic create/update was an ambient authorization bypass: a platform
-    # admin could edit users, org membership, SSH keys, mirror proofs or reward
-    # state without satisfying the domain API's signature and policy checks.
-    # Keep this helper as a fail-closed response for stale bookmarks.
-    return (
-        '<div class="empty">Generic row editing is disabled. Use the '
-        "purpose-built, audited administration action for this resource.</div>"
-    )
-
-
-async def _render_record_detail(env, table, rowid, admin_query=""):
-    if table in ADMIN_HIDDEN_TABLES:
-        return '<div class="empty">This table is restricted.</div>'
-    try:
-        rowid = int(rowid)
-    except (TypeError, ValueError):
-        return '<div class="empty">Record not found.</div>'
-    if rowid <= 0:
-        return '<div class="empty">Record not found.</div>'
-    row = await d1_first(
-        env,
-        "SELECT rowid AS _rowid_, * FROM " + table + " WHERE rowid=? LIMIT 1",
-        rowid,
-    )
-    if not row:
-        return '<div class="empty">Record not found.</div>'
-    fields = [("_rowid_", rowid)]
-    for key, value in row.items():
-        if key == "_rowid_":
-            continue
-        if key == "data" and isinstance(value, str) and value:
-            decoded = await decrypt_row(env, value)
-            value = (
-                _admin_redact_wallet_keys(decoded)
-                if isinstance(decoded, (dict, list))
-                else decoded
-            )
-        if isinstance(value, (dict, list)):
-            value = json.dumps(value, indent=2, sort_keys=True, default=str)
-        elif value is None:
-            value = "NULL"
-        fields.append((key, value))
-    rows = "".join(
-        "<div><dt>%s</dt><dd>%s</dd></div>"
-        % (_html_escape(key), _html_escape(value))
-        for key, value in fields
-    )
-    return (
-        '<div class="title">Record detail · %s · row %d</div>'
-        '<div class="tools"><a class="navlink" href="%s">← Back to %s</a>'
-        '<span class="meta">Read-only vertical view. Sensitive tables remain '
-        'restricted and encrypted data is redacted before display.</span></div>'
-        '<section class="record-detail"><dl>%s</dl></section>'
-        % (
-            _html_escape(table),
-            rowid,
-            _admin_href(admin_query, table=table),
-            _html_escape(table),
-            rows,
-        )
-    )
-
-
-async def _admin_row_values(env, table, form):
-    # Map submitted f_<col> fields to (column, value) for valid columns only,
-    # encrypting the `data` column from its edited JSON.
-    valid = set(await _admin_table_columns(env, table))
-    cols, values = [], []
-    for key, vals in form.items():
-        if not key.startswith("f_"):
-            continue
-        col = key[2:]
-        if col not in valid:
-            continue
-        raw = vals[0] if vals else ""
-        if col == "data":
-            parsed = json.loads(raw) if raw.strip() else {}
-            if _admin_contains_wallet_key(parsed):
-                raise ValueError("wallet_private_key_fields_are_not_accepted")
-            values.append(await encrypt_row(env, parsed))
-        else:
-            values.append(raw)
-        cols.append(col)
-    return cols, values
-
-
-async def _admin_update_row(env, table, form):
-    return (
-        "Update blocked: generic database mutation is disabled; use the "
-        "purpose-built audited administration action."
-    )
-
-
-async def _admin_insert_row(env, table, form):
-    return (
-        "Insert blocked: generic database mutation is disabled; use the "
-        "purpose-built audited administration action."
-    )
-
-
-async def _admin_selected_rows_have_wallet_keys(env, table, rowids):
-    # A bulk delete must not become an undeclared custody scrub. Only tables
-    # that can historically embed donation_secret are inspected; key-bearing
-    # rows remain until the separately confirmed offline migration updates them.
-    if table not in ("users", "nodes") or not rowids:
-        return False
-    for start in range(0, len(rowids), 90):
-        batch = rowids[start:start + 90]
-        placeholders = ",".join(["?"] * len(batch))
-        rows = await d1_all(
-            env,
-            "SELECT data FROM " + table + " WHERE rowid IN ("
-            + placeholders + ")",
-            *batch,
-        )
-        for row in rows or []:
-            decoded = await decrypt_row(env, row.get("data", ""))
-            if _admin_contains_wallet_key(decoded):
-                return True
-    return False
-
-
-async def _admin_selected_rows_digest(env, table, rowids):
-    """Return a content-free audit digest for a bounded operational purge."""
-    if not _admin_purge_allowed(table) or not rowids:
-        return ""
-    records = []
-    for start in range(0, min(len(rowids), 500), 90):
-        batch = rowids[start:start + 90]
-        placeholders = ",".join(["?"] * len(batch))
-        rows = await d1_all(
-            env,
-            "SELECT rowid AS _rowid_,* FROM " + table
-            + " WHERE rowid IN (" + placeholders + ") ORDER BY rowid",
-            *batch,
-        )
-        records.extend(rows or [])
-    canonical = json.dumps(
-        records,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
-
-
-def _render_diag_breakdown(title, pairs):
-    if not pairs:
-        return ""
-    rows = "".join(
-        "<tr><td>%s</td><td>%s</td></tr>" % (_html_escape(k or "(unknown)"),
-                                             _html_escape(n))
-        for k, n in pairs)
-    return ('<div class="diagcol"><h3>%s</h3><table><thead><tr>'
-            '<th>%s</th><th>runs</th></tr></thead><tbody>%s</tbody></table></div>'
-            % (_html_escape(title), _html_escape(title), rows))
-
-
-def _render_install_diag_overview(summary):
-    # Anonymous install funnel: per-step distinct-run counts (reached / ok /
-    # failed) plus coarse platform breakdowns. Counts are over a 30-day window.
-    total = summary.get("total", 0)
-    completed = summary.get("completed", 0)
-    funnel_rows = []
-    for f in summary.get("funnel", []):
-        runs = f["runs"]
-        pct = ("%d%%" % round(100 * f["ok"] / runs)) if runs else "—"
-        fail_cls = ' class="s5"' if f["failed"] else ""
-        funnel_rows.append(
-            "<tr><td>%s</td><td>%s</td><td>%s</td><td%s>%s</td><td>%s</td></tr>"
-            % (_html_escape(f["step"]), _html_escape(runs), _html_escape(f["ok"]),
-               fail_cls, _html_escape(f["failed"]), pct))
-    funnel_table = (
-        '<div class="diagcol"><h3>Install funnel (30d)</h3>'
-        '<table><thead><tr><th>Step</th><th>Reached</th><th>OK</th>'
-        '<th>Failed</th><th>OK %</th></tr></thead><tbody>'
-        + "".join(funnel_rows) + "</tbody></table></div>")
-    return (
-        '<div class="title">Install diagnostics · %d run(s), %d completed</div>'
-        '<div class="meta">Anonymous: each row is a random per-run id, never tied '
-        'to an account, email, or IP. 30-day window.</div>'
-        '<div class="diaggrid">%s%s%s%s</div>'
-        % (total, completed, funnel_table,
-           _render_diag_breakdown("Platform", summary.get("platforms", [])),
-           _render_diag_breakdown("Pkg manager", summary.get("managers", [])),
-           _render_diag_breakdown("Distro", summary.get("distros", [])))
-    )
-
-
-async def _render_table_view(
-        env, table, csrf_field="", admin_query="", user_filter=""):
-    # Generic "show all rows" view for one D1 table. The encrypted `data` column
-    # (users/nodes/repos/inboxes store an AES-GCM blob there) is decrypted in place
-    # so the admin can actually read it. The table name is validated by the
-    # caller against the live table list, so it is safe to interpolate.
-    # rowid lets the admin select + bulk-delete any row regardless of the table's
-    # declared primary key (all these tables are rowid tables).
-    # Newest-first by default: rowid ascends with insertion, so ORDER BY rowid DESC
-    # surfaces the most recent rows (and, with LIMIT, keeps the newest 500) for
-    # every table — including the error log, which reads from these rows.
-    if table in ADMIN_HIDDEN_TABLES:
-        return '<div class="empty">This table is restricted.</div>'
-    requested_user = (
-        clean_string(user_filter or "", MAX_NODE_NAME).strip().lower()
-        if table == "users" else ""
-    )
-    if requested_user:
-        requested_user_bi = await blind_index(env, requested_user)
-        rows = await d1_all(
-            env,
-            "SELECT rowid AS _rowid_, * FROM users "
-            "WHERE user_bi=? LIMIT 1",
-            requested_user_bi,
-        )
-        total = len(rows)
-    else:
-        rows = await d1_all(
-            env, "SELECT rowid AS _rowid_, * FROM " + table
-            + " ORDER BY rowid DESC LIMIT 500")
-        count_row = await d1_first(
-            env, "SELECT COUNT(*) AS n FROM " + table)
-        total = int((count_row or {}).get("n", 0) or 0)
-
-    # Admin tool: reset any user account's login password. Shown above the
-    # users table; posts back to ?action=set_password (handled in _admin).
-    prefix = ""
-    if table == "users":
-        user_value = (
-            ' value="%s"' % _html_escape(requested_user)
-            if requested_user else ""
-        )
-        detail_heading = (
-            '<div class="title" id="user-detail">User detail · %s · '
-            '<a class="navlink" href="%s">Back to all users</a></div>'
-            % (
-                _html_escape(requested_user),
-                _admin_href(admin_query, table="users"),
-            )
-            if requested_user else ""
-        )
-        prefix = (
-            detail_heading +
-            '<div class="tools">'
-            '<form method="post" action="%s" '
-            'onsubmit="return confirm(\'Set a new login password for this '
-            'account?\')">'
-            + csrf_field +
-            '<input type="text" name="name" placeholder="user name"%s '
-            'autocomplete="off" required>'
-            '<input type="password" name="password" '
-            'placeholder="new password (min 8 chars)" minlength="8" required>'
-            '<button type="submit">Set password</button>'
-            '</form>'
-            '<span class="meta">Resets a user account\'s login password '
-            '(PBKDF2-hashed); email and payout address are left unchanged.</span>'
-            '<form method="post" action="%s" '
-            'onsubmit="return confirm(\'Resend the verification email for this '
-            'account?\')">'
-            + csrf_field +
-            '<input type="text" name="name" placeholder="user name"%s '
-            'autocomplete="off" required>'
-            '<button type="submit">Resend verify email</button>'
-            '</form>'
-            '<span class="meta">Re-sends the email-confirmation link to a user\'s '
-            'stored address; queues it for manual verification if email is not '
-            'configured.</span>'
-            '</div>'
-        ) % (
-            _admin_href(admin_query, table="users", action="set_password"),
-            user_value,
-            _admin_href(admin_query, table="users", action="resend_verify"),
-            user_value,
-        )
-
-    if table == "install_diag":
-        # Purpose-built anonymous install funnel + recent events, newest first.
-        summary = await install_diag_summary(env)
-        recent = await d1_all(
-            env,
-            "SELECT rowid AS _rowid_, * FROM install_diag ORDER BY id DESC LIMIT 200")
-        body = []
-        for r in recent:
-            ok = int(r.get("ok", 0) or 0)
-            cls = "" if ok else "s5"
-            body.append(
-                "<tr%s>"
-                % _admin_record_row_attrs(
-                    admin_query, table, r.get("_rowid_", ""))
-                + _admin_row_checkbox(r.get("_rowid_", ""))
-                + '<td data-ts="%s">%s</td>'
-                '<td>%s</td><td class="%s">%s</td><td>%s</td><td>%s</td>'
-                "<td>%s</td><td>%s</td><td>%s</td></tr>"
-                % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
-                   _html_escape(r.get("step", "")), cls,
-                   "ok" if ok else "fail",
-                   _html_escape(r.get("os", "")), _html_escape(r.get("arch", "")),
-                   _html_escape(r.get("pm", "")), _html_escape(r.get("distro", "")),
-                   _html_escape(r.get("detail", "")))
-            )
-        if not body:
-            events = '<div class="empty">No install events recorded yet.</div>'
-        else:
-            events = (_admin_bulk_form_open(table, csrf_field, admin_query)
-                      + "<table><thead><tr>" + _admin_select_all_th()
-                      + "<th>Time</th><th>Step</th><th>Result</th><th>OS</th>"
-                      "<th>Arch</th><th>PM</th><th>Distro</th><th>Detail</th>"
-                      "</tr></thead><tbody>" + "".join(body)
-                      + "</tbody></table></form>")
-        return (_render_install_diag_overview(summary)
-                + '<div class="title">Recent events · %d of %d row(s)</div>'
-                % (len(recent), total) + events)
-
-    if table == "error_log":
-        # Keep the purpose-built, time-formatted error view and add a bounded
-        # 24-hour occurrence overview. The aggregation uses the same already
-        # redacted fields as the raw admin-only table.
-        now = int(Date.now())
-        recent_24h = await d1_all(
-            env,
-            "SELECT ts,status,method,path,message,actor FROM error_log "
-            "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
-            now - 24 * 60 * 60 * 1000,
-        )
-        hourly = [0] * 24
-        groups = {}
-        for row in recent_24h or []:
-            ts = int(row.get("ts") or 0)
-            if 0 < ts < 10 ** 11:
-                ts *= 1000
-            age_hours = max(0, (now - ts) // (60 * 60 * 1000))
-            if age_hours < 24:
-                hourly[23 - int(age_hours)] += 1
-            signature = (
-                str(row.get("status") or ""),
-                str(row.get("method") or "").upper(),
-                str(row.get("path") or ""),
-                str(row.get("message") or ""),
-            )
-            group = groups.setdefault(
-                signature,
-                {
-                    "hours": [0] * 24,
-                    "firstSeen": ts,
-                    "lastSeen": ts,
-                    # Accounts whose own sessions hit this exact failure, and
-                    # how many occurrences carried no session at all. Grouping
-                    # stays keyed on the failure itself so one user's traffic
-                    # never splits a group; the affected users ride along.
-                    "actors": {},
-                    "anonymous": 0,
-                },
-            )
-            group["firstSeen"] = min(group["firstSeen"] or ts, ts)
-            group["lastSeen"] = max(group["lastSeen"] or ts, ts)
-            actor = str(row.get("actor") or "").strip().lower()
-            if actor:
-                group["actors"][actor] = group["actors"].get(actor, 0) + 1
-            else:
-                group["anonymous"] += 1
-            if age_hours < 24:
-                group["hours"][23 - int(age_hours)] += 1
-        peak = max(hourly) if hourly else 0
-        bars = []
-        for index, count in enumerate(hourly):
-            height = max(2, round(132 * count / peak)) if peak else 2
-            hours_ago = 23 - index
-            label = (
-                "current hour" if hours_ago == 0
-                else "%d hours ago" % hours_ago
-            )
-            bars.append(
-                '<div class="error-bar" tabindex="0" role="img" '
-                'aria-label="%s: %d error%s" data-empty="%s" '
-                'style="height:%dpx" title="%s · %d"></div>'
-                % (
-                    _html_escape(label),
-                    count,
-                    "" if count == 1 else "s",
-                    "true" if count == 0 else "false",
-                    height,
-                    _html_escape(label),
-                    count,
-                )
-            )
-        group_rows = []
-        for (status, request_method, path, message), group in sorted(
-                groups.items(),
-                key=lambda item: (-sum(item[1]["hours"]), item[0]))[:25]:
-            frequency = group["hours"]
-            count = sum(frequency)
-            group_peak = max(frequency) if frequency else 0
-            spark_bars = []
-            for index, bucket_count in enumerate(frequency):
-                height = (
-                    max(2, round(28 * bucket_count / group_peak))
-                    if group_peak else 2
-                )
-                hours_ago = 23 - index
-                label = (
-                    "current hour" if hours_ago == 0
-                    else "%d hours ago" % hours_ago
-                )
-                spark_bars.append(
-                    '<span class="error-spark-bar" data-empty="%s" '
-                    'style="height:%dpx" title="%s · %d"></span>'
-                    % (
-                        "true" if bucket_count == 0 else "false",
-                        height,
-                        _html_escape(label),
-                        bucket_count,
-                    )
-                )
-            related_users = _admin_error_related_users(
-                group["actors"], group["anonymous"])
-            group_rows.append(
-                '<tr><td>%d</td><td><div class="error-sparkline" '
-                'tabindex="0" role="img" '
-                'aria-label="24-hour frequency: %d occurrence%s">%s</div></td>'
-                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
-                "<td title=\"%s\"><span class=\"error-message\">%s</span>%s</td>"
-                "%s"
-                '<td data-ts="%s">%s</td><td data-ts="%s">%s</td>'
-                "<td>%s</td><td>%s</td></tr>"
-                % (
-                    count,
-                    count,
-                    "" if count == 1 else "s",
-                    "".join(spark_bars),
-                    _admin_error_source_badge(request_method, path),
-                    _html_escape(status or "error"),
-                    _html_escape(request_method or "—"),
-                    _html_escape(path or "—"),
-                    _html_escape(message or "—"),
-                    # A crash report earns its length: show all of it. The
-                    # cell wraps, so the group stays readable at any size.
-                    _html_escape(message or "—"),
-                    _admin_error_copy_button(message or ""),
-                    _admin_error_users_cell(
-                        group["actors"], group["anonymous"]),
-                    _html_escape(group["firstSeen"]),
-                    _html_escape(group["firstSeen"]),
-                    _html_escape(group["lastSeen"]),
-                    _html_escape(group["lastSeen"]),
-                    _admin_error_bot_task_form(
-                        status, request_method, path, message, related_users,
-                        csrf_field, admin_query),
-                    _admin_error_group_delete_form(
-                        status, request_method, path, message,
-                        csrf_field, admin_query),
-                )
-            )
-        analytics = (
-            '<section class="error-analytics" aria-labelledby="error-analytics-title">'
-            '<h2 id="error-analytics-title">Previous 24 hours · %d occurrence%s</h2>'
-            '<div class="error-chart">%s</div>'
-            '<div class="error-hours"><span>24h ago</span><span>12h ago</span>'
-            '<span>now</span></div><div class="error-groups">'
-            '<h3>Equivalent errors</h3>%s</div></section>'
-            % (
-                len(recent_24h or []),
-                "" if len(recent_24h or []) == 1 else "s",
-                "".join(bars),
-                (
-                    "<table><thead><tr><th>Count</th><th>24-hour frequency</th>"
-                    "<th>Source</th><th>Status</th>"
-                    "<th>Method</th><th>Path</th><th>Message</th>"
-                    "<th>Related users</th>"
-                    "<th>First seen</th><th>Last seen</th>"
-                    "<th>Bot task</th><th>Delete</th></tr></thead>"
-                    "<tbody>" + "".join(group_rows) + "</tbody></table>"
-                    if group_rows
-                    else '<div class="empty">No errors in the previous 24 hours.</div>'
-                ),
-            )
-        )
-        body = []
-        for r in rows:
-            status = r.get("status", "")
-            cls = "s5" if str(status).startswith("5") else ""
-            body.append(
-                "<tr%s>"
-                % _admin_record_row_attrs(
-                    admin_query, table, r.get("_rowid_", ""))
-                + _admin_row_checkbox(r.get("_rowid_", ""))
-                + '<td data-ts="%s">%s</td>'
-                "<td>%s</td>"
-                '<td class="%s">%s</td>'
-                "<td>%s</td><td>%s</td>"
-                "<td><span class=\"error-message\">%s</span>%s</td>"
-                "%s<td>%s</td><td>%s</td><td>%s</td></tr>"
-                % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
-                   _admin_error_source_badge(
-                       r.get("method", ""), r.get("path", "")),
-                   cls, _html_escape(status),
-                   _html_escape(r.get("method", "")), _html_escape(r.get("path", "")),
-                   _html_escape(r.get("message", "")),
-                   _admin_error_copy_button(r.get("message", "")),
-                   _admin_error_row_user_cell(r.get("actor", "")),
-                   _html_escape(r.get("ray", "")),
-                   _admin_error_row_bot_task_button(
-                       r.get("_rowid_", ""), admin_query),
-                   _admin_error_row_delete_button(
-                       r.get("_rowid_", ""), admin_query))
-            )
-        if not body:
-            inner = '<div class="empty">No errors recorded yet.</div>'
-        else:
-            inner = (_admin_bulk_form_open(table, csrf_field, admin_query)
-                     + "<table><thead><tr>" + _admin_select_all_th()
-                     + "<th>Time</th><th>Source</th><th>Status</th><th>Method</th>"
-                     "<th>Path</th><th>Message</th><th>Related user</th>"
-                     "<th>CF-Ray</th>"
-                     "<th>Bot task</th><th>Delete</th></tr></thead><tbody>"
-                     + "".join(body) + "</tbody></table></form>")
-        return (
-            '<div class="title">Error logs · %d row(s)</div>' % total
-            + analytics
-            + inner
-        )
-
-    purge_allowed = _admin_purge_allowed(table)
-    add_link = ""
-    if not rows:
-        return (prefix
-                + '<div class="title">%s · 0 rows%s</div>'
-                  '<div class="empty">This table is empty.</div>'
-                % (_html_escape(table), add_link))
-
-    # Column order: union of keys, first row's order first. The synthetic
-    # _rowid_ column drives row selection and is not displayed.
-    columns = [c for c in rows[0].keys() if c != "_rowid_"]
-    for r in rows:
-        for k in r.keys():
-            if k != "_rowid_" and k not in columns:
-                columns.append(k)
-
-    # Decrypt each row's `data` blob once, then promote the union of its
-    # top-level JSON keys to real table columns so rows stay one line tall.
-    # The data cell itself collapses to a marker with the pretty JSON in its
-    # hover tooltip.
-    decoded_rows = []
-    for r in rows:
-        decoded = None
-        if isinstance(r.get("data"), str) and r.get("data"):
-            decoded = await decrypt_row(env, r.get("data"))
-        decoded_rows.append((
-            r,
-            _admin_redact_wallet_keys(decoded)
-            if isinstance(decoded, dict) else None,
-        ))
-    json_cols = []
-    for _r, decoded in decoded_rows:
-        if decoded:
-            for k in decoded:
-                if k not in columns and k not in json_cols:
-                    json_cols.append(k)
-    json_cols = json_cols[:ADMIN_MAX_JSON_COLS]
-
-    # Surface which columns the admin is looking at plaintext vs. ciphertext:
-    # the `data` blob is AES-GCM encrypted at rest and only decrypted for this
-    # view, so operators should not mistake a successful decrypt for the data
-    # having been stored unencrypted.
-    enc_notice = ""
-    if "data" in columns:
-        encrypted_total = sum(
-            1 for r in rows if isinstance(r.get("data"), str) and r.get("data"))
-        decrypted_ok = sum(
-            1 for _r, decoded in decoded_rows if decoded is not None)
-        plain_cols = [c for c in columns if c != "data"]
-        sentence = (
-            "🔒 <code>data</code> is stored AES-GCM encrypted and decrypted "
-            "here for display (%d/%d row(s) decrypted)"
-            % (decrypted_ok, encrypted_total)
-        )
-        if json_cols:
-            sentence += ", expanded into " + ", ".join(
-                "<code>%s</code>" % _html_escape(c) for c in json_cols)
-        sentence += "."
-        if plain_cols:
-            sentence += " Column(s) " + ", ".join(
-                "<code>%s</code>" % _html_escape(c) for c in plain_cols
-            ) + " are stored as plaintext."
-        enc_notice = '<div class="meta">%s</div>' % sentence
-    else:
-        enc_notice = (
-            '<div class="meta">No encrypted columns in this table; all '
-            'values are stored as plaintext.</div>'
-        )
-
-    body = []
-    for r, decoded_data in decoded_rows:
-        rid = r.get("_rowid_", "")
-        cells = [_admin_row_checkbox(rid)] if purge_allowed else []
-        for col in columns:
-            value = r.get(col)
-            if col == "data" and decoded_data is not None:
-                cells.append(_admin_json_cell(decoded_data))
-                continue
-            cells.append(_admin_compact_cell(value))
-        for col in json_cols:
-            cells.append(_admin_compact_cell(
-                None if decoded_data is None else decoded_data.get(col)))
-        body.append(
-            "<tr%s>%s</tr>"
-            % (
-                _admin_record_row_attrs(
-                    admin_query, table, rid),
-                "".join(cells),
-            )
-        )
-
-    head = (_admin_select_all_th() if purge_allowed else "") + "".join(
-        "<th>%s</th>" % _html_escape(c) for c in columns) + "".join(
-        '<th class="jcol" title="from the data JSON">%s</th>' % _html_escape(c)
-        for c in json_cols)
-    table_markup = (
-        '<table class="compact"><thead><tr>' + head + "</tr></thead><tbody>"
-        + "".join(body) + "</tbody></table>"
-    )
-    if purge_allowed:
-        table_markup = (
-            _admin_bulk_form_open(table, csrf_field, admin_query)
-            + table_markup
-            + "</form>"
-        )
-    return (
-        prefix
-        + '<div class="title">%s · %d row(s)%s%s</div>'
-        % (_html_escape(table), total,
-           " (showing 500)" if total > 500 else "", add_link)
-        + enc_notice
-        + table_markup
-    )
-
-
-def _render_admin_stats(stats):
-    if not stats:
-        return ""
-    cards = [
-        ("hosts", "live hosts", False),
-        ("clients", "chat clients", False),
-        ("repos", "catalog repos", False),
-        ("installs_24h", "installs (24h)", False),
-        ("errors_total", "errors (all time)", True),
-        ("errors_24h", "errors (24h)", True),
-    ]
-    out = []
-    for key, label, warn in cards:
-        value = stats.get(key, 0)
-        cls = "card warn" if warn and value else "card"
-        out.append('<div class="%s"><div class="n">%s</div><div class="l">%s</div></div>'
-                    % (cls, _html_escape(value), label))
-    return '<div class="cards">' + "".join(out) + "</div>"
-
-
-def _render_admin_operational_alerts(
-        settings, csrf_field="", admin_query="", standalone=False):
-    settings = settings if isinstance(settings, dict) else {}
-    rows = []
-    for system_id, label in STATUS_ALERT_ADMIN_SYSTEMS:
-        field_id = system_id.replace(":", "__").replace("*", "all")
-        ping_checked = (
-            " checked" if _status_monitor_alert_setting(
-                settings, system_id, "pings") else "")
-        email_checked = (
-            " checked" if _status_monitor_alert_setting(
-                settings, system_id, "emails") else "")
-        continual_checked = (
-            " checked" if _status_monitor_alert_setting(
-                settings, system_id, "continual") else "")
-        rows.append(
-            '<tr><th scope="row">%s</th>'
-            '<td><label><input type="checkbox" name="ping_%s" value="1"%s> '
-            'Ping</label></td>'
-            '<td><label><input type="checkbox" name="email_%s" value="1"%s> '
-            'Email</label></td>'
-            '<td><label><input type="checkbox" name="continual_%s" value="1"%s> '
-            'Continual ping</label></td></tr>' % (
-                _html_escape(label), field_id, ping_checked,
-                field_id, email_checked, field_id, continual_checked))
-    page_link = (
-        '<a class="button" href="%s">Open alert settings page</a>' %
-        _admin_href(admin_query, view="alerts")
-        if not standalone else
-        '<a href="%s">Back to admin data</a>' % _admin_href(admin_query))
-    return (
-        '<section id="operational-alerts" class="admin-setting" '
-        'tabindex="-1"><div><h2>Operational alerts</h2>'
-        '<p>Admin-only delivery controls for every /status monitor. Continual '
-        'ping repeats a still-down alert every five minutes; the homepage is '
-        'selected by default. Optional attention emails include a redacted '
-        'two-minute Cloudflare log excerpt when credentials are configured.</p>'
-        + page_link + '</div>'
-        '<form method="post" action="%s">' %
-        _admin_href(admin_query, action="set_operational_alerts",
-                    view=("alerts" if standalone else "")) +
-        csrf_field +
-        '<div class="table-wrap"><table><thead><tr><th>Monitor</th>'
-        '<th>Qt / Pings</th><th>Email</th><th>Persistent outage</th>'
-        '</tr></thead><tbody>' + "".join(rows) + '</tbody></table></div>'
-        '<button type="submit">Save alert settings</button></form></section>'
-    )
-
-
-def render_admin_alerts_html(settings, csrf_field="", admin_query="", banner=""):
-    banner_html = (
-        '<div class="banner">%s</div>' % _html_escape(banner) if banner else "")
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        '<meta name="color-scheme" content="light dark">'
-        '<title>forkmesh · alert settings</title>'
-        '<link rel="stylesheet" href="/styles.css">'
-        '<link rel="stylesheet" href="/site-header.css">'
-        '<script src="/site-header.js" defer></script>'
-        '<style>' + ADMIN_STYLE + '</style></head><body>'
-        '<div data-forkmesh-header="simple"></div><div class="ab-root">'
-        '<header><h1>Monitoring alert settings</h1>'
-        '<div class="meta">Granular, administrator-only outage delivery.</div>'
-        '</header>' + banner_html + _render_admin_operational_alerts(
-            settings, csrf_field, admin_query, standalone=True) +
-        '</div></body></html>')
-
-
-def _render_admin_repo_terms_flags(csrf_field="", admin_query=""):
-    return (
-        '<section id="repository-terms-flags" class="admin-setting" '
-        'tabindex="-1"><div><h2>Repository Terms flags</h2>'
-        '<p>Apply or clear the public policy-warning badge for a repository. '
-        'The operator note is encrypted and remains admin-only.</p></div>'
-        '<form method="post" action="%s">' %
-        _admin_href(admin_query, action="set_repo_terms_flag") +
-        csrf_field +
-        '<input type="text" name="owner" placeholder="owner" '
-        'pattern="[A-Za-z0-9._-]{1,100}" required>'
-        '<input type="text" name="repo" placeholder="repository" '
-        'pattern="[A-Za-z0-9._-]{1,100}" required>'
-        '<select name="category" aria-label="Terms category">'
-        '<option value="spam">Spam</option>'
-        '<option value="malware">Malware</option>'
-        '<option value="harassment">Harassment</option>'
-        '<option value="illegal">Illegal content</option>'
-        '<option value="other">Other</option></select>'
-        '<input type="text" name="note" maxlength="500" '
-        'placeholder="private operator note">'
-        '<label><input type="checkbox" name="clear" value="1"> Clear</label>'
-        '<button type="submit">Save flag</button></form></section>'
-    )
-
-
-def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=False):
-    counts = counts or {}
-    if sort_records:
-        tables = sorted(tables, key=lambda t: counts.get(t, 0), reverse=True)
-    toggle_label = "A–Z" if sort_records else "Sort by records"
-    toggle_href = _admin_href(admin_query, table=active,
-                              sort=("name" if sort_records else "records"))
-    links = ['<div class="sec">Tables <a class="navsort" href="%s">%s</a></div>'
-             % (toggle_href, toggle_label)]
-    for t in tables:
-        label = "Error logs" if t == "error_log" else t
-        cls = ' class="active"' if t == active else ""
-        n = counts.get(t)
-        suffix = (' <span class="navcount">%d</span>' % n) if n is not None else ""
-        # Carry the active sort along: sort state lives only in the URL, so a
-        # table link that dropped it would silently reset the nav to the
-        # most-records-first default.
-        links.append('<a href="%s"%s>%s%s</a>'
-                     % (_admin_href(admin_query, table=t,
-                                    sort=("records" if sort_records else "name")),
-                        cls, _html_escape(label), suffix))
-    return "<nav>" + "".join(links) + "</nav>"
-
-
-def render_admin_html(env_stats, tables, active_table, table_html, banner="",
-                      counts=None, csrf_field="", admin_query="",
-                      sort_records=False, operational_alert_settings=None):
-    banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
-    return (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<meta name=\"color-scheme\" content=\"light dark\">"
-        "<title>forkmesh · admin</title>"
-        # site-header.js is deferred (it also injects the header markup), so on
-        # its own it would only stamp html.light/html.dark AFTER first paint —
-        # a visible dark→light flash. This blocking pre-paint snippet mirrors
-        # its resolveTheme() (same localStorage keys, then OS preference) and
-        # stamps the class before any CSS paints, killing the flash. The
-        # deferred script re-applies the same value and owns the toggle.
-        "<script>(function(){try{"
-        "var k=['forkmesh.dashboard.theme','forkmesh.theme'],t='';"
-        "for(var i=0;i<k.length;i++){var v=localStorage.getItem(k[i]);"
-        "if(v==='light'||v==='dark'){t=v;break;}}"
-        "if(!t)t=(window.matchMedia&&window.matchMedia("
-        "'(prefers-color-scheme: light)').matches)?'light':'dark';"
-        "var r=document.documentElement,l=t==='light';"
-        "r.classList.toggle('light',l);r.classList.toggle('dark',!l);"
-        "r.style.colorScheme=l?'light':'dark';"
-        "}catch(e){}})();</script>"
-        # The universal site header (brand, nav, account chip) + the theme
-        # engine it carries: site-header.js stamps html.light/html.dark from
-        # the visitor's saved choice or OS preference, which ADMIN_STYLE's
-        # variable palette keys off. styles.css supplies the header's own
-        # tokens; ADMIN_STYLE loads after it so the admin rules win.
-        "<link rel=\"stylesheet\" href=\"/styles.css\">"
-        "<link rel=\"stylesheet\" href=\"/site-header.css\">"
-        "<script src=\"/posthog.js\"></script>"
-        "<script src=\"/site-header.js\" defer></script>"
-        "<style>" + ADMIN_STYLE + "</style></head><body>"
-        "<div data-forkmesh-header=\"simple\"></div>"
-        # .ab-root scopes every admin style rule so they cannot leak into the
-        # injected site header above (and vice versa).
-        "<div class=\"ab-root\">"
-        "<header><h1>forkmesh · admin</h1>"
-        "<div class=\"meta\">Live Durable Object load, every D1 table, and "
-        "Solana payment-reference status.</div></header>"
-        + _render_admin_stats(env_stats)
-        + _render_admin_operational_alerts(
-            operational_alert_settings, csrf_field, admin_query)
-        + _render_admin_repo_terms_flags(csrf_field, admin_query)
-        + '<div class="tools"><form method="post" action="%s" '
-          'onsubmit="return confirm(\'Show legacy custody migration status?\')">'
-          % _admin_href(admin_query, action="disburse")
-          + csrf_field +
-          '<button type="submit">Legacy custody status</button></form>'
-          '<span class="meta">Worker signing and automated sweeps are disabled. '
-          'Historical encrypted deposit rows require an offline, balance-'
-          'reconciled migration; this console cannot access or use wallet '
-          'seeds.</span></div>'
-        + '<div class="tools"><form method="post" action="%s" '
-          'onsubmit="return confirm(\'Request ownership transfer for this node?\')">'
-          % _admin_href(admin_query, action="request_ownership")
-          + csrf_field +
-          '<input type="text" name="target" placeholder="node to take (name)" '
-          'autocomplete="off" required>'
-          '<input type="text" name="owner" placeholder="new owner (account name)" '
-          'autocomplete="off" required>'
-          '<button type="submit">Request ownership transfer</button></form>'
-          '<span class="meta">Parks a pending transfer on the node\'s own '
-          'account record — it only completes once that node\'s current '
-          'owner approves the confirmation prompt on its own client.</span></div>'
-        + banner_html
-        + '<div class="layout">'
-        + _render_admin_nav(tables, active_table, counts, admin_query, sort_records)
-        + "<main>" + table_html + "</main>"
-        + "</div></div>"
-        "<script>const adminTimes=[];"
-        "for(const el of document.querySelectorAll('[data-ts]')){"
-        "let ms=Number(el.getAttribute('data-ts'));if(ms&&ms<1e11)ms*=1000;"
-        "if(!ms)continue;el.textContent=new Date(ms).toLocaleString();"
-        "const rel=document.createElement('span');rel.className='relative-time';"
-        "el.append(' · ',rel);adminTimes.push([rel,ms]);}"
-        "function updateAdminRelativeTimes(){const now=Date.now();"
-        "for(const pair of adminTimes){const rel=pair[0],ms=pair[1];"
-        "const future=ms>now,seconds=Math.max(0,Math.floor(Math.abs(now-ms)/1000));"
-        "let value,unit;if(seconds<60){value=seconds;unit='second';}"
-        "else if(seconds<3600){value=Math.floor(seconds/60);unit='minute';}"
-        "else if(seconds<86400){value=Math.floor(seconds/3600);unit='hour';}"
-        "else{value=Math.floor(seconds/86400);unit='day';}"
-        "rel.textContent=future?'in '+value+' '+unit+(value===1?'':'s'):"
-        "value+' '+unit+(value===1?'':'s')+' ago';}}"
-        "updateAdminRelativeTimes();setInterval(updateAdminRelativeTimes,30000);"
-        # Copy-to-clipboard for error messages. Delegated so the analytics and
-        # raw tables share one handler, and written to survive the non-secure
-        # contexts / older browsers where navigator.clipboard is absent.
-        "document.addEventListener('click',function(ev){"
-        "const btn=ev.target.closest&&ev.target.closest('[data-copy]');"
-        "if(!btn)return;ev.preventDefault();ev.stopPropagation();"
-        "const text=btn.getAttribute('data-copy')||'';"
-        "const label=btn.dataset.copyLabel||btn.textContent;"
-        "btn.dataset.copyLabel=label;"
-        "function done(ok){btn.textContent=ok?'Copied':'Copy failed';"
-        "setTimeout(function(){btn.textContent=label;},1200);}"
-        "function fallback(){try{const ta=document.createElement('textarea');"
-        "ta.value=text;ta.setAttribute('readonly','');"
-        "ta.style.position='fixed';ta.style.opacity='0';"
-        "document.body.appendChild(ta);ta.select();"
-        "const ok=document.execCommand('copy');ta.remove();done(ok);}"
-        "catch(e){done(false);}}"
-        "if(navigator.clipboard&&navigator.clipboard.writeText){"
-        "navigator.clipboard.writeText(text).then(function(){done(true);},"
-        "fallback);}else{fallback();}});"
-        "if(location.hash==='#operational-alerts'){"
-        "var a=document.getElementById('operational-alerts');"
-        "if(a){a.scrollIntoView({block:'center'});a.focus({preventScroll:true});}"
-        "}</script>"
-        "</body></html>"
-    )
 
 
 async def _admin_set_password(env, name, password):
@@ -44798,7 +39132,6 @@ async def _https_mirror_private_proxy(env, request, private_record):
             {"error": "mirror_unavailable"}, status=503,
             cache_control="no-store",
             extra_headers=EXPECTED_DEGRADED_HEADERS)
-    from js import fetch as js_fetch
     for endpoint in candidates:
         target = https_routing.masked_private_replica_url(
             endpoint["baseUrl"], endpoint["opaqueId"])
@@ -44822,16 +39155,17 @@ async def _https_mirror_private_proxy(env, request, private_record):
             "X-ForkMesh-Signature": signature,
         }
         try:
-            upstream = await asyncio.wait_for(
-                js_fetch(JsRequest.new(
-                    target,
-                    to_js({
-                        "method": method,
-                        "headers": headers,
-                        "redirect": "manual",
-                    }),
-                )),
-                timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+            # Native AbortSignal timeout, not asyncio.wait_for — the private
+            # replica read rides the same clone path whose wedges this rule
+            # exists for (see the top of this module).
+            upstream = await js_fetch_with_timeout(
+                target,
+                {
+                    "method": method,
+                    "headers": headers,
+                    "redirect": "manual",
+                },
+                HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
             )
             status = int(getattr(upstream, "status", 0) or 0)
         except Exception:
@@ -44915,6 +39249,88 @@ async def _hosted_repository_import_route(env, owner, repo):
                 and safe_segment(mirror_name)):
             return mirror_owner, mirror_name
     return None
+
+
+# --- Source-of-truth admission override -------------------------------------
+# A mirror whose served state falls out of the signed pin window can no longer
+# serve clones — and, because its own re-sync fetch is that same gated clone
+# route, it cannot catch up either, so the repository goes dark. The repo's
+# operator (the source-of-truth node, authenticated by its admin key) can flip a
+# short-lived override that admits the group's mirrors at the states they are
+# actually advertising until they converge. The flag lives in KV with a native
+# TTL, so admission always heals back to the strict pin policy on its own — and
+# it is consulted ONLY on the would-be-503 path (see _https_mirror_public_context),
+# never on the healthy hot clone path.
+ADMISSION_OVERRIDE_PREFIX = "admission-override:"
+ADMISSION_OVERRIDE_DEFAULT_TTL = 30 * 60
+ADMISSION_OVERRIDE_MAX_TTL = 6 * 60 * 60
+
+
+async def _admission_override_active(env, repo_bi):
+    repo_bi = str(repo_bi or "")
+    if not repo_bi:
+        return False
+    namespace = getattr(env, "REPOSITORY_METADATA", None)
+    if namespace is None:
+        return False
+    try:
+        raw = await namespace.get(ADMISSION_OVERRIDE_PREFIX + repo_bi)
+    except Exception:
+        return False
+    return raw is not None
+
+
+async def _admission_override_set(env, repo_bi, ttl_seconds):
+    repo_bi = str(repo_bi or "")
+    namespace = getattr(env, "REPOSITORY_METADATA", None)
+    if namespace is None or not repo_bi:
+        return 0
+    try:
+        ttl = int(ttl_seconds if ttl_seconds is not None
+                  else ADMISSION_OVERRIDE_DEFAULT_TTL)
+    except (TypeError, ValueError):
+        ttl = ADMISSION_OVERRIDE_DEFAULT_TTL
+    ttl = max(60, min(ttl, ADMISSION_OVERRIDE_MAX_TTL))
+    try:
+        await namespace.put(
+            ADMISSION_OVERRIDE_PREFIX + repo_bi,
+            str(int(Date.now())),
+            to_js({"expirationTtl": ttl}),
+        )
+    except Exception:
+        return 0
+    return ttl
+
+
+async def _admin_set_admission_override(env, request):
+    # Signed source-of-truth override: an admin proves control of their node key
+    # (the same auth as every other admin mutation) and opens a bounded window
+    # during which the group's mirrors are admitted at their advertised states,
+    # so a repo deadlocked out of the pin window recovers instead of staying
+    # unavailable. The window auto-expires via the KV TTL.
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+    owner = clean_string(data.get("owner", ""), MAX_NODE_NAME).lower()
+    repo = clean_string(data.get("repo", ""), MAX_REPO_SEGMENT).strip().lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(owner) or not safe_segment(repo):
+        return json_response({"error": "invalid_repo"}, status=400)
+    canonical = ("forkmesh-admission-override-v1\n" + node + "\n"
+                 + owner + "/" + repo + "\n" + ts).encode()
+    if not await _admin_authorized(env, node, ts, sig, canonical):
+        return json_response({"error": "unauthorized"}, status=401)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    ttl = await _admission_override_set(env, repo_bi, data.get("ttlSeconds"))
+    await _audit_sensitive_action(
+        env, node, "admin.admission_override", "repository",
+        owner + "/" + repo, "success" if ttl else "error",
+        {"ttlSeconds": ttl})
+    return json_response(
+        {"ok": bool(ttl), "repo": owner + "/" + repo, "ttlSeconds": ttl})
 
 
 async def _https_mirror_public_context(env, owner, repo):
@@ -45100,7 +39516,37 @@ async def _https_mirror_public_context(env, owner, repo):
             ):
                 source = record
         if not allowed:
-            return None
+            # Deadlocked out of the pin window: no live node serves a state the
+            # source-of-truth attested. If the repo's operator is holding a
+            # source-of-truth override open, admit the group's mirrors at the
+            # states they currently advertise so the repo recovers instead of
+            # going dark. Consulted ONLY here (never on the healthy path that
+            # already found an eligible node) so ordinary clones pay nothing,
+            # and only ever widens an existing real pin set — a repo with no
+            # source attestation (pins is None above) is never force-opened.
+            if not (pins and await _admission_override_active(
+                    env, target_row.get("key_bi"))):
+                return None
+            pins = set(pins) | admission_override_pins(members)
+            for row in members:
+                record = row.get("data") or {}
+                node = clean_string(
+                    record.get("machineName") or record.get("owner", ""),
+                    MAX_NODE_NAME).lower()
+                if not valid_node_name(node):
+                    continue
+                state = clean_string(record.get("stateHash", ""), 64).lower()
+                endpoint_state = quorum.get("nodeDigests", {}).get(node, "")
+                if state in pins or endpoint_state in pins:
+                    allowed.add(node)
+                    if (
+                        source is None
+                        and str(record.get("source") or "local-node")
+                        == "local-node"
+                    ):
+                        source = record
+            if not allowed:
+                return None
         canonical = source or target
         canonical_owner = clean_string(
             canonical.get("owner", ""), MAX_NODE_NAME).lower()
@@ -45114,6 +39560,14 @@ async def _https_mirror_public_context(env, owner, repo):
         return {
             "owner": canonical_owner,
             "repo": canonical_repo,
+            # The canonical local-node record is the only collaboration writer
+            # while its signed endpoint health is fresh.  Consumers must not
+            # infer this from the first eligible routing node: mirrors can be
+            # fresher than the source and participate in the same cursor ring.
+            "sourceNode": clean_string(
+                canonical.get("machineName") or canonical.get("owner", ""),
+                MAX_NODE_NAME,
+            ).strip().lower(),
             "nodes": allowed,
             # Every node publishing a record in this mirror group, including
             # the ones the state-pin gate currently excludes from serving.
@@ -45757,17 +40211,17 @@ async def _https_mirror_merge_proxy(env, endpoint, context, request):
         "X-ForkMesh-Signature": signature,
     }
     try:
-        upstream = await asyncio.wait_for(
-            js_fetch(JsRequest.new(
-                target,
-                to_js({
-                    "method": "POST",
-                    "headers": headers,
-                    "body": Uint8Array.new(_to_js(body)),
-                    "redirect": "manual",
-                }),
-            )),
-            timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        # Native AbortSignal timeout, not asyncio.wait_for — see the
+        # no-concurrent-tasks rule at the top of this module.
+        upstream = await js_fetch_with_timeout(
+            target,
+            {
+                "method": "POST",
+                "headers": headers,
+                "body": Uint8Array.new(_to_js(body)),
+                "redirect": "manual",
+            },
+            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
         )
         status = int(getattr(upstream, "status", 0) or 0)
         announced = int(upstream.headers.get("content-length") or 0)
@@ -45918,16 +40372,12 @@ async def _https_mirror_actions_proxy(env, endpoint, context):
         "X-ForkMesh-Signature": signature,
     }
     try:
-        upstream = await asyncio.wait_for(
-            js_fetch(JsRequest.new(
-                target,
-                to_js({
-                    "method": "GET",
-                    "headers": headers,
-                    "redirect": "manual",
-                }),
-            )),
-            timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        # Native AbortSignal timeout, not asyncio.wait_for — see the
+        # no-concurrent-tasks rule at the top of this module.
+        upstream = await js_fetch_with_timeout(
+            target,
+            {"method": "GET", "headers": headers, "redirect": "manual"},
+            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
         )
         if int(getattr(upstream, "status", 0) or 0) != 200:
             return None
@@ -46408,7 +40858,6 @@ async def _https_mirror_proxy(
             {"error": "mirror_unavailable"}, status=503,
             cache_control="no-store",
             extra_headers=EXPECTED_DEGRADED_HEADERS)
-    from js import fetch as js_fetch
     for endpoint in candidates:
         if not await _https_mirror_repository_proof(
                 env, endpoint, context, operation):
@@ -46536,16 +40985,23 @@ class Default(WorkerEntrypoint):
         # The platform Cron Trigger does two things, cheapest and most public
         # first.
         #
-        # (1) It records the /status health sample DIRECTLY. The trigger is
-        # the only per-minute schedule the platform itself guarantees, so the
-        # public minute strip must not depend on the Durable Object subsystem
-        # being healthy: a wedged runner isolate or exhausted free-tier DO
-        # allowance left multi-hour "no health sample was recorded" gaps that
-        # read as fake downtime. The per-minute claim inside
-        # record_status_sample keeps this sample and the runner's own from
-        # double-counting an hour's checks — whichever lands first wins.
+        # (1) It records the /status health sample DIRECTLY — but only while
+        # the alarm runner is provably not doing so. The trigger is the only
+        # per-minute schedule the platform itself guarantees, so the public
+        # minute strip must not depend on the Durable Object subsystem being
+        # healthy: a wedged runner isolate or exhausted free-tier DO
+        # allowance left multi-hour "no health sample was recorded" gaps
+        # that read as fake downtime. The direct probe run, however, holds
+        # this scheduled wrapper open for ~25s of awaited I/O inside a
+        # serving isolate, and that overlap re-triggered the Pyodide
+        # "Cannot enter into task" wedge on the clone path (2026-08-06) —
+        # so in the steady state the trigger spends one D1 read confirming
+        # runner-tagged claims exist and skips the probes. The per-minute
+        # claim inside record_status_sample still keeps this sample and the
+        # runner's own from double-counting — whichever lands first wins.
         try:
-            await record_status_sample(self.env)
+            if await _runner_status_sample_is_stale(self.env, Date.now()):
+                await record_status_sample(self.env)
         except BaseException as error:
             try:
                 await log_cron_error(
@@ -46615,8 +41071,16 @@ class Default(WorkerEntrypoint):
         # downtime, so a tick that dies partway (cold Pyodide isolate blowing
         # the invocation limits — cron runs in its own colo, where user
         # traffic never warms the isolate) has already landed its samples.
+        # The heartbeat below (not the claim, which the trigger usually wins)
+        # is what lets the Cron Trigger's scheduled() skip its own direct
+        # probe run while this batch is provably alive
+        # (_runner_status_sample_is_stale).
         try:
-            await record_status_sample(self.env)
+            await _record_runner_status_heartbeat(self.env)
+        except BaseException:
+            pass
+        try:
+            await record_status_sample(self.env, source="runner")
         except BaseException as error:
             await log_cron_error(
                 self.env, "/cron/record-status-sample",
@@ -46879,6 +41343,7 @@ class Default(WorkerEntrypoint):
 
     async def fetch(self, request):
         url = None
+        request_started_ms = int(Date.now())
         try:
             url = urlparse(request.url)
 
@@ -46928,6 +41393,15 @@ class Default(WorkerEntrypoint):
             status = int(getattr(response, "status", 200) or 200)
         except Exception:
             status = 200
+        # Every served /api response feeds the api.forkmesh.com diagnostics
+        # buckets (minute × masked route group × status class). The module is
+        # lazy and the fold is in-memory; D1 sees one batched upsert per few
+        # dozen requests, and record_api_request never raises.
+        if url is not None and str(getattr(url, "path", "")).startswith(
+                "/api/"):
+            await _api_metrics.record_api_request(
+                self.env, url.path, status,
+                int(Date.now()) - request_started_ms)
         # Credit the website that sent this visitor. Gated to served page
         # navigations carrying an external Referer, so the extra D1 write only
         # happens on the rare request that is actually an inbound referral.
@@ -47467,6 +41941,11 @@ class Default(WorkerEntrypoint):
             return await self._git_push(request, git_recv.group(1), git_recv.group(2))
 
         if url.path == "/" and method_name(request) in ("GET", "HEAD"):
+            # On the api role (api.forkmesh.com), the root is the traffic
+            # diagnostics landing page; the marketing homepage stays a relay
+            # concern (it also records site_referrers there).
+            if str(getattr(self.env, "WORKER_ROLE", "") or "") == "api":
+                return _api_metrics.landing_page_response(self.env)
             # Everyone enters the same world immediately. The app may use the
             # locally held session to render an authorized avatar and portals,
             # but the route itself never changes based on login state.
@@ -47485,6 +41964,13 @@ class Default(WorkerEntrypoint):
                 {
                     "ok": True,
                     "service": "forkmesh-mainnode",
+                    # /health is relay-routed while /api/* serves from the
+                    # split forkmesh-api Worker, so deploy verification reads
+                    # the relay's build stamp here (and the api Worker's from
+                    # /api/version).
+                    "rev": _build_rev(self.env),
+                    "worker": str(
+                        getattr(self.env, "WORKER_ROLE", "") or "relay"),
                     "node": getattr(self.env, "NODE_NAME", "forkmesh"),
                     "nodeSolanaAddress": getattr(self.env, "NODE_SOLANA_ADDRESS", ""),
                     "websocket": "/api/repo/{owner}/{repo}/rooms/{room}/ws",
@@ -47510,6 +41996,13 @@ class Default(WorkerEntrypoint):
                 {
                     "ok": True,
                     "rev": _build_rev(self.env),
+                    # Which Worker answered: the same Python bundle deploys
+                    # as forkmesh-relay (catch-all) AND forkmesh-api (zone
+                    # routes for /api/*), distinguished by the WORKER_ROLE
+                    # var so the split verification can prove route
+                    # ownership.
+                    "worker": str(
+                        getattr(self.env, "WORKER_ROLE", "") or "relay"),
                     # deploy.sh stamps APP_VERSION (qt_client release number)
                     # alongside BUILD_REV; the dashboard header chip renders
                     # it. It was documented as echoed here but never was —
@@ -47520,6 +42013,17 @@ class Default(WorkerEntrypoint):
                     "now": Date.now(),
                 }
             )
+
+        if url.path in ("/api/metrics/summary", "/api/metrics/summary/"):
+            return await _api_metrics.metrics_summary_handler(
+                self.env, request)
+
+        if url.path in ("/api/metrics/endpoints", "/api/metrics/endpoints/"):
+            return await _api_metrics.endpoint_catalog_handler(
+                self.env, request)
+
+        if url.path in ("/api/openapi.json", "/api/openapi.json/"):
+            return await _api_metrics.openapi_handler(self.env, request)
 
         if url.path in ("/api/world/context", "/api/world/context/"):
             return world_context_handler(request)
@@ -47878,6 +42382,11 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/client-errors", "/api/client-errors/"):
             return await client_error_handler(self.env, request)
 
+        # Desktop-app failures (warning dialogs, error toasts) from a signed
+        # node, so an error nobody was watching still pings the administrators.
+        if url.path in ("/api/desktop-errors", "/api/desktop-errors/"):
+            return await desktop_error_handler(self.env, request)
+
         # Private vulnerability reports — stored encrypted, emailed to security@.
         if url.path in ("/api/security/report", "/api/security/report/"):
             return await security_report_handler(self.env, request)
@@ -48009,6 +42518,13 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/nodes/events", "/api/nodes/events/"):
             return await node_events_handler(self.env, request)
 
+        # The browser's key to that same channel: a session traded for a
+        # 60s account-scoped ticket, because a WebSocket upgrade carries no
+        # Authorization header. Matched ahead of accounts_handler.
+        if url.path in ("/api/accounts/event-ticket",
+                        "/api/accounts/event-ticket/"):
+            return await account_event_ticket_handler(self.env, request)
+
         if url.path in ("/api/forkbot/chat", "/api/forkbot/chat/"):
             return await forkbot_chat_handler(self.env, request)
 
@@ -48019,6 +42535,10 @@ class Default(WorkerEntrypoint):
         # One prompt answered by a picked Workers AI model (desktop composer).
         if url.path in ("/api/ai/ask", "/api/ai/ask/"):
             return await ai_ask_handler(self.env, request)
+
+        # One tool-use turn for the desktop's Workers AI coding agent.
+        if url.path in ("/api/ai/agent", "/api/ai/agent/"):
+            return await ai_agent_handler(self.env, request)
 
         polar_match = POLAR_INTEGRATION_RE.match(url.path)
         if polar_match:

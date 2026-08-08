@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.16 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.18 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -44,12 +44,13 @@ if(FORKMESH_BUILD_COMMIT_OVERRIDE)
     endif()
 endif()
 
-# Baked into the binaries: the quick-update button uses the source dir to
-# git pull + rebuild when running from a checkout. Global is fine here — the
-# value never changes between builds of the same checkout, so it never
+# Baked into the binaries for rebuild-only developer actions and diagnostics.
+# Update & restart deliberately uses an app-managed source clone instead, so it
+# cannot pull, replace, or build inside this working copy. Global is fine here —
+# the value never changes between builds of the same checkout, so it never
 # invalidates incremental builds. (It also must stay global: the inline
-# updateClientDir() in MainWindowInternal.h reads it, so every TU has to see
-# the same value or the ODR is violated.)
+# workingClientDir() in MainWindowInternal.h reads it, so every TU has to see the
+# same value or the ODR is violated.)
 add_compile_definitions(
     FORKMESH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
@@ -157,6 +158,7 @@ set(FORKMESH_MAIN_WINDOW_SOURCES
     src/MainWindowChat.cpp
     src/MainWindowTasks.cpp
     src/MainWindowNotes.cpp
+    src/MainWindowFiles.cpp
     src/MainWindowIssues.cpp
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp
@@ -186,6 +188,8 @@ set(FORKMESH_APP_SOURCES
     src/CrashHandler.cpp
     src/PlatformLogFilter.h
     src/PlatformLogFilter.cpp
+    src/LogSource.h
+    src/LogSource.cpp
     src/SingleInstance.h
     src/SingleInstance.cpp
     src/StartupSplash.h
@@ -195,6 +199,10 @@ set(FORKMESH_APP_SOURCES
     src/ForkMeshIdentity.h
     src/ForkMeshIdentity.cpp
     src/ChatBackend.h
+    src/ClientErrorReports.h
+    src/ClientErrorReports.cpp
+    src/PingSyncState.h
+    src/PingSyncState.cpp
     src/MainnodeRoom.h
     src/RoomCrypto.h
     src/RoomCrypto.cpp
@@ -210,6 +218,7 @@ set(FORKMESH_APP_SOURCES
     src/PublicMirrorRuntime.cpp
     src/UpstreamCheckoutSync.h
     src/UpstreamCheckoutSync.cpp
+    src/MirrorPushOutcome.h
     src/CoveStore.h
     src/CoveStore.cpp
     src/ChatHistoryLimits.h
@@ -226,6 +235,7 @@ set(FORKMESH_APP_SOURCES
     src/ActionTelemetry.h
     src/ActionTelemetry.cpp
     src/NetworkBackoff.h
+    src/NetworkReplyError.h
     src/BackoffNetworkAccessManager.h
     src/BackoffNetworkAccessManager.cpp
     src/ControlNode.h
@@ -277,6 +287,7 @@ set(FORKMESH_APP_SOURCES
     src/AgentStore.h
     src/AgentStore.cpp
     src/AgentJail.h
+    src/AgentWorktree.h
     src/VirtualMachineRuntime.h
     src/VirtualMachineRuntime.cpp
     src/AgentPromptImages.h
@@ -614,6 +625,7 @@ if(FORKMESH_BUILD_TESTS)
         src/GlobalSearchMatch.cpp
         src/AgentStore.h
         src/AgentStore.cpp
+        src/AgentWorktree.h
         src/UsageLimitCalendar.h
         src/UsageLimitCalendar.cpp
         src/ActionStore.h
@@ -634,6 +646,10 @@ if(FORKMESH_BUILD_TESTS)
         src/SystemStats.cpp
         src/NodeDiagnostics.h
         src/NodeDiagnostics.cpp
+        src/ClientErrorReports.h
+        src/ClientErrorReports.cpp
+        src/PingSyncState.h
+        src/PingSyncState.cpp
     )
     # Qt6::Concurrent: DirectorySizeScan scans top-level trees in parallel.
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent OpenSSL::Crypto)
@@ -705,6 +721,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ActionStore.cpp
         src/ActionRunner.h
         src/ActionRunner.cpp
+        src/SystemStats.h
+        src/SystemStats.cpp
     )
     target_include_directories(forkmesh-action-security-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -776,6 +794,25 @@ if(FORKMESH_BUILD_TESTS)
             MACOSX_BUNDLE FALSE)
     endif()
 
+    # The unattended SSH mirror fan-out pushes every stable ref at once without
+    # forcing, so a branch the gateway advanced first is rejected while the
+    # rest land and git still exits non-zero. This suite proves that partial
+    # rejection reads as a healthy push (and that an unreachable gateway or a
+    # hook denial still reads as a failure), against real local git repos.
+    qt_add_executable(forkmesh-ssh-mirror-push-tests
+        tests/test_ssh_mirror_push.cpp
+        src/MirrorGatewayHealth.h
+        src/MirrorPushOutcome.h
+        src/NetworkBackoff.h
+    )
+    target_include_directories(forkmesh-ssh-mirror-push-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(forkmesh-ssh-mirror-push-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-ssh-mirror-push-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
+    endif()
+
     # The first-instance owner's community reward-pool key remains inside a
     # passphrase-encrypted, owner-only desktop vault. These tests exercise key
     # import, strict transaction inspection, local signing, canonical owner
@@ -825,6 +862,7 @@ if(FORKMESH_BUILD_TESTS)
     # Focused Codex app-server JSONL transport and normalization tests.
     qt_add_executable(forkmesh-codex-tests
         tests/test_codex_app_server.cpp
+        src/AgentResumeIdentity.h
         src/CodexAppServerSession.h
         src/CodexAppServerSession.cpp
         src/CodexTranscriptStyle.h
@@ -834,6 +872,23 @@ if(FORKMESH_BUILD_TESTS)
     target_link_libraries(forkmesh-codex-tests PRIVATE Qt6::Core)
     if(APPLE)
         set_target_properties(forkmesh-codex-tests PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
+    # The Claude Code stream transport's start/exit contract: a launch that never
+    # starts still has to end, and a turn that cannot be written has to be
+    # reported as undelivered (adhoc #1618).
+    qt_add_executable(forkmesh-agent-transport-tests
+        tests/test_agent_transport.cpp
+        src/AgentJail.h
+        src/ClaudeStreamSession.h
+        src/ClaudeStreamSession.cpp
+        src/VirtualMachineRuntime.h
+        src/VirtualMachineRuntime.cpp
+    )
+    target_link_libraries(forkmesh-agent-transport-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-agent-transport-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
     endif()
 
     # Boot-scoped Lima/QEMU command construction and host/guest boundary tests.
@@ -963,12 +1018,13 @@ if(FORKMESH_BUILD_TESTS)
     # perf-tests each recompile every app source, so building them implicitly
     # tripled the cost of a plain `cmake --build build` (what run.sh and the
     # in-app quick-update do). They still build on demand — `--target check`
-    # below depends on all of them, run.sh test and ci.yml name their targets
-    # explicitly, and the release/deploy builds configure with
+    # below depends on all of them, run.sh test and ci.yml build the
+    # `critical-tests` aggregate, and the release/deploy builds configure with
     # FORKMESH_BUILD_TESTS=OFF anyway.
     set_target_properties(
         forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
-        forkmesh-codex-tests forkmesh-vm-runtime-tests
+        forkmesh-codex-tests forkmesh-agent-transport-tests
+        forkmesh-vm-runtime-tests
         forkmesh-control-tests forkmesh-chat-transport-tests
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
@@ -1001,6 +1057,8 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-world-speech-tests
              COMMAND forkmesh-world-speech-tests)
     add_test(NAME forkmesh-codex-tests COMMAND forkmesh-codex-tests)
+    add_test(NAME forkmesh-agent-transport-tests
+        COMMAND forkmesh-agent-transport-tests)
     add_test(NAME forkmesh-vm-runtime-tests COMMAND forkmesh-vm-runtime-tests)
     add_test(NAME forkmesh-control-tests COMMAND forkmesh-control-tests)
     add_test(NAME forkmesh-chat-transport-tests
@@ -1013,19 +1071,36 @@ if(FORKMESH_BUILD_TESTS)
              COMMAND forkmesh-public-mirror-tests)
     add_test(NAME forkmesh-upstream-sync-tests
              COMMAND forkmesh-upstream-sync-tests)
+    add_test(NAME forkmesh-ssh-mirror-push-tests
+             COMMAND forkmesh-ssh-mirror-push-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
+    add_test(NAME forkmesh-mirror-fleet-window-tests
+             COMMAND forkmesh-window-tests --mirror-fleet-only)
     add_test(NAME forkmesh-perf-tests COMMAND forkmesh-perf-tests)
     add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
-    set_tests_properties(forkmesh-tests forkmesh-window-tests forkmesh-perf-tests PROPERTIES
+    set_tests_properties(forkmesh-tests forkmesh-window-tests
+        forkmesh-mirror-fleet-window-tests forkmesh-perf-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     # The default developer/CI suite stays intentionally small: deployment
     # trust boundaries, private/public mirror encryption, and the agent
     # transport. The remaining targets are available for focused changes.
-    set_tests_properties(
+    set(FORKMESH_CRITICAL_TESTS
         forkmesh-control-tests forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests forkmesh-codex-tests
-        forkmesh-vm-runtime-tests
+        forkmesh-vm-runtime-tests forkmesh-mirror-fleet-window-tests)
+    set_tests_properties(${FORKMESH_CRITICAL_TESTS}
         PROPERTIES LABELS "critical" TIMEOUT 20)
+    # The binaries those test names execute. Not the same list: the mirror
+    # fleet suite is a second, flag-selected run of forkmesh-window-tests.
+    # Every critical test target is EXCLUDE_FROM_ALL, so ctest reports a bare
+    # "***Not Run" when one was never built -- promoting a suite to critical
+    # without teaching ci.yml to build it is silent until the run fails. This
+    # aggregate is what ci.yml builds, so the two can no longer drift apart.
+    set(FORKMESH_CRITICAL_TEST_TARGETS
+        forkmesh-control-tests forkmesh-private-mirror-tests
+        forkmesh-public-mirror-tests forkmesh-codex-tests
+        forkmesh-vm-runtime-tests forkmesh-window-tests)
+    add_custom_target(critical-tests DEPENDS ${FORKMESH_CRITICAL_TEST_TARGETS})
     # The e2e loop drives real git subprocesses and needs the stub agent's path.
     set_tests_properties(forkmesh-e2e PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;FORKMESH_E2E_STUB_AGENT=$<TARGET_FILE:forkmesh-e2e-stub-agent>")
@@ -1035,12 +1110,14 @@ if(FORKMESH_BUILD_TESTS)
         USES_TERMINAL)
     add_dependencies(check forkmesh-tests forkmesh-ide-tests
         forkmesh-world-speech-tests forkmesh-codex-tests
+        forkmesh-agent-transport-tests
         forkmesh-vm-runtime-tests
         forkmesh-control-tests forkmesh-chat-transport-tests
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
         forkmesh-upstream-sync-tests
+        forkmesh-ssh-mirror-push-tests
         forkmesh-window-tests forkmesh-perf-tests forkmesh-e2e
         forkmesh-e2e-stub-agent)
 
