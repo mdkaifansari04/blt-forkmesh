@@ -6319,7 +6319,7 @@ void MainWindow::fixCurrentPullConflictsWithOriginatingAgent()
         QStringLiteral("Merge `%1` into your branch and resolve all merge conflicts. "
                        "Make sure the build and tests still pass, then commit.")
             .arg(base.isEmpty() ? QStringLiteral("main") : base);
-    m_pendingSteerMessage.insert(sessionId, prompt);
+    queueAgentSteerMessage(sessionId, prompt);
     if (provider == QLatin1String("claude-code"))
         applyTranscriptEvent(
             sessionId,
@@ -8208,6 +8208,19 @@ void MainWindow::syncPullsInbox()
                      QStringLiteral("pulls"));
 }
 
+QString MainWindow::relayCooldownMessage(const QString &host) const
+{
+    const auto *network =
+        qobject_cast<BackoffNetworkAccessManager *>(m_networkAccess);
+    const qint64 remainingMs =
+        network && !host.isEmpty() ? network->hostCooldownRemainingMs(host) : 0;
+    if (remainingMs <= 0)
+        return QStringLiteral("ForkMesh relay is rate-limited — try again in a "
+                              "moment.");
+    return QStringLiteral("ForkMesh relay is rate-limited — try again in %1.")
+        .arg(formatDuration(remainingMs));
+}
+
 void MainWindow::showPendingInbox(const RepositoryRecord &repo,
                                   const QString &kind)
 {
@@ -8230,19 +8243,35 @@ void MainWindow::showPendingInbox(const RepositoryRecord &repo,
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, kind] {
+            [this, reply, repo, kind, host = url.host()] {
         const QByteArray body = reply->readAll();
         const int status = reply->attribute(
             QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QNetworkReply::NetworkError networkError = reply->error();
         const QString networkErrorText = reply->errorString();
+        const bool rateLimited =
+            BackoffNetworkAccessManager::isBackoffSuppressed(reply);
         reply->deleteLater();
         if (networkError != QNetworkReply::NoError) {
+            // The host-wide cooldown answered this locally, so it never reached
+            // the relay: there is no HTTP status to show (the modal used to read
+            // a baffling "HTTP 0") and nothing to do but wait. Say when it is
+            // worth retrying, in the status bar rather than behind an OK button.
+            if (rateLimited) {
+                flashMessage(relayCooldownMessage(host), true);
+                return;
+            }
+            // A transport failure has no status either; only name one when the
+            // relay actually answered with it.
             QMessageBox::warning(
                 this, QStringLiteral("Sync inbox"),
-                QStringLiteral("Could not load the pending inbox (HTTP %1): %2")
-                    .arg(status)
-                    .arg(networkErrorText));
+                status > 0
+                    ? QStringLiteral(
+                          "Could not load the pending inbox (HTTP %1): %2")
+                          .arg(status)
+                          .arg(networkErrorText)
+                    : QStringLiteral("Could not load the pending inbox: %1")
+                          .arg(networkErrorText));
             return;
         }
         const QJsonArray pending =
@@ -8262,44 +8291,83 @@ void MainWindow::showPendingInboxDialog(const RepositoryRecord &repo,
                               .arg(kind == QLatin1String("pulls")
                                        ? QStringLiteral("pull requests")
                                        : kind));
-    dialog.resize(680, qBound(260, 180 + pending.size() * 38, 620));
+    dialog.resize(kind == QLatin1String("pulls") ? 780 : 680,
+                  qBound(280, 200 + pending.size() * 38, 620));
+
+    // A whole pull request can be pulled onto this computer and read before it is
+    // accepted; a conversation event on an existing PR cannot (there is nothing
+    // to check out), so the extra column only appears for pull inboxes.
+    const bool reviewable = kind == QLatin1String("pulls");
+    const int syncColumn = reviewable ? 3 : 2;
 
     auto *layout = new QVBoxLayout(&dialog);
     auto *intro = new QLabel(
         pending.isEmpty()
             ? QStringLiteral("This inbox is up to date.")
-            : QStringLiteral("%1 submission%2 waiting to be written into %3/%4.")
-                  .arg(pending.size())
-                  .arg(pending.size() == 1 ? QString() : QStringLiteral("s"))
-                  .arg(repo.owner, repo.name),
+            : (reviewable
+                   ? QStringLiteral(
+                         "%1 submission%2 waiting on the nodes for %3/%4. "
+                         "\"Review\" pulls one onto this computer to read, build "
+                         "and run \xE2\x80\x94 nothing is merged and nothing is "
+                         "written into the repository until you \"Sync\" it.")
+                         .arg(pending.size())
+                         .arg(pending.size() == 1 ? QString()
+                                                  : QStringLiteral("s"))
+                         .arg(repo.owner, repo.name)
+                   : QStringLiteral(
+                         "%1 submission%2 waiting to be written into %3/%4.")
+                         .arg(pending.size())
+                         .arg(pending.size() == 1 ? QString()
+                                                  : QStringLiteral("s"))
+                         .arg(repo.owner, repo.name)),
         &dialog);
     intro->setWordWrap(true);
     layout->addWidget(intro);
 
     auto *tree = new QTreeWidget(&dialog);
     tree->setObjectName(QStringLiteral("pendingInboxList"));
-    tree->setColumnCount(3);
-    tree->setHeaderLabels({QStringLiteral("Submission"),
-                           QStringLiteral("Author"), QString()});
+    tree->setColumnCount(syncColumn + 1);
+    QStringList headers{QStringLiteral("Submission"), QStringLiteral("Author")};
+    while (headers.size() < syncColumn + 1)
+        headers << QString();
+    tree->setHeaderLabels(headers);
     tree->setRootIsDecorated(false);
     tree->setAlternatingRowColors(true);
     tree->setSelectionMode(QAbstractItemView::NoSelection);
     tree->header()->setStretchLastSection(false);
     tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    for (int column = 1; column <= syncColumn; ++column)
+        tree->header()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
     layout->addWidget(tree, 1);
 
     for (const QJsonValue &value : pending) {
         const QJsonObject item = value.toObject();
-        auto *row = new QTreeWidgetItem(
-            tree, {pendingInboxSummary(kind, item),
-                   pendingInboxAuthor(kind, item), QString()});
+        QStringList cells{pendingInboxSummary(kind, item),
+                          pendingInboxAuthor(kind, item), QString()};
+        while (cells.size() < syncColumn + 1)
+            cells << QString();
+        auto *row = new QTreeWidgetItem(tree, cells);
+        if (reviewable && item.contains(QStringLiteral("pull"))) {
+            auto *reviewOne = new QPushButton(QStringLiteral("Review"), tree);
+            reviewOne->setObjectName(QStringLiteral("pendingInboxReviewOne"));
+            reviewOne->setProperty("buttonSize", "sm");
+            reviewOne->setCursor(Qt::PointingHandCursor);
+            reviewOne->setToolTip(
+                QStringLiteral("Fetch this pull request onto this computer and "
+                               "read it, without merging it or adding it to the "
+                               "repository"));
+            tree->setItemWidget(row, 2, reviewOne);
+            connect(reviewOne, &QPushButton::clicked, &dialog,
+                    [this, repo, item] { reviewPendingPull(repo, item); });
+        }
         auto *syncOne = new QPushButton(QStringLiteral("Sync"), tree);
         syncOne->setObjectName(QStringLiteral("pendingInboxSyncOne"));
         syncOne->setProperty("buttonSize", "sm");
         syncOne->setCursor(Qt::PointingHandCursor);
-        tree->setItemWidget(row, 2, syncOne);
+        syncOne->setToolTip(
+            QStringLiteral("Write this submission into %1/%2")
+                .arg(repo.owner, repo.name));
+        tree->setItemWidget(row, syncColumn, syncOne);
         connect(syncOne, &QPushButton::clicked, &dialog,
                 [this, tree, row, repo, kind, item] {
             QJsonArray selected;
@@ -8321,6 +8389,200 @@ void MainWindow::showPendingInboxDialog(const RepositoryRecord &repo,
             [this, &dialog, repo, kind, pending] {
         applyPendingInboxSelection(repo, kind, pending);
         setPendingInboxCount(repo, kind, 0);
+        dialog.accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.exec();
+}
+
+// Where a review-only copy of an inbox submission lives: under the app's data
+// directory, never inside the repository, so an unaccepted pull request cannot be
+// mistaken for repository content.
+QString MainWindow::pullReviewCheckoutPath(const RepositoryRecord &repo,
+                                           const QString &slug) const
+{
+    const auto safe = [](const QString &text) {
+        QString out;
+        for (const QChar ch : text) {
+            out += (ch.isLetterOrNumber() || ch == QLatin1Char('-') ||
+                    ch == QLatin1Char('_') || ch == QLatin1Char('.'))
+                       ? ch
+                       : QLatin1Char('-');
+        }
+        return out.left(60);
+    };
+    return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) +
+           QStringLiteral("/pull-review/%1__%2/pr-%3")
+               .arg(safe(repo.owner), safe(repo.name), safe(slug));
+}
+
+// "Review" in the pulls inbox (adhoc #1541): fetch a submission other nodes filed
+// onto this computer and open it, without merging it, without writing it into the
+// repository's pull ledger and without acknowledging the inbox — the submission
+// stays pending (and keeps its badge) until the owner clicks Sync. Repo/item are
+// taken by value: the git work below pumps the event loop.
+void MainWindow::reviewPendingPull(RepositoryRecord repo, QJsonObject item)
+{
+    const QJsonObject payload = item.value(QStringLiteral("pull")).toObject();
+    if (payload.isEmpty()) {
+        flashMessage(QStringLiteral("Only a whole pull request can be pulled down "
+                                    "for review; this is a comment on one."),
+                     true);
+        return;
+    }
+    const PullRequest pr = PullRequest::fromJson(payload);
+    const RepositoryRecord writable = writableRecordFor(repo);
+    const PullStore store(writable.localPath, writable.mirrorPath,
+                          &m_profileIdentity, m_userName);
+    // A submission carries the number from the node that authored it; an
+    // unnumbered one is keyed by its inbox row instead so two of them cannot
+    // land in the same folder.
+    QString slug = pr.number > 0 ? QString::number(pr.number) : QString();
+    if (slug.isEmpty()) {
+        const QJsonValue id = item.value(QStringLiteral("id"));
+        slug = QStringLiteral("inbox-%1")
+                   .arg(id.isDouble() ? QString::number(qint64(id.toDouble()))
+                                      : pr.sig.left(12));
+    }
+    const QString dir = pullReviewCheckoutPath(repo, slug);
+
+    PullReviewCheckout checkout;
+    QString error;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool ok = store.checkoutForReview(pr, dir, &checkout, &error);
+    QApplication::restoreOverrideCursor();
+    if (!ok) {
+        QMessageBox::warning(this, QStringLiteral("Review pull request"),
+                             error.isEmpty()
+                                 ? QStringLiteral("Could not pull this submission "
+                                                  "down for review.")
+                                 : error);
+        return;
+    }
+    logSystem(QStringLiteral("Pulled pending pull request \"%1\" from %2/%3 into "
+                             "%4 for review (not merged).")
+                  .arg(pr.title.left(80), repo.owner, repo.name, checkout.path));
+    showPullReviewDialog(repo, pr, checkout);
+}
+
+void MainWindow::showPullReviewDialog(RepositoryRecord repo, PullRequest pr,
+                                      PullReviewCheckout checkout)
+{
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("pullReviewDialog"));
+    dialog.setWindowTitle(pr.number > 0
+                              ? QStringLiteral("Review pull request #%1")
+                                    .arg(pr.number)
+                              : QStringLiteral("Review pull request"));
+    dialog.resize(1000, 720);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *title = new QLabel(
+        QStringLiteral("<b>%1</b>")
+            .arg(pr.title.isEmpty() ? QStringLiteral("(untitled)")
+                                    : pr.title.toHtmlEscaped()),
+        &dialog);
+    title->setTextFormat(Qt::RichText);
+    title->setWordWrap(true);
+    layout->addWidget(title);
+
+    QStringList metaBits;
+    const QString author =
+        pr.authorName.isEmpty() ? pr.author.left(12) : pr.authorName;
+    if (!author.isEmpty())
+        metaBits << author;
+    if (!pr.head.isEmpty() || !pr.base.isEmpty())
+        metaBits << QStringLiteral("%1 \xE2\x86\x92 %2")
+                        .arg(pr.head.isEmpty() ? QStringLiteral("(patch)")
+                                               : pr.head,
+                             pr.base.isEmpty() ? QStringLiteral("(base)")
+                                               : pr.base);
+    if (checkout.commitCount > 0)
+        metaBits << QStringLiteral("%1 commit%2")
+                        .arg(checkout.commitCount)
+                        .arg(checkout.commitCount == 1 ? QString()
+                                                       : QStringLiteral("s"));
+    if (!checkout.baseOid.isEmpty())
+        metaBits << QStringLiteral("on %1").arg(checkout.baseOid.left(8));
+    if (!metaBits.isEmpty()) {
+        auto *meta = new QLabel(metaBits.join(QString::fromUtf8(" \xC2\xB7 ")),
+                                &dialog);
+        meta->setObjectName(QStringLiteral("statusLine"));
+        meta->setWordWrap(true);
+        layout->addWidget(meta);
+    }
+
+    QString notice =
+        QStringLiteral("Pulled onto this computer for review only \xE2\x80\x94 "
+                       "nothing has been merged and no pull request has been "
+                       "written into %1/%2. It stays in the inbox until you sync "
+                       "it.\n\n%3")
+            .arg(repo.owner, repo.name, checkout.path);
+    if (checkout.uncommitted)
+        notice += QStringLiteral(
+            "\n\nThis submission would not replay as commits, so its patch was "
+            "applied as uncommitted changes in that folder.");
+    if (!checkout.conflicts.isEmpty())
+        notice += QStringLiteral("\n\nConflicting file%1: %2")
+                      .arg(checkout.conflicts.size() == 1 ? QString()
+                                                        : QStringLiteral("s"),
+                           checkout.conflicts.mid(0, 8).join(
+                               QStringLiteral(", ")));
+    auto *note = new QLabel(notice, &dialog);
+    note->setObjectName(QStringLiteral("pullReviewNotice"));
+    note->setWordWrap(true);
+    note->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(note);
+
+    if (!pr.description.trimmed().isEmpty()) {
+        auto *body = new QLabel(
+            QStringLiteral("<span style='white-space:pre-wrap'>%1</span>")
+                .arg(pr.description.trimmed().left(4000).toHtmlEscaped()),
+            &dialog);
+        body->setTextFormat(Qt::RichText);
+        body->setWordWrap(true);
+        body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        layout->addWidget(body);
+    }
+
+    auto *diff = new QTextBrowser(&dialog);
+    diff->setObjectName(QStringLiteral("pullReviewDiff"));
+    diff->setOpenLinks(false);
+    registerDiffView(diff);
+    QList<DiffFileEntry> files;
+    const QString html =
+        renderDiffHtml(checkout.patch, files, checkout.path, checkout.baseOid,
+                       checkout.headOid);
+    if (html.trimmed().isEmpty())
+        setDiffHtml(diff, QStringLiteral("<p style='color:#8b949e'>This "
+                                         "submission carries no file "
+                                         "changes.</p>"));
+    else
+        setDiffHtml(diff, html);
+    layout->addWidget(diff, 1);
+
+    auto *buttons = new QDialogButtonBox(&dialog);
+    QPushButton *openFolder = buttons->addButton(
+        QStringLiteral("Open folder"), QDialogButtonBox::ActionRole);
+    openFolder->setObjectName(QStringLiteral("pullReviewOpenFolder"));
+    QPushButton *discard = buttons->addButton(
+        QStringLiteral("Discard review copy"), QDialogButtonBox::ActionRole);
+    discard->setObjectName(QStringLiteral("pullReviewDiscard"));
+    buttons->addButton(QDialogButtonBox::Close);
+    const QString path = checkout.path;
+    const RepositoryRecord writable = writableRecordFor(repo);
+    const QString localPath = writable.localPath;
+    const QString mirrorPath = writable.mirrorPath;
+    connect(openFolder, &QPushButton::clicked, &dialog, [path] {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    });
+    connect(discard, &QPushButton::clicked, &dialog,
+            [this, &dialog, path, localPath, mirrorPath] {
+        const PullStore store(localPath, mirrorPath, &m_profileIdentity,
+                              m_userName);
+        store.discardReviewCheckout(path);
+        flashMessage(QStringLiteral("Removed the review copy at %1.").arg(path));
         dialog.accept();
     });
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
@@ -8372,11 +8634,33 @@ void MainWindow::setPendingInboxCount(const RepositoryRecord &repo,
     refreshPendingInboxBadges();
 }
 
+// Pull requests other nodes have filed but this node has not taken in yet also
+// ride the Pulls tab, as a red count beside its blue open-PR total (adhoc
+// #1541). The Inbox tile that drains them only exists while the Pulls toolbar is
+// on screen, so without this a submission waiting in the relay was invisible
+// from every other tab in the repo.
+void MainWindow::setPendingPullsTabBadge(int pending)
+{
+    auto *tab = dynamic_cast<VerticalIconButton *>(m_repoPullsTab);
+    if (!tab)
+        return;
+    tab->setAlertBadgeCount(qMax(0, pending));
+    tab->setToolTip(
+        pending > 0
+            ? QStringLiteral("%1 pull request submission%2 waiting on the nodes "
+                             "\xE2\x80\x94 open Pulls and click Inbox to review "
+                             "them")
+                  .arg(pending)
+                  .arg(pending == 1 ? QString() : QStringLiteral("s"))
+            : QString());
+}
+
 void MainWindow::refreshPendingInboxBadges()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         setPullActionBadge(m_issueSyncButton, 0);
         setPullActionBadge(m_pullSyncButton, 0);
+        setPendingPullsTabBadge(0);
         if (m_discussionSyncButton)
             m_discussionSyncButton->setText(QStringLiteral("Sync inbox"));
         return;
@@ -8394,6 +8678,7 @@ void MainWindow::refreshPendingInboxBadges()
         known ? counts.value(QStringLiteral("discussions")).toInt() : 0;
     setPullActionBadge(m_issueSyncButton, issues);
     setPullActionBadge(m_pullSyncButton, pulls);
+    setPendingPullsTabBadge(pulls);
     if (m_discussionSyncButton) {
         m_discussionSyncButton->setText(
             discussions > 0 ? QStringLiteral("Sync inbox (%1)").arg(discussions)
@@ -8424,6 +8709,12 @@ int MainWindow::testPullInboxBadgeCount() const
 {
     const auto *button = dynamic_cast<const VerticalIconButton *>(m_pullSyncButton);
     return button ? int(button->badgeCount()) : 0;
+}
+
+int MainWindow::testPullsTabAlertBadgeCount() const
+{
+    const auto *tab = dynamic_cast<const VerticalIconButton *>(m_repoPullsTab);
+    return tab ? int(tab->alertBadgeCount()) : 0;
 }
 
 QString MainWindow::testDiscussionInboxButtonText() const
@@ -8521,15 +8812,18 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive,
         if (mirrorIntake)
             m_mirrorIssueIntakeInFlight.remove(intakeKey);
         if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(backoffKey,
-                                      QDateTime::currentMSecsSinceEpoch());
+            noteInboxDrainFailure(
+                backoffKey,
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt(),
+                mirrorIntake);
             if (interactive)
                 QMessageBox::warning(this, "Sync inbox",
                                      "Could not reach the inbox: " +
                                          reply->errorString());
             return;
         }
-        m_pollBackoff.noteSuccess(backoffKey);
+        noteInboxDrainSuccess(backoffKey);
         const QJsonArray pending =
             QJsonDocument::fromJson(reply->readAll())
                 .object()
@@ -8815,8 +9109,9 @@ void MainWindow::scheduleRelaySync()
 // account across every owned repo — pending issue/pull/discussion/commit
 // inbox items and queued agent prompts — and the shared apply* helpers merge
 // each slice exactly as the old per-topic drains did. Runs when a relay event
-// frame arrives (scheduleRelaySync) and on the slow m_inboxPollTimer fallback
-// tick that covers dropped events and reconnect gaps.
+// frame arrives (scheduleRelaySync), once per event-socket (re)connect as the
+// catch-up for anything queued while the channel was down, and once shortly
+// after launch. There is no periodic fallback tick.
 void MainWindow::performRelaySync()
 {
     if (!m_networkAccess)

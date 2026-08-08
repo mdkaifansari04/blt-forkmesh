@@ -11,7 +11,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY_PATH = ROOT / "src" / "entry.py"
-ENTRY = ENTRY_PATH.read_text(encoding="utf-8")
+# The QA deck/handler live in the on-demand world_qa module (kept out of
+# Worker startup); the board's contracts span both files.
+ENTRY = (
+    ENTRY_PATH.read_text(encoding="utf-8") + "\n"
+    + ENTRY_PATH.with_name("world_qa.py").read_text(encoding="utf-8")
+)
 SCHEMA = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
 WORLD = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
 SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(
@@ -357,7 +362,7 @@ def test_cards_stack_only_deals_tasks_that_nobody_has_reviewed():
     assert "CARDS WAITING" in SCENE
 
 
-def test_shared_qa_deck_refreshes_while_world_remains_open():
+def test_shared_qa_deck_refreshes_while_the_visitor_stands_at_the_board():
     for contract in (
         "const WORLD_QA_POLL_MS = 15 * 1000;",
         "this.qaTimer = window.setInterval(() => {",
@@ -366,6 +371,20 @@ def test_shared_qa_deck_refreshes_while_world_remains_open():
         "window.clearInterval(this.qaTimer);",
     ):
         assert contract in WORLD
+    # A fifteen-second cadence is only affordable because it is scoped to a
+    # visitor actually standing at the board — it must start on approach and
+    # be cleared on departure, never run for the life of the page.
+    assert "object: worldQaBoard," in SCENE
+    assert "onEnter: (refetch) => onQaBoardNearby({ refetch })," in SCENE
+    assert "onExit: () => onQaBoardAway()," in SCENE
+    assert "onQaBoardNearby: ({ refetch } = {}) =>" in WORLD
+    assert "onQaBoardAway: () => this.stopQaDeckWatch()," in WORLD
+    watch = WORLD[
+        WORLD.index("  startQaDeckWatch("):
+        WORLD.index("  async refreshBuildBoard(")
+    ]
+    assert "}, WORLD_QA_POLL_MS);" in watch
+    assert "window.clearInterval(this.qaTimer);" in watch
     visibility = WORLD[
         WORLD.index("handleVisibility = () => {"):
         WORLD.index("handleStorage = (event) => {")
@@ -374,10 +393,7 @@ def test_shared_qa_deck_refreshes_while_world_remains_open():
 
 
 def test_qa_catalog_is_not_truncated_to_the_first_64_cards():
-    handler = ENTRY[
-        ENTRY.index("async def world_qa_handler"):
-        ENTRY.index("\n\nWORLD_PREFERENCES_MAX_BYTES")
-    ]
+    handler = ENTRY[ENTRY.index("async def world_qa_handler"):]
     assert "WORLD_QA_MAX_CARDS = 4096" in ENTRY
     assert "deck_cards = deck_cards[:64]" not in handler
     assert "deck_cards = deck_cards[:128]" not in handler
@@ -395,10 +411,7 @@ def test_qa_catalog_is_not_truncated_to_the_first_64_cards():
 
 
 def test_private_task_failures_require_a_reason_and_accept_one_screenshot():
-    handler = ENTRY[
-        ENTRY.index("async def world_qa_handler"):
-        ENTRY.index("\n\nWORLD_PREFERENCES_MAX_BYTES")
-    ]
+    handler = ENTRY[ENTRY.index("async def world_qa_handler"):]
     for contract in (
         '"failure_reason_required"',
         '"invalid_qa_screenshot"',
@@ -422,10 +435,7 @@ def test_private_task_failures_require_a_reason_and_accept_one_screenshot():
 
 
 def test_qa_routing_is_privileged_audited_and_targets_real_work_queues():
-    handler = ENTRY[
-        ENTRY.index("async def world_qa_handler"):
-        ENTRY.index("\n\nWORLD_PREFERENCES_MAX_BYTES")
-    ]
+    handler = ENTRY[ENTRY.index("async def world_qa_handler"):]
     for contract in (
         'action in ("route_todo", "route_issue")',
         "if not can_route:",

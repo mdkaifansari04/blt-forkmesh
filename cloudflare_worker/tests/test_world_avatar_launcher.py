@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORLD = (ROOT / "public/world/world.js").read_text(encoding="utf-8")
 CSS = (ROOT / "public/world/world.css").read_text(encoding="utf-8")
 SCENE = (ROOT / "public/world/world-scene.js").read_text(encoding="utf-8")
+FACE = (ROOT / "public/world/world-avatar-face.js").read_text(encoding="utf-8")
 BUILD_BOARD = (ROOT / "src/world_build_board.py").read_text(encoding="utf-8")
 
 
@@ -47,6 +48,35 @@ def test_avatar_launcher_keeps_actionable_counts_on_their_related_tools():
     assert ".world-shirt-initial" not in CSS
     assert ".world-tool-count:not([hidden])" in CSS
     assert 'content: attr(data-world-tooltip);' in CSS
+
+
+def test_launcher_wears_a_painted_face_when_no_photo_was_uploaded():
+    # Guests can never have an uploaded account photo, so the badge used to
+    # render as an empty disc in the top-right corner. The deterministic
+    # portrait the 3D head already paints stands in, keyed to the same
+    # identity so the badge and the avatar in the scene match.
+    assert "export function paintProceduralAvatarFace(context, identityKey)" in FACE
+    assert "export function proceduralAvatarFaceDataURL(identityKey, size = 128)" in FACE
+    assert "skin = paintProceduralAvatarFace(context, identityKey);" in SCENE
+    assert (
+        'import { proceduralAvatarFaceDataURL } from "./world-avatar-face.js";'
+        in WORLD
+    )
+    assert "function hudAvatarFaceSource(session, identity)" in WORLD
+    assert (
+        'hudFacePortrait = { key, url: proceduralAvatarFaceDataURL(key) };'
+        in WORLD
+    )
+    assert (
+        "const shirtAvatarSource = hudAvatarFaceSource(accountSession, identity);"
+        in WORLD
+    )
+    avatar_markup = WORLD.split("data-world-shirt-avatar", 1)[1].split("/>", 1)[0]
+    assert 'src="${escapeHTML(shirtAvatarSource)}"' in avatar_markup
+    assert "${shirtAvatarSource ? \"\" : \"hidden\"}" in avatar_markup
+    identity_sync = WORLD.split("const avatar = this.$(\"[data-world-shirt-avatar]\");", 1)[1]
+    assert "const source = hudAvatarFaceSource(session, this.identity);" in identity_sync
+    assert "avatar.hidden = !source;" in identity_sync
 
 
 def test_hud_controls_slide_out_without_resizing_and_latch_until_movement():

@@ -2187,7 +2187,7 @@
       const issueNewButton = event.target.closest("[data-repo-issue-new]");
       if (issueNewButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openIssueCompose(state.selectedRepo);
@@ -2197,7 +2197,7 @@
       const issueImportButton = event.target.closest("[data-repo-issue-import]");
       if (issueImportButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openIssueImport(state.selectedRepo);
@@ -2213,7 +2213,7 @@
       const pullNewButton = event.target.closest("[data-repo-pull-new]");
       if (pullNewButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openPullCompose(state.selectedRepo);

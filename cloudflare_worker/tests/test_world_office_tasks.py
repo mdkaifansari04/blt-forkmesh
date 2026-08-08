@@ -1477,6 +1477,100 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     assert finished["agent"]["strength"] == "xhigh"
     assert finished["agent"]["status"] == "success"
 
+
+@run_async_test
+async def test_agent_status_batch_reports_a_whole_fleet_in_one_write():
+    """adhoc #1618: a restart published one request per session, and the relay
+    rate-limited its own desktop. The batch reports every run at once, with the
+    per-task ownership gate applied to each entry."""
+
+    runtime = FakeRuntime()
+    ids = []
+    for index in range(3):
+        opened = await tasks_api.handle(
+            runtime.use("POST", "wendy", {
+                "title": "Fleet run %d" % index,
+                "department": "engineering",
+                "repository": "forkmesh/forkmesh",
+                "assigneeKind": "agent",
+                "agent": {"provider": "claude-code", "sessionId": str(index),
+                          "status": "queued"},
+            }),
+            tasks_api.UNIVERSAL_PREFIX,
+        )
+        assert opened["status"] == 201
+        ids.append(opened["data"]["task"]["id"])
+
+    # A plain member's task, which the reporting desktop does not own.
+    others = await tasks_api.handle(
+        runtime.use("POST", "carol", {
+            "title": "Someone else's run",
+            "department": "engineering",
+            "repository": "forkmesh/forkmesh",
+            "assigneeKind": "agent",
+            "agent": {"provider": "codex", "sessionId": "9", "status": "queued"},
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert others["status"] == 201
+    foreign = others["data"]["task"]["id"]
+
+    batch = await tasks_api.handle(
+        runtime.use("POST", "wendy", {"statuses": [
+            {"task": ids[0], "status": "running"},
+            {"task": ids[1], "status": "waiting"},
+            {"task": ids[2], "status": "success"},
+            {"task": foreign, "status": "failed"},
+            {"task": "f" * 32, "status": "running"},
+            {"task": ids[0], "status": "stopped"},   # duplicate: ignored
+            {"task": ids[1], "status": "sleeping"},  # not a run state
+            {"task": "not-a-task-id", "status": "running"},
+        ]}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert batch["status"] == 200
+    results = {row["task"]: row for row in batch["data"]["results"]}
+    assert results[ids[0]]["ok"] and results[ids[1]]["ok"] and results[ids[2]]["ok"]
+    # Not this desktop's task, a task that does not exist, and a status that is
+    # not a run state each fail alone rather than failing the whole write.
+    assert results[foreign] == {"task": foreign, "ok": False, "error": "forbidden"}
+    assert results["f" * 32]["error"] == "task_not_found"
+    assert len(batch["data"]["results"]) == 5
+    assert results[ids[0]]["ok"] is True  # the first entry won, not the dup
+
+    for task_id, expected in zip(ids, ("running", "waiting", "success")):
+        current = await tasks_api.handle(
+            runtime.use("GET", "wendy", {}),
+            f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+        )
+        assert current["data"]["task"]["agent"]["status"] == expected
+    foreign_now = await tasks_api.handle(
+        runtime.use("GET", "carol", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{foreign}",
+    )
+    assert foreign_now["data"]["task"]["agent"]["status"] == "queued"
+
+    for body in ({}, {"statuses": []}, {"statuses": "running"},
+                 {"statuses": [{"task": "nope", "status": "running"}]}):
+        refused = await tasks_api.handle(
+            runtime.use("POST", "wendy", body),
+            f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+        )
+        assert refused["status"] == 400, body
+    oversized = await tasks_api.handle(
+        runtime.use("POST", "wendy", {"statuses": [
+            {"task": ids[0], "status": "running"}
+        ] * (tasks_api.MAX_AGENT_STATUS_BATCH + 1)}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert oversized["status"] == 400
+    assert oversized["data"]["error"] == "agent_status_batch_too_large"
+    not_allowed = await tasks_api.handle(
+        runtime.use("GET", "wendy", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert not_allowed["status"] == 405
+
     # An unrelated member still cannot close somebody else's agent run out.
     other = await tasks_api.handle(
         runtime.use("POST", "bob", {"title": "Another agent run",
@@ -1492,6 +1586,93 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     )
     assert denied["status"] == 403
     assert denied["data"]["error"] == "assignee_or_manager_only"
+
+
+@run_async_test
+async def test_hand_opened_task_accepts_the_run_a_desktop_starts_on_it():
+    """The Tasks page's "Start agent with prompt settings" button binds a local
+    run to a task that already exists, so that task has no run provenance when
+    the first state arrives. Seeding it is what lets the board answer "who is
+    working this?" for a task nobody launched from a prompt."""
+
+    runtime = FakeRuntime()
+    opened = await tasks_api.handle(
+        runtime.use("POST", "wendy", {
+            "title": "Written by hand on the board",
+            "details": "No agent ran when this was filed",
+            "department": "engineering",
+            "repository": "forkmesh/forkmesh",
+            "assigneeKind": "agent",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert opened["status"] == 201
+    task = opened["data"]["task"]
+    assert task["agent"] is None
+
+    started = await tasks_api.handle(
+        runtime.use("POST", "wendy", {"statuses": [{
+            "task": task["id"],
+            "status": "running",
+            "agent": {
+                "provider": "claude-code",
+                "startedBy": "claude-code@Workstation",
+                "model": "opus",
+                "mode": "Auto",
+                "strength": "HIGH",
+                "sessionId": "1515",
+                # A status smuggled into the provenance never wins over the
+                # state the entry actually reports.
+                "status": "success",
+            },
+        }]}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert started["status"] == 200
+    assert started["data"]["results"][0]["ok"] is True
+    current = await tasks_api.handle(
+        runtime.use("GET", "wendy", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}",
+    )
+    agent = current["data"]["task"]["agent"]
+    assert agent["provider"] == "claude-code"
+    assert agent["startedBy"] == "claude-code@workstation"
+    assert agent["model"] == "opus"
+    assert agent["mode"] == "Auto"
+    assert agent["strength"] == "high"
+    assert agent["sessionId"] == "1515"
+    assert agent["status"] == "running"
+
+    # A later state keeps the launch stamp rather than blanking it.
+    finished = await tasks_api.handle(
+        runtime.use("POST", "wendy", {"statuses": [
+            {"task": task["id"], "status": "success"},
+        ]}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert finished["status"] == 200
+    settled = await tasks_api.handle(
+        runtime.use("GET", "wendy", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}",
+    )
+    assert settled["data"]["task"]["agent"]["sessionId"] == "1515"
+    assert settled["data"]["task"]["agent"]["status"] == "success"
+
+    # Seeding provenance is not a way around the ownership gate.
+    denied = await tasks_api.handle(
+        runtime.use("POST", "carol", {"statuses": [{
+            "task": task["id"],
+            "status": "failed",
+            "agent": {"provider": "codex", "sessionId": "77"},
+        }]}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert denied["data"]["results"][0]["error"] == "forbidden"
+    unchanged = await tasks_api.handle(
+        runtime.use("GET", "wendy", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}",
+    )
+    assert unchanged["data"]["task"]["agent"]["sessionId"] == "1515"
 
 
 @run_async_test

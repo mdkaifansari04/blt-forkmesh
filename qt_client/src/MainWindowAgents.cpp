@@ -10,6 +10,8 @@
 #include "RepoStatsStore.h"
 #include "AgentJail.h"
 #include "AgentPromptImages.h"
+#include "AgentResumeIdentity.h"
+#include "AgentWorktree.h"
 #include "KebabHeaderView.h"
 #include "CodexAppServerSession.h"
 #include "UsageLimitCalendar.h"
@@ -34,12 +36,15 @@ QString MainWindow::agentProviderName(const QString &provider) const
 {
     // "CC" is Claude Code — the real `claude` CLI — abbreviated (adhoc #38) so
     // the provider fits the composer row and the agents list's narrow columns.
-    // "Codex" runs the local `codex` CLI; legacy "claude" sessions map to Claude
+    // "Codex" runs the local `codex` CLI; "CF AI" runs the bundled Workers AI
+    // agent script against the relay; legacy "claude" sessions map to Claude
     // API and legacy "openai" sessions keep their old OpenAI API label.
     if (provider == QLatin1String("claude-code"))
         return QStringLiteral("CC");
     if (agentIsCodexProvider(provider))
         return QStringLiteral("Codex");
+    if (agentIsCloudflareAiProvider(provider))
+        return QStringLiteral("CF AI");
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
@@ -262,49 +267,98 @@ QString agentSuccessOutcomeText(const AgentSession &session)
 
 int agentStatusModelIconIndex(const AgentSession &session)
 {
-    const QString model = session.model.toLower();
-    if (session.provider.startsWith(QLatin1String("claude"))) {
-        if (model.contains(QLatin1String("opus")))
-            return 1;
-        if (model.contains(QLatin1String("haiku")))
-            return 3;
-        if (model.contains(QLatin1String("sonnet")) ||
-            model.contains(QLatin1String("fable")))
-            return 2;
-        return 0; // Auto / the provider default.
-    }
-    if (model.contains(QLatin1String("mini")) ||
-        model.contains(QLatin1String("nano")))
-        return 6;
-    if (model.contains(QLatin1String("codex")))
-        return 5;
-    return 4;
+    // "Auto" picks its model per task, so a session still on the sentinel gets
+    // the auto glyph rather than one model's portrait.
+    if (session.model.trimmed().compare(kClaudeAutoModelId,
+                                        Qt::CaseInsensitive) == 0)
+        return 7;
+    return agentModelFaceIconIndex(session.provider, session.model);
 }
 
 QString agentStatusBadgeText(const AgentSession &session)
 {
+    QString state;
     if (session.merged)
-        return QStringLiteral("Merged");
-    if (session.status == AgentStatus::Success)
-        return QStringLiteral("Done");
-    if (session.status == AgentStatus::Failed)
-        return QStringLiteral("Failed");
-    if (session.status == AgentStatus::Stopped)
-        return QStringLiteral("Stopped");
-    if (session.status == AgentStatus::Running)
-        return QStringLiteral("Working");
-    if (session.status == AgentStatus::Waiting)
-        return QStringLiteral("Waiting");
-    if (session.status == AgentStatus::Queued)
-        return QStringLiteral("Queued");
-    return QStringLiteral("Idle");
+        state = QStringLiteral("merged");
+    else if (session.status == AgentStatus::Success)
+        state = QStringLiteral("done");
+    else if (session.status == AgentStatus::Failed)
+        state = QStringLiteral("failed");
+    else if (session.status == AgentStatus::Stopped)
+        state = QStringLiteral("stopped");
+    else if (session.status == AgentStatus::Running)
+        state = QStringLiteral("running");
+    else if (session.status == AgentStatus::Waiting)
+        state = QStringLiteral("waiting");
+    else if (session.status == AgentStatus::Queued)
+        state = QStringLiteral("queued");
+    else
+        state = QStringLiteral("idle");
+    // "Opus is: running" — the model wears the state, so the pill answers who
+    // is doing what in one read. Sessions with no model recorded fall back to
+    // the bare state word.
+    const QString modelWord = agentModelShortLabel(session.model);
+    if (modelWord.isEmpty()) {
+        state[0] = state.at(0).toUpper();
+        return state;
+    }
+    return QStringLiteral("%1 is: %2").arg(modelWord, state);
 }
+
+// The pill breaks after "is:" so the state word gets its own line (adhoc
+// #1598). With the portrait beside it now drawn large, "Fable is: failed" on
+// one line pushed the session actions across the header; stacked, the pill
+// stays the width of its widest word. The tooltip keeps the flat one-liner.
+QString agentStatusPillText(const AgentSession &session)
+{
+    const QString flat = agentStatusBadgeText(session);
+    const int at = flat.indexOf(QLatin1String("is: "));
+    if (at < 0)
+        return flat;
+    QString wrapped = flat;
+    wrapped.replace(at, 4, QStringLiteral("is:\n"));
+    return wrapped;
+}
+
+// Size of the model portrait in the detail header's status pill. Much larger
+// than the 22px it used to be (adhoc #1598): the face is how you tell at a
+// glance which agent a session is running, so it reads as a portrait rather
+// than as another toolbar glyph.
+constexpr int kAgentStatusPillIconPx = 44;
+
+// How many times a CLI that dies without finishing a turn is put back on the
+// queue before the session is failed with a reason. A crash mid-turn is worth
+// retrying; a launch that cannot work today (its saved conversation is gone,
+// the login expired, the CLI is broken) fails identically every pass, and
+// retrying it forever is indistinguishable from a button that does nothing.
+constexpr int kMaxAgentRelaunchAttempts = 2;
 
 QIcon agentStatusPillIcon(const AgentSession &session)
 {
-    if (session.merged || session.status == AgentStatus::Success)
-        return themedOcticon("check-circle", QColor("#3fb950"), 14);
-    return agentControlIcon(agentStatusModelIconIndex(session));
+    const QIcon avatar = agentControlIcon(agentStatusModelIconIndex(session));
+    if (!(session.merged || session.status == AgentStatus::Success))
+        return avatar;
+
+    // The avatar stays the pill's primary mark once a session finishes (adhoc
+    // #1636), but swapping it out for a bare checkmark lost the done signal
+    // entirely — so it comes back as a small corner badge on the portrait
+    // instead of replacing it.
+    constexpr int kBadgePx = 20;
+    QPixmap out = crispIconPixmap(kAgentStatusPillIconPx, kAgentStatusPillIconPx,
+                                  iconDevicePixelRatio());
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.drawPixmap(QRect(0, 0, kAgentStatusPillIconPx, kAgentStatusPillIconPx),
+                avatar.pixmap(kAgentStatusPillIconPx, kAgentStatusPillIconPx));
+    const QRect badgeRect(kAgentStatusPillIconPx - kBadgePx,
+                          kAgentStatusPillIconPx - kBadgePx, kBadgePx, kBadgePx);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor("#0d1117"));
+    p.drawEllipse(badgeRect.adjusted(-2, -2, 0, 0));
+    themedOcticon(QStringLiteral("check-circle"), QColor("#3fb950"), kBadgePx)
+        .paint(&p, badgeRect);
+    p.end();
+    return QIcon(out);
 }
 
 QString agentStatusBadgeTone(const AgentSession &session)
@@ -470,10 +524,9 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                                 const AgentSession &session,
                                 const QString &gitDir, const QString &base,
                                 const QString &worktree,
-                                bool probeConflict, bool autoSyncCompleted)
+                                bool probeConflict, bool idleSession)
 {
     AgentDiffStat stat;
-    bool trackedDirty = false;
     // forkmesh/pulls is the shared signed PR ledger, not an agent-authored code
     // branch. Comparing its historical storage tree to main produces a bogus
     // 99+ file badge and can trigger an equally bogus behind/conflict state.
@@ -492,12 +545,6 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
             const QString lines = QString::fromUtf8(dirtyOut).trimmed();
             stat.dirty =
                 lines.isEmpty() ? 0 : lines.count(QLatin1Char('\n')) + 1;
-            for (const QString &line : lines.split(QLatin1Char('\n'))) {
-                if (!line.isEmpty() && !line.startsWith(QLatin1String("??"))) {
-                    trackedDirty = true;
-                    break;
-                }
-            }
         }
     }
     if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
@@ -557,55 +604,20 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                 stat.ahead = parts.at(1).toInt();
             }
         }
-        // A merge into main advances the base for every surviving agent branch.
-        // Keep completed, clean worktrees current as part of the same background
-        // refresh instead of painting every row as newly unhealthy until the
-        // user opens it one by one. Never touch an active or dirty worktree, and
-        // preflight the merge tree so a genuine conflict stays completely
-        // unchanged and visible for manual resolution.
-        if (autoSyncCompleted && stat.behind > 0 && !trackedDirty &&
-            !stat.worktree.isEmpty()) {
-            const bool canMerge =
-                runGitCapture(gitDir,
-                              {QStringLiteral("merge-tree"),
-                               QStringLiteral("--write-tree"),
-                               session.branchName, base},
-                              nullptr, nullptr);
-            if (canMerge) {
-                const QStringList mergeArgs =
-                    stat.ahead == 0
-                        ? QStringList{QStringLiteral("merge"),
-                                      QStringLiteral("--ff-only"), base}
-                        : QStringList{QStringLiteral("merge"),
-                                      QStringLiteral("--no-edit"), base};
-                if (runGitCapture(stat.worktree, mergeArgs, nullptr, nullptr)) {
-                    QByteArray refreshedCounts;
-                    if (runGitCapture(
-                            gitDir,
-                            {QStringLiteral("rev-list"),
-                             QStringLiteral("--left-right"),
-                             QStringLiteral("--count"),
-                             base + QStringLiteral("...") + session.branchName},
-                            &refreshedCounts, nullptr)) {
-                        const QStringList refreshed =
-                            QString::fromUtf8(refreshedCounts)
-                                .trimmed()
-                                .split(QRegularExpression(QStringLiteral("\\s+")));
-                        if (refreshed.size() >= 2) {
-                            stat.behind = refreshed.at(0).toInt();
-                            stat.ahead = refreshed.at(1).toInt();
-                        }
-                    }
-                }
-            } else {
-                stat.conflicted = true;
-            }
-        }
-        // merge-tree is materially slower than the ref/status reads above. The
-        // selected row gets an exact verdict; all other rows publish their
-        // counts immediately and the branch detail performs its own cached
+        // This refresh reports on branches; it never moves them. A merge into
+        // main advances the base for every surviving agent branch, and the
+        // refresh used to quietly merge it back into each idle, clean worktree
+        // so the rows didn't all turn "behind" at once. That automatic pull is
+        // gone (adhoc #1611): main goes into an agent branch only when asked
+        // for, from the Agents toolbar's "Update all" or one session's "Update".
+        //
+        // merge-tree is materially slower than the ref/status reads above, so
+        // the exact verdict is confined to the rows where a wrong one is worth
+        // the cost: the selected one, and the idle ones (an active session's
+        // branch tip moves under the probe anyway). Everything else publishes
+        // its counts immediately, and the branch detail performs its own cached
         // conflict probe when opened.
-        if (probeConflict && stat.behind > 0 && !session.merged &&
+        if ((probeConflict || idleSession) && stat.behind > 0 && !session.merged &&
             !runGitCapture(gitDir,
                            {QStringLiteral("merge-tree"),
                             QStringLiteral("--write-tree"), session.branchName,
@@ -706,6 +718,19 @@ QStringList localProviderCredentialValues()
     values.removeAll(QString());
     values.removeDuplicates();
     return values;
+}
+
+// The name the user gave the provider login with this id, or empty when the id
+// names no configured account any more (a profile that has since been removed)
+// or when there is no id to look up at all.
+QString agentAccountLabelFor(const QString &provider, const QString &accountId)
+{
+    if (accountId.isEmpty())
+        return QString();
+    for (const AgentAccountProfile &profile : agentAccountProfiles(provider))
+        if (profile.id == accountId)
+            return profile.label.trimmed();
+    return QString();
 }
 
 QJsonObject localCliAvailability(const QString &provider)
@@ -1025,6 +1050,10 @@ AgentProviderGlyph agentProviderGlyph(const QString &provider)
     if (agentUsesOpenAiKey(provider))
         return {QStringLiteral("cloud"), openai,
                 QStringLiteral("OpenAI API — run against OpenAI's API")};
+    if (agentIsCloudflareAiProvider(provider))
+        return {QStringLiteral("cloud"), QColor("#f6821f"),
+                QStringLiteral(
+                    "Cloudflare AI — run against the relay's Workers AI")};
     return {QString(), QColor(), QString()};
 }
 
@@ -1061,9 +1090,18 @@ QPixmap agentLeadGlyphPixmap(const AgentSession &session,
         const QRect statusRect(kAgentIdentityCirclePx + kAgentLeadGlyphGapPx,
                                (kAgentIdentityCirclePx - kAgentStatusGlyphPx) / 2,
                                kAgentStatusGlyphPx, kAgentStatusGlyphPx);
-        const QIcon icon = themedOcticon(statusIcon, agentStatusIconColor(session),
+        // Every state — a finished run's green check-circle included — is the
+        // themed octicon named by agentStatusCellIconName(), so the column reads
+        // as one set of glyphs rather than a pasted bitmap among line art.
+        const QIcon icon = themedOcticon(statusIcon,
+                                         agentStatusIconColor(session),
                                          kAgentStatusGlyphPx);
         if (running) {
+            // The status glyph is a rasterized octicon pixmap, and this is a
+            // freehand rotation (not a multiple of 90 degrees) driven by
+            // activityAngle every tick — without SmoothPixmapTransform, Qt
+            // resamples it nearest-neighbour and the spin reads as jagged.
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
             p.save();
             p.translate(statusRect.center());
             p.rotate(activityAngle);
@@ -1376,8 +1414,8 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
-        s.rwidth() += chipWidth(opt) + countWidth(opt) + kGlyphSize +
-                      4 * kButtonMargin + 2 * kChipGap + kBarWidth;
+        s.rwidth() += chipWidth(opt) + countWidth(opt) + 2 * kGlyphSize +
+                      4 * kButtonMargin + 3 * kChipGap + kBarWidth;
         s.rheight() = qMax(s.height(), kBarHeight + 6);
         return s;
     }
@@ -1440,6 +1478,17 @@ public:
                     kGlyphSize, kGlyphSize);
         themedOcticon("git-branch", ink, kGlyphSize).paint(painter, glyph);
         painter->restore();
+
+        // The worktree glyph sits just left of the chip, in the chip's own
+        // "live" blue: the ring colour already carries this, but it only
+        // reads on hover-comparison, so a session with a checkout still on
+        // disk gets its own glyph instead of asking the ring colour to be
+        // remembered row to row.
+        if (live) {
+            const QColor liveColor(dark ? "#58a6ff" : "#0969da");
+            themedOcticon("worktree", liveColor, kGlyphSize)
+                .paint(painter, worktreeRect(option, index));
+        }
 
         // Only the branch glyph is boxed. Counts and branch-health glyphs sit
         // beside it directly on the row, matching the compact screenshot and
@@ -1581,6 +1630,15 @@ private:
     static int countWidth(const QStyleOptionViewItem &opt)
     {
         return QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+"));
+    }
+
+    // The worktree glyph's slot, immediately before the chip: the mirror image
+    // of conflictRect on the chip's other side.
+    static QRect worktreeRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    {
+        const QRect chip = buttonRect(opt, idx);
+        return QRect(chip.left() - kChipGap - kGlyphSize,
+                     chip.center().y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
     }
 
     // The conflict/behind glyph's own click target, immediately after the chip
@@ -1841,6 +1899,7 @@ public:
     {
         setWordWrap(false);
         setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setTextInteractionFlags(Qt::TextSelectableByMouse);
         setFullText(text);
     }
 
@@ -1934,8 +1993,11 @@ private:
             return;
         adjustSize();
         constexpr int kMargin = 12;
-        move(qMax(kMargin, m_pane->width() - width() - kMargin),
-             qMax(kMargin, m_pane->height() - height() - kMargin));
+        // Top-right, not bottom-right (adhoc #1612): kMargin matches the detail
+        // pane's own top inset (detailLayout's contents margin), so this bar and
+        // the session actions on the other side of the splitter land on the same
+        // line instead of one floating below the other.
+        move(qMax(kMargin, m_pane->width() - width() - kMargin), kMargin);
         raise();
     }
 
@@ -1968,9 +2030,10 @@ QWidget *MainWindow::buildAgentsTab()
     listPane->setObjectName(QStringLiteral("agentsListPane"));
     listPane->setMinimumWidth(260);
     // No heading at all any more (adhoc #224): with the repository band hidden
-    // on this tab (updateRepoActivityRail) and the toolbar moved to the pane's
-    // foot, the session list starts in the page's very top-left corner — the
-    // first row's selection outline begins on the window's left rule. The tab is
+    // on this tab (updateRepoActivityRail) and the toolbar floating over the
+    // pane rather than sitting in its layout, the session list starts in the
+    // page's very top-left corner — the first row's selection outline begins on
+    // the window's left rule. The tab is
     // already named "Agents" in the rail, so a second "Agent sessions" line only
     // pushed the list it labels down and in.
 
@@ -2146,9 +2209,24 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
-    // Keep every fleet action in one floating bar at the bottom-right of the
-    // session-list pane. Queue capacity, bulk controls, and interactive
-    // provider terminals are all available from one place.
+    // "Update all" is the detail page's per-session "Update" run over the whole
+    // fleet: merge each session's base branch into its own worktree branch. It is
+    // deliberately a button and nothing else — ForkMesh never pulls main into a
+    // branch on its own, so branches only catch up when this is pressed.
+    m_agentUpdateAllButton = railActionButton(
+        QStringLiteral("sync"), QStringLiteral("Update all"),
+        "Merge each agent's base branch into its own worktree branch. Uncommitted "
+        "work is stashed and restored on top; a branch that can't merge cleanly "
+        "is left exactly as it was.");
+    m_agentUpdateAllButton->setObjectName("agentUpdateAllButton");
+    connect(m_agentUpdateAllButton, &QPushButton::clicked, this,
+            &MainWindow::updateAllAgentWorktreesFromMain);
+
+    // Keep every fleet action in one floating bar at the top-right of the
+    // session-list pane (adhoc #1612), level with the session actions atop the
+    // detail pane on the other side of the splitter. Queue capacity, bulk
+    // controls, and interactive provider terminals are all available from one
+    // place.
     auto *agentQueueOverlay = new AgentQueueOverlay(listPane);
     auto *agentQueueLayout = new QHBoxLayout(agentQueueOverlay);
     agentQueueLayout->setContentsMargins(8, 6, 8, 6);
@@ -2266,6 +2344,7 @@ QWidget *MainWindow::buildAgentsTab()
     });
     agentQueueLayout->addWidget(m_agentStartAllButton);
     agentQueueLayout->addWidget(m_agentStopAllButton);
+    agentQueueLayout->addWidget(m_agentUpdateAllButton);
     agentQueueLayout->addWidget(m_agentDeleteMergedButton);
     agentQueueLayout->addWidget(m_agentHideDetailButton);
     agentQueueLayout->addWidget(claudeTerminalButton);
@@ -2282,7 +2361,10 @@ QWidget *MainWindow::buildAgentsTab()
     // Keep the whole title on one line; the detail pane's actual right edge is
     // the only clipping boundary, and widening it reveals the remaining text.
     m_agentTitle = new WrappedTitleLabel(QStringLiteral("Select a session"));
-    m_agentTitle->setObjectName("channelTitle");
+    // Own objectName rather than the shared "channelTitle" (adhoc #1612): the
+    // thin rule under it is specific to this title, not every #channelTitle
+    // label app-wide.
+    m_agentTitle->setObjectName("agentPromptTitle");
     // The session's field list (Agent/Model/Repo/Status/Issue/PR/… plus Branch
     // and Worktree) no longer sits open across the top of the detail pane: it
     // filled a full-width band above the transcript for information that is only
@@ -2328,6 +2410,20 @@ QWidget *MainWindow::buildAgentsTab()
     auto *metaPopupLayout = new QVBoxLayout(m_agentMetaPopup);
     metaPopupLayout->setContentsMargins(12, 10, 12, 10);
     metaPopupLayout->addWidget(m_agentMeta);
+    // Hand this session's conversation to the user's own terminal (adhoc #1584).
+    // It sits with the Session row it acts on rather than in the header's action
+    // row: the id and the button that uses it are one thought, and the row above
+    // is where the user goes to ask "what exactly am I taking over?".
+    m_agentPopOutButton = railActionButton(QStringLiteral("terminal"),
+                                           QStringLiteral("Pop out"), QString());
+    m_agentPopOutButton->setObjectName("agentPopOutButton");
+    connect(m_agentPopOutButton, &QPushButton::clicked, this,
+            [this] { popOutAgentSessionToTerminal(m_selectedAgentSessionId); });
+    auto *popOutRow = new QHBoxLayout;
+    popOutRow->setContentsMargins(0, 6, 0, 0);
+    popOutRow->addStretch(1);
+    popOutRow->addWidget(m_agentPopOutButton);
+    metaPopupLayout->addLayout(popOutRow);
     m_agentStopButton = railActionButton(QStringLiteral("circle-slash"),
                                          QStringLiteral("Stop"),
                                          "Stop this session's running agent");
@@ -2348,11 +2444,19 @@ QWidget *MainWindow::buildAgentsTab()
     // recovery path is immediately available where the outcome is shown.
     m_agentStartButton = railActionButton(
         QStringLiteral("play"), QStringLiteral("Continue"),
-        "Resume this session from where it left off");
+        "Resume this session with the agent, model and mode currently chosen in "
+        "the composer");
     m_agentStartButton->setObjectName("agentContinueButton");
     m_agentStartButton->hide();
-    connect(m_agentStartButton, &QPushButton::clicked, this,
-            &MainWindow::continueSelectedAgentSession);
+    connect(m_agentStartButton, &QPushButton::clicked, this, [this] {
+        // Same contract as the composer's "add" button on an empty prompt
+        // (adhoc #372): honour the agent/model/mode dropdowns before resuming,
+        // so a session whose agent hit its usage limit continues under the one
+        // the user just picked instead of silently re-running the exhausted
+        // one. The two buttons do the same job and must not disagree.
+        applyComposerSelectionToAgentSession(m_selectedAgentSessionId);
+        continueSelectedAgentSession();
+    });
 
     // Delete the agent together with its worktree folder and branch in one action.
     // adhoc #51 folded the session-only "Delete" that sat beside it into this one
@@ -2503,12 +2607,20 @@ QWidget *MainWindow::buildAgentsTab()
             &MainWindow::createLinkedIssueForSelectedSession);
 
     // The model icon doubles as the compact outcome control. Its outline is
-    // outcome-coloured and the one-word label keeps the header scannable; hover
-    // or click reveals the fuller session detail without restoring a long pill.
+    // outcome-coloured and the "<Model> is: <state>" label reads who is doing
+    // what at a glance; hover or click reveals the fuller session detail
+    // without restoring a long pill. The portrait is drawn large (adhoc #1598)
+    // — it is the fastest read of which agent a session runs — with the state
+    // word stacked under the model name beside it so the pill stays narrow.
     m_agentStatusPill = new QToolButton;
     m_agentStatusPill->setObjectName("agentStatusPill");
     m_agentStatusPill->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_agentStatusPill->setIconSize(QSize(18, 18));
+    m_agentStatusPill->setIconSize(
+        QSize(kAgentStatusPillIconPx, kAgentStatusPillIconPx));
+    // Reserve the portrait's own height: the pill only ever holds an icon and a
+    // two-line label, and without this the row it shares with the fixed-height
+    // action tiles hands it their 40px and the face paints over its border.
+    m_agentStatusPill->setFixedHeight(kAgentStatusPillIconPx + 6);
     m_agentStatusPill->setCursor(Qt::PointingHandCursor);
     m_agentStatusPill->installEventFilter(this);
     connect(m_agentStatusPill, &QToolButton::clicked, this,
@@ -2577,7 +2689,21 @@ QWidget *MainWindow::buildAgentsTab()
     statusRow->addSpacing(4);
     statusRow->addLayout(actionRow);
     topRow->addLayout(statusRow);
+    // Screenshots the prompt attached, above the title (adhoc #1598): what the
+    // run was handed reads before what it was asked. Filled per session in
+    // renderAgentPromptImages(); hidden when the prompt carried none.
+    m_agentPromptImages = new QWidget;
+    m_agentPromptImages->setObjectName(QStringLiteral("agentPromptImages"));
+    auto *promptImagesRow = new QHBoxLayout(m_agentPromptImages);
+    promptImagesRow->setContentsMargins(0, 0, 0, 2);
+    promptImagesRow->setSpacing(6);
+    m_agentPromptImages->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    m_agentPromptImages->hide();
+    topRow->addWidget(m_agentPromptImages);
     topRow->addWidget(m_agentTitle);
+    // adhoc #1598 removed the read-only "Prompt" box that used to sit under the
+    // title: the title is that prompt's first line and the transcript's opening
+    // turn is the prompt in full, so the box was the third copy on the page.
 
     m_agentLog = new QPlainTextEdit;
     m_agentLog->setReadOnly(true);
@@ -2698,35 +2824,28 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentOutputStack->addWidget(m_agentTerminal);   // page 1: embedded terminal
     m_agentOutputStack->addWidget(m_agentTranscript); // page 2: rich transcript
 
-    // Transcript | Raw switch, shown only for Claude Code transcript sessions.
-    // The same octicon-over-caption tiles as the session actions it now sits
-    // beside in the header (adhoc #224) — the segmented pill it used to be was
-    // the last control on the page with a look of its own. Still checkable, so
-    // the rail button's green accent line marks the view you are on.
-    m_transcriptModeButton =
-        railActionButton(QStringLiteral("comment"), QStringLiteral("Transcript"),
-                         "Show this run as rendered transcript cards");
-    m_terminalModeButton =
+    // Transcript/Raw switch, shown only for Claude Code transcript sessions.
+    // One octicon-over-caption tile like the session actions it sits beside in
+    // the header (adhoc #224). adhoc #1598 folded the checkable pair into this
+    // single toggle: the tile names the view a click gives you, so there is no
+    // second tile and no checked-state accent line down its left edge.
+    m_agentOutputModeButton =
         railActionButton(QStringLiteral("terminal"), QStringLiteral("Raw"),
                          "Show this run's raw, unformatted output");
-    for (QPushButton *b : {m_transcriptModeButton, m_terminalModeButton})
-        b->setCheckable(true);
-    auto *outputModeGroup = new QButtonGroup(this);
-    outputModeGroup->setExclusive(true);
-    outputModeGroup->addButton(m_transcriptModeButton);
-    outputModeGroup->addButton(m_terminalModeButton);
-    m_transcriptModeButton->setChecked(true);
-    connect(m_transcriptModeButton, &QPushButton::clicked, this, [this] {
-        m_transcriptModeButton->setChecked(true);
-        m_terminalModeButton->setChecked(false);
-        if (m_agentOutputStack)
-            m_agentOutputStack->setCurrentWidget(m_agentTranscript);
-    });
-    connect(m_terminalModeButton, &QPushButton::clicked, this, [this] {
-        m_terminalModeButton->setChecked(true);
-        m_transcriptModeButton->setChecked(false);
-        showAgentRawOutput();
-    });
+    // Sized once for the longer of the two captions so toggling never reflows
+    // the header row.
+    {
+        QFont f = QGuiApplication::font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        m_agentOutputModeButton->setFixedSize(
+            qMax(railItemWidth(),
+                 QFontMetrics(f).horizontalAdvance(QStringLiteral("Transcript"))
+                     + 12),
+            kRailItemHeight);
+    }
+    connect(m_agentOutputModeButton, &QPushButton::clicked, this,
+            [this] { setAgentRawOutputMode(!m_agentRawOutputMode); });
     // The unified/split diff-style selector that used to sit here is gone (adhoc
     // #51); the transcript still honours the stored kClaudeDiffSplitSetting.
 
@@ -2766,12 +2885,11 @@ QWidget *MainWindow::buildAgentsTab()
             });
 
     // The output toolbar is gone with the search box it was built around (adhoc
-    // #224): its last two controls, Transcript and Raw, join the actions in the
-    // header's top-right corner, so the transcript starts directly under the
-    // title instead of a row down. Branch follows the pair with no extra
+    // #224): its Transcript/Raw switch — now one toggle (adhoc #1598) — joins the
+    // actions in the header's top-right corner, so the transcript starts directly
+    // under the title instead of a row down. Branch follows it with no extra
     // separator, making it the final right-most action.
-    statusRow->addWidget(m_transcriptModeButton, 0, Qt::AlignVCenter);
-    statusRow->addWidget(m_terminalModeButton, 0, Qt::AlignVCenter);
+    statusRow->addWidget(m_agentOutputModeButton, 0, Qt::AlignVCenter);
     statusRow->addWidget(m_agentBranchButton, 0, Qt::AlignVCenter);
 
     // Edited-files list for the "Files changed" tab: the files this session has
@@ -3044,6 +3162,46 @@ QWidget *MainWindow::buildAgentsTab()
     return page;
 }
 
+// Does this session have something that can receive a prompt right now?  The
+// persisted status alone is not a transport liveness signal: after a Codex
+// app-server window exits or disconnects, a session can still read Running even
+// though it no longer has a process behind it.  Asked by the restart gate (which
+// must not start a second copy of a live session) and by the composer stash
+// (which must not retarget one).
+bool MainWindow::agentSessionHasLiveTransport(int sessionId) const
+{
+    const ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
+    const CodexAppServerSession *codex = m_codexStreams.value(sessionId);
+    return (claude && claude->running()) || (codex && codex->running()) ||
+           runnerForSession(sessionId) != nullptr;
+}
+
+// Drop a transport whose process is still alive but can no longer be given a
+// turn — its stdin has gone, so every follow-up written to it disappears. Qt has
+// not called it finished yet, and until it does agentSessionHasLiveTransport()
+// reports the session as live, which is what left Continue and "add" answering
+// "this agent is already running" about a process that would never reply again
+// (adhoc #1618). Returns true when something was dropped.
+bool MainWindow::discardWedgedAgentTransport(int sessionId)
+{
+    bool dropped = false;
+    if (ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
+        claude && claude->running() && !claude->acceptsInput()) {
+        m_streamSessions.remove(sessionId);
+        claude->stop();
+        claude->deleteLater();
+        dropped = true;
+    }
+    if (CodexAppServerSession *codex = m_codexStreams.value(sessionId);
+        codex && codex->running() && !codex->acceptsInput()) {
+        m_codexStreams.remove(sessionId);
+        codex->stop();
+        codex->deleteLater();
+        dropped = true;
+    }
+    return dropped;
+}
+
 // The composer's model dropdown is the user's live choice for what runs
 // next; without this the session kept coasting on whatever model it
 // happened to launch with, so switching the dropdown before following up
@@ -3057,6 +3215,16 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
         session && (session->provider == QLatin1String("claude-code") ||
                     agentIsCodexProvider(session->provider))) {
         bool changed = false;
+        // A session with a live transport is not up for grabs: continueAgentSession()
+        // refuses to restart one, so a provider switch stashed here could never be
+        // honored by a resume — it would only be handed straight to the process
+        // already running. That is what broke "add" from an Opus composer to a
+        // ChatGPT agent: the session was relabelled claude-code and given a Claude
+        // model, then sendPromptToAgentSession() passed that model into the Codex
+        // app-server's turn/start, which rejects a model that is not its own, so
+        // the follow-up never reached the agent. The prompt goes to whoever is
+        // actually running; the dropdown takes effect on the next restart.
+        const bool liveTransport = agentSessionHasLiveTransport(sessionId);
         // The composer's provider dropdown is the user's live choice for which
         // agent continues this session. Honor a switch to a *different*
         // CLI-backed provider (Claude Code <-> Codex) so a session can be handed
@@ -3072,12 +3240,38 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
             composerProvider == QLatin1String("claude-code") ||
             agentIsCodexProvider(composerProvider);
         if (composerIsCli && composerProvider != session->provider) {
-            session->provider = composerProvider;
-            changed = true;
+            if (liveTransport) {
+                // Say so once, where the answer will appear: the reply comes back
+                // from the agent that is running, not the one the dropdown names,
+                // and silence there reads as the message having gone nowhere.
+                applyTranscriptEvent(
+                    sessionId,
+                    QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("_local_notice")},
+                        {QStringLiteral("text"),
+                         QStringLiteral("This session is still live under %1, so the "
+                                        "message went to it. %2 takes over when the "
+                                        "session is next restarted.")
+                             .arg(cliProviderLabel(session->provider),
+                                  cliProviderLabel(composerProvider))}});
+            } else {
+                session->provider = composerProvider;
+                changed = true;
+            }
         }
         if (composerIsCli && m_quickAddClaudeModel) {
-            const QString chosen = selectedModelComboValue(m_quickAddClaudeModel);
-            if (session->model != chosen) {
+            const QString chosen = (composerProvider == QLatin1String("claude-code")
+                                       ? selectedModelComboValue(m_quickAddClaudeModel)
+                                       : codexChatGptModelId(
+                                           selectedModelComboValue(m_quickAddClaudeModel)));
+            // The model only ever belongs to the provider that will actually run
+            // it. A declined hand-off above leaves those two disagreeing — the
+            // composer's Claude model against a session still live under Codex —
+            // and writing it through anyway is what sendPromptToAgentSession()
+            // then fed to the Codex app-server's turn/start, which rejects a model
+            // that is not its own and drops the follow-up on the floor.
+            if (session->model != chosen &&
+                agentModelMatchesProvider(session->provider, chosen)) {
                 session->model = chosen;
                 changed = true;
             }
@@ -3129,61 +3323,146 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
     // its row can show the square (adhoc #222).
     if (prompt.contains(QLatin1String("Attached image:")))
         m_agentImageScanPending = true;
+    // Hand it to whatever is actually running first; everything else here is the
+    // restart path.
+    if (deliverPromptToLiveAgentTransport(sessionId, prompt))
+        return;
+    AgentSession *session = findAgentSession(sessionId);
+    if (!session)
+        return;
+    // No live process — the session is stopped, waiting, failed or done — or one
+    // that claimed to be live could not take the turn. Restart it and fold this
+    // message into the resumed run as a steering instruction so the queued
+    // message actually takes effect (adhoc #177).
+    const int sid = session->id;
+    queueAgentSteerMessage(sid, prompt);
+    if (session->provider == QLatin1String("claude-code") ||
+        agentIsCodexProvider(session->provider))
+        applyTranscriptEvent(
+            sid, QJsonObject{
+                     {QStringLiteral("type"), QStringLiteral("_local_user")},
+                     {QStringLiteral("text"), prompt}});
+    else if (m_agentStore)
+        m_agentStore->appendLog(
+            *session,
+            QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
+                .arg(prompt));
+    continueAgentSession(sid);
+}
+
+// Try to hand `prompt` to the process this session is running right now.
+// Returns false when there is nothing live to take it — including a transport
+// that still reports itself as running but refuses the write, which is what a
+// crashed CLI looks like for the moment before its exit is noticed. That case
+// used to swallow the message: the send "succeeded", the status was flipped back
+// to Running, and the user watched a transcript full of their own prompts with
+// nothing answering them (adhoc #1618). Failing here instead routes the prompt
+// through the restart path, which is what they were asking for by pressing add.
+bool MainWindow::deliverPromptToLiveAgentTransport(int sessionId,
+                                                   const QString &prompt)
+{
+    auto restarting = [this, sessionId] {
+        noteAgentSessionNotice(
+            sessionId,
+            QStringLiteral("The agent's process was no longer accepting input, "
+                           "so ForkMesh is restarting the session with your "
+                           "message."),
+            /*error=*/false);
+        return false;
+    };
+    // A process that is alive but has closed its stdin will never see this turn;
+    // clear it out of the way and let the restart path take the prompt.
+    if (discardWedgedAgentTransport(sessionId))
+        return restarting();
     ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
     CodexAppServerSession *codex = m_codexStreams.value(sessionId);
-    if ((claude && claude->running()) || (codex && codex->running())) {
-        // Steer the live Claude Code transcript session: record the turn in
-        // this session's buffer so it survives view switches, then send it.
-        const int sid = sessionId;
-        QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
-                         {QStringLiteral("text"), prompt}};
-        applyTranscriptEvent(sid, turn);
-        if (codex && codex->running()) {
-            if (const AgentSession *session = findAgentSession(sid)) {
-                const QString effort =
-                    QSettings()
-                        .value(kClaudeEffortSetting, QStringLiteral("high"))
-                        .toString();
-                codex->setTurnOptions(session->model, session->mode, effort);
-            }
-            codex->sendUserText(prompt);
-        } else {
-            claude->sendUserText(prompt);
-        }
-        // Replying puts the agent back to work — clear "Waiting", or the
-        // Failed left by an error result whose process stayed alive, so the
-        // list shows the session running again.
-        if (AgentSession *as = findAgentSession(sid);
-            as && as->status != AgentStatus::Running) {
-            as->status = AgentStatus::Running;
-            as->finishedAtMs = 0;
-            as->lastError.clear();
-            as->mergeCandidateHead.clear();
-            if (m_agentStore)
-                m_agentStore->saveSession(*as);
-            updateAgentStatusCell(sid);
-        }
-    } else if (AgentRunner *runner = runnerForSession(sessionId)) {
-        runner->steer(prompt);
-    } else if (AgentSession *session = findAgentSession(sessionId)) {
-        // No live process: the session is stopped, waiting, failed or done.
-        // Restart it and fold this message into the resumed run as a steering
-        // instruction so the queued message actually takes effect (adhoc #177).
-        const int sid = session->id;
-        m_pendingSteerMessage.insert(sid, prompt);
-        if (session->provider == QLatin1String("claude-code") ||
-            agentIsCodexProvider(session->provider))
-            applyTranscriptEvent(
-                sid, QJsonObject{
-                         {QStringLiteral("type"), QStringLiteral("_local_user")},
-                         {QStringLiteral("text"), prompt}});
-        else
-            m_agentStore->appendLog(
-                *session,
-                QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
-                    .arg(prompt));
-        continueAgentSession(sid);
+    const bool claudeLive = claude && claude->running();
+    const bool codexLive = codex && codex->running();
+    if (!claudeLive && !codexLive) {
+        if (AgentRunner *runner = runnerForSession(sessionId))
+            return runner->steer(prompt);
+        return false;
     }
+    bool sent = false;
+    if (codexLive) {
+        if (const AgentSession *session = findAgentSession(sessionId)) {
+            const QString effort =
+                QSettings()
+                    .value(kClaudeEffortSetting, QStringLiteral("high"))
+                    .toString();
+            // Only a Codex model may ride into turn/start; the app-server
+            // fails the whole turn on anything else, which silently ate the
+            // follow-up. A session record can still name a Claude model here
+            // — one was written onto it by an older build before the
+            // composer stash learned to leave a live session alone — so pass
+            // nothing rather than a foreign id and let the running thread
+            // keep the model it started with.
+            QString model = session->model.trimmed();
+            if (!model.isEmpty())
+                model = codexChatGptModelId(model);
+            if (!agentModelMatchesProvider(kCodexProvider, model))
+                model.clear();
+            codex->setTurnOptions(model, session->mode, effort);
+        }
+        sent = codex->sendUserText(prompt);
+    } else {
+        sent = claude->sendUserText(prompt);
+    }
+    if (!sent) {
+        // The transport is finished even if it has not said so yet. Drop it so
+        // agentSessionHasLiveTransport() stops reporting a live session and the
+        // restart gate lets this session start again.
+        if (ClaudeStreamSession *dead = m_streamSessions.take(sessionId)) {
+            dead->stop();
+            dead->deleteLater();
+        }
+        if (CodexAppServerSession *dead = m_codexStreams.take(sessionId)) {
+            dead->stop();
+            dead->deleteLater();
+        }
+        return restarting();
+    }
+    // Record the turn in this session's buffer so it survives view switches.
+    applyTranscriptEvent(
+        sessionId, QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                               {QStringLiteral("text"), prompt}});
+    // Replying puts the agent back to work — clear "Waiting", or the
+    // Failed left by an error result whose process stayed alive, so the
+    // list shows the session running again.
+    if (AgentSession *as = findAgentSession(sessionId);
+        as && as->status != AgentStatus::Running) {
+        as->status = AgentStatus::Running;
+        as->finishedAtMs = 0;
+        as->lastError.clear();
+        as->mergeCandidateHead.clear();
+        if (m_agentStore)
+            m_agentStore->saveSession(*as);
+        updateAgentStatusCell(sessionId);
+    }
+    return true;
+}
+
+// Park a message for the session's next start. Prompts accumulate rather than
+// replacing one another: pressing add three times while a session is restarting
+// used to keep only the last one, so two of the three instructions were never
+// sent to anybody (adhoc #1618).
+void MainWindow::queueAgentSteerMessage(int sessionId, const QString &prompt)
+{
+    const QString trimmed = prompt.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    QString &pending = m_pendingSteerMessage[sessionId];
+    if (pending.trimmed().isEmpty()) {
+        pending = trimmed;
+        return;
+    }
+    // Pressing the same button twice on a session that has not restarted yet is
+    // one instruction, not two — the repeat is impatience, and repeating it back
+    // to the agent only wastes its turn.
+    if (pending == trimmed ||
+        pending.endsWith(QStringLiteral("\n\n") + trimmed))
+        return;
+    pending += QStringLiteral("\n\n") + trimmed;
 }
 
 // Re-sends the full title + description + comment thread of the issue linked
@@ -3687,7 +3966,7 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
         const QString prompt =
             job.value(QStringLiteral("prompt")).toString();
         const QString requestedModel =
-            job.value(QStringLiteral("model")).toString().trimmed();
+            codexChatGptModelId(job.value(QStringLiteral("model")).toString());
         const int issueNumber =
             job.value(QStringLiteral("issueNumber")).toInt();
         const QSet<QString> allowedWebsiteModels = {
@@ -3699,7 +3978,6 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
             QStringLiteral("gpt-5.6-luna"),
             QStringLiteral("gpt-5.6-terra"),
             QStringLiteral("gpt-5.3-codex-spark"),
-            QStringLiteral("gpt-5.3-spark"),
         };
         const QJsonObject security =
             job.value(QStringLiteral("securityCheck")).toObject();
@@ -5559,9 +5837,18 @@ void MainWindow::refreshClaudeCodeUsage(bool fromHover)
         // On any error (expired token, offline) keep the last-known figures
         // rather than blanking the gauge; the next poll retries — with a
         // growing backoff so a sustained failure stops hammering the endpoint.
+        // A 429 usually names its own cooldown via Retry-After; honour that
+        // as a floor on top of the exponential curve so a burst of hovers
+        // right after a rate limit doesn't immediately trip another one.
         if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(pollKey,
-                                      QDateTime::currentMSecsSinceEpoch());
+            const QByteArray retryAfter = reply->rawHeader("Retry-After");
+            bool retryAfterOk = false;
+            const qint64 retryAfterMs =
+                QString::fromLatin1(retryAfter).trimmed().toLongLong(&retryAfterOk) * 1000;
+            m_pollBackoff.noteFailure(
+                pollKey, QDateTime::currentMSecsSinceEpoch(),
+                NetworkBackoff::kDefaultBaseMs, NetworkBackoff::kDefaultCapMs,
+                retryAfterOk && retryAfterMs > 0 ? retryAfterMs : 0);
             if (fromHover)
                 flashUsageChart(m_navTokenUsage, false);
             return;
@@ -5608,6 +5895,9 @@ void MainWindow::applyLiveClaudeModelsToCombos()
         m_issueAgentProvider->currentData().toString() == claudeCode)
         mergeLiveClaudeModels(m_issueAgentModel, models);
     refreshQuickAddAgentModelSelector();
+    // The Settings list of which models the composer offers is built from the
+    // same catalog, so a live fetch has to reach it as well (adhoc #1557).
+    refreshComposerModelVisibilityList();
 }
 
 // Re-fetch the live claude-code model list from the provider (GET /v1/models)
@@ -5866,6 +6156,12 @@ void MainWindow::initAgents()
     m_agentSessions = m_agentStore->loadAllSessions();
     seedSessionTokens();
     refreshAgentDotMatrix(); // the top-bar fleet matrix reflects sessions from the start
+    // The composer is built before this runs, so its model menu was ranked and
+    // counted against an empty session list and no store at all — every model
+    // opened on "0 merged" until some later reload happened to refresh it
+    // (adhoc #1565). The tallies are on disk right here; show them from the
+    // first frame instead of blanking a record the user reads as lost.
+    refreshQuickAddAgentModelSelector();
     // The re-queued sessions are NOT started here: initAgents() runs inside the
     // MainWindow constructor, and draining the queue starts Claude transcripts
     // whose assign-time UI jump (switchToAgentsTab → openRepoDetail) fired a
@@ -5876,6 +6172,8 @@ void MainWindow::initAgents()
 
 void MainWindow::reloadAgents()
 {
+    if (deferUiRefresh(UiRefreshAgents))
+        return;
     if (!m_agentStore)
         return;
     m_agentSessions = m_agentStore->loadAllSessions();
@@ -6262,14 +6560,96 @@ void MainWindow::scanAgentSessionImages(const QList<AgentSession> &sessions,
             // Only redraw when something actually moved: the rows are rewritten
             // in place and this runs behind every reload, so an unconditional
             // refresh here would double the cost of a quiet tick.
-            if (changed)
+            if (changed) {
                 refreshAgentTable();
+                // The open session's attachment strip is drawn from the same
+                // map, so fill it in when a scan finds pictures the header was
+                // showing nothing for (adhoc #1598).
+                if (m_selectedAgentSessionId > 0)
+                    renderAgentPromptImages(m_selectedAgentSessionId);
+            }
         });
 }
 
 QStringList MainWindow::agentSessionImages(int sessionId) const
 {
     return m_agentSessionImages.value(sessionId);
+}
+
+// Attachment strip above the detail header's title (adhoc #1598). Paths come
+// from the background scan where it has run, and from the session's own stored
+// prompt otherwise — the launch screenshot is named there, so a session in a
+// repository the scan has not covered still shows it without any file reads.
+void MainWindow::renderAgentPromptImages(int sessionId)
+{
+    if (!m_agentPromptImages)
+        return;
+    auto *row = qobject_cast<QHBoxLayout *>(m_agentPromptImages->layout());
+    if (!row)
+        return;
+    QStringList paths;
+    if (const AgentSession *session = findAgentSession(sessionId)) {
+        for (const QString &raw : AgentStore::attachmentPathsIn(session->prompt)) {
+            const QString path = AgentPromptImages::resolve(raw);
+            if (!path.isEmpty() && !paths.contains(path))
+                paths.append(path);
+        }
+    }
+    for (const QString &path : agentSessionImages(sessionId))
+        if (!paths.contains(path))
+            paths.append(path);
+    // Rebuilding the strip decodes every attachment, and showAgentSession() runs
+    // on each reload — skip the work when nothing about the strip has changed.
+    if (m_agentPromptImageSession == sessionId && paths == m_agentPromptImagePaths)
+        return;
+    m_agentPromptImageSession = sessionId;
+    m_agentPromptImagePaths = paths;
+    while (QLayoutItem *item = row->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+
+    // Big enough to recognise the screenshot a run was started from, small
+    // enough that the title still leads the pane. Click one for the full-size
+    // view, the same dialog the composer's own attachment chips open.
+    constexpr int kStripHeight = 76;
+    constexpr int kStripMaxWidth = 220;
+    int shown = 0;
+    for (const QString &path : std::as_const(paths)) {
+        QImageReader reader(path);
+        reader.setAutoTransform(true);
+        const QSize src = reader.size(); // header only, no pixel decode
+        if (src.isValid() && !src.isEmpty() &&
+            (src.width() > kStripMaxWidth || src.height() > kStripHeight)) {
+            QSize target = src;
+            target.scale(kStripMaxWidth, kStripHeight, Qt::KeepAspectRatio);
+            reader.setScaledSize(target.expandedTo(QSize(1, 1)));
+        }
+        const QImage image = reader.read();
+        if (image.isNull())
+            continue; // attachment moved or unreadable — nothing to show
+        const QPixmap pixmap = QPixmap::fromImage(image);
+        auto *thumbnail = new QPushButton(m_agentPromptImages);
+        thumbnail->setObjectName(QStringLiteral("agentPromptImage"));
+        thumbnail->setFlat(true);
+        thumbnail->setCursor(Qt::PointingHandCursor);
+        thumbnail->setFocusPolicy(Qt::NoFocus);
+        thumbnail->setToolTip(
+            QStringLiteral("View %1").arg(QFileInfo(path).fileName()));
+        thumbnail->setIcon(QIcon(pixmap));
+        thumbnail->setIconSize(pixmap.size());
+        // Hug the picture rather than padding every attachment out to the full
+        // strip height — a wide, short screenshot would otherwise sit in a tall
+        // empty box.
+        thumbnail->setFixedSize(pixmap.width() + 6, pixmap.height() + 6);
+        connect(thumbnail, &QPushButton::clicked, this,
+                [this, path] { showQuickAddImageDetail(path); });
+        row->addWidget(thumbnail);
+        ++shown;
+    }
+    row->addStretch(1);
+    m_agentPromptImages->setVisible(shown > 0);
 }
 
 QIcon MainWindow::agentThumbnail(const QString &path)
@@ -7155,10 +7535,11 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
         return false;
     // Every successful merge advances the comparison base for every surviving
     // agent branch, even when the merged PR did not originate from an agent.
-    // Arm the coalesced worker now: completed clean worktrees are updated there,
-    // active/dirty ones are retried by the reload that follows their completion.
-    // This is intentionally independent of whether the merged PR matches a
-    // session below.
+    // Arm the coalesced worker now so those rows re-read their behind/conflict
+    // counts against the new base — it only measures them; catching a branch up
+    // is "Update all" in the Agents toolbar and nothing else (adhoc #1611). This
+    // is intentionally independent of whether the merged PR matches a session
+    // below.
     m_agentDiffRefreshPending = true;
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     bool changed = false;
@@ -7445,7 +7826,7 @@ static QString agentDetailTableHtml(const QStringList &headers, const QStringLis
 // Size the info popup's label to the table it just rendered. The popup is a
 // Qt::Popup laid out by adjustSize(), and a word-wrapping QLabel reports a
 // deliberately squarish sizeHint, so long values — agent/adhoc-NN-… branch names
-// and their /tmp/forkmesh-worktrees paths — wrapped mid-name in a narrow popup
+// and their .worktrees/agent-NN-… paths — wrapped mid-name in a narrow popup
 // (adhoc #68). Measure the rendered document instead and pin the label that
 // wide, capped against the screen so one pathological value can't grow the popup
 // off it (values longer than the cap still wrap, as before).
@@ -7583,6 +7964,33 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                 ? QString()
                 : QStringLiteral("Open worktree %1").arg(worktreePath));
     }
+    // The conversation id both halves of this popup are about: the Session row
+    // shows it, and "Pop out" hands it to a terminal (adhoc #1584).
+    const QString conversationId = agentCliConversationId(sessionId);
+    if (m_agentPopOutButton) {
+        // Only the cheap half of agentTerminalHandoff()'s test is asked here —
+        // this runs on the running-session ticker, and probing PATH and the
+        // filesystem every ~240ms to grey out a button is not worth it. The rest
+        // is reported on click, where a blocked hand-off says exactly why.
+        const bool cliSession = isExternalSession(sessionId) ||
+                                agentIsCodexProvider(session->provider) ||
+                                session->provider == QLatin1String("claude-code");
+        m_agentPopOutButton->setEnabled(cliSession);
+        m_agentPopOutButton->setToolTip(
+            !cliSession
+                ? QStringLiteral("%1 sessions run against the API — there is no "
+                                 "CLI conversation to continue in a terminal.")
+                      .arg(agentProviderName(session->provider))
+                : conversationId.isEmpty()
+                      ? QStringLiteral("Stop this session and open its agent CLI "
+                                       "in a system terminal. It has no "
+                                       "conversation to resume yet, so the CLI "
+                                       "starts fresh in the same directory.")
+                      : QStringLiteral("Stop this session and continue "
+                                       "conversation %1 in a system terminal. "
+                                       "Continue above picks it back up here.")
+                            .arg(conversationId));
+    }
     if (isExternalSession(sessionId)) {
         // Rendered as a mini table — header labels on top, values below (adhoc
         // #90) — rather than one long "Label: value | Label: value" line. Every
@@ -7608,6 +8016,13 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         values << agentStatusText(session->status).toHtmlEscaped();
         headers << QStringLiteral("Mode");
         values << QStringLiteral("watch-only");
+        // A watch-only row *is* a CLI conversation: its synthetic id is the
+        // transcript's file stem, which is the id `claude --resume` wants
+        // (adhoc #1584). Shown for the same reason as below.
+        headers << QStringLiteral("Session");
+        values << (conversationId.isEmpty()
+                       ? QStringLiteral("<span style='color:#8b949e'>unknown</span>")
+                       : conversationId.toHtmlEscaped());
         QString meta = agentDetailTableHtml(headers, values);
         if (!mergedMeta.isEmpty())
             meta += QStringLiteral("<br>") + mergedMeta;
@@ -7738,6 +8153,20 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                      .arg(SystemStats::formatBytes(compilers.residentBytes)
                               .toHtmlEscaped());
     }
+    // Who this session is, to ForkMesh and to the CLI driving it. The CLI's own
+    // conversation id is what `claude --resume` / `codex resume` take, so it is
+    // both the answer to "which transcript on disk is this?" and the handle the
+    // "Pop out" button below hands to a system terminal (adhoc #1584). Empty
+    // until the CLI has announced a conversation this account can reach — the
+    // same condition that makes a resume fall back to replaying the task.
+    headers << QStringLiteral("Session");
+    lines << QStringLiteral("#%1 &middot; %2")
+                 .arg(QString::number(session->id),
+                      conversationId.isEmpty()
+                          ? QStringLiteral(
+                                "<span style='color:#8b949e'>no CLI conversation "
+                                "yet</span>")
+                          : conversationId.toHtmlEscaped());
     // A result event arrives before a long-lived CLI transport has necessarily
     // reaped its build/test children. Show the exact remaining process snapshot
     // where the user already checks session status, rather than claiming Done
@@ -7766,6 +8195,7 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
+    updateQuickAddTargetAgentLabel();
     // The session on screen is the Agents tab's place, so Back walks between
     // sessions the same way it walks between issues (adhoc #50).
     scheduleNavRecord();
@@ -7786,6 +8216,7 @@ void MainWindow::showAgentSession(int sessionId)
             static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setStats(QString());
         if (m_agentNetPanel)
             m_agentNetPanel->clear();
+        renderAgentPromptImages(-1);
         if (m_agentViewPrButton)
             m_agentViewPrButton->hide();
         if (m_agentCreatePrButton)
@@ -7801,6 +8232,7 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLogSession = -1; // log emptied out-of-band; force the next set to render
         m_agentDetailTabSession = -1; // next opened session re-starts on the Agent tab
         updateAgentActionState();
+        updateQuickAddTargetAgentLabel();
         return;
     }
     // Several detail helpers resolve git/worktree state through keep-alive
@@ -7809,6 +8241,13 @@ void MainWindow::showAgentSession(int sessionId)
     // value copy rather than retaining a pointer into that replaceable list.
     const AgentSession sessionSnapshot = *liveSession;
     const AgentSession *session = &sessionSnapshot;
+    // Land the composer on this session's last-used agent/model/mode/speed
+    // (adhoc #1625): switching between two sessions that ran different agents
+    // used to leave the pickers wherever they were last left, so a follow-up
+    // typed right after opening the detail page silently launched under the
+    // wrong provider. The user can still change any of these before sending;
+    // this only sets the default they land on.
+    syncQuickAddControlsToAgentSession(sessionSnapshot);
 
     // Restore a finished/idle Claude Code session's transcript from disk so it
     // survives an app restart — parsed on a worker thread. The first click on a
@@ -7825,6 +8264,8 @@ void MainWindow::showAgentSession(int sessionId)
     // sessions; the live re-fetch only happens on the top-bar chart's hover.
     applyLiveClaudeModelsToCombos();
     if (m_agentTitle) {
+        const QString sessionLabel =
+            QStringLiteral("Agent #%1").arg(sessionId);
         if (isExternalSession(sessionId)) {
             const QString label = !session->issueTitle.isEmpty()
                                       ? session->issueTitle
@@ -7833,7 +8274,8 @@ void MainWindow::showAgentSession(int sessionId)
                                              : session->branchName);
             setAgentTitleText(
                 m_agentTitle,
-                QStringLiteral("External Claude Code · %1").arg(label));
+                QStringLiteral("%1 · External Claude Code · %2")
+                    .arg(sessionLabel, label));
         } else {
             // Older ad-hoc sessions may still carry a historically shortened
             // issueTitle, so prefer the prompt's complete first line when it is
@@ -7845,7 +8287,8 @@ void MainWindow::showAgentSession(int sessionId)
             setAgentTitleText(
                 m_agentTitle,
                 session->issueNumber > 0
-                    ? QStringLiteral("#%1 · %2")
+                    ? QStringLiteral("%1 · #%2 · %3")
+                          .arg(sessionLabel)
                           .arg(session->issueNumber)
                           .arg(session->issueTitle.isEmpty()
                                    ? agentProviderName(session->provider)
@@ -7853,13 +8296,15 @@ void MainWindow::showAgentSession(int sessionId)
                     // Ad-hoc sessions (no issue) lead with the prompt-derived
                     // title rather than "pull #0" — before a PR exists prNumber
                     // is 0, and the prompt is what identifies the run anyway.
-                    : QStringLiteral("%1 · %2")
+                    : QStringLiteral("%1 · %2 · %3")
+                          .arg(sessionLabel)
                           .arg(agentProviderName(session->provider))
                           .arg(adHocTitle.isEmpty()
                                    ? QStringLiteral("pull #%1").arg(session->prNumber)
                                    : adHocTitle));
         }
     }
+    renderAgentPromptImages(sessionId);
     // The detail header's key/value meta lines (identity, issue/branch/worktree/PR
     // chips, run Stats). Split out so the live-update paths can refresh just the
     // header text without a costly transcript rebuild (adhoc #42).
@@ -7929,10 +8374,11 @@ void MainWindow::showAgentSession(int sessionId)
     }
     // Feed the transcript's "session started" divider the run context the CLI
     // itself never reports — branch, permission mode, reasoning strength (adhoc
-    // #9). Set before any rebuild below so the divider renders with it; external
-    // sessions keep whatever their own init event says.
+    // #9) and the provider login it runs as (adhoc #1588). Set before any
+    // rebuild below so the divider renders with it; external sessions keep
+    // whatever their own init event says.
     if (m_agentTranscript) {
-        QString ctxMode, ctxStrength;
+        QString ctxMode, ctxStrength, ctxAccount;
         // Only the CLI providers run under a permission mode; the API ones have
         // no such notion (the same rule the detail meta table uses).
         if (!external && (session->provider == QLatin1String("claude-code") ||
@@ -7945,11 +8391,28 @@ void MainWindow::showAgentSession(int sessionId)
                                          ? kClaudeAutoModeLabel
                                          : kAgentAskModeLabel)
                               .toString();
+            // Accounts are a CLI notion too: each is its own config root, and
+            // the login that is signed in there is what the run spends. A live
+            // run knows the account it launched under; a stored one is read off
+            // the conversation its transcript carries (showAgentSession runs
+            // again once those events finish loading, so an unloaded transcript
+            // is not stuck with the fallback). Nothing to read means the
+            // session resumes as the selected account — the same rule
+            // AgentResumeIdentity.h applies to an unstamped conversation.
+            QString accountId = m_streamAccountId.value(sessionId);
+            if (accountId.isEmpty())
+                accountId = forkmesh::agents::resumeConversationAccountId(
+                    m_streamEvents.value(sessionId),
+                    agentIsCodexProvider(session->provider));
+            ctxAccount = agentAccountLabelFor(session->provider, accountId);
+            if (ctxAccount.isEmpty())
+                ctxAccount = activeAgentAccount(session->provider).label.trimmed();
         }
         if (!external)
             ctxStrength = session->strength.isEmpty() ? composerAgentStrength()
                                                       : session->strength;
-        m_agentTranscript->setSessionContext(session->branchName, ctxMode, ctxStrength);
+        m_agentTranscript->setSessionContext(session->branchName, ctxMode,
+                                             ctxStrength, ctxAccount);
         // Render a Codex run in Codex's own idiom ("Ran …", "Explored", exit=)
         // rather than Claude Code's tool cards (adhoc #34). Set before the
         // rebuild below so the rows are built in the right dialect.
@@ -7995,13 +8458,11 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLog->setPlainText(QString());
         m_agentLogSession = -1; // set out-of-band; the async set re-renders
     }
-    // The Transcript/Raw switch lives in the header with the session actions
+    // The Transcript/Raw toggle lives in the header with the session actions
     // (adhoc #224) and comes and goes with the surface it acts on: a plain
     // log/terminal session has no transcript to switch to.
-    if (m_transcriptModeButton)
-        m_transcriptModeButton->setVisible(transcript);
-    if (m_terminalModeButton)
-        m_terminalModeButton->setVisible(transcript);
+    if (m_agentOutputModeButton)
+        m_agentOutputModeButton->setVisible(transcript);
     // The "Files changed" tab only applies to local transcript sessions (external
     // sessions have no worktree/diff here). Hide it otherwise and fall back to the
     // Agent tab so the user never lands on an empty tab.
@@ -8025,10 +8486,9 @@ void MainWindow::showAgentSession(int sessionId)
         const bool termLive = sessionId == m_terminalSessionId && m_agentTerminal &&
                               m_agentTerminal->isRunning();
         if (transcript) {
-            const bool raw = m_terminalModeButton && m_terminalModeButton->isChecked();
             m_agentOutputStack->setCurrentWidget(
-                raw ? static_cast<QWidget *>(m_agentLog)
-                    : static_cast<QWidget *>(m_agentTranscript));
+                m_agentRawOutputMode ? static_cast<QWidget *>(m_agentLog)
+                                     : static_cast<QWidget *>(m_agentTranscript));
         } else if (termLive) {
             m_agentOutputStack->setCurrentWidget(m_agentTerminal);
         } else {
@@ -8036,6 +8496,34 @@ void MainWindow::showAgentSession(int sessionId)
         }
     }
     updateAgentActionState();
+}
+
+// The reverse of applyComposerSelectionToAgentSession() above: land the
+// composer's agent/model/mode/speed pickers on what this session last ran,
+// rather than leaving them wherever they were left from some other session or
+// launch (adhoc #1625). Purely a UI default — nothing here touches the
+// session record itself, and the user can still change any of these before
+// sending a follow-up.
+void MainWindow::syncQuickAddControlsToAgentSession(const AgentSession &session)
+{
+    if (m_quickAddAgentProvider && !session.provider.isEmpty()) {
+        const int providerIndex = m_quickAddAgentProvider->findData(session.provider);
+        if (providerIndex >= 0)
+            m_quickAddAgentProvider->setCurrentIndex(providerIndex);
+    }
+    if (m_quickAddClaudeModel && !session.model.isEmpty())
+        selectModelComboValue(m_quickAddClaudeModel, session.model);
+    if (m_quickAddModeSelector && !session.mode.isEmpty()) {
+        const int modeIndex = m_quickAddModeSelector->findText(session.mode);
+        if (modeIndex >= 0)
+            m_quickAddModeSelector->setCurrentIndex(modeIndex);
+    }
+    if (!session.strength.trimmed().isEmpty()) {
+        QSettings().setValue(kClaudeEffortSetting,
+                             session.strength.trimmed().toLower());
+        refreshQuickAddSpeedSelector();
+    }
+    refreshQuickAddAgentModelSelector();
 }
 
 void MainWindow::setAgentLogText(int sessionId, const QString &text)
@@ -8157,7 +8645,7 @@ void MainWindow::applyAgentNetworkPanel(const AgentLogScan &scan, const QString 
             .arg(bar(outTokens, "#d2a8ff"), fmtTokens(outTokens)));
 }
 
-AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) const
+AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider)
 {
     AgentRunner::Config config;
     config.contextWindow =
@@ -8210,6 +8698,49 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         config.command = codexCommandSetting();
         config.model = codexChatGptModelId(
             QSettings().value(kCodexModelSetting).toString().trimmed());
+    } else if (agentIsCloudflareAiProvider(provider)) {
+        // Cloudflare AI (adhoc #1634): bundled Python script driving the
+        // relay's Workers AI tool-use endpoint. The desktop has no session
+        // token (auth is key-based), so the run carries a per-run Ed25519
+        // ticket the relay verifies on every turn: the account signature over
+        // "forkmesh-ai-agent-v1\n<account>\n<ts>", time-boxed server-side.
+        // It rides Config::apiKey so AgentRunner injects it as an env var and
+        // redacts it from the session log like any other credential.
+        config.command = defaultCloudflareAiCommand();
+        if (forkmesh::vm::active()) {
+            QString stagedScript = cloudflareAgentScriptPath(
+                forkmesh::vm::worktreeRoot() + QStringLiteral("/runtime"));
+            stagedScript.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+            config.command =
+                QStringLiteral("python3 '%1' {promptFile}").arg(stagedScript);
+        }
+        config.model =
+            QSettings().value(kCloudflareAiModelSetting).toString().trimmed();
+        if (config.model.isEmpty())
+            config.model = cloudflareAiFallbackModels().first().first;
+        config.apiKeyName = QStringLiteral("FORKMESH_AI_AGENT_AUTH");
+        const QString signer = accountOwner().trimmed().toLower();
+        if (!signer.isEmpty() && hasOwnerSigningCapability(signer) &&
+            (m_profileIdentity.isValid() || m_profileIdentity.load())) {
+            const QString ts =
+                QString::number(QDateTime::currentMSecsSinceEpoch());
+            const QByteArray canonical =
+                (QStringLiteral("forkmesh-ai-agent-v1\n") + signer +
+                 QStringLiteral("\n") + ts)
+                    .toUtf8();
+            QUrl url = catalogApiUrl();
+            url.setPath(QStringLiteral("/api/ai/agent"));
+            url.setQuery(QString());
+            const QJsonObject ticket{
+                {QStringLiteral("url"), url.toString()},
+                {QStringLiteral("node"), signer},
+                {QStringLiteral("ts"), ts},
+                {QStringLiteral("sig"), m_profileIdentity.signData(canonical)}};
+            config.apiKey = QString::fromUtf8(
+                QJsonDocument(ticket).toJson(QJsonDocument::Compact));
+        }
+        // An empty ticket (signed out, no key) still launches: the script
+        // reports the actionable "sign in" message into the session log.
     } else {
         // OpenAI API: drive the Codex CLI with the saved OpenAI key in an isolated
         // home so it cannot accidentally use the user's logged-in Codex account.
@@ -8217,7 +8748,8 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         config.command = codexCommandSetting();
         config.apiKeyName = QStringLiteral("CODEX_API_KEY");
         config.apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();
-        config.model = QSettings().value(kCodexModelSetting).toString().trimmed();
+        config.model = codexChatGptModelId(
+            QSettings().value(kCodexModelSetting).toString());
         config.preferApiKeyAuth = true;
         config.isolatedHome =
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
@@ -8241,73 +8773,12 @@ void MainWindow::assignIssueToAgent(const QString &provider, const QString &mode
     startAgentForIssue(*issue, provider, createPr, /*quiet=*/false, model);
 }
 
-// Short branch slug from a session title, in the spirit of the SCM tab's
-// auto commit message: keep only the title's significant words and cap the
-// result at a few of them, so "occasionally the codex sessions bleed into
-// each other" names the branch "codex-sessions-bleed" rather than a 48-char
-// transliteration of the whole sentence.
+// Short branch slug from a session title, in the spirit of the SCM tab's auto
+// commit message. Shared with the worktree directory name (AgentWorktree.h) so
+// a run's branch and the tree it is checked out in always read the same.
 static QString agentBranchSlug(const QString &title, const QString &fallback)
 {
-    // Filler that makes a poor branch name; mirrors the commit drafter's
-    // generic-name filter, but for prose.
-    static const QSet<QString> kFiller = {
-        QStringLiteral("a"),     QStringLiteral("an"),    QStringLiteral("and"),
-        QStringLiteral("are"),   QStringLiteral("as"),    QStringLiteral("at"),
-        QStringLiteral("be"),    QStringLiteral("but"),   QStringLiteral("can"),
-        QStringLiteral("could"), QStringLiteral("do"),    QStringLiteral("dont"),
-        QStringLiteral("each"),  QStringLiteral("for"),   QStringLiteral("from"),
-        QStringLiteral("get"),   QStringLiteral("has"),   QStringLiteral("have"),
-        QStringLiteral("i"),     QStringLiteral("id"),    QStringLiteral("if"),
-        QStringLiteral("in"),    QStringLiteral("into"),  QStringLiteral("is"),
-        QStringLiteral("it"),    QStringLiteral("its"),   QStringLiteral("just"),
-        QStringLiteral("let"),   QStringLiteral("lets"),  QStringLiteral("like"),
-        QStringLiteral("make"),  QStringLiteral("my"),    QStringLiteral("of"),
-        QStringLiteral("on"),    QStringLiteral("or"),    QStringLiteral("other"),
-        QStringLiteral("our"),   QStringLiteral("out"),   QStringLiteral("please"),
-        QStringLiteral("should"),QStringLiteral("so"),    QStringLiteral("some"),
-        QStringLiteral("that"),  QStringLiteral("the"),   QStringLiteral("their"),
-        QStringLiteral("them"),  QStringLiteral("then"),  QStringLiteral("there"),
-        QStringLiteral("these"), QStringLiteral("they"),  QStringLiteral("this"),
-        QStringLiteral("to"),    QStringLiteral("too"),   QStringLiteral("up"),
-        QStringLiteral("use"),   QStringLiteral("we"),    QStringLiteral("when"),
-        QStringLiteral("with"),  QStringLiteral("would"), QStringLiteral("you"),
-        QStringLiteral("your")};
-    QStringList words{QString()};
-    for (QChar ch : title.toLower()) {
-        const char a = ch.toLatin1();
-        if ((a >= 'a' && a <= 'z') || (a >= '0' && a <= '9'))
-            words.last().append(ch);
-        else if (!words.last().isEmpty())
-            words.append(QString());
-    }
-    QString slug;
-    int kept = 0;
-    for (const QString &word : words) {
-        if (word.isEmpty() || kFiller.contains(word))
-            continue;
-        if (!slug.isEmpty() &&
-            (kept >= 4 || slug.size() + 1 + word.size() > 30))
-            break;
-        if (!slug.isEmpty())
-            slug.append(QLatin1Char('-'));
-        slug.append(word);
-        ++kept;
-    }
-    if (slug.isEmpty()) {
-        // All filler (or non-latin): fall back to the first raw words.
-        for (const QString &word : words) {
-            if (word.isEmpty())
-                continue;
-            if (!slug.isEmpty() &&
-                (kept >= 4 || slug.size() + 1 + word.size() > 30))
-                break;
-            if (!slug.isEmpty())
-                slug.append(QLatin1Char('-'));
-            slug.append(word);
-            ++kept;
-        }
-    }
-    return slug.isEmpty() ? fallback : slug.left(30);
+    return forkmesh::agentwt::titleSlug(title, fallback);
 }
 
 int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
@@ -8359,7 +8830,10 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.orgTask = true;
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
-    session.model = model.trimmed(); // empty leaves the provider's own default
+    session.model = (provider == QLatin1String("claude-code") ||
+                     agentIsCodexProvider(provider))
+                        ? codexChatGptModelId(model)
+                        : model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
         session.mode = m_quickAddModeSelector->currentText();
@@ -8692,7 +9166,9 @@ void MainWindow::updateIssueLooperButton()
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr,
                                        const QString &model,
-                                       const QString &titleOverride, bool genie)
+                                       const QString &titleOverride, bool genie,
+                                       bool switchToTab,
+                                       const QString &orgTaskId)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -8719,15 +9195,22 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     // by itself (adhoc #12).
     session.yolo = false;
     // Every prompt opens an organization task (adhoc #18, no longer optional
-    // since adhoc #120).
+    // since adhoc #120) — unless the caller started from a task that already
+    // exists, in which case the run is bound to that one. openOrgTaskForSession
+    // below leaves a session that already names a task alone, so the board gets
+    // this run's live status and completion note instead of a duplicate row.
     session.orgTask = true;
+    session.orgTaskId = orgTaskId.trimmed();
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
     // Genie (adhoc #38): stamped at launch, so a resumed run still reads as a
     // genie even though the "task" button that started it is long since
     // forgotten.
     session.genie = genie;
-    session.model = model.trimmed(); // empty leaves the provider's own default
+    session.model = (provider == QLatin1String("claude-code") ||
+                     agentIsCodexProvider(provider))
+                        ? codexChatGptModelId(model)
+                        : model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
         session.mode = m_quickAddModeSelector->currentText();
@@ -8766,7 +9249,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     if (runningAgentCount() >= maxRunningAgents()) {
         m_agentQueue.append(session.id);
         reloadAgents();
-        switchToAgentsTab(session.id);
+        if (switchToTab)
+            switchToAgentsTab(session.id);
         flashMessage(QStringLiteral("Queued \xE2\x80\x94 %1 agents are already "
                                     "running (limit set in Settings).")
                          .arg(maxRunningAgents()));
@@ -8776,7 +9260,7 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     if (provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) {
         // Both CLI-backed agents render through their structured protocols; the
         // typed prompt is their task verbatim.
-        startCliTranscript(session, Issue(), repo.localPath, task);
+        startCliTranscript(session, Issue(), repo.localPath, task, switchToTab);
     } else {
         // API-key agents run headlessly through a runner. There's no issue to
         // anchor to, so the task rides through the config as an override prompt.
@@ -8793,7 +9277,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         markAgentLimitWindow(provider);
         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
         reloadAgents();
-        switchToAgentsTab(session.id);
+        if (switchToTab)
+            switchToAgentsTab(session.id);
     }
     return session.id;
 }
@@ -8825,7 +9310,8 @@ void MainWindow::startAgentFromComposer()
         provider == QLatin1String("claude-code")
             ? QSettings().value(kClaudeCodeModelSetting).toString()
             : (agentIsCodexProvider(provider)
-                   ? QSettings().value(kCodexModelSetting).toString()
+                   ? codexChatGptModelId(
+                       QSettings().value(kCodexModelSetting).toString())
                    : QString());
     if (startAdHocAgentForRepo(repoIndex, prompt, provider, /*createPr=*/true,
                                model) > 0)
@@ -8840,9 +9326,42 @@ QString MainWindow::saveNewAgentPromptImage(const QImage &image)
     return AgentPromptImages::save(image);
 }
 
+// The user-driven route into continueAgentSession: the detail page's Continue
+// button and the composer's "add" with nothing typed. continueAgentSession() is
+// also a background path (a website-queued resume, "Start all", the restart
+// recovery) so it returns quietly on the states it will not act on — which from
+// this side is exactly what a dead button looks like. Name the reason here,
+// where a person is waiting for one.
 void MainWindow::continueSelectedAgentSession()
 {
-    continueAgentSession(m_selectedAgentSessionId);
+    const int sid = m_selectedAgentSessionId;
+    if (sid <= 0 || !findAgentSession(sid)) {
+        logSystem(QStringLiteral(
+            "No agent open above to continue \xE2\x80\x94 open one first."));
+        return;
+    }
+    if (isExternalSession(sid)) {
+        logSystem(QStringLiteral(
+            "This session belongs to another process, so ForkMesh can only "
+            "watch it \xE2\x80\x94 start a new agent instead."));
+        return;
+    }
+    discardWedgedAgentTransport(sid);
+    if (agentSessionHasLiveTransport(sid)) {
+        flashMessage(QStringLiteral(
+            "This agent is already running \xE2\x80\x94 type a message and it goes "
+            "straight to it."));
+        return;
+    }
+    if (const AgentSession *session = findAgentSession(sid);
+        session && session->status == AgentStatus::Queued &&
+        m_agentQueue.contains(sid)) {
+        scheduleAgentQueuePump();
+        flashMessage(QStringLiteral(
+            "This agent is queued and starts as soon as a run slot frees up."));
+        return;
+    }
+    continueAgentSession(sid);
 }
 
 // Same as continueSelectedAgentSession, but for an arbitrary session id
@@ -8864,20 +9383,31 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
                                     "cannot be started."));
         return;
     }
-    // Do not start a second copy of a genuinely live session.  The persisted
-    // status alone is not a transport liveness signal: after a Codex app-server
-    // window exits or disconnects, a session can still read Running even though
-    // it no longer has a process to receive a prompt.  Treat that stale state as
-    // resumable so Continue and a follow-up prompt reconnect it instead of
-    // silently leaving the message in m_pendingSteerMessage.
-    ClaudeStreamSession *claude = m_streamSessions.value(session->id);
-    CodexAppServerSession *codex = m_codexStreams.value(session->id);
-    const bool liveTransport =
-        (claude && claude->running()) || (codex && codex->running());
-    if (session->status == AgentStatus::Queued || liveTransport ||
-        runnerForSession(session->id))
+    // Do not start a second copy of a genuinely live session.  A stale Running
+    // status with no process behind it stays resumable, so Continue and a
+    // follow-up prompt reconnect it instead of silently leaving the message in
+    // m_pendingSteerMessage — see agentSessionHasLiveTransport().
+    if (agentSessionHasLiveTransport(session->id))
         return;
+    // Queued means "waiting for a run slot", and processAgentQueue() will get to
+    // it — but only while the queue still holds it. A Queued status the queue has
+    // lost (the app was restarted, or a pass dropped it) is another stale state
+    // with nothing behind it: leaving it alone strands the session, and strands
+    // the follow-up prompt the caller just parked in m_pendingSteerMessage. Fall
+    // through and re-queue instead.
+    if (session->status == AgentStatus::Queued && m_agentQueue.contains(session->id)) {
+        // Still make sure something is coming for it. The pump is driven by
+        // status/reload hooks, and a pass that was skipped while the fleet was at
+        // its cap leaves a genuinely queued session sitting there — from the
+        // composer that is indistinguishable from add doing nothing (adhoc #1618).
+        scheduleAgentQueuePump();
+        return;
+    }
 
+    // A person asking for this run again gets the full retry budget. Without the
+    // reset, a session that had already spent its attempts on an earlier failure
+    // could be failed on the very first exit of the run the user just asked for.
+    m_agentRelaunchAttempts.remove(sessionId);
     session->status = AgentStatus::Queued;
     session->lastError.clear();
     session->finishedAtMs = 0;
@@ -8930,7 +9460,7 @@ void MainWindow::fixAgentConflictsWithAgent(int sessionId)
                        "Make sure the build and tests still pass, then commit.")
             .arg(base);
     const int sid = s->id;
-    m_pendingSteerMessage.insert(sid, prompt);
+    queueAgentSteerMessage(sid, prompt);
     if (s->provider == QLatin1String("claude-code") ||
         agentIsCodexProvider(s->provider))
         applyTranscriptEvent(
@@ -9006,19 +9536,34 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree,
         const RepositoryRecord repo = m_repositories.at(repoIndex);
         IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
                               m_userName);
-        if (!issueStore.canWrite()) {
-            flashMessage("Only the host can delete an agent session from the issue.",
-                         true);
-            return false;
+        // An issue that no longer exists has no agent event to clear. Treating a
+        // stale reference as a hard failure stranded the session — and, worse,
+        // silently aborted the whole merge-and-cleanup that was deleting it
+        // (worktree and branch survived with no visible reason). Skip missing
+        // issues exactly like closeIssuesForMerge does.
+        bool issueExists = false;
+        for (const Issue &issue : issueStore.loadAll()) {
+            if (issue.number == snapshot.issueNumber) {
+                issueExists = true;
+                break;
+            }
         }
-        QString error;
-        if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
-                                    AgentStatus::Cleared, &error)) {
-            flashMessage(error.isEmpty()
-                             ? QStringLiteral("Could not clear the issue agent.")
-                             : error,
-                         true);
-            return false;
+        if (issueExists) {
+            if (!issueStore.canWrite()) {
+                flashMessage(
+                    "Only the host can delete an agent session from the issue.",
+                    true);
+                return false;
+            }
+            QString error;
+            if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
+                                        AgentStatus::Cleared, &error)) {
+                flashMessage(error.isEmpty()
+                                 ? QStringLiteral("Could not clear the issue agent.")
+                                 : error,
+                             true);
+                return false;
+            }
         }
     }
 
@@ -9126,10 +9671,13 @@ void MainWindow::purgeSessionState(int sessionId)
     m_streamWorktree.remove(sessionId);
     m_streamPending.remove(sessionId);
     m_streamSessionInfo.remove(sessionId);
+    m_streamAccountId.remove(sessionId);
     m_sessionWorkdirCache.remove(sessionId);
     m_pendingSteerMessage.remove(sessionId);
+    m_agentRelaunchAttempts.remove(sessionId);
     m_sessionTokens.remove(sessionId);
     m_lastAssistantText.remove(sessionId);
+    m_agentDoneNotified.remove(sessionId);
     m_scannerStates.remove(sessionId);
     m_agentDiffStats.remove(sessionId);
     m_agentDiffSig.remove(sessionId);
@@ -9306,16 +9854,10 @@ QStringList MainWindow::runningAgentBlockers() const
     // session silent well past the threshold is stuck, not busy. A freshly
     // launched one is covered by startedAtMs, and anything yanked here is
     // re-queued and resumed by initAgents, so no real work is abandoned.
-    constexpr qint64 kBlockerStaleMs = 90'000;
     auto recentlyLive = [this](int id) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        qint64 liveAt = m_scannerStates.value(id).lastActivityMs;
-        for (const AgentSession &session : m_agentSessions)
-            if (session.id == id) {
-                liveAt = qMax(liveAt, session.startedAtMs);
-                break;
-            }
-        return liveAt > 0 && (now - liveAt) < kBlockerStaleMs;
+        const qint64 liveAt = agentSessionLastLiveMs(id);
+        return liveAt > 0 && (now - liveAt) < kAgentSilentStaleMs;
     };
     QStringList blockers;
     for (AgentRunner *runner : m_agentRunners)
@@ -9470,6 +10012,50 @@ void MainWindow::refreshAgentQueueControls()
         m_maxRunningAgentsEdit->setText(QString::number(limit));
 }
 
+// Tell the user what just happened to their session, in the two places they
+// might be reading: the transcript on screen and the session's own run log
+// (which is also what the website shows). The transcript half is skipped when
+// this session's events are not in memory — inserting into m_streamEvents there
+// would stand in for the persisted history the next load is supposed to bring
+// back — and nothing is lost by that, since a transcript nobody has opened is
+// not being read either. Added for adhoc #1618.
+void MainWindow::noteAgentSessionNotice(int sessionId, const QString &text,
+                                        bool error)
+{
+    if (text.trimmed().isEmpty())
+        return;
+    if (m_streamEvents.contains(sessionId))
+        applyTranscriptEvent(
+            sessionId,
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_notice")},
+                        {QStringLiteral("level"), error ? QStringLiteral("error")
+                                                        : QStringLiteral("warning")},
+                        {QStringLiteral("text"), text}});
+    if (m_agentStore)
+        if (const AgentSession *session = findAgentSession(sessionId))
+            m_agentStore->appendLog(
+                *session, QStringLiteral("\n==> %1\n").arg(text));
+}
+
+// A queued session that cannot be started at all. Stamping the reason on the
+// record alone left it wherever the user was not looking: they pressed add, the
+// prompt they typed went into the transcript, and the session dropped straight
+// back to Failed with the explanation available only as a tooltip in the list.
+// Put it where the question was asked (adhoc #1618).
+void MainWindow::failQueuedAgentSession(AgentSession &session,
+                                        const QString &reason)
+{
+    const int sid = session.id;
+    session.status = AgentStatus::Failed;
+    session.lastError = reason;
+    session.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+    if (m_agentStore)
+        m_agentStore->saveSession(session);
+    noteAgentSessionNotice(
+        sid, QStringLiteral("This session could not be started: %1").arg(reason),
+        /*error=*/true);
+}
+
 void MainWindow::processAgentQueue()
 {
     if (!m_agentStore)
@@ -9496,9 +10082,7 @@ void MainWindow::processAgentQueue()
             continue;
         const int repoIndex = repoIndexFor(session->owner, session->name);
         if (repoIndex < 0) {
-            session->status = AgentStatus::Failed;
-            session->lastError = QStringLiteral("Repository not found.");
-            m_agentStore->saveSession(*session);
+            failQueuedAgentSession(*session, QStringLiteral("Repository not found."));
             changed = true;
             continue;
         }
@@ -9509,9 +10093,8 @@ void MainWindow::processAgentQueue()
         // are all built off this; the agent never edits it in place.
         const QString agentGitDir = repoAgentGitDir(repo);
         if (agentGitDir.isEmpty()) {
-            session->status = AgentStatus::Failed;
-            session->lastError = QStringLiteral("No local checkout is configured.");
-            m_agentStore->saveSession(*session);
+            failQueuedAgentSession(
+                *session, QStringLiteral("No local checkout is configured."));
             changed = true;
             continue;
         }
@@ -9532,9 +10115,8 @@ void MainWindow::processAgentQueue()
                     break;
                 }
             if (!found) {
-                session->status = AgentStatus::Failed;
-                session->lastError = QStringLiteral("Issue not found.");
-                m_agentStore->saveSession(*session);
+                failQueuedAgentSession(*session,
+                                       QStringLiteral("Issue not found."));
                 changed = true;
                 continue;
             }
@@ -10080,12 +10662,21 @@ QString MainWindow::issueContextPrompt(const Issue &issue) const
 
 void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                     const QString &repoPath,
-                                    const QString &customPrompt)
+                                    const QString &customPrompt,
+                                    bool switchToTab)
 {
     if (!m_agentStore)
         return;
     const int sid = session.id;
     const bool codex = agentIsCodexProvider(session.provider);
+    // The account this run goes out under. Captured once here — rather than read
+    // again from the account menu when the asynchronous worktree checkout lands,
+    // and again as each event arrives — so the config root the CLI is launched
+    // with and the account its conversation is stamped with are always the same
+    // one, however the menu is switched while the run is in flight.
+    const AgentAccountProfile runAccount = activeAgentAccount(session.provider);
+    const QStringList runAccountEnv = activeAgentAccountEnv(session.provider);
+    m_streamAccountId[sid] = runAccount.id;
 
     auto gitOut = [](const QString &dir, const QStringList &args) -> QString {
         QProcess git;
@@ -10166,9 +10757,56 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // full-prompt replay when there's no recoverable session id (e.g. a legacy
     // transcript or a fresh run), so those still resume the way they used to.
     const QString steer = m_pendingSteerMessage.take(sid);
+    // Held until the CLI announces itself: a launch that dies on the way there
+    // never delivered this, and the automatic retry must carry it rather than
+    // resume with a bare "Continue where you left off." (adhoc #1618).
+    if (steer.isEmpty())
+        m_inFlightSteerMessage.remove(sid);
+    else
+        m_inFlightSteerMessage.insert(sid, steer);
     const QString resumeId =
         resuming ? (codex ? lastCodexThreadId(sid) : lastClaudeSessionId(sid))
                  : QString();
+    // Nothing this run can resume. There are two ways to get here with real work
+    // already on the branch, and both replay the original task with a note that
+    // it is under way — a bare "Continue where you left off." would be no better
+    // than silence, since whoever takes over has never seen the task.
+    const QList<QJsonObject> events = m_streamEvents.value(sid);
+    // First: the same CLI, but the turns so far belong to one of its *other*
+    // accounts — usually because the account that was running hit its usage limit
+    // and the user picked another one before hitting add. Each account is its own
+    // config root (CLAUDE_CONFIG_DIR / CODEX_HOME) and each CLI keeps its
+    // conversations inside it, so that history simply isn't there for this login
+    // and `--resume` on it fails the turn outright. The branch is still there and
+    // still the point, so hand the work over rather than dropping it.
+    QString handoffAccount;
+    if (resuming && resumeId.isEmpty()) {
+        const QString ownerId =
+            forkmesh::agents::resumeConversationAccountId(events, codex);
+        if (!ownerId.isEmpty() && ownerId != runAccount.id) {
+            const QString label =
+                agentAccountLabelFor(session.provider, ownerId);
+            handoffAccount =
+                label.isEmpty() ? QStringLiteral("another account") : label;
+        }
+    }
+    // Second: continuing under the *other* CLI (the composer's agent dropdown
+    // picks who takes the next turn, adhoc #76 — again, typically because the one
+    // that was running hit its usage limit). The counterpart's conversation id
+    // belongs to a different program; handing it over anyway is what failed the
+    // turn outright. Only asked when this CLI has no unreachable history of its
+    // own: that is the failure the resume just hit, and the more useful of the
+    // two to name. The lookups here run unfiltered on purpose — what matters is
+    // whether the other CLI ran at all, not which of its accounts is selected.
+    const QString handoffFrom =
+        resuming && resumeId.isEmpty() && handoffAccount.isEmpty()
+            ? (codex ? (forkmesh::agents::claudeResumeSessionId(events).isEmpty()
+                            ? QString()
+                            : QStringLiteral("Claude Code"))
+                     : (forkmesh::agents::codexResumeThreadId(events).isEmpty()
+                            ? QString()
+                            : QStringLiteral("Codex")))
+            : QString();
     if (!resumeId.isEmpty()) {
         if (steer.isEmpty()) {
             prompt = QStringLiteral("Continue where you left off.");
@@ -10178,19 +10816,76 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         } else {
             prompt = steer; // already shown in the transcript by the composer
         }
-    } else if (!steer.isEmpty()) {
-        // No context to resume — fold the steer into the replayed prompt as before
-        // (this is the original always-on-composer restart behaviour, adhoc #177).
-        prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
+    } else {
+        if (!handoffFrom.isEmpty()) {
+            prompt = QStringLiteral(
+                         "You are taking over this session from %1, whose "
+                         "conversation cannot be handed to a different agent. "
+                         "Work is already in progress on the current branch — "
+                         "read what is there before changing anything, then "
+                         "carry on from that point.\n\nOriginal task:\n%2")
+                         .arg(handoffFrom, originalTaskPrompt);
+            applyTranscriptEvent(
+                sid,
+                QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("_local_notice")},
+                    {QStringLiteral("text"),
+                     QStringLiteral(
+                         "Continuing with %1. A %2 conversation can't be resumed "
+                         "by another agent, so the original task was re-sent with "
+                         "the branch as its context.")
+                         .arg(codex ? QStringLiteral("Codex")
+                                    : QStringLiteral("Claude Code"),
+                              handoffFrom)}});
+        } else if (!handoffAccount.isEmpty()) {
+            prompt = QStringLiteral(
+                         "You are taking over this session from a different %1 "
+                         "account, whose conversation this login cannot open. "
+                         "Work is already in progress on the current branch — "
+                         "read what is there before changing anything, then "
+                         "carry on from that point.\n\nOriginal task:\n%2")
+                         .arg(codex ? QStringLiteral("Codex")
+                                    : QStringLiteral("Claude Code"),
+                              originalTaskPrompt);
+            applyTranscriptEvent(
+                sid,
+                QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("_local_notice")},
+                    {QStringLiteral("text"),
+                     QStringLiteral(
+                         "Continuing as %1. The earlier turns belong to %2, and "
+                         "one account can't open another's conversation, so the "
+                         "original task was re-sent with the branch as its "
+                         "context.")
+                         .arg(runAccount.label.trimmed().isEmpty()
+                                  ? QStringLiteral("the selected account")
+                                  : runAccount.label.trimmed(),
+                              handoffAccount)}});
+        }
+        if (!steer.isEmpty()) {
+            // No context to resume — fold the steer into the replayed prompt as
+            // before (the original always-on-composer restart behaviour, adhoc
+            // #177).
+            prompt +=
+                QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
+        }
     }
-    QString codexResumeFallbackPrompt;
-    if (codex && !resumeId.isEmpty()) {
-        codexResumeFallbackPrompt =
+    // Both CLIs keep their conversations in their own config root and prune them,
+    // so a session picked back up days later can have nothing left to resume.
+    // Neither is allowed to fail on that: the branch still holds the work and is
+    // still the point, so hand the run a full-context turn to fall back on. This
+    // is what lets "add" restart *any* past session rather than only the ones
+    // whose conversation the CLI still happens to hold.
+    QString resumeFallbackPrompt;
+    if (!resumeId.isEmpty()) {
+        resumeFallbackPrompt =
             QStringLiteral(
-                "The previous Codex thread could not be resumed. Continue the "
+                "The previous %1 conversation could not be resumed. Continue the "
                 "same work from the current branch and repository state.\n\n"
-                "Original task:\n%1\n\nLatest user instruction:\n%2")
-                .arg(originalTaskPrompt,
+                "Original task:\n%2\n\nLatest user instruction:\n%3")
+                .arg(codex ? QStringLiteral("Codex thread")
+                           : QStringLiteral("Claude Code session"),
+                     originalTaskPrompt,
                      steer.isEmpty() ? QStringLiteral("Continue where you left off.")
                                      : steer);
     }
@@ -10275,37 +10970,13 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                     as->lastError.clear();
                     m_agentStore->saveSession(*as);
                     updateAgentStatusCell(sid);
+                    // Completed here rather than in the drain poll, so this is
+                    // the path that owes the celebration (adhoc #1630).
+                    notifyAgentDone(sid);
                 }
             } else if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
-                // Only re-queue a process that actually got somewhere (crash mid-turn);
-                // one that never produced a session id at all (bad install, expired
-                // login) would otherwise cycle Queued -> Running -> exit forever via
-                // processAgentQueue(), each pass reporting "Running" to
-                // anyAgentRunning() and leaving Rebuild & restart stuck on "Waiting
-                // for running actions to finish" with no real work in flight (adhoc
-                // #116). Codex already guarded this; extend the same check to Claude
-                // Code.
-                const bool launchFailed = codex ? lastCodexThreadId(sid).isEmpty()
-                                                 : lastClaudeSessionId(sid).isEmpty();
-                if (launchFailed) {
-                    as->status = AgentStatus::Failed;
-                    as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
-                    as->lastError =
-                        codex ? QStringLiteral("Codex app-server exited before "
-                                               "starting a thread (exit %1).")
-                                    .arg(exitCode)
-                              : QStringLiteral("Claude Code exited before starting "
-                                               "a session (exit %1).")
-                                    .arg(exitCode);
-                } else {
-                    as->status = AgentStatus::Queued;
-                    as->lastError.clear();
-                    if (!m_agentQueue.contains(sid))
-                        m_agentQueue.append(sid);
-                }
-                m_agentStore->saveSession(*as);
-                scheduleAgentSessionsPush(); // adhoc #182
+                applyCliExitWithoutResult(sid, codex, exitCode);
             }
         }
         // Pull requests are user-driven now (adhoc #2 follow-up: "I don't want
@@ -10369,8 +11040,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                         agentIsCodexProvider(
                             m_quickAddAgentProvider->currentData().toString())) {
                         mergeLiveCodexModels(m_quickAddClaudeModel, models);
-                        const QString selected =
-                            selectedModelComboValue(m_quickAddClaudeModel);
+                        const QString selected = codexChatGptModelId(
+                            selectedModelComboValue(m_quickAddClaudeModel));
                         QSettings().setValue(kCodexModelSetting, selected);
                         if (m_codexModelEdit)
                             m_codexModelEdit->setText(selected);
@@ -10406,6 +11077,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     const QString branchName = session.branchName;
     const QString baseRef = session.baseRef;
     const int issueNumber = session.issueNumber;
+    const QString worktreeName =
+        forkmesh::agentwt::dirName(sid, session.issueTitle);
     QString selectedModel = session.model;
     if (selectedModel.isEmpty())
         selectedModel = QSettings()
@@ -10449,18 +11122,18 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Skip the jump when the user is already viewing this session (e.g. they
     // pressed Enter in the composer on the Agents tab): switchToAgentsTab fires
     // extra reloadAgents() calls that can reset the table selection to row 0 and
-    // navigate away from the session the user was working with.
+    // navigate away from the session the user was working with. switchToTab is
+    // false for a quick-add bar launch (adhoc #1573): the prompt bar is docked
+    // on every page, so starting a run from it must not yank the user onto the
+    // Agents tab away from whatever they were looking at.
     const bool startupQuiet =
         m_startupQuietAgentSessions.remove(sid) || m_agentQuietResume;
     if (!startupQuiet) {
         m_terminalSessionId = sid;
-        if (m_selectedAgentSessionId != sid)
+        if (switchToTab && m_selectedAgentSessionId != sid)
             switchToAgentsTab(sid);
         showAgentSession(sid); // renders the buffered turn + selects the surface
-        if (m_transcriptModeButton)
-            m_transcriptModeButton->setChecked(true);
-        if (m_terminalModeButton)
-            m_terminalModeButton->setChecked(false);
+        setAgentRawOutputMode(false); // a fresh run opens on its transcript
     }
     reloadAgents();
 
@@ -10482,9 +11155,10 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
-    auto launch = [this, sid, prompt, codexResumeFallbackPrompt, autoMode,
+    auto launch = [this, sid, prompt, resumeFallbackPrompt, autoMode,
                    branchName, resumeId, selectedModel, routeTask, codex,
-                   sessionMode, sessionStrength](const QString &workdir) {
+                   sessionMode, sessionStrength,
+                   runAccountEnv](const QString &workdir) {
         if (codex) {
             CodexAppServerSession *live = m_codexStreams.value(sid);
             if (!live)
@@ -10516,7 +11190,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                  QStringLiteral("CODEX_API_KEY"),
                                  QStringLiteral("OPENAI_ACCESS_TOKEN"),
                                  QStringLiteral("OPENAI_ADMIN_KEY")};
-            codexEnv << activeAgentAccountEnv(QStringLiteral("codex"));
+            codexEnv << runAccountEnv;
             // Jail (adhoc #236): private scratch env + memory cap for this run.
             int jailMb = 0;
             if (QSettings().value(kAgentJailSetting, false).toBool()) {
@@ -10529,7 +11203,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 codexEnv << AgentJail::envEntries(jailDir);
             }
             live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
-                        effort, jailMb, codexResumeFallbackPrompt);
+                        effort, jailMb, resumeFallbackPrompt);
             return;
         }
 
@@ -10541,7 +11215,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             << QStringLiteral("ANTHROPIC_AUTH_TOKEN")
             << QStringLiteral("ANTHROPIC_ADMIN_KEY")
             << QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
-        env << activeAgentAccountEnv(QStringLiteral("claude-code"));
+        env << runAccountEnv;
         if (!forkmesh::vm::active()) {
             if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
                 if (bridge->start(workdir))
@@ -10557,8 +11231,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // runs the router (adhoc #91), which is asynchronous — so `begin`
         // re-checks that this stream is still the session's live one (the user
         // may have stopped or restarted it while the triage ran).
-        auto begin = [this, sid, live, workdir, env, prompt, autoMode,
-                      resumeId, sessionMode, sessionStrength](const QString &chosenModel) {
+        auto begin = [this, sid, live, workdir, env, prompt, autoMode, resumeId,
+                      resumeFallbackPrompt, sessionMode,
+                      sessionStrength](const QString &chosenModel) {
             if (m_streamSessions.value(sid) != live)
                 return;
             // Footer slash-actions menu (adhoc #116): effort and model-fallback
@@ -10596,7 +11271,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                  QStringLiteral("claude-code"), chosenModel,
                                  sessionMode, effort)));
             live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
-                        resumeId, chosenModel, effort, fallback, jailMb);
+                        resumeId, chosenModel, effort, fallback, jailMb,
+                        resumeFallbackPrompt);
         };
         if (selectedModel == kClaudeAutoModelId)
             resolveAutoClaudeModel(sid, routeTask, workdir, live, std::move(begin));
@@ -10642,14 +11318,25 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         failLaunch(forkmesh::vm::pathError(repoPath));
         return;
     }
+    // The run's worktree lives inside the project it is working on, at
+    // <checkout>/.worktrees/agent-<id>-<desc> (adhoc #1624) — see AgentWorktree.h
+    // for why, and for the bare-mirror case that still lands in the temp dir.
+    // Under KVM it has to stay on the host directory mounted into the jail.
     const QString wtRoot = forkmesh::vm::active()
                                ? forkmesh::vm::worktreeRoot()
-                               : QStandardPaths::writableLocation(
-                                     QStandardPaths::TempLocation) +
-                                     QStringLiteral("/forkmesh-worktrees");
-    QDir().mkpath(wtRoot);
-    const QString wtPath =
-        wtRoot + QStringLiteral("/issue-%1-s%2").arg(issueNumber).arg(sid);
+                               : forkmesh::agentwt::root(repoPath);
+    forkmesh::agentwt::ensureRoot(wtRoot);
+    const QString wtPath = QDir(wtRoot).filePath(worktreeName);
+    // Where a session started by an older build put its worktree. Only relevant
+    // on a resume, and handled below: the branch is checked out *there*, so an
+    // add at the new path would fail outright ("already used by worktree at …")
+    // and take any uncommitted work in the old tree down with the run.
+    const QString legacyPath =
+        (forkmesh::vm::active()
+             ? forkmesh::vm::worktreeRoot()
+             : QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+                   QStringLiteral("/forkmesh-worktrees")) +
+        QStringLiteral("/issue-%1-s%2").arg(issueNumber).arg(sid);
     // Recreate the agent's worktree, robustly. A finished session tears its worktree
     // down asynchronously, so on a continue that teardown may still be in flight:
     // prune AND force-remove any lingering registration at this path in the same
@@ -10660,16 +11347,19 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     //
     // On a resume the branch already holds the agent's committed work, so check it
     // out as-is to continue from where it left off; only a fresh run (no resume id)
-    // creates the branch from baseRef. Branch names and the temp path are sanitised
-    // to [a-z0-9/-] / a fixed tmp layout, so single-quoting is safe.
+    // creates the branch from baseRef. Branch names are sanitised to [a-z0-9/-],
+    // so single-quoting them is safe; the worktree path now begins with the
+    // project directory the user cloned into, which is not, so it goes through
+    // the quoter (adhoc #1624).
+    const QString quotedPath = forkmesh::agentwt::shellQuote(wtPath);
     const QString addStep =
         resumeId.isEmpty()
-            ? QStringLiteral("git worktree add -B '%1' '%2' '%3'")
-                  .arg(branchName, wtPath, baseRef)
-            : QStringLiteral("git worktree add '%1' '%2'").arg(wtPath, branchName);
+            ? QStringLiteral("git worktree add -B '%1' %2 '%3'")
+                  .arg(branchName, quotedPath, baseRef)
+            : QStringLiteral("git worktree add %1 '%2'").arg(quotedPath, branchName);
     const QString script =
-        QStringLiteral("git worktree prune; git worktree remove --force '%1' 2>/dev/null; %2")
-            .arg(wtPath, addStep);
+        QStringLiteral("git worktree prune; git worktree remove --force %1 2>/dev/null; %2")
+            .arg(quotedPath, addStep);
     // Chaining prune+remove+add above only serializes *within* this one script;
     // it does NOT serialize against the previous run's teardown thread, which may
     // still be mid-`git worktree remove`/`prune` on this same repo. When our add
@@ -10728,8 +11418,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // into oblivion. Reuse only a tree that really is this session's branch: the
     // linked worktree's own HEAD names it without shelling git. Anything else (a
     // half-torn-down folder, a stale tree) goes through the recreate script.
-    auto worktreeOnSessionBranch = [&wtPath, &branchName]() -> bool {
-        QFile dotGit(wtPath + QStringLiteral("/.git"));
+    auto worktreeOnSessionBranch = [&branchName](const QString &path) -> bool {
+        QFile dotGit(path + QStringLiteral("/.git"));
         if (!dotGit.open(QIODevice::ReadOnly | QIODevice::Text))
             return false;
         QString gitDir = QString::fromUtf8(dotGit.readLine()).trimmed();
@@ -10737,7 +11427,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             return false;
         gitDir = gitDir.mid(7).trimmed();
         if (QDir::isRelativePath(gitDir))
-            gitDir = QDir(wtPath).absoluteFilePath(gitDir);
+            gitDir = QDir(path).absoluteFilePath(gitDir);
         QFile head(gitDir + QStringLiteral("/HEAD"));
         if (!head.open(QIODevice::ReadOnly | QIODevice::Text))
             return false;
@@ -10747,9 +11437,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     if (QThread *teardown = m_worktreeTeardown.value(sid);
         teardown && teardown->isRunning()) {
         connect(teardown, &QThread::finished, this, [runAdd] { (*runAdd)(3); });
-    } else if (worktreeOnSessionBranch()) {
+    } else if (worktreeOnSessionBranch(wtPath)) {
         m_streamWorktree[sid] = wtPath;
         launch(wtPath);
+    } else if (wtPath != legacyPath && worktreeOnSessionBranch(legacyPath)) {
+        // A run that started before agent worktrees moved into the project
+        // (adhoc #1624) carries on in the tree it already has, work in flight
+        // and all. It moves to the new layout on its next fresh run.
+        m_streamWorktree[sid] = legacyPath;
+        launch(legacyPath);
     } else {
         (*runAdd)(3);
     }
@@ -10946,6 +11642,83 @@ bool MainWindow::isStoppableAgentSession(int sessionId) const
            session->status == AgentStatus::Queued;
 }
 
+// The last sign of life from a session: the wall-clock of the last raw output it
+// streamed, falling back to its launch while nothing has streamed yet. 0 when
+// neither is known. Shared by every "is this really still working" check, so they
+// read the same signal (the fleet lights' live-output meter).
+qint64 MainWindow::agentSessionLastLiveMs(int sessionId) const
+{
+    qint64 liveAt = m_scannerStates.value(sessionId).lastActivityMs;
+    for (const AgentSession &session : std::as_const(m_agentSessions))
+        if (session.id == sessionId) {
+            liveAt = qMax(liveAt, session.startedAtMs);
+            break;
+        }
+    return liveAt;
+}
+
+// Is this session *actually* executing work right now? The stored status can't
+// answer that on its own — the family of adhoc #143/#157: a terminal `result`
+// event that never landed, a run killed along with the app, a resume that
+// produced no turn, or a completion poll still waiting on a background process
+// the agent left running all park a finished session on "Running". Gates that
+// trusted the status alone therefore told the user an agent was still working on
+// a task it had finished (adhoc #1537).
+//
+// Same rules as runningAgentBlockers(), scoped to one session: ForkMesh owns
+// something that is executing it, and it has produced output recently — a working
+// agent streams continuously, so a long silence means stuck or done, not busy.
+bool MainWindow::agentSessionWorkInFlight(int sessionId) const
+{
+    if (sessionId <= 0)
+        return false;
+    const AgentSession *session = nullptr;
+    for (const AgentSession &candidate : std::as_const(m_agentSessions))
+        if (candidate.id == sessionId) {
+            session = &candidate;
+            break;
+        }
+    // Landed work is finished by definition, whatever the status still reads.
+    if (session && session->merged)
+        return false;
+    // A session launched moments ago isn't in m_agentSessions until the next
+    // reloadAgents(); runningAgentBlockers() falls back to the same creation-time
+    // snapshot so it isn't invisible here either.
+    const QString status = session ? session->status
+                                   : m_streamSessionInfo.value(sessionId).status;
+    // Waiting is deliberately not in flight: the turn ended and the agent is
+    // parked on the user's reply or approval, so nothing is executing and it can
+    // sit that way indefinitely — the same distinction adhoc #91 drew for the
+    // rebuild gate. Everything else has finished, failed or been stopped.
+    if (status != AgentStatus::Running && status != AgentStatus::Queued)
+        return false;
+    // A watch-only row is somebody else's CLI — there is no process of ours to
+    // inspect, and the transcript scan that produced the row already resolved its
+    // liveness (externalIsLive) before calling it Running.
+    if (isExternalSession(sessionId))
+        return true;
+    // Queued: nothing is executing yet, but the queue is about to start it.
+    if (m_agentQueue.contains(sessionId))
+        return true;
+    if (runnerForSession(sessionId)) // headless AgentRunner mid-run
+        return true;
+    ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
+    CodexAppServerSession *codex = m_codexStreams.value(sessionId);
+    // No live process at all: whatever the status says, nothing can be working
+    // and nothing more can be committed.
+    const bool claudeLive = claude && claude->running();
+    // Codex tracks turn boundaries precisely, so an app-server idling between
+    // turns can't be mistaken for in-flight work.
+    const bool codexLive = codex && codex->running() && codex->turnActive();
+    if (!claudeLive && !codexLive)
+        return false;
+    // The Claude Code CLI stays alive across turns, so back the status up with the
+    // same liveness window runningAgentBlockers() uses.
+    const qint64 liveAt = agentSessionLastLiveMs(sessionId);
+    return liveAt > 0 &&
+           (QDateTime::currentMSecsSinceEpoch() - liveAt) < kAgentSilentStaleMs;
+}
+
 bool MainWindow::stopAgentSessionById(int sessionId)
 {
     if (sessionId <= 0 || !isStoppableAgentSession(sessionId))
@@ -11021,6 +11794,144 @@ void MainWindow::startAllStoppedAgents()
     flashMessage(QStringLiteral("Started %1 agent session%2.")
                      .arg(ids.size())
                      .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
+}
+
+// The branches "Update all" would merge into: our own unfinished work, in any
+// repository, that still has a branch of its own to catch up. Merged sessions
+// are landed, external (watch-only) rows and association-only PR records own no
+// worktree, and a session sitting on its own base has nothing to pull in.
+// Deliberately cheap — no git here — because updateAgentActionState() calls this
+// on every selection change; the batch below is where paths are resolved.
+QList<int> MainWindow::updatableAgentSessionIds() const
+{
+    QList<int> ids;
+    QSet<QString> seen;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.merged || session.associationOnly ||
+            isExternalSession(session.id))
+            continue;
+        if (session.branchName.isEmpty() ||
+            session.branchName == agentMergeBase(session))
+            continue;
+        const int repoIndex = repoIndexFor(session.owner, session.name);
+        if (repoIndex < 0 || m_repositories.at(repoIndex).localPath.isEmpty())
+            continue;
+        // One entry per branch: a follow-up run shares its predecessor's branch,
+        // and the second merge of the same base would be an empty no-op counted
+        // as a second update.
+        const QString key = m_repositories.at(repoIndex).localPath +
+                            QLatin1Char('\n') + session.branchName;
+        if (seen.contains(key))
+            continue;
+        seen.insert(key);
+        ids << session.id;
+    }
+    return ids;
+}
+
+// "Update all" (adhoc #1611): the detail page's per-session "Update" over the
+// whole fleet — merge each session's own base branch into its own worktree
+// branch. Nothing else in the app pulls main into an agent branch any more; the
+// background diff refresh used to do it silently for every idle worktree, and
+// now only measures how far behind each one is. Pressing this is the whole
+// mechanism.
+//
+// Every merge goes through mergeBaseIntoLinkedWorktree(), the same
+// autostash-protected, transactional path "Pull main" uses on one branch: an
+// agent's uncommitted edits are set aside and restored on top, and a merge that
+// can't complete cleanly leaves its branch exactly as it was, wearing the row's
+// conflict alert that hands it to an agent.
+void MainWindow::updateAllAgentWorktreesFromMain()
+{
+    // Snapshot the ids up front: the refreshes at the end rebuild m_agentSessions.
+    const QList<int> ids = updatableAgentSessionIds();
+    if (ids.isEmpty()) {
+        flashMessage(QStringLiteral("No agent branches to update."));
+        return;
+    }
+    int updated = 0;    // merged base in
+    int current = 0;    // already contained it
+    int busy = 0;       // a merge or unresolved files were already in the way
+    int conflicted = 0; // merge refused or rolled back; branch left alone
+    int skipped = 0;    // no worktree of its own, or no such base branch
+    for (const int sessionId : std::as_const(ids)) {
+        const AgentSession *session = findAgentSession(sessionId);
+        const int repoIndex =
+            session ? repoIndexFor(session->owner, session->name) : -1;
+        if (repoIndex < 0) {
+            ++skipped;
+            continue;
+        }
+        const QString branch = session->branchName;
+        const QString base = agentMergeBase(*session);
+        const QString worktree = worktreePathForBranch(
+            m_repositories.at(repoIndex).localPath, branch);
+        // No checkout of its own (deleted, or never created): there is nothing to
+        // merge into. Merging in the repo's main checkout would move whatever
+        // unrelated branch is sitting there.
+        if (worktree.isEmpty() || !QDir(worktree).exists()) {
+            ++skipped;
+            continue;
+        }
+        // A base recorded by the session but no longer present locally would make
+        // `git merge` fail as if the branch conflicted, so name it for what it is.
+        if (!runGitCapture(worktree,
+                           {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                            QStringLiteral("--quiet"),
+                            QStringLiteral("refs/heads/%1").arg(base)},
+                           nullptr, nullptr)) {
+            ++skipped;
+            continue;
+        }
+        // Already has base in its history: merging again would only build an
+        // empty commit, and counting it as "updated" would overstate the batch.
+        if (runGitCapture(worktree,
+                          {QStringLiteral("merge-base"),
+                           QStringLiteral("--is-ancestor"), base,
+                           QStringLiteral("HEAD")},
+                          nullptr, nullptr)) {
+            ++current;
+            continue;
+        }
+        switch (mergeBaseIntoLinkedWorktree(worktree, branch, base).status) {
+        case WorktreeMergeReport::Merged:
+            ++updated;
+            break;
+        case WorktreeMergeReport::Busy:
+            ++busy;
+            break;
+        case WorktreeMergeReport::Conflicted:
+        case WorktreeMergeReport::Failed:
+            ++conflicted;
+            break;
+        }
+    }
+    QStringList notes;
+    if (current > 0)
+        notes << QStringLiteral("%1 already current").arg(current);
+    if (busy > 0)
+        notes << QStringLiteral("%1 mid-merge").arg(busy);
+    if (conflicted > 0)
+        notes << QStringLiteral("%1 conflicting").arg(conflicted);
+    if (skipped > 0)
+        notes << QStringLiteral("%1 without a worktree").arg(skipped);
+    flashMessage(
+        QStringLiteral("Updated %1 agent branch%2%3.")
+            .arg(updated)
+            .arg(updated == 1 ? QString() : QStringLiteral("es"),
+                 notes.isEmpty() ? QString()
+                                 : QStringLiteral(" (%1 skipped: %2)")
+                                       .arg(ids.size() - updated)
+                                       .arg(notes.join(QStringLiteral(", ")))),
+        /*isError=*/conflicted > 0);
+    // The merges moved branch tips: re-read the behind/conflict badges, the open
+    // session's Files-changed diff, and the Worktrees table if it is built.
+    m_agentDiffRefreshPending = true;
+    reloadAgents();
+    if (m_selectedAgentSessionId > 0)
+        refreshAgentFilesPanel(m_selectedAgentSessionId);
+    loadWorktreesPanel();
+    updateAgentActionState();
 }
 
 // ---- External Claude Code sessions ----------------------------------------
@@ -11174,6 +12085,7 @@ void MainWindow::unsurfaceExternalSession(int sessionId)
     m_externalSig.clear();
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
+    updateQuickAddTargetAgentLabel();
     reloadAgents();
 }
 
@@ -11270,6 +12182,7 @@ void MainWindow::onExternalClaudeTick()
             m_externalSig.clear();
             if (isExternalSession(m_selectedAgentSessionId))
                 m_selectedAgentSessionId = -1;
+            updateQuickAddTargetAgentLabel();
             injectExternalSessions();
             refreshAgentTable();
             updateAgentsTabIndicator();
@@ -11410,6 +12323,44 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
         reapplyTranscriptSearch(); // re-highlight against the rebuilt transcript
 }
 
+// One-line, human-readable summary of a stream event — what the "Prompt sent"
+// bubble shows as its live status while the agent is still running (adhoc
+// #1570). Empty when the event has nothing worth surfacing (thinking deltas,
+// bookkeeping events, etc).
+static QString oneLineTranscriptSummary(const QJsonObject &ev)
+{
+    const QString type = ev.value(QStringLiteral("type")).toString();
+    if (type == QLatin1String("assistant")) {
+        const QJsonArray content = ev.value(QStringLiteral("message")).toObject()
+                                       .value(QStringLiteral("content")).toArray();
+        for (const QJsonValue &bv : content) {
+            const QJsonObject b = bv.toObject();
+            const QString btype = b.value(QStringLiteral("type")).toString();
+            if (btype == QLatin1String("tool_use")) {
+                const QString name = b.value(QStringLiteral("name")).toString();
+                const QJsonObject input = b.value(QStringLiteral("input")).toObject();
+                QString arg = input.value(QStringLiteral("file_path")).toString();
+                if (arg.isEmpty())
+                    arg = input.value(QStringLiteral("command")).toString();
+                if (arg.isEmpty())
+                    arg = input.value(QStringLiteral("path")).toString();
+                if (arg.isEmpty())
+                    arg = input.value(QStringLiteral("pattern")).toString();
+                return (arg.isEmpty() ? name : name + QStringLiteral(": ") + arg)
+                    .simplified();
+            }
+            if (btype == QLatin1String("text")) {
+                const QString t = b.value(QStringLiteral("text")).toString().trimmed();
+                if (!t.isEmpty())
+                    return t.simplified();
+            }
+        }
+    } else if (type == QLatin1String("_codex_agent_complete")) {
+        return ev.value(QStringLiteral("text")).toString().simplified();
+    }
+    return QString();
+}
+
 // Buffer one event for a session and, if that session is the one on screen,
 // render it live. Also collect the files it edits for the side panel.
 void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
@@ -11418,11 +12369,31 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
     // enter a UI buffer, the persistent transcript store, an owner-sealed sync
     // snapshot, or a copyable raw-output surface.  This is intentionally at the
     // common ingestion point so future stream providers cannot bypass it.
-    const QJsonObject ev =
+    QJsonObject ev =
         redactProviderCredentials(
             QJsonValue(event), localProviderCredentialValues())
             .toObject();
+    // Record which provider account produced this conversation. Each account is
+    // its own CLI config root, so the id below is only resumable by the account
+    // that created it — see AgentResumeIdentity.h. Only events that actually
+    // carry a conversation id are stamped; nothing else is ever consulted.
+    if (const QString accountId = m_streamAccountId.value(sessionId);
+        !accountId.isEmpty() &&
+        (!ev.value(QStringLiteral("session_id")).toString().isEmpty() ||
+         !ev.value(QStringLiteral("thread_id")).toString().isEmpty())) {
+        ev.insert(forkmesh::agents::resumeAccountKey(), accountId);
+    }
     const QString type = ev.value(QStringLiteral("type")).toString();
+    // While the "Prompt sent" bubble for this exact session is still on screen,
+    // keep its status line showing what the agent is doing right now instead of
+    // the static "Started a Claude Code agent..." message it opened with
+    // (adhoc #1570).
+    if (sessionId == m_topMessageAgentSessionId && m_topMessageIsPromptBubble &&
+        m_topMessage && m_topMessage->isVisible() && !m_topMessageSlidingOut) {
+        const QString live = oneLineTranscriptSummary(ev);
+        if (!live.isEmpty())
+            updateTopMessagePromptLiveStatus(live);
+    }
     m_streamEvents[sessionId].append(ev);
     // Persist the turn so the transcript survives an app restart (issue #41).
     if (m_agentStore && m_streamSessionInfo.contains(sessionId))
@@ -11638,6 +12609,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
             const bool userStopped = as->status == AgentStatus::Stopped;
             if (!userStopped && ClaudeTranscriptView::resultIsError(ev)) {
                 m_agentCompletionChecks.remove(sessionId);
+                m_agentCompletionPollCounts.remove(sessionId);
                 as->status = AgentStatus::Failed;
                 as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 // Same wording the transcript's "✗ Failed" row shows, so the
@@ -11655,6 +12627,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
                 awaitSubprocesses = true;
             } else if (userStopped) {
                 m_agentCompletionChecks.remove(sessionId);
+                m_agentCompletionPollCounts.remove(sessionId);
             }
             if (m_agentStore && !isExternalSession(sessionId))
                 m_agentStore->saveSession(*as);
@@ -11734,36 +12707,254 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
 // agent is picked up with its full context (adhoc #182). Events are held in
 // memory while a session is live and reloaded from disk on resume
 // (ensureStreamEventsLoaded), so this is the authoritative source after a
-// restart too. Synthetic `_local_user` turns carry no id and are skipped.
+// restart too. Synthetic `_local_user` turns carry no id and are skipped, as are
+// any turns the *other* CLI produced — see AgentResumeIdentity.h for why
+// handing Claude Code a Codex thread id fails the whole run. Turns belonging to
+// a Claude Code account other than the one now selected are skipped for the same
+// reason: that conversation lives in the other account's config root.
 QString MainWindow::lastClaudeSessionId(int sessionId) const
 {
-    const QList<QJsonObject> &events = m_streamEvents.value(sessionId);
-    for (auto it = events.crbegin(); it != events.crend(); ++it) {
-        const QString id = it->value(QStringLiteral("session_id")).toString();
-        if (!id.isEmpty())
-            return id;
-    }
-    return QString();
+    return forkmesh::agents::claudeResumeSessionId(
+        m_streamEvents.value(sessionId),
+        activeAgentAccount(QStringLiteral("claude-code")).id);
 }
 
 // Codex app-server threads are the native conversation identity used by the
 // official IDE extension. The transport records it on the normalized init
 // event, so a ForkMesh restart can resume the real thread rather than replaying
-// a clipped plain-text transcript into a new process.
+// a clipped plain-text transcript into a new process. Scoped to the selected
+// Codex account, as above.
 QString MainWindow::lastCodexThreadId(int sessionId) const
 {
-    const QList<QJsonObject> &events = m_streamEvents.value(sessionId);
-    for (auto it = events.crbegin(); it != events.crend(); ++it) {
-        QString id = it->value(QStringLiteral("thread_id")).toString();
-        if (id.isEmpty()
-            && it->value(QStringLiteral("provider")).toString()
-                   == QLatin1String("codex")) {
-            id = it->value(QStringLiteral("session_id")).toString();
-        }
-        if (!id.isEmpty())
-            return id;
-    }
+    return forkmesh::agents::codexResumeThreadId(
+        m_streamEvents.value(sessionId),
+        activeAgentAccount(kCodexProvider).id);
+}
+
+// The conversation id of whichever CLI drives this session — the same id its
+// next resume would use, shown in the detail popup's Session row and handed to
+// the terminal by "Pop out" (adhoc #1584). A watch-only row is a CLI
+// conversation ForkMesh only reads: its synthetic entry is keyed by the
+// transcript's file stem, which is exactly the `claude` session id. API-only
+// providers have no CLI conversation at all and return empty, as does a session
+// whose CLI has not stamped one this account can reach.
+QString MainWindow::agentCliConversationId(int sessionId)
+{
+    if (isExternalSession(sessionId))
+        return m_externalSurfaced.value(sessionId).uuid;
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session)
+        return QString();
+    if (agentIsCodexProvider(session->provider))
+        return lastCodexThreadId(sessionId);
+    if (session->provider == QLatin1String("claude-code"))
+        return lastClaudeSessionId(sessionId);
     return QString();
+}
+
+// Resolve the hand-off before doing any of it, so the button can refuse with a
+// reason instead of opening a terminal that immediately fails. Every blocker
+// here is a real dead end: an API-only session has no CLI to take over, an
+// uninstalled CLI cannot run, and a worktree that has been cleaned up leaves
+// nowhere to run it. A session with no conversation id yet is *not* blocked —
+// the CLI simply opens fresh in the right directory, which is still the useful
+// half of the hand-off.
+MainWindow::AgentTerminalHandoff MainWindow::agentTerminalHandoff(int sessionId)
+{
+    AgentTerminalHandoff plan;
+    const AgentSession *live = findAgentSession(sessionId);
+    if (!live) {
+        plan.blocker = QStringLiteral("Select a session first.");
+        return plan;
+    }
+    // cachedSessionWorktree() below can shell out to git, which pumps the event
+    // loop and may replace m_agentSessions — read the session by value first.
+    const AgentSession session = *live;
+    const bool external = isExternalSession(sessionId);
+    const QString provider =
+        external ? QStringLiteral("claude-code") : session.provider;
+    const bool codex = agentIsCodexProvider(provider);
+    if (!codex && provider != QLatin1String("claude-code")) {
+        plan.blocker = QStringLiteral("%1 sessions run against the API — there is "
+                                      "no CLI conversation to continue in a "
+                                      "terminal.")
+                           .arg(agentProviderName(provider));
+        return plan;
+    }
+    plan.program = codex ? QStringLiteral("codex") : QStringLiteral("claude");
+    if (QStandardPaths::findExecutable(plan.program).isEmpty()) {
+        plan.blocker = QStringLiteral("%1 is not installed on this device.")
+                           .arg(codex ? QStringLiteral("Codex")
+                                      : QStringLiteral("Claude Code"));
+        return plan;
+    }
+    // Where the agent was working: its worktree, falling back to the repository
+    // checkout for a session that never got one. A watch-only row already knows
+    // its own cwd — that is how it was detected.
+    if (external) {
+        plan.cwd = m_externalSurfaced.value(sessionId).cwd;
+    } else {
+        const int repoIdx = repoIndexFor(session.owner, session.name);
+        const QString repoLocal =
+            repoIdx >= 0 ? m_repositories.at(repoIdx).localPath : QString();
+        if (!repoLocal.isEmpty() && !session.branchName.isEmpty())
+            plan.cwd =
+                cachedSessionWorktree(sessionId, repoLocal, session.branchName);
+        if (plan.cwd.isEmpty())
+            plan.cwd = repoLocal;
+    }
+    if (plan.cwd.isEmpty() || !QDir(plan.cwd).exists()) {
+        plan.blocker = QStringLiteral("This session has no working directory left "
+                                      "on disk to continue in.");
+        return plan;
+    }
+    plan.conversationId = agentCliConversationId(sessionId);
+    if (!plan.conversationId.isEmpty()) {
+        plan.args = codex ? QStringList{QStringLiteral("resume"),
+                                        plan.conversationId}
+                          : QStringList{QStringLiteral("--resume"),
+                                        plan.conversationId};
+    }
+    // The conversation lives inside the config root of the account that ran it,
+    // and agentCliConversationId() only returns ids the *selected* account can
+    // reach — so point the terminal at that same account (see
+    // AgentResumeIdentity.h for why a mismatch fails the resume outright).
+    const AgentAccountProfile account = activeAgentAccount(provider);
+    if (!account.builtIn)
+        plan.env.insert(codex ? QStringLiteral("CODEX_HOME")
+                              : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                        account.configDir);
+    plan.ok = true;
+    return plan;
+}
+
+// Hand the session to the user's own terminal: stop it here first, then open the
+// CLI on the same conversation, in the same directory, under the same account
+// (adhoc #1584). The stop is the point rather than a side effect — two CLIs
+// appending to one conversation and one worktree is exactly the corruption this
+// avoids — and it is reversible from this same page: the header's Continue
+// button picks the session back up in ForkMesh once the terminal is done.
+void MainWindow::popOutAgentSessionToTerminal(int sessionId)
+{
+    if (m_headless) {
+        logSystem(
+            QStringLiteral("A system terminal is unavailable on a headless node."));
+        return;
+    }
+    const AgentTerminalHandoff plan = agentTerminalHandoff(sessionId);
+    if (m_agentMetaPopup)
+        m_agentMetaPopup->hide(); // the click is leaving this pane either way
+    if (!plan.ok) {
+        flashMessage(plan.blocker, true);
+        return;
+    }
+    // Reuse the session-stop primitive rather than repeating its liveness rules:
+    // it dequeues a session the run limit has not started yet (which would
+    // otherwise launch a second CLI onto the worktree the terminal now holds),
+    // tears down the runner or transport driving one that is running, and
+    // records the Stopped status Continue reads. It refuses the synthetic ids
+    // watch-only rows carry, so those signal their own CLI process instead —
+    // the same split the Stop button makes.
+    bool stopped = false;
+    if (isExternalSession(sessionId)) {
+        if (m_externalSurfaced.contains(sessionId) &&
+            externalIsLive(m_externalSurfaced.value(sessionId).uuid)) {
+            stopExternalSession(sessionId);
+            stopped = true;
+        }
+    } else {
+        stopped = stopAgentSessionById(sessionId);
+    }
+    if (!launchSystemTerminal(plan.program, plan.args, plan.cwd, plan.env))
+        return;
+    const QString what =
+        plan.conversationId.isEmpty()
+            ? QStringLiteral("%1 opened in %2").arg(plan.program, plan.cwd)
+            : QStringLiteral("%1 resumed in %2").arg(plan.program, plan.cwd);
+    flashMessage(stopped ? QStringLiteral("Session stopped here — %1.").arg(what)
+                         : QStringLiteral("%1.").arg(what));
+}
+
+// A CLI exited while its session was still Running/Waiting, i.e. without ever
+// finishing a turn. Decide between another go and giving up, and stamp the
+// session accordingly; returns true when it was re-queued.
+//
+// Only re-queue a process that actually got somewhere (a crash mid-turn); one
+// that never produced a session id at all (bad install, expired login) would
+// otherwise cycle Queued -> Running -> exit forever via processAgentQueue(),
+// each pass reporting "Running" to anyAgentRunning() and leaving Rebuild &
+// restart stuck on "Waiting for running actions to finish" with no real work in
+// flight (adhoc #116).
+//
+// That id check reads the whole persisted transcript, though, so it only catches
+// a session that has NEVER launched. One that ran fine last week and cannot
+// start today — the conversation its resume names has been pruned, the login
+// expired, the CLI is broken — still shows an id from those older turns, so it
+// took the re-queue branch on every pass and span there: queued, exit, queued,
+// with a perpetual spinner and no error anywhere. Pressing Continue or the
+// composer's "add" on such a past session was indistinguishable from a dead
+// button. Bound the retries and fail with a reason instead.
+bool MainWindow::applyCliExitWithoutResult(int sessionId, bool codex, int exitCode)
+{
+    AgentSession *session = findAgentSession(sessionId);
+    if (!session)
+        return false;
+    const bool neverLaunched = codex ? lastCodexThreadId(sessionId).isEmpty()
+                                     : lastClaudeSessionId(sessionId).isEmpty();
+    const int attempts = m_agentRelaunchAttempts.value(sessionId) + 1;
+    m_agentRelaunchAttempts.insert(sessionId, attempts);
+    const bool giveUp = neverLaunched || attempts > kMaxAgentRelaunchAttempts;
+    if (giveUp) {
+        m_agentRelaunchAttempts.remove(sessionId);
+        session->status = AgentStatus::Failed;
+        session->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+        const QString cli = codex ? QStringLiteral("Codex app-server")
+                                  : QStringLiteral("Claude Code");
+        session->lastError =
+            neverLaunched
+                ? QStringLiteral("%1 exited before starting a %2 (exit %3).")
+                      .arg(cli,
+                           codex ? QStringLiteral("thread")
+                                 : QStringLiteral("session"))
+                      .arg(exitCode)
+                : QStringLiteral("%1 exited without starting a turn on %2 "
+                                 "attempts (exit %3). The branch still holds the "
+                                 "work \xE2\x80\x94 check the CLI is installed and "
+                                 "logged in, then continue this session again.")
+                      .arg(cli)
+                      .arg(attempts)
+                      .arg(exitCode);
+    } else {
+        session->status = AgentStatus::Queued;
+        session->lastError.clear();
+        if (!m_agentQueue.contains(sessionId))
+            m_agentQueue.append(sessionId);
+    }
+    // This launch consumed the user's queued instruction and then died without
+    // ever starting a turn, so nobody has read it. Put it back: a retry that
+    // resumes with "Continue where you left off." instead of what the user
+    // actually typed is how a message pressed into the composer disappeared
+    // (adhoc #1618). On give-up it waits for the next Continue.
+    if (const QString unsent = m_inFlightSteerMessage.take(sessionId);
+        !unsent.isEmpty())
+        queueAgentSteerMessage(sessionId, unsent);
+    if (m_agentStore)
+        m_agentStore->saveSession(*session);
+    // Say so in the transcript. Both endings were silent, which is what made a
+    // session that could not restart look like a button that did nothing: the
+    // prompts stacked up on screen and the only account of what happened to them
+    // was a status word in the list and a tooltip (adhoc #1618). Copied out
+    // first — applyTranscriptEvent can reload the sessions this points into.
+    const QString notice =
+        giveUp ? session->lastError
+               : QStringLiteral("%1 exited (exit %2) before answering. "
+                                "Restarting the session\xE2\x80\xA6")
+                     .arg(codex ? QStringLiteral("Codex app-server")
+                                : QStringLiteral("Claude Code"))
+                     .arg(exitCode);
+    noteAgentSessionNotice(sessionId, notice, /*error=*/giveUp);
+    scheduleAgentSessionsPush(); // adhoc #182
+    return !giveUp;
 }
 
 // The session started working again — a resumed CLI announced itself, or a new
@@ -11778,6 +12969,17 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     // A fresh turn supersedes any delayed completion poll from the previous
     // result; that old poll must never turn this new turn into Done.
     m_agentCompletionChecks.remove(sessionId);
+    m_agentCompletionPollCounts.remove(sessionId);
+    // Getting here means a launch reached the CLI's own announcement, so the
+    // relaunch budget starts over: a later crash mid-turn is a new problem, not
+    // a continuation of a launch that could never work. The steering message this
+    // launch carried has demonstrably arrived, so it is no longer owed a retry.
+    m_agentRelaunchAttempts.remove(sessionId);
+    m_inFlightSteerMessage.remove(sessionId);
+    // A new turn is a new run to celebrate when it lands (adhoc #1630). Cleared
+    // ahead of the already-Running early return below so a session steered while
+    // it is still working also gets a card for the turn that follows.
+    m_agentDoneNotified.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status == AgentStatus::Running)
         return;
@@ -11794,6 +12996,16 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     updateAgentStatusCell(sessionId);
 }
 
+// A build/test child usually exits within a poll or two of the CLI's `result`
+// event. An orphaned helper the CLI never reaped (e.g. a screenshot-capture
+// python3 process) can linger indefinitely, and without a cap this poll would
+// have left the session stuck showing "Running" forever (adhoc #1583). Escalate
+// to a kill after a 10s grace period, and give up waiting on the tree entirely
+// after 20s so the session always reaches Success once the CLI's own turn
+// finished, even if a straggler proves unkillable.
+static constexpr int kAgentCompletionKillAfterPolls = 40;   // 40 * 250ms = 10s
+static constexpr int kAgentCompletionGiveUpAfterPolls = 80; // 80 * 250ms = 20s
+
 void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
 {
     if (!m_agentCompletionChecks.contains(sessionId))
@@ -11801,12 +13013,21 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
     AgentSession *session = findAgentSession(sessionId);
     if (!session || session->status != AgentStatus::Running) {
         m_agentCompletionChecks.remove(sessionId);
+        m_agentCompletionPollCounts.remove(sessionId);
         return;
     }
 
     const QList<SystemStats::DescendantProcess> subprocesses =
         SystemStats::descendantProcesses(agentSessionProcessId(sessionId));
-    if (!subprocesses.isEmpty()) {
+    const int pollCount = subprocesses.isEmpty() ? 0 : ++m_agentCompletionPollCounts[sessionId];
+    if (!subprocesses.isEmpty() && pollCount < kAgentCompletionGiveUpAfterPolls) {
+        if (pollCount == kAgentCompletionKillAfterPolls) {
+            QList<qint64> pids;
+            pids.reserve(subprocesses.size());
+            for (const SystemStats::DescendantProcess &p : subprocesses)
+                pids.append(p.pid);
+            killExternalSessionPids(pids);
+        }
         // Keep the session visibly Working and let the detail popup expose the
         // snapshot above. A short, single-shot poll avoids a permanent timer
         // for idle sessions and lets a just-exited child disappear promptly.
@@ -11819,12 +13040,17 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
     }
 
     m_agentCompletionChecks.remove(sessionId);
+    m_agentCompletionPollCounts.remove(sessionId);
     session->status = AgentStatus::Success;
     session->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
     session->lastError.clear();
     if (m_agentStore && !isExternalSession(sessionId))
         m_agentStore->saveSession(*session);
     updateAgentStatusCell(sessionId);
+    // The run is over and its figures are stored: celebrate it (adhoc #1630).
+    // This is where a Claude Code / Codex session lands — the legacy runner pool
+    // reaches the same call from onAgentFinished().
+    notifyAgentDone(sessionId);
 }
 
 // The agent's turn ended (or it needs permission) and it's now waiting on the
@@ -11832,6 +13058,7 @@ void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
 void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
 {
     m_agentCompletionChecks.remove(sessionId);
+    m_agentCompletionPollCounts.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status != AgentStatus::Running)
         return; // only meaningful for a session that was actively running
@@ -11859,6 +13086,92 @@ void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
     // doesn't have to hunt for it in the agents list (adhoc #189).
     flashMessage(msg, /*error=*/false,
                  QStringLiteral("fm:agent:%1").arg(sessionId));
+}
+
+// The last prose the agent produced — the sign-off it ends a run with, which is
+// the summary worth showing when it finishes. m_lastAssistantText holds it for a
+// session this process watched run; a session restored from disk (or one whose
+// final text arrived before the cache existed) has it only in the event buffer,
+// so fall back to walking that newest-first.
+QString MainWindow::agentClosingSummary(int sessionId) const
+{
+    const QString cached = m_lastAssistantText.value(sessionId).trimmed();
+    if (!cached.isEmpty())
+        return cached;
+    const QList<QJsonObject> events = m_streamEvents.value(sessionId);
+    for (int i = events.size() - 1; i >= 0; --i) {
+        const QJsonObject &ev = events.at(i);
+        const QString type = ev.value(QStringLiteral("type")).toString();
+        // Codex normalizes its final answer onto one event; Claude Code's is the
+        // text blocks of the last assistant message.
+        if (type == QLatin1String("_codex_agent_complete")) {
+            const QString text = ev.value(QStringLiteral("text")).toString().trimmed();
+            if (!text.isEmpty())
+                return text;
+            continue;
+        }
+        if (type != QLatin1String("assistant"))
+            continue;
+        QString text;
+        const QJsonArray content = ev.value(QStringLiteral("message"))
+                                       .toObject()
+                                       .value(QStringLiteral("content"))
+                                       .toArray();
+        for (const QJsonValue &bv : content) {
+            const QJsonObject block = bv.toObject();
+            if (block.value(QStringLiteral("type")).toString() == QLatin1String("text"))
+                text += block.value(QStringLiteral("text")).toString();
+        }
+        if (!text.trimmed().isEmpty())
+            return text.trimmed();
+    }
+    return QString();
+}
+
+// A run reached the end: celebrate it. The card carries the agent's own list
+// icon, a headline naming the run, and the summary it signed off with, and the
+// window edge pulses green so the news lands even when the Agents tab is closed
+// (adhoc #1630). Firing once per run is m_agentDoneNotified's job — completion
+// can be reached more than once (a re-fired signal, a requeue), and
+// markAgentSessionRunning() clears the mark when the next turn starts.
+void MainWindow::notifyAgentDone(int sessionId)
+{
+    if (m_agentDoneNotified.contains(sessionId))
+        return;
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->status != AgentStatus::Success)
+        return;
+    // Watch-only rows mirror another process's CLI: ForkMesh didn't run that
+    // work and surfaces it after the fact, so it has nothing to announce.
+    if (isExternalSession(sessionId))
+        return;
+    m_agentDoneNotified.insert(sessionId);
+
+    QString summary = agentClosingSummary(sessionId).simplified();
+    if (summary.isEmpty())
+        summary = QStringLiteral("Finished with no closing summary.");
+    // Long enough to carry the agent's actual conclusion, short of pasting a
+    // whole final message into the corner of the window.
+    if (summary.size() > kAgentDoneSummaryChars)
+        summary = summary.left(kAgentDoneSummaryChars - 1) +
+                  QString::fromUtf8("\xE2\x80\xA6"); // …
+    // The headline (icon, "Agent #12 is done!", the run's figures) is painted by
+    // renderTopMessage from the session behind this href, so a card that waits
+    // its turn in the queue still shows that agent's final numbers.
+    flashMessage(summary, /*error=*/false,
+                 QStringLiteral("fm:agent:%1").arg(sessionId),
+                 /*durationSeconds=*/0, kAgentDoneToastKind);
+    flashCelebrationBorder();
+    // Runs are long: the window is often behind something else by the time one
+    // lands, which is exactly when an OS notification earns its keep. Opt-out,
+    // not opt-in — a finished run is worth surfacing by default — but still a
+    // dedicated Settings toggle like every other native alert.
+    if (!QSettings().value(kAgentDoneAlertSetting, true).toBool())
+        return;
+    notifyIfInactive(QStringLiteral("ForkMesh %1 Agent #%2 is done!")
+                         .arg(QString::fromUtf8("\xE2\x80\x94")) // —
+                         .arg(sessionId),
+                     summary);
 }
 
 // Refresh just the Status cell for a session's row, in place — avoids the full
@@ -11973,7 +13286,7 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
         return;
     m_agentStatusPill->setProperty("outcomeTone", agentStatusBadgeTone(*session));
     m_agentStatusPill->setIcon(agentStatusPillIcon(*session));
-    m_agentStatusPill->setText(agentStatusBadgeText(*session));
+    m_agentStatusPill->setText(agentStatusPillText(*session));
     m_agentStatusPill->setToolTip(agentStatusBadgeToolTip(*session));
     m_agentStatusPill->style()->unpolish(m_agentStatusPill);
     m_agentStatusPill->style()->polish(m_agentStatusPill);
@@ -12854,6 +14167,12 @@ QString MainWindow::testAgentPrButtonText(int sessionId)
                ? m_agentViewPrButton->text()
                : QString();
 }
+
+QString MainWindow::testAgentMetaHtml(int sessionId)
+{
+    showAgentSession(sessionId);
+    return m_agentMeta ? m_agentMeta->text() : QString();
+}
 #endif
 
 // Open a ForkMesh pull request from the session's changes (diff since baseRef),
@@ -13232,31 +14551,115 @@ void MainWindow::syncOrgTaskAgentStatus(int sessionId)
         return;
     if (m_orgTaskAgentStatusSent.value(sessionId) == status)
         return;
+    // Claim the state now so a second reload in the same turn doesn't queue the
+    // row twice; the flush puts it back if the relay refuses the write.
+    m_orgTaskAgentStatusSent.insert(sessionId, status);
+    m_orgTaskAgentStatusPending.insert(sessionId, status);
+    // reloadAgents() walks every session, so the first reload after launch lands
+    // here once per session — seventeen signed POSTs in the same millisecond,
+    // most of which the relay answered 429 to (adhoc #1618). Coalesce the burst
+    // into the single batched write below on the next event-loop turn.
+    if (m_orgTaskAgentStatusFlushQueued)
+        return;
+    m_orgTaskAgentStatusFlushQueued = true;
+    QTimer::singleShot(0, this, &MainWindow::flushOrgTaskAgentStatus);
+}
+
+void MainWindow::flushOrgTaskAgentStatus()
+{
+    m_orgTaskAgentStatusFlushQueued = false;
+    const QHash<int, QString> pending = m_orgTaskAgentStatusPending;
+    m_orgTaskAgentStatusPending.clear();
+    if (pending.isEmpty() || !m_networkAccess)
+        return;
+
+    // Re-resolve each session: queuing happened turns ago and m_agentSessions
+    // may have been rebuilt since (the git-pump UAF family, adhoc #106/#119).
+    QJsonArray statuses;
+    QList<QPair<int, QString>> sent;
+    for (auto it = pending.cbegin(); it != pending.cend(); ++it) {
+        const AgentSession *session = findAgentSession(it.key());
+        if (!session || session->orgTaskId.isEmpty() ||
+            isExternalSession(it.key())) {
+            // Nothing to report against: forget the claim rather than leave a
+            // status recorded as published.
+            if (m_orgTaskAgentStatusSent.value(it.key()) == it.value())
+                m_orgTaskAgentStatusSent.remove(it.key());
+            continue;
+        }
+        statuses.append(QJsonObject{
+            {QStringLiteral("task"), session->orgTaskId},
+            {QStringLiteral("status"), it.value()},
+            // A run bound to a task that already existed (the Tasks page's
+            // "Start agent" button) never went through the open-a-task call
+            // that records who is running it, so the provenance rides along
+            // with the state instead. The relay layers it onto whatever the
+            // task already holds, so a task opened by a launch is unaffected.
+            {QStringLiteral("agent"),
+             QJsonObject{
+                 {QStringLiteral("provider"), session->provider},
+                 {QStringLiteral("startedBy"), session->startedByBot},
+                 {QStringLiteral("model"), session->model},
+                 {QStringLiteral("mode"), session->mode},
+                 {QStringLiteral("strength"), session->strength},
+                 {QStringLiteral("sessionId"), QString::number(session->id)},
+             }},
+        });
+        sent.append({it.key(), it.value()});
+    }
+    if (statuses.isEmpty())
+        return;
 
     QUrl url = catalogApiUrl();
-    url.setPath(QStringLiteral("/api/tasks/") + session->orgTaskId +
-                QStringLiteral("/agent-status"));
+    url.setPath(QStringLiteral("/api/tasks/agent-status"));
     url.setQuery(QString());
     url.setFragment(QString());
     QNetworkRequest request;
-    if (!authenticateOrgTaskRequest(url, request, kOrgTaskAgentStatusProof,
-                                    session->orgTaskId))
+    // The batch proof names no task: the ids ride in the body and the relay
+    // re-checks ownership for each one exactly as it does for a single write.
+    if (!authenticateOrgTaskRequest(url, request, kOrgTaskAgentStatusBatchProof,
+                                    QString())) {
+        for (const QPair<int, QString> &entry : std::as_const(sent))
+            if (m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
+                m_orgTaskAgentStatusSent.remove(entry.first);
         return;
-    m_orgTaskAgentStatusSent.insert(sessionId, status);
+    }
     QNetworkReply *reply = m_networkAccess->post(
         request,
-        QJsonDocument(QJsonObject{{QStringLiteral("status"), status}})
+        QJsonDocument(QJsonObject{{QStringLiteral("statuses"), statuses}})
             .toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, sessionId, status] {
-                const int response =
-                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
-                        .toInt();
-                reply->deleteLater();
-                if ((response < 200 || response >= 300) &&
-                    m_orgTaskAgentStatusSent.value(sessionId) == status)
-                    m_orgTaskAgentStatusSent.remove(sessionId);
-            });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, sent] {
+        const int response =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray payload = reply->readAll();
+        reply->deleteLater();
+        if (response >= 200 && response < 300) {
+            // Per-entry outcomes: a task the relay refused (row deleted, no
+            // longer agent work) is dropped from the cache so a later status
+            // change is still attempted.
+            QHash<QString, bool> ok;
+            for (const QJsonValue &value :
+                 QJsonDocument::fromJson(payload)
+                     .object()
+                     .value(QStringLiteral("results"))
+                     .toArray())
+                ok.insert(value.toObject().value(QStringLiteral("task")).toString(),
+                          value.toObject().value(QStringLiteral("ok")).toBool());
+            for (const QPair<int, QString> &entry : std::as_const(sent)) {
+                const AgentSession *session = findAgentSession(entry.first);
+                if (session && !ok.value(session->orgTaskId, true) &&
+                    m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
+                    m_orgTaskAgentStatusSent.remove(entry.first);
+            }
+            return;
+        }
+        // Rate limit, offline, signed-out, or a relay too old to know the batch
+        // path: let the next reload re-queue them. A retry is still one request
+        // for the whole fleet, never one per session.
+        for (const QPair<int, QString> &entry : std::as_const(sent))
+            if (m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
+                m_orgTaskAgentStatusSent.remove(entry.first);
+    });
 }
 
 void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followUp)
@@ -13425,7 +14828,7 @@ void MainWindow::maybeAutoMergeForSession(int sessionId)
 }
 
 // Release the temp worktree a stream session ran in once the run is over. The
-// worktree at /tmp/forkmesh-worktrees/issue-N-sSID holds its branch checked out,
+// worktree at <checkout>/.worktrees/agent-SID-desc holds its branch checked out,
 // so leaving it behind makes any later `git checkout <branch>` (e.g. opening the
 // PR locally) fail with "already used by worktree at …". Removing the worktree
 // frees the branch while keeping the branch ref, so the PR still resolves.
@@ -13502,6 +14905,27 @@ void MainWindow::appendAgentRawLog(const QString &text)
 // first: while the transcript is shown appendAgentRawLog() skips the edit, so it
 // can be behind. setPlainText() lays out lazily (one pass), unlike the per-line
 // inserts that caused the stalls.
+// The header's single Transcript/Raw tile (adhoc #1598). It names the view a
+// click switches to, so the caption/glyph is always the *other* surface: on the
+// transcript it offers "Raw", on the raw log it offers "Transcript".
+void MainWindow::setAgentRawOutputMode(bool raw)
+{
+    m_agentRawOutputMode = raw;
+    if (m_agentOutputModeButton) {
+        m_agentOutputModeButton->setGlyph(
+            raw ? QStringLiteral("comment") : QStringLiteral("terminal"),
+            raw ? QStringLiteral("Transcript") : QStringLiteral("Raw"));
+        m_agentOutputModeButton->setToolTip(
+            raw ? QStringLiteral("Show this run as rendered transcript cards")
+                : QStringLiteral("Show this run's raw, unformatted output"));
+    }
+    if (raw) {
+        showAgentRawOutput();
+    } else if (m_agentOutputStack && m_agentTranscript) {
+        m_agentOutputStack->setCurrentWidget(m_agentTranscript);
+    }
+}
+
 void MainWindow::showAgentRawOutput()
 {
     if (!m_agentOutputStack || !m_agentLog)
@@ -13607,6 +15031,11 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
             landAgentPullForSession(*session, patch, QString());
     }
     reloadAgents(); // rebuilds m_agentSessions; `session` is dangling after this
+    // The legacy runner pool's half of the completion celebration (adhoc #1630);
+    // stream sessions raise it from completeAgentSessionWhenSubprocessesExit().
+    // Only a run that actually succeeded qualifies — notifyAgentDone() checks the
+    // stored status, so a failed `ok` never reaches a card.
+    notifyAgentDone(sessionId);
     maybeAutoMergeForSession(sessionId); // adhoc #12: YOLO lands it without review
     completeOrgTaskForSession(sessionId); // adhoc #18: close out the org task
     if (sessionId == m_selectedAgentSessionId)
@@ -13671,6 +15100,10 @@ void MainWindow::updateAgentActionState()
     // session is sitting there resumable, selection or not.
     if (m_agentStartAllButton)
         m_agentStartAllButton->setEnabled(!startableAgentSessionIds().isEmpty());
+    // And for "Update all" (adhoc #1611): live whenever any unmerged session still
+    // holds a branch of its own that main could be merged into, selection or not.
+    if (m_agentUpdateAllButton)
+        m_agentUpdateAllButton->setEnabled(!updatableAgentSessionIds().isEmpty());
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
@@ -13736,4 +15169,20 @@ void MainWindow::updateQuickAddEnterTarget()
     apply(m_quickAddSendToAgentButton, toAgent,
           QStringLiteral("Send to the agent open above, as a follow-up message"));
     apply(m_quickAddSendButton, !toAgent, QStringLiteral("Send to a new agent"));
+    updateQuickAddTargetAgentLabel();
+}
+
+void MainWindow::updateQuickAddTargetAgentLabel()
+{
+    if (!m_issueQuickAdd)
+        return;
+    // The follow-up target used to ride a separate "Agent #123" label pinned to
+    // the box's corner; it now reads inline in the placeholder itself (adhoc
+    // #1621), right next to "enter prompt" rather than off on its own.
+    if (!quickAddShouldFollowUpAgent()) {
+        m_issueQuickAdd->setPlaceholderText(QStringLiteral("enter prompt"));
+        return;
+    }
+    m_issueQuickAdd->setPlaceholderText(
+        QStringLiteral("enter prompt to agent #%1").arg(m_selectedAgentSessionId));
 }

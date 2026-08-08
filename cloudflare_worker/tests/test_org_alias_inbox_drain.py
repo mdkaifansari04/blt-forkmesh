@@ -23,7 +23,15 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+ENTRY_TEXT = (
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+)
 QT_PULLS = ROOT.parent / "qt_client" / "src" / "MainWindowPulls.cpp"
 
 FUNCS = {

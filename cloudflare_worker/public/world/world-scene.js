@@ -3,9 +3,16 @@ import {
   normalizeElementParams,
 } from "./elements/index.js";
 import {
+  createWorldBackoff,
+  markWorldHTTPFailure,
+  withWorldBackoff,
+} from "./world-backoff.js";
+import {
+  CAMPFIRE_SEATED_ACTIVITY,
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
   OUTFIT_STYLE_OPTIONS,
+  SWING_RIDING_ACTIVITY,
   WORLD_REGIONS,
   flagEmoji,
   landmarkById,
@@ -38,6 +45,10 @@ import {
   nextOfficeZoneState,
 } from "./world-office-tower.js";
 import { createWorldSky } from "./world-sky.js";
+import {
+  hashNumber,
+  paintProceduralAvatarFace,
+} from "./world-avatar-face.js";
 import { WORKER_FOOTPRINT } from "./worker-footprint.js";
 // Side-effect import: ForkMesh's own QR generator publishes globalThis.ForkMeshQR,
 // used for the reward-pool treasury address board.
@@ -73,6 +84,54 @@ const REPOSITORY_CONNECTION_MAX_X = 103;
 const LEADERBOARD_ISLAND_CENTER_X = -130;
 const LEADERBOARD_CONNECTION_MIN_X = -103;
 const LEADERBOARD_CONNECTION_MAX_X = -78;
+// The island's boards used to share one 43-unit perimeter, which mixed public
+// rankings, social feeds, and operational boards into a single ring nobody
+// could read as a group. Each family now stands on a smaller circle of its
+// own, and the district apron grew to carry all three.
+const LEADERBOARD_DISTRICT_GROUND_RADIUS = 56;
+const BILLBOARD_CIRCLE_SPECS = Object.freeze({
+  // Nearest the causeway: the boards that are neither a ranking nor a feed.
+  hub: Object.freeze({
+    id: "hub",
+    label: "World boards circle",
+    x: 28,
+    z: 0,
+    minRing: 13,
+    groundMargin: 5,
+    // Three discs cut from one apron colour read as a single plaza from the
+    // air, so each circle carries its own tint and an accent rim.
+    color: "#8f96a8",
+    accent: "#77d9ff",
+  }),
+  social: Object.freeze({
+    id: "social",
+    label: "Social circle",
+    x: -14,
+    z: -28,
+    minRing: 11,
+    groundMargin: 5,
+    color: "#9a8ba6",
+    accent: "#b39bf0",
+  }),
+  leaderboards: Object.freeze({
+    id: "leaderboards",
+    label: "Leaderboard circle",
+    x: -14,
+    z: 28,
+    minRing: 11,
+    groundMargin: 5,
+    color: "#86a094",
+    accent: "#9ef7c6",
+  }),
+});
+// Width of the accent band drawn around each circle's rim.
+const BILLBOARD_CIRCLE_RIM_WIDTH = 0.7;
+// Boards sit on their circle's apron, which is itself lifted clear of the
+// district ground so the two concrete discs cannot z-fight.
+const BILLBOARD_CIRCLE_GROUND_Y = 0.05;
+const BILLBOARD_CIRCLE_SURFACE_Y = BILLBOARD_CIRCLE_GROUND_Y + 0.07;
+// Tangential clearance between neighbouring boards on a circle.
+const BILLBOARD_CIRCLE_GAP = 3;
 const MEMBER_ISLAND_CENTER_Z = 130;
 // Carry the south promenade beneath the Members Circle instead of stopping at
 // its edge. The slightly raised dirt disk hides the final stretch, so visitors
@@ -106,9 +165,73 @@ const NODE_DETAIL_EXIT_DISTANCE = 70;
 const NODE_PLAZA_MAX_RADIUS = 28;
 const NODE_LOD_MAX_INSTANCES = 64;
 const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
+// The repository ring is a room, not a billboard. Its portals stay collapsed
+// to a bare disc from anywhere else in the World, and a visitor who walks
+// inside seals a shell around the whole circle: the concentric size rings
+// expand, and every triangle outside the shell stops being drawn. The shell
+// sits between the portal ring and the edge of the ground apron so the portals
+// are enclosed without the wall clipping the concrete.
+const REPOSITORY_ENCLOSURE_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 4;
+const REPOSITORY_ENCLOSURE_HEIGHT = 14;
+const REPOSITORY_ENCLOSURE_DOME_HEIGHT = 10;
+// The only way back out. Wide enough to walk through without hunting for it,
+// narrow enough that the town beyond is a sliver rather than a second scene.
+const REPOSITORY_ENCLOSURE_DOOR_WIDTH = 7;
+const REPOSITORY_ENCLOSURE_DOOR_HEIGHT = 5.4;
+const REPOSITORY_ENCLOSURE_DOOR_HALF_ANGLE = Math.asin(
+  REPOSITORY_ENCLOSURE_DOOR_WIDTH / 2 / REPOSITORY_ENCLOSURE_RADIUS,
+);
+// Three's cylinder sweeps theta from +Z toward +X, so the door facing the town
+// causeway (world -X from the island centre) is centred on -PI/2.
+const REPOSITORY_ENCLOSURE_DOOR_THETA = -Math.PI / 2;
+// Sealing and dissolving are hysteresis boundaries, not one threshold, so a
+// visitor standing in the doorway cannot flicker the shell open and shut.
+const REPOSITORY_ENCLOSURE_SEAL_RADIUS = REPOSITORY_ENCLOSURE_RADIUS - 2.2;
+const REPOSITORY_ENCLOSURE_RELEASE_RADIUS = REPOSITORY_ENCLOSURE_RADIUS + 1.6;
+const REPOSITORY_ENCLOSURE_RAISE_MS = 620;
+const REPOSITORY_ENCLOSURE_DISSOLVE_MS = 900;
+// Folded away, the concentric rings sit exactly on the portal's outline torus
+// (1.08 of the node radius, against the outermost ring's 1.58), so the moment
+// they start to matter they grow out of the disc's own edge.
+const REPOSITORY_RING_COLLAPSED_SCALE = 1.08 / 1.58;
+const REPOSITORY_RING_EXPANSION_RATE = 4.6;
 // Avatar geometry is shared across users, while each person remains complete
 // and visible at every camera distance.
 const OFFICE_EXTERIOR_LOD_DISTANCE = 235;
+// Distance detail used to be all-or-nothing: past OFFICE_EXTERIOR_LOD_DISTANCE
+// the entire tower interior disappeared, so from anywhere else in Town the
+// Office read as an empty glass box. Keep the structure, floors, desks and
+// boards drawn at every range and drop only the individual props that are
+// heavy enough to be worth the missing view. Today that is the marine reef
+// (~16k triangles) and the mirrored logo fountain (~5.7k); every floor group
+// stays well below the limit.
+const OFFICE_DISTANT_PROP_TRIANGLE_LIMIT = 2500;
+// Standing on an Office floor you are still physically in Town, so the campus
+// keeps rendering behind the curtain wall instead of the panoramic glass
+// looking out onto an empty void. Only outdoor roots that are both heavy and
+// far enough away to be a few pixels of the view are dropped.
+const ENCLOSURE_EXTERIOR_TRIANGLE_LIMIT = 5000;
+const ENCLOSURE_EXTERIOR_KEEP_RADIUS = 200;
+
+// Triangle weight of a subtree, memoized because the level-of-detail callers
+// run inside the animation loop. Instanced draws count every copy.
+const objectTriangleWeights = new WeakMap();
+function triangleWeight(object) {
+  if (!object) return 0;
+  const cached = objectTriangleWeights.get(object);
+  if (cached !== undefined) return cached;
+  let total = 0;
+  object.traverse((child) => {
+    const geometry = child.isMesh ? child.geometry : null;
+    const position = geometry?.attributes?.position;
+    if (!position) return;
+    const vertices = geometry.index ? geometry.index.count : position.count;
+    total += (vertices / 3) * (child.isInstancedMesh ? child.count : 1);
+  });
+  const weight = Math.round(total);
+  objectTriangleWeights.set(object, weight);
+  return weight;
+}
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
@@ -572,14 +695,6 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
   broadcast: 9,
   office: 10,
 });
-// Shared by the seated pose and the presence frame so other visitors can render
-// a bench sitter sitting rather than standing on the plank. Exported because
-// the shell must keep it out of the landmark-proximity activity label.
-export const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
-// Shared by the swing-set ride and the presence frame for the same reason:
-// exported so the shell keeps it out of the landmark-proximity activity label
-// while a visitor is riding one of the town swings.
-export const SWING_RIDING_ACTIVITY = "swinging on the town swing set";
 // Legs hinge at the hip and again at the knee. Avatar fronts face local -Z, so
 // the positive pitch about X is the one that swings the knee over the front
 // edge of the bench instead of out behind the sitter; the knee then folds back
@@ -714,15 +829,6 @@ function worldRendererPixelRatio(width, height, devicePixelRatio, compact) {
     DESKTOP_RENDER_PIXEL_BUDGET / (cssWidth * cssHeight),
   );
   return Math.min(dpr, densityCap, pixelBudgetRatio);
-}
-
-function hashNumber(value) {
-  let hash = 2166136261;
-  for (const char of String(value || "")) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return Math.abs(hash >>> 0);
 }
 
 function deterministicFraction(value) {
@@ -2554,6 +2660,17 @@ const WORLD_LEADERBOARD_BOARD_STUBS = Object.freeze([
   },
 ]);
 
+// /api/leaderboards also ships "activity", "referrals", and "referring-sites".
+// Those three cards are painted by their own richer textures — live world
+// activity, the viewer's own referral link, redacted referrer URLs — so the
+// shared statistic painter must leave them alone or the two repaints fight
+// over the same face on every snapshot.
+const LEADERBOARD_CARDS_WITH_OWN_PAINTER = new Set([
+  "active-members",
+  "referrals",
+  "http-referrers",
+]);
+
 function leaderboardStatCompactNumber(value) {
   return Math.max(0, Number(value) || 0).toLocaleString("en-US");
 }
@@ -2597,209 +2714,6 @@ function leaderboardStatValue(board = {}, row = {}) {
     return `${sol.toFixed(sol >= 1 ? 2 : 4)} SOL`;
   }
   return String(row.value ?? "—").slice(0, 18).toUpperCase();
-}
-
-function leaderboardRowIsSpecial(board = {}, row = {}, index = -1) {
-  const role = String(row?.role || row?.permission || "").toLowerCase();
-  const status = String(
-    row?.status || row?.health || row?.state || "",
-  ).toLowerCase();
-  const boardId = String(board?.id || "").toLowerCase();
-  return (
-    row?.special === true ||
-    row?.featured === true ||
-    row?.verified === true ||
-    row?.isAdmin === true ||
-    row?.is_admin === true ||
-    ["owner", "admin", "maintainer"].includes(role) ||
-    ((boardId.includes("node") || boardId === "uptime") &&
-      ["online", "live", "healthy", "serving"].includes(status)) ||
-    index === 0
-  );
-}
-
-function leaderboardGridBoardDescriptors(state = {}) {
-  const boardById =
-    state.boards instanceof Map ? state.boards : new Map();
-  const active = rankedActiveLeaderboardMembers(state.members).slice(0, 5);
-  const referrals = rankedReferralRows(state.referralRows).slice(0, 5);
-  const referrers = rankedSiteReferrerRows(state.siteRows).slice(0, 5);
-  const descriptors = [
-    {
-      id: "active-members",
-      title: "ACTIVE MEMBERS",
-      subtitle: "TOTAL ACTIVE TIME",
-      accent: "#77d9ff",
-      entries: active.map((member) => ({
-        name: String(member.name || "member"),
-        value: activeDurationLabel(member.totalActiveMs ?? member.activeMs),
-        source: member,
-      })),
-    },
-    {
-      id: "referrals",
-      title: "REFERRALS",
-      subtitle: "SIGNUPS · CLICKS",
-      accent: "#9ef7c6",
-      entries: referrals.map((row) => ({
-        name: String(row.name || "member"),
-        value: `${Number(row.signups) || 0} JOIN · ${Number(row.clicks) || 0} CLICK`,
-        source: row,
-      })),
-    },
-    {
-      id: "http-referrers",
-      title: "HTTP REFERRERS",
-      subtitle: "OBSERVED VISITS",
-      accent: "#77d9ff",
-      entries: referrers.map((row) => ({
-        name: String(row.host || "site"),
-        value: `${Number(row.visits) || 0} VISITS`,
-        source: row,
-      })),
-    },
-  ];
-  const seen = new Set(descriptors.map((board) => board.id));
-  [
-    ...WORLD_LEADERBOARD_BOARD_STUBS,
-    ...boardById.values(),
-  ].forEach((fallback) => {
-    const id = String(fallback?.id || "").trim();
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    const board = boardById.get(id) || fallback;
-    descriptors.push({
-      id,
-      title: String(board.title || id).toUpperCase(),
-      subtitle: String(board.subtitle || "LIVE PUBLIC RANKINGS").toUpperCase(),
-      accent:
-        id.includes("funds") || id.includes("wallet") || id === "largest"
-          ? "#f7c96b"
-          : "#9ef7c6",
-      entries: (Array.isArray(board.rows) ? board.rows : [])
-        .slice(0, 5)
-        .map((row) => ({
-          name: String(row?.name || row?.host || "participant"),
-          value: leaderboardStatValue(board, row),
-          source: row,
-        })),
-      source: board,
-    });
-  });
-  return descriptors.slice(0, 25);
-}
-
-function leaderboardGridTexture(THREE, state = {}) {
-  const boards = leaderboardGridBoardDescriptors(state);
-  return canvasTexture(THREE, 2048, 2048, (context) => {
-    const width = 2048;
-    const height = 2048;
-    context.clearRect(0, 0, width, height);
-    roundedRect(context, 7, 7, width - 14, height - 14, 28);
-    context.fillStyle = "rgba(6,17,14,0.98)";
-    context.fill();
-    context.strokeStyle = "#9ef7c6";
-    context.lineWidth = 10;
-    context.stroke();
-    context.textBaseline = "middle";
-    context.fillStyle = "#f1fff6";
-    context.font = '800 62px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText("FORKMESH LEADERBOARDS", 48, 62);
-    context.fillStyle = "#77d9ff";
-    context.font = '600 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      "5 × 5 LIVE GRID · EACH CATEGORY LISTS MEMBERS OR NODES VERTICALLY",
-      50,
-      116,
-    );
-    context.fillStyle = "#f7c96b";
-    context.textAlign = "right";
-    context.fillText("★ SPECIAL USER / LIVE NODE", width - 48, 116);
-    context.textAlign = "left";
-    const gridLeft = 38;
-    const gridTop = 154;
-    const gridWidth = width - gridLeft * 2;
-    const gridHeight = height - gridTop - 38;
-    const cellWidth = gridWidth / 5;
-    const cellHeight = gridHeight / 5;
-    for (let index = 0; index < 25; index += 1) {
-      const column = index % 5;
-      const row = Math.floor(index / 5);
-      const x = gridLeft + column * cellWidth;
-      const y = gridTop + row * cellHeight;
-      const board = boards[index];
-      context.fillStyle =
-        (column + row) % 2 === 0
-          ? "rgba(21,58,48,0.45)"
-          : "rgba(10,31,26,0.72)";
-      context.fillRect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
-      context.strokeStyle = board?.accent || "rgba(99,125,113,0.45)";
-      context.lineWidth = board ? 4 : 2;
-      context.strokeRect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
-      if (!board) {
-        context.fillStyle = "#60756b";
-        context.font = '650 20px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText("OPEN CATEGORY", x + 22, y + 38);
-        continue;
-      }
-      context.fillStyle = board.accent;
-      context.fillRect(x + 4, y + 4, 8, cellHeight - 8);
-      context.fillStyle = "#f1fff6";
-      context.font = '800 24px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(
-        String(board.title).slice(0, 25),
-        x + 24,
-        y + 34,
-        cellWidth - 44,
-      );
-      context.fillStyle = board.accent;
-      context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(
-        String(board.subtitle).slice(0, 34),
-        x + 24,
-        y + 66,
-        cellWidth - 44,
-      );
-      const entries = board.entries.length
-        ? board.entries
-        : [{ name: "waiting for public data", value: "—", source: {} }];
-      entries.slice(0, 5).forEach((entry, entryIndex) => {
-        const entryY = y + 106 + entryIndex * 47;
-        const special = leaderboardRowIsSpecial(
-          board.source || board,
-          entry.source,
-          entryIndex,
-        );
-        if (special) {
-          context.fillStyle = "rgba(247,201,107,0.13)";
-          context.fillRect(
-            x + 18,
-            entryY - 20,
-            cellWidth - 38,
-            40,
-          );
-        }
-        context.fillStyle = special ? "#f7c96b" : "#d9ffea";
-        context.font = '750 17px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(
-          `${special ? "★" : entryIndex + 1 + "."} ${String(entry.name).slice(0, 16)}`,
-          x + 24,
-          entryY,
-          cellWidth * 0.55,
-        );
-        context.fillStyle = special ? "#ffe29b" : "#86a99c";
-        context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
-        context.textAlign = "right";
-        context.fillText(
-          String(entry.value || "—").toUpperCase().slice(0, 18),
-          x + cellWidth - 20,
-          entryY,
-          cellWidth * 0.4,
-        );
-        context.textAlign = "left";
-      });
-    }
-  });
 }
 
 function leaderboardStatTexture(THREE, board = {}) {
@@ -3481,7 +3395,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:admin-record-detail", task: "Admin database record detail pages", detail: "Every visible database row opens a read-only page that lists the complete redacted record vertically, with a clear route back to its table.", estimate: "implemented · focused QA", done: true },
   { key: "task:member-verification-admin-link", task: "Member verification + admin detail", detail: "Member panels show a red X for every non-guest account without a verified email, and the privileged admin-detail action opens safely in a new tab.", estimate: "implemented · focused QA", done: true },
   { key: "task:engineering-debug-panel", task: "Engineering live debug control panel", detail: "A full in-room panel samples FPS, longest frame, draw calls, triangles, geometries, textures, GPU programs, animation callbacks, interactive targets, members, heap, and pixel ratio with green, orange, or red optimization states.", estimate: "implemented · focused QA", done: true },
-  { key: "task:leaderboard-grid", task: "One raised square 5×5 leaderboard", detail: "Every public leaderboard and statistic occupies its own cell in one square wall; the center marker and separate physical boards are gone, and every footing, post, frame, face, and label clears the terrain.", estimate: "verified · ready for QA", done: true },
+  { key: "task:billboard-circles", task: "Three billboard circles + leaderboard cards", detail: "The island's single perimeter is split into a social circle, a leaderboard circle, and a world-boards circle. Every public ranking is a physical card again instead of one 5×5 wall, and nothing on any circle is fetched until a visitor walks onto it — the ring above a board spins only while that approach's request is open.", estimate: "implemented · focused QA", done: true },
   { key: "task:reward-node-download", task: "Front SOL sign + start-node action", detail: "The treasury QR now sits at the front midpoint of the first node ring, with a small Start a node control that opens the desktop download page in a new window.", estimate: "verified · ready for QA", done: true },
   { key: "task:world-member-path", task: "One path to the Members Circle", detail: "The overlapping south path and member promenade are one concrete-brick route that runs beneath the dirt; the entrance sign is gone and the START HERE map faces inward from the far side.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-office-path", task: "One path to the Office", detail: "The north town route, elevated bridge, and Office approach now meet edge-to-edge at one width; the stacked land promenade and doubled slabs are removed.", estimate: "implemented · focused QA", done: true },
@@ -3519,7 +3433,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:world-roof-and-seating", task: "Parachute roof jump and universal seating", detail: "Space exits the roof with checkout; a mini parachute deploys on descent, caps fall speed, and collapses after landing, while every marked chair and park bench accepts a sitter.", estimate: "verified · ready for QA", done: true },
   { key: "task:world-beach-road", task: "Driveable road and beach", detail: "A connected road, usable car, local horizon, water, sand, and beach seating now extend the city.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-bike-perimeter", task: "Clear perimeter bike route", detail: "The continuous bike loop now runs outside activity areas and retains two usable bicycles.", estimate: "ready for deploy · in QA", done: true },
-  { key: "task:world-panel-layout", task: "Aligned boards and leaderboard", detail: "Public billboards now form one clean circle with the obsolete center marker removed.", estimate: "ready for deploy · in QA", done: true },
+  { key: "task:world-panel-layout", task: "Aligned boards and leaderboard", detail: "Public billboards form clean circles with the obsolete center marker removed.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-github-theme", task: "GitHub interface design system", detail: "World overlays now share GitHub-dark surfaces, borders, spacing, controls, and focus treatment.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-time-stars-textures", task: "Daylight, stars, time, textures", detail: "Local daylight, chest time, organization stars, and preloaded optimized textures now render together.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-node-delete-regression", task: "Reliable node delete and effect", detail: "Visible machine and node aliases resolve to one canonical deletion target with a cabinet removal effect.", estimate: "ready for deploy · in QA", done: true },
@@ -5803,85 +5717,10 @@ function avatarFaceTexture(THREE, emoji) {
   return { texture, color: color || AVATAR_EMOJI_SKIN_COLOR };
 }
 
-// A stable, code-native portrait for accounts that have not uploaded a photo.
-// The same public identity key always selects the same skin, eyes, brows,
-// mouth, freckles and glasses, so people remain recognizable across devices
-// without storing another image or sending image bytes over presence.
 function proceduralAvatarFaceTexture(THREE, identityKey) {
-  const seed = hashNumber(String(identityKey || "forkmesh-visitor"));
-  const skins = ["#f6d8b6", "#e9bb8c", "#c98555", "#8e5738", "#5d392a"];
-  const eyes = ["#30231c", "#31576d", "#3f633b", "#725138"];
-  const skin = skins[seed % skins.length];
-  const eye = eyes[(seed >>> 3) % eyes.length];
-  const eyeSpacing = 19 + ((seed >>> 7) % 7);
-  const eyeRadius = 4 + ((seed >>> 10) % 3);
-  const browLift = (seed >>> 13) % 7;
-  const smile = (seed >>> 16) % 3;
-  const glasses = ((seed >>> 19) & 3) === 0;
-  const freckles = ((seed >>> 22) & 3) === 0;
+  let skin = AVATAR_EMOJI_SKIN_COLOR;
   const texture = canvasTexture(THREE, 128, 128, (context) => {
-    context.fillStyle = skin;
-    context.fillRect(0, 0, 128, 128);
-    context.lineCap = "round";
-    context.lineJoin = "round";
-
-    context.strokeStyle = "#553a2d";
-    context.lineWidth = 5;
-    context.beginPath();
-    context.moveTo(64 - eyeSpacing - 8, 42 - browLift);
-    context.quadraticCurveTo(64 - eyeSpacing, 38 - browLift, 64 - eyeSpacing + 8, 42 - browLift);
-    context.moveTo(64 + eyeSpacing - 8, 42 - (6 - browLift));
-    context.quadraticCurveTo(64 + eyeSpacing, 38 - (6 - browLift), 64 + eyeSpacing + 8, 42 - (6 - browLift));
-    context.stroke();
-
-    context.fillStyle = "#ffffff";
-    [64 - eyeSpacing, 64 + eyeSpacing].forEach((x) => {
-      context.beginPath();
-      context.ellipse(x, 57, eyeRadius + 3, eyeRadius + 5, 0, 0, Math.PI * 2);
-      context.fill();
-      context.fillStyle = eye;
-      context.beginPath();
-      context.arc(x, 58, eyeRadius, 0, Math.PI * 2);
-      context.fill();
-      context.fillStyle = "#ffffff";
-      context.beginPath();
-      context.arc(x - 1, 56, 1.5, 0, Math.PI * 2);
-      context.fill();
-      context.fillStyle = "#ffffff";
-    });
-
-    context.strokeStyle = "#9a6245";
-    context.lineWidth = 4;
-    context.beginPath();
-    context.moveTo(64, 61);
-    context.quadraticCurveTo(58 + (seed % 13), 72, 65, 76);
-    context.stroke();
-
-    context.strokeStyle = "#5c3028";
-    context.lineWidth = 5;
-    context.beginPath();
-    context.moveTo(43, 88);
-    context.quadraticCurveTo(64, 100 + smile * 4, 85, 88 - smile * 2);
-    context.stroke();
-
-    if (glasses) {
-      context.strokeStyle = "#253a39";
-      context.lineWidth = 4;
-      context.strokeRect(38 - eyeSpacing / 5, 47, 29, 23);
-      context.strokeRect(61 + eyeSpacing / 5, 47, 29, 23);
-      context.beginPath();
-      context.moveTo(67, 56);
-      context.lineTo(73, 56);
-      context.stroke();
-    }
-    if (freckles) {
-      context.fillStyle = "rgba(104,56,42,0.55)";
-      [-24, -17, -10, 10, 17, 24].forEach((offset, index) => {
-        context.beginPath();
-        context.arc(64 + offset, 75 + (index % 2) * 3, 1.5, 0, Math.PI * 2);
-        context.fill();
-      });
-    }
+    skin = paintProceduralAvatarFace(context, identityKey);
   });
   return { texture, color: skin };
 }
@@ -10721,6 +10560,46 @@ function repositoryFollowerIconTexture(THREE, follower, accent, image = null) {
   });
 }
 
+// How long a freshly risen portal keeps shimmering while its size tree is
+// still being assembled. A map that never arrives fades out instead of leaving
+// a permanent decoration on a repository nothing is happening to.
+const REPOSITORY_SPARKLE_MS = 11_000;
+
+// The motes that orbit a portal while its size map is being built. Seeds are
+// carried on the object so the animation loop can move every mote from one
+// buffer write per frame instead of allocating.
+function makeRepositorySizeMapSparkle(THREE, radius, label) {
+  const count = 26;
+  const positions = new Float32Array(count * 3);
+  const seeds = new Float32Array(count * 3);
+  for (let index = 0; index < count; index += 1) {
+    const angle = (index / count) * Math.PI * 2;
+    // Radius, vertical phase, and angular speed. The staggered radii read as a
+    // shell of dust around the disk rather than a single flat ring.
+    seeds[index * 3] = radius * (1.06 + (index % 5) * 0.16);
+    seeds[index * 3 + 1] = angle;
+    seeds[index * 3 + 2] = 0.9 + (index % 7) * 0.14;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const sparkle = new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
+      color: "#a5f3fc",
+      size: 0.17,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  sparkle.name = `repository-size-map-sparkle:${label}`;
+  sparkle.position.z = 0.14;
+  sparkle.userData.repositorySparkleSeeds = seeds;
+  return sparkle;
+}
+
 function makeRepositoryFollowerIcon(THREE, follower) {
   const seed = repositoryFollowerSeed(follower);
   const accent =
@@ -11122,6 +11001,139 @@ function repositoryWedgeGeometry(
   return geometry;
 }
 
+// The shell that closes over the repository ring. It is one opaque, seamless
+// surface — wall, transom above the doorway, and a dome cap — because its job
+// is not decoration: while it stands, every root outside it stops being drawn,
+// and the shell is what the visitor sees instead. The single gap is a real
+// doorway with a frame and a lit sign, and the walker's wall collider uses the
+// same door angle, so the only way through the surface is the way it looks.
+function createRepositoryEnclosure(THREE) {
+  const group = new THREE.Group();
+  group.name = "repository-enclosure";
+  group.position.set(REPOSITORY_ISLAND_CENTER_X, 0, 0);
+  const doorHalf = REPOSITORY_ENCLOSURE_DOOR_HALF_ANGLE;
+  const doorTheta = REPOSITORY_ENCLOSURE_DOOR_THETA;
+  const radius = REPOSITORY_ENCLOSURE_RADIUS;
+  const height = REPOSITORY_ENCLOSURE_HEIGHT;
+  // One material for the whole shell: the raise and dissolve effects animate a
+  // single opacity rather than walking a subtree of materials each frame.
+  const shellMaterial = makeMaterial(THREE, "#0d2a35", {
+    metalness: 0.22,
+    roughness: 0.44,
+    emissive: "#12586e",
+    emissiveIntensity: 0.42,
+    transparent: true,
+    opacity: 1,
+    side: THREE.DoubleSide,
+  });
+  const trimMaterial = makeMaterial(THREE, "#8fe6ff", {
+    metalness: 0.3,
+    roughness: 0.26,
+    emissive: "#2ea6cf",
+    emissiveIntensity: 1.05,
+    transparent: true,
+    opacity: 1,
+  });
+  const wall = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      radius,
+      radius,
+      height,
+      // The shell is a triangle budget, not a model. Every segment it spends on
+      // itself comes out of what hiding the World behind it buys back, so the
+      // whole thing is kept under ~1.5k triangles.
+      72,
+      1,
+      true,
+      doorTheta + doorHalf,
+      Math.PI * 2 - doorHalf * 2,
+    ),
+    shellMaterial,
+  );
+  wall.name = "repository-enclosure-wall";
+  wall.position.y = height / 2;
+  group.add(wall);
+  // The doorway is an opening, not a missing wall: the shell closes again above
+  // the lintel so the town beyond stays a doorway-sized sliver.
+  const transomHeight = height - REPOSITORY_ENCLOSURE_DOOR_HEIGHT;
+  const transom = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      radius,
+      radius,
+      transomHeight,
+      12,
+      1,
+      true,
+      doorTheta - doorHalf,
+      doorHalf * 2,
+    ),
+    shellMaterial,
+  );
+  transom.name = "repository-enclosure-door-transom";
+  transom.position.y = REPOSITORY_ENCLOSURE_DOOR_HEIGHT + transomHeight / 2;
+  group.add(transom);
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 48, 7, 0, Math.PI * 2, 0, Math.PI / 2),
+    shellMaterial,
+  );
+  dome.name = "repository-enclosure-dome";
+  dome.position.y = height;
+  dome.scale.y = REPOSITORY_ENCLOSURE_DOME_HEIGHT / radius;
+  group.add(dome);
+  const rim = new THREE.Mesh(
+    new THREE.TorusGeometry(radius, 0.14, 4, 72),
+    trimMaterial,
+  );
+  rim.name = "repository-enclosure-rim";
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = height;
+  group.add(rim);
+  // Door frame. The posts sit on the two cut edges of the wall sweep, so the
+  // frame and the collider's door arc cannot drift apart.
+  [doorTheta - doorHalf, doorTheta + doorHalf].forEach((theta, index) => {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.42, REPOSITORY_ENCLOSURE_DOOR_HEIGHT, 0.62),
+      trimMaterial,
+    );
+    post.name = `repository-enclosure-door-post-${index + 1}`;
+    post.position.set(
+      Math.sin(theta) * radius,
+      REPOSITORY_ENCLOSURE_DOOR_HEIGHT / 2,
+      Math.cos(theta) * radius,
+    );
+    post.rotation.y = theta;
+    group.add(post);
+  });
+  const lintel = new THREE.Mesh(
+    new THREE.BoxGeometry(0.42, 0.36, REPOSITORY_ENCLOSURE_DOOR_WIDTH + 0.6),
+    trimMaterial,
+  );
+  lintel.name = "repository-enclosure-door-lintel";
+  lintel.position.set(
+    -radius,
+    REPOSITORY_ENCLOSURE_DOOR_HEIGHT,
+    0,
+  );
+  group.add(lintel);
+  const sign = repositorySizeLabelSprite(
+    THREE,
+    "EXIT",
+    "WALK THROUGH TO LEAVE",
+    "#9ef7c6",
+  );
+  sign.name = "repository-enclosure-door-sign";
+  // Above the doorway on the inside face, so the way out is readable from
+  // anywhere in the room rather than only once you are standing at the wall.
+  sign.scale.set(6, 1.64, 1);
+  // Clear of the import kiosk, which stands on the centre line to the door.
+  sign.position.set(-radius + 1.6, REPOSITORY_ENCLOSURE_DOOR_HEIGHT + 2.4, 0);
+  group.add(sign);
+  group.userData.repositoryEnclosureShell = shellMaterial;
+  group.userData.repositoryEnclosureTrim = trimMaterial;
+  group.userData.repositoryEnclosureSign = sign;
+  return group;
+}
+
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const content = new THREE.Group();
@@ -11136,8 +11148,9 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
       REPOSITORY_GROUND_RADIUS,
     ),
   );
-  // Repository portals stay open on the east island so their charts remain
-  // readable without an enclosure or doorway transition.
+  // The island itself is always open — no doorway transition, no second scene
+  // to load. The shell in createRepositoryEnclosure only closes over it while a
+  // visitor is actually standing inside the portal ring.
   const ringMaterial = makeMaterial(THREE, "#77d9ff", {
     metalness: 0.2,
     roughness: 0.28,
@@ -15932,52 +15945,8 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     );
     group.add(facadeColumn);
   }
-  const floorAccentColors = [
-    "#9ef7c6",
-    "#f7c96b",
-    "#77d9ff",
-    "#ff8ab6",
-    "#ff7189",
-    "#64d6ff",
-    "#b6ef7e",
-    "#c7a0ff",
-    "#ffaf75",
-    "#a7dfff",
-  ];
-  OFFICE_FLOORS.forEach((floor, index) => {
-    const accent = floorAccentColors[index];
-    const plaqueTexture = canvasTexture(THREE, 768, 176, (context) => {
-      context.fillStyle = "#071714";
-      context.fillRect(0, 0, 768, 176);
-      context.strokeStyle = accent;
-      context.lineWidth = 8;
-      context.strokeRect(5, 5, 758, 166);
-      context.fillStyle = accent;
-      context.font = '900 64px "ForkMesh Mono", ui-monospace, monospace';
-      context.textAlign = "left";
-      context.textBaseline = "middle";
-      context.fillText(String(floor.level + 1).padStart(2, "0"), 28, 88);
-      context.fillStyle = "#effff8";
-      context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(floor.label.toUpperCase(), 150, 88, 580);
-    });
-    const plaque = cloneSharedPlane(
-      THREE,
-      12,
-      2.75,
-      new THREE.MeshBasicMaterial({
-        map: plaqueTexture,
-        toneMapped: false,
-      }),
-    );
-    plaque.name = `forkmesh-office-facade-floor-${floor.id}`;
-    plaque.position.set(
-      -76,
-      floor.level * OFFICE_FLOOR_HEIGHT + OFFICE_FLOOR_HEIGHT / 2,
-      OFFICE_FRONT_Z + 0.26,
-    );
-    group.add(plaque);
-  });
+  // Floor plaques are intentionally hidden outside the Office so the tower facade
+  // appears without floor labels.
 
   const signTexture = canvasTexture(THREE, 1024, 192, (context) => {
     context.fillStyle = "#0b1713";
@@ -16297,6 +16266,7 @@ export function createWorldScene({
   identity,
   initialSpawn = null,
   initialDisabledElements = [],
+  initialDeletedObjects = [],
   reducedMotion = false,
   forceCompactRenderer = false,
   onLandmarkSelect = () => {},
@@ -16323,6 +16293,16 @@ export function createWorldScene({
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
   onBuildBoardNearby = () => {},
+  onBuildBoardAway = () => {},
+  onQaBoardNearby = () => {},
+  onQaBoardAway = () => {},
+  onLobbyLinkKioskNearby = () => {},
+  onLeaderboardCircleNearby = () => {},
+  onLeaderboardCircleAway = () => {},
+  onSocialCircleNearby = () => {},
+  onSocialCircleAway = () => {},
+  onWorldBoardsCircleNearby = () => {},
+  onWorldBoardsCircleAway = () => {},
   onBuildVideoSelect = () => {},
   onBuildBoardReorder = () => {},
   onBuildIssueAssign = () => {},
@@ -16335,6 +16315,7 @@ export function createWorldScene({
   onOfficeMovement = () => {},
   onOfficeElevatorSound = () => {},
   onLocationChange = () => {},
+  onRepositoryDistrictEnter = () => {},
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
@@ -16662,6 +16643,9 @@ export function createWorldScene({
         if (typeof live === "function") element.liveness.set(root, live);
         if (disabledWorldElements.has(id)) detachElementRoot(element, root);
       });
+    // A piece an administrator deleted before the last reload comes out again
+    // as soon as the element that owns it exists.
+    applyStoredObjectDeletions(element);
     return element;
   }
 
@@ -16675,6 +16659,10 @@ export function createWorldScene({
 
   function pruneDeadElementRoots(element) {
     element.roots.forEach((root) => {
+      // A root an administrator right-click deleted is parentless on purpose
+      // and must keep its registration, or restoring it would hand back a
+      // root no element owns any more.
+      if (deletedWorldObjectNodes.has(root)) return;
       const live = element.liveness.get(root);
       const detachedHere = element.detached.has(root);
       // Externally removed (a despawned avatar) or reported dead: forget it.
@@ -16756,6 +16744,7 @@ export function createWorldScene({
   // Elements toggle, the diagnostics cost breakdown and disable-on-load for
   // free.
   const storeElementInstances = new Map();
+  const storeElementBackoff = createWorldBackoff();
 
   // An element may only read the endpoints its manifest declared, which the
   // store disclosed before purchase. Anything else is refused here rather than
@@ -16767,12 +16756,25 @@ export function createWorldScene({
       if (!allowed.has(target)) {
         throw new Error(`${manifest.id} may not read ${target}`);
       }
-      const response = await fetch(target, {
-        credentials: "same-origin",
-        headers: { accept: "application/json" },
-      });
-      if (!response.ok) throw new Error(`${target} failed`);
-      return response.json();
+      // An element owns its own refresh loop, so a purchased plugin polling a
+      // failing endpoint is exactly the case the shared cooldown exists for.
+      return withWorldBackoff(
+        storeElementBackoff,
+        `GET:${target}`,
+        async () => {
+          const response = await fetch(target, {
+            credentials: "same-origin",
+            headers: { accept: "application/json" },
+          });
+          if (!response.ok) {
+            throw markWorldHTTPFailure(
+              new Error(`${target} failed`),
+              response,
+            );
+          }
+          return response.json();
+        },
+      );
     };
   }
 
@@ -16942,6 +16944,315 @@ export function createWorldScene({
           describeElementPart(node, index, steps, interactiveSet),
         ),
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Right-click deletion. An administrator (or anyone running the debug panel)
+  // can aim at any single thing in the world and pull it straight out of the
+  // game instead of hunting for its row in the Elements tree. A pick resolves
+  // whatever sits under the cursor to the element that owns it and to an index
+  // path inside that element — the exact addressing the Elements panel already
+  // uses — so a deletion survives a reload and can always be undone. This is
+  // local render state: nothing is sent anywhere and no other visitor's world
+  // changes.
+  const deletedWorldObjects = new Map();
+  const deletedWorldObjectNodes = new Set();
+  // Keys picked in this session, so a menu action deletes the node the visitor
+  // actually pointed at rather than re-walking indices that a sibling deletion
+  // may have shifted underneath it.
+  const pickedWorldObjects = new Map();
+  const storedObjectDeletions = new Set(
+    (Array.isArray(initialDeletedObjects) ? initialDeletedObjects : [])
+      .map((key) => String(key || "").slice(0, 160))
+      .filter(Boolean),
+  );
+
+  function worldObjectKey(elementId, path) {
+    return `${elementId}:${path.join(".")}`;
+  }
+
+  function parseWorldObjectKey(key) {
+    const raw = String(key || "");
+    const separator = raw.lastIndexOf(":");
+    if (separator <= 0) return null;
+    const elementId = raw.slice(0, separator);
+    const path = raw
+      .slice(separator + 1)
+      .split(".")
+      .map((step) => Number(step))
+      .filter((step) => Number.isInteger(step) && step >= 0);
+    if (!elementId || !path.length) return null;
+    return { elementId, path };
+  }
+
+  // listWorldElementParts answers "what is inside this node"; deletion needs
+  // the node itself, addressed by the same path.
+  function elementPartNode(element, path) {
+    let nodes = elementPartRoots(element);
+    let node = null;
+    for (const index of path) {
+      node = nodes[index];
+      if (!node) return null;
+      nodes = node.children || [];
+    }
+    return node;
+  }
+
+  // The reverse walk: from a raycast hit back up to the element part root that
+  // contains it, recording the child index at every step.
+  function elementPartPathFor(element, object) {
+    const partRoots = elementPartRoots(element);
+    const descent = [];
+    let current = object;
+    while (current) {
+      const index = partRoots.indexOf(current);
+      if (index >= 0) {
+        const path = [index];
+        let parent = current;
+        for (const node of descent) {
+          const at = (parent.children || []).indexOf(node);
+          if (at < 0) return null;
+          path.push(at);
+          parent = node;
+        }
+        return path;
+      }
+      descent.unshift(current);
+      current = current.parent;
+    }
+    return null;
+  }
+
+  function elementOwning(object) {
+    const owners = new Map();
+    worldElements.forEach((element) => {
+      element.roots.forEach((root) => {
+        if (!owners.has(root)) owners.set(root, element);
+      });
+    });
+    let current = object;
+    while (current) {
+      const element = owners.get(current);
+      if (element) return element;
+      current = current.parent;
+    }
+    return null;
+  }
+
+  function detachSceneNode(node) {
+    const parent = node?.parent || null;
+    if (!parent) return null;
+    const index = parent.children.indexOf(node);
+    const interactives = [];
+    node.traverse?.((child) => {
+      let at = interactive.indexOf(child);
+      while (at >= 0) {
+        interactives.push(child);
+        interactive.splice(at, 1);
+        at = interactive.indexOf(child);
+      }
+    });
+    parent.remove(node);
+    return { parent, index, interactives };
+  }
+
+  function attachSceneNode(node, record) {
+    const parent = record?.parent;
+    if (!parent || !node) return false;
+    parent.add(node);
+    // Index paths address every part of the world, so a restored node goes
+    // back where it was rather than onto the end of its parent's children.
+    const children = parent.children;
+    const at = children.indexOf(node);
+    if (at >= 0 && record.index >= 0 && record.index < children.length) {
+      children.splice(at, 1);
+      children.splice(record.index, 0, node);
+    }
+    record.interactives?.forEach((child) => {
+      if (!interactive.includes(child)) interactive.push(child);
+    });
+    return true;
+  }
+
+  function deleteResolvedWorldObject(key, element, node) {
+    if (!key || !node || deletedWorldObjects.has(key)) return false;
+    const label = sceneObjectLabel(node);
+    const record = detachSceneNode(node);
+    if (!record) return false;
+    deletedWorldObjectNodes.add(node);
+    deletedWorldObjects.set(key, {
+      ...record,
+      key,
+      node,
+      label,
+      elementId: element?.id || "",
+      elementLabel: element?.label || "Unregistered",
+    });
+    // Same reason the Elements toggle rebuilds it: a deleted caster must not
+    // leave its shadow painted on the ground.
+    if (renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true;
+    return true;
+  }
+
+  // Deletions restored from storage are resolved against the element as it was
+  // just built — every path first, then every detach — so two deletions inside
+  // one element cannot shift each other's indices.
+  function applyStoredObjectDeletions(element) {
+    if (!storedObjectDeletions.size) return;
+    const resolved = [];
+    storedObjectDeletions.forEach((key) => {
+      const parsed = parseWorldObjectKey(key);
+      if (!parsed || parsed.elementId !== element.id) return;
+      const node = elementPartNode(element, parsed.path);
+      if (node) resolved.push({ key, node });
+    });
+    resolved.forEach(({ key, node }) => {
+      storedObjectDeletions.delete(key);
+      deleteResolvedWorldObject(key, element, node);
+    });
+  }
+
+  function describeDeletionTarget(scope, key, node, path, interactiveSet) {
+    const index = path.length ? path[path.length - 1] : 0;
+    return {
+      ...describeElementPart(node, index, path.slice(0, -1), interactiveSet),
+      scope,
+      key,
+      label: sceneObjectLabel(node),
+    };
+  }
+
+  // What is under the cursor, offered at two levels: the exact object that was
+  // hit, and the whole named piece it belongs to — a single plank is rarely
+  // what someone means by "delete that bench".
+  function pickWorldObject({ clientX, clientY } = {}) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+    pointerCoordinates({ clientX, clientY });
+    raycaster.setFromCamera(pointer, camera);
+    const hit = raycaster
+      .intersectObject(scene, true)
+      .find(
+        ({ object }) =>
+          object &&
+          object.userData?.raycastProxy !== true &&
+          objectIsEffectivelyVisible(object),
+      );
+    if (!hit) return null;
+    pickedWorldObjects.clear();
+    const element = elementOwning(hit.object);
+    const interactiveSet = new Set(interactive);
+    const targets = [];
+    const remember = (target, node) => {
+      pickedWorldObjects.set(target.key, { node, element });
+      targets.push(target);
+    };
+    const path = element ? elementPartPathFor(element, hit.object) : null;
+    if (element && path) {
+      remember(
+        describeDeletionTarget(
+          "object",
+          worldObjectKey(element.id, path),
+          hit.object,
+          path,
+          interactiveSet,
+        ),
+        hit.object,
+      );
+      if (path.length > 1) {
+        const groupPath = path.slice(0, 1);
+        const groupNode = elementPartNode(element, groupPath);
+        if (groupNode) {
+          remember(
+            describeDeletionTarget(
+              "group",
+              worldObjectKey(element.id, groupPath),
+              groupNode,
+              groupPath,
+              interactiveSet,
+            ),
+            groupNode,
+          );
+        }
+      }
+    } else {
+      // Scenery no element claims — the store plugin sandbox, a stray helper.
+      // It can still be deleted for this session; only element-addressed
+      // deletions can be written down and replayed after a reload.
+      remember(
+        describeDeletionTarget(
+          "object",
+          `scene:${hit.object.uuid}`,
+          hit.object,
+          [0],
+          interactiveSet,
+        ),
+        hit.object,
+      );
+    }
+    return {
+      elementId: element?.id || "",
+      elementLabel: element?.label || "Unregistered",
+      elementCategory: element?.category || "",
+      elementEnabled: element ? worldElementEnabled(element.id) : false,
+      elementSystem: element?.systemOnly === true,
+      persistent: Boolean(element && path),
+      distance: Math.round((Number(hit.distance) || 0) * 10) / 10,
+      targets,
+    };
+  }
+
+  function deleteWorldObject(key) {
+    const id = String(key || "");
+    if (!id || deletedWorldObjects.has(id)) return false;
+    const picked = pickedWorldObjects.get(id);
+    let node = picked?.node || null;
+    let element = picked?.element || null;
+    if (!node) {
+      const parsed = parseWorldObjectKey(id);
+      element = parsed ? worldElements.get(parsed.elementId) || null : null;
+      node = element ? elementPartNode(element, parsed.path) : null;
+    }
+    return deleteResolvedWorldObject(id, element, node);
+  }
+
+  function restoreWorldObject(key) {
+    const id = String(key || "");
+    const record = deletedWorldObjects.get(id);
+    if (!record) {
+      // Never resolved this session (its element has not been built yet):
+      // dropping the stored key is still a restore.
+      return storedObjectDeletions.delete(id);
+    }
+    deletedWorldObjects.delete(id);
+    deletedWorldObjectNodes.delete(record.node);
+    attachSceneNode(record.node, record);
+    if (renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true;
+    return true;
+  }
+
+  function restoreAllWorldObjects() {
+    const keys = [...deletedWorldObjects.keys(), ...storedObjectDeletions];
+    keys.forEach((key) => restoreWorldObject(key));
+    return keys.length;
+  }
+
+  function listDeletedWorldObjects() {
+    return [
+      ...[...deletedWorldObjects.values()].map((record) => ({
+        key: record.key,
+        label: record.label,
+        elementId: record.elementId,
+        elementLabel: record.elementLabel,
+        pending: false,
+      })),
+      ...[...storedObjectDeletions].map((key) => ({
+        key,
+        label: key,
+        elementId: parseWorldObjectKey(key)?.elementId || "",
+        elementLabel: "",
+        pending: true,
+      })),
+    ];
   }
 
   // Unnamed meshes are the norm, so fall back to the nearest named ancestor
@@ -17357,7 +17668,7 @@ export function createWorldScene({
     setShadows(bike);
     world.add(bike);
     registerWorldElement("bikes", "World bikes", "Vehicles & rides", bike);
-    const state = { bike, wheels, seat, moving: false, angle: 0 };
+    const state = { bike, wheels, seat, hint, moving: false, angle: 0 };
     placeBikeOnLane(state, along * Math.PI * 2);
     bikeStates.push(state);
   }
@@ -17974,7 +18285,11 @@ export function createWorldScene({
   leaderboardInterior.name = "forkmesh-leaderboard-interior";
   leaderboardInterior.userData.leaderboardInterior = true;
   leaderboardInterior.add(
-    createDistrictGroundCircle(THREE, "leaderboards"),
+    createDistrictGroundCircle(
+      THREE,
+      "leaderboards",
+      LEADERBOARD_DISTRICT_GROUND_RADIUS,
+    ),
   );
   leaderboardDistrict.add(leaderboardInterior);
   leaderboardDistrict.userData.leaderboardInterior = leaderboardInterior;
@@ -18012,40 +18327,168 @@ export function createWorldScene({
     "leaderboard-district", "Leaderboard district", "Districts",
     leaderboardDistrict,
   );
-  const billboardIslandObjects = [];
+  const billboardCircles = new Map();
   const billboardIslandBounds = new THREE.Box3();
-  const relayoutBillboardCircle = () => {
-    const count = billboardIslandObjects.length;
-    billboardIslandObjects.forEach(({ object }, index) => {
-      const angle =
-        -Math.PI / 2 + (index / Math.max(1, count)) * Math.PI * 2;
-      const radius = 43;
+  const billboardCircleOrigin = new THREE.Vector3();
+  // A board only fetches once somebody walks up to its circle, so each one
+  // carries the ring that says a refresh is in flight. They are keyed by feed
+  // because several boards (the three social banners) share one request.
+  const billboardFeedRecords = new Map();
+  const billboardSpinners = [];
+  function billboardCircle(id) {
+    const spec =
+      BILLBOARD_CIRCLE_SPECS[id] || BILLBOARD_CIRCLE_SPECS.hub;
+    let circle = billboardCircles.get(spec.id);
+    if (circle) return circle;
+    const group = new THREE.Group();
+    group.name = `forkmesh-${spec.id}-billboard-circle`;
+    group.position.set(spec.x, 0, spec.z);
+    const groundMaterial = districtGroundMaterial(THREE, "leaderboards");
+    groundMaterial.color = new THREE.Color(spec.color);
+    const ground = new THREE.Mesh(
+      new THREE.CircleGeometry(spec.minRing + spec.groundMargin, 96),
+      groundMaterial,
+    );
+    ground.name = `forkmesh-${spec.id}-circle-ground`;
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = BILLBOARD_CIRCLE_GROUND_Y;
+    ground.receiveShadow = true;
+    ground.userData.ground = true;
+    group.add(ground);
+    const rim = new THREE.Mesh(
+      new THREE.RingGeometry(
+        spec.minRing + spec.groundMargin - BILLBOARD_CIRCLE_RIM_WIDTH,
+        spec.minRing + spec.groundMargin,
+        96,
+      ),
+      new THREE.MeshBasicMaterial({ color: spec.accent, toneMapped: false }),
+    );
+    rim.name = `forkmesh-${spec.id}-circle-rim`;
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.y = BILLBOARD_CIRCLE_GROUND_Y + 0.01;
+    group.add(rim);
+    leaderboardInterior.add(group);
+    circle = { spec, group, ground, rim, objects: [], radius: spec.minRing };
+    billboardCircles.set(spec.id, circle);
+    return circle;
+  }
+  // Boards are laid out by the arc each one actually needs rather than by an
+  // even split, so a wide assembly grows its circle instead of overlapping the
+  // board beside it, and a circle of narrow leaderboard cards stays compact.
+  const relayoutBillboardCircle = (circle) => {
+    const objects = circle.objects;
+    if (!objects.length) return;
+    let widest = 0;
+    let span = 0;
+    for (const record of objects) {
+      widest = Math.max(widest, record.width);
+      span += record.width + BILLBOARD_CIRCLE_GAP;
+    }
+    // A single board also has to fit inside its own circle. The widest board
+    // is flat, so its ends reach sqrt(r² + (w/2)²) from the centre; holding the
+    // radius at 0.75w keeps those corners inside the apron's margin even when
+    // one wide assembly is the only thing on the circle.
+    const radius = Math.max(
+      circle.spec.minRing,
+      span / (Math.PI * 2),
+      widest * 0.75,
+    );
+    circle.radius = radius;
+    const groundRadius = radius + circle.spec.groundMargin;
+    circle.ground.geometry.dispose();
+    circle.ground.geometry = new THREE.CircleGeometry(groundRadius, 96);
+    // Scaling would widen the band as well as move it, so the rim follows the
+    // apron by rebuilding — the same cheap 96-segment rebuild the apron does.
+    circle.rim.geometry.dispose();
+    circle.rim.geometry = new THREE.RingGeometry(
+      groundRadius - BILLBOARD_CIRCLE_RIM_WIDTH,
+      groundRadius,
+      96,
+    );
+    let cursor = 0;
+    objects.forEach((record) => {
+      const object = record.object;
+      const slice = record.width + BILLBOARD_CIRCLE_GAP;
+      const angle = -Math.PI / 2 + ((cursor + slice / 2) / span) * Math.PI * 2;
+      cursor += slice;
       object.position.set(
         Math.cos(angle) * radius,
         0,
         Math.sin(angle) * radius,
       );
       object.rotation.y = Math.atan2(-object.position.x, -object.position.z);
-      object.updateMatrixWorld(true);
-      billboardIslandBounds.setFromObject(object);
       // Board authors use different local origins (some at their center,
       // others at their footings). Normalize from actual geometry so no
       // frame, post, label, or base can be buried by the shared terrain.
-      if (Number.isFinite(billboardIslandBounds.min.y)) {
-        object.position.y += 0.12 - billboardIslandBounds.min.y;
-      }
+      object.position.y = BILLBOARD_CIRCLE_SURFACE_Y - record.baseY;
     });
   };
-  function placeBillboardOnIsland(object) {
-    if (!object) return;
+  function placeBillboardOnIsland(object, options = {}) {
+    if (!object) return null;
+    const circle = billboardCircle(String(options.circle || "hub"));
     object.parent?.remove(object);
-    leaderboardInterior.add(object);
-    billboardIslandObjects.push({ object });
-    relayoutBillboardCircle();
+    circle.group.add(object);
+    // Measure the board square-on and unplaced: the circle owns its position
+    // and heading from here, and the local extents drive both the arc it is
+    // given and the height its spinner floats at.
+    object.position.set(0, 0, 0);
+    object.rotation.y = 0;
+    object.updateMatrixWorld(true);
+    billboardIslandBounds.setFromObject(object);
+    circle.group.getWorldPosition(billboardCircleOrigin);
+    const record = {
+      object,
+      circle: circle.spec.id,
+      feed: String(options.feed || ""),
+      width: Math.max(
+        1,
+        billboardIslandBounds.max.x - billboardIslandBounds.min.x,
+      ),
+      baseY: billboardIslandBounds.min.y - billboardCircleOrigin.y,
+      topY: billboardIslandBounds.max.y - billboardCircleOrigin.y,
+    };
+    circle.objects.push(record);
+    if (record.feed) {
+      // Only a board that has a request of its own gets a ring. It rides just
+      // above the board's own top edge, in the board's local frame, so it
+      // stays put when the circle re-levels the board onto the apron.
+      const spinner = new THREE.Mesh(
+        new THREE.TorusGeometry(0.42, 0.1, 10, 30, Math.PI * 1.55),
+        new THREE.MeshBasicMaterial({ color: "#8ff1c3", toneMapped: false }),
+      );
+      spinner.name = `forkmesh-billboard-refresh-spinner-${record.feed}-${circle.objects.length}`;
+      spinner.position.set(0, record.topY + 1.1, 0.4);
+      spinner.visible = false;
+      spinner.renderOrder = 46;
+      object.add(spinner);
+      record.spinner = spinner;
+      billboardSpinners.push(spinner);
+      const shared = billboardFeedRecords.get(record.feed) || [];
+      shared.push(record);
+      billboardFeedRecords.set(record.feed, shared);
+    }
+    relayoutBillboardCircle(circle);
+    return record;
   }
-  placeBillboardOnIsland(worldBulletin);
-  placeBillboardOnIsland(worldGeneralChatBoard);
-  placeBillboardOnIsland(worldDiscordBoard);
+  animated.push((time) => {
+    for (const spinner of billboardSpinners) {
+      if (spinner.visible) spinner.rotation.z = -time * 0.006;
+    }
+  });
+  // Called by the shell whenever a board's request starts or settles. Nothing
+  // else makes a spinner visible, so a spinning ring always means a live fetch
+  // that the visitor's own approach started.
+  function setBillboardRefreshing(feed, loading) {
+    for (const record of billboardFeedRecords.get(String(feed || "")) || []) {
+      record.spinner.visible = loading === true;
+    }
+  }
+  // The bulletin, the general-chat board, and the Discord board carry no
+  // request of their own — they are painted from data the page already holds —
+  // so they take a circle but no feed, and never show a spinner.
+  placeBillboardOnIsland(worldBulletin, { circle: "hub" });
+  placeBillboardOnIsland(worldGeneralChatBoard, { circle: "hub" });
+  placeBillboardOnIsland(worldDiscordBoard, { circle: "social" });
 
   // Registered members and their named campfire benches have a dedicated
   // southern garden. It is the fourth cardinal district, leaving the live
@@ -18397,13 +18840,17 @@ export function createWorldScene({
     "social-banners", "Social & status banners", "Boards & kiosks",
     [twitterBanner, redditBanner, blogBanner, statusBanner],
   );
-  [
-    mastodonKiosk,
-    twitterBanner,
-    redditBanner,
-    blogBanner,
-    statusBanner,
-  ].forEach((board) => placeBillboardOnIsland(board));
+  // Mastodon, X, Reddit, and the blog are one family and share the social
+  // circle. Status is an operational readout, not a feed, so it belongs with
+  // the other world boards on the hub circle.
+  placeBillboardOnIsland(mastodonKiosk, {
+    circle: "social",
+    feed: "mastodon",
+  });
+  [twitterBanner, redditBanner, blogBanner].forEach((board) =>
+    placeBillboardOnIsland(board, { circle: "social", feed: "social" }),
+  );
+  placeBillboardOnIsland(statusBanner, { circle: "hub", feed: "status" });
   const statusBannerRecord = {
     group: statusBanner,
     options: STATUS_BANNER_OPTIONS,
@@ -18615,21 +19062,14 @@ export function createWorldScene({
     { radius: 7.1, capacity: 16 },
     { radius: 9.7, capacity: 22 },
   ];
-  const MEMBER_CIRCLE_VISIBLE_LIMIT = MEMBER_CIRCLE_RINGS.reduce(
-    (total, ring) => total + ring.capacity,
-    0,
-  );
+  const MEMBER_CIRCLE_RING_SPACING = 3.65;
+  const MEMBER_CIRCLE_RING_GROWTH = 2.65;
   function memberCirclePosition(index, total) {
-    const boundedTotal = Math.max(
-      0,
-      Math.min(MEMBER_CIRCLE_VISIBLE_LIMIT, Math.round(Number(total) || 0)),
-    );
+    const boundedTotal = Math.max(0, Math.round(Number(total) || 0));
+    let remaining = boundedTotal;
     let ringStart = 0;
     for (const ring of MEMBER_CIRCLE_RINGS) {
-      const ringCount = Math.min(
-        ring.capacity,
-        Math.max(0, boundedTotal - ringStart),
-      );
+      const ringCount = Math.min(ring.capacity, Math.max(0, remaining));
       if (index < ringStart + ringCount) {
         // Keep a clear approach from Town while spreading directory members
         // around the open hearth in bounded, camera-LOD avatars.
@@ -18646,6 +19086,36 @@ export function createWorldScene({
         );
       }
       ringStart += ringCount;
+      remaining -= ringCount;
+    }
+    let ringRadius =
+      MEMBER_CIRCLE_RINGS[MEMBER_CIRCLE_RINGS.length - 1]?.radius || 9.7;
+    let ringGap = MEMBER_CIRCLE_RING_GROWTH;
+    while (remaining > 0) {
+      ringRadius += ringGap;
+      const ringCount = Math.max(
+        1,
+        Math.min(
+          Math.floor((Math.PI * 2 * ringRadius) / MEMBER_CIRCLE_RING_SPACING),
+          remaining,
+        ),
+      );
+      if (index < ringStart + ringCount) {
+        const entranceGap = Math.min(Math.PI / 2, 3.6 / ringRadius);
+        const usableArc = Math.PI * 2 - entranceGap;
+        const slot = index - ringStart;
+        const angle =
+          -Math.PI / 2 + entranceGap / 2 +
+          ((slot + 0.5) / Math.max(1, ringCount)) * usableArc;
+        return new THREE.Vector3(
+          Math.cos(angle) * ringRadius,
+          0,
+          Math.sin(angle) * ringRadius,
+        );
+      }
+      ringStart += ringCount;
+      remaining -= ringCount;
+      ringGap += 0.35;
     }
     return new THREE.Vector3();
   }
@@ -19304,13 +19774,11 @@ export function createWorldScene({
   world.add(gym);
   registerWorldElement("gym", "Outdoor gym", "Recreation", gym);
 
-  // One square 5×5 wall preserves the whole leaderboard catalog without
-  // duplicate physical boards. Lift the complete assembly above the terrain.
-  const leaderboardSuperPanel = new THREE.Group();
-  leaderboardSuperPanel.name = "forkmesh-leaderboard-super-panel";
-  leaderboardSuperPanel.position.set(-42, 0.22, 0);
-  leaderboardSuperPanel.rotation.y = Math.PI / 2;
-  const leaderboardGridState = {
+  // Every public ranking is a card of its own again, standing on the
+  // leaderboard circle. The single 5×5 wall packed the whole catalog into one
+  // 2048² texture, so a change to any board repainted all of them and there
+  // was one object to walk up to instead of fifteen.
+  const leaderboardCardState = {
     members: [],
     referralRows: [],
     viewerLink: "",
@@ -19320,64 +19788,43 @@ export function createWorldScene({
       WORLD_LEADERBOARD_BOARD_STUBS.map((board) => [board.id, board]),
     ),
   };
-  const leaderboardSuperBacking = new THREE.Mesh(
-    new THREE.BoxGeometry(23, 23, 0.45),
-    makeMaterial(THREE, "#102b27", {
-      metalness: 0.24,
-      roughness: 0.52,
-    }),
-  );
-  leaderboardSuperBacking.position.set(0, 12, 0);
-  leaderboardSuperPanel.add(leaderboardSuperBacking);
-  for (const x of [-10.3, 10.3]) {
-    const footing = new THREE.Mesh(
-      new THREE.BoxGeometry(1.4, 0.5, 1.45),
-      makeMaterial(THREE, "#173136", { roughness: 0.78 }),
-    );
-    footing.position.set(x, 0.25, 0);
-    leaderboardSuperPanel.add(footing);
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.42, 23, 0.42),
-      makeMaterial(THREE, "#29645e", {
-        metalness: 0.28,
-        roughness: 0.48,
-      }),
-    );
-    post.position.set(x, 11.5, 0);
-    leaderboardSuperPanel.add(post);
-  }
-  const leaderboardGridFace = new THREE.Mesh(
-    new THREE.PlaneGeometry(22.4, 22.4),
-    new THREE.MeshBasicMaterial({
-      map: leaderboardGridTexture(THREE, leaderboardGridState),
-      transparent: true,
-    }),
-  );
-  leaderboardGridFace.position.set(0, 12, 0.24);
-  leaderboardGridFace.userData.interactive = "leaderboard-grid";
-  leaderboardGridFace.userData.leaderboardPanelTile = true;
-  leaderboardSuperPanel.add(leaderboardGridFace);
-  interactive.push(leaderboardGridFace);
-  leaderboardInterior.add(leaderboardSuperPanel);
-
-  let leaderboardGridKey = "";
-  function repaintLeaderboardGrid() {
-    const key = JSON.stringify({
-      members: rankedActiveLeaderboardMembers(leaderboardGridState.members),
-      referrals: rankedReferralRows(leaderboardGridState.referralRows),
-      viewerLink: leaderboardGridState.viewerLink,
-      sites: rankedSiteReferrerRows(leaderboardGridState.siteRows),
-      totals: leaderboardGridState.siteTotals,
-      boards: Array.from(leaderboardGridState.boards.entries()),
+  const leaderboardCards = new Map();
+  function addLeaderboardCard(id, sign) {
+    const face = sign.userData.face;
+    if (face) {
+      face.userData.interactive = "leaderboard-card";
+      face.userData.boardId = id;
+      face.userData.leaderboardPanelTile = true;
+      interactive.push(face);
+    }
+    leaderboardCards.set(id, { id, sign, face, key: "" });
+    placeBillboardOnIsland(sign, {
+      circle: "leaderboards",
+      feed: "leaderboards",
     });
-    if (leaderboardGridKey === key) return;
-    leaderboardGridFace.material.map?.dispose?.();
-    leaderboardGridFace.material.map = leaderboardGridTexture(
-      THREE,
-      leaderboardGridState,
+  }
+  // Each card keys its own repaint, so a snapshot that only moved one board
+  // rebuilds one 768² canvas rather than the whole circle.
+  function repaintLeaderboardCard(id, key, paint) {
+    const card = leaderboardCards.get(id);
+    if (!card?.face?.material || card.key === key) return;
+    card.key = key;
+    card.face.material.map?.dispose?.();
+    card.face.material.map = paint();
+    card.face.material.needsUpdate = true;
+  }
+  addLeaderboardCard("active-members", makeActiveLeaderboardSign(THREE));
+  addLeaderboardCard("referrals", makeReferralLeaderboardSign(THREE));
+  addLeaderboardCard("http-referrers", makeSiteReferrerLeaderboardSign(THREE));
+  for (const board of WORLD_LEADERBOARD_BOARD_STUBS) {
+    addLeaderboardCard(board.id, makeLeaderboardStatSign(THREE, board));
+  }
+
+  function repaintActiveLeaderboardCard() {
+    const rows = rankedActiveLeaderboardMembers(leaderboardCardState.members);
+    repaintLeaderboardCard("active-members", JSON.stringify(rows), () =>
+      activeLeaderboardTexture(THREE, leaderboardCardState.members),
     );
-    leaderboardGridFace.material.needsUpdate = true;
-    leaderboardGridKey = key;
   }
 
   function updateLeaderboards(boards = []) {
@@ -19385,22 +19832,49 @@ export function createWorldScene({
       .filter((board) => board && typeof board === "object")
       .forEach((board) => {
         const id = String(board.id || "");
-        if (!id) return;
-        leaderboardGridState.boards.set(id, board);
+        if (!id || !leaderboardCards.has(id)) return;
+        if (LEADERBOARD_CARDS_WITH_OWN_PAINTER.has(id)) return;
+        leaderboardCardState.boards.set(id, board);
+        repaintLeaderboardCard(id, JSON.stringify(board), () =>
+          leaderboardStatTexture(THREE, board),
+        );
       });
-    repaintLeaderboardGrid();
   }
 
   function updateReferralLeaderboard(rows = [], viewerLink = "") {
-    leaderboardGridState.referralRows = Array.isArray(rows) ? rows : [];
-    leaderboardGridState.viewerLink = String(viewerLink || "");
-    repaintLeaderboardGrid();
+    leaderboardCardState.referralRows = Array.isArray(rows) ? rows : [];
+    leaderboardCardState.viewerLink = String(viewerLink || "");
+    repaintLeaderboardCard(
+      "referrals",
+      JSON.stringify([
+        rankedReferralRows(leaderboardCardState.referralRows),
+        leaderboardCardState.viewerLink,
+      ]),
+      () =>
+        referralLeaderboardTexture(
+          THREE,
+          leaderboardCardState.referralRows,
+          leaderboardCardState.viewerLink,
+        ),
+    );
   }
   function updateSiteReferrerLeaderboard(rows = [], totals = {}) {
-    leaderboardGridState.siteRows = rankedSiteReferrerRows(rows);
-    leaderboardGridState.siteTotals =
+    leaderboardCardState.siteRows = rankedSiteReferrerRows(rows);
+    leaderboardCardState.siteTotals =
       totals && typeof totals === "object" ? totals : {};
-    repaintLeaderboardGrid();
+    repaintLeaderboardCard(
+      "http-referrers",
+      JSON.stringify([
+        leaderboardCardState.siteRows,
+        leaderboardCardState.siteTotals,
+      ]),
+      () =>
+        siteReferrerLeaderboardTexture(
+          THREE,
+          leaderboardCardState.siteRows,
+          leaderboardCardState.siteTotals,
+        ),
+    );
   }
   const nodeDistrict = new THREE.Group();
   nodeDistrict.name = "forkmesh-node-district";
@@ -19457,6 +19931,17 @@ export function createWorldScene({
         voidWalkSurfaceContains(x, z, radius);
   let activeEnclosureScene = "";
   const enclosureHiddenWorldRoots = new Map();
+  // "" → "raising" → "sealed" → "dissolving" → "". Only "sealed" hides the rest
+  // of the World: the shell has to be opaque and closed before the triangles
+  // behind it are allowed to disappear, and the outside comes back the instant
+  // the visitor steps through the door rather than after the dissolve plays.
+  let repositoryEnclosureState = "";
+  let repositoryEnclosureStateAt = 0;
+  let repositoryEnclosure = null;
+  // 0 = portals are bare discs, 1 = concentric size rings fully expanded.
+  let repositoryRingExpansion = 0;
+  world.userData.repositoryEnclosureState = "";
+  world.userData.repositoryRingExpansion = 0;
 
   // A hidden Object3D stops draw calls, but Three.js deliberately retains
   // every buffer and texture it uploaded for that object. On unified-memory
@@ -19643,10 +20128,53 @@ export function createWorldScene({
     return detailed;
   }
 
+  // What stays drawn while the repository shell is sealed. The catalog ring and
+  // the district apron are the room itself; the city land plate keeps a floor
+  // under the doorway so the town side reads as ground rather than a void; and
+  // anything else whose own origin lands inside the shell — a visitor, ForkBot,
+  // an agent bot standing at a portal — is in the room with you. Everything
+  // else in the World is behind an opaque surface, so it stops being drawn.
+  function repositoryEnclosureKeptRoots() {
+    const kept = [
+      repositoryEnclosure,
+      landmarkObjects.get("repositories"),
+      world.userData.repositoryCatalogLayer,
+      continuousCityLand,
+    ].filter(Boolean);
+    world.children.forEach((root) => {
+      const distance = Math.hypot(
+        root.position.x - REPOSITORY_ISLAND_CENTER_X,
+        root.position.z,
+      );
+      if (distance <= REPOSITORY_ENCLOSURE_RADIUS) kept.push(root);
+    });
+    return kept;
+  }
+
   function enclosureSceneRoots(mode) {
     if (mode === "office") return [officeInterior];
     if (mode === "beach") return [beachScene];
+    if (mode === "repositories") return repositoryEnclosureKeptRoots();
     return [];
+  }
+
+  const enclosureViewCenter = new THREE.Vector3();
+  const enclosureRootBounds = new THREE.Box3();
+  const enclosureRootCenter = new THREE.Vector3();
+  // A world root only earns its way out of the panoramic view by being both
+  // expensive and distant. Anything cheap, and anything close enough to be a
+  // real part of the view through the glass — the campus ground, the bridge,
+  // the tower's own curtain wall, the front garden — keeps rendering.
+  function enclosureExteriorIsCostly(root, sceneRoot) {
+    if (triangleWeight(root) <= ENCLOSURE_EXTERIOR_TRIANGLE_LIMIT) return false;
+    sceneRoot.getWorldPosition(enclosureViewCenter);
+    enclosureRootBounds.setFromObject(root);
+    if (enclosureRootBounds.isEmpty()) return false;
+    return (
+      enclosureRootBounds
+        .getCenter(enclosureRootCenter)
+        .distanceTo(enclosureViewCenter) > ENCLOSURE_EXTERIOR_KEEP_RADIUS
+    );
   }
 
   function syncEnclosureSceneVisibility(force = false) {
@@ -19654,7 +20182,9 @@ export function createWorldScene({
       ? "beach"
       : officeSceneMode !== "town"
         ? "office"
-        : "";
+        : repositoryEnclosureState === "sealed"
+          ? "repositories"
+          : "";
     if (force || next !== activeEnclosureScene) {
       enclosureHiddenWorldRoots.forEach((visible, root) => {
         root.visible = visible;
@@ -19665,15 +20195,223 @@ export function createWorldScene({
     }
     beachScene.visible = beachSceneActive;
     if (!next) return next;
-    const keep = new Set([player, ...enclosureSceneRoots(next)]);
+    const roots = enclosureSceneRoots(next);
+    const keep = new Set([player, ...roots]);
+    // The Office tower is a glass building standing in Town, not a separate
+    // room: every floor looks out through a full-height curtain wall, so Town
+    // stays drawn around it and only the heavy distant roots are dropped. The
+    // Beach remains a fully isolated scene.
+    const panoramic = next === "office";
     world.children.forEach((root) => {
-      if (keep.has(root)) return;
+      if (keep.has(root)) {
+        // The repository keep-set is recomputed per frame because people walk
+        // into and out of the shell. Somebody who was hidden crossing the town
+        // has to come back the moment they step through the doorway.
+        if (enclosureHiddenWorldRoots.has(root)) {
+          root.visible = enclosureHiddenWorldRoots.get(root);
+          enclosureHiddenWorldRoots.delete(root);
+        }
+        return;
+      }
       if (!enclosureHiddenWorldRoots.has(root)) {
         enclosureHiddenWorldRoots.set(root, root.visible);
       }
       root.visible = false;
     });
     return next;
+  }
+
+  // Built the first time somebody reaches the ring, not at load: a visitor who
+  // never walks east never pays for the shell's geometry.
+  function ensureRepositoryEnclosure() {
+    if (repositoryEnclosure) return repositoryEnclosure;
+    repositoryEnclosure = createRepositoryEnclosure(THREE);
+    repositoryEnclosure.visible = false;
+    world.add(repositoryEnclosure);
+    registerWorldElement(
+      "repository-enclosure",
+      "Repository ring enclosure",
+      "Districts",
+      repositoryEnclosure,
+    );
+    return repositoryEnclosure;
+  }
+
+  function setRepositoryEnclosureState(next, time) {
+    if (repositoryEnclosureState === next) return;
+    repositoryEnclosureState = next;
+    repositoryEnclosureStateAt = time;
+    world.userData.repositoryEnclosureState = next;
+  }
+
+  // The shell reads as one surface, so it animates as one: a single opacity and
+  // a vertical scale off the ground plane. Sealed is fully opaque and fully
+  // opaque means opaque — `transparent` is switched off so the closed shell
+  // draws in the opaque pass with the rest of the room.
+  function applyRepositoryEnclosureShell(visible, opacity, lift, spread, flare) {
+    const shell = repositoryEnclosure;
+    if (!shell) return;
+    shell.visible = visible;
+    if (!visible) {
+      // Park the shell back at rest rather than leaving it wearing the last
+      // frame of the dissolve, so a re-entry starts from a known transform.
+      shell.scale.set(1, 1, 1);
+      return;
+    }
+    // The walls sweep up on `lift` alone. `spread` stays at 1 until the cover
+    // comes apart, or a rising shell would pass through the portal ring it is
+    // supposed to enclose, and the collider radius would not match the wall.
+    shell.scale.set(spread, lift, spread);
+    const wantsTransparent = opacity < 1;
+    [
+      shell.userData.repositoryEnclosureShell,
+      shell.userData.repositoryEnclosureTrim,
+    ].forEach((material) => {
+      if (!material) return;
+      // A closed shell is genuinely opaque, not opacity-1 transparent, so it
+      // draws with the rest of the room instead of in the sorted pass.
+      if (material.transparent !== wantsTransparent) {
+        material.transparent = wantsTransparent;
+        material.needsUpdate = true;
+      }
+      material.opacity = opacity;
+    });
+    const trim = shell.userData.repositoryEnclosureTrim;
+    if (trim) trim.emissiveIntensity = 1.05 + flare * 1.75;
+    const sign = shell.userData.repositoryEnclosureSign;
+    if (sign?.material) sign.material.opacity = opacity;
+  }
+
+  // Seal on arrival, release through the doorway. Everything the enclosure
+  // drives — the expanded portal rings, the outside-triangle cull in
+  // syncEnclosureSceneVisibility, and the wall collider — reads this state, so
+  // there is exactly one place where "inside the repository ring" is decided.
+  function updateRepositoryEnclosure(time, delta) {
+    const available =
+      officeSceneMode === "town" &&
+      !beachSceneActive &&
+      worldElementEnabled("repository-enclosure");
+    const distance = Math.hypot(
+      player.position.x - REPOSITORY_ISLAND_CENTER_X,
+      player.position.z,
+    );
+    if (!available) {
+      // An administrator hiding the element, or a warp into the Office, must
+      // not leave a sealed shell holding the rest of the World invisible.
+      setRepositoryEnclosureState("", time);
+    } else if (repositoryEnclosureState === "") {
+      if (distance <= REPOSITORY_ENCLOSURE_SEAL_RADIUS) {
+        const shell = ensureRepositoryEnclosure();
+        if (shell.parent === world) {
+          setRepositoryEnclosureState(reducedMotion ? "sealed" : "raising", time);
+        }
+      }
+    } else if (distance > REPOSITORY_ENCLOSURE_RELEASE_RADIUS) {
+      if (repositoryEnclosureState !== "dissolving") {
+        setRepositoryEnclosureState(reducedMotion ? "" : "dissolving", time);
+      }
+    } else if (
+      repositoryEnclosureState === "dissolving" &&
+      distance <= REPOSITORY_ENCLOSURE_SEAL_RADIUS
+    ) {
+      // Stepped back in before the cover finished coming apart.
+      setRepositoryEnclosureState(reducedMotion ? "sealed" : "raising", time);
+    }
+    const elapsed = time - repositoryEnclosureStateAt;
+    if (repositoryEnclosureState === "raising") {
+      const progress = clamp(elapsed / REPOSITORY_ENCLOSURE_RAISE_MS, 0, 1);
+      // Ease out, so the walls sweep up fast and settle rather than creeping.
+      const eased = 1 - (1 - progress) ** 3;
+      if (progress >= 1) {
+        setRepositoryEnclosureState("sealed", time);
+      } else {
+        applyRepositoryEnclosureShell(
+          true,
+          Math.min(1, eased * 1.35),
+          Math.max(0.02, eased),
+          1,
+          1 - eased,
+        );
+      }
+    }
+    if (repositoryEnclosureState === "sealed") {
+      applyRepositoryEnclosureShell(true, 1, 1, 1, 0);
+    } else if (repositoryEnclosureState === "dissolving") {
+      const progress = clamp(elapsed / REPOSITORY_ENCLOSURE_DISSOLVE_MS, 0, 1);
+      if (progress >= 1) {
+        setRepositoryEnclosureState("", time);
+      } else {
+        // The cover does not simply switch off: it flares along its rim, lifts
+        // and widens off the ring, and thins out into the sky.
+        applyRepositoryEnclosureShell(
+          true,
+          (1 - progress) ** 1.6,
+          1 + progress * 0.34,
+          1 + progress * 0.08,
+          Math.sin(progress * Math.PI),
+        );
+      }
+    }
+    if (repositoryEnclosureState === "") {
+      applyRepositoryEnclosureShell(false, 0, 1, 1, 0);
+    }
+    const target =
+      repositoryEnclosureState === "raising" ||
+      repositoryEnclosureState === "sealed"
+        ? 1
+        : 0;
+    if (repositoryRingExpansion === target) return;
+    const next = reducedMotion
+      ? target
+      : repositoryRingExpansion +
+        (target - repositoryRingExpansion) *
+          clamp(delta * REPOSITORY_RING_EXPANSION_RATE, 0, 1);
+    repositoryRingExpansion = Math.abs(target - next) < 0.004 ? target : next;
+    world.userData.repositoryRingExpansion = repositoryRingExpansion;
+    repositoryPortals.forEach(({ group }) => {
+      applyRepositoryRingExpansion(group.userData.repositoryExpandedProfile);
+    });
+  }
+
+  // A collapsed profile is not merely small, it is not drawn at all — that is
+  // the point of leaving the rings folded away until somebody is in the room.
+  // At the low end of the expansion it sits exactly on the portal's outline
+  // torus, so appearing and disappearing there is seamless.
+  function applyRepositoryRingExpansion(profile) {
+    if (!profile) return;
+    profile.visible = repositoryRingExpansion > 0.002;
+    if (!profile.visible) return;
+    profile.scale.setScalar(
+      REPOSITORY_RING_COLLAPSED_SCALE +
+        repositoryRingExpansion * (1 - REPOSITORY_RING_COLLAPSED_SCALE),
+    );
+  }
+
+  // The town-facing gap in the wall. Only the doorway arc lets the walker
+  // through the surface; everywhere else the visitor slides along the inside of
+  // the shell instead of stepping out of the drawn room into hidden geometry.
+  function constrainRepositoryEnclosureWall() {
+    if (repositoryEnclosureState !== "sealed") return false;
+    const offsetX = player.position.x - REPOSITORY_ISLAND_CENTER_X;
+    const offsetZ = player.position.z;
+    const distance = Math.hypot(offsetX, offsetZ);
+    const limit = REPOSITORY_ENCLOSURE_RADIUS - OFFICE_AVATAR_RADIUS;
+    if (distance <= limit || distance <= 0.001) return false;
+    // Cylinder theta, matching the wall sweep: measured from +Z toward +X.
+    const theta = Math.atan2(offsetX, offsetZ);
+    let doorOffset = theta - REPOSITORY_ENCLOSURE_DOOR_THETA;
+    while (doorOffset > Math.PI) doorOffset -= Math.PI * 2;
+    while (doorOffset < -Math.PI) doorOffset += Math.PI * 2;
+    if (Math.abs(doorOffset) <= REPOSITORY_ENCLOSURE_DOOR_HALF_ANGLE) {
+      return false;
+    }
+    // Clamping the radius alone keeps the tangential component, so pushing into
+    // the wall walks the avatar around it toward the doorway.
+    const scale = limit / distance;
+    player.position.x = REPOSITORY_ISLAND_CENTER_X + offsetX * scale;
+    player.position.z = offsetZ * scale;
+    cancelDash();
+    return true;
   }
 
   function compactDistrictDiagnostics() {
@@ -20816,6 +21554,7 @@ export function createWorldScene({
     // Exterior visibility is camera-LOD controlled so nearby visitors can see
     // furnished floors through the glass without paying for them at distance.
     floorGroup.visible = true;
+    floorGroup.userData.officeFloorGroup = true;
     officeInterior.add(floorGroup);
     officeFloorGroups.set(floor.id, floorGroup);
   });
@@ -22483,30 +23222,12 @@ export function createWorldScene({
     issues: [],
   };
   let draggedBuildCard = null;
-  let buildBoardWasNearby = false;
 
   function setBuildBoardLoading(loading) {
     buildBoardSpinner.visible = loading === true;
-  }
-
-  function updateBuildBoardProximity() {
-    if (officeSceneMode !== "town") {
-      buildBoardWasNearby = false;
-      return;
-    }
-    const position = officeTaskBulletin.getWorldPosition(
-      buildBoardWorldPosition,
-    );
-    const distance = Math.hypot(
-      player.position.x - position.x,
-      player.position.z - position.z,
-    );
-    if (distance <= 18 && !buildBoardWasNearby) {
-      buildBoardWasNearby = true;
-      onBuildBoardNearby();
-    } else if (distance >= 23) {
-      buildBoardWasNearby = false;
-    }
+    // The board's own inset spinner is only legible from directly in front of
+    // it; the circle spinner above it reads from anywhere on the hub circle.
+    setBillboardRefreshing("build-board", loading);
   }
 
   function repaintBuildBoards() {
@@ -22644,7 +23365,10 @@ export function createWorldScene({
     "office-task-bulletin", "Office task bulletin", "Boards & kiosks",
     officeTaskBulletin,
   );
-  placeBillboardOnIsland(officeTaskBulletin);
+  placeBillboardOnIsland(officeTaskBulletin, {
+    circle: "hub",
+    feed: "build-board",
+  });
 
   const worldQaBoard = new THREE.Group();
   worldQaBoard.name = "forkmesh-world-qa-board";
@@ -22717,7 +23441,110 @@ export function createWorldScene({
   registerWorldElement(
     "qa-board", "QA board", "Boards & kiosks", worldQaBoard,
   );
-  placeBillboardOnIsland(worldQaBoard);
+  placeBillboardOnIsland(worldQaBoard, { circle: "hub", feed: "qa-board" });
+
+  // Boards whose contents only matter to someone standing at them. Each entry
+  // reports its own approach and departure so the owner can fetch on arrival
+  // and stop polling on the way out, instead of holding a permanent request
+  // cadence for a board nobody is looking at. The exit radius is deliberately
+  // wider than the entry radius so pacing the boundary cannot thrash the
+  // fetch, and cooldownMs bounds how often a re-approach may refetch.
+  const proximityBoards = [
+    {
+      object: officeTaskBulletin,
+      mode: "town",
+      enter: 18,
+      exit: 23,
+      cooldownMs: 15_000,
+      onEnter: (refetch) => onBuildBoardNearby({ refetch }),
+      onExit: () => onBuildBoardAway(),
+    },
+    {
+      object: worldQaBoard,
+      mode: "town",
+      enter: 18,
+      exit: 23,
+      cooldownMs: 5_000,
+      onEnter: (refetch) => onQaBoardNearby({ refetch }),
+      onExit: () => onQaBoardAway(),
+    },
+    {
+      object: officeLinkKiosk,
+      mode: "lobby",
+      enter: 14,
+      exit: 19,
+      cooldownMs: 60_000,
+      onEnter: (refetch) => {
+        if (refetch) onLobbyLinkKioskNearby();
+      },
+      onExit: () => {},
+    },
+    // The three billboard circles each own one request family. Nothing in
+    // them is fetched until a visitor steps onto the circle, and the approach
+    // radius is the circle itself plus the depth of the boards standing on it,
+    // so the fetch starts exactly when the faces become readable.
+    {
+      object: billboardCircle("leaderboards").group,
+      mode: "town",
+      enter: billboardCircle("leaderboards").radius + 6,
+      exit: billboardCircle("leaderboards").radius + 14,
+      cooldownMs: 60_000,
+      onEnter: (refetch) => onLeaderboardCircleNearby({ refetch }),
+      onExit: () => onLeaderboardCircleAway(),
+    },
+    {
+      object: billboardCircle("social").group,
+      mode: "town",
+      enter: billboardCircle("social").radius + 6,
+      exit: billboardCircle("social").radius + 14,
+      cooldownMs: 60_000,
+      onEnter: (refetch) => onSocialCircleNearby({ refetch }),
+      onExit: () => onSocialCircleAway(),
+    },
+    {
+      object: billboardCircle("hub").group,
+      mode: "town",
+      enter: billboardCircle("hub").radius + 6,
+      exit: billboardCircle("hub").radius + 14,
+      cooldownMs: 60_000,
+      onEnter: (refetch) => onWorldBoardsCircleNearby({ refetch }),
+      onExit: () => onWorldBoardsCircleAway(),
+    },
+  ].map((board) => ({ ...board, near: false, lastEnterAt: 0 }));
+
+  function updateBoardProximity() {
+    for (const board of proximityBoards) {
+      if (officeSceneMode !== board.mode) {
+        // Leaving the scene the board lives in counts as walking away, so a
+        // visitor who ducks into the office does not leave a town poll running.
+        if (board.near) {
+          board.near = false;
+          board.onExit();
+        }
+        continue;
+      }
+      const position = board.object.getWorldPosition(
+        proximityBoardWorldPosition,
+      );
+      const distance = Math.hypot(
+        player.position.x - position.x,
+        player.position.z - position.z,
+      );
+      if (!board.near && distance <= board.enter) {
+        board.near = true;
+        // The cooldown gates the immediate refetch, not the approach itself:
+        // a board that polls while you stand at it must still start its timer
+        // on every arrival, even when its contents are too fresh to refetch.
+        const now = Date.now();
+        const stale = now - board.lastEnterAt >= board.cooldownMs;
+        if (stale) board.lastEnterAt = now;
+        board.onEnter(stale);
+      } else if (board.near && distance >= board.exit) {
+        board.near = false;
+        board.onExit();
+      }
+    }
+  }
 
   let qaBoardSnapshot = { view: "cards", list: [] };
 
@@ -23558,6 +24385,17 @@ export function createWorldScene({
   const memberFacts = new Map();
   const repositoryPortals = new Map();
   const repositoryPortalBornAt = new Map();
+  // Sparkle deadline per portal key. A portal that is still waiting for its
+  // size tree shimmers until this timestamp; the map landing rebuilds the
+  // layer without a sparkle, and a map that never arrives simply fades out.
+  const repositorySparkleUntil = new Map();
+  // The repository district loads nothing until a character stands on its
+  // ground circle. The scene reports that arrival once; the shell owns every
+  // request that follows.
+  let repositoryDistrictEntered = false;
+  // Set by the shell the moment it starts the deferred catalog read, so the
+  // first portals to arrive rise out of the ground instead of appearing.
+  let repositoryRevealPending = false;
   const emoteSprites = [];
   const rewardFlights = [];
   const pushSurges = [];
@@ -23616,6 +24454,9 @@ export function createWorldScene({
   const cameraDirection = new THREE.Vector3();
   const cameraLookTarget = new THREE.Vector3();
   const cameraOffsetDirection = new THREE.Vector3();
+  // Sampled after the camera update each frame so the sky layer can drop its
+  // stars, planets, and satellites whenever the view is not tilted upward.
+  const skyViewDirection = new THREE.Vector3();
   const cameraDesired = new THREE.Vector3();
   const cameraLocalTarget = new THREE.Vector3();
   const cameraLocalDesired = new THREE.Vector3();
@@ -23625,7 +24466,7 @@ export function createWorldScene({
   const diagnosticsDrawingBuffer = new THREE.Vector2();
   const officeDoorLocalPosition = new THREE.Vector3();
   const officeReceptionLocalPosition = new THREE.Vector3();
-  const buildBoardWorldPosition = new THREE.Vector3();
+  const proximityBoardWorldPosition = new THREE.Vector3();
   const localPointLightPosition = new THREE.Vector3();
   const localPointLightCandidates = [];
   scene.traverse((object) => {
@@ -23744,6 +24585,7 @@ export function createWorldScene({
   let nextSceneLodAt = 0;
   let nextShadowMapUpdateAt = 0;
   let farSceneDetail = null;
+  let officeDistantPropsCulled = false;
   let nextAvatarHighlightAt = 0;
   let nextProximityUpdateAt = 0;
   let nextScreenLabelUpdateAt = 0;
@@ -23875,15 +24717,48 @@ export function createWorldScene({
     world.userData.officeExteriorDetailLevel = exteriorDetailed
       ? "furnished"
       : "shell";
+    // A desktop GPU keeps every story of the tower populated from anywhere in
+    // Town and pays for it by culling the few heavy props below. Compact
+    // renderers still page the whole interior out beyond their own boundary.
+    const interiorDrawn =
+      officeSceneMode !== "town" || exteriorDetailed || !compactRenderer;
+    world.userData.officeInteriorDrawn = interiorDrawn;
     // Story changes are independent of camera zoom. A doorway warp and an
     // elevator arrival must still expose the selected floor immediately.
-    officeInterior.visible = officeSceneMode !== "town" || exteriorDetailed;
+    officeInterior.visible = interiorDrawn;
     for (const [floorId, floorGroup] of officeFloorGroups) {
       if (floorId === "lobby") continue;
       floorGroup.visible = officeSceneMode === "town"
-        ? exteriorDetailed
+        ? interiorDrawn
         : floorId === officeCurrentFloorId;
     }
+    syncOfficeDistantPropDetail(officeSceneMode === "town" && !exteriorDetailed);
+  }
+
+  // Only the props whose own triangle weight dominates the interior drop out
+  // at distance. Their pre-cull visibility is parked exactly like the mirror
+  // yard's cabinets so a prop that was already hidden — the meeting-mode lobby
+  // avatar, an element an administrator switched off — stays hidden when the
+  // camera comes back.
+  function syncOfficeDistantPropDetail(culled) {
+    if (culled === officeDistantPropsCulled) return;
+    officeDistantPropsCulled = culled;
+    world.userData.officeDistantPropsCulled = culled;
+    officeInterior.children.forEach((prop) => {
+      // Floor groups own their own story visibility; the weight pass must
+      // never race the elevator for them.
+      if (prop.userData?.officeFloorGroup === true) return;
+      if (triangleWeight(prop) <= OFFICE_DISTANT_PROP_TRIANGLE_LIMIT) return;
+      if (culled) {
+        if (Object.hasOwn(prop.userData, "officeLodVisible")) return;
+        prop.userData.officeLodVisible = prop.visible;
+        prop.visible = false;
+        return;
+      }
+      if (!Object.hasOwn(prop.userData, "officeLodVisible")) return;
+      prop.visible = prop.userData.officeLodVisible;
+      delete prop.userData.officeLodVisible;
+    });
   }
 
   function updateSceneLevelOfDetail(force = false) {
@@ -24600,7 +25475,32 @@ export function createWorldScene({
     return false;
   }
 
+  // The repository catalog, its imports, and every hosted size map are the
+  // heaviest reads in the World, and most visits never walk east at all. None
+  // of them are requested until a character is actually standing on the
+  // repositories ground circle, which is what this reports — exactly once.
+  function updateRepositoryDistrictArrival() {
+    if (repositoryDistrictEntered) return;
+    const distance = Math.hypot(
+      player.position.x - REPOSITORY_ISLAND_CENTER_X,
+      player.position.z,
+    );
+    if (distance > REPOSITORY_GROUND_RADIUS) return;
+    repositoryDistrictEntered = true;
+    onRepositoryDistrictEnter();
+  }
+
+  // Called by the shell when it begins the deferred catalog read, whether the
+  // trigger was the ground circle or the repositories panel. Portals built
+  // after this point rise and shimmer instead of popping into the ring.
+  function beginRepositoryDistrictReveal() {
+    repositoryDistrictEntered = true;
+    repositoryRevealPending = true;
+    return true;
+  }
+
   function nearestLandmark() {
+    updateRepositoryDistrictArrival();
     if (
       !["town-square", "east", "central", "west"].includes(currentSpace)
     ) {
@@ -27498,6 +28398,7 @@ export function createWorldScene({
     }
     if (!superJumping) {
       constrainTownOfficeWalls(previousHorizontalPosition);
+      constrainRepositoryEnclosureWall();
     }
     if (carRide) {
       jumpQueued = false;
@@ -29533,8 +30434,8 @@ export function createWorldScene({
       syncOperatorBelt(THREE, avatar, enriched.nodes || []);
       avatar.userData.badgeKey = badgeKey;
     });
-    leaderboardGridState.members = leaderboardMembers;
-    repaintLeaderboardGrid();
+    leaderboardCardState.members = leaderboardMembers;
+    repaintActiveLeaderboardCard();
 
     // Populate the open member-circle rings with directory members who are
     // not already represented by a live World avatar.
@@ -29548,8 +30449,7 @@ export function createWorldScene({
           }
           interiorNames.add(name);
           return true;
-        })
-        .slice(0, MEMBER_CIRCLE_VISIBLE_LIMIT);
+        });
       const seen = new Set();
       interiorMembers.forEach((member, index) => {
         const name = String(member.name).trim().slice(0, 32);
@@ -29601,7 +30501,7 @@ export function createWorldScene({
           figure = createAvatar(
             THREE,
             memberIdentity,
-            { remote: true, scale: 0.78 },
+            { remote: true },
           );
           figure.userData.badgeKey = badgeKey;
           figure.userData.memberCircleFigure = true;
@@ -31202,27 +32102,39 @@ export function createWorldScene({
         Math.sin(angle) * ringRadius,
       );
       node.rotation.y = -angle - Math.PI / 2;
-      if (
-        ["external-import", "hosted-import", "bulk-import"].includes(
-          record.source,
-        ) &&
-        !previousPortalKeys.has(record.key)
-      ) {
-        const importedBefore = records
+      // A portal rises when it is genuinely new to the ring: a fresh import, or
+      // the whole district arriving at once because a character just walked
+      // onto the repositories circle. The district reveal stages tightly so a
+      // full catalog reads as one wave rather than a several-minute queue.
+      const risesOnArrival =
+        !previousPortalKeys.has(record.key) &&
+        (repositoryRevealPending ||
+          ["external-import", "hosted-import", "bulk-import"].includes(
+            record.source,
+          ));
+      if (risesOnArrival) {
+        const risingBefore = records
           .slice(0, index)
           .filter(
             (candidate) =>
-              ["external-import", "hosted-import", "bulk-import"].includes(
-                candidate.source,
-              ) &&
-              !previousPortalKeys.has(candidate.key),
+              !previousPortalKeys.has(candidate.key) &&
+              (repositoryRevealPending ||
+                ["external-import", "hosted-import", "bulk-import"].includes(
+                  candidate.source,
+                )),
           ).length;
-        repositoryPortalBornAt.set(
+        const bornAt =
+          performance.now() +
+          risingBefore * (repositoryRevealPending ? 90 : 320);
+        repositoryPortalBornAt.set(record.key, bornAt);
+        repositorySparkleUntil.set(
           record.key,
-          performance.now() + importedBefore * 320,
+          bornAt + REPOSITORY_SPARKLE_MS,
         );
         node.scale.setScalar(reducedMotion ? 1 : 0.015);
       }
+      // The size tree has landed, so this portal has nothing left to build.
+      if (record.sizeTree) repositorySparkleUntil.delete(record.key);
       const face = new THREE.Group();
       face.name = `repository-portal-face:${record.owner}/${record.name}`;
       face.scale.setScalar(portalDensityScale);
@@ -31260,10 +32172,13 @@ export function createWorldScene({
         portalMeshes.push(mesh);
       }
       face.add(disk, outline);
-      // Keep every repository visually expanded, including stubs whose full
-      // size tree has not reached this mirror yet. The concentric profile is
-      // deliberately lightweight; a real sizeTree replaces its centre with
-      // the file wedges below without collapsing the surrounding rings.
+      // Every repository — including a stub whose size tree has not reached
+      // this mirror yet — carries the same concentric profile, but it stays
+      // folded into the portal's own outline until somebody walks inside the
+      // ring. From the town the east island is a circle of plain discs; the
+      // rings only expand for the visitor standing among them, and a real
+      // sizeTree replaces the centre with the file wedges below without
+      // collapsing them again. updateRepositoryEnclosure owns the animation.
       const expandedProfile = new THREE.Group();
       expandedProfile.name =
         `repository-always-expanded-profile:${record.owner}/${record.name}`;
@@ -31278,7 +32193,24 @@ export function createWorldScene({
         ring.scale.setScalar(nodeRadius);
         expandedProfile.add(ring);
       });
+      // A catalog refresh while the shell is already sealed must rebuild the
+      // portals at the expansion the room is currently showing, not snap them.
+      applyRepositoryRingExpansion(expandedProfile);
       face.add(expandedProfile);
+      node.userData.repositoryExpandedProfile = expandedProfile;
+      // Still waiting on this repository's size tree. Shimmer while the map is
+      // assembled — the wedges below replace the shimmer the moment it lands.
+      const sparkleUntil = repositorySparkleUntil.get(record.key) || 0;
+      if (!reducedMotion && !record.sizeTree && performance.now() < sparkleUntil) {
+        const sparkle = makeRepositorySizeMapSparkle(
+          THREE,
+          nodeRadius,
+          `${record.owner}/${record.name}`,
+        );
+        sparkle.userData.repositorySparkleUntil = sparkleUntil;
+        face.add(sparkle);
+        node.userData.repositorySparkle = sparkle;
+      }
       if (record.termsFlagged) {
         const policyFlag = new THREE.Group();
         policyFlag.name =
@@ -31544,6 +32476,12 @@ export function createWorldScene({
         key: record.key,
         record,
       });
+    });
+    // The district has now risen once. Later catalog refreshes are ordinary
+    // updates again, so only genuinely new imports get the arrival animation.
+    repositoryRevealPending = false;
+    repositorySparkleUntil.forEach((_, key) => {
+      if (!repositoryPortals.has(key)) repositorySparkleUntil.delete(key);
     });
 
     layer.userData.repositoryCatalogLayer = true;
@@ -34038,24 +34976,15 @@ export function createWorldScene({
       if (href) onMastodonOpenLink(href);
       return;
     }
-    if (hit?.object?.userData?.interactive === "leaderboard-grid") {
-      const canvasX = (Number(hit.uv?.x) || 0) * 2048;
-      const canvasY = (1 - (Number(hit.uv?.y) || 0)) * 2048;
-      const gridTop = 154;
-      const gridHeight = 2048 - gridTop - 38;
-      const column = Math.floor((canvasX - 38) / ((2048 - 76) / 5));
-      const row = Math.floor((canvasY - gridTop) / (gridHeight / 5));
-      const board =
-        column >= 0 && column < 5 && row >= 0 && row < 5
-          ? leaderboardGridBoardDescriptors(leaderboardGridState)[
-              row * 5 + column
-            ]
-          : null;
-      if (board?.id === "referrals") {
+    if (hit?.object?.userData?.interactive === "leaderboard-card") {
+      // The card itself identifies the board now: no canvas-space cell
+      // arithmetic, so a click always lands on the ranking being looked at.
+      const boardId = String(hit.object.userData.boardId || "");
+      if (boardId === "referrals") {
         onReferralBoardSelect();
-      } else if (board?.id === "http-referrers") {
+      } else if (boardId === "http-referrers") {
         const href = safeSiteReferrerURL(
-          leaderboardGridState.siteRows?.[0],
+          leaderboardCardState.siteRows?.[0],
         );
         if (href) onSiteReferrerOpen(href);
       }
@@ -34910,6 +35839,9 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
+    // Resolve the repository shell before the visibility sweep so the frame the
+    // shell closes on is the same frame the World behind it stops drawing.
+    updateRepositoryEnclosure(time, delta);
     syncEnclosureSceneVisibility();
     if (officeSceneMode === "town") {
       const insideInstanceBooth =
@@ -34992,6 +35924,48 @@ export function createWorldScene({
           repositoryPortalBornAt.delete(key);
         }
       });
+      // Motes circling a portal whose size tree is still being assembled. They
+      // fade in with the portal, twinkle while the map builds, and fade out on
+      // their own if the map never arrives, so a stalled mirror is never left
+      // wearing a permanent celebration.
+      if (worldElementEnabled("repository-portals")) {
+        repositoryPortals.forEach(({ group, key }) => {
+          const sparkle = group.userData.repositorySparkle;
+          if (!sparkle) return;
+          const seeds = sparkle.userData.repositorySparkleSeeds;
+          const until = sparkle.userData.repositorySparkleUntil || 0;
+          const remaining = until - time;
+          if (remaining <= 0 || !seeds) {
+            if (sparkle.visible) {
+              sparkle.visible = false;
+              sparkle.material.opacity = 0;
+              repositorySparkleUntil.delete(key);
+            }
+            return;
+          }
+          sparkle.visible = true;
+          const born = repositoryPortalBornAt.get(key);
+          const rising = born ? clamp((time - born) / 1050, 0, 1) : 1;
+          // Fade out over the last second so the shimmer never cuts off.
+          sparkle.material.opacity =
+            0.9 * rising * clamp(remaining / 1000, 0, 1);
+          const positions = sparkle.geometry.attributes.position;
+          const array = positions.array;
+          for (let index = 0; index < array.length; index += 3) {
+            const radius = seeds[index];
+            const phase = seeds[index + 1];
+            const speed = seeds[index + 2];
+            const angle = phase + time * 0.0011 * speed;
+            // Breathe the orbit so the motes look like they are still settling
+            // onto a map that has not finished resolving.
+            const breath = 1 + Math.sin(time * 0.0021 + phase) * 0.16;
+            array[index] = Math.cos(angle) * radius * breath;
+            array[index + 1] = Math.sin(angle) * radius * breath;
+            array[index + 2] = Math.sin(time * 0.0035 + phase) * 0.12;
+          }
+          positions.needsUpdate = true;
+        });
+      }
       // Node beacons hold a steady colour and size — no pulse — so a status
       // reads the same in a screenshot as it does live. Only degraded and
       // healing nodes carry a sweep, and it turns rather than fades, so the
@@ -35223,14 +36197,20 @@ export function createWorldScene({
     // the chase/zoom camera update makes wheel, pinch, and orbit changes take
     // effect on the same rendered frame.
     updateNodeDetailLevel();
-    if (worldElementEnabled("sky")) worldSky.tick(Date.now(), camera.position);
+    if (worldElementEnabled("sky")) {
+      worldSky.tick(
+        Date.now(),
+        camera.position,
+        camera.getWorldDirection(skyViewDirection),
+      );
+    }
     tickStoreElements(time);
     // Spatial scans and DOM-adjacent controls do not need monitor refresh
     // cadence. Bounding them to 12.5Hz removes repeated portal walks and
     // layout writes while movement and WebGL rendering remain full-rate.
     if (time >= nextProximityUpdateAt) {
       nextProximityUpdateAt = time + 80;
-      updateBuildBoardProximity();
+      updateBoardProximity();
       if (officeSceneMode === "town") {
         nearestLandmark();
         updateRepositoryPortalLabels();
@@ -35853,6 +36833,10 @@ export function createWorldScene({
     keys.clear();
     touchKeys.clear();
     touchMovement.set(0, 0);
+    // Put deleted pieces back before the sweep below: a detached subtree is
+    // not reachable from the scene, and its GPU buffers would outlive the
+    // renderer that allocated them.
+    [...deletedWorldObjects.keys()].forEach((key) => restoreWorldObject(key));
     scene.traverse((child) => {
       disposeOwnedGeometry(child.geometry);
       if (Array.isArray(child.material)) {
@@ -35983,6 +36967,7 @@ export function createWorldScene({
     updateLeaderboards,
     updateReferralLeaderboard,
     updateSiteReferrerLeaderboard,
+    setBillboardRefreshing,
     deleteNetworkNode,
     updateNetworkNodes,
     armMirrorPushEffect,
@@ -36001,6 +36986,7 @@ export function createWorldScene({
     updateIdentity,
     setInputActive,
     updateRepositoryCatalog,
+    beginRepositoryDistrictReveal,
     updateRepositoryGraph,
     updateRepositoryActivity,
     setRepositoryImportState,
@@ -36066,6 +37052,11 @@ export function createWorldScene({
     setWorldElementEnabled,
     listSceneObjects,
     listWorldElementParts,
+    pickWorldObject,
+    deleteWorldObject,
+    restoreWorldObject,
+    restoreAllWorldObjects,
+    listDeletedWorldObjects,
     installStoreElement,
     removeStoreElement,
     getEnvironmentState: () => ({

@@ -28,21 +28,45 @@ jobs:
             printf '%s\n' "$app_changes"
           fi
 
-      # Build the release APK and copy it out of the (temporary) run worktree to
-      # a persistent artifacts dir on this node, since the worktree is removed
-      # when the run finishes. The APK path is printed to the run log — that's
-      # the attached artifact (ForkMesh has no relay artifact upload).
+      # Build the release APK and copy it into $HOME/forkmesh-artifacts, which
+      # the runner lands in this node's Actions artifacts store once the run
+      # finishes — everything else in the sandbox (workspace, $HOME, /tmp) is
+      # deleted with it. The landed path is printed to the run log; ForkMesh has
+      # no relay artifact upload.
       - name: Build APK and collect artifact
         run: |
           [ -f .forkmesh-skip-android ] && exit 0
           set -e
 
           # Self-install Flutter + the Android SDK + a JDK under
-          # $HOME/.forkmesh/toolchain when this node doesn't already have them
-          # (cached there across runs), the same way cloudflare_worker/
-          # pywrangler.sh self-installs the deploy toolchain instead of
-          # assuming the host has it pre-provisioned.
+          # $HOME/.forkmesh/toolchain when this node doesn't already have them,
+          # the same way cloudflare_worker/pywrangler.sh self-installs the
+          # deploy toolchain instead of assuming the host has it
+          # pre-provisioned.
           . tools/flutter-android-toolchain.sh
+
+          # Actions run with the network namespace unshared unless the node sets
+          # the FORKMESH_ACTIONS_ALLOW_NETWORK variable, and an Android build
+          # needs egress twice over: to install the toolchain at all (the
+          # sandbox $HOME starts empty every run, so nothing is cached between
+          # them), and then for `flutter pub get` and Gradle's own dependency
+          # and NDK downloads. Report that as a skip instead of a red run — the
+          # old code just let `apt-get download` fail under `set -e`, so every
+          # push touching flutter_app/ died as a bare "exit code 100".
+          if [ "$FLUTTER_TOOLCHAIN_STATUS" = "offline" ]; then
+            echo "Skipping the Android build: $FLUTTER_TOOLCHAIN_REASON."
+            echo "To build APKs here, allow network access for Actions on this"
+            echo "node (set the FORKMESH_ACTIONS_ALLOW_NETWORK variable under"
+            echo "Settings -> Secrets & Coves), or run this workflow on a node"
+            echo "that already has one."
+            exit 0
+          fi
+          # A toolchain that could not be installed on a node that DOES have
+          # egress is a real breakage, not a policy skip: fail the run.
+          if [ "$FLUTTER_TOOLCHAIN_READY" != "1" ]; then
+            echo "ERROR: Android toolchain unavailable: $FLUTTER_TOOLCHAIN_REASON." >&2
+            exit 1
+          fi
           "$FLUTTER" --version
 
           cd flutter_app

@@ -23,7 +23,8 @@ thread_local bool g_insideSink = false;
 
 // Hands the message to the registered sink. Returns true once the sink has it
 // and the console copy should be dropped.
-bool routeToAppLog(QtMsgType type, const QString &message)
+bool routeToAppLog(QtMsgType type, const QMessageLogContext &context,
+                   const QString &message)
 {
     if (type == QtFatalMsg || g_insideSink)
         return false;
@@ -36,7 +37,13 @@ bool routeToAppLog(QtMsgType type, const QString &message)
         ReentryGuard() { g_insideSink = true; }
         ~ReentryGuard() { g_insideSink = false; }
     } guard;
-    g_sink(type, message);
+    // context.file points at a string literal in the emitting translation unit
+    // (or is null in a build without QT_MESSAGELOGCONTEXT). Copied here rather
+    // than passed on as a pointer: the sink may queue the message to another
+    // thread, and a literal from a plugin that later unloads would outlive it.
+    g_sink(type, message,
+           context.file ? QString::fromUtf8(context.file) : QString(),
+           context.line);
     return !g_keepConsoleEcho;
 }
 
@@ -47,7 +54,7 @@ void filterPlatformNoise(QtMsgType type, const QMessageLogContext &context,
         return;
     if (isFontDatabaseNoise(message))
         return;
-    if (routeToAppLog(type, message))
+    if (routeToAppLog(type, context, message))
         return;
     if (g_previousMessageHandler) {
         g_previousMessageHandler(type, context, message);

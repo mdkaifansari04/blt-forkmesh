@@ -9,7 +9,17 @@
  * pays for it. Nothing here runs until that loader calls bootWorldDiscord().
  */
 
+import {
+  createWorldBackoff,
+  markWorldHTTPFailure,
+  withWorldBackoff,
+} from "./world-backoff.js";
+
 const SESSION_KEY = "forkmesh.session";
+// Every call here is click-initiated, so the cooldown is about a visitor who
+// keeps pressing a button against a bridge that is down, and about the relay
+// hop to Discord answering 429 on our behalf.
+const backoff = createWorldBackoff();
 const state = {
   open: false,
   reading: false,
@@ -84,27 +94,30 @@ function button(label, action, className = "", disabled = false) {
 }
 
 async function api(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  headers.set("accept", "application/json");
-  const token = sessionToken();
-  if (token) headers.set("authorization", `Bearer ${token}`);
-  if (options.body !== undefined) headers.set("content-type", "application/json");
-  const response = await fetch(path, {
-    method: options.method || "GET",
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    credentials: "same-origin",
-    cache: "no-store",
-  });
-  let data = {};
-  try { data = await response.json(); } catch { /* bounded generic failure */ }
-  if (!response.ok) {
-    const error = text(data?.error || `Request failed (${response.status})`, 180);
-    const failure = new Error(error);
-    failure.payload = data;
-    throw failure;
-  }
-  return data;
+  const method = options.method || "GET";
+  return withWorldBackoff(backoff, `${method}:${path}`, async () => {
+    const headers = new Headers(options.headers || {});
+    headers.set("accept", "application/json");
+    const token = sessionToken();
+    if (token) headers.set("authorization", `Bearer ${token}`);
+    if (options.body !== undefined) headers.set("content-type", "application/json");
+    const response = await fetch(path, {
+      method,
+      headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    let data = {};
+    try { data = await response.json(); } catch { /* bounded generic failure */ }
+    if (!response.ok) {
+      const error = text(data?.error || `Request failed (${response.status})`, 180);
+      const failure = new Error(error);
+      failure.payload = data;
+      throw markWorldHTTPFailure(failure, response);
+    }
+    return data;
+  }, { retryableOnly: method !== "GET" });
 }
 
 function selectedChannels(connector) {

@@ -260,6 +260,7 @@ void writeMirrors(QJsonObject &message, const QList<MirrorAdvert> &mirrors)
         QJsonObject head;
         head.insert("c", m.commit);
         head.insert("b", m.branch);
+        head.insert("r", m.refsFingerprint);
         head.insert("t", m.updatedMs);
         head.insert("s", m.source); // shared upstream identity for grouping
         head.insert("z", double(m.sizeBytes)); // on-disk mirror size in bytes
@@ -297,6 +298,7 @@ QList<MirrorAdvert> readMirrors(const QJsonObject &message)
         const QJsonObject head = heads.value(repo).toObject();
         advert.commit = head.value("c").toString().left(64);
         advert.branch = head.value("b").toString().left(kMaxRepoNameChars);
+        advert.refsFingerprint = head.value("r").toString().left(64);
         advert.updatedMs = qint64(head.value("t").toDouble());
         advert.source = head.value("s").toString().left(kMaxRepoNameChars);
         advert.sizeBytes = qMax(qint64(0), qint64(head.value("z").toDouble()));
@@ -1241,6 +1243,8 @@ void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
                   repos.at(i).source != m_mirroredRepos.at(i).source ||
                   repos.at(i).commit != m_mirroredRepos.at(i).commit ||
                   repos.at(i).branch != m_mirroredRepos.at(i).branch ||
+                  repos.at(i).refsFingerprint !=
+                      m_mirroredRepos.at(i).refsFingerprint ||
                   repos.at(i).updatedMs != m_mirroredRepos.at(i).updatedMs ||
                   repos.at(i).sizeBytes != m_mirroredRepos.at(i).sizeBytes ||
                   repos.at(i).issueCount != m_mirroredRepos.at(i).issueCount ||

@@ -34,6 +34,10 @@ struct MirrorAdvert {
     QString source;
     QString commit;       // full HEAD commit hash of the node's mirror (may be empty)
     QString branch;       // branch HEAD points to
+    // SHA-256 of the transported heads/tags ref set. HEAD alone cannot reveal
+    // a pull-request ledger update on forkmesh/pulls, so convergence decisions
+    // use this fingerprint when both peers support it.
+    QString refsFingerprint;
     // Subject/author/date of `commit`, so the Mirror nodes view and the World
     // cabinets can show what the node's latest commit actually is. Empty when
     // the peer is older than this field or couldn't read it.
@@ -230,8 +234,8 @@ public:
     virtual void setMirroredRepos(const QList<MirrorAdvert> &repos) { Q_UNUSED(repos); }
     // Announce that this node just refreshed a repo's mirror from its source of
     // truth, so peers mirroring the same repo can be notified (and refresh).
-    // `commit` is the new HEAD the source advanced to, so peers can see exactly
-    // which commit is different without waiting for a fresh advert.
+    // `commit` is the primary HEAD for backward-compatible status display. The
+    // update means some served ref changed, so receivers still fetch all refs.
     virtual void notifyMirrorUpdated(const QString &ownerName,
                                      const QString &commit = QString())
     {

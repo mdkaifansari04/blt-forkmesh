@@ -31,11 +31,13 @@ def test_agent_install_uses_pinned_ssh_and_official_user_scoped_installers():
     assert "savedHostIdentityFile(node, ip, user)" in installer
     assert "forkmesh::control::agentCliBootstrapRemoteCommand" in installer
     assert "does not copy tokens" in CHAT
-    assert "identityFile.isEmpty() ? pass : QString()" in installer
-    assert "Using the ForkMesh-managed SSH identity" in installer
+    # The whole fleet authorizes one shared key, so it is always offered; a
+    # session password is only ssh's fallback when that key is refused.
+    assert "const QString sshPassword = pass;" in installer
+    assert "Using the shared ForkMesh SSH identity" in installer
     assert "SSH could not reach %1 on port 22" in installer
-    assert "The mirror rejected its saved ForkMesh SSH " in installer
-    assert '"key. Re-provision or replace that host key, "' in installer
+    assert "The mirror rejected the shared ForkMesh SSH " in installer
+    assert '"key. Add that key to %1\'s authorized_keys, "' in installer
     # The per-host button installs binaries only; it never copies a login.
     assert "/*copyCredentials=*/false" in installer
 
@@ -130,6 +132,36 @@ def test_saved_host_key_path_fails_closed_instead_of_falling_back_to_password():
     assert "return identity;" in lookup
     assert "QFileInfo(identity).isFile()" not in lookup
     assert "silently fall back to a session password" in lookup
+
+
+def test_every_saved_host_defaults_to_the_shared_fleet_ssh_key():
+    # A row without its own recorded key — added by hand, or saved before the
+    # fleet moved to one shared key — still connects with the shared key.
+    lookup = CHAT.split(
+        "QString MainWindow::savedHostIdentityFile(", 1
+    )[1].split("\n// --- One-click Vultr mirror provisioning", 1)[0]
+    assert (
+        "return forkmesh::control::existingSharedHostIdentityFile();" in lookup
+    )
+    # Adding a host records it against that same key.
+    add = CHAT.split("void MainWindow::addHostFromForm()", 1)[1][:2500]
+    assert "forkmesh::control::existingSharedHostIdentityFile()" in add
+    assert (
+        'rememberHost(node, ip, user, pass, QStringLiteral("added"), '
+        "identityFile);" in add
+    )
+    # One key for the whole fleet, generated or adopted once per device.
+    keypair = CHAT.split("void MainWindow::ensureSharedHostKeypair(", 1)[1][
+        :4000
+    ]
+    assert "forkmesh::control::sharedHostKeyPath()" in keypair
+    assert 'QStringLiteral("forkmesh-shared-host-key")' in keypair
+    # The provider registration reuses that one key rather than minting a
+    # per-deployment key.
+    assert "ensureSharedHostKeypair([this, apiKey, node](" in CHAT
+    shared = CONTROL.split("QString sharedHostKeyPath()", 1)[1][:1500]
+    assert 'QStringLiteral("forkmesh_shared_ed25519")' in shared
+    assert 'QStringLiteral("vultr_mirror_ed25519")' in shared
 
 
 def test_saved_hosts_are_reprobed_until_online_with_agent_capabilities():

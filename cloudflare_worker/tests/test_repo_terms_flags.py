@@ -4,7 +4,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+# entry.py plus its on-demand admin console (loaded outside Worker startup).
+ENTRY = (
+    (ROOT / "src" / "entry.py").read_text(encoding="utf-8") + "\n"
+    + (ROOT / "src" / "admin_console.py").read_text(encoding="utf-8")
+)
 SCHEMA = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
 DASHBOARD = (ROOT / "public" / "dashboard.js").read_text(encoding="utf-8")
 WORLD = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")

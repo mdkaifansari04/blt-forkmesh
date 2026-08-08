@@ -46,6 +46,11 @@ class FakeRuntime:
         self.ids = 0
         self.fail_batch_at = None
         self.room_access_calls = []
+        self.account_events = []
+
+    async def notify_account(self, owner, topic):
+        # Payload-free push to one account's clients (adhoc #1604).
+        self.account_events.append((owner, topic))
 
     def use(self, method, actor="", data=None, query=None):
         self.request_method = method
@@ -208,6 +213,10 @@ async def test_pair_creation_is_atomic_and_reverse_order_is_idempotent():
     assert runtime.scalar(
         "SELECT COUNT(*) FROM chat_direct_participants"
     ) == 2
+    # bob got a conversation he did not open, and his chat page reads that list
+    # once when it opens rather than every 30s, so he is told (adhoc #1604).
+    # Reopening an existing pair creates nothing and pushes nothing.
+    assert runtime.account_events == [("bob", "direct-messages")]
 
 
 @run_async_test
