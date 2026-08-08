@@ -1181,6 +1181,10 @@ QWidget *MainWindow::buildIssuesSection()
     // tracked agent session, working until ForkMesh can open a PR from its diff.
     m_issueAgentProvider->addItem(QStringLiteral("Claude Code"),
                                   QStringLiteral("claude-code"));
+    // "Cloudflare AI" runs the bundled Workers AI agent script against the
+    // relay's models (adhoc #1634).
+    m_issueAgentProvider->addItem(QStringLiteral("Cloudflare AI"),
+                                  kCloudflareAiProvider);
     selectDefaultAgentProvider(m_issueAgentProvider);
     m_issueAgentProvider->setToolTip("Which agent to run on this issue");
     // Model picker beneath the provider so a run can target a specific model
@@ -4366,32 +4370,14 @@ void MainWindow::quickAddIssue()
         m_quickAddAgentProvider
             ? m_quickAddAgentProvider->currentData().toString()
             : QStringLiteral("claude-code");
-    // Cloudflare AI is neither an agent nor an issue: the picked Workers AI model
-    // answers the prompt on the relay and the reply is shown (adhoc #1407). It
-    // has no checkout, so it must be handled before the agent hand-off below.
-    if (agentIsCloudflareAiProvider(quickAddProvider)) {
-        if (title.isEmpty())
-            return;
-        const QString model = selectedModelComboValue(m_quickAddClaudeModel);
-        // Workers AI text models take no images here, so say what was dropped
-        // instead of silently discarding the attachments.
-        if (!m_quickAddImages.isEmpty())
-            logSystem(QStringLiteral("Cloudflare AI answers text only; %1 "
-                                     "attached image(s) were not sent.")
-                          .arg(m_quickAddImages.size()));
-        // Keep an unsent prompt in the composer when authentication is missing
-        // or another Workers AI request is still in flight. The old void path
-        // cleared it even though no request had started.
-        if (!sendPromptToCloudflareAi(title, model))
-            return;
-        m_issueQuickAdd->clear();
-        clearQuickAddImages();
-        return;
-    }
     if (quickAddProvider != QLatin1String("manual")) {
+        // Cloudflare AI runs an agent like everything else since adhoc #1634
+        // (it used to answer the prompt via /api/ai/ask and stop); its picked
+        // "@cf/..." model rides along just like a Claude Code or Codex pick.
         const QString provider = quickAddProvider;
         const QString model = (provider == QLatin1String("claude-code") ||
-                               agentIsCodexProvider(provider))
+                               agentIsCodexProvider(provider) ||
+                               agentIsCloudflareAiProvider(provider))
                                   ? selectedModelComboValue(m_quickAddClaudeModel)
                                   : QString();
         const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();

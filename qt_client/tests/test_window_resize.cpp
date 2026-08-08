@@ -70,6 +70,7 @@ QString linkifyIssueRefs(const QString &escaped);
 bool isTemporaryChatGuest(const MemberInfo &m);
 QString agentModelLabel(const QString &model);
 bool agentModelIsClaudeStyle(const QString &model);
+bool agentModelIsCloudflareStyle(const QString &model);
 bool agentModelMatchesProvider(const QString &provider, const QString &model);
 MirrorBranchTip mirrorPrimaryBranchTip(const QString &mirrorPath,
                                        const QString &workTree);
@@ -6408,7 +6409,8 @@ int main(int argc, char *argv[])
         }
         // Every active Workers AI fallback must appear as its own selectable
         // composer row. Selecting each row updates the same hidden provider and
-        // model controls quickAddIssue() reads when it sends /api/ai/ask.
+        // model controls quickAddIssue() reads when it starts the Workers AI
+        // agent (adhoc #1634).
         bool allCloudflareModelsSelectable = quickAgentModel && canonicalModel;
         QStringList selectedCloudflareModels;
         for (const auto &choice :
@@ -7110,6 +7112,40 @@ int main(int argc, char *argv[])
         check(agentModelMatchesProvider(QStringLiteral("claude-api"),
                                         QStringLiteral("opus")),
               QStringLiteral("the opus alias matches a Claude API provider"));
+
+        // adhoc #1634: Workers AI ids bind to the cloudflare-ai provider only.
+        // "@cf/..." is not Claude-style, so without its own family check it
+        // would silently pass as a Codex/OpenAI model.
+        using forkmesh::ui::agentModelIsCloudflareStyle;
+        check(agentModelIsCloudflareStyle(
+                  QStringLiteral("@cf/meta/llama-3.3-70b-instruct-fp8-fast")),
+              QStringLiteral("a @cf/ id is Cloudflare-style"));
+        check(!agentModelIsCloudflareStyle(QStringLiteral("gpt-5.5")),
+              QStringLiteral("a gpt-* id is not Cloudflare-style"));
+        check(agentModelMatchesProvider(
+                  QStringLiteral("cloudflare-ai"),
+                  QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast")),
+              QStringLiteral("a @cf/ model matches the Cloudflare AI provider"));
+        check(agentModelMatchesProvider(QStringLiteral("cloudflare-ai"),
+                                        QString()),
+              QStringLiteral(
+                  "an empty model matches Cloudflare AI (uses its default)"));
+        check(!agentModelMatchesProvider(QStringLiteral("cloudflare-ai"),
+                                         QStringLiteral("claude-opus-4-8")),
+              QStringLiteral(
+                  "a Claude model does not match the Cloudflare AI provider"));
+        check(!agentModelMatchesProvider(QStringLiteral("cloudflare-ai"),
+                                         QStringLiteral("gpt-5.5")),
+              QStringLiteral(
+                  "a gpt model does not match the Cloudflare AI provider"));
+        check(!agentModelMatchesProvider(
+                  QStringLiteral("codex"),
+                  QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast")),
+              QStringLiteral("a @cf/ model does not match the Codex provider"));
+        check(!agentModelMatchesProvider(
+                  QStringLiteral("openai"),
+                  QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast")),
+              QStringLiteral("a @cf/ model does not match the OpenAI provider"));
     }
 
     // adhoc #191: the issue looper (and per-issue agent assignment) must work on

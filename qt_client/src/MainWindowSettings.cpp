@@ -1339,6 +1339,8 @@ QWidget *MainWindow::buildSettingsSection()
                                          QStringLiteral("claude-api"));
     m_defaultAgentProviderCombo->addItem(QStringLiteral("Claude Code"),
                                          QStringLiteral("claude-code"));
+    m_defaultAgentProviderCombo->addItem(QStringLiteral("Cloudflare AI"),
+                                         kCloudflareAiProvider);
     selectDefaultAgentProvider(m_defaultAgentProviderCombo);
     m_defaultAgentProviderCombo->setToolTip(
         "Provider pre-selected when you assign a coding agent to an issue.");
