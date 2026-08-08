@@ -1727,15 +1727,18 @@ def test_dashboard_pull_timeline_includes_commits_and_live_branch_agents():
     # The conversation is a chronological activity feed, not merely the signed
     # review-comment files. Pull-specific commits are read from the metadata
     # branch, and a branch-matched organization agent contributes safe lifecycle
-    # status rows that poll only while it is active.
+    # status rows.
     for marker in (
         "function parsePullCommitMbox(mbox)",
         'path: `pulls/${number}/commits.mbox`, ref: metadataRef,',
         "function buildRepoPullTimeline(values, conversation, commits, agents)",
         "function pullAgentActivityEvent(session, number, headBranch)",
-        "function refreshRepoPullActivity(repo, number)",
-        "function scheduleRepoPullActivityRefresh(repo, number)",
+        "async function refreshRepoPullActivity(repo, number, agentsOnly = false)",
+        "function scheduleRepoPullActivityRefresh(repo, number, active)",
         "data-repo-pull-timeline-count",
+        "data-repo-pull-commit-count",
+        "data-repo-pull-commit-phrase",
+        "data-repo-pull-commits",
         "repoAgentStatusSnapshot(session)",
     ):
         assert marker in dashboard_js
@@ -1746,7 +1749,60 @@ def test_dashboard_pull_timeline_includes_commits_and_live_branch_agents():
     ]
     assert "loadRepoPullCommits" in refresh
     assert "loadRepoPullAgentActivity" in refresh
+    # A working agent is watched every few seconds; an otherwise idle pull page
+    # only re-checks the (worker-side) session list, so it never sits on a
+    # fast timer pointed at the mirrors.
     assert "document.hidden ? 15000 : 3000" in refresh
+    assert "document.hidden ? 120000 : 30000" in refresh
+    assert "refreshRepoPullActivity(repo, number, !active);" in refresh
+    # The header no longer hard-codes "1 commit", and both it and the Commits
+    # tab follow the branch while an agent pushes to it.
+    assert "wants to merge 1 commit into" not in dashboard_js
+    assert "renderRepoPullCommits(commits)" in refresh
+    assert "pullCommitPhrase(commits.length)" in refresh
+    # Only signed-in members can read organization sessions, so a signed-out
+    # visitor never starts the watch at all.
+    assert 'if (kind === "pulls" && state.session?.sessionToken) {' in dashboard_js
+
+
+def test_dashboard_pull_commits_follow_the_live_head_branch():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    loader = dashboard_js[
+        dashboard_js.index("async function loadRepoPullCommits")
+        : dashboard_js.index("function pullAgentStatusIsActive")
+    ]
+
+    # An agent keeps pushing to the head branch after the pull was opened, so
+    # the branch tip is read first and the immutable creation head is only the
+    # fallback. Either way the bounded history is kept only when it still
+    # reaches the pull's recorded creation base.
+    assert "const branch = pullHeadBranchRef(values);" in loader
+    assert 'String(values?.status || "open").toLowerCase() === "open"' in loader
+    assert "refs.push(head);" in loader
+    assert "loadRepoPullBranchCommits(repo, ref, base)" in loader
+    assert 'const base = immutableGitCommit(values?.creationBaseOid);' in loader
+
+    # mbox folds long headers across continuation lines. The unfolding replace
+    # has to match a real newline, not the two-character "\\n" escape.
+    mbox = dashboard_js[
+        dashboard_js.index("function parsePullCommitMbox")
+        : dashboard_js.index("function renderRepoPullCommits")
+    ]
+    assert r'replace(/\n[ \t]+/g, " ")' in mbox
+    assert r'replace(/\\n[ \\t]+/g, " ")' not in mbox
+
+    branch_reader = dashboard_js[
+        dashboard_js.index("async function loadRepoPullBranchCommits")
+        : dashboard_js.index("async function loadRepoPullCommits")
+    ]
+    assert "baseIndex >= 0 ? history.slice(0, baseIndex) : []" in branch_reader
+
+    # "<contributor>:<branch>" heads name a ref only by their branch segment.
+    resolver = dashboard_js[
+        dashboard_js.index("function pullHeadBranchRef")
+        : dashboard_js.index("async function loadRepoPullBranchCommits")
+    ]
+    assert 'head.slice(head.lastIndexOf(":") + 1)' in resolver
 
 
 def test_dashboard_never_loads_a_diff_for_non_open_pulls():
