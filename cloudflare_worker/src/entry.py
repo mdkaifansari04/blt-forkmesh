@@ -665,6 +665,9 @@ def mirroring_owner_set(*args, **kwargs): return _mirrors.mirroring_owner_set(*a
 def release_blob_mirror_candidates(*args, **kwargs): return _mirrors.release_blob_mirror_candidates(*args, **kwargs)
 def repo_clone_online(*args, **kwargs): return _mirrors.repo_clone_online(*args, **kwargs)
 def repo_mirror_group_key(*args, **kwargs): return _mirrors.repo_mirror_group_key(*args, **kwargs)
+def repo_mirror_group_keys(*args, **kwargs): return _mirrors.repo_mirror_group_keys(*args, **kwargs)
+def repo_mirror_group_selection(*args, **kwargs): return _mirrors.repo_mirror_group_selection(*args, **kwargs)
+def repo_mirror_pin_history_keys(*args, **kwargs): return _mirrors.repo_mirror_pin_history_keys(*args, **kwargs)
 def repo_mirror_same_group(*args, **kwargs): return _mirrors.repo_mirror_same_group(*args, **kwargs)
 def set_mirror_request_status(*args, **kwargs): return _mirrors.set_mirror_request_status(*args, **kwargs)
 def select_clone_fallback(*args, **kwargs): return _mirrors.select_clone_fallback(*args, **kwargs)
@@ -14178,6 +14181,40 @@ async def repo_about_handler(env, request, owner, repo):
     return json_response(result)
 
 
+# node name -> (resolved human owner, ts). Resolving the account behind a
+# headless mirror costs a blind_index plus up to two D1 reads and a decrypt,
+# and the /mirrors payload needs it for EVERY mirror in the group — sequentially
+# (concurrent tasks are banned on a request path), on every edge-cache miss. A
+# claim link changes about never, so a short per-isolate memo keeps a growing
+# mirror fleet from turning one poll into dozens of round-trips. Bounded by the
+# fleet, with a hard cap as a backstop.
+_MIRROR_OWNER_USER_MEMO = {}
+MIRROR_OWNER_USER_MEMO_TTL_MS = 5 * 60 * 1000
+MIRROR_OWNER_USER_MEMO_MAX = 512
+
+
+async def _mirror_owner_user(env, node_name, now):
+    # "" when the node has no account row or no linked user — memoized too, so
+    # an unlinked node is not re-resolved on every poll.
+    cached = _MIRROR_OWNER_USER_MEMO.get(node_name)
+    if cached is not None and now - cached[1] < MIRROR_OWNER_USER_MEMO_TTL_MS:
+        return cached[0]
+    try:
+        _, node_rec = await _account_row(env, node_name)
+    except Exception:
+        return ""  # transient read error: retry next request, do not memoize
+    if not node_rec:
+        owner_user = ""
+    elif _account_kind(node_rec) == "user":
+        owner_user = node_name
+    else:
+        owner_user = str(node_rec.get("owner") or "").strip()
+    if len(_MIRROR_OWNER_USER_MEMO) >= MIRROR_OWNER_USER_MEMO_MAX:
+        _MIRROR_OWNER_USER_MEMO.clear()
+    _MIRROR_OWNER_USER_MEMO[node_name] = (owner_user, now)
+    return owner_user
+
+
 async def repo_mirrors_handler(env, request, owner, repo):
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -14217,26 +14254,25 @@ async def repo_mirrors_handler(env, request, owner, repo):
     cached = await edge_cache_match(cache_key)
     if cached is not None:
         return cached
-    rows = await d1_all(
-        env,
-        "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0"
-    )
-    catalog_rows = []
-    for row in rows:
-        rec = await decrypt_row(env, row.get("data"))
-        if not rec:
-            continue
-        if rec.get("visibility") != "public":
-            continue
-        if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
-            continue
-        catalog_rows.append({
-            "key_bi": row.get("key_bi"),
-            "is_private": int(row.get("is_private") or 0),
-            "data": rec,
-        })
-
     now = int(Date.now())
+    # Read the catalog through the shared per-isolate memo (5s TTL, ciphertext
+    # -keyed decrypt cache, single-flight refill). This poll-heavy route used to
+    # run its OWN `SELECT ... FROM repositories` plus a sequential decrypt_row()
+    # over every public repo on each edge-cache miss — an unbounded per-request
+    # pass that grows with the catalog and wedges the isolate once it outruns
+    # the CPU limit ("Cannot enter into task" / CpuLimitExceeded, adhoc #1630;
+    # same family as #144/#153/#167/#183).
+    catalog_rows = [
+        row
+        for row in await _decrypted_public_catalog(env, now)
+        if not row.get("is_private")
+        and not _is_blocked_catalog_identity(
+            env,
+            (row.get("data") or {}).get("owner"),
+            (row.get("data") or {}).get("name"),
+        )
+    ]
+
     # Repository bytes moved off the retired host WebSocket to signed direct
     # HTTPS endpoints. Read the fresh endpoint leases once and map them onto
     # this catalog group directly; the old hydrate path issued up to eight
@@ -14301,8 +14337,19 @@ async def repo_mirrors_handler(env, request, owner, repo):
             and not bool(int(row.get("abuse_blocked") or 0))
         )
     }
+    # Resolve the mirror group once, up front, and scope every remaining read to
+    # it. `group_keys` used to be EVERY public repository, so each poll pulled
+    # the whole of repo_first_hosted plus one repo_state_history query per 80
+    # catalog rows — sequential D1 round-trips and a pin history for repos that
+    # never appear in this payload. An unknown repo now also costs nothing: it
+    # 404s before touching another table.
+    selection = repo_mirror_group_selection(owner, repo, catalog_rows)
+    if selection is None:
+        return json_response({"error": "not_found"}, status=404)
+    _group_target, group_members, group_public_rows = selection
+    group_keys = repo_mirror_group_keys(group_members)
     presence = {}
-    for row in catalog_rows:
+    for row in group_members:
         record = row.get("data") or {}
         node_name = clean_string(
             record.get("machineName") or record.get("owner", ""),
@@ -14311,27 +14358,33 @@ async def repo_mirrors_handler(env, request, owner, repo):
         key = str(row.get("key_bi") or "")
         if key and node_name in reachable_seen:
             presence[key] = reachable_seen[node_name]
-    first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
-    first_hosted = {
-        str(r.get("repo_bi")): int(r.get("ts") or 0)
-        for r in first_rows
-        if r.get("repo_bi")
-    }
-    # Recent owner-attested state pins, so the payload can mark which mirrors
-    # the clone integrity gate is rejecting (same gathering as _state_pins).
-    # Scoped to this request's catalog group — the old full-table scan read
-    # every repo's pin history on every /mirrors poll.
-    history = {}
-    group_keys = [str(r.get("key_bi") or "") for r in catalog_rows
-                  if r.get("key_bi")]
+    first_hosted = {}
     for offset in range(0, len(group_keys), 80):
         key_batch = group_keys[offset:offset + 80]
+        first_rows = await d1_all(
+            env,
+            "SELECT repo_bi, ts FROM repo_first_hosted"
+            " WHERE repo_bi IN (%s)" % ",".join("?" for _ in key_batch),
+            *key_batch)
+        for r in first_rows or []:
+            if r.get("repo_bi"):
+                first_hosted[str(r.get("repo_bi"))] = int(r.get("ts") or 0)
+    # Recent owner-attested state pins, so the payload can mark which mirrors
+    # the clone integrity gate is rejecting (same gathering as _state_pins).
+    # Slightly wider than the group: a rootless record groups by name, so a
+    # working-copy holder outside the requested repo's own group can still be
+    # the attestation a member is validated against.
+    history = {}
+    history_keys = repo_mirror_pin_history_keys(
+        group_members, group_public_rows)
+    for offset in range(0, len(history_keys), 80):
+        key_batch = history_keys[offset:offset + 80]
         hist_rows = await d1_all(
             env,
             "SELECT key_bi, state_hash FROM repo_state_history"
             " WHERE key_bi IN (%s)" % ",".join("?" for _ in key_batch),
             *key_batch)
-        for r in hist_rows:
+        for r in hist_rows or []:
             history.setdefault(str(r.get("key_bi") or ""), []).append(
                 r.get("state_hash"))
     linked_row = await d1_first(
@@ -14354,6 +14407,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         linked_canonical=bool(linked_row),
         reachable_nodes=reachable_nodes,
         routing_verified_nodes=routing_verified_nodes,
+        selection=selection,
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
@@ -14450,20 +14504,11 @@ async def repo_mirrors_handler(env, request, owner, repo):
                 if isinstance(value, str)
             ],
         })
-        if mirror.get("ownerUser"):
+        if mirror.get("ownerUser") or not node_name:
             continue
-        if not node_name:
-            continue
-        try:
-            _, node_rec = await _account_row(env, node_name)
-        except Exception:
-            continue
-        if not node_rec:
-            continue
-        if _account_kind(node_rec) == "user":
-            mirror["ownerUser"] = node_name
-        else:
-            mirror["ownerUser"] = str(node_rec.get("owner") or "").strip()
+        owner_user = await _mirror_owner_user(env, node_name, now)
+        if owner_user:
+            mirror["ownerUser"] = owner_user
     # Node cabinets and the repository Mirrors panel poll while visible. Keep a
     # tiny shared edge window to collapse bursts without leaving an integrity
     # transition or completed sync stuck on screen for ten seconds.
