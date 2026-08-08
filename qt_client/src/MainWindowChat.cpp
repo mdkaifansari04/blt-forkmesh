@@ -62,6 +62,21 @@
 using namespace forkmesh::ui;
 
 namespace {
+// Why the cloud log monitor is ticked but idle, as the chip's tooltip says it.
+// Both states are properties of the machine rather than of a run, so the
+// automatic start reports them there instead of toasting on every launch.
+QString cloudLogMonitorMissingTokenReason()
+{
+    return QStringLiteral(
+        "waiting for a Cloudflare API token (Settings > Secrets)");
+}
+
+QString cloudLogMonitorOldNodeReason()
+{
+    return QStringLiteral("Node.js %1+ is required to run Wrangler")
+        .arg(forkmesh::control::kWranglerMinimumNodeMajor);
+}
+
 // Work that finishes inside this window never gets a chip. Almost every git read
 // lands well under it, so the strip shows genuinely slow jobs and no widget is
 // created (let alone destroyed) for the hundreds of fast ones.
@@ -8351,6 +8366,7 @@ bool MainWindow::prepareCloudflareTail(
         // A background monitor must never be the thing that pops a modal — it
         // starts on its own at launch, including on a headless node with nobody
         // there to type.
+        m_cloudLogMonitorIdleReason = cloudLogMonitorMissingTokenReason();
         flashMessage(
             QStringLiteral(
                 "Cloud log monitoring needs a Cloudflare API token. Store "
@@ -8362,8 +8378,18 @@ bool MainWindow::prepareCloudflareTail(
     *workerDirectory = forkmesh::control::findCloudflareWorkerDirectory(
         QStringLiteral(FORKMESH_SOURCE_DIR),
         QCoreApplication::applicationDirPath());
-    const QString npx =
-        QStandardPaths::findExecutable(QStringLiteral("npx"));
+    // Not PATH's npx: Wrangler exits 1 on anything older than Node 22, and the
+    // node in PATH is routinely the old one on a box that keeps a current one in
+    // nvm (adhoc #1617).
+    const forkmesh::control::NodeToolchain node =
+        forkmesh::control::findNodeToolchain(
+            forkmesh::control::kWranglerMinimumNodeMajor);
+    if (!node.isValid()) {
+        m_cloudLogMonitorIdleReason = cloudLogMonitorOldNodeReason();
+        flashMessage(cloudLogMonitorNodeRequirement(), true);
+        scrub();
+        return false;
+    }
     QString account =
         m_cloudflareAccountEdit
             ? m_cloudflareAccountEdit->text().trimmed()
@@ -8379,16 +8405,15 @@ bool MainWindow::prepareCloudflareTail(
         account = forkmesh::control::cloudflareAccountIdFromVariables(
             storedVariables);
     }
-    *command = forkmesh::control::buildCloudflareTailCommand(*token, account,
-                                                             npx);
+    *command = forkmesh::control::buildCloudflareTailCommand(
+        *token, account, node.npx, node.binDir);
     if (workerDirectory->isEmpty() || command->program.isEmpty()) {
         flashMessage(
             workerDirectory->isEmpty()
                 ? QStringLiteral(
                       "The installed Cloudflare Worker bundle is incomplete.")
                 : QStringLiteral(
-                      "Cloudflare live logs require Node.js/npx and a valid "
-                      "account ID."),
+                      "Cloudflare live logs require a valid account ID."),
             true);
         scrub();
         return false;
@@ -8446,18 +8471,44 @@ bool MainWindow::cloudLogMonitorTokenAvailable() const
     return have;
 }
 
-// The stored preference, acted on once the window is up. A node with no token
-// says so in the tooltip and does nothing else: the automatic start neither
-// flips the preference off (it is still "monitor" — storing a token and
-// relaunching is all it takes) nor writes a line into the log every launch.
+// What to tell someone whose machine cannot run the pinned Wrangler at all. The
+// version manager is named because that is usually where the newer Node already
+// is — unused, because the app inherited a shell whose PATH points at the old
+// one (adhoc #1617).
+QString MainWindow::cloudLogMonitorNodeRequirement() const
+{
+    return QStringLiteral(
+               "Cloudflare live logs need Node.js %1 or newer. Install it (or "
+               "point FORKMESH_NODE_BIN at a newer Node's bin directory) and "
+               "restart.")
+        .arg(forkmesh::control::kWranglerMinimumNodeMajor);
+}
+
+// The stored preference, acted on once the window is up. A node that cannot
+// monitor — no token, or no Node new enough for Wrangler — says which in the
+// tooltip and does nothing else: the automatic start neither flips the
+// preference off (it is still "monitor" — fixing the machine and relaunching is
+// all it takes) nor writes a line into the log every launch.
 void MainWindow::startCloudLogMonitorIfConfigured()
 {
     if (m_closingDown || m_cloudLogMonitorProcess)
         return;
     if (!QSettings().value(kCloudLogMonitorSetting, true).toBool())
         return;
-    m_cloudLogMonitorAwaitingToken = !cloudLogMonitorTokenAvailable();
-    if (m_cloudLogMonitorAwaitingToken) {
+    m_cloudLogMonitorIdleReason.clear();
+    if (!cloudLogMonitorTokenAvailable()) {
+        m_cloudLogMonitorIdleReason = cloudLogMonitorMissingTokenReason();
+        updateCloudLogMonitorTooltip();
+        return;
+    }
+    // Checked here as well as in prepareCloudflareTail() so the automatic start
+    // stays silent about a machine-wide prerequisite: a toast on every launch
+    // for something no relaunch can fix is noise, and the tooltip is where the
+    // monitor already explains itself.
+    if (!forkmesh::control::findNodeToolchain(
+             forkmesh::control::kWranglerMinimumNodeMajor)
+             .isValid()) {
+        m_cloudLogMonitorIdleReason = cloudLogMonitorOldNodeReason();
         updateCloudLogMonitorTooltip();
         return;
     }
@@ -8533,7 +8584,7 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
     m_cloudLogMonitorErrors = 0;
     m_cloudLogMonitorEvents = 0;
     m_cloudLogMonitorStopping = false;
-    m_cloudLogMonitorAwaitingToken = false;
+    m_cloudLogMonitorIdleReason.clear();
     m_cloudLogMonitorProcess = new QProcess(this);
     m_cloudLogMonitorProcess->setWorkingDirectory(workerDirectory);
     m_cloudLogMonitorProcess->setProcessEnvironment(command.environment);

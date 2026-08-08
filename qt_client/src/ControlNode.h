@@ -333,13 +333,47 @@ QString cloudflareApiTokenFromVariables(
 QString cloudflareAccountIdFromVariables(
     const QMap<QString, QString> &variables);
 
+// The pinned Wrangler refuses to run on an older interpreter — "Wrangler
+// requires at least Node.js v22.0.0", printed once before it exits 1. That is
+// how the cloud log monitor died a second after every launch on a machine whose
+// PATH `node` is 20 while a newer one sits unused in nvm (adhoc #1617): the
+// monitor is on by default, so it kept starting a tail that could never stream.
+constexpr int kWranglerMinimumNodeMajor = 22;
+
+// A Node install good enough to run Wrangler with.
+struct NodeToolchain {
+    QString npx;     // absolute npx to run
+    QString binDir;  // MUST lead the child's PATH: both npx and the wrangler bin
+                     // it spawns start with `#!/usr/bin/env node`, so an old
+                     // node earlier in PATH is picked straight back up
+    int majorVersion = 0;
+    bool isValid() const { return !npx.isEmpty(); }
+};
+
+// Directories that may hold a Node install, in the order they should be tried:
+// an explicit FORKMESH_NODE_BIN override, then PATH, then every version a
+// manager (nvm/fnm/volta/asdf) has installed, newest first. Only directories
+// that actually contain an executable npx are returned. Runs no process.
+QStringList nodeBinDirectoryCandidates();
+
+// Major version out of `node --version` output or a versioned path segment
+// ("v22.23.1" -> 22). 0 when the text carries none.
+int nodeMajorVersionFromText(const QString &text);
+
+// The first candidate whose `node --version` reports at least `minimumMajor`.
+// Invalid when this machine has nothing new enough, which is a state worth
+// reporting rather than a tail worth starting.
+NodeToolchain findNodeToolchain(int minimumMajor);
+
 // Build a direct (non-shell) invocation of ForkMesh's pinned Wrangler tail.
 // The token and optional account ID are placed only in the child environment,
-// never in argv.
+// never in argv. `nodeBinDir` is prepended to the child's PATH so the shebangs
+// down the chain resolve to the Node that npx came from.
 CloudflareBootstrapCommand buildCloudflareTailCommand(
     const QString &apiToken,
     const QString &accountId,
-    const QString &npxProgram);
+    const QString &npxProgram,
+    const QString &nodeBinDir = QString());
 
 // One decoded event of `wrangler tail --format json`. The viewer renders these
 // itself (rather than letting Wrangler pretty-print) because the pretty format
