@@ -5834,6 +5834,20 @@ int main(int argc, char *argv[])
                   QString("a short pathspec list is still shown verbatim "
                           "(crumb = %1)").arg(few));
 
+            // A private-repo fetch carries the signed view token as a "-c
+            // http.extraHeader=…" override, and a crumb reaches the log file and
+            // actions.jsonl — so the key survives and the credential does not.
+            const QString authed = forkmesh::ui::gitArgsCrumb(
+                QStringLiteral("git"),
+                {"-c", "http.extraHeader=Authorization: Basic c2VjcmV0OnRva2Vu",
+                 "-C", "/repos/forkmesh", "fetch", "--prune", "origin"});
+            check(!authed.contains(QStringLiteral("c2VjcmV0OnRva2Vu")) &&
+                      authed.startsWith(QString::fromUtf8(
+                          "git -c http.extraHeader=\xE2\x80\xA6 fetch")) &&
+                      authed.endsWith(QStringLiteral("(forkmesh)")),
+                  QString("the crumb keeps the config key but never logs the "
+                          "view token (adhoc #1620, crumb = %1)").arg(authed));
+
             const QString noPaths = forkmesh::ui::gitArgsCrumb(
                 QStringLiteral("git"), {"log", "--numstat", "-n", "5"});
             check(noPaths == QStringLiteral("git log --numstat -n 5"),

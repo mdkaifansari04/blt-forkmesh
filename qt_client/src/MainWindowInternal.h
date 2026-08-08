@@ -11783,6 +11783,20 @@ inline QString gitArgsCrumb(const QString &program, const QStringList &argsIn)
 {
     QStringList args = argsIn;
     QString repo;
+    // Leading "-c key=value" overrides come first on our fetch/clone lines, and
+    // the value is a secret: viewAuthGitArgs/importAuthGitArgs pass the signed
+    // view token as "-c http.extraHeader=Authorization: Basic <base64>". A crumb
+    // reaches the log file and actions.jsonl, so keep the key (an authed read is
+    // worth seeing) and drop the credential.
+    QStringList config;
+    while (args.size() >= 2 && args.first() == QLatin1String("-c")) {
+        const QString pair = args.at(1);
+        const int eq = pair.indexOf(QLatin1Char('='));
+        config << QStringLiteral("-c ") +
+                      (eq < 0 ? pair
+                              : pair.left(eq + 1) + QString::fromUtf8("…"));
+        args = args.mid(2);
+    }
     if (args.size() >= 2 && args.first() == QLatin1String("-C")) {
         repo = QFileInfo(args.at(1)).fileName();
         args = args.mid(2);
@@ -11805,8 +11819,9 @@ inline QString gitArgsCrumb(const QString &program, const QStringList &argsIn)
             paths = pathspecs.join(QLatin1Char(' '));
         }
     }
-    QString cmd =
-        (program + QLatin1Char(' ') + args.join(QLatin1Char(' '))).simplified();
+    QString cmd = (program + QLatin1Char(' ') +
+                   (config + args).join(QLatin1Char(' ')))
+                      .simplified();
     constexpr int kMaxCommand = 80;
     if (cmd.size() > kMaxCommand)
         cmd = cmd.left(kMaxCommand - 1) + QStringLiteral("…");
