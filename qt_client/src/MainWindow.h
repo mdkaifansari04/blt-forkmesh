@@ -526,6 +526,20 @@ public:
     }
     int testCloudLogMonitorErrors() const { return m_cloudLogMonitorErrors; }
     int testCloudLogMonitorEvents() const { return m_cloudLogMonitorEvents; }
+    // Put the monitor back to "never started". On a machine that can actually
+    // run Wrangler the suite's own window starts a real tail of the live Worker
+    // at launch, whose hits land in the same log the cloud checks feed
+    // synthetic events into — and which, since a tail now survives its session
+    // expiring (adhoc #1623), keeps arriving for the whole run.
+    void testResetCloudLogMonitor()
+    {
+        setCloudLogMonitorEnabled(false);
+        cancelCloudLogMonitorRestart();
+        m_cloudLogMonitorErrors = 0;
+        m_cloudLogMonitorEvents = 0;
+        m_cloudLogMonitorRestarts = 0;
+        m_cloudLogMonitorIdleReason.clear();
+    }
     // adhoc #1623: end the tail the way an expired tail session does — the
     // child exits, nobody asked it to — and hand back how long the monitor
     // means to wait before the next one (0 = it has given up). The pending
