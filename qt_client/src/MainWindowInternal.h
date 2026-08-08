@@ -3971,6 +3971,12 @@ const QString kOrgTaskCompleteProof =
 // in entry.py.
 const QString kOrgTaskAgentStatusBatchProof =
     QStringLiteral("forkmesh-org-task-agent-status-batch-v1");
+// How long that batch may wait for the relay's verdict when it went out as a
+// node event socket frame rather than an HTTP request. The relay answers every
+// frame it reads, refusals included, so silence past this means the frame was
+// lost (an evicted Durable Object, a write that never arrived) and the states
+// go back in the queue. Generous: a false timeout only republishes them.
+constexpr int kOrgTaskAgentStatusAckTimeoutMs = 30000;
 // Same key, reading the board. Without it the Tasks tab was empty for every
 // operator who launched normally instead of typing a password (adhoc #52).
 // Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.

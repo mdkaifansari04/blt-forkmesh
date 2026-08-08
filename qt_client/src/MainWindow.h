@@ -9082,6 +9082,17 @@ private:
     // relay rate-limit this desktop (adhoc #1618).
     QHash<int, QString> m_orgTaskAgentStatusPending;
     bool m_orgTaskAgentStatusFlushQueued = false;
+    // Batches sent over the node event socket that have not been answered yet,
+    // oldest first. A socket write gets its verdict in a later frame, so the
+    // batches have to be remembered in order to match each verdict to the
+    // states it judged — and re-queued wholesale if the link drops first,
+    // because nothing else would ever notice they never landed.
+    QList<QList<QPair<int, QString>>> m_orgTaskAgentStatusInFlight;
+    // Bounds that wait. The relay answers every frame it reads, so silence
+    // means the frame was lost (an evicted Durable Object, a write that never
+    // reached it) — without this the states would stay "published" for as long
+    // as the link happened to stay up.
+    QTimer *m_orgTaskAgentStatusAckTimer = nullptr;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
@@ -9387,15 +9398,33 @@ private:
     bool authenticateOrgTaskRequest(QUrl &url, QNetworkRequest &request,
                                     const QString &proofPrefix,
                                     const QString &resource) const;
+    // The node/ts/sig triple behind that signature, for a write that has no
+    // URL to hang it on — the batched agent-status report travels as a node
+    // event socket frame. Same canonical string, so the relay verifies it with
+    // the same code either way. False => this node cannot sign.
+    bool signOrgTaskProof(const QString &proofPrefix, const QString &resource,
+                          QString *node, QString *ts, QString *sig) const;
     // POST /api/tasks for a freshly created session and record the id it gets
     // back on the session. No-op unless session.orgTask is set.
     void openOrgTaskForSession(const AgentSession &session);
     // Queue one session's live state for the board. The write itself is
-    // batched: POST /api/tasks/agent-status carries every queued session in a
-    // single signed request, so a restart publishes the whole fleet at once
-    // instead of one request per session (adhoc #1618).
+    // batched: every queued session goes out together in one signed
+    // agent-status report, so a restart publishes the whole fleet at once
+    // instead of one request per session (adhoc #1618). That report rides the
+    // node event socket this desktop already holds — no HTTP request at all —
+    // and falls back to POST /api/tasks/agent-status when the socket is down
+    // or the relay is too old to accept the frame.
     void syncOrgTaskAgentStatus(int sessionId);
     void flushOrgTaskAgentStatus();
+    // Apply the relay's verdict on a batch of published states: `ok` false
+    // un-publishes all of them, otherwise only the tasks reported refused.
+    void applyOrgTaskAgentStatusResult(const QList<QPair<int, QString>> &sent,
+                                       bool ok, const QJsonArray &results);
+    // Match the relay's next socket verdict to the oldest unanswered batch.
+    void onOrgTaskAgentStatusFrame(bool ok, const QJsonArray &results);
+    // Un-publish everything still waiting on a socket verdict. Called when the
+    // event socket drops, because the answer is never coming.
+    void requeueOrgTaskAgentStatusInFlight();
     // POST /api/tasks/<id>/complete once the run reaches a terminal status,
     // stamping the finishing bot. No-op without an org task, while the run is
     // still going, or once finishedByBot is already set.

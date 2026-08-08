@@ -1,8 +1,10 @@
 #include "NodeEventSocket.h"
 
 #include <QDateTime>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QRandomGenerator>
 #include <QSslSocket>
 #include <QTimer>
@@ -11,6 +13,12 @@ namespace {
 
 // Event frames are a topic plus a repo path; anything bigger is not ours.
 constexpr quint64 kMaxEventPayload = 64 * 1024;
+// Outbound frame ceiling, matching the relay's NODE_EVENT_MAX_FRAME_BYTES: a
+// batched agent-status report is a task id, a run state and the run's
+// provenance per live session (200 at most, the relay's batch cap) alongside
+// one signature. Must stay under 64 KiB — sendTextFrame writes the two-byte
+// extended length, which cannot describe a longer payload.
+constexpr int kMaxOutboundPayload = 60 * 1024;
 // A server that accepts TCP/TLS but never answers the upgrade would otherwise
 // hang the attempt forever: no other timer runs before the 101.
 constexpr int kConnectTimeoutMs = 30000;
@@ -80,6 +88,7 @@ void NodeEventSocket::stop()
         m_pingTimer->stop();
     const bool wasConnected = m_wsReady;
     m_wsReady = false;
+    m_accepts.clear();
     m_attemptActive = false;
     discardCurrentSocket();
     if (wasConnected)
@@ -108,6 +117,7 @@ void NodeEventSocket::openConnection()
     discardCurrentSocket();
     m_attemptActive = false;
     m_wsReady = false;
+    m_accepts.clear();
     m_readBuffer.clear();
 
     if (m_userStopped)
@@ -219,6 +229,7 @@ void NodeEventSocket::handleLinkLost()
         m_connectTimeoutTimer->stop();
     const bool wasConnected = m_wsReady;
     m_wsReady = false;
+    m_accepts.clear();
     if (wasConnected)
         emit connectedChanged(false);
     scheduleReconnect();
@@ -368,17 +379,53 @@ void NodeEventSocket::processFrame(const QByteArray &payload)
     if (!doc.isObject())
         return;
     const QJsonObject frame = doc.object();
-    // Advisory-only by design: whatever arrives here, the strongest reaction
-    // is one signed /api/sync. There is nothing else to parse or trust.
-    if (frame.value(QStringLiteral("type")).toString() ==
-        QLatin1String("event"))
+    const QString type = frame.value(QStringLiteral("type")).toString();
+    // Advisory-only by design: an event frame's strongest effect is one signed
+    // /api/sync. There is nothing in it to parse or trust.
+    if (type == QLatin1String("event")) {
         emit eventReceived(frame.value(QStringLiteral("topic")).toString(),
                            frame.value(QStringLiteral("repo")).toString());
+        return;
+    }
+    if (type == QLatin1String("hello")) {
+        // Which signed writes this relay can take off the socket. It grants
+        // nothing — every such frame still carries its own proof — so the
+        // worst a lying relay achieves is that we send it a write it ignores,
+        // exactly what an older relay does today.
+        m_accepts.clear();
+        for (const QJsonValue &value :
+             frame.value(QStringLiteral("accepts")).toArray()) {
+            const QString kind = value.toString().trimmed();
+            if (!kind.isEmpty())
+                m_accepts.insert(kind);
+        }
+        return;
+    }
+    if (type == QLatin1String("agent-status-result"))
+        emit agentStatusResult(
+            frame.value(QStringLiteral("ok")).toBool(),
+            frame.value(QStringLiteral("results")).toArray());
+}
+
+bool NodeEventSocket::sendSignedFrame(const QJsonObject &frame)
+{
+    const QString kind = frame.value(QStringLiteral("type")).toString();
+    // Never speak a frame kind this relay has not advertised: an older relay
+    // silently drops what it does not understand, and the caller must be free
+    // to treat "false" as "use the signed HTTPS route instead".
+    if (kind.isEmpty() || !accepts(kind) || !m_socket)
+        return false;
+    const QByteArray payload =
+        QJsonDocument(frame).toJson(QJsonDocument::Compact);
+    if (payload.size() > kMaxOutboundPayload)
+        return false;
+    sendTextFrame(payload);
+    return true;
 }
 
 void NodeEventSocket::sendTextFrame(const QByteArray &payload)
 {
-    if (!m_wsReady || !m_socket || payload.size() > 4096)
+    if (!m_wsReady || !m_socket || payload.size() > kMaxOutboundPayload)
         return;
     QByteArray frame;
     frame.append(char(0x81));
