@@ -2553,7 +2553,94 @@ int main(int argc, char *argv[])
                   QStringLiteral("fix/stall-filter-test-isolation"),
           QStringLiteral("opening a cross-node head diffs the branch portion, not "
                          "the cache-socket node label"));
+    // The pull conversation is the whole activity feed, not only the signed
+    // review events: the commits behind the pull and the lifecycle of an agent
+    // working its branch interleave with the comments in time order. Without
+    // this a pull opened from an agent branch showed nothing but its opening
+    // card, which is what made the page look empty.
+    {
+        PullRequest activity;
+        activity.number = 406;
+        activity.base = QStringLiteral("main");
+        // Reuse the cross-node branch above rather than inventing one: the head
+        // stays decorated "<node>:<branch>" while the session records the plain
+        // branch it ran on, so this also covers agentSessionForPull() matching
+        // the branch portion instead of the label.
+        activity.head =
+            QStringLiteral("cache-socket-2632:fix/stall-filter-test-isolation");
+        activity.author = QStringLiteral("jett");
+        activity.authorName = QStringLiteral("jett");
+        activity.title = QStringLiteral("fix: add clear network log");
+        activity.description = QStringLiteral("Drain queued MetaCalls.");
+        activity.ts = 1000;
+        PullEvent comment;
+        comment.type = QStringLiteral("comment");
+        comment.author = QStringLiteral("reviewer");
+        comment.authorName = QStringLiteral("reviewer");
+        comment.body = QStringLiteral("Looks good.");
+        comment.ts = 3000;
+        activity.events = {comment};
+
+        AgentSession working;
+        working.id = 91510;
+        working.owner = QStringLiteral("me");
+        working.name = QStringLiteral("r");
+        working.provider = QStringLiteral("claude-code");
+        working.branchName = QStringLiteral("fix/stall-filter-test-isolation");
+        working.status = AgentStatus::Running;
+        working.createdAtMs = 1500;
+        working.startedAtMs = 2500;
+        window.testAddAgentSession(working);
+
+        // Stands in for renderPullCommits()' base..head walk. The second commit
+        // lands after the pull was opened — the case that matters, because it is
+        // the agent still pushing to the branch.
+        window.testSeedPullActivityCommits(
+            activity.number,
+            {{QStringLiteral("bbbbccccddddeeee"), QStringLiteral("original commit"),
+              QStringLiteral("jett"), QStringLiteral("2026-08-05 12:00"), 2,
+              QString()},
+             {QStringLiteral("ccccddddeeeeffff"), QStringLiteral("agent follow-up"),
+              QStringLiteral("agent"), QStringLiteral("2026-08-05 18:00"), 4,
+              QStringLiteral("claude-code")}});
+        window.testRenderPullThread(activity);
+        const QStringList cards = window.testPullThreadCardHeaders();
+
+        check(cards.size() == 7,
+              QStringLiteral("the pull conversation carries every activity card "
+                             "(got %1)").arg(cards.size()));
+        if (cards.size() == 7) {
+            check(cards.at(0).contains(QStringLiteral("opened this pull request")) &&
+                      cards.at(1).contains(QStringLiteral("was queued")) &&
+                      cards.at(2).contains(QStringLiteral("bbbbccccdddd")) &&
+                      cards.at(3).contains(QStringLiteral("started working")) &&
+                      cards.at(4).contains(QStringLiteral("commented")) &&
+                      cards.at(5).contains(QStringLiteral("ccccddddeeee")),
+                  QStringLiteral("commits and agent transitions interleave with the "
+                                 "review events in time order"));
+            // The live status pins to the bottom: it is where the run is now,
+            // not a transition that already happened.
+            check(cards.at(6).contains(QStringLiteral("is <b>running</b>")),
+                  QStringLiteral("a working agent's current status closes the feed"));
+            // The agent cards exist at all only because the decorated head
+            // matched the plain branch the session ran on.
+            check(cards.at(6).contains(
+                      QStringLiteral("fix/stall-filter-test-isolation")) &&
+                      !cards.at(6).contains(QStringLiteral("cache-socket-2632")),
+                  QStringLiteral("a cross-node head still finds its agent, and the "
+                                 "card names the branch not the node label"));
+        }
+        check(cards.join(QLatin1Char('\n'))
+                  .contains(QStringLiteral("as claude-code")),
+              QStringLiteral("an agent-authored commit says so on its card"));
+        check(window.testPullActivityExtraCards() == 5,
+              QStringLiteral("the Conversation badge counts the commits and agent "
+                             "cards alongside the review items"));
+        window.testRemoveAgentSession(working.id);
+    }
+
     window.testSwitchToWorktreeGitBranch(QStringLiteral("main"));
+
 
     // adhoc #55: the status strip names the commit the open branch is on —
     // short SHA, date, subject and author. The read is detached (it must not

@@ -5899,6 +5899,11 @@ void MainWindow::reloadAgents()
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
     updateAgentsTabIndicator();
+    // Every agent status transition reaches this reload, so an open pull request
+    // whose branch an agent is working shows that progress as it happens — no
+    // poll of its own. It is a no-op unless that pull is on screen and its
+    // agent actually moved.
+    refreshPullAgentActivity();
     refreshAgentDotMatrix();
     for (const AgentSession &session : std::as_const(m_agentSessions))
         syncOrgTaskAgentStatus(session.id);
@@ -6998,11 +7003,19 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber,
     // it ran on (issue #257). Scope to the detail repo so a like-named branch in
     // another repo can't false-match, skip sessions already bound to a different
     // PR, and prefer the most recent matching session.
-    if (!headBranch.isEmpty() && m_repoDetailIndex >= 0 &&
+    //
+    // A cross-node head is decorated "<node>:<branch>" for attribution, the same
+    // label resolvablePullHead() undecorates before handing it to Git. A session
+    // records the plain branch it ran on, so match against that portion —
+    // comparing the decorated label found nothing and left every such pull
+    // looking like it had no agent.
+    const QString branch =
+        headBranch.section(QLatin1Char(':'), -1, -1).trimmed();
+    if (!branch.isEmpty() && m_repoDetailIndex >= 0 &&
         m_repoDetailIndex < m_repositories.size()) {
         for (auto it = m_agentSessions.crbegin(); it != m_agentSessions.crend();
              ++it) {
-            if (it->branchName == headBranch && it->owner == repo.owner &&
+            if (it->branchName == branch && it->owner == repo.owner &&
                 it->name == repo.name &&
                 (it->prNumber == 0 || it->prNumber == prNumber))
                 return &*it;
