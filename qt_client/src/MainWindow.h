@@ -4595,6 +4595,11 @@ private:
     // already gone — the desired end state either way.
     bool localBranchExists(const QString &repoPath, const QString &branch) const;
     void showBranchDiff(const QString &branch, int agentSessionId = -1);
+    // Take the range pane off a branch that no longer exists (merged & deleted,
+    // or its worktree torn down) before anything tries to diff it (adhoc #1628).
+    // By value: callers hand in m_branchDiffBranch itself, which this clears (see
+    // the git-pump aliasing family in the .cpp).
+    void showBranchDiffBranchGone(QString branch, QString base);
     // Paint the branch detail bar from already-gathered counts.
     void applyBranchDetailActions(const QString &branch, const QString &base,
                                   int behind, int ahead, bool hasConflict,
