@@ -1181,6 +1181,10 @@ QWidget *MainWindow::buildIssuesSection()
     // tracked agent session, working until ForkMesh can open a PR from its diff.
     m_issueAgentProvider->addItem(QStringLiteral("Claude Code"),
                                   QStringLiteral("claude-code"));
+    // "Cloudflare AI" runs the bundled Workers AI agent script against the
+    // relay's models (adhoc #1634).
+    m_issueAgentProvider->addItem(QStringLiteral("Cloudflare AI"),
+                                  kCloudflareAiProvider);
     selectDefaultAgentProvider(m_issueAgentProvider);
     m_issueAgentProvider->setToolTip("Which agent to run on this issue");
     // Model picker beneath the provider so a run can target a specific model
@@ -4366,32 +4370,14 @@ void MainWindow::quickAddIssue()
         m_quickAddAgentProvider
             ? m_quickAddAgentProvider->currentData().toString()
             : QStringLiteral("claude-code");
-    // Cloudflare AI is neither an agent nor an issue: the picked Workers AI model
-    // answers the prompt on the relay and the reply is shown (adhoc #1407). It
-    // has no checkout, so it must be handled before the agent hand-off below.
-    if (agentIsCloudflareAiProvider(quickAddProvider)) {
-        if (title.isEmpty())
-            return;
-        const QString model = selectedModelComboValue(m_quickAddClaudeModel);
-        // Workers AI text models take no images here, so say what was dropped
-        // instead of silently discarding the attachments.
-        if (!m_quickAddImages.isEmpty())
-            logSystem(QStringLiteral("Cloudflare AI answers text only; %1 "
-                                     "attached image(s) were not sent.")
-                          .arg(m_quickAddImages.size()));
-        // Keep an unsent prompt in the composer when authentication is missing
-        // or another Workers AI request is still in flight. The old void path
-        // cleared it even though no request had started.
-        if (!sendPromptToCloudflareAi(title, model))
-            return;
-        m_issueQuickAdd->clear();
-        clearQuickAddImages();
-        return;
-    }
     if (quickAddProvider != QLatin1String("manual")) {
+        // Cloudflare AI runs an agent like everything else since adhoc #1634
+        // (it used to answer the prompt via /api/ai/ask and stop); its picked
+        // "@cf/..." model rides along just like a Claude Code or Codex pick.
         const QString provider = quickAddProvider;
         const QString model = (provider == QLatin1String("claude-code") ||
-                               agentIsCodexProvider(provider))
+                               agentIsCodexProvider(provider) ||
+                               agentIsCloudflareAiProvider(provider))
                                   ? selectedModelComboValue(m_quickAddClaudeModel)
                                   : QString();
         const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
@@ -5320,6 +5306,34 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (handleFramelessResizeEvent(obj, event))
         return true;
 
+    // A diff pane's overlays (sticky header, active-file outline) are sized
+    // against its viewport, so a splitter drag has to re-lay them out even
+    // though nothing scrolled.
+    if (event->type() == QEvent::Resize) {
+        if (m_branchDiffView && obj == m_branchDiffView->viewport()) {
+            updateBranchDiffSticky();
+            updateBranchDiffActiveOutline();
+        } else if (m_scmDiff && obj == m_scmDiff->viewport()) {
+            updateScmDiffScrollState();
+        }
+    }
+
+    // Up/Down in the CHANGES tree reviews the diff file by file: each step
+    // selects the next changed file and scrolls its header to the top of the
+    // diff pane. Handled here rather than left to QTreeWidget so the group
+    // headers, which have no diff of their own, are stepped over.
+    if (obj == m_scmTree && event->type() == QEvent::KeyPress) {
+        const auto *key = static_cast<QKeyEvent *>(event);
+        const bool plainArrow =
+            (key->key() == Qt::Key_Up || key->key() == Qt::Key_Down) &&
+            !(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier |
+                                  Qt::MetaModifier | Qt::ShiftModifier));
+        if (plainArrow) {
+            stepScmTreeFile(key->key() == Qt::Key_Down ? 1 : -1);
+            return true; // consumed either way: never land on a group header
+        }
+    }
+
     // The agent detail's status control is both a compact status indicator and
     // the entry point for its full metadata. Hover should expose the same popup
     // as click, while a short deferred leave check lets the pointer travel from
@@ -5341,6 +5355,9 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         obj == m_topMessageContainer || obj == m_topMessage ||
         obj == m_topMessageScroll || obj == m_topMessageActions ||
         obj == m_topMessageMeta || obj == m_topMessageTypeBadge ||
+        obj == m_topMessageAgentRow || obj == m_topMessageAgentIcon ||
+        obj == m_topMessageAgentHeadline ||
+        obj == m_topMessageContentRow || obj == m_topMessageAvatar ||
         obj == m_topMessageActionOutput ||
         obj == m_topMessageCopy ||
         obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
@@ -5382,14 +5399,33 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                 (box->standardButtons()
                  & ~(QMessageBox::Ok | QMessageBox::Close))
                 == QMessageBox::NoButton;
-            if (informational
-                && (icon == QMessageBox::Warning
-                    || icon == QMessageBox::Critical)) {
+            if (informational) {
                 QString text = box->text();
                 if (!box->informativeText().isEmpty())
                     text += QLatin1Char(' ') + box->informativeText();
-                reportUserVisibleError(QStringLiteral("dialog"),
-                                       box->windowTitle(), text);
+                const bool failure = icon == QMessageBox::Warning
+                                     || icon == QMessageBox::Critical;
+                // Every popup this app shows is filed on the Pings page, so a
+                // dialog that was clicked away is still an event with a record
+                // (adhoc #1629). Quiet: the modal is already in front of the
+                // operator, and a toast repeating it would be noise.
+                AppNotification item;
+                item.title = box->windowTitle().isEmpty()
+                                 ? QStringLiteral("Desktop alert")
+                                 : box->windowTitle();
+                item.body = text.simplified();
+                item.warning = failure;
+                item.kind = QStringLiteral("dialog");
+                item.quiet = true;
+                const qint64 pingId = recordNotification(item);
+                // …and a failure is also reported to the relay, so a modal on a
+                // machine nobody is watching still reaches somebody (#1538).
+                // The ping id rides along: whether that report lands is what the
+                // row's Status column ends up showing.
+                if (failure)
+                    reportUserVisibleError(QStringLiteral("dialog"),
+                                           box->windowTitle(), text, QString(),
+                                           pingId);
             }
         }
     }

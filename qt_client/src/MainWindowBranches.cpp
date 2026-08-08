@@ -288,6 +288,351 @@ static QString branchConflictKey(const QString &dir, const QString &baseSha,
         return QString();
     return dir + QLatin1Char('\n') + baseSha + QLatin1Char('\n') + branchSha;
 }
+
+// ---- Merge celebration -----------------------------------------------------
+//
+// What the range pane shows once a branch has been merged and deleted (see
+// mergeCelebrationHtml). Credit is the hard part: by the time that screen
+// renders, the branch is gone, "Merge & clean up" has deleted the agent session
+// that produced it, and git records only this desktop's own identity as the
+// author of every merge commit. So the credit is captured at merge time, while
+// the session still exists, and replayed here.
+
+// Where the merge log lives. A line per landing, read only when a merge lands or
+// the celebration renders, so QSettings is storage enough — no store, no schema.
+static const QString kMergeNotesSetting = QStringLiteral("branches/mergeNotes");
+
+// Notes outlive their day so a merge landed just before midnight can still name
+// its agent in the morning, and are dropped after that: the screen only ever
+// looks at today.
+static constexpr qint64 kMergeNoteLifetimeMs = 48LL * 60 * 60 * 1000;
+
+// A busy day is truncated rather than turned into a scroll of rows. What was cut
+// is stated on screen rather than silently dropped.
+static constexpr int kMergeCelebrationRowLimit = 12;
+
+// Who was responsible for one landing, in the terms the app knows them by.
+struct MergeNote {
+    QString mergeCommit; // ties the note back to the merge commit exactly
+    QString branch;
+    qint64 mergedAtMs = 0;
+    bool byAgent = false;
+    QString actor;    // "Opus 5" for an agent, the account name for a person
+    QString detail;   // "Agent #12 · Claude Code · issue #14"
+    QString provider; // provider + model pick the agent's portrait
+    QString model;
+};
+
+static QList<MergeNote> loadMergeNotes()
+{
+    const QJsonArray stored =
+        QJsonDocument::fromJson(
+            QSettings().value(kMergeNotesSetting).toString().toUtf8())
+            .array();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QList<MergeNote> notes;
+    for (const QJsonValue &value : stored) {
+        const QJsonObject object = value.toObject();
+        MergeNote note;
+        note.mergeCommit = object.value(QStringLiteral("commit")).toString();
+        note.branch = object.value(QStringLiteral("branch")).toString();
+        note.mergedAtMs =
+            static_cast<qint64>(object.value(QStringLiteral("at")).toDouble());
+        note.byAgent = object.value(QStringLiteral("agent")).toBool();
+        note.actor = object.value(QStringLiteral("actor")).toString();
+        note.detail = object.value(QStringLiteral("detail")).toString();
+        note.provider = object.value(QStringLiteral("provider")).toString();
+        note.model = object.value(QStringLiteral("model")).toString();
+        if (note.mergeCommit.isEmpty() ||
+            now - note.mergedAtMs > kMergeNoteLifetimeMs)
+            continue;
+        notes.append(note);
+    }
+    return notes;
+}
+
+static void saveMergeNotes(const QList<MergeNote> &notes)
+{
+    QJsonArray stored;
+    for (const MergeNote &note : notes)
+        stored.append(QJsonObject{
+            {QStringLiteral("commit"), note.mergeCommit},
+            {QStringLiteral("branch"), note.branch},
+            {QStringLiteral("at"), double(note.mergedAtMs)},
+            {QStringLiteral("agent"), note.byAgent},
+            {QStringLiteral("actor"), note.actor},
+            {QStringLiteral("detail"), note.detail},
+            {QStringLiteral("provider"), note.provider},
+            {QStringLiteral("model"), note.model}});
+    QSettings().setValue(
+        kMergeNotesSetting,
+        QString::fromUtf8(QJsonDocument(stored).toJson(QJsonDocument::Compact)));
+}
+
+// The session that produced `branch`, preferring a live one over a cleared one
+// and then the most recent run — the same choice the worktrees list makes when a
+// branch has been worked more than once.
+static const AgentSession *sessionForMergedBranch(
+    const QList<AgentSession> &sessions, const QString &branch,
+    const QString &repoOwner, const QString &repoName)
+{
+    const AgentSession *best = nullptr;
+    for (const AgentSession &session : sessions) {
+        if (session.branchName != branch)
+            continue;
+        if (!repoOwner.isEmpty() &&
+            (session.owner != repoOwner || session.name != repoName))
+            continue;
+        if (!best) {
+            best = &session;
+            continue;
+        }
+        const bool live = session.status != AgentStatus::Cleared;
+        const bool bestLive = best->status != AgentStatus::Cleared;
+        if ((live && !bestLive) || (live == bestLive && session.id > best->id))
+            best = &session;
+    }
+    return best;
+}
+
+// How an agent session is named on the celebration screen: the model it ran as
+// (that is what its portrait shows), with the session number, the CLI behind it
+// and the issue it was working as the second line.
+static void creditFromSession(const AgentSession &session, QString *actor,
+                              QString *detail)
+{
+    const QString model = agentModelLabel(session.model);
+    const QString provider = cliProviderLabel(session.provider);
+    *actor = !model.isEmpty() ? model
+                              : (!provider.isEmpty() ? provider
+                                                     : QStringLiteral("Agent"));
+    QStringList parts;
+    parts << QStringLiteral("Agent #%1").arg(session.id);
+    if (!provider.isEmpty() && provider != *actor)
+        parts << provider;
+    if (session.issueNumber > 0)
+        parts << QStringLiteral("issue #%1").arg(session.issueNumber);
+    *detail = parts.join(QString::fromUtf8(" \xC2\xB7 "));
+}
+
+// Record who landed `branch`. Called from the merge path the moment git reports
+// the branch contained in the base branch, and deliberately before any agent
+// teardown runs — after that there is nothing left to credit.
+static void rememberMergedBranch(const QString &dir, const QString &branch,
+                                 const QList<AgentSession> &sessions,
+                                 const QString &repoOwner, const QString &repoName,
+                                 const QString &personName)
+{
+    if (dir.isEmpty() || branch.isEmpty())
+        return;
+    QByteArray head;
+    if (!runGitCapture(dir, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")},
+                       &head, nullptr))
+        return;
+    MergeNote note;
+    note.mergeCommit = QString::fromUtf8(head).trimmed();
+    if (note.mergeCommit.isEmpty())
+        return;
+    note.branch = branch;
+    note.mergedAtMs = QDateTime::currentMSecsSinceEpoch();
+    if (const AgentSession *session =
+            sessionForMergedBranch(sessions, branch, repoOwner, repoName)) {
+        note.byAgent = true;
+        note.provider = session->provider;
+        note.model = session->model;
+        creditFromSession(*session, &note.actor, &note.detail);
+    } else {
+        note.actor = personName.trimmed().isEmpty() ? QStringLiteral("You")
+                                                    : personName.trimmed();
+        note.detail = QStringLiteral("merged by hand");
+    }
+    QList<MergeNote> notes = loadMergeNotes();
+    // A fast-forward-shaped re-merge can land on the same commit; the newest
+    // credit for it wins rather than being listed twice.
+    notes.removeIf([&note](const MergeNote &existing) {
+        return existing.mergeCommit == note.mergeCommit;
+    });
+    notes.append(note);
+    // A fleet that lands hundreds of branches a day would otherwise grow the
+    // settings entry unbounded within the lifetime window; only the newest
+    // notes can still be shown.
+    constexpr int kMergeNoteLimit = 200;
+    if (notes.size() > kMergeNoteLimit)
+        notes = notes.mid(notes.size() - kMergeNoteLimit);
+    saveMergeNotes(notes);
+}
+
+// One merge commit on the base branch, as git reports it.
+struct MergeLanding {
+    QString sha;
+    QString branch; // from the subject; empty when it named none
+    QString author;
+    qint64 whenSecs = 0;
+    int files = 0;
+    int insertions = 0;
+    int deletions = 0;
+};
+
+// Every merge that landed on `base` since local midnight, newest first. One git
+// read for the lot: the record separator starts each commit, the unit separator
+// splits its fields, and --shortstat appends the first-parent change totals.
+static QList<MergeLanding> mergesLandedToday(const QString &dir,
+                                             const QString &base)
+{
+    QList<MergeLanding> landings;
+    if (dir.isEmpty() || base.isEmpty())
+        return landings;
+    const QString midnight =
+        QDateTime(QDate::currentDate(), QTime(0, 0)).toString(Qt::ISODate);
+    QByteArray out;
+    if (!runGitCapture(dir,
+                       {QStringLiteral("log"), QStringLiteral("--merges"),
+                        QStringLiteral("--first-parent"),
+                        QStringLiteral("--diff-merges=first-parent"),
+                        QStringLiteral("--shortstat"),
+                        QStringLiteral("--since=%1").arg(midnight),
+                        QStringLiteral("--pretty=format:%x1e%H%x1f%ct%x1f%an%x1f%s"),
+                        base},
+                       &out, nullptr))
+        return landings;
+    static const QRegularExpression shortstat(
+        QStringLiteral("(\\d+) files? changed"
+                       "(?:, (\\d+) insertions?\\(\\+\\))?"
+                       "(?:, (\\d+) deletions?\\(-\\))?"));
+    const QStringList records = QString::fromUtf8(out).split(QChar(0x1e),
+                                                             Qt::SkipEmptyParts);
+    for (const QString &record : records) {
+        const QStringList lines = record.split(QLatin1Char('\n'));
+        const QStringList fields = lines.value(0).split(QChar(0x1f));
+        if (fields.size() < 4)
+            continue;
+        MergeLanding landing;
+        landing.sha = fields.at(0);
+        landing.whenSecs = fields.at(1).toLongLong();
+        landing.author = fields.at(2);
+        landing.branch = mergedBranchFromMergeSubject(fields.at(3));
+        for (int i = 1; i < lines.size(); ++i) {
+            const QRegularExpressionMatch match = shortstat.match(lines.at(i));
+            if (!match.hasMatch())
+                continue;
+            landing.files = match.captured(1).toInt();
+            landing.insertions = match.captured(2).toInt();
+            landing.deletions = match.captured(3).toInt();
+            break;
+        }
+        landings.append(landing);
+    }
+    return landings;
+}
+
+// The artwork one landing is credited with: the model's portrait for an agent
+// (what the Agents list and the World draw it as), and the person's own picture
+// or their deterministic identicon otherwise.
+static QPixmap mergeCreditAvatar(bool byAgent, const QString &provider,
+                                 const QString &model, const QString &person,
+                                 const QString &me, const QByteArray &myAvatarPng,
+                                 int size)
+{
+    if (byAgent) {
+        // "Auto" has no fixed model, so a session still on the sentinel wears
+        // the auto glyph rather than one model's portrait — as it does
+        // everywhere else.
+        const int index =
+            model.trimmed().compare(kClaudeAutoModelId, Qt::CaseInsensitive) == 0
+                ? 7
+                : agentModelFaceIconIndex(provider, model);
+        return agentControlIcon(index).pixmap(QSize(size, size),
+                                              iconDevicePixelRatio());
+    }
+    const QString seed = person.trimmed().toLower();
+    // Nobody to draw: an identicon of the empty string would put a face on a
+    // landing that names no one.
+    if (seed.isEmpty())
+        return QPixmap();
+    if (!me.trimmed().isEmpty() && !myAvatarPng.isEmpty() &&
+        person.trimmed().compare(me.trimmed(), Qt::CaseInsensitive) == 0)
+        return roundedAvatar(myAvatarPng, size, 0.5);
+    return roundedAvatar(forkMeshAvatarPng(seed), size, 0.5);
+}
+
+// Turn the day's merge commits into celebration rows, crediting each one from
+// the best evidence available: the note written when it landed, then a stored
+// agent session still naming that branch (an ordinary "Merge to main" keeps its
+// session), and finally the commit's own author.
+//
+// The celebrated landing's artwork is rasterised at the hero size it is also
+// drawn at up top; the img tags carry their own logical size, so the same
+// pixmap serves both places without a second raster.
+static QList<MergeCelebrationRow> mergeCelebrationRows(
+    const QString &dir, const QString &base, const QList<MergeLanding> &landings,
+    const QList<AgentSession> &sessions, const QString &repoOwner,
+    const QString &repoName, const QString &me, const QByteArray &myAvatarPng,
+    const QString &celebrated, int avatarSize, int heroAvatarSize)
+{
+    QHash<QString, MergeNote> notesByCommit;
+    QHash<QString, MergeNote> notesByBranch;
+    for (const MergeNote &note : loadMergeNotes()) {
+        notesByCommit.insert(note.mergeCommit, note);
+        if (!note.branch.isEmpty())
+            notesByBranch.insert(note.branch, note);
+    }
+    QSet<QString> liveBranches;
+    QByteArray refs;
+    if (runGitCapture(dir,
+                      {QStringLiteral("for-each-ref"),
+                       QStringLiteral("--format=%(refname:short)"),
+                       QStringLiteral("refs/heads")},
+                      &refs, nullptr))
+        for (const QString &ref : QString::fromUtf8(refs).split(QLatin1Char('\n'),
+                                                                Qt::SkipEmptyParts))
+            liveBranches.insert(ref.trimmed());
+
+    QList<MergeCelebrationRow> rows;
+    for (const MergeLanding &landing : landings) {
+        MergeCelebrationRow row;
+        row.branch = landing.branch;
+        row.mergeCommit = landing.sha;
+        row.branchStillExists = !landing.branch.isEmpty() &&
+                                landing.branch != base &&
+                                liveBranches.contains(landing.branch);
+        row.whenSecs = landing.whenSecs;
+        row.files = landing.files;
+        row.insertions = landing.insertions;
+        row.deletions = landing.deletions;
+        row.current = !celebrated.isEmpty() && landing.branch == celebrated;
+
+        QString provider;
+        QString model;
+        const auto note = notesByCommit.constFind(landing.sha);
+        const auto branchNote = landing.branch.isEmpty()
+                                    ? notesByBranch.constEnd()
+                                    : notesByBranch.constFind(landing.branch);
+        if (note != notesByCommit.constEnd() || branchNote != notesByBranch.constEnd()) {
+            const MergeNote &credit =
+                note != notesByCommit.constEnd() ? note.value() : branchNote.value();
+            row.byAgent = credit.byAgent;
+            row.actor = credit.actor;
+            row.detail = credit.detail;
+            provider = credit.provider;
+            model = credit.model;
+        } else if (const AgentSession *session = sessionForMergedBranch(
+                       sessions, landing.branch, repoOwner, repoName)) {
+            row.byAgent = true;
+            provider = session->provider;
+            model = session->model;
+            creditFromSession(*session, &row.actor, &row.detail);
+        } else {
+            row.actor = landing.author;
+        }
+        row.avatar =
+            mergeCreditAvatar(row.byAgent, provider, model, row.actor, me,
+                              myAvatarPng,
+                              row.current ? heroAvatarSize : avatarSize);
+        rows.append(row);
+    }
+    return rows;
+}
+
 // Worktrees tab (next to Branches): lists this repo's git worktrees — the main
 // checkout plus each agent's isolated worktree+branch — with open/remove/prune.
 QWidget *MainWindow::buildWorktreesTab()
@@ -625,8 +970,7 @@ void startDetachedGit(DetachedGitRequest request)
             git->kill(); // finished() follows and releases the slot
     });
     trackProcessActivity(git, QStringLiteral("git"),
-                         QStringLiteral("git ") +
-                             request.args.join(QLatin1Char(' ')));
+                         gitArgsCrumb(QStringLiteral("git"), request.args));
     git->start(QStringLiteral("git"), request.args);
     // These reads never feed the child stdin; closing the channel now returns a
     // descriptor per in-flight process instead of holding it open until exit.
@@ -1203,6 +1547,12 @@ bool MainWindow::selectBranchRow(const QString &branch)
 // reload rebuild the table underneath it.
 void MainWindow::reportBranchNotFound(const QString &branch)
 {
+#ifdef FORKMESH_WINDOW_TESTS
+    // QMessageBox::exec() waits for a click that a headless run can never
+    // deliver, so this dialog parked the whole window-test suite here — every
+    // check after it simply never ran. Report and carry on instead.
+    qWarning().noquote() << "branch not found:" << branch;
+#else
     QTimer::singleShot(0, this, [this, branch] {
         QMessageBox::information(
             this, QStringLiteral("Branch not found"),
@@ -1210,6 +1560,7 @@ void MainWindow::reportBranchNotFound(const QString &branch)
                            "It may have been merged and deleted.")
                 .arg(branch));
     });
+#endif
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -1560,16 +1911,6 @@ void MainWindow::updateWorktreeSelection(const QString &branch,
     }
 }
 
-// A merge started from the branch review ends that review (adhoc #119): the
-// branch's work is in the base branch now, so the diff on screen either describes
-// history the user is done with or — after "Merge & delete all" — a branch that no
-// longer exists. Hand the Git view's columns back to the working tree, exactly
-// like the pane's own ✕ does, instead of leaving a finished diff open.
-void MainWindow::closeBranchDiffAfterMerge()
-{
-    closeBranchCompareView();
-}
-
 // Merge a worktree's branch into the repo's default branch. Direct + safe: only
 // when the primary checkout is ON the default branch and clean (otherwise it
 // would clobber concurrent WIP) — else point the user at Create PR.
@@ -1833,6 +2174,25 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         runGitCapture(dir, {"merge-base", "--is-ancestor", branch, "HEAD"}, nullptr,
                       nullptr);
     if (merged && !hasConflicts && branchInBase) {
+        // Credit the landing now, while there is still something to credit: the
+        // teardown below deletes the agent session that produced the branch, and
+        // git records only this desktop's own identity as the merge author, so
+        // this note is all the celebration screen (and the rest of today's list)
+        // has to name who did the work (adhoc #1615).
+        {
+            QString owner;
+            QString name;
+            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+                owner = m_repositories.at(m_repoDetailIndex).owner;
+                name = m_repositories.at(m_repoDetailIndex).name;
+            }
+            // By value: the git read inside pumps the event loop, and a queued
+            // reloadAgents() would otherwise reseat m_agentSessions underneath
+            // the reference (the git-pump family, adhoc #106/#149).
+            const QList<AgentSession> sessions = m_agentSessions;
+            rememberMergedBranch(dir, branch, sessions, owner, name,
+                                 topBarUserName());
+        }
         // adhoc #23: an agent's branch just landed in the base branch, so close any
         // issue attached to the session(s) that produced it — mirroring the
         // PR-merge flow's closeIssuesLinkedFromPull. Read the attachments now, while
@@ -1924,9 +2284,17 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     // the neighbour renders a diff the user didn't ask for, and re-selecting a
     // branch that no longer exists falls back to the checked-out one. Leave an
     // animated check in its row instead and select nothing.
-    if (branchDeleted)
+    if (branchDeleted) {
+        // Build the celebration here, on the merge path, rather than inside the
+        // panel rebuild that shows it: every git wait on the GUI thread pumps
+        // the event loop (adhoc #101), and renderBranchesPanel runs with the
+        // table's signals blocked mid-rebuild — pumping there re-enters the very
+        // handlers it is rebuilding for. This function already reads git under a
+        // keep-alive, so three more reads are at home in it.
         flashMergedBranchRow(branch);
-    else if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()) {
+        if (!m_branchMergedFlashBranch.isEmpty())
+            m_branchMergedFlashHtml = mergedBranchCelebrationHtml(branch, base, dir);
+    } else if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()) {
         const QString next = neighbourBranchInList(branch);
         if (!next.isEmpty())
             m_branchDiffBranch = next;
@@ -2879,6 +3247,19 @@ QWidget *MainWindow::buildBranchRangePane()
     connect(m_branchDiffView, &QTextBrowser::anchorClicked, this,
             &MainWindow::onBranchDiffAnchorClicked);
     registerDiffView(m_branchDiffView);
+    // Selection outline for the file CHANGES points at. Created before the
+    // sticky header so the header, which is raised on every update, keeps
+    // painting over it rather than under it.
+    m_branchDiffActiveOutline = new QFrame(m_branchDiffView->viewport());
+    m_branchDiffActiveOutline->setObjectName("diffActiveOutline");
+    m_branchDiffActiveOutline->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_branchDiffActiveOutline->setStyleSheet(
+        QStringLiteral("#diffActiveOutline{background:transparent;"
+                       "border:2px solid #2da44e;border-radius:6px;}"));
+    m_branchDiffActiveOutline->hide();
+    // Both overlays are sized against the viewport, which changes width when the
+    // splitter moves without any scroll to trigger a refresh.
+    m_branchDiffView->viewport()->installEventFilter(this);
     // Sticky header overlay pinned over the diff viewport — same form as the PR
     // viewer's: filename + Pac-Man read-progress + percent + a Viewed toggle.
     m_branchDiffSticky = new QFrame(m_branchDiffView->viewport());
@@ -2900,6 +3281,7 @@ QWidget *MainWindow::buildBranchRangePane()
         m_branchStickyPath = new QLabel(m_branchDiffSticky);
         m_branchStickyPath->setTextFormat(Qt::RichText);
         m_branchStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
+        configureDiffStickyPathLabel(m_branchStickyPath);
         sl->addWidget(m_branchStickyPath, 1);
         m_branchStickyPacman = new PacmanProgress(m_branchDiffSticky);
         m_branchStickyPacman->setToolTip(
@@ -2917,9 +3299,28 @@ QWidget *MainWindow::buildBranchRangePane()
         connect(m_branchStickyViewed, &QPushButton::clicked, this, [this] {
             if (m_branchStickyFile.isEmpty())
                 return;
-            onBranchDiffAnchorClicked(QUrl(
-                QStringLiteral("viewed:") +
-                QString::fromLatin1(QUrl::toPercentEncoding(m_branchStickyFile))));
+            // Where the review goes next, worked out before the toggle
+            // re-renders: marking a file viewed advances to the file after it so
+            // the next Viewed button lands under the same pointer. Un-viewing
+            // holds position — that click is to look at this file again.
+            const QString file = m_branchStickyFile;
+            const QString context =
+                m_branchDiffViewedContext.isEmpty()
+                    ? QStringLiteral("branch/") + m_branchDiffBranch
+                    : m_branchDiffViewedContext;
+            const int at = m_branchDiffFilePaths.indexOf(file);
+            const bool advance = !loadDiffViewed(context).contains(file) &&
+                                 at >= 0 && at + 1 < m_branchDiffFilePaths.size();
+            const QString next =
+                advance ? m_branchDiffFilePaths.at(at + 1) : QString();
+            onBranchDiffAnchorClicked(
+                QUrl(QStringLiteral("viewed:") +
+                     QString::fromLatin1(QUrl::toPercentEncoding(file))));
+            // Scroll without taking focus: the reviewer may be walking the
+            // CHANGES tree with the keyboard, and this click is on the diff's
+            // own overlay, not an "open this file" action.
+            if (!next.isEmpty())
+                scrollBranchDiffToFile(next, /*moveFocus=*/false);
         });
         sl->addWidget(m_branchStickyViewed, 0);
         m_branchDiffSticky->hide();
@@ -2934,8 +3335,10 @@ QWidget *MainWindow::buildBranchRangePane()
             &MainWindow::applyBranchAutoMarkViewedOnScroll);
     connect(m_branchDiffView->verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this] {
-                // Cheap, every-tick: sticky header / Pac-Man / list follow.
+                // Cheap, every-tick: sticky header / Pac-Man / list follow, and
+                // the selected file's outline riding along with the document.
                 updateBranchDiffSticky();
+                updateBranchDiffActiveOutline();
                 // Heavy, debounced: collapse fully-seen files into "Viewed".
                 if (m_branchAutoViewedDebounce)
                     m_branchAutoViewedDebounce->start();
@@ -3147,6 +3550,22 @@ QWidget *MainWindow::buildBranchRangePane()
             createPullFromBranch(m_branchDiffBranch);
     });
 
+    // Send the branch to the merge queue instead of merging it here and now:
+    // queues its open pull request (opening one when it has none), which the
+    // queue then updates from the base and merges in turn. Only visible when
+    // the open repository has its merge queue switched on.
+    m_branchQueueButton = new StackedIconButton("Queue merge");
+    m_branchQueueButton->setObjectName("ghostButton");
+    m_branchQueueButton->setProperty("buttonSize", "sm");
+    m_branchQueueButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchQueueButton, "list-unordered", 14);
+    m_branchQueueButton->setEnabled(false);
+    m_branchQueueButton->hide();
+    connect(m_branchQueueButton, &QPushButton::clicked, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            queueBranchForMerge(m_branchDiffBranch);
+    });
+
     // Merge the selected branch straight into the default branch (an empty
     // worktree path tells mergeWorktreeIntoMain not to prune any worktree).
     // Ghost, not green: "Merge & clean up" beside it is the finishing move worth
@@ -3158,9 +3577,12 @@ QWidget *MainWindow::buildBranchRangePane()
     setOcticon(m_branchMergeButton, "check-circle", 14);
     m_branchMergeButton->setEnabled(false);
     connect(m_branchMergeButton, &QPushButton::clicked, this, [this] {
-        if (!m_branchDiffBranch.isEmpty()
-            && mergeWorktreeIntoMain(m_branchDiffBranch, QString()))
-            closeBranchDiffAfterMerge();
+        if (!m_branchDiffBranch.isEmpty()) {
+            // Keep the review in place after a successful merge. Moving back to
+            // the working-tree page made the result feel like a navigation jump
+            // precisely when the user needs the review context to confirm it.
+            mergeWorktreeIntoMain(m_branchDiffBranch, QString());
+        }
     });
 
     // Same merge, but nothing of the source checkout survives it: its worktree,
@@ -3180,10 +3602,12 @@ QWidget *MainWindow::buildBranchRangePane()
         const QString repoPath = repoGitDir();
         // An empty path is fine — it just means the branch has no worktree of its
         // own, so there's nothing to prune beyond the branch and its agent.
-        if (mergeWorktreeIntoMain(m_branchDiffBranch,
-                                  worktreePathForBranch(repoPath, m_branchDiffBranch),
-                                  /*deleteAgent=*/true))
-            closeBranchDiffAfterMerge();
+        // Cleanup can remove the branch being reviewed, but the completed review
+        // remains useful confirmation. Leave the Git range page on screen rather
+        // than abruptly navigating the user back to the working tree.
+        mergeWorktreeIntoMain(m_branchDiffBranch,
+                              worktreePathForBranch(repoPath, m_branchDiffBranch),
+                              /*deleteAgent=*/true);
     });
 
     auto *detailBar = new QHBoxLayout;
@@ -3207,6 +3631,7 @@ QWidget *MainWindow::buildBranchRangePane()
     detailBar->addWidget(m_branchFixAgentCombo);
     detailBar->addWidget(m_branchFixModelCombo);
     detailBar->addWidget(m_branchPrButton);
+    detailBar->addWidget(m_branchQueueButton);
     detailBar->addWidget(m_branchMergeButton);
     detailBar->addWidget(m_branchMergeDeleteButton);
 
@@ -4118,13 +4543,20 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         // Table signals are blocked across the rebuild, so blank the diff pane
         // ourselves rather than leaving the deleted branch's diff on screen.
         showBranchDiff(QString());
+        // The branch is gone, so this pane has no diff to show. Rather than one
+        // grey line saying so, it shows the congratulation the merge path built
+        // for this landing — who was behind it and every other merge of the day
+        // (adhoc #1615). Only a flash raised without one falls back to the line.
         if (m_branchDiffView)
-            setDiffHtml(m_branchDiffView,
-                        QStringLiteral("<p style='color:#8b949e'>Merged %1 into %2 "
-                                       "and deleted it. Pick a branch to see its "
-                                       "changes.</p>")
-                            .arg(m_branchMergedFlashBranch.toHtmlEscaped(),
-                                 base.toHtmlEscaped()));
+            setDiffHtml(
+                m_branchDiffView,
+                m_branchMergedFlashHtml.isEmpty()
+                    ? QStringLiteral("<p style='color:#8b949e'>Merged %1 into %2 "
+                                     "and deleted it. Pick a branch to see its "
+                                     "changes.</p>")
+                          .arg(m_branchMergedFlashBranch.toHtmlEscaped(),
+                               base.toHtmlEscaped())
+                    : m_branchMergedFlashHtml);
         return;
     }
 
@@ -4338,6 +4770,77 @@ void MainWindow::flashMergedBranchRow(const QString &branch)
     });
 }
 
+// The pane that replaces a merged-and-deleted branch's diff: a congratulation
+// naming who landed it, beside every other branch that reached the base branch
+// today and who was behind each. Assembling it is three cheap git reads (the
+// day's merge commits with their change totals, the live branch list, and the
+// merge's commit count) plus whatever credit was recorded at merge time; the
+// layout itself is mergeCelebrationHtml. Called from the merge path and held in
+// m_branchMergedFlashHtml — those reads pump the event loop, which the panel
+// rebuild that paints the result cannot afford.
+QString MainWindow::mergedBranchCelebrationHtml(const QString &branch,
+                                                const QString &base,
+                                                const QString &dir)
+{
+    // Both sizes are rasterised for HiDPI and drawn at their logical size.
+    constexpr int kRowAvatarPx = 22;
+    constexpr int kHeroAvatarPx = 56;
+    QString owner;
+    QString name;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        owner = m_repositories.at(m_repoDetailIndex).owner;
+        name = m_repositories.at(m_repoDetailIndex).name;
+    }
+    const QString me = topBarUserName();
+    const QByteArray myAvatar = effectiveUserAvatar();
+    // By value: the git reads below pump the event loop, and a queued
+    // reloadAgents() would reseat m_agentSessions underneath a reference to it
+    // (the git-pump family, adhoc #106/#149).
+    const QList<AgentSession> sessions = m_agentSessions;
+    QList<MergeCelebrationRow> rows = mergeCelebrationRows(
+        dir, base, mergesLandedToday(dir, base), sessions, owner, name, me,
+        myAvatar, branch, kRowAvatarPx, kHeroAvatarPx);
+
+    // The landing being celebrated leads the screen. It is normally the newest
+    // row; a merge that left no merge commit on the base branch (a
+    // fast-forward, or one already reported by an earlier pass) has nothing in
+    // the list, so its hero is built from the same credit lookup over a landing
+    // that names only the branch.
+    MergeCelebrationRow landed;
+    const auto current = std::find_if(
+        rows.cbegin(), rows.cend(),
+        [](const MergeCelebrationRow &row) { return row.current; });
+    if (current != rows.cend()) {
+        landed = *current;
+    } else {
+        MergeLanding synthetic;
+        synthetic.branch = branch;
+        synthetic.whenSecs = QDateTime::currentSecsSinceEpoch();
+        const QList<MergeCelebrationRow> heroOnly = mergeCelebrationRows(
+            dir, base, {synthetic}, sessions, owner, name, me, myAvatar, branch,
+            kRowAvatarPx, kHeroAvatarPx);
+        if (!heroOnly.isEmpty())
+            landed = heroOnly.first();
+    }
+
+    int commits = -1;
+    if (!landed.mergeCommit.isEmpty()) {
+        QByteArray out;
+        if (runGitCapture(dir,
+                          {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                           QStringLiteral("%1^1..%1").arg(landed.mergeCommit)},
+                          &out, nullptr))
+            commits = QString::fromUtf8(out).trimmed().toInt();
+    }
+
+    int truncated = 0;
+    if (rows.size() > kMergeCelebrationRowLimit) {
+        truncated = rows.size() - kMergeCelebrationRowLimit;
+        rows = rows.mid(0, kMergeCelebrationRowLimit);
+    }
+    return mergeCelebrationHtml(landed, base, rows, commits, truncated);
+}
+
 // Drop the check. Deliberately doesn't repaint the panel: the row disappears at
 // the next natural rebuild, so retiring it never moves anything under the cursor.
 void MainWindow::clearMergedBranchFlash()
@@ -4345,6 +4848,7 @@ void MainWindow::clearMergedBranchFlash()
     m_branchMergedFlashBranch.clear();
     m_branchMergedFlashDir.clear();
     m_branchMergedFlashRow = -1;
+    m_branchMergedFlashHtml.clear();
 }
 
 // Prune every branch that's fully merged into the default branch (0 behind and
@@ -4715,6 +5219,25 @@ void MainWindow::applyBranchDetailActions(const QString &branch, const QString &
                         : "Read-only mirror \xE2\x80\x94 no working tree to open a pull "
                           "request from"));
 
+    // Send the branch to the merge queue (same availability as Create PR — the
+    // queue merges through the branch's pull request). Hidden, not just
+    // disabled, for repositories without the queue.
+    if (m_branchQueueButton) {
+        const bool queueOn = mergeQueueEnabledForOpenRepo();
+        const bool canQueue = queueOn && writable && !isBase;
+        m_branchQueueButton->setVisible(queueOn);
+        m_branchQueueButton->setEnabled(canQueue);
+        m_branchQueueButton->setToolTip(
+            canQueue
+                ? QStringLiteral("Send %1 to the merge queue — its pull request "
+                                 "(opened now if it has none) is updated from %2 "
+                                 "and merged in turn")
+                      .arg(branch, base)
+                : (isBase ? QStringLiteral("Select a branch other than %1").arg(base)
+                          : QStringLiteral("Read-only mirror \xE2\x80\x94 nothing "
+                                           "to merge into here")));
+    }
+
     // Merge this branch directly into the default branch.
     const bool canMerge = writable && !isBase;
     m_branchMergeButton->setEnabled(canMerge);
@@ -4881,6 +5404,10 @@ void MainWindow::beginBranchDiffTransition(QString branch)
     // through the switch and leave a phantom entry in the Back/Forward trail.
     m_branchDiffFilePaths.clear();
     m_branchDiffFileAnchors.clear();
+    m_branchStickyLabelHtml.clear();
+    m_branchActiveFile.clear();
+    if (m_branchDiffActiveOutline)
+        m_branchDiffActiveOutline->hide();
     clearRangeFilesInSourceControl();
     setDiffHtml(m_branchDiffView,
                 QString::fromUtf8("<p style='color:#8b949e'>Reading changes on "
@@ -5201,11 +5728,13 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
                                         anchorFile, notes, viewed);
     m_branchDiffFilePaths.clear();
     m_branchDiffFileAnchors.clear();
+    m_branchStickyLabelHtml.clear();
     QStringList rangeStatuses;
     for (const DiffFileEntry &f : files) {
         m_branchDiffFilePaths.append(f.path);
         m_branchDiffFileAnchors.append(f.anchor);
         rangeStatuses.append(f.status);
+        m_branchStickyLabelHtml.insert(f.path, diffStickyLabelHtml(f));
     }
     showRangeFilesInSourceControl(m_branchDiffFilePaths, rangeStatuses);
 
@@ -5226,7 +5755,11 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
     // the last batch lands. Either way this covers whatever is currently shown.
     m_branchFileTops.clear(); // positions change on re-render; force a recompute
     m_branchStickyFile.clear();
+    // A file that is no longer part of the range cannot stay outlined.
+    if (!m_branchDiffFilePaths.contains(m_branchActiveFile))
+        m_branchActiveFile.clear();
     rebuildBranchDiffSpans();
+    updateBranchDiffActiveOutline();
     // The document was just replaced; an open find bar's cursors died with it.
     if (m_branchDiffSearchBar && m_branchDiffSearchBar->isVisible())
         branchDiffSearchRecompute();
@@ -5256,16 +5789,16 @@ void MainWindow::rebuildBranchDiffSpans()
     updateBranchDiffSticky();
 }
 
-void MainWindow::createPullFromBranch(const QString &branch)
+int MainWindow::createPullFromBranch(const QString &branch)
 {
     const QString dir = repoGitDir();
     const QString base = repoDefaultBranch(repoBranches());
     if (branch.isEmpty() || branch == base)
-        return;
+        return -1;
     if (!repoHasWorkingTree()) {
         setRepoDetailNotice(
             "This is a read-only mirror; pull requests can't be opened here.", true);
-        return;
+        return -1;
     }
     QByteArray diff;
     QString err;
@@ -5274,7 +5807,7 @@ void MainWindow::createPullFromBranch(const QString &branch)
         setRepoDetailNotice(
             QStringLiteral("%1 has no changes to open as a pull request.").arg(branch),
             true);
-        return;
+        return -1;
     }
     // Default the PR title to the branch's first commit subject.
     QByteArray subjectOut;
@@ -5291,7 +5824,7 @@ void MainWindow::createPullFromBranch(const QString &branch)
             QLineEdit::Normal, subjects.isEmpty() ? branch : subjects.first(), &ok)
             .trimmed();
     if (!ok || title.isEmpty())
-        return;
+        return -1;
     QString description;
     for (const QString &s : subjects)
         description += "- " + s + "\n";
@@ -5309,7 +5842,7 @@ void MainWindow::createPullFromBranch(const QString &branch)
     if (number < 0) {
         setRepoDetailNotice(
             error.isEmpty() ? "Could not create the pull request." : error, true);
-        return;
+        return -1;
     }
     bindAgentSessionsToPull(number, branch);
     logSystem(QStringLiteral("Opened pull #%1 from %2 into %3.")
@@ -5319,6 +5852,7 @@ void MainWindow::createPullFromBranch(const QString &branch)
         QStringLiteral("Opened pull request #%1 from %2.").arg(number).arg(branch));
     m_currentPullNumber = number;
     switchToPullTab(number);
+    return number;
 }
 
 // Merge `base` into `branch` inside the linked worktree that owns it — the one
@@ -5548,7 +6082,7 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     if (ahead == 0 && !isCurrent) {
         // `isCurrent` only reflects *this* checkout's HEAD. The branch can still be
         // checked out in a separate agent worktree (e.g. an issue session under
-        // /tmp/forkmesh-worktrees/...), and git flatly refuses to fetch into a ref
+        // <checkout>/.worktrees/...), and git flatly refuses to fetch into a ref
         // that's live in another worktree — surfacing a cryptic
         // "fatal: refusing to fetch into branch '...' checked out at '...'".
         // Explain what's actually happening instead of dumping the raw error, so
@@ -6434,6 +6968,25 @@ void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
             m_branchDiffView->verticalScrollBar()->setValue(scroll);
         return;
     }
+    // The merge celebration's own links (adhoc #1615): one of today's branches
+    // that still exists, the base branch it lists at the bottom, or — for a
+    // branch that was deleted with its merge — the merge commit it left behind.
+    if (url.scheme() == QLatin1String("fmbranch")) {
+        const QString target = url.path();
+        if (!target.isEmpty()) {
+            clearMergedBranchFlash();
+            switchToBranch(target);
+        }
+        return;
+    }
+    if (url.scheme() == QLatin1String("fmcommit")) {
+        const QString sha = url.path();
+        if (!sha.isEmpty()) {
+            showOverviewCommits();
+            showCommit(sha);
+        }
+        return;
+    }
     // "Retry" on the failure pane (adhoc #1384): re-run the read from scratch.
     // The cached patch is invalid after a failure, so this is the only way back
     // to a diff short of re-clicking the branch.
@@ -6530,8 +7083,20 @@ void MainWindow::updateBranchDiffSticky()
         }
     }
     if (idx < 0) {
-        m_branchDiffSticky->hide();
-        return;
+        // A re-render's layout can trail by an event-loop turn, and a streamed
+        // diff starts with only the visible window's spans. Hold the current
+        // file (or the first one) rather than blanking the filename bar until
+        // positions land on the next tick.
+        for (int i = 0; i < m_branchDiffFileSpans.size(); ++i) {
+            if (m_branchDiffFileSpans.at(i).second == m_branchStickyFile) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0)
+            idx = 0;
+        fileTop = 0;
+        fileBottom = qMax(1, docHeight);
     }
     const QString cur = m_branchDiffFileSpans.at(idx).second;
 
@@ -6547,8 +7112,15 @@ void MainWindow::updateBranchDiffSticky()
     const bool isViewed = loadDiffViewed(viewedContext).contains(cur);
     if (cur != m_branchStickyFile) {
         m_branchStickyFile = cur;
-        if (m_branchStickyPath)
-            m_branchStickyPath->setText(diffStickyPathHtml(cur));
+        if (m_branchStickyPath) {
+            // Prefer the labelled form (status word + octicon + +/- counts); the
+            // bare path is the fallback for a span whose entry did not survive a
+            // re-render.
+            const QString label = m_branchStickyLabelHtml.value(cur);
+            m_branchStickyPath->setText(label.isEmpty() ? diffStickyPathHtml(cur)
+                                                        : label);
+            m_branchStickyPath->setToolTip(cur); // the bar may elide a long path
+        }
     }
     if (m_branchStickyViewed)
         m_branchStickyViewed->setText(isViewed
@@ -6567,14 +7139,79 @@ void MainWindow::updateBranchDiffSticky()
 
     m_branchDiffSticky->setGeometry(0, 0, m_branchDiffView->viewport()->width(),
                                     m_branchDiffSticky->sizeHint().height());
-    // Do not cover the real per-file header while it is still visible.
-    if (viewTop <= fileTop + m_branchDiffSticky->sizeHint().height()) {
-        m_branchDiffSticky->hide();
-        return;
-    }
+    // Pinned for the whole file, its first screen included: the bar used to
+    // yield while the file's own header was still on screen, so the filename
+    // blinked away at every file boundary. Both headers are a single line now,
+    // so the handover reads as one bar staying put.
     m_branchDiffSticky->show();
     m_branchDiffSticky->raise();
 }
+
+// Draw the green selection outline around the extent of the file CHANGES points
+// at, so the stroke on the row and the stroke on its diff section read as one
+// selection. Runs on every scroll tick, so it only reads the cached file tops.
+void MainWindow::updateBranchDiffActiveOutline()
+{
+    if (!m_branchDiffView || !m_branchDiffActiveOutline)
+        return;
+    const int index = m_branchActiveFile.isEmpty()
+                          ? -1
+                          : m_branchDiffFilePaths.indexOf(m_branchActiveFile);
+    QScrollBar *vbar = m_branchDiffView->verticalScrollBar();
+    if (index < 0 || !vbar || m_branchDiffFileSpans.isEmpty()) {
+        m_branchDiffActiveOutline->hide();
+        return;
+    }
+    if (m_branchFileTops.size() != m_branchDiffFileSpans.size())
+        computeBranchFileTops();
+    // The span list can lag the path list while a streamed diff is still
+    // landing; there is nothing to outline until its position is known.
+    if (index >= m_branchFileTops.size() || m_branchFileTops.at(index) < 0) {
+        m_branchDiffActiveOutline->hide();
+        return;
+    }
+    const int docHeight =
+        m_branchDiffView->document()->documentLayout()->documentSize().height();
+    const int top = m_branchFileTops.at(index);
+    const int bottom = (index + 1 < m_branchFileTops.size() &&
+                        m_branchFileTops.at(index + 1) >= 0)
+                           ? m_branchFileTops.at(index + 1)
+                           : docHeight;
+
+    const int viewTop = vbar->value();
+    const int height = m_branchDiffView->viewport()->height();
+    // Wholly scrolled past in either direction: nothing to draw.
+    if (bottom - viewTop <= 0 || top - viewTop >= height) {
+        m_branchDiffActiveOutline->hide();
+        return;
+    }
+    // Qt clips a child to its parent, so an outline taller than the viewport can
+    // simply hang off both edges — the side borders stay visible and the top or
+    // bottom one falls out of view, which is exactly the wanted "continues past
+    // here" reading.
+    m_branchDiffActiveOutline->setGeometry(
+        1, top - viewTop, qMax(0, m_branchDiffView->viewport()->width() - 2),
+        qMax(1, bottom - top));
+    m_branchDiffActiveOutline->show();
+    m_branchDiffActiveOutline->raise();
+    if (m_branchDiffSticky && m_branchDiffSticky->isVisible())
+        m_branchDiffSticky->raise(); // header stays above the outline
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testBranchOutlinedFile() const
+{
+    return m_branchDiffActiveOutline && m_branchDiffActiveOutline->isVisible()
+               ? m_branchActiveFile
+               : QString();
+}
+
+QRect MainWindow::testBranchOutlineRect() const
+{
+    return m_branchDiffActiveOutline ? m_branchDiffActiveOutline->geometry()
+                                     : QRect();
+}
+#endif
 
 // Debounced off the branch diff's scrollbar: mark every file scrolled fully
 // through (its end reached the viewport bottom) as Viewed, re-render once for

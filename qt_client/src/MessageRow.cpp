@@ -35,32 +35,6 @@ constexpr int kAvatarSize = 36;
 constexpr int kMaxMediaWidth = 360;
 constexpr int kPickerColumns = 6;
 
-// A rounded-rectangle fallback avatar: the sender's initial on a colored tile.
-QPixmap initialsAvatar(const QString &name, const QString &color)
-{
-    // Rendered at the device pixel ratio and tagged with it, so HiDPI screens
-    // composite the tile 1:1 instead of upscaling it into a pixelated blur.
-    const qreal dpr = qGuiApp ? qGuiApp->devicePixelRatio() : 1.0;
-    QPixmap pixmap(qMax(1, qRound(kAvatarSize * dpr)),
-                   qMax(1, qRound(kAvatarSize * dpr)));
-    pixmap.setDevicePixelRatio(dpr);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setBrush(QColor(color));
-    painter.setPen(Qt::NoPen);
-    painter.drawRoundedRect(0, 0, kAvatarSize, kAvatarSize, 9, 9);
-    painter.setPen(Qt::white);
-    QFont font = painter.font();
-    font.setBold(true);
-    font.setPixelSize(16);
-    painter.setFont(font);
-    const QString initial = name.isEmpty() ? "?" : name.left(1).toUpper();
-    painter.drawText(QRect(0, 0, kAvatarSize, kAvatarSize), Qt::AlignCenter,
-                     initial);
-    return pixmap;
-}
-
 QString humanSize(qint64 bytes)
 {
     if (bytes < 1024)
@@ -246,6 +220,35 @@ private:
 };
 
 } // namespace
+
+// A rounded-rectangle fallback avatar: the sender's initial on a colored tile.
+// Scaled from the transcript's own 36px tile, so the smaller copy the alert
+// bubble draws is the same face at a smaller size rather than a second look.
+QPixmap MessageRow::initialsAvatar(const QString &name, const QString &color,
+                                   int side)
+{
+    side = qMax(8, side);
+    // Rendered at the device pixel ratio and tagged with it, so HiDPI screens
+    // composite the tile 1:1 instead of upscaling it into a pixelated blur.
+    const qreal dpr = qGuiApp ? qGuiApp->devicePixelRatio() : 1.0;
+    QPixmap pixmap(qMax(1, qRound(side * dpr)), qMax(1, qRound(side * dpr)));
+    pixmap.setDevicePixelRatio(dpr);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setBrush(QColor(color));
+    painter.setPen(Qt::NoPen);
+    const qreal radius = side * 0.25; // 9px on the transcript's 36px tile
+    painter.drawRoundedRect(0, 0, side, side, radius, radius);
+    painter.setPen(Qt::white);
+    QFont font = painter.font();
+    font.setBold(true);
+    font.setPixelSize(qMax(8, qRound(side * (16.0 / 36.0))));
+    painter.setFont(font);
+    const QString initial = name.isEmpty() ? "?" : name.left(1).toUpper();
+    painter.drawText(QRect(0, 0, side, side), Qt::AlignCenter, initial);
+    return pixmap;
+}
 
 MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
                        const QHash<QString, MemberInfo> &mentionProfiles,

@@ -156,6 +156,22 @@ inline QString backgroundElapsedText(qint64 ms)
     return QStringLiteral("%1s").arg(clamped / 1000.0, 0, 'f', 1);
 }
 
+// Backstop for the note a caller attaches to a ticket. Callers are expected to
+// pass something already summarised (see gitArgsCrumb for the git command line),
+// but a note is free-form and one over-long one — a command line carrying a few
+// hundred pathspecs, say — turns a log entry into a wall of text in both log
+// views and in the strip's tooltip. Cap it here so no future call site can
+// (adhoc #1620).
+constexpr int kBackgroundDetailMaxChars = 220;
+
+inline QString backgroundDetailNote(const QString &detail)
+{
+    const QString note = detail.simplified();
+    if (note.size() <= kBackgroundDetailMaxChars)
+        return note;
+    return note.left(kBackgroundDetailMaxChars - 1) + QString::fromUtf8("\xE2\x80\xA6");
+}
+
 // The log entry for one finished run of a kind of work. `runs` collapses a burst
 // of same-kind tickets that all came and went too fast to be backgrounded, in
 // which case `elapsedMs` is the longest of them.
@@ -174,7 +190,7 @@ inline QString backgroundOutcomeLine(const QString &word, int runs,
     line += QStringLiteral(" (%1%2)")
                 .arg(runs > 1 ? QStringLiteral("longest ") : QString(),
                      backgroundElapsedText(elapsedMs));
-    const QString note = detail.trimmed();
+    const QString note = backgroundDetailNote(detail);
     if (!note.isEmpty())
         line += QStringLiteral(" - ") + note;
     return line;

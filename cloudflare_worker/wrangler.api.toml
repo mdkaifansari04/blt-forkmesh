@@ -29,7 +29,7 @@
 name = "forkmesh-api"
 main = "src_build/entry.py"
 compatibility_flags = [ "python_workers" ]
-compatibility_date = "2026-07-23"
+compatibility_date = "2026-08-03"
 
 [build]
 command = "python3 tools/build_worker_python.py && python3 tools/build_split_assets.py api"

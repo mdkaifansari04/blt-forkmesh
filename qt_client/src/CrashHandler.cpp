@@ -7,6 +7,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QObject>
+#include <QSocketNotifier>
 #include <QStandardPaths>
 
 #include <cstdlib>
@@ -14,6 +16,7 @@
 #include <cstring>
 #include <exception>
 #include <initializer_list>
+#include <utility>
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <execinfo.h>
@@ -58,6 +61,21 @@ std::atomic_flag g_handling = ATOMIC_FLAG_INIT;
 // execute workflows in parallel now — protection must stay on until the LAST of
 // them finishes, not drop the moment any single run completes.
 std::atomic_int g_surviveTerminationSignals{0};
+
+// Graceful stop plumbing. A SIGTERM/SIGINT is a *request* to exit, not a fault:
+// killing the process from the handler skips closeEvent(), so window geometry,
+// chat history, the pings journal and the network log are all lost. Instead the
+// handler pokes this self-pipe, a QSocketNotifier picks it up on the GUI thread
+// and runs the normal shutdown. Armed only once there is an event loop to hand
+// the request to; before that, termination keeps its default behavior.
+int g_terminationPipe[2] = {-1, -1};
+std::atomic_bool g_gracefulShutdownArmed{false};
+std::atomic_flag g_gracefulShutdownRequested = ATOMIC_FLAG_INIT;
+
+// If the orderly shutdown wedges (a blocked GUI thread, a modal dialog), this
+// many seconds later SIGALRM's default disposition ends the process anyway, so
+// asking the app to stop always stops it. Nothing else in the app uses alarm().
+constexpr unsigned int kGracefulShutdownDeadlineSeconds = 15;
 
 // Async-signal-safe unsigned-to-decimal. Writes into buf, returns length.
 int safeUtoa(unsigned long v, char *buf)
@@ -205,7 +223,7 @@ bool isTerminationSignal(int sig)
 }
 
 void safeWriteMainLogSignalRecord(int sig, unsigned long when,
-                                  bool survived)
+                                  const char *disposition)
 {
     if (g_mainLogFd < 0)
         return;
@@ -214,14 +232,27 @@ void safeWriteMainLogSignalRecord(int sig, unsigned long when,
     safeWriteFd(g_mainLogFd, signalName(sig));
     safeWriteFd(g_mainLogFd, " at epoch ");
     safeWriteNumToFd(g_mainLogFd, when);
-    if (survived) {
-        safeWriteFd(g_mainLogFd,
-                    "; action workflow survived and will finish/fail normally");
-    } else {
-        safeWriteFd(g_mainLogFd,
-                    "; terminating; full record logged above");
-    }
+    safeWriteFd(g_mainLogFd, disposition);
     safeWriteFd(g_mainLogFd, "\n");
+}
+
+// True once a graceful stop has been handed to the event loop by this call, so
+// the caller knows to return instead of terminating. A second signal (or one
+// arriving before the notifier is armed) falls through and exits immediately.
+bool requestGracefulShutdown()
+{
+    if (!g_gracefulShutdownArmed.load(std::memory_order_acquire))
+        return false;
+    if (g_gracefulShutdownRequested.test_and_set())
+        return false;
+    const char byte = 1;
+    const ssize_t written = ::write(g_terminationPipe[1], &byte, 1);
+    if (written != 1) {
+        // Nobody will read it; let the signal take its default course.
+        return false;
+    }
+    ::alarm(kGracefulShutdownDeadlineSeconds);
+    return true;
 }
 
 // The signal handler. Strictly async-signal-safe: only write/time/
@@ -235,7 +266,18 @@ void crashHandler(int sig, siginfo_t *info, void *)
         return;
     }
 
-    safeWrite("\n===== ForkMesh crash =====\n");
+    // A SIGTERM/SIGINT from another process is someone asking the app to stop —
+    // `kill`, `systemctl stop`, a desktop logout, an updater swapping binaries.
+    // It is not a fault, and its backtrace is only ever the idle event loop, so
+    // it gets its own heading instead of being filed (and read) as a crash.
+    const bool terminationSignal = isTerminationSignal(sig);
+    const char *const banner = terminationSignal
+                                   ? "\n===== ForkMesh shutdown signal =====\n"
+                                   : "\n===== ForkMesh crash =====\n";
+    const char *const footer = terminationSignal
+                                   ? "====================================\n"
+                                   : "==========================\n";
+    safeWrite(banner);
     const unsigned long when = (unsigned long)::time(nullptr);
     safeWrite("when (epoch): ");
     safeWriteNum(when);
@@ -247,17 +289,44 @@ void crashHandler(int sig, siginfo_t *info, void *)
     safeWriteSignalInfo(info);
     safeWriteCrashContext();
 
-    const bool terminationSignal = isTerminationSignal(sig);
     const bool surviveTermination =
         terminationSignal &&
         g_surviveTerminationSignals.load(std::memory_order_relaxed) > 0;
-    safeWriteMainLogSignalRecord(sig, when, surviveTermination);
+    const bool gracefulShutdown =
+        terminationSignal && !surviveTermination && requestGracefulShutdown();
+    safeWriteMainLogSignalRecord(
+        sig, when,
+        surviveTermination
+            ? "; action workflow survived and will finish/fail normally"
+        : gracefulShutdown ? "; shutting down cleanly"
+                           : "; terminating; full record logged above");
 
     if (surviveTermination) {
         safeWrite("termination signal survived: action workflow is still "
                   "running; continuing so the run can fail cleanly\n");
-        safeWrite("==========================\n");
+        safeWrite(footer);
         g_handling.clear(std::memory_order_release);
+        return;
+    }
+
+    if (gracefulShutdown) {
+        safeWrite("stop requested: closing the window and quitting normally so "
+                  "settings, chat history and the log are saved; sending it "
+                  "again exits immediately\n");
+        safeWrite(footer);
+        // Cleared so a genuine fault during the shutdown still gets logged, and
+        // so a repeat signal re-enters and takes the immediate path below.
+        g_handling.clear(std::memory_order_release);
+        return;
+    }
+
+    if (terminationSignal) {
+        // Either the event loop isn't up yet (nothing to hand the stop to) or
+        // this is the second signal — exit now, without a backtrace of the
+        // event loop that says nothing about why we were asked to stop.
+        safeWrite(footer);
+        signal(sig, SIG_DFL);
+        raise(sig);
         return;
     }
 
@@ -408,6 +477,47 @@ void installCrashHandler(const QString &crashLogPath,
 #else
     Q_UNUSED(crashLogPath); // kept for API compatibility; never used
     Q_UNUSED(mainLogPath);
+#endif
+}
+
+void enableGracefulTerminationShutdown(QObject *context,
+                                       std::function<void()> onTerminate)
+{
+#ifdef FORKMESH_CRASH_HANDLER
+    if (!context || !onTerminate)
+        return;
+    if (g_gracefulShutdownArmed.load(std::memory_order_acquire))
+        return; // already armed; one owner of the stop request is enough
+
+    if (::pipe(g_terminationPipe) != 0) {
+        g_terminationPipe[0] = g_terminationPipe[1] = -1;
+        return; // no pipe: termination keeps its default, immediate behavior
+    }
+    // O_CLOEXEC so the pipe can't leak into the git/agent children we spawn;
+    // non-blocking so neither the signal handler's write nor the drain below
+    // can ever stall.
+    for (int fd : {g_terminationPipe[0], g_terminationPipe[1]}) {
+        ::fcntl(fd, F_SETFD, ::fcntl(fd, F_GETFD, 0) | FD_CLOEXEC);
+        ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    }
+
+    auto *notifier = new QSocketNotifier(g_terminationPipe[0],
+                                         QSocketNotifier::Read, context);
+    QObject::connect(notifier, &QSocketNotifier::activated, context,
+                     [notifier, callback = std::move(onTerminate)]() {
+                         // One stop only: the deadline alarm armed in the
+                         // handler is the backstop if this shutdown wedges.
+                         notifier->setEnabled(false);
+                         char drain[16];
+                         while (::read(g_terminationPipe[0], drain,
+                                       sizeof(drain)) > 0)
+                             ;
+                         callback();
+                     });
+    g_gracefulShutdownArmed.store(true, std::memory_order_release);
+#else
+    Q_UNUSED(context);
+    Q_UNUSED(onTerminate);
 #endif
 }
 

@@ -49,16 +49,28 @@ def test_chat_activity_route_registered():
     assert "await chat_activity_handler(self.env, request)" in ENTRY
 
 
-def test_chat_activity_counts_without_decrypting():
+def test_chat_activity_counts_messages_without_decrypting():
     source = _function_source("chat_activity_handler")
-    # Counts only: chat bodies stay ciphertext and user rows stay encrypted.
-    assert "decrypt_row" not in source
+    # The message count is still a bare tally: chat bodies stay ciphertext.
     assert "COUNT(*)" in source
     assert "FROM chat_history" in source
     assert "FLAGSHIP_ROOM_KEY" in source
-    # Users are separated from keyless node reservations by the email blind
-    # index, which only email-bearing user accounts carry.
-    assert "email_bi IS NOT NULL" in source
+
+
+def test_chat_activity_member_count_matches_world_roster():
+    # adhoc #1617: the badge and the World campfire HUD used to run two
+    # different filters over `users` (one raw "has an email" count, one a
+    # decrypted active/user/non-private roster) and could disagree by a few
+    # accounts. Both now go through the one shared counter/predicate.
+    source = _function_source("chat_activity_handler")
+    assert "_public_member_count(env)" in source
+    assert "email_bi IS NOT NULL" not in source
+
+    count_source = _function_source("_public_member_count")
+    assert "_is_public_roster_member(rec)" in count_source
+
+    directory_source = _function_source("_account_users_directory")
+    assert "_is_public_roster_member(rec)" in directory_source
 
 
 def test_chat_activity_is_edge_cached():
@@ -149,8 +161,13 @@ def test_own_messages_advance_the_header_baseline():
     # adhoc #426: the badge is a delta against the stored baseline, so a line
     # this browser contributed to #general showed up as unread on every other
     # page of the site. Sending advances the baseline by one instead.
-    assert "function noteOwnChatActivity()" in CHAT
-    assert "noteOwnChatActivity();" in CHAT
+    assert "function noteSeenChatActivity()" in CHAT
+    assert "noteSeenChatActivity();" in CHAT
+    # Same baseline bump for a line that ARRIVES while the page is open — that
+    # is what let the 60s re-read of /api/chat/activity go away. Replayed
+    # history is excluded: the read at page open already counted it.
+    assert 'type !== "history" &&' in CHAT
+    assert "DURABLE_TYPES.has(type) &&" in CHAT
     # Only retained public-world frames reach the counter the badge reads; a
     # private channel, a DM, or an unretained oversized file frame must not
     # move the baseline.

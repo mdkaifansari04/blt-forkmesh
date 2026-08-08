@@ -237,16 +237,14 @@ def test_worker_exception_capture_does_not_raise_from_reporting_failures():
     assert "write" in call_names
 
 
-def test_background_tasks_observe_exceptions_instead_of_default_handler():
-    assert "def _fire_and_forget" in ENTRY_TEXT
-    assert "def _consume_background_task" in ENTRY_TEXT
-    assert "task.result()" in ENTRY_TEXT
-    ensure_future_lines = [
-        line.strip()
-        for line in ENTRY_TEXT.splitlines()
-        if "asyncio.ensure_future(" in line
-    ]
-    assert ensure_future_lines == ["task = asyncio.ensure_future(coro)"]
+def test_telemetry_never_runs_on_a_detached_task():
+    # There is no fire-and-forget helper any more: a detached task is one more
+    # PyodideTask the runtime can re-enter, and a wedged isolate answers 1101
+    # for every later request (see tests/test_worker_task_concurrency.py).
+    # Telemetry is awaited inline inside its own try/except instead.
+    assert "def _fire_and_forget" not in ENTRY_TEXT
+    assert "asyncio.ensure_future(" not in ENTRY_TEXT
+    assert "asyncio.create_task(" not in ENTRY_TEXT
     # Repository transfers are awaited direct-HTTPS fetches, not detached
     # socket watchdog tasks.
     proxy = ENTRY_TEXT[
@@ -519,6 +517,17 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "safeWriteMainLogSignalRecord" in CRASH_HANDLER_CPP_TEXT
     assert "ForkMesh signal: " in CRASH_HANDLER_CPP_TEXT
     assert "action workflow survived and will finish/fail normally" in CRASH_HANDLER_CPP_TEXT
+    # An external stop request is not a crash: it gets its own heading, no
+    # event-loop backtrace, and is handed to the event loop so closeEvent()
+    # still saves settings/chat/log before the process exits.
+    assert "===== ForkMesh shutdown signal =====" in CRASH_HANDLER_CPP_TEXT
+    assert "bool requestGracefulShutdown()" in CRASH_HANDLER_CPP_TEXT
+    assert "std::atomic_flag g_gracefulShutdownRequested" in CRASH_HANDLER_CPP_TEXT
+    assert "kGracefulShutdownDeadlineSeconds" in CRASH_HANDLER_CPP_TEXT
+    assert "::alarm(kGracefulShutdownDeadlineSeconds);" in CRASH_HANDLER_CPP_TEXT
+    assert "; shutting down cleanly" in CRASH_HANDLER_CPP_TEXT
+    assert "void enableGracefulTerminationShutdown(QObject *context," in CRASH_HANDLER_H_TEXT
+    assert "forkmesh::enableGracefulTerminationShutdown(&app," in MAIN_CPP_TEXT
     assert "void safeWriteSignalInfo(const siginfo_t *info)" in CRASH_HANDLER_CPP_TEXT
     assert "signal code: " in CRASH_HANDLER_CPP_TEXT
     assert "sender pid: " in CRASH_HANDLER_CPP_TEXT

@@ -475,6 +475,10 @@ QWidget *MainWindow::buildPullsTab()
     listLayout->setContentsMargins(0, 0, 0, 0);
     listLayout->setSpacing(0);
     listLayout->addWidget(m_pullTable, 1);
+    // The merge queue lives under the list, where the order it will merge in is
+    // visible next to the pull requests it is made of. Hidden entirely for
+    // repositories that have not switched the queue on.
+    listLayout->addWidget(buildMergeQueuePanel());
     floatingBar->show();
 
     // Right: PR detail — header + changed-files explorer + diff viewer.
@@ -515,6 +519,13 @@ QWidget *MainWindow::buildPullsTab()
         pullActionButton(QStringLiteral("Delete + branch"), "trash");
     m_pullMergeDeleteButton =
         pullActionButton(QStringLiteral("Merge + delete"), "check-circle");
+    // Merge queue: hand this PR to the queue rather than merging it here and
+    // now. Only shown for repositories with the queue switched on; the caption
+    // and tooltip flip once the PR is in it, so the same tile takes it back out.
+    m_pullQueueButton = pullActionButton(QStringLiteral("Queue"), "list-unordered");
+    m_pullQueueButton->hide();
+    connect(m_pullQueueButton, &QPushButton::clicked, this,
+            &MainWindow::toggleCurrentPullInMergeQueue);
     m_pullPreviewButton = pullActionButton(QStringLiteral("Preview"),
                                            "device-desktop");
     m_pullLinkIssueButton = pullActionButton(
@@ -661,6 +672,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullEditFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullQueueButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeDeleteButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullReopenButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullSendToSourceButton, 0, Qt::AlignTop);
@@ -757,13 +769,13 @@ QWidget *MainWindow::buildPullsTab()
     auto *diffZoomIn = new QPushButton(QStringLiteral("+"));
     diffZoomIn->setToolTip("Larger diff text");
     connect(diffZoomIn, &QPushButton::clicked, this, [this] { adjustDiffFont(1); });
-    // Files are marked viewed automatically once their end reaches the viewport.
-    // Keep the preference object for existing settings compatibility, but the PR
-    // review page now consistently follows the requested read-as-you-scroll
-    // behavior instead of making it contingent on a toolbar toggle.
+    // Auto-mark-viewed is off (autoMarkViewedOnScrollPref defaults false): files
+    // are checked off by clicking Viewed, not by scrolling past them. The setting
+    // — and this hidden button that follows it — stay for the opt-in path (the
+    // working-tree Changes header's eye toggle writes the same key).
     m_pullAutoViewedButton = new QPushButton;
     m_pullAutoViewedButton->setCheckable(true);
-    m_pullAutoViewedButton->setChecked(true);
+    m_pullAutoViewedButton->setChecked(autoMarkViewedOnScrollPref());
     m_pullAutoViewedButton->hide();
     setOcticon(m_pullAutoViewedButton, "eye", 14);
     m_pullAutoViewedButton->setToolTip(
@@ -842,6 +854,7 @@ QWidget *MainWindow::buildPullsTab()
         m_pullStickyPath = new QLabel(m_pullStickyHeader);
         m_pullStickyPath->setTextFormat(Qt::RichText);
         m_pullStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
+        configureDiffStickyPathLabel(m_pullStickyPath);
         sl->addWidget(m_pullStickyPath, 1);
         m_pullStickyPacman = new PacmanProgress(m_pullStickyHeader);
         m_pullStickyPacman->setToolTip(
@@ -862,10 +875,21 @@ QWidget *MainWindow::buildPullsTab()
             const QString context =
                 QStringLiteral("pull/") + QString::number(m_currentPullNumber);
             const QSet<QString> cur = loadDiffViewed(context);
-            setDiffViewed(context, m_pullStickyFile,
-                          !cur.contains(m_pullStickyFile));
+            const QString file = m_pullStickyFile;
+            const bool nowViewed = !cur.contains(file);
+            // Marking a file viewed walks the review on: the next file's header
+            // lands at the top of the viewport, so its Viewed button appears
+            // under the pointer that just clicked this one and the whole PR can
+            // be checked off without moving the mouse. Un-viewing stays put —
+            // the reviewer is reopening that file to look at it again.
+            const int at = m_pullFileOrder.indexOf(file);
+            const QString next =
+                nowViewed && at >= 0 && at + 1 < m_pullFileOrder.size()
+                    ? m_pullFileOrder.at(at + 1)
+                    : file;
+            setDiffViewed(context, file, nowViewed);
             renderPullDiff();
-            scrollPullDiffToFile(m_pullStickyFile);
+            scrollPullDiffToFile(next);
         });
         sl->addWidget(m_pullStickyViewed, 0);
         m_pullStickyHeader->hide();
@@ -1542,6 +1566,12 @@ void MainWindow::applyLoadedPulls(const PullStore &store,
     // already on screen; the badges drop in as each dry-run finishes).
     if (!m_pendingPullConflictChecks.isEmpty())
         QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+    // A fresh view of the pull requests is exactly what the merge queue runs on:
+    // repaint the queue with it and let it take another turn. The wake-up is
+    // delayed and coalesced, so the reload that a merge itself triggers cannot
+    // recurse straight back into the runner.
+    refreshMergeQueuePanel();
+    scheduleMergeQueueRun(2000);
 }
 
 void MainWindow::processPendingPullConflicts(quint64 gen)
@@ -2609,8 +2639,16 @@ void MainWindow::updatePullDiffScrollState()
         }
     }
     if (idx < 0) {
-        m_pullStickyHeader->hide();
-        return;
+        // Text layout can lag a re-render by an event-loop turn, and a streamed
+        // diff holds only the visible window's anchors at first. Never let that
+        // transient gap blank the filename bar: keep showing the current file,
+        // or the first one until positions arrive on the next tick (the same
+        // guard the working-tree diff makes).
+        idx = m_pullFileOrder.indexOf(m_pullStickyFile);
+        if (idx < 0)
+            idx = 0;
+        fileTop = 0;
+        fileBottom = qMax(1, docHeight);
     }
     const QString path = m_pullFileOrder.at(idx);
 
@@ -2627,7 +2665,12 @@ void MainWindow::updatePullDiffScrollState()
     const bool isViewed = viewed.contains(path);
     if (path != m_pullStickyFile) {
         m_pullStickyFile = path;
-        m_pullStickyPath->setText(m_pullStickyLabelHtml.value(path));
+        // Fall back to the bare path: a file whose label wasn't cached (a render
+        // still in flight) must still name itself in the bar.
+        m_pullStickyPath->setText(m_pullStickyLabelHtml.contains(path)
+                                      ? m_pullStickyLabelHtml.value(path)
+                                      : diffStickyPathHtml(path));
+        m_pullStickyPath->setToolTip(path);
         // The list follows the scroll: select whichever file is now on screen.
         selectPullFileInList(path);
     }
@@ -2648,14 +2691,11 @@ void MainWindow::updatePullDiffScrollState()
     }
 
     layoutPullStickyHeader();
-    // Do not cover the real per-file header while it is still visible. This is
-    // what produced the doubled filename/Viewed controls in the old top bar.
-    // The compact sticky bar takes over only after the natural header scrolls
-    // away.
-    if (viewTop <= fileTop + m_pullStickyHeader->sizeHint().height()) {
-        m_pullStickyHeader->hide();
-        return;
-    }
+    // Pinned for the whole file, its first screen included. The bar used to
+    // yield while the file's own header was still visible, so the filename
+    // blinked out of existence at every file boundary — exactly where a reviewer
+    // looks for it. Both headers are one line now, so the handover is a swap in
+    // place rather than the doubled two-line block that made it duck out.
     m_pullStickyHeader->show();
     m_pullStickyHeader->raise();
 }
@@ -2671,6 +2711,10 @@ void MainWindow::updatePullDiffScrollState()
 void MainWindow::applyAutoMarkViewedOnScroll()
 {
     if (!m_pullDiff || m_currentPullNumber < 0 || m_pullFileOrder.isEmpty())
+        return;
+    // Off unless explicitly opted back in: scrolling past a file no longer
+    // collapses it out from under the reviewer.
+    if (!autoMarkViewedOnScrollPref())
         return;
     QScrollBar *vbar = m_pullDiff->verticalScrollBar();
     if (!vbar)
@@ -3171,6 +3215,9 @@ void MainWindow::renderPullThread(const PullRequest &pr)
     if (pr.number == 0) {
         if (m_pullLinksValue)
             m_pullLinksValue->hide();
+        m_pullActivityExtraCards = 0;
+        m_pullActivityCardsNumber = 0;
+        m_pullAgentActivityDigest.clear();
         return;
     }
 
@@ -3193,6 +3240,36 @@ void MainWindow::renderPullThread(const PullRequest &pr)
         }
     }
 
+    // The conversation is this pull's whole activity feed, not only its signed
+    // review events: the commits behind it and any agent working its branch are
+    // interleaved in time order, so a branch an agent is still pushing to reads
+    // as one story. Cards are collected first and emitted after sorting, because
+    // commits and agent transitions interleave with comments rather than
+    // following them.
+    struct ThreadEntry {
+        qint64 ts = 0;
+        int order = 0; // stable tie-break for entries sharing a timestamp
+        std::function<void()> add;
+    };
+    QList<ThreadEntry> entries;
+    int entryOrder = 0;
+    // A card header does not wrap, so its width sets a floor on how narrow the
+    // whole window can be drawn (issue #369 budgets that at 900px, and
+    // QStackedWidget hands the widest page's minimum to the window). A branch
+    // name is one unbreakable token and can be arbitrarily long, so bound what
+    // goes on the header line; callers keep the full value in the card body.
+    const auto headerToken = [](const QString &text) {
+        constexpr int limit = 24;
+        const QString trimmed = text.trimmed();
+        return (trimmed.size() <= limit ? trimmed
+                                        : trimmed.left(limit - 1) + QChar(0x2026))
+            .toHtmlEscaped();
+    };
+    // Commit and agent cards, counted for the Conversation tab's badge.
+    int extraCards = 0;
+    m_pullActivityExtraCards = 0;
+    m_pullActivityCardsNumber = pr.number;
+
     // The PR description as the opening card.
     const QString opener = pr.authorName.isEmpty() ? pr.author.left(10) : pr.authorName;
     QString linkOwner = QStringLiteral("repo");
@@ -3203,12 +3280,50 @@ void MainWindow::renderPullThread(const PullRequest &pr)
     }
     const QString pullLink =
         QStringLiteral("forkmesh://pull/%1/%2/%3").arg(linkOwner, linkRepo).arg(pr.number);
-    addConversationCard(
-        m_pullThreadLayout, opener,
-        QStringLiteral("<b>%1</b> <span style='color:#8b949e'>opened this pull "
-                       "request %2</span>")
-            .arg(opener.toHtmlEscaped(), formatIssueRelativeTime(pr.ts)),
-        pr.description, QString(), pullLink + QStringLiteral("#open"), pr.author);
+    entries.append(
+        {pr.ts, entryOrder++, [this, opener, pr, pullLink] {
+             addConversationCard(
+                 m_pullThreadLayout, opener,
+                 QStringLiteral("<b>%1</b> <span style='color:#8b949e'>opened this "
+                                "pull request %2</span>")
+                     .arg(opener.toHtmlEscaped(), formatIssueRelativeTime(pr.ts)),
+                 pr.description, QString(), pullLink + QStringLiteral("#open"),
+                 pr.author);
+         }});
+
+    // Commits behind the pull. renderPullCommits() collected these for the
+    // Commits tab immediately before this call, so they cost nothing here — and
+    // because that walk resolves the live head branch (resolvablePullHead), a
+    // commit an agent pushed after the pull was opened shows up too.
+    if (m_pullActivityCommitsNumber == pr.number) {
+        for (const PullActivityCommit &commit : std::as_const(m_pullActivityCommits)) {
+            const QString who =
+                commit.author.isEmpty() ? QStringLiteral("unknown") : commit.author;
+            const QString shortSha = commit.sha.left(12);
+            QString verb = QStringLiteral("committed");
+            if (!shortSha.isEmpty())
+                verb += QStringLiteral(" <code>%1</code>").arg(shortSha.toHtmlEscaped());
+            if (!commit.agentTrailer.isEmpty())
+                verb += QStringLiteral(" <span style='color:#a371f7'>as %1</span>")
+                            .arg(headerToken(commit.agentTrailer));
+            const QString when = commit.committedSecs > 0
+                                     ? formatIssueRelativeTime(commit.committedSecs * 1000)
+                                     : commit.when;
+            entries.append(
+                {commit.committedSecs * 1000, entryOrder++,
+                 [this, who, verb, when, commit, pullLink] {
+                     addConversationCard(
+                         m_pullThreadLayout, who,
+                         QStringLiteral("<b>%1</b> %2 <span style='color:#8b949e'>%3"
+                                        "</span>")
+                             .arg(who.toHtmlEscaped(), verb, when),
+                         commit.subject, QStringLiteral("#58a6ff"),
+                         pullLink + QStringLiteral("#commit-%1").arg(commit.sha),
+                         QString());
+                 }});
+            ++extraCards;
+        }
+    }
 
     // Threads whose suggestion can still be applied and committed in one click
     // (adhoc #82): unresolved, not yet applied, on an open PR this node can
@@ -3280,15 +3395,104 @@ void MainWindow::renderPullThread(const PullRequest &pr)
         }
         // Pass the decorated body — the suggestion diff and its apply link were
         // appended above (passing ev.body here silently dropped them).
-        addConversationCard(
-            m_pullThreadLayout, who,
-            QStringLiteral("<b>%1</b> %2 <span style='color:#8b949e'>%3</span>")
-                .arg(who.toHtmlEscaped(), verb, when),
-            body, accent,
+        const QString anchor =
             pullLink + QStringLiteral("#%1")
-                           .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id),
-            ev.author);
+                           .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id);
+        entries.append(
+            {ev.ts, entryOrder++,
+             [this, who, verb, when, body, accent, anchor, author = ev.author] {
+                 addConversationCard(
+                     m_pullThreadLayout, who,
+                     QStringLiteral("<b>%1</b> %2 <span style='color:#8b949e'>%3"
+                                    "</span>")
+                         .arg(who.toHtmlEscaped(), verb, when),
+                     body, accent, anchor, author);
+             }});
     }
+
+    // An agent attached to this pull (by number, or by the branch it ran on)
+    // contributes its lifecycle to the same feed. Only routing and status are
+    // shown — the prompt and transcript stay in the agent's own view. Copied by
+    // value: addConversationCard below builds widgets, and a pointer into
+    // m_agentSessions must not be held across that (adhoc #119/#124).
+    if (const AgentSession *linked = agentSessionForPull(pr.number, pr.head)) {
+        const AgentSession agent = *linked;
+        const QString provider = agentProviderName(agent.provider);
+        const QString branch =
+            agent.branchName.isEmpty() ? pr.head : agent.branchName;
+        const QString on = branch.isEmpty()
+                               ? QString()
+                               : QStringLiteral(" on <code>%1</code>")
+                                     .arg(headerToken(branch));
+        const auto agentCard = [&](qint64 ts, const QString &verb,
+                                   const QString &accent, QString body) {
+            if (ts <= 0)
+                return;
+            ++extraCards;
+            // The header only has room for a bounded branch label, so the card
+            // body carries the name in full.
+            if (!branch.isEmpty())
+                body = QStringLiteral("Branch: %1%2")
+                           .arg(branch, body.isEmpty()
+                                            ? QString()
+                                            : QStringLiteral("\n\n") + body);
+            entries.append(
+                {ts, entryOrder++,
+                 [this, provider, verb, accent, body, ts, pullLink, agent] {
+                     addConversationCard(
+                         m_pullThreadLayout, provider,
+                         QStringLiteral("<b>%1</b> %2 <span style='color:#8b949e'>%3"
+                                        "</span>")
+                             .arg(provider.toHtmlEscaped(), verb,
+                                  formatIssueRelativeTime(ts)),
+                         body, accent,
+                         pullLink + QStringLiteral("#agent-%1").arg(agent.id),
+                         QString());
+                 }});
+        };
+        const QString queuedTone = agentStatusColor(AgentStatus::Queued).name();
+        agentCard(agent.createdAtMs,
+                  QStringLiteral("was queued%1").arg(on), queuedTone, QString());
+        agentCard(agent.startedAtMs,
+                  QStringLiteral("started working%1").arg(on),
+                  agentStatusColor(AgentStatus::Running).name(), QString());
+        if (agent.finishedAtMs > 0) {
+            QString verb = QStringLiteral("finished (%1)")
+                               .arg(agentStatusText(agent.status).toLower());
+            if (agent.status == AgentStatus::Success)
+                verb = QStringLiteral("finished successfully");
+            else if (agent.status == AgentStatus::Failed)
+                verb = QStringLiteral("failed");
+            else if (agent.status == AgentStatus::Stopped)
+                verb = QStringLiteral("was stopped");
+            agentCard(agent.finishedAtMs, verb,
+                      agentStatusColor(agent.status).name(), agent.lastError);
+        } else if (agentSessionActive(&agent) ||
+                   agent.status == AgentStatus::Waiting) {
+            // Still working: pin the live status to the bottom of the feed so it
+            // reads as "where this is right now" rather than a past transition.
+            // reloadAgents() re-renders this card on every status change, which is
+            // what makes it live (refreshPullAgentActivity).
+            agentCard(QDateTime::currentMSecsSinceEpoch(),
+                      QStringLiteral("is <b>%1</b>%2")
+                          .arg(agentStatusText(agent.status).toLower(), on),
+                      agentStatusColor(agent.status).name(), agent.lastError);
+        }
+    }
+
+    // Oldest first, and entries sharing a timestamp keep the order they were
+    // collected in (a commit's own comment should not jump ahead of it).
+    std::stable_sort(entries.begin(), entries.end(),
+                     [](const ThreadEntry &a, const ThreadEntry &b) {
+                         return a.ts != b.ts ? a.ts < b.ts : a.order < b.order;
+                     });
+    // Stamped before the cards are built, not after: building them can pump the
+    // GUI event loop, and a reload landing in that window would find the stale
+    // digest and re-enter this render (refreshPullAgentActivity).
+    m_pullActivityExtraCards = extraCards;
+    m_pullAgentActivityDigest = pullAgentActivityDigest(pr);
+    for (const ThreadEntry &entry : std::as_const(entries))
+        entry.add();
     if (m_repoDetailIndex >= 0 &&
         m_repoDetailIndex < m_repositories.size() && m_networkAccess) {
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
@@ -3305,6 +3509,65 @@ void MainWindow::renderPullThread(const PullRequest &pr)
     }
 }
 
+QString MainWindow::pullAgentActivityDigest(const PullRequest &pr) const
+{
+    const AgentSession *agent = agentSessionForPull(pr.number, pr.head);
+    if (!agent)
+        return QString();
+    // Joined rather than built with arg(): lastError is arbitrary text, and a
+    // stray "%2" inside it would swallow a later placeholder and hide a real
+    // status change from the comparison.
+    return QStringList{QString::number(agent->id),
+                       agent->status,
+                       agent->branchName,
+                       agent->lastError,
+                       QString::number(agent->createdAtMs),
+                       QString::number(agent->startedAtMs),
+                       QString::number(agent->finishedAtMs)}
+        .join(QLatin1Char('\x1f'));
+}
+
+void MainWindow::refreshPullAgentActivity()
+{
+    // Only the pull actually on screen, and only when its agent moved: this runs
+    // from reloadAgents(), which fires for every session in the app, and
+    // renderPullThread() rebuilds every card (which would also throw away the
+    // reader's scroll position).
+    if (!m_pullDetail || !m_pullDetail->isVisible() || m_currentPullNumber <= 0)
+        return;
+    PullRequest current;
+    for (const PullRequest &pr : std::as_const(m_currentPulls))
+        if (pr.number == m_currentPullNumber)
+            current = pr;
+    if (current.number <= 0)
+        return;
+    const QString digest = pullAgentActivityDigest(current);
+    if (digest == m_pullAgentActivityDigest || m_pullActivityRefreshing)
+        return;
+    // A live status card carries "x minutes ago", so hold the scroll offset
+    // across the rebuild rather than snapping the reader back to the top.
+    const int offset = m_pullThreadScroll && m_pullThreadScroll->verticalScrollBar()
+                           ? m_pullThreadScroll->verticalScrollBar()->value()
+                           : 0;
+    // Re-walk the commits first: an agent that reached this transition has
+    // usually pushed to the branch on the way, and the conversation reads the
+    // commit list renderPullCommits() leaves behind. The walk is cached against
+    // the resolved base/head SHAs, so a branch that has not moved costs one
+    // rev-parse. It does pump the GUI event loop, hence the guard — this runs
+    // inside reloadAgents(), which the pump can re-enter (adhoc #119/#124).
+    const QScopedValueRollback<bool> busy(m_pullActivityRefreshing, true);
+    renderPullCommits(current);
+    renderPullThread(current);
+    if (m_pullThreadScroll && m_pullThreadScroll->verticalScrollBar())
+        m_pullThreadScroll->verticalScrollBar()->setValue(offset);
+    // Just the one badge, from counts already in hand. updatePullSubTabCounts()
+    // would be the obvious call, but it pumps git reads for the commit and check
+    // tallies — and this runs from inside reloadAgents(), where a pump can
+    // re-enter the reload paths that own m_currentPulls (adhoc #119/#124).
+    setPullActionBadge(m_pullTabConversation,
+                       m_pullConversationBaseCount + m_pullActivityExtraCards);
+}
+
 void MainWindow::renderPullCommits(PullRequest pr)
 {
     if (!m_pullCommitsList)
@@ -3316,6 +3579,11 @@ void MainWindow::renderPullCommits(PullRequest pr)
     // be use-after-frees — the same crash class that took runIdsForPull by value
     // in adhoc #119. The copy stays valid across any nested reload.
     m_pullCommitsList->clear();
+    // The Conversation reuses whatever this walk finds (see PullActivityCommit):
+    // reset it up front so a PR with no readable commits cannot inherit the
+    // previous pull's rows.
+    m_pullActivityCommits.clear();
+    m_pullActivityCommitsNumber = pr.number;
     const QString dir = repoGitDir();
     // PRs are patch-based; list the commits on the head branch since the base
     // when both refs resolve in this repo. Otherwise show a single synthetic row.
@@ -3408,6 +3676,9 @@ void MainWindow::renderPullCommits(PullRequest pr)
                 }
                 item->setToolTip(tip);
                 m_pullCommitsList->addItem(item);
+                m_pullActivityCommits.append(
+                    {sha, f.at(2), f.at(3), f.at(4), f.at(5).toLongLong(),
+                     agentTrailer});
                 listed = true;
             }
         }
@@ -3467,6 +3738,8 @@ void MainWindow::renderPullCommits(PullRequest pr)
             item->setToolTip(tip);
             item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
             m_pullCommitsList->addItem(item);
+            m_pullActivityCommits.append(
+                {sha, subj, auth, when, committedSecs, agentTrailer});
             listed = true;
             author.clear();
             subject.clear();
@@ -4042,7 +4315,12 @@ void MainWindow::updatePullSubTabCounts(PullRequest pr)
         return;
     }
     const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
-    label(m_pullTabConversation, snapshot.topLevelItems + snapshot.totalThreads);
+    // The Conversation is an activity feed now, so its badge counts the commits
+    // and agent transitions renderPullThread() added alongside the review items.
+    m_pullConversationBaseCount = snapshot.topLevelItems + snapshot.totalThreads;
+    label(m_pullTabConversation,
+          m_pullConversationBaseCount +
+              (m_pullActivityCardsNumber == pr.number ? m_pullActivityExtraCards : 0));
     label(m_pullTabCommits, pullCommitShas(pr).size());
     label(m_pullTabChecks, runIdsForPull(pr).size());
     label(m_pullTabFiles, pr.filesChanged);
@@ -4327,6 +4605,30 @@ void MainWindow::updatePullActionState()
             m_pullConversationMergeButton->setEnabled(canMerge);
             m_pullConversationMergeButton->setToolTip(m_pullMergeButton->toolTip());
         }
+    }
+    // Merge queue tile: offered on any open PR of a queue-enabled repository
+    // this node can merge in — the queue itself is what waits for the approvals,
+    // the base-branch update and the conflict check, so it is deliberately not
+    // gated on merge-readiness the way the Merge button is.
+    if (m_pullQueueButton) {
+        const bool queueEnabled = mergeQueueEnabledForOpenRepo();
+        const bool offerQueue = queueEnabled && writable && have && open;
+        const MergeQueue queue = openRepoMergeQueue();
+        const bool queued = have && queue.contains(m_currentPullNumber);
+        m_pullQueueButton->setVisible(offerQueue);
+        m_pullQueueButton->setEnabled(offerQueue);
+        m_pullQueueButton->setText(queued ? QStringLiteral("Dequeue")
+                                          : QStringLiteral("Queue"));
+        m_pullQueueButton->setToolTip(
+            queued ? QStringLiteral("Take this pull request back out of the merge "
+                                    "queue")
+                   : QStringLiteral("Add this pull request to the merge queue — it "
+                                    "is updated from its base branch and merged in "
+                                    "turn, after the ones already queued"));
+        // The badge is this PR's place in the queue, so the tile says how much
+        // is in front of it.
+        setPullActionBadge(m_pullQueueButton,
+                           queued ? queue.indexOf(m_currentPullNumber) + 1 : 0);
     }
     // "Merge + delete branch" gates on the same merge-readiness as Merge (it
     // merges first), and on no delete worker already running.
@@ -4876,10 +5178,15 @@ void MainWindow::mergeCurrentPull()
         QMessageBox::warning(this, "Merge pull request", error);
         return;
     }
-    logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
-    closeIssuesLinkedFromPull(current);
-    fundBountiesForMergedPull(current);
-    autoBountyForMergedPull(current);
+    afterPullMerged(current);
+}
+
+void MainWindow::afterPullMerged(PullRequest pr)
+{
+    logSystem(QStringLiteral("Merged pull request #%1.").arg(pr.number));
+    closeIssuesLinkedFromPull(pr);
+    fundBountiesForMergedPull(pr);
+    autoBountyForMergedPull(pr);
     // adhoc #100: mergePull just landed a new commit in this checkout, so the top
     // "Sync" button and the Changes panel would otherwise stay stale (showing 0
     // pending commits) until a manual refresh — force both to recheck now.
@@ -4887,7 +5194,7 @@ void MainWindow::mergeCurrentPull()
     reloadPulls();
     // Issue #291: flag the agent session behind this PR as landed in main (after
     // reloadPulls so the agent table's PR column also reflects the merge).
-    markAgentSessionsMerged(current.number, current.head, /*mergeVerified=*/true);
+    markAgentSessionsMerged(pr.number, pr.head, /*mergeVerified=*/true);
     // Adhoc #110: only push the merge (closed PR + any linked issue closes) to the
     // mirror and notify peers when the owner has opted into auto-sync-on-merge.
     // Off by default: the merge stays local, refreshSourceControl above has
@@ -6104,7 +6411,7 @@ void MainWindow::fixCurrentPullConflictsWithOriginatingAgent()
         QStringLiteral("Merge `%1` into your branch and resolve all merge conflicts. "
                        "Make sure the build and tests still pass, then commit.")
             .arg(base.isEmpty() ? QStringLiteral("main") : base);
-    m_pendingSteerMessage.insert(sessionId, prompt);
+    queueAgentSteerMessage(sessionId, prompt);
     if (provider == QLatin1String("claude-code"))
         applyTranscriptEvent(
             sessionId,
@@ -8505,6 +8812,23 @@ int MainWindow::testPullsTabAlertBadgeCount() const
 QString MainWindow::testDiscussionInboxButtonText() const
 {
     return m_discussionSyncButton ? m_discussionSyncButton->text() : QString();
+}
+
+QStringList MainWindow::testPullThreadCardHeaders() const
+{
+    QStringList headers;
+    if (!m_pullThreadLayout)
+        return headers;
+    for (int i = 0; i < m_pullThreadLayout->count(); ++i) {
+        QWidget *row = m_pullThreadLayout->itemAt(i)->widget();
+        if (!row || row->objectName() != QLatin1String("issueTimelineRow"))
+            continue;
+        if (QWidget *box =
+                row->findChild<QWidget *>(QStringLiteral("issueTimelineHeader")))
+            if (QLabel *header = box->findChild<QLabel *>())
+                headers << header->text();
+    }
+    return headers;
 }
 #endif
 

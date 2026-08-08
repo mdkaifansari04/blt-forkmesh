@@ -337,6 +337,27 @@ owner node pushes through its own authenticated fleet remotes. That is why
 the Worker allowlist carries `forkmesh/forkmesh=read-only` and no
 `mirror<N>/...` entries.
 
+**A retired node rotates itself out of the push fan-out.** Those fleet
+remotes (`forkmesh-mirror<N>-sync`) are ordinary Git remotes on the owner's
+working copy, so decommissioning a node does not remove one. The desktop
+fan-out runs every five seconds, and a host that no longer answers costs a
+full TCP connect timeout on each pass. A gateway whose push fails at the
+connection level — a connect timeout, a refused connection, a hostname that
+no longer resolves — is therefore skipped for a cooldown that doubles from
+one minute up to fifteen, while every gateway that is up keeps syncing on
+the normal pass; the first success puts it straight back into rotation.
+A release rollout still tries every configured gateway, so an operator
+pushing a tag gets an honest per-gateway count. Failures that reach the
+repository (a refused key, a hook denial) are not rotated out: they answered,
+and they stay loud on every pass.
+
+The network log says it once, then hourly, and after a full day of silence
+names the remote to drop:
+
+```bash
+git -C <working-copy> remote remove forkmesh-mirror13-sync
+```
+
 **Host certificates give the members one identity.** Every member keeps its
 own host key — no private key is ever shared between machines — and
 additionally presents a certificate signed by the ForkMesh host CA that

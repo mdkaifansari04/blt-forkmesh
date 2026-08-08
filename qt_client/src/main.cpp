@@ -999,6 +999,19 @@ int main(int argc, char *argv[])
         console = new HeadlessConsole(window, &app, &app);
     Q_UNUSED(console);
 
+    // Now that there is an event loop to hand it to, an external stop request
+    // (`kill`, `systemctl stop`, desktop logout, an updater swapping the binary)
+    // goes through the normal shutdown rather than killing us where we stand:
+    // closeEvent() is what saves window geometry, chat history, the pings
+    // journal and the network log. Same two steps the headless `quit` command
+    // runs. A second signal exits immediately.
+    forkmesh::enableGracefulTerminationShutdown(&app, [&app, window]() {
+        qInfo().noquote() << QStringLiteral(
+            "Stop requested (SIGTERM/SIGINT): shutting down.");
+        window->close();
+        app.quit();
+    });
+
     forkmesh::logStartupTrace(
         QStringLiteral("entering Qt event loop; deferred startup remains visible "
                        "in subsequent startup entries"));
