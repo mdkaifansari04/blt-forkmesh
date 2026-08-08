@@ -5311,6 +5311,15 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (handleFramelessResizeEvent(obj, event))
         return true;
 
+    // The branch/PR diff's overlays (sticky header, active-file outline) are
+    // sized against its viewport, so a splitter drag has to re-lay them out even
+    // though nothing scrolled.
+    if (m_branchDiffView && obj == m_branchDiffView->viewport() &&
+        event->type() == QEvent::Resize) {
+        updateBranchDiffSticky();
+        updateBranchDiffActiveOutline();
+    }
+
     // Up/Down in the CHANGES tree reviews the diff file by file: each step
     // selects the next changed file and scrolls its header to the top of the
     // diff pane. Handled here rather than left to QTreeWidget so the group

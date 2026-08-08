@@ -161,6 +161,8 @@ public:
         applyStyle();
     }
 
+    bool isSelected() const { return m_selected; }
+
     std::function<void()> onClicked;
 
 protected:
@@ -287,9 +289,50 @@ void MainWindow::scrollBranchDiffToFile(const QString &path, bool moveFocus)
     if (index < 0 || index >= m_branchDiffFileAnchors.size())
         return;
     m_lastSourceControlDiffPath = path;
+    m_branchActiveFile = path;
     scrollDiffToAnchor(m_branchDiffView, m_branchDiffFileAnchors.at(index));
+    updateBranchDiffActiveOutline();
     if (moveFocus)
         m_branchDiffView->setFocus();
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+// The row wearing the green stroke, read off the ScmFileRow widgets themselves
+// rather than off the tree's current item, so a stroke that failed to follow a
+// rebuild is visible to the tests as the mismatch it is.
+QString MainWindow::testScmStrokedRowFile() const
+{
+    if (!m_scmTree)
+        return QString();
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+        for (int c = 0; group && c < group->childCount(); ++c) {
+            QTreeWidgetItem *item = group->child(c);
+            auto *row = dynamic_cast<ScmFileRow *>(m_scmTree->itemWidget(item, 0));
+            if (row && row->isSelected())
+                return item->data(0, Qt::UserRole).toString();
+        }
+    }
+    return QString();
+}
+#endif
+
+// Mark a CHANGES row current without letting currentItemChanged drive the diff.
+// The green stroke lives on the ScmFileRow widget, which that handler normally
+// moves, so it has to be moved by hand here.
+void MainWindow::setScmCurrentItemSilently(QTreeWidgetItem *item)
+{
+    if (!m_scmTree || !item)
+        return;
+    QSignalBlocker block(m_scmTree);
+    if (QTreeWidgetItem *previous = m_scmTree->currentItem()) {
+        if (auto *row =
+                dynamic_cast<ScmFileRow *>(m_scmTree->itemWidget(previous, 0)))
+            row->setSelected(false);
+    }
+    m_scmTree->setCurrentItem(item);
+    if (auto *row = dynamic_cast<ScmFileRow *>(m_scmTree->itemWidget(item, 0)))
+        row->setSelected(true);
 }
 
 // Up/Down in the CHANGES tree walks files, not rows: the group headers ("Changes
@@ -786,6 +829,12 @@ void MainWindow::showRangeFilesInSourceControl(const QStringList &paths,
     m_scmTree->setEnabled(true); // range files remain reviewable on read-only mirrors
     if (m_scmEmptyNote)
         m_scmEmptyNote->hide();
+    // The rebuild below destroys the row widgets that carry the green selection
+    // stroke, so remember which file wore it and put it back afterwards.
+    const QString previousPath =
+        m_scmTree->currentItem()
+            ? m_scmTree->currentItem()->data(0, Qt::UserRole).toString()
+            : QString();
     m_scmTree->clear();
 
     if (!paths.isEmpty()) {
@@ -889,6 +938,26 @@ void MainWindow::showRangeFilesInSourceControl(const QStringList &paths,
             m_scmTree->setItemWidget(item, 0, row);
         }
         group->setExpanded(true);
+
+        // Restore the stroke on the file that had it, or open on the first one
+        // so the range always shows a current file — that is what the diff's
+        // own outline and the arrow keys both key off. Silently: a re-render
+        // (marking a file viewed, say) must not drag the diff back to the top.
+        QTreeWidgetItem *restore = group->child(0);
+        if (!previousPath.isEmpty()) {
+            for (int c = 0; c < group->childCount(); ++c) {
+                if (group->child(c)->data(0, Qt::UserRole).toString() ==
+                    previousPath) {
+                    restore = group->child(c);
+                    break;
+                }
+            }
+        }
+        if (restore) {
+            setScmCurrentItemSilently(restore);
+            m_branchActiveFile = restore->data(0, Qt::UserRole).toString();
+            updateBranchDiffActiveOutline();
+        }
     }
 
     fitTreeToWidestEntry(m_scmTree);
@@ -2282,23 +2351,10 @@ void MainWindow::onScmDiffAnchorClicked(const QUrl &url)
 void MainWindow::scmSelectAdjacentChange(int delta)
 {
     if (sourceControlShowsRange() && m_scmTree) {
-        QList<QTreeWidgetItem *> files;
-        for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
-            QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
-            for (int i = 0; group && i < group->childCount(); ++i)
-                files.append(group->child(i));
-        }
-        if (files.isEmpty())
-            return;
-        int index = files.indexOf(m_scmTree->currentItem());
-        if (index < 0)
-            index = delta > 0 ? 0 : files.size() - 1;
-        else
-            index = qBound(0, index + delta, files.size() - 1);
-        m_scmTree->setCurrentItem(files.at(index));
-        m_scmTree->scrollToItem(files.at(index));
-        scrollBranchDiffToFile(
-            files.at(index)->data(0, Qt::UserRole).toString());
+        // Same walk the arrow keys take (setCurrentItem drives the diff through
+        // currentItemChanged), so the toolbar's Prev/Next and the keyboard can
+        // never disagree about what "the next file" means.
+        stepScmTreeFile(delta);
         return;
     }
     // Every change shares one scrollable view, so stepping is just the next /

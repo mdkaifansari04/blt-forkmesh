@@ -3893,6 +3893,33 @@ int main(int argc, char *argv[])
                       QString("Down past the last file keeps it selected "
                               "(landed on \"%1\")")
                           .arg(past.isEmpty() ? QStringLiteral("<none>") : past));
+
+                // The selection reads as one thing in two places: a green
+                // stroke on the CHANGES row, and a green outline around that
+                // file's section of the diff.
+                check(window.testScmStrokedRowFile() == reviewFiles.last(),
+                      QString("the current file's CHANGES row carries the green "
+                              "stroke (stroked = \"%1\", current = \"%2\")")
+                          .arg(window.testScmStrokedRowFile(),
+                               reviewFiles.last()));
+                check(window.testBranchOutlinedFile() == reviewFiles.last() &&
+                          window.testBranchOutlineRect().width() > 0 &&
+                          window.testBranchOutlineRect().height() > 0,
+                      QString("the range diff outlines the active file's section "
+                              "(outlined = \"%1\", rect = %2x%3)")
+                          .arg(window.testBranchOutlinedFile().isEmpty()
+                                   ? QStringLiteral("<none>")
+                                   : window.testBranchOutlinedFile())
+                          .arg(window.testBranchOutlineRect().width())
+                          .arg(window.testBranchOutlineRect().height()));
+                // Stepping back moves both marks together.
+                const QString back = window.testArrowOnSourceControl(false);
+                check(window.testScmStrokedRowFile() == back &&
+                          window.testBranchOutlinedFile() == back,
+                      QString("stroke and outline follow the walk together "
+                              "(file = \"%1\", stroke = \"%2\", outline = \"%3\")")
+                          .arg(back, window.testScmStrokedRowFile(),
+                               window.testBranchOutlinedFile()));
             }
         }
         // Every diff keeps the same universal source-control composer and

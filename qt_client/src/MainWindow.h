@@ -966,6 +966,12 @@ public:
     {
         return m_lastSourceControlDiffPath;
     }
+    // The file whose CHANGES row currently wears the green selection stroke.
+    QString testScmStrokedRowFile() const;
+    // The file the range diff currently draws its green outline around, empty
+    // when nothing is outlined, plus that outline's viewport rect.
+    QString testBranchOutlinedFile() const;
+    QRect testBranchOutlineRect() const;
     // The working-tree viewer reaches every edge of its right-hand surface — no
     // inherited layout or document gutter remains around the diff.
     bool testScmDiffUsesFullSurface() const;
@@ -4115,6 +4121,13 @@ private:
     // Move the CHANGES tree's selection to the previous/next file row, skipping
     // the group headers. Returns false when there is nothing further that way.
     bool stepScmTreeFile(int delta);
+    // Make a CHANGES row current — green stroke and all — without letting
+    // currentItemChanged drive the diff. Used when the tree is rebuilt beneath
+    // an unchanged diff: the highlight has to survive, the scroll must not move.
+    void setScmCurrentItemSilently(QTreeWidgetItem *item);
+    // Keep the green outline drawn over the active file's extent in the branch
+    // /PR range diff aligned with the document; cheap enough for a scroll tick.
+    void updateBranchDiffActiveOutline();
     // Detached `git status` that only updates the activity rail's Git badge, so
     // the uncommitted-file count is right on every repo tab (and right after a
     // repo opens), not just while the changes panel is the visible view.
@@ -6512,6 +6525,12 @@ private:
     // worktree this lets the one Git view include committed, staged, unstaged,
     // and untracked changes rather than only the branch tip.
     QString m_branchDiffWorkDir;
+    // Green outline drawn over the extent of the file selected in CHANGES, so
+    // the row's stroke and the diff section it points at read as one selection.
+    // An overlay rather than a rendered border: re-rendering the whole diff on
+    // every arrow press would be far too heavy for a large review.
+    QFrame *m_branchDiffActiveOutline = nullptr;
+    QString m_branchActiveFile; // file CHANGES currently points at
     // Sticky header pinned over the branch/PR diff (same form as the PR viewer's:
     // filename, Pac-Man read-progress chart, percent label and a Viewed toggle).
     QFrame *m_branchDiffSticky = nullptr;
