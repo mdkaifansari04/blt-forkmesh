@@ -10,6 +10,7 @@
 #include "PublicMirrorRuntime.h"
 
 #include <QApplication>
+#include <QButtonGroup>
 #include <QClipboard>
 #include <QDateTime>
 #include <QFileInfo>
@@ -25,6 +26,7 @@
 #include <QScrollArea>
 #include <QStandardPaths>
 #include <QSaveFile>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTextDocument>
 #include <QTimer>
@@ -33,27 +35,32 @@ using namespace forkmesh::ui;
 
 namespace {
 
+// Each control-node area is an open surface on the page background rather than
+// a bordered card (adhoc #1606): the tab tile above already names the area, so
+// a panel around it only ate width and repeated the caption as a heading.
 QFrame *controlCard(const QString &heading, QVBoxLayout **bodyOut)
 {
     auto *card = new QFrame;
-    card->setObjectName(QStringLiteral("leaderboardCard"));
-    card->setFrameShape(QFrame::StyledPanel);
+    card->setObjectName(QStringLiteral("controlTabPane"));
+    card->setFrameShape(QFrame::NoFrame);
+    card->setAccessibleName(heading);
     auto *body = new QVBoxLayout(card);
-    body->setContentsMargins(16, 14, 16, 14);
+    body->setContentsMargins(0, 0, 0, 0);
     body->setSpacing(10);
-    auto *title = new QLabel(heading);
-    title->setObjectName(QStringLiteral("sectionLabel"));
-    body->addWidget(title);
     if (bodyOut)
         *bodyOut = body;
     return card;
 }
 
+// Explanatory paragraphs are off by default and revealed together by the tab
+// row's Help tile (adhoc #1606). The property is what marks a label as help
+// text; the muted styling is unchanged.
 QLabel *controlHint(const QString &text)
 {
     auto *label = new QLabel(text);
     label->setObjectName(QStringLiteral("mutedLabel"));
     label->setWordWrap(true);
+    label->setProperty("fmControlHelp", true);
     return label;
 }
 
@@ -242,19 +249,6 @@ bool writeEnvAssignments(const QString &path,
     return true;
 }
 
-bool validRouterPublicKey(const QString &value)
-{
-    static const QRegularExpression pattern(
-        QStringLiteral("^[A-Za-z0-9_-]{43}$"));
-    if (!pattern.match(value).hasMatch())
-        return false;
-    return QByteArray::fromBase64(
-               value.toLatin1(),
-               QByteArray::Base64UrlEncoding |
-                   QByteArray::AbortOnBase64DecodingErrors)
-               .size() == 32;
-}
-
 QString normalizedHttpsOrigin(const QString &hostname)
 {
     const QString host = hostname.trimmed().toLower();
@@ -307,41 +301,43 @@ QWidget *MainWindow::buildControlNodeSection()
     auto *page = new QWidget;
     page->setObjectName(QStringLiteral("controlNodeSection"));
     auto *outer = new QVBoxLayout(page);
-    outer->setContentsMargins(24, 20, 24, 24);
-    outer->setSpacing(12);
-
-    auto *header = new QHBoxLayout;
-    auto *title = new QLabel(QStringLiteral("Control node"));
-    title->setObjectName(QStringLiteral("sectionTitle"));
-    QFont titleFont = title->font();
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    header->addWidget(title);
-    header->addStretch();
-    outer->addLayout(header);
-    outer->addWidget(controlHint(
-        QStringLiteral(
-            "This desktop is the local control plane. Repository bytes, identity "
-            "keys, wallet ownership, Cloudflare credentials, and host credentials "
-            "remain on devices you control; the relay receives only signed public "
-            "metadata and ordinary repository traffic.")));
+    // The tab row is pinned to the very top of the content area, on the same
+    // line as the activity rail's first icon (adhoc #1606) — no page title, no
+    // standing paragraph above it.
+    outer->setContentsMargins(24, kRepoTabRowTopInset, 24, 24);
+    outer->setSpacing(8);
 
     // One tab per operational area instead of one very long scroll (adhoc
-    // #108). Each tab scrolls on its own; the title and the privacy note above
-    // stay pinned so they are readable from any tab.
+    // #108). Each tab scrolls on its own. The row of tiles below drives the
+    // stack, so the stock tab bar stays hidden — but the QTabWidget itself is
+    // kept, which is what the Back/Forward trail records and restores.
     auto *tabs = new QTabWidget;
     tabs->setObjectName(QStringLiteral("controlNodeTabs"));
     tabs->setDocumentMode(true);
     m_controlNodeTabs = tabs;
+
+    // Icon-over-caption tiles, the same form and 44px height as the activity
+    // rail's entries, laid out in one row at the top of the page.
+    auto *tabRow = new QHBoxLayout;
+    tabRow->setContentsMargins(0, 0, 0, 0);
+    tabRow->setSpacing(2);
+    auto *tabGroup = new QButtonGroup(page);
+    tabGroup->setExclusive(true);
+    QVector<VerticalIconButton *> tabTiles;
+
     // Each operational area is its own destination on the Back/Forward trail
     // (adhoc #50).
     connect(tabs, &QTabWidget::currentChanged, this,
-            [this](int) { scheduleNavRecord(); });
-    const auto addTab = [tabs](QWidget *card, const QString &name) {
+            [this, tabGroup](int index) {
+                if (QAbstractButton *tile = tabGroup->button(index))
+                    tile->setChecked(true);
+                scheduleNavRecord();
+            });
+    const auto addTab = [&](QWidget *card, const QString &name,
+                            const QString &caption, const QString &icon) {
         auto *body = new QWidget;
         auto *bodyCol = new QVBoxLayout(body);
-        bodyCol->setContentsMargins(2, 12, 2, 12);
+        bodyCol->setContentsMargins(2, 6, 2, 12);
         bodyCol->setSpacing(14);
         bodyCol->addWidget(card);
         bodyCol->addStretch();
@@ -351,8 +347,25 @@ QWidget *MainWindow::buildControlNodeSection()
         scroll->setWidgetResizable(true);
         scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         scroll->setWidget(body);
+        const int index = tabs->count();
         tabs->addTab(scroll, name);
+
+        auto *tile = new VerticalIconButton(caption, VerticalIconButton::Tab);
+        tile->setObjectName(QStringLiteral("controlNodeTab"));
+        tile->setCheckable(true);
+        tile->setChecked(index == 0);
+        tile->setToolTip(name);
+        tile->setOcticonName(icon);
+        tabGroup->addButton(tile, index);
+        tabRow->addWidget(tile);
+        tabTiles.append(tile);
     };
+
+    // --- Ship this checkout with cloudflare_worker/deploy.sh ---------------
+    // First tab: deploying the site is the action this page is opened for most
+    // often (adhoc #1606).
+    addTab(buildSiteDeployCard(), QStringLiteral("Site deployment"),
+           QStringLiteral("Deploy"), QStringLiteral("rocket"));
 
     // --- Local service lifecycle ------------------------------------------
     QVBoxLayout *serviceCol = nullptr;
@@ -406,7 +419,8 @@ QWidget *MainWindow::buildControlNodeSection()
     serviceButtons->addWidget(logsButton);
     serviceButtons->addStretch();
     serviceCol->addLayout(serviceButtons);
-    addTab(serviceCard, QStringLiteral("Mirror services"));
+    addTab(serviceCard, QStringLiteral("Mirror services"),
+           QStringLiteral("Mirrors"), QStringLiteral("broadcast"));
 
     // --- Per-repository permissions ---------------------------------------
     QVBoxLayout *permissionCol = nullptr;
@@ -438,7 +452,8 @@ QWidget *MainWindow::buildControlNodeSection()
     connect(m_controlPermissionsTable, &QTableWidget::itemChanged, this,
             &MainWindow::updateControlRepositoryPermission);
     permissionCol->addWidget(m_controlPermissionsTable);
-    addTab(permissionCard, QStringLiteral("Repository permissions"));
+    addTab(permissionCard, QStringLiteral("Repository permissions"),
+           QStringLiteral("Permissions"), QStringLiteral("lock"));
 
     // --- Local key + wallet public address --------------------------------
     QVBoxLayout *identityCol = nullptr;
@@ -501,10 +516,12 @@ QWidget *MainWindow::buildControlNodeSection()
             "ledger allocations; Completed on-chain transfers include a "
             "confirmed transaction signature. ForkMesh never stores a user's "
             "wallet private key.")));
-    addTab(identityCard, QStringLiteral("Keys and wallet"));
+    addTab(identityCard, QStringLiteral("Keys and wallet"),
+           QStringLiteral("Keys"), QStringLiteral("key"));
 
     // --- First-instance-owner community reward-pool signer ----------------
-    addTab(buildRewardPoolControlCard(), QStringLiteral("Reward pool"));
+    addTab(buildRewardPoolControlCard(), QStringLiteral("Reward pool"),
+           QStringLiteral("Rewards"), QStringLiteral("credit-card"));
 
     // --- Cloudflare one-click relay bootstrap -----------------------------
     QVBoxLayout *cloudflareCol = nullptr;
@@ -687,13 +704,12 @@ QWidget *MainWindow::buildControlNodeSection()
     m_controlNodeOutput->setFont(mono);
     cloudflareCol->addWidget(m_controlNodeOutput);
     m_controlCloudflareTabIndex = tabs->count();
-    addTab(cloudflareCard, QStringLiteral("Cloudflare relay"));
+    addTab(cloudflareCard, QStringLiteral("Cloudflare relay"),
+           QStringLiteral("Relay"), QStringLiteral("cloud"));
 
     // --- Cloudflare API token: what it can do vs. what ForkMesh needs ------
-    addTab(buildCloudflareTokenCard(), QStringLiteral("API token"));
-
-    // --- Ship this checkout with cloudflare_worker/deploy.sh ---------------
-    addTab(buildSiteDeployCard(), QStringLiteral("Site deployment"));
+    addTab(buildCloudflareTokenCard(), QStringLiteral("API token"),
+           QStringLiteral("Token"), QStringLiteral("shield-check"));
 
     // --- Remote hosts ------------------------------------------------------
     QVBoxLayout *hostsCol = nullptr;
@@ -727,9 +743,61 @@ QWidget *MainWindow::buildControlNodeSection()
     hostButtons->addWidget(deployHosts);
     hostButtons->addStretch();
     hostsCol->addLayout(hostButtons);
-    addTab(hostsCard, QStringLiteral("Connected hosts"));
+    addTab(hostsCard, QStringLiteral("Connected hosts"),
+           QStringLiteral("Hosts"), QStringLiteral("server"));
 
+    connect(tabGroup, &QButtonGroup::idClicked, tabs,
+            [tabs](int index) { tabs->setCurrentIndex(index); });
+
+    // Every explanatory paragraph on this page starts hidden; the Help tile at
+    // the end of the row reveals them all at once (adhoc #1606).
+    const QString privacy = QStringLiteral(
+        "This desktop is the local control plane. Repository bytes, identity "
+        "keys, wallet ownership, Cloudflare credentials, and host credentials "
+        "remain on devices you control; the relay receives only signed public "
+        "metadata and ordinary repository traffic.");
+    auto *helpTile = new VerticalIconButton(QStringLiteral("Help"),
+                                            VerticalIconButton::Tab);
+    helpTile->setObjectName(QStringLiteral("controlNodeHelpToggle"));
+    helpTile->setCheckable(true);
+    helpTile->setToolTip(privacy);
+    helpTile->setOcticonName(QStringLiteral("info"));
+    tabTiles.append(helpTile);
+    tabRow->addStretch();
+    tabRow->addWidget(helpTile);
+
+    // One width for every tile so the icons sit on an even grid, exactly like
+    // the activity rail's column.
+    int tileWidth = railItemWidth();
+    for (VerticalIconButton *tile : std::as_const(tabTiles))
+        tileWidth = qMax(tileWidth, tile->sizeHint().width());
+    for (VerticalIconButton *tile : std::as_const(tabTiles))
+        tile->setFixedWidth(tileWidth);
+
+    outer->addLayout(tabRow);
+    // The page-level privacy note reads as the first line of help, under the
+    // row rather than permanently above it.
+    QLabel *privacyHint = controlHint(privacy);
+    privacyHint->setObjectName(QStringLiteral("controlNodePrivacyHint"));
+    outer->addWidget(privacyHint);
+    // Tiles are the tab bar now; the stock one would only repeat them.
+    tabs->tabBar()->hide();
     outer->addWidget(tabs, 1);
+
+    // Every hint is a descendant of the page only once the tab widget is in the
+    // layout above, so collect and hide them here rather than as they are built.
+    QPointer<QWidget> pageGuard(page);
+    const auto applyHelpVisibility = [pageGuard](bool visible) {
+        if (!pageGuard)
+            return;
+        const auto labels = pageGuard->findChildren<QLabel *>();
+        for (QLabel *label : labels) {
+            if (label->property("fmControlHelp").toBool())
+                label->setVisible(visible);
+        }
+    };
+    connect(helpTile, &QPushButton::toggled, page, applyHelpVisibility);
+    applyHelpVisibility(false);
 
     m_controlNodeRefreshTimer = new QTimer(page);
     // Process/gateway labels are cheap, but the mirror readiness snapshot is
@@ -1436,7 +1504,7 @@ void MainWindow::updateControlRepositoryPermission(QTableWidgetItem *item)
         else
             syncRepository(index, /*quiet=*/false);
     } else if (permission == QLatin1String("serve") &&
-               !repo.publishToNetwork) {
+               !repo.publishToNetwork && directMirrorGatewayConfigured()) {
         QString gatewayError;
         if (!rebuildDirectMirrorGatewayConfiguration(
                 &gatewayError, true)) {
@@ -1488,23 +1556,23 @@ void MainWindow::saveControlWalletAddress()
     refreshControlNode();
 }
 
-bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
-    QString *error, bool restartRunningGateway)
+bool MainWindow::directMirrorGatewayConfigured() const
 {
-    if ((!m_profileIdentity.isValid() && !m_profileIdentity.load()) ||
-        !m_profileIdentity.isValid()) {
-        if (error)
-            *error = QStringLiteral(
-                "The local node identity is unavailable.");
-        return false;
-    }
+    return resolveDirectMirrorGatewayIdentity(nullptr, nullptr, nullptr);
+}
+
+bool MainWindow::resolveDirectMirrorGatewayIdentity(
+    QString *nodeName, QString *hostname, QString *routerPublicKey) const
+{
+    // An in-flight deployment holds the hostname and router key it just
+    // negotiated in memory; everything else reads what this node saved.
     QSettings settings;
     const QString node =
         settings.value(QStringLiteral("control/cloudflareNodeName"))
             .toString()
             .trimmed()
             .toLower();
-    const QString hostname =
+    const QString host =
         (m_directMirrorHostname.isEmpty()
              ? settings
                    .value(QStringLiteral(
@@ -1521,11 +1589,31 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
                    .toString()
              : m_directMirrorRouterPublicKey)
             .trimmed();
-    const QString origin = normalizedHttpsOrigin(hostname);
-    static const QRegularExpression nodePattern(
-        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
-    if (!nodePattern.match(node).hasMatch() || origin.isEmpty() ||
-        !validRouterPublicKey(routerKey)) {
+    if (nodeName)
+        *nodeName = node;
+    if (hostname)
+        *hostname = host;
+    if (routerPublicKey)
+        *routerPublicKey = routerKey;
+    return forkmesh::control::directMirrorGatewayIsConfigured(
+        node, normalizedHttpsOrigin(host), routerKey);
+}
+
+bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
+    QString *error, bool restartRunningGateway)
+{
+    if ((!m_profileIdentity.isValid() && !m_profileIdentity.load()) ||
+        !m_profileIdentity.isValid()) {
+        if (error)
+            *error = QStringLiteral(
+                "The local node identity is unavailable.");
+        return false;
+    }
+    QSettings settings;
+    QString node;
+    QString hostname;
+    QString routerKey;
+    if (!resolveDirectMirrorGatewayIdentity(&node, &hostname, &routerKey)) {
         if (error) {
             *error = QStringLiteral(
                 "The mirror hostname, node name, or Worker router public key "
@@ -1533,6 +1621,7 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
         }
         return false;
     }
+    const QString origin = normalizedHttpsOrigin(hostname);
     const QString gatewayScript =
         forkmesh::control::findMirrorGatewayScript(
             QStringLiteral(FORKMESH_SOURCE_DIR),
@@ -2458,7 +2547,8 @@ void MainWindow::provisionDirectMirrorEndpoint(bool dryRun)
                 status == 200 &&
                 object.value(QStringLiteral("ok"))
                     .toBool() &&
-                validRouterPublicKey(routerKey);
+                forkmesh::control::isValidMirrorRouterPublicKey(
+                    routerKey);
             reply->deleteLater();
             if (!ok) {
                 appendControlNodeOutput(
@@ -2945,6 +3035,16 @@ QWidget *MainWindow::buildSiteDeployCard()
             "machine's own wrangler login and .env.production; nothing is read "
             "from or written to this page. Output streams below as the script "
             "runs.")));
+    // Status line with the live spinner beside it: a Cloudflare deploy runs for
+    // minutes with long silent stretches, so the page has to show it is still
+    // working rather than looking finished (adhoc #1606).
+    auto *statusRow = new QHBoxLayout;
+    statusRow->setContentsMargins(0, 0, 0, 0);
+    statusRow->setSpacing(8);
+    m_siteDeploySpinner = new BusySpinner(nullptr, 16);
+    m_siteDeploySpinner->setObjectName(QStringLiteral("siteDeploySpinner"));
+    m_siteDeploySpinner->hide();
+    statusRow->addWidget(m_siteDeploySpinner, 0, Qt::AlignTop);
     m_siteDeployStatus = new QLabel;
     m_siteDeployStatus->setObjectName(QStringLiteral("mutedLabel"));
     m_siteDeployStatus->setWordWrap(true);
@@ -2957,7 +3057,8 @@ QWidget *MainWindow::buildSiteDeployCard()
                   "cloudflare_worker/deploy.sh was not found next to this "
                   "build's Worker bundle.")
             : QStringLiteral("Ready: %1").arg(deployScript));
-    col->addWidget(m_siteDeployStatus);
+    statusRow->addWidget(m_siteDeployStatus, 1);
+    col->addLayout(statusRow);
 
     auto *buttons = new QHBoxLayout;
     m_siteDeployButton =
@@ -2989,9 +3090,7 @@ QWidget *MainWindow::buildSiteDeployCard()
     m_siteDeployOutput->setPlaceholderText(
         QStringLiteral("deploy.sh output appears here live; credentials are "
                        "redacted."));
-    QFont deployMono(QStringLiteral("monospace"));
-    deployMono.setStyleHint(QFont::Monospace);
-    m_siteDeployOutput->setFont(deployMono);
+    applyLogFont(m_siteDeployOutput);
     col->addWidget(m_siteDeployOutput);
     return card;
 }
@@ -3028,11 +3127,12 @@ void MainWindow::runSiteDeploy()
     appendSiteDeployOutput(
         QStringLiteral("$ %1\n").arg(script));
     if (m_siteDeployStatus)
-        m_siteDeployStatus->setText(QStringLiteral("Deploying…"));
+        m_siteDeployStatus->setText(QStringLiteral("Deploying to Cloudflare…"));
     if (m_siteDeployButton)
         m_siteDeployButton->setEnabled(false);
     if (m_siteDeployCancelButton)
         m_siteDeployCancelButton->setEnabled(true);
+    setSiteDeployRunning(true);
     logSystem(QStringLiteral("Control node: site deployment started."));
 
     auto *process = new QProcess(this);
@@ -3057,6 +3157,18 @@ void MainWindow::runSiteDeploy()
                         QStringLiteral(
                             "deploy.sh could not start; verify bash and the "
                             "Worker bundle on this machine.\n"));
+                    // finished() never arrives for a process that never
+                    // started, so the running indicators have to be cleared
+                    // here or they would spin forever.
+                    if (m_siteDeployStatus) {
+                        m_siteDeployStatus->setText(
+                            QStringLiteral("deploy.sh could not start."));
+                    }
+                    if (m_siteDeployButton)
+                        m_siteDeployButton->setEnabled(true);
+                    if (m_siteDeployCancelButton)
+                        m_siteDeployCancelButton->setEnabled(false);
+                    setSiteDeployRunning(false);
                 }
             });
     connect(process, &QProcess::finished, this,
@@ -3078,6 +3190,7 @@ void MainWindow::runSiteDeploy()
                     m_siteDeployButton->setEnabled(true);
                 if (m_siteDeployCancelButton)
                     m_siteDeployCancelButton->setEnabled(false);
+                setSiteDeployRunning(false);
                 logSystem(ok
                               ? QStringLiteral(
                                     "Control node: site deployment succeeded.")
@@ -3090,6 +3203,18 @@ void MainWindow::runSiteDeploy()
                 process->deleteLater();
             });
     process->start(bash, {script});
+}
+
+// One place that says "a site deployment is in flight": the spinner beside the
+// deploy status, and a blinking light on the Control rail tile so the run stays
+// visible from any other page (adhoc #1606).
+void MainWindow::setSiteDeployRunning(bool running)
+{
+    if (m_siteDeploySpinner)
+        m_siteDeploySpinner->setVisible(running);
+    if (auto *rail =
+            dynamic_cast<ActivityRailButton *>(m_controlNodeNavButton))
+        rail->setActivityBlink(running);
 }
 
 void MainWindow::cancelSiteDeploy()

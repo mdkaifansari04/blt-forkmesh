@@ -2187,7 +2187,7 @@
       const issueNewButton = event.target.closest("[data-repo-issue-new]");
       if (issueNewButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openIssueCompose(state.selectedRepo);
@@ -2197,7 +2197,7 @@
       const issueImportButton = event.target.closest("[data-repo-issue-import]");
       if (issueImportButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openIssueImport(state.selectedRepo);
@@ -2213,7 +2213,7 @@
       const pullNewButton = event.target.closest("[data-repo-pull-new]");
       if (pullNewButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openPullCompose(state.selectedRepo);
@@ -2276,6 +2276,7 @@
         if (["pulls", "discussions", "issues"].includes(kind)) {
           navigateHistory(`${repoPathUrl(state.selectedRepo)}/${kind}`);
         }
+        if (kind === "pulls") stopRepoPullActivityRefresh();
         state.repoRecordDetail = null;
         if (kind === "issues") {
           // A deep-linked refresh straight into the issue detail never loaded
@@ -2960,6 +2961,7 @@
             if (/^\d+$/.test(path)) {
               loadRepoRecordDetail(repo, kind, path);
             } else if (state.repoRecordDetail?.kind === kind) {
+              if (kind === "pulls") stopRepoPullActivityRefresh();
               state.repoRecordDetail = null;
               // Issues re-render through their filtered list (loadRepoCollection
               // would leak closed issues into the default Open view); fetch it

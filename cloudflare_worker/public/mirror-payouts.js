@@ -70,7 +70,9 @@
         : `Signed in as ${session.email}.`;
     } else {
       element.innerHTML =
-        'You are not signed in. <a href="/login">Log in</a> to manage a public payout address.';
+        'You are not signed in. <a href="/login?next='
+        + encodeURIComponent(location.pathname + location.search)
+        + '">Log in</a> to manage a public payout address.';
     }
   }
 

@@ -51,6 +51,7 @@
         <file alias="person.svg">icons/octicons/person.svg</file>
         <file alias="pencil.svg">icons/octicons/pencil.svg</file>
         <file alias="pie-chart.svg">icons/octicons/pie-chart.svg</file>
+        <file alias="play.svg">icons/octicons/play.svg</file>
         <file alias="plus.svg">icons/octicons/plus.svg</file>
         <file alias="repo.svg">icons/octicons/repo.svg</file>
         <file alias="repo-forked.svg">icons/octicons/repo-forked.svg</file>
@@ -105,6 +106,13 @@
         <file alias="icons/effort-high.png">agent-ui/icons/effort-high.png</file>
         <file alias="icons/effort-ultra.png">agent-ui/icons/effort-ultra.png</file>
         <file alias="icons/effort-max.png">agent-ui/icons/effort-max.png</file>
+        <file alias="icons/model-starburst.png">agent-ui/icons/model-starburst.png</file>
+        <file alias="icons/model-feather.png">agent-ui/icons/model-feather.png</file>
+        <file alias="icons/model-mountain-blossom.png">agent-ui/icons/model-mountain-blossom.png</file>
+        <file alias="icons/model-book-quill.png">agent-ui/icons/model-book-quill.png</file>
+        <file alias="icons/model-sun.png">agent-ui/icons/model-sun.png</file>
+        <file alias="icons/model-crescent-moon.png">agent-ui/icons/model-crescent-moon.png</file>
+        <file alias="icons/model-globe-leaf.png">agent-ui/icons/model-globe-leaf.png</file>
     </qresource>
     <qresource prefix="/fonts">
         <file alias="NotoColorEmoji.ttf">fonts/NotoColorEmoji.ttf</file>

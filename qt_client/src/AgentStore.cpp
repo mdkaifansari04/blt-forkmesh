@@ -494,9 +494,17 @@ QList<AgentSession> AgentStore::loadAllSessions() const
                 sessions.append(AgentSession::fromJson(doc.object()));
         }
     }
+    const auto updatedAtMs = [](const AgentSession &session) {
+        return qMax(qMax(session.createdAtMs, session.startedAtMs),
+                    qMax(session.finishedAtMs, session.mergedAtMs));
+    };
     std::sort(sessions.begin(), sessions.end(),
-              [](const AgentSession &a, const AgentSession &b) {
-                  return a.createdAtMs > b.createdAtMs;
+              [updatedAtMs](const AgentSession &a, const AgentSession &b) {
+                  const qint64 aUpdated = updatedAtMs(a);
+                  const qint64 bUpdated = updatedAtMs(b);
+                  if (aUpdated != bUpdated)
+                      return aUpdated > bUpdated;
+                  return a.id > b.id;
               });
     return sessions;
 }

@@ -161,6 +161,8 @@ public:
         applyStyle();
     }
 
+    bool isSelected() const { return m_selected; }
+
     std::function<void()> onClicked;
 
 protected:
@@ -279,7 +281,7 @@ QString MainWindow::sourceControlGitDir() const
     return repoGitDir();
 }
 
-void MainWindow::scrollBranchDiffToFile(const QString &path)
+void MainWindow::scrollBranchDiffToFile(const QString &path, bool moveFocus)
 {
     if (!m_branchDiffView || path.isEmpty())
         return;
@@ -287,8 +289,103 @@ void MainWindow::scrollBranchDiffToFile(const QString &path)
     if (index < 0 || index >= m_branchDiffFileAnchors.size())
         return;
     m_lastSourceControlDiffPath = path;
+    m_branchActiveFile = path;
     scrollDiffToAnchor(m_branchDiffView, m_branchDiffFileAnchors.at(index));
-    m_branchDiffView->setFocus();
+    updateBranchDiffActiveOutline();
+    if (moveFocus)
+        m_branchDiffView->setFocus();
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+// The row wearing the green stroke, read off the ScmFileRow widgets themselves
+// rather than off the tree's current item, so a stroke that failed to follow a
+// rebuild is visible to the tests as the mismatch it is.
+QString MainWindow::testScmStrokedRowFile() const
+{
+    if (!m_scmTree)
+        return QString();
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+        for (int c = 0; group && c < group->childCount(); ++c) {
+            QTreeWidgetItem *item = group->child(c);
+            auto *row = dynamic_cast<ScmFileRow *>(m_scmTree->itemWidget(item, 0));
+            if (row && row->isSelected())
+                return item->data(0, Qt::UserRole).toString();
+        }
+    }
+    return QString();
+}
+
+// The section key carries the staged/unstaged side ("s|" / "u|"); the tests care
+// about the path the outline is drawn around.
+QString MainWindow::testScmOutlinedFile() const
+{
+    if (!m_scmDiffActiveOutline || !m_scmDiffActiveOutline->isVisible())
+        return QString();
+    const int index = m_scmSectionKeys.indexOf(m_scmActiveSectionKey);
+    return index < 0 ? QString() : m_scmSectionPaths.value(index);
+}
+
+QRect MainWindow::testScmOutlineRect() const
+{
+    return m_scmDiffActiveOutline ? m_scmDiffActiveOutline->geometry() : QRect();
+}
+#endif
+
+// Mark a CHANGES row current without letting currentItemChanged drive the diff.
+// The green stroke lives on the ScmFileRow widget, which that handler normally
+// moves, so it has to be moved by hand here.
+void MainWindow::setScmCurrentItemSilently(QTreeWidgetItem *item)
+{
+    if (!m_scmTree || !item)
+        return;
+    QSignalBlocker block(m_scmTree);
+    if (QTreeWidgetItem *previous = m_scmTree->currentItem()) {
+        if (auto *row =
+                dynamic_cast<ScmFileRow *>(m_scmTree->itemWidget(previous, 0)))
+            row->setSelected(false);
+    }
+    m_scmTree->setCurrentItem(item);
+    if (auto *row = dynamic_cast<ScmFileRow *>(m_scmTree->itemWidget(item, 0)))
+        row->setSelected(true);
+}
+
+// Up/Down in the CHANGES tree walks files, not rows: the group headers ("Changes
+// against main", "Staged", ...) carry no path, so landing on one would leave the
+// diff showing the previous file with nothing selected. Flattening the tree here
+// also lets Down cross from the end of one group into the head of the next.
+bool MainWindow::stepScmTreeFile(int delta)
+{
+    if (!m_scmTree || delta == 0)
+        return false;
+    QList<QTreeWidgetItem *> rows;
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+        // A collapsed group's children are unreachable by mouse; keep the
+        // keyboard consistent with what is on screen.
+        if (!group->isExpanded())
+            continue;
+        for (int c = 0; c < group->childCount(); ++c) {
+            QTreeWidgetItem *item = group->child(c);
+            if (!item->isHidden() &&
+                !item->data(0, Qt::UserRole).toString().isEmpty())
+                rows.append(item);
+        }
+    }
+    if (rows.isEmpty())
+        return false;
+
+    // From a group header (or no selection at all) the first step lands on the
+    // nearest file in the direction of travel rather than being swallowed.
+    int index = rows.indexOf(m_scmTree->currentItem());
+    if (index < 0)
+        index = delta > 0 ? -1 : rows.size();
+    const int next = index + delta;
+    if (next < 0 || next >= rows.size())
+        return false;
+    m_scmTree->setCurrentItem(rows.at(next));
+    m_scmTree->scrollToItem(rows.at(next));
+    return true;
 }
 
 QWidget *MainWindow::buildSourceControlPanel()
@@ -665,6 +762,20 @@ QWidget *MainWindow::buildSourceControlPanel()
     // splitter's own minimum.
     m_scmTree->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
     m_scmTree->setMinimumHeight(0);
+    // Arrow keys step file-to-file here (see the m_scmTree branch of
+    // eventFilter). Rows are drawn by ScmFileRow widgets set on the items, so
+    // the tree needs click focus of its own for that to survive a mouse pick.
+    m_scmTree->setFocusPolicy(Qt::StrongFocus);
+    m_scmTree->installEventFilter(this);
+    // Right-click a file for the operations the hover actions have no room for —
+    // edit it, ignore it, delete it — in the working-tree groups and in the
+    // "Changes against <base>" range list alike (adhoc #1594). Each row carries a
+    // ScmFileRow item widget; a context-menu event on one propagates up to the
+    // viewport and arrives here in viewport coordinates, same as a click on the
+    // empty area below the rows.
+    m_scmTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_scmTree, &QWidget::customContextMenuRequested, this,
+            &MainWindow::showScmFileMenu);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *item, QTreeWidgetItem *previous) {
                 if (previous) {
@@ -681,7 +792,9 @@ QWidget *MainWindow::buildSourceControlPanel()
                 if (path.isEmpty())
                     return; // group header
                 if (item->data(0, Qt::UserRole + 3).toBool()) {
-                    scrollBranchDiffToFile(path);
+                    // Selection-driven: the tree keeps the keyboard so Up/Down
+                    // can carry on to the next file.
+                    scrollBranchDiffToFile(path, /*moveFocus=*/false);
                     return;
                 }
                 showScmDiff(path, item->data(0, Qt::UserRole + 1).toBool(),
@@ -740,6 +853,12 @@ void MainWindow::showRangeFilesInSourceControl(const QStringList &paths,
     m_scmTree->setEnabled(true); // range files remain reviewable on read-only mirrors
     if (m_scmEmptyNote)
         m_scmEmptyNote->hide();
+    // The rebuild below destroys the row widgets that carry the green selection
+    // stroke, so remember which file wore it and put it back afterwards.
+    const QString previousPath =
+        m_scmTree->currentItem()
+            ? m_scmTree->currentItem()->data(0, Qt::UserRole).toString()
+            : QString();
     m_scmTree->clear();
 
     if (!paths.isEmpty()) {
@@ -833,12 +952,36 @@ void MainWindow::showRangeFilesInSourceControl(const QStringList &paths,
             layout->addWidget(actions);
             row->setActionsWidget(actions);
             row->onClicked = [this, item, path] {
+                // Re-clicking the current row emits no currentItemChanged, so
+                // the scroll stays explicit. Focus stays on the tree so the
+                // arrow keys pressed next go on walking the file list.
                 m_scmTree->setCurrentItem(item);
-                scrollBranchDiffToFile(path);
+                scrollBranchDiffToFile(path, /*moveFocus=*/false);
+                m_scmTree->setFocus(Qt::MouseFocusReason);
             };
             m_scmTree->setItemWidget(item, 0, row);
         }
         group->setExpanded(true);
+
+        // Restore the stroke on the file that had it, or open on the first one
+        // so the range always shows a current file — that is what the diff's
+        // own outline and the arrow keys both key off. Silently: a re-render
+        // (marking a file viewed, say) must not drag the diff back to the top.
+        QTreeWidgetItem *restore = group->child(0);
+        if (!previousPath.isEmpty()) {
+            for (int c = 0; c < group->childCount(); ++c) {
+                if (group->child(c)->data(0, Qt::UserRole).toString() ==
+                    previousPath) {
+                    restore = group->child(c);
+                    break;
+                }
+            }
+        }
+        if (restore) {
+            setScmCurrentItemSilently(restore);
+            m_branchActiveFile = restore->data(0, Qt::UserRole).toString();
+            updateBranchDiffActiveOutline();
+        }
     }
 
     fitTreeToWidestEntry(m_scmTree);
@@ -996,6 +1139,9 @@ void MainWindow::showSourceControlLoading(const QString &branch)
 
 void MainWindow::refreshSourceControl(bool force)
 {
+    if (deferUiRefresh(force ? UiRefreshSourceControlForce
+                             : UiRefreshSourceControl))
+        return;
     if (!m_scmTree)
         return;
     // A manual refresh should also recheck commits pending sync (the top "Sync"
@@ -1272,6 +1418,9 @@ void MainWindow::refreshSourceControl(bool force)
             w->onClicked = [this, item, path, staged, untracked] {
                 m_scmTree->setCurrentItem(item);
                 showScmDiff(path, staged, untracked);
+                // The row widget itself takes no focus; make the tree's claim on
+                // the keyboard explicit so Up/Down keeps stepping through files.
+                m_scmTree->setFocus(Qt::MouseFocusReason);
             };
             m_scmTree->setItemWidget(item, 0, w);
         }
@@ -1631,6 +1780,18 @@ void MainWindow::setupScmDiffPane()
     connect(m_scmDiff, &QTextBrowser::anchorClicked, this,
             &MainWindow::onScmDiffAnchorClicked);
 
+    // Selection outline for the file CHANGES points at, matching the branch/PR
+    // pane. Created before the sticky header so the header, which is raised on
+    // every update, keeps painting over it.
+    m_scmDiffActiveOutline = new QFrame(m_scmDiff->viewport());
+    m_scmDiffActiveOutline->setObjectName("diffActiveOutline");
+    m_scmDiffActiveOutline->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_scmDiffActiveOutline->setStyleSheet(
+        QStringLiteral("#diffActiveOutline{background:transparent;"
+                       "border:2px solid #2da44e;border-radius:6px;}"));
+    m_scmDiffActiveOutline->hide();
+    m_scmDiff->viewport()->installEventFilter(this);
+
     // Parented to the viewport so it floats over the text instead of scrolling
     // away with the document.
     m_scmStickyHeader = new QFrame(m_scmDiff->viewport());
@@ -1837,6 +1998,11 @@ void MainWindow::renderScmCombinedDiff()
     // The document (and its layout) was replaced; re-read the file positions once
     // the layout has settled.
     m_scmStickySection.clear();
+    // A section that is no longer rendered cannot stay outlined.
+    if (!m_scmSectionKeys.contains(m_scmActiveSectionKey))
+        m_scmActiveSectionKey.clear();
+    if (m_scmDiffActiveOutline)
+        m_scmDiffActiveOutline->hide(); // until the new layout is measured
     QTimer::singleShot(0, this, &MainWindow::updateScmDiffScrollState);
 }
 
@@ -1913,7 +2079,9 @@ void MainWindow::scrollScmDiffToFile(const QString &path, bool staged)
     // retries the same exact pin after the bounded background batches land.
     flushDiffStream(m_scmDiff);
     const QString key = m_scmSectionKeys.at(idx);
+    m_scmActiveSectionKey = key;
     scrollDiffToAnchor(m_scmDiff, m_scmSectionAnchors.at(idx));
+    updateScmDiffActiveOutline();
     if (pinScmDiffSectionToTop(idx))
         m_scmPendingScrollKey.clear();
     else
@@ -1995,6 +2163,50 @@ void MainWindow::computeScmFileTops()
     }
 }
 
+// The working-tree twin of updateBranchDiffActiveOutline(): outline the combined
+// diff's section for whichever file CHANGES currently points at.
+void MainWindow::updateScmDiffActiveOutline()
+{
+    if (!m_scmDiff || !m_scmDiffActiveOutline)
+        return;
+    const int index = m_scmActiveSectionKey.isEmpty()
+                          ? -1
+                          : m_scmSectionKeys.indexOf(m_scmActiveSectionKey);
+    QScrollBar *vbar = m_scmDiff->verticalScrollBar();
+    if (index < 0 || !vbar) {
+        m_scmDiffActiveOutline->hide();
+        return;
+    }
+    if (m_scmFileTops.size() != m_scmSectionAnchors.size())
+        computeScmFileTops();
+    // A section still streaming in has no measured top yet.
+    if (index >= m_scmFileTops.size() || m_scmFileTops.at(index) < 0) {
+        m_scmDiffActiveOutline->hide();
+        return;
+    }
+    const int docHeight =
+        m_scmDiff->document()->documentLayout()->documentSize().height();
+    const int top = m_scmFileTops.at(index);
+    const int bottom =
+        (index + 1 < m_scmFileTops.size() && m_scmFileTops.at(index + 1) >= 0)
+            ? m_scmFileTops.at(index + 1)
+            : docHeight;
+
+    const int viewTop = vbar->value();
+    const int height = m_scmDiff->viewport()->height();
+    if (bottom - viewTop <= 0 || top - viewTop >= height) {
+        m_scmDiffActiveOutline->hide();
+        return;
+    }
+    m_scmDiffActiveOutline->setGeometry(
+        1, top - viewTop, qMax(0, m_scmDiff->viewport()->width() - 2),
+        qMax(1, bottom - top));
+    m_scmDiffActiveOutline->show();
+    m_scmDiffActiveOutline->raise();
+    if (m_scmStickyHeader && m_scmStickyHeader->isVisible())
+        m_scmStickyHeader->raise(); // header stays above the outline
+}
+
 // Runs on every scroll tick of the combined diff (cheap; no re-render). Works out
 // which file sits at the top of the viewport, mirrors its header into the sticky
 // bar, advances the read-progress chart / percentage by how much of that file has
@@ -2005,6 +2217,8 @@ void MainWindow::updateScmDiffScrollState()
         return;
     if (m_scmSectionKeys.isEmpty()) {
         m_scmStickyHeader->hide();
+        if (m_scmDiffActiveOutline)
+            m_scmDiffActiveOutline->hide();
         return;
     }
     QScrollBar *vbar = m_scmDiff->verticalScrollBar();
@@ -2064,6 +2278,9 @@ void MainWindow::updateScmDiffScrollState()
         m_scmStickyPath->setToolTip(path); // the bar may elide a long path
         selectScmFileInTree(path, key.startsWith(QLatin1String("s|")));
     }
+    // The tree's green stroke follows the scroll here (selectScmFileInTree), so
+    // the outline has to track the same section or the two would drift apart.
+    m_scmActiveSectionKey = key;
     m_scmStickyViewed->setText(isViewed ? QString::fromUtf8("\xE2\x98\x91 Viewed")
                                         : QString::fromUtf8("\xE2\x98\x90 Viewed"));
     m_scmStickyViewed->setChecked(isViewed);
@@ -2078,6 +2295,9 @@ void MainWindow::updateScmDiffScrollState()
     layoutScmStickyHeader();
     m_scmStickyHeader->show();
     m_scmStickyHeader->raise();
+    // Last, so it uses the section this tick just settled on and can re-raise
+    // the header above itself.
+    updateScmDiffActiveOutline();
 }
 
 struct ScmAutoViewedDelta {
@@ -2247,23 +2467,10 @@ void MainWindow::onScmDiffAnchorClicked(const QUrl &url)
 void MainWindow::scmSelectAdjacentChange(int delta)
 {
     if (sourceControlShowsRange() && m_scmTree) {
-        QList<QTreeWidgetItem *> files;
-        for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
-            QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
-            for (int i = 0; group && i < group->childCount(); ++i)
-                files.append(group->child(i));
-        }
-        if (files.isEmpty())
-            return;
-        int index = files.indexOf(m_scmTree->currentItem());
-        if (index < 0)
-            index = delta > 0 ? 0 : files.size() - 1;
-        else
-            index = qBound(0, index + delta, files.size() - 1);
-        m_scmTree->setCurrentItem(files.at(index));
-        m_scmTree->scrollToItem(files.at(index));
-        scrollBranchDiffToFile(
-            files.at(index)->data(0, Qt::UserRole).toString());
+        // Same walk the arrow keys take (setCurrentItem drives the diff through
+        // currentItemChanged), so the toolbar's Prev/Next and the keyboard can
+        // never disagree about what "the next file" means.
+        stepScmTreeFile(delta);
         return;
     }
     // Every change shares one scrollable view, so stepping is just the next /
@@ -2376,6 +2583,162 @@ void MainWindow::scmDiscardPath(const QString &path, bool untracked)
     refreshSourceControl();
 }
 
+// Reject anything that isn't a plain path inside the checkout. The tree's rows
+// come from git's own porcelain/diff output, so this is a belt-and-braces guard
+// before a delete or an ignore rule is built from one.
+static bool scmRelPathIsSafe(const QString &path)
+{
+    const QString clean = QDir::cleanPath(path);
+    return clean == path && !clean.isEmpty() && clean != QLatin1String(".") &&
+           !clean.startsWith(QLatin1String("../")) &&
+           !clean.contains(QLatin1String("/../")) &&
+           !QDir::isAbsolutePath(clean) && clean != QLatin1String(".git") &&
+           !clean.startsWith(QLatin1String(".git/"));
+}
+
+void MainWindow::showScmFileMenu(const QPoint &pos)
+{
+    if (!m_scmTree)
+        return;
+    QTreeWidgetItem *item = m_scmTree->itemAt(pos);
+    // Group headers ("Changes (7)", "Changes against main (3)") carry no path.
+    const QString path = item ? item->data(0, Qt::UserRole).toString() : QString();
+    if (path.isEmpty() || !scmRelPathIsSafe(path))
+        return;
+    const QString dir = sourceControlGitDir();
+    if (dir.isEmpty())
+        return;
+    // Right-clicking a row selects it, so the diff on the right follows the file
+    // the menu is about.
+    if (item != m_scmTree->currentItem())
+        m_scmTree->setCurrentItem(item);
+
+    // A change that *deleted* the file leaves nothing on disk to edit, ignore or
+    // remove, so those entries are shown greyed rather than silently failing.
+    const bool onDisk = QFileInfo(QDir(dir).filePath(path)).isFile();
+
+    QMenu menu(this);
+    QAction *edit = menu.addAction(QStringLiteral("Edit"));
+    menu.addSeparator();
+    QAction *ignore = menu.addAction(QStringLiteral("Add to .gitignore"));
+    QAction *remove = menu.addAction(QStringLiteral("Delete file"));
+    for (QAction *action : {edit, ignore, remove})
+        action->setEnabled(onDisk);
+
+    QAction *chosen = menu.exec(m_scmTree->viewport()->mapToGlobal(pos));
+    if (chosen == edit)
+        openWorkingTreeFile(dir, path);
+    else if (chosen == ignore)
+        scmIgnorePath(path);
+    else if (chosen == remove)
+        scmDeletePath(path);
+}
+
+void MainWindow::scmIgnorePath(const QString &path)
+{
+    const QString dir = sourceControlGitDir();
+    if (dir.isEmpty() || !scmRelPathIsSafe(path))
+        return;
+    const QString rule = gitignoreRuleForPath(path);
+    const QString ignoreFile = QDir(dir).filePath(QStringLiteral(".gitignore"));
+
+    QStringList lines;
+    QFile file(ignoreFile);
+    if (file.exists()) {
+        if (!file.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, "Add to .gitignore",
+                                 QStringLiteral("Could not read %1.").arg(ignoreFile));
+            return;
+        }
+        lines = QString::fromUtf8(file.readAll()).split(QLatin1Char('\n'));
+        file.close();
+        // Already listed — as the anchored rule we would write, or as the bare
+        // path someone typed by hand. Broader patterns that happen to match are
+        // git's business, not ours, so those still get an explicit rule.
+        for (const QString &line : std::as_const(lines)) {
+            const QString trimmed = line.trimmed();
+            if (trimmed == rule || trimmed == path) {
+                flashMessage(QStringLiteral("%1 is already in .gitignore.").arg(path));
+                return;
+            }
+        }
+    }
+
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        QMessageBox::warning(this, "Add to .gitignore",
+                             QStringLiteral("Could not write %1.").arg(ignoreFile));
+        return;
+    }
+    QByteArray out;
+    // split() leaves a trailing empty element when the file ends in a newline; a
+    // non-empty last element means it doesn't, and the rule needs its own line.
+    if (!lines.isEmpty() && !lines.constLast().isEmpty())
+        out.append('\n');
+    out.append(rule.toUtf8());
+    out.append('\n');
+    const bool wrote = file.write(out) == out.size();
+    file.close();
+    if (!wrote) {
+        QMessageBox::warning(this, "Add to .gitignore",
+                             QStringLiteral("Could not write %1.").arg(ignoreFile));
+        return;
+    }
+
+    // An ignore rule does nothing for a file git already tracks: it would keep
+    // appearing in this very list, leaving the menu item looking broken. Offer
+    // the one extra step that makes the rule bite, without touching the file.
+    const bool tracked = runGitCapture(
+        dir, {"ls-files", "--error-unmatch", "--", path}, nullptr, nullptr);
+    if (tracked &&
+        QMessageBox::question(
+            this, QStringLiteral("Add to .gitignore"),
+            QStringLiteral("\"%1\" is tracked by git, so the new rule has no "
+                           "effect until git stops tracking it.\n\nStop tracking "
+                           "it? The file stays on disk.")
+                .arg(path),
+            QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
+        QString err;
+        // --cached never touches the working tree; -f only waives the
+        // up-to-date check that staged changes would otherwise trip.
+        if (!runSourceControlMutation(dir, {"rm", "--cached", "-f", "-q", "--", path},
+                                      nullptr, &err))
+            QMessageBox::warning(this, "Add to .gitignore",
+                                 err.isEmpty() ? QStringLiteral("git rm --cached failed.")
+                                               : err.left(240));
+    }
+    flashMessage(QStringLiteral("Added %1 to .gitignore.").arg(path));
+    refreshSourceControl(true);
+}
+
+void MainWindow::scmDeletePath(const QString &path)
+{
+    const QString dir = sourceControlGitDir();
+    if (dir.isEmpty() || !scmRelPathIsSafe(path))
+        return;
+    if (QMessageBox::warning(
+            this, "Delete file",
+            QStringLiteral("Delete \"%1\" from the working tree?\n\nA tracked file "
+                           "becomes a deletion you can still discard; an untracked "
+                           "one is gone for good.")
+                .arg(path),
+            QMessageBox::Yes | QMessageBox::Cancel) != QMessageBox::Yes)
+        return;
+    const QString abs = QDir(dir).absoluteFilePath(path);
+    if (!QFile::remove(abs)) {
+        QMessageBox::warning(this, "Delete file",
+                             QStringLiteral("Could not delete %1.").arg(abs));
+        return;
+    }
+    // Any editor tab still on this file would otherwise offer to save it back.
+    // All three of m_openFileTabs' key forms can name it: the ref-backed tab is
+    // keyed by the relative path, the filesystem explorer's read-only one by the
+    // absolute path, and the editable working-tree tab by that behind a marker.
+    for (const QString &key : {path, abs, worktreeTabKey(abs)})
+        closeRepoFileTabsUnder(key, false);
+    logSystem(QStringLiteral("Deleted %1.").arg(abs));
+    refreshSourceControl(true);
+}
+
 void MainWindow::scmStageAll()
 {
     const QString dir = sourceControlGitDir();
@@ -2408,11 +2771,21 @@ void MainWindow::scmDiscardAll()
 
 bool MainWindow::performScmCommit()
 {
+    const QString msg =
+        m_scmMessage ? m_scmMessage->toPlainText().trimmed() : QString();
+    if (!commitWorkingTree(msg))
+        return false;
+    if (m_scmMessage)
+        m_scmMessage->clear();
+    return true;
+}
+
+bool MainWindow::commitWorkingTree(const QString &message)
+{
     const QString dir = sourceControlGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree())
         return false;
-    const QString msg =
-        m_scmMessage ? m_scmMessage->toPlainText().trimmed() : QString();
+    const QString msg = message.trimmed();
     if (msg.isEmpty()) {
         QMessageBox::information(this, "Commit", "Enter a commit message first.");
         return false;
@@ -2441,8 +2814,6 @@ bool MainWindow::performScmCommit()
                              err.isEmpty() ? "git commit failed." : err.left(300));
         return false;
     }
-    if (m_scmMessage)
-        m_scmMessage->clear();
     logSystem(QStringLiteral("Committed: %1").arg(msg.section('\n', 0, 0)));
     loadCommits(); // refresh history + the working-changes panel
     if (m_repoDetailIndex >= 0)
@@ -3300,10 +3671,8 @@ QWidget *MainWindow::buildRepoSecurityTab()
         const QString path = item->data(Qt::UserRole).toString();
         if (path.isEmpty())
             return;
-        // Switch to the Code tab (index 0) so the highlighted line is visible;
-        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
-        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-            m_repoDetailTabs->button(0)->click();
+        // openRepoFileAtLine opens the Files section itself (adhoc #1590), so
+        // the highlighted line is on screen without picking a repo tab first.
         openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
@@ -3929,10 +4298,8 @@ QWidget *MainWindow::buildRepoQualityTab()
         const QString path = item->data(Qt::UserRole).toString();
         if (path.isEmpty())
             return;
-        // Switch to the Code tab (index 0) so the highlighted line is visible;
-        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
-        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-            m_repoDetailTabs->button(0)->click();
+        // openRepoFileAtLine opens the Files section itself (adhoc #1590), so
+        // the highlighted line is on screen without picking a repo tab first.
         openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
@@ -4311,31 +4678,17 @@ void MainWindow::chooseSizeMapFolder()
     QString start = sizeMapRoot();
     if (start.isEmpty() || !QDir(start).exists())
         start = QDir::homePath();
-    // Qt's own dialog rather than the platform one: the portal/GTK pickers
-    // bury the filesystem root behind "Other Locations" and refuse to hand
-    // back "/" itself, which is exactly the folder people want to size
-    // (adhoc #21). This one returns whatever directory is open when Choose is
-    // pressed, so "/" — and every mount — is selectable.
-    QFileDialog dialog(this, "Choose a folder to size", start);
-    dialog.setFileMode(QFileDialog::Directory);
-    dialog.setOption(QFileDialog::ShowDirsOnly, true);
-    dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-    dialog.setFilter(QDir::AllDirs | QDir::Drives | QDir::NoDotAndDotDot |
-                     QDir::Hidden);
-    QList<QUrl> sidebar{QUrl::fromLocalFile(QDir::rootPath()),
-                        QUrl::fromLocalFile(QDir::homePath())};
-    for (const QStorageInfo &volume : sizeMapVolumes()) {
-        const QUrl url = QUrl::fromLocalFile(volume.rootPath());
-        if (!sidebar.contains(url))
-            sidebar.append(url);
-    }
-    dialog.setSidebarUrls(sidebar);
-    if (dialog.exec() != QDialog::Accepted)
+    // Every mounted volume joins the picker's sidebar, on top of the root and
+    // home entries chooseExistingDirectory always adds. That shared picker is
+    // also what makes "/" selectable at all (adhoc #21) — see its comment.
+    QList<QUrl> sidebar;
+    for (const QStorageInfo &volume : sizeMapVolumes())
+        sidebar.append(QUrl::fromLocalFile(volume.rootPath()));
+    const QString chosen = chooseExistingDirectory(
+        this, QStringLiteral("Choose a folder to size"), start, sidebar);
+    if (chosen.isEmpty())
         return;
-    const QStringList chosen = dialog.selectedFiles();
-    if (chosen.isEmpty() || chosen.first().isEmpty())
-        return;
-    setSizeMapRootOverride(chosen.first());
+    setSizeMapRootOverride(chosen);
 }
 
 void MainWindow::setSizeMapRootOverride(const QString &path)

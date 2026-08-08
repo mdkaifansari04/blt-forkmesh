@@ -2,17 +2,20 @@
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QSet>
 #include <QStandardPaths>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace forkmesh::control {
@@ -326,6 +329,49 @@ QJsonArray scrubSavedHostPasswords(
 
 } // namespace
 
+QString sharedHostKeyDirectory()
+{
+    const QString appDataDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (appDataDir.isEmpty())
+        return {};
+    const QString sshStateDir =
+        QDir(appDataDir).filePath(QStringLiteral("ssh"));
+    if (!QDir().mkpath(sshStateDir))
+        return {};
+    QFile::setPermissions(
+        sshStateDir,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner);
+    return sshStateDir;
+}
+
+QString sharedHostKeyPath()
+{
+    const QString sshStateDir = sharedHostKeyDirectory();
+    if (sshStateDir.isEmpty())
+        return {};
+    const QString sharedPath =
+        QDir(sshStateDir).filePath(QStringLiteral("forkmesh_shared_ed25519"));
+    if (QFileInfo(sharedPath).isFile())
+        return sharedPath;
+    // Devices set up before the fleet moved to one shared key still hold the
+    // key the mirrors already authorize, under its old per-provider name.
+    // Adopt that file in place; generating a second key here would leave every
+    // existing host rejecting it.
+    const QString legacyPath =
+        QDir(sshStateDir).filePath(QStringLiteral("vultr_mirror_ed25519"));
+    if (QFileInfo(legacyPath).isFile())
+        return legacyPath;
+    return sharedPath;
+}
+
+QString existingSharedHostIdentityFile()
+{
+    const QString keyPath = sharedHostKeyPath();
+    return QFileInfo(keyPath).isFile() ? keyPath : QString();
+}
+
 HostSshCommand buildHostSshCommand(const QString &host,
                                    const QString &sshUser,
                                    const QString &sshPassword,
@@ -346,20 +392,13 @@ HostSshCommand buildHostSshCommand(const QString &host,
         return command;
     }
 
-    const QString appDataDir =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    const QString sshStateDir =
-        QDir(appDataDir).filePath(QStringLiteral("ssh"));
-    if (appDataDir.isEmpty() || !QDir().mkpath(sshStateDir)) {
+    const QString sshStateDir = sharedHostKeyDirectory();
+    if (sshStateDir.isEmpty()) {
         if (error)
             *error = QStringLiteral(
                 "ForkMesh could not create its persistent SSH trust store.");
         return command;
     }
-    QFile::setPermissions(
-        sshStateDir,
-        QFileDevice::ReadOwner | QFileDevice::WriteOwner |
-            QFileDevice::ExeOwner);
     const QString knownHostsPath =
         QDir(sshStateDir).filePath(QStringLiteral("known_hosts"));
     if (!QFileInfo::exists(knownHostsPath)) {
@@ -386,9 +425,10 @@ HostSshCommand buildHostSshCommand(const QString &host,
         QStringLiteral("-o"), QStringLiteral("UpdateHostKeys=yes"),
         QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
     };
-    // Pin authentication to a ForkMesh-managed key when the saved host records
-    // one (auto-provisioned Vultr mirrors). -i is argv-safe for any path;
-    // IdentitiesOnly stops the agent offering unrelated keys first.
+    // Pin authentication to the ForkMesh-managed key the caller resolved — the
+    // shared fleet key for every host, or a key a saved host recorded itself.
+    // -i is argv-safe for any path; IdentitiesOnly stops the agent offering
+    // unrelated keys first.
     const QString identity = identityFile.trimmed();
     if (!identity.isEmpty()) {
         if (identity.contains(QChar::Null) ||
@@ -1563,10 +1603,178 @@ QString cloudflareAccountIdFromVariables(
                             });
 }
 
+namespace {
+
+// `node --version` is a fast local exec; the ceiling is only there so a wedged
+// interpreter cannot hold the GUI thread while the monitor decides what to run.
+constexpr int kNodeVersionProbeTimeoutMs = 3000;
+
+// npx and node as this platform spells them. Windows ships npx as a .cmd
+// wrapper, which QStandardPaths knows about but a plain directory join does
+// not.
+QStringList executableNames(const QString &base)
+{
+#ifdef Q_OS_WIN
+    return {base + QStringLiteral(".cmd"), base + QStringLiteral(".exe"), base};
+#else
+    return {base};
+#endif
+}
+
+QString executableIn(const QString &binDir, const QString &base)
+{
+    const QDir dir(binDir);
+    for (const QString &name : executableNames(base)) {
+        const QString path = dir.absoluteFilePath(name);
+        if (QFileInfo(path).isExecutable())
+            return path;
+    }
+    return {};
+}
+
+// (major, minor, patch) for ordering. Missing components sort as 0.
+std::array<int, 3> nodeVersionTriple(const QString &text)
+{
+    static const QRegularExpression versionPattern(
+        QStringLiteral("v(\\d{1,4})(?:\\.(\\d{1,6}))?(?:\\.(\\d{1,6}))?"));
+    const auto match = versionPattern.match(text);
+    if (!match.hasMatch())
+        return {0, 0, 0};
+    return {match.captured(1).toInt(), match.captured(2).toInt(),
+            match.captured(3).toInt()};
+}
+
+// Every versioned install under a version manager's root, newest first. `suffix`
+// is the path from one version directory down to its bin (nvm and volta keep it
+// at bin/, fnm one level deeper).
+QStringList versionedNodeBinDirs(const QString &root, const QString &suffix)
+{
+    QDir rootDir(root);
+    if (!rootDir.exists())
+        return {};
+    QStringList versions =
+        rootDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::NoSort);
+    std::sort(versions.begin(), versions.end(),
+              [](const QString &left, const QString &right) {
+                  return nodeVersionTriple(left) > nodeVersionTriple(right);
+              });
+    QStringList bins;
+    bins.reserve(versions.size());
+    for (const QString &version : versions) {
+        bins.append(QDir(rootDir.absoluteFilePath(version))
+                        .absoluteFilePath(suffix));
+    }
+    return bins;
+}
+
+// `node --version` from one directory, or 0 when there is no runnable node
+// there. Authoritative: a directory name is only ever used for ordering.
+int probeNodeMajorVersion(const QString &binDir)
+{
+    const QString node = executableIn(binDir, QStringLiteral("node"));
+    if (node.isEmpty())
+        return 0;
+    QProcess process;
+    process.setProgram(node);
+    process.setArguments({QStringLiteral("--version")});
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.setStandardInputFile(QProcess::nullDevice());
+    process.start();
+    if (!process.waitForFinished(kNodeVersionProbeTimeoutMs)) {
+        process.kill();
+        process.waitForFinished(500);
+        return 0;
+    }
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
+        return 0;
+    return nodeMajorVersionFromText(
+        QString::fromUtf8(process.readAllStandardOutput()));
+}
+
+}  // namespace
+
+int nodeMajorVersionFromText(const QString &text)
+{
+    static const QRegularExpression versionPattern(
+        QStringLiteral("v?(\\d{1,4})\\.\\d{1,6}\\.\\d{1,6}"));
+    const auto match = versionPattern.match(text.trimmed());
+    return match.hasMatch() ? match.captured(1).toInt() : 0;
+}
+
+QStringList nodeBinDirectoryCandidates()
+{
+    QStringList dirs;
+    const auto add = [&dirs](const QString &dir) {
+        const QString trimmed = dir.trimmed();
+        if (trimmed.isEmpty())
+            return;
+        const QString canonical = QFileInfo(trimmed).canonicalFilePath();
+        if (canonical.isEmpty() || dirs.contains(canonical) ||
+            !QFileInfo(canonical).isDir()) {
+            return;
+        }
+        if (executableIn(canonical, QStringLiteral("npx")).isEmpty())
+            return;
+        dirs.append(canonical);
+    };
+
+    // An explicit override wins: a Node that neither PATH nor a version manager
+    // knows about is exactly what it is for.
+    add(qEnvironmentVariable("FORKMESH_NODE_BIN"));
+    // PATH next. On a machine already running a current Node there is nothing to
+    // search for and exactly one probe to run.
+    const QString pathNpx =
+        QStandardPaths::findExecutable(QStringLiteral("npx"));
+    if (!pathNpx.isEmpty())
+        add(QFileInfo(pathNpx).absolutePath());
+
+    // Version managers keep every install side by side, so the newest one is
+    // usually the one that satisfies Wrangler even when PATH does not.
+    const QDir home = QDir::home();
+    QString nvmDir = qEnvironmentVariable("NVM_DIR").trimmed();
+    if (nvmDir.isEmpty())
+        nvmDir = home.absoluteFilePath(QStringLiteral(".nvm"));
+    QStringList managed;
+    managed += versionedNodeBinDirs(
+        QDir(nvmDir).absoluteFilePath(QStringLiteral("versions/node")),
+        QStringLiteral("bin"));
+    managed += versionedNodeBinDirs(
+        home.absoluteFilePath(QStringLiteral(".local/share/fnm/node-versions")),
+        QStringLiteral("installation/bin"));
+    managed += versionedNodeBinDirs(
+        home.absoluteFilePath(QStringLiteral(".volta/tools/image/node")),
+        QStringLiteral("bin"));
+    managed += versionedNodeBinDirs(
+        home.absoluteFilePath(QStringLiteral(".asdf/installs/nodejs")),
+        QStringLiteral("bin"));
+    for (const QString &dir : managed)
+        add(dir);
+    return dirs;
+}
+
+NodeToolchain findNodeToolchain(int minimumMajor)
+{
+    NodeToolchain toolchain;
+    const QStringList candidates = nodeBinDirectoryCandidates();
+    for (const QString &dir : candidates) {
+        const int major = probeNodeMajorVersion(dir);
+        if (major <= 0 || major < minimumMajor)
+            continue;
+        toolchain.npx = executableIn(dir, QStringLiteral("npx"));
+        if (toolchain.npx.isEmpty())
+            continue;
+        toolchain.binDir = dir;
+        toolchain.majorVersion = major;
+        break;
+    }
+    return toolchain;
+}
+
 CloudflareBootstrapCommand buildCloudflareTailCommand(
     const QString &apiToken,
     const QString &accountId,
-    const QString &npxProgram)
+    const QString &npxProgram,
+    const QString &nodeBinDir)
 {
     CloudflareBootstrapCommand command;
     const QString token = apiToken.trimmed();
@@ -1583,14 +1791,31 @@ CloudflareBootstrapCommand buildCloudflareTailCommand(
         return command;
     }
 
+    // JSON, not pretty: Wrangler's pretty printer throws the request headers
+    // away, and the user agent behind each hit is the whole reason to read this
+    // log. parseCloudflareTailLine() renders the line instead (adhoc #1615).
     command.arguments = {
         QStringLiteral("--yes"),
-        QStringLiteral("wrangler@4.42.1"),
+        QStringLiteral("wrangler@4.120.0"),
         QStringLiteral("tail"),
         QStringLiteral("--format"),
-        QStringLiteral("pretty"),
+        QStringLiteral("json"),
     };
     command.environment = QProcessEnvironment::systemEnvironment();
+    // Running npx out of a newer Node's bin directory is not enough on its own:
+    // npx and the wrangler bin it spawns are both `#!/usr/bin/env node` scripts,
+    // so without this the old node from PATH runs them and Wrangler exits 1 on
+    // its version check (adhoc #1617).
+    const QString nodeBin = nodeBinDir.trimmed();
+    if (!nodeBin.isEmpty()) {
+        const QString existingPath =
+            command.environment.value(QStringLiteral("PATH"));
+        command.environment.insert(
+            QStringLiteral("PATH"),
+            existingPath.isEmpty()
+                ? nodeBin
+                : nodeBin + QDir::listSeparator() + existingPath);
+    }
     command.environment.remove(QStringLiteral("CLOUDFLARE_API_KEY"));
     command.environment.remove(QStringLiteral("CLOUDFLARE_EMAIL"));
     command.environment.insert(QStringLiteral("CLOUDFLARE_API_TOKEN"),
@@ -1603,6 +1828,307 @@ CloudflareBootstrapCommand buildCloudflareTailCommand(
             QStringLiteral("CLOUDFLARE_ACCOUNT_ID"), account);
     }
     return command;
+}
+
+namespace {
+
+// One console-log argument as text. Wrangler ships each log entry's message as
+// an array of whatever the Worker passed to console.log, so anything that isn't
+// already a string is re-encoded compactly rather than dropped.
+QString tailLogArgument(const QJsonValue &value)
+{
+    if (value.isString())
+        return value.toString();
+    if (value.isDouble())
+        return QString::number(value.toDouble());
+    if (value.isBool())
+        return value.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    if (value.isNull())
+        return QStringLiteral("null");
+    if (value.isObject())
+        return QString::fromUtf8(
+            QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact));
+    if (value.isArray())
+        return QString::fromUtf8(
+            QJsonDocument(value.toArray()).toJson(QJsonDocument::Compact));
+    return {};
+}
+
+// Keep one field from turning a tail line into a paragraph. A pathological user
+// agent (or a Worker logging a whole payload) is truncated with an ellipsis so
+// the viewer stays one readable line per event.
+QString elideTailField(QString value, int limit)
+{
+    value.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    value.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    value = value.simplified();
+    if (value.size() <= limit)
+        return value;
+    return value.left(qMax(0, limit - 1)) + QString::fromUtf8("\xE2\x80\xA6");
+}
+
+// Carry JSON nesting depth across the lines of one pretty-printed document.
+// Braces inside strings are ignored, so a URL or user agent containing one
+// cannot close the record early.
+void advanceJsonDepth(const QString &line, int *depth, bool *inString,
+                      bool *escaped)
+{
+    for (const QChar ch : line) {
+        if (*inString) {
+            if (*escaped) {
+                *escaped = false;
+            } else if (ch == QLatin1Char('\\')) {
+                *escaped = true;
+            } else if (ch == QLatin1Char('"')) {
+                *inString = false;
+            }
+            continue;
+        }
+        if (ch == QLatin1Char('"')) {
+            *inString = true;
+            *escaped = false;
+        } else if (ch == QLatin1Char('{') || ch == QLatin1Char('[')) {
+            ++*depth;
+        } else if (ch == QLatin1Char('}') || ch == QLatin1Char(']')) {
+            --*depth;
+        }
+    }
+    // A JSON string never contains a raw newline, so one arriving mid-string
+    // means this was never JSON. Reset rather than swallow the rest of the log.
+    *inString = false;
+    *escaped = false;
+}
+
+// Wrangler's word for an outcome, so the rendered line reads like its own
+// default output rather than the wire value.
+QString prettyTailOutcome(const QString &outcome)
+{
+    if (outcome == QLatin1String("ok"))
+        return QStringLiteral("Ok");
+    if (outcome == QLatin1String("canceled"))
+        return QStringLiteral("Canceled");
+    if (outcome == QLatin1String("exceededCpu"))
+        return QStringLiteral("Exceeded CPU Limit");
+    if (outcome == QLatin1String("exceededMemory"))
+        return QStringLiteral("Exceeded Memory Limit");
+    if (outcome == QLatin1String("exception"))
+        return QStringLiteral("Exception Thrown");
+    if (outcome.isEmpty() || outcome == QLatin1String("unknown"))
+        return QStringLiteral("Unknown");
+    return outcome;
+}
+
+// A stream that never closes a brace must not grow into the heap.
+constexpr qsizetype kMaximumTailBufferBytes = 1024 * 1024;
+
+}  // namespace
+
+QStringList takeCloudflareTailRecords(QByteArray *buffer)
+{
+    QStringList records;
+    if (!buffer || buffer->isEmpty())
+        return records;
+
+    qsizetype cursor = 0;      // next byte to scan
+    qsizetype consumed = 0;    // everything before this has become a record
+    qsizetype recordStart = -1; // where the open JSON document began
+    int depth = 0;
+    bool inString = false;
+    bool escaped = false;
+    for (qsizetype newline = buffer->indexOf('\n', cursor); newline >= 0;
+         newline = buffer->indexOf('\n', cursor)) {
+        const qsizetype lineStart = cursor;
+        const QString line =
+            QString::fromUtf8(buffer->mid(lineStart, newline - lineStart));
+        cursor = newline + 1;
+        if (recordStart < 0) {
+            const QString trimmed = line.trimmed();
+            if (trimmed.isEmpty()) {
+                consumed = cursor;
+                continue;
+            }
+            if (!trimmed.startsWith(QLatin1Char('{'))) {
+                // Wrangler's own banner or a warning: a record on its own.
+                records << trimmed;
+                consumed = cursor;
+                continue;
+            }
+            recordStart = lineStart;
+            depth = 0;
+            inString = false;
+            escaped = false;
+        } else if (line.startsWith(QLatin1Char('{'))) {
+            // Only the opening brace of a pretty-printed document sits in column
+            // zero, so one arriving while a record is open means the open one
+            // was never a document — stderr is merged into this stream, and a
+            // warning carrying a stray brace would otherwise swallow every event
+            // after it. Flush the wreckage and resync on this line.
+            records << QString::fromUtf8(
+                              buffer->mid(recordStart, lineStart - recordStart))
+                           .trimmed();
+            recordStart = lineStart;
+            depth = 0;
+            inString = false;
+            escaped = false;
+        }
+        advanceJsonDepth(line, &depth, &inString, &escaped);
+        if (depth > 0)
+            continue;
+        records << QString::fromUtf8(
+                          buffer->mid(recordStart, newline - recordStart))
+                       .trimmed();
+        recordStart = -1;
+        consumed = cursor;
+    }
+    buffer->remove(0, consumed);
+    if (buffer->size() > kMaximumTailBufferBytes)
+        buffer->clear();
+    return records;
+}
+
+CloudflareTailEvent parseCloudflareTailLine(const QString &line)
+{
+    CloudflareTailEvent event;
+    const QString trimmed = line.trimmed();
+    // A record that isn't a tail event still has to read as one log line: a
+    // pretty-printed JSON document that nothing here understands is collapsed
+    // rather than pasted into the log across thirty rows.
+    event.summary = elideTailField(trimmed, 1000);
+    if (trimmed.isEmpty() || !trimmed.startsWith(QLatin1Char('{')))
+        return event;
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(trimmed.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject())
+        return event;
+    const QJsonObject root = document.object();
+    // Wrangler's tail frames always carry an outcome; anything else that merely
+    // happens to be JSON on stdout is passed through as plain text.
+    if (!root.contains(QStringLiteral("outcome")))
+        return event;
+    event.parsed = true;
+
+    event.outcome = root.value(QStringLiteral("outcome")).toString().trimmed();
+    const QJsonObject eventBody =
+        root.value(QStringLiteral("event")).toObject();
+    const QJsonObject request =
+        eventBody.value(QStringLiteral("request")).toObject();
+    event.method = request.value(QStringLiteral("method")).toString().trimmed();
+    event.url = request.value(QStringLiteral("url")).toString().trimmed();
+    const QJsonObject headers =
+        request.value(QStringLiteral("headers")).toObject();
+    for (auto it = headers.constBegin(); it != headers.constEnd(); ++it) {
+        // Header names arrive lower-cased in practice, but the match is
+        // case-insensitive so a proxy that re-cases them can't hide the agent.
+        if (it.key().compare(QLatin1String("user-agent"),
+                             Qt::CaseInsensitive) == 0) {
+            event.userAgent = it.value().toString().trimmed();
+            break;
+        }
+    }
+    const QJsonValue response = eventBody.value(QStringLiteral("response"));
+    if (response.isObject()) {
+        event.status =
+            response.toObject().value(QStringLiteral("status")).toInt();
+    }
+
+    bool errorLevelLog = false;
+    const QJsonArray exceptions =
+        root.value(QStringLiteral("exceptions")).toArray();
+    for (const QJsonValue &value : exceptions) {
+        const QJsonObject exception = value.toObject();
+        const QString name =
+            exception.value(QStringLiteral("name")).toString().trimmed();
+        const QString message =
+            exception.value(QStringLiteral("message")).toString().trimmed();
+        const QString text = name.isEmpty()
+                                 ? message
+                                 : (message.isEmpty()
+                                        ? name
+                                        : name + QStringLiteral(": ") + message);
+        if (!text.isEmpty())
+            event.messages << text;
+    }
+    const QJsonArray logs = root.value(QStringLiteral("logs")).toArray();
+    for (const QJsonValue &value : logs) {
+        const QJsonObject entry = value.toObject();
+        const QString level =
+            entry.value(QStringLiteral("level")).toString().trimmed().toLower();
+        if (level == QLatin1String("error") || level == QLatin1String("fatal"))
+            errorLevelLog = true;
+        QStringList parts;
+        const QJsonValue message = entry.value(QStringLiteral("message"));
+        if (message.isArray()) {
+            for (const QJsonValue &argument : message.toArray()) {
+                const QString text = tailLogArgument(argument);
+                if (!text.isEmpty())
+                    parts << text;
+            }
+        } else {
+            const QString text = tailLogArgument(message);
+            if (!text.isEmpty())
+                parts << text;
+        }
+        if (parts.isEmpty())
+            continue;
+        const QString joined = parts.join(QLatin1Char(' '));
+        event.messages << (level.isEmpty() || level == QLatin1String("log")
+                               ? joined
+                               : level + QStringLiteral(": ") + joined);
+    }
+
+    // "canceled" is the client hanging up mid-request and "unknown" is Wrangler
+    // having no verdict — neither is the Worker failing, so neither raises an
+    // alert. A 5xx does, whatever the outcome says.
+    const bool badOutcome = !event.outcome.isEmpty() &&
+                            event.outcome != QLatin1String("ok") &&
+                            event.outcome != QLatin1String("unknown") &&
+                            event.outcome != QLatin1String("canceled");
+    event.isError = badOutcome || !exceptions.isEmpty() || errorLevelLog ||
+                    event.status >= 500;
+
+    // Rendered as Wrangler's own default line — "GET https://… - 200 Ok @ time"
+    // — with the one thing its pretty printer throws away appended: the agent
+    // behind the hit (adhoc #1623).
+    const qint64 timestampMs = static_cast<qint64>(
+        root.value(QStringLiteral("eventTimestamp")).toDouble());
+    const QString stamp =
+        timestampMs > 0 ? QDateTime::fromMSecsSinceEpoch(timestampMs)
+                              .toString(QStringLiteral("HH:mm:ss"))
+                        : QString();
+    const QString outcome = prettyTailOutcome(event.outcome);
+    const QString verdict = event.status > 0
+                                ? QStringLiteral("%1 %2")
+                                      .arg(event.status)
+                                      .arg(outcome)
+                                : outcome;
+    const QJsonValue cron = eventBody.value(QStringLiteral("cron"));
+    QString head;
+    if (!event.url.isEmpty()) {
+        head = QStringLiteral("%1 %2 - %3")
+                   .arg(event.method.isEmpty() ? QStringLiteral("(no method)")
+                                               : event.method.toUpper(),
+                        elideTailField(event.url, 160), verdict);
+    } else if (cron.isString()) {
+        head = QStringLiteral("\"%1\" - %2")
+                   .arg(elideTailField(cron.toString(), 40), verdict);
+    } else {
+        head = QStringLiteral("Unknown Event - %1").arg(verdict);
+    }
+    if (!stamp.isEmpty())
+        head += QStringLiteral(" @ ") + stamp;
+
+    QStringList fields{head};
+    // The agent string is the reason this viewer decodes the JSON at all, so it
+    // is never the field that gets dropped.
+    fields << (event.userAgent.isEmpty()
+                   ? QStringLiteral("UA (none)")
+                   : QStringLiteral("UA %1")
+                         .arg(elideTailField(event.userAgent, 160)));
+    for (const QString &message : std::as_const(event.messages))
+        fields << elideTailField(message, 400);
+    event.summary = fields.join(QString::fromUtf8(" \xC2\xB7 "));
+    return event;
 }
 
 QJsonObject parseCloudflareBootstrapResult(const QByteArray &output,
@@ -1875,6 +2401,30 @@ QStringList directMirrorRepositoryOwners(const QString &canonicalOwner,
         }
     }
     return owners;
+}
+
+bool isValidMirrorRouterPublicKey(const QString &value)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^[A-Za-z0-9_-]{43}$"));
+    if (!pattern.match(value).hasMatch())
+        return false;
+    return QByteArray::fromBase64(
+               value.toLatin1(),
+               QByteArray::Base64UrlEncoding |
+                   QByteArray::AbortOnBase64DecodingErrors)
+               .size() == 32;
+}
+
+bool directMirrorGatewayIsConfigured(const QString &nodeName,
+                                     const QString &mirrorOrigin,
+                                     const QString &routerPublicKey)
+{
+    static const QRegularExpression nodePattern(
+        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
+    return nodePattern.match(nodeName).hasMatch() &&
+           !mirrorOrigin.isEmpty() &&
+           isValidMirrorRouterPublicKey(routerPublicKey);
 }
 
 QByteArray mirrorManifestSigningPayload(const QJsonObject &request,

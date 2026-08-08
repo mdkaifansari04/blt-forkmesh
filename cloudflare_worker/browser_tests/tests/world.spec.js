@@ -1261,6 +1261,16 @@ async function waitForWorld(page, url = "/world/") {
   await waitForWorldReady(page);
 }
 
+// Boot requests nothing from the repository district. A character has to stand
+// on its ground circle before the catalog, the flagship tree, or any size map
+// is fetched, so a spec that inspects repository state walks there first —
+// exactly what a visitor does — instead of reaching for the loader directly.
+async function enterRepositoryDistrict(page) {
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setSpawn({ x: 130, z: 0, space: "town-square" });
+  });
+}
+
 test("authorized agent sessions create one status-lit world robot each", async ({
   page,
 }) => {
@@ -1502,6 +1512,7 @@ async function waitForOfficeEntry(page) {
 
 async function openWorldPullReview(page, number = 44) {
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready" &&
@@ -1522,6 +1533,7 @@ async function openWorldPullReview(page, number = 44) {
 
 async function openWorldRepositoryExplorer(page) {
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready" &&
@@ -6481,6 +6493,84 @@ test("a 4K display keeps the full World inside a 1080p raster budget", async ({
   await context.close();
 });
 
+test("stars, planets, and satellites are drawn only while looking up at night", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-deep-sky-gate");
+  await waitForWorld(page);
+
+  const shell = page.locator("forkmesh-world");
+  const sample = async (mode, pitch) => {
+    const startedAtFrame = await shell.evaluate(
+      (element, view) => {
+        element.world.setDaylightMode(view.mode);
+        // A negative orbit pitch drops the eye below its target, which is how
+        // this camera cranes upward.
+        element.world.setCameraView({ pitch: view.pitch });
+        return element.world.renderer.info.render.frame;
+      },
+      { mode, pitch },
+    );
+    // The gate is sampled in the animation loop, not by the setters.
+    await page.waitForFunction(
+      (frame) =>
+        document.querySelector("forkmesh-world").world.renderer.info.render
+          .frame > frame + 2,
+      startedAtFrame,
+    );
+    return shell.evaluate((element) => {
+      const sky = element.world.getDiagnostics().sky;
+      const group = element.world.scene.getObjectByName("forkmesh-world-sky");
+      return {
+        lookingUp: sky.lookingUp,
+        night: sky.night,
+        deepSkyVisible: sky.deepSkyVisible,
+        drawCalls: sky.drawCalls,
+        starsVisible: Boolean(
+          group.getObjectByName("forkmesh-world-stars")?.visible,
+        ),
+        satellitesVisible: Boolean(
+          group.getObjectByName("forkmesh-world-satellites")?.visible,
+        ),
+        planetInstances: group.getObjectByName("forkmesh-world-planets").count,
+      };
+    });
+  };
+
+  // Daylight keeps the sun and moon instances and nothing else, even with the
+  // camera craned all the way back.
+  expect(await sample("day", -1.2)).toMatchObject({
+    night: false,
+    lookingUp: true,
+    deepSkyVisible: false,
+    drawCalls: 2,
+    starsVisible: false,
+    satellitesVisible: false,
+    planetInstances: 2,
+  });
+  // Night at eye level is just as cheap.
+  expect(await sample("night", 0.6)).toMatchObject({
+    night: true,
+    lookingUp: false,
+    deepSkyVisible: false,
+    drawCalls: 2,
+    starsVisible: false,
+    satellitesVisible: false,
+    planetInstances: 2,
+  });
+  // Only looking up at a night sky pays for the six planets and the stars.
+  const nightLookingUp = await sample("night", -1.2);
+  expect(nightLookingUp).toMatchObject({
+    night: true,
+    lookingUp: true,
+    deepSkyVisible: true,
+    starsVisible: true,
+    satellitesVisible: true,
+    planetInstances: 8,
+  });
+  expect(nightLookingUp.drawCalls).toBeGreaterThan(2);
+});
+
 test("busy walking stays connected while movement frames remain within the soft budget", async ({
   page,
 }) => {
@@ -6923,6 +7013,150 @@ test("every element in the Elements tab opens into its own pieces, each list sor
   await officeRow.click();
   await expect(officeRow).toHaveAttribute("aria-expanded", "false");
   await expect(parts).toHaveCount(0);
+});
+
+test("right-clicking a piece of the world deletes it, and the Elements tab puts it back", async ({
+  page,
+}) => {
+  // Boot, two settings round trips, a delete and a restore do not fit in the
+  // default per-test budget.
+  test.slow();
+  await prepareWorldPage(page, "world-object-delete");
+  await waitForWorld(page);
+
+  const countSceneObjects = () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      let objects = 0;
+      shell.world.scene.traverse(() => {
+        objects += 1;
+      });
+      return objects;
+    });
+
+  const canvas = page.locator("[data-world-canvas-wrap]");
+  const box = await canvas.boundingBox();
+  const aim = { x: box.x + box.width / 2, y: box.y + box.height * 0.66 };
+  const menu = page.locator("[data-world-object-menu]");
+
+  // Without the tool switched on, the browser keeps its own context menu.
+  // Dispatched rather than clicked, so no native menu is left open over the
+  // canvas for the rest of this test.
+  await canvas.dispatchEvent("contextmenu");
+  await expect(menu).toBeHidden();
+
+  // Turning the debug panel on is the visitor-facing way in; an administrator
+  // has it without asking.
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="debug"]').click();
+  await page.locator("[data-world-debug-panel]").check();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-world-settings]")).toHaveAttribute(
+    "data-open",
+    "false",
+  );
+
+  const before = await countSceneObjects();
+  await page.mouse.click(aim.x, aim.y, { button: "right" });
+  await expect(menu).toBeVisible();
+  const deleteAction = menu.locator("[data-world-object-delete]").first();
+  const key = await deleteAction.getAttribute("data-world-object-delete");
+  expect(key).toMatch(/^[a-z0-9-]+:\d+(\.\d+)*$/);
+
+  // Deleting takes it out of the scene graph and off the device's clickable
+  // list, and remembers the choice on this browser.
+  await deleteAction.click();
+  await expect(menu).toBeHidden();
+  expect(await countSceneObjects()).toBeLessThan(before);
+  expect(
+    await page
+      .locator("forkmesh-world")
+      .evaluate((shell) =>
+        shell.world.listDeletedWorldObjects().map((entry) => entry.key),
+      ),
+  ).toEqual([key]);
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(
+        localStorage.getItem("forkmesh.world.deletedObjects.v1") || "[]",
+      ).map((entry) => entry.key),
+    ),
+  ).toEqual([key]);
+
+  // Everything deleted is listed in the Elements tab, and one click puts it
+  // back exactly where it was.
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="elements"]').click();
+  const deletedRows = page.locator(
+    "[data-world-deleted-list] .world-deleted-row",
+  );
+  await expect(deletedRows).toHaveCount(1);
+  await deletedRows.locator("[data-world-object-restore]").click();
+  await expect(deletedRows).toHaveCount(0);
+  expect(await countSceneObjects()).toBe(before);
+  expect(
+    await page.evaluate(
+      () => localStorage.getItem("forkmesh.world.deletedObjects.v1") || "[]",
+    ),
+  ).toBe("[]");
+});
+
+test("a deleted piece is still gone after a reload, and still comes back", async ({
+  page,
+}) => {
+  test.slow();
+  await prepareWorldPage(page, "world-object-delete-reload");
+  await waitForWorld(page);
+
+  const countSceneObjects = () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      let objects = 0;
+      shell.world.scene.traverse(() => {
+        objects += 1;
+      });
+      return objects;
+    });
+
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="debug"]').click();
+  await page.locator("[data-world-debug-panel]").check();
+  await page.keyboard.press("Escape");
+
+  const box = await page.locator("[data-world-canvas-wrap]").boundingBox();
+  const before = await countSceneObjects();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.66, {
+    button: "right",
+  });
+  const menu = page.locator("[data-world-object-menu]");
+  await expect(menu).toBeVisible();
+  const deleteAction = menu.locator("[data-world-object-delete]").first();
+  const key = await deleteAction.getAttribute("data-world-object-delete");
+  await deleteAction.click();
+  const afterDelete = await countSceneObjects();
+  expect(afterDelete).toBeLessThan(before);
+
+  // The world opens the way it was left: the piece comes out again as its
+  // element is rebuilt, not as a leftover entry waiting for one.
+  await page.reload();
+  await waitForWorldReady(page);
+  expect(await countSceneObjects()).toBe(afterDelete);
+  expect(
+    await page
+      .locator("forkmesh-world")
+      .evaluate((shell) => shell.world.listDeletedWorldObjects()),
+  ).toEqual([
+    {
+      key,
+      label: "campfire-member-circle-dirt",
+      elementId: "campfire",
+      elementLabel: "Members Circle campfire",
+      pending: false,
+    },
+  ]);
+
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="elements"]').click();
+  await page.locator("[data-world-object-restore]").first().click();
+  expect(await countSceneObjects()).toBe(before);
 });
 
 test("the topbar has no clock or emote actions and local light level survives movement without becoming presence data", async ({
@@ -7828,6 +8062,7 @@ test("a stale offline alias cannot erase the live mirrors' flagship pin", async 
     repositoryFixture: { staleOfflineAlias: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready";
@@ -7877,6 +8112,7 @@ test("the flagship pin keeps user ownership separate from source node identity",
     repositoryFixture: { sourceUserOwner: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready";
@@ -7910,6 +8146,7 @@ test("repository portals and the 3D size sunburst use the verified catalog tree"
     repositoryFixture: { staleOfflineAlias: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready";
@@ -8079,6 +8316,7 @@ test("disagreeing eligible mirrors leave the automatic flagship map unpinned", a
     repositoryFixture: { conflictingHealthyAlias: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "unavailable";
@@ -8116,6 +8354,7 @@ test("the flagship portal opens once mid-sync mirrors converge after entry", asy
     repositoryFixture,
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "unavailable";
@@ -8169,6 +8408,7 @@ test("an incomplete healthy-mirror state attestation cannot auto-load the flagsh
     repositoryFixture: { missingHealthyStateHash: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "unavailable";
@@ -8602,6 +8842,7 @@ test("pull requests open and become viewed entirely inside the repository World"
     repositoryFixture: {},
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready" &&
@@ -8711,6 +8952,7 @@ test("a fresh map resolves exact pull metadata before slow issue scans", async (
     },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready" &&
@@ -8797,6 +9039,7 @@ test("four fresh single-core contexts keep exact pull metadata ahead of other re
       repositoryFixture,
     });
     await waitForWorld(page);
+    await enterRepositoryDistrict(page);
     await page.waitForFunction(() => {
       const shell = document.querySelector("forkmesh-world");
       return shell?.repositoryMapState === "ready" &&
@@ -9129,6 +9372,7 @@ test("missing pull metadata branch fails closed without probing main", async ({
     repositoryFixture: { invalidPullBranch: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready";
@@ -9168,6 +9412,7 @@ test("a listed pull with unreadable metadata is unknown rather than open", async
     repositoryFixture: { missingPullMetadata: true },
   });
   await waitForWorld(page);
+  await enterRepositoryDistrict(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return shell?.repositoryMapState === "ready";

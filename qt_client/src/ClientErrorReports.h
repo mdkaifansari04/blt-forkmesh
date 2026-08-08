@@ -50,6 +50,12 @@ public:
         QString message;  // the failure text; empty means "nothing to report"
         qint64 tsMs = 0;  // when the operator saw it
         int attempts = 0; // sends tried so far (a deferred report keeps counting)
+        // The Pings row this failure was filed as (adhoc #1629). Carried so the
+        // report's fate can be written back onto that row — "Synced" once the
+        // relay takes it, "Not synced" when it never does. Local bookkeeping
+        // only: payload() never puts it on the wire, and dedupeKey() ignores it,
+        // so two sightings of one failure still count as one report.
+        qint64 pingId = 0;
     };
 
     static constexpr int kMaxMessageChars = 700;
@@ -89,7 +95,10 @@ public:
     bool defer(const Report &report);
 
     // Everything still worth sending, oldest first; the queue is left empty.
-    QList<Report> takeDeferred(qint64 nowMs);
+    // `expiredOut` collects the reports dropped for having waited longer than
+    // kMaxDeferralMs — they are never sent, and the Pings row each one came from
+    // has to be told that rather than waiting forever (adhoc #1629).
+    QList<Report> takeDeferred(qint64 nowMs, QList<Report> *expiredOut = nullptr);
     int deferredCount() const { return m_deferred.size(); }
 
 private:

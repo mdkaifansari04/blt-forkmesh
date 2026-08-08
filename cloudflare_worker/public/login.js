@@ -34,6 +34,24 @@
     return value;
   }
 
+  // Fallback destination when no ?next= was passed: the same-origin page the
+  // visitor came from (e.g. they hit a login-required page and clicked the
+  // plain header "Login" link). Auth pages are excluded so a login ↔ signup ↔
+  // forgot-password shuffle doesn't bounce straight back into a form.
+  function referrerPath() {
+    let url = null;
+    try {
+      url = new URL(document.referrer);
+    } catch (_) {
+      return "";
+    }
+    if (url.origin !== location.origin) return "";
+    if (/^\/(login|signup|forgot-password|reset-password)(\.html)?$/.test(url.pathname)) {
+      return "";
+    }
+    return url.pathname + url.search + url.hash;
+  }
+
   function demoLoginAllowed() {
     return location.hostname === "localhost" || location.hostname === "127.0.0.1";
   }
@@ -110,7 +128,7 @@
       setHint("Logged in as “" + (body.nodeName || email) + "”.", "good");
       // Persist a minimal, non-secret session marker for the static site.
       storeSession(body);
-      setTimeout(() => (location.href = nextPath() || "/"), 700);
+      setTimeout(() => (location.href = nextPath() || referrerPath() || "/"), 700);
       return;
     }
     if (body.error === "bad_totp") {

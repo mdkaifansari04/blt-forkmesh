@@ -68,11 +68,27 @@ struct HostSshCommand {
     QProcessEnvironment environment;
 };
 
+// The device-local directory holding ForkMesh's SSH state: the shared host key
+// and the persistent known_hosts trust store. Created owner-only on demand;
+// empty when it could not be created.
+QString sharedHostKeyDirectory();
+
+// Path of the one ForkMesh-managed private key every host in the fleet
+// authorizes. Devices that still hold the older per-provider key file keep
+// using that file, so mirrors provisioned before the switch stay reachable.
+// The file itself may not exist yet; sharedHostKeyPath() only names it.
+QString sharedHostKeyPath();
+
+// sharedHostKeyPath() when the key has actually been generated on this device,
+// empty otherwise. Callers use it as the default identity for every saved host,
+// including hosts added by hand.
+QString existingSharedHostIdentityFile();
+
 // Build the common authenticated transport used by install, logs, uninstall,
 // and Actions. The caller owns remoteCommand, which must not contain credentials.
-// identityFile optionally pins authentication to one ForkMesh-managed private
-// key (used for auto-provisioned Vultr mirrors); the path is public metadata,
-// the key material never leaves disk.
+// identityFile pins authentication to one ForkMesh-managed private key — the
+// shared fleet key, or whatever key a saved host recorded; the path is public
+// metadata, the key material never leaves disk.
 HostSshCommand buildHostSshCommand(const QString &host,
                                    const QString &sshUser,
                                    const QString &sshPassword,
@@ -317,13 +333,82 @@ QString cloudflareApiTokenFromVariables(
 QString cloudflareAccountIdFromVariables(
     const QMap<QString, QString> &variables);
 
+// The pinned Wrangler refuses to run on an older interpreter — "Wrangler
+// requires at least Node.js v22.0.0", printed once before it exits 1. That is
+// how the cloud log monitor died a second after every launch on a machine whose
+// PATH `node` is 20 while a newer one sits unused in nvm (adhoc #1617): the
+// monitor is on by default, so it kept starting a tail that could never stream.
+constexpr int kWranglerMinimumNodeMajor = 22;
+
+// A Node install good enough to run Wrangler with.
+struct NodeToolchain {
+    QString npx;     // absolute npx to run
+    QString binDir;  // MUST lead the child's PATH: both npx and the wrangler bin
+                     // it spawns start with `#!/usr/bin/env node`, so an old
+                     // node earlier in PATH is picked straight back up
+    int majorVersion = 0;
+    bool isValid() const { return !npx.isEmpty(); }
+};
+
+// Directories that may hold a Node install, in the order they should be tried:
+// an explicit FORKMESH_NODE_BIN override, then PATH, then every version a
+// manager (nvm/fnm/volta/asdf) has installed, newest first. Only directories
+// that actually contain an executable npx are returned. Runs no process.
+QStringList nodeBinDirectoryCandidates();
+
+// Major version out of `node --version` output or a versioned path segment
+// ("v22.23.1" -> 22). 0 when the text carries none.
+int nodeMajorVersionFromText(const QString &text);
+
+// The first candidate whose `node --version` reports at least `minimumMajor`.
+// Invalid when this machine has nothing new enough, which is a state worth
+// reporting rather than a tail worth starting.
+NodeToolchain findNodeToolchain(int minimumMajor);
+
 // Build a direct (non-shell) invocation of ForkMesh's pinned Wrangler tail.
 // The token and optional account ID are placed only in the child environment,
-// never in argv.
+// never in argv. `nodeBinDir` is prepended to the child's PATH so the shebangs
+// down the chain resolve to the Node that npx came from.
 CloudflareBootstrapCommand buildCloudflareTailCommand(
     const QString &apiToken,
     const QString &accountId,
-    const QString &npxProgram);
+    const QString &npxProgram,
+    const QString &nodeBinDir = QString());
+
+// One decoded event of `wrangler tail --format json`. The viewer renders these
+// itself (rather than letting Wrangler pretty-print) because the pretty format
+// drops request headers — and the user agent behind each hit is exactly what
+// the cloud log is read for. `summary` is Wrangler's own default line with the
+// agent appended, so the log reads the way `wrangler tail` does.
+struct CloudflareTailEvent {
+    bool parsed = false;    // false for banner/plain lines: show them verbatim
+    bool isError = false;   // an exception, a non-ok outcome, a 5xx, error logs
+    QString summary;        // the rendered one-line form for the viewer
+    QString method;
+    QString url;
+    QString userAgent;      // request user-agent header, empty when absent
+    QString outcome;
+    int status = 0;         // response status, 0 when the event carries none
+    QStringList messages;   // console logs and exception text, newest first
+};
+
+// Cut whatever Wrangler has written so far into whole tail records, leaving any
+// incomplete trailing one in `buffer` for the next read.
+//
+// `--format json` is NOT NDJSON: Wrangler prints each event with
+// JSON.stringify(event, null, 4), so a single hit spans ~30 indented lines
+// (adhoc #1623). Splitting on newlines alone therefore hands the parser
+// fragments like `    "outcome": "ok",`, none of which decode — which is how the
+// whole expanded object ended up in the viewer, and why no Worker failure ever
+// reached the alert path. A record here is one brace-balanced JSON document, or
+// one plain line (Wrangler's own banner/warnings) when no document is open.
+QStringList takeCloudflareTailRecords(QByteArray *buffer);
+
+// Decode one record of Wrangler's tail, as produced by
+// takeCloudflareTailRecords(). Anything that is not a JSON tail event
+// (Wrangler's own banner, a blank line) comes back with parsed=false and the
+// text collapsed to one line in `summary`, so callers can pass it through.
+CloudflareTailEvent parseCloudflareTailLine(const QString &line);
 
 // Decode the bootstrapper's bounded, non-secret machine result. Human log
 // output may surround the sentinel line; malformed or duplicate results fail
@@ -358,6 +443,21 @@ QUrl worldDevServerUrl(const QString &configured);
 // archive.
 QStringList directMirrorRepositoryOwners(const QString &canonicalOwner,
                                          const QString &catalogOwner);
+
+// True when `value` is one deployed Worker's mirror-router public key: 43
+// base64url characters that decode to exactly 32 bytes.
+bool isValidMirrorRouterPublicKey(const QString &value);
+
+// True when this node holds every setting its direct HTTPS mirror gateway
+// needs: a DNS-label node name, an https origin for the mirror hostname (as
+// returned by the caller's origin normalizer, empty when the hostname is
+// unusable), and the deployed Worker's router public key. A node that never
+// provisioned a Cloudflare endpoint leaves these empty and serves through the
+// relay instead, so an incomplete set is a supported steady state rather than
+// a failure worth reporting.
+bool directMirrorGatewayIsConfigured(const QString &nodeName,
+                                     const QString &mirrorOrigin,
+                                     const QString &routerPublicKey);
 
 // Validate the JSON request emitted by cloudflare_bootstrap.py's external
 // manifest signer and return the exact canonical manifest bytes to sign.

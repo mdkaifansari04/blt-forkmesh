@@ -17,16 +17,38 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
                                 const QString &initialPrompt, bool skipPermissions,
                                 const QString &resumeSessionId, const QString &model,
                                 const QString &effort, const QString &fallbackModels,
-                                int memoryLimitMb)
+                                int memoryLimitMb,
+                                const QString &resumeFallbackPrompt)
+{
+    m_cwd = cwd;
+    m_extraEnv = extraEnv;
+    m_initialPrompt = initialPrompt;
+    m_skipPermissions = skipPermissions;
+    m_resumeSessionId = resumeSessionId;
+    m_model = model;
+    m_effort = effort;
+    m_fallbackModels = fallbackModels;
+    m_memoryLimitMb = memoryLimitMb;
+    m_resumeFallbackPrompt = resumeFallbackPrompt.trimmed();
+    m_resumeFallbackUsed = false;
+    launch();
+}
+
+void ClaudeStreamSession::launch()
 {
     stop();
     m_buf.clear();
+    m_conversationOpened = false;
+    m_exitReported = false;
+
+    const QString cwd = m_cwd;
+    const QString initialPrompt = m_initialPrompt;
 
     m_proc = new QProcess(this);
     m_proc->setWorkingDirectory(cwd);
 
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    for (const QString &kv : extraEnv) {
+    for (const QString &kv : m_extraEnv) {
         const int eq = kv.indexOf(QLatin1Char('='));
         if (eq > 0)
             env.insert(kv.left(eq), kv.mid(eq + 1));
@@ -42,7 +64,52 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
             &ClaudeStreamSession::onStderr);
     connect(m_proc, &QProcess::started, this, &ClaudeStreamSession::started);
     connect(m_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this](int code, QProcess::ExitStatus) { emit finished(code); });
+            this, [this](int code, QProcess::ExitStatus) {
+                // Exiting before the `system`/init line means the CLI never got
+                // a conversation going. With `--resume` in play that is almost
+                // always the saved conversation being gone (pruned, or written
+                // under a config root this login no longer uses), so try once
+                // more as a fresh one rather than reporting a dead session the
+                // caller would only relaunch the same way.
+                if (!m_conversationOpened && !m_resumeSessionId.isEmpty() &&
+                    !m_resumeFallbackUsed) {
+                    m_resumeFallbackUsed = true;
+                    m_resumeSessionId.clear();
+                    if (!m_resumeFallbackPrompt.isEmpty())
+                        m_initialPrompt = m_resumeFallbackPrompt;
+                    emit event(QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("_local_notice")},
+                        {QStringLiteral("level"), QStringLiteral("warning")},
+                        {QStringLiteral("text"),
+                         QStringLiteral(
+                             "The saved Claude Code conversation could not be "
+                             "resumed, so ForkMesh started a new one with the "
+                             "saved task and latest instruction. The branch and "
+                             "its work are untouched.")}});
+                    launch();
+                    return;
+                }
+                reportExit(code);
+            });
+    // A process that never starts emits errorOccurred(FailedToStart) and no
+    // finished() at all, so this is the only ending the caller will ever see for
+    // a launch whose working directory has been removed or whose shell is
+    // missing. Without it the session stayed Running behind a dead transport:
+    // every following "add" restarted it, the restart failed the same silent way,
+    // and the prompts piled up in the transcript with nothing answering them
+    // (adhoc #1618). A start failure is not the resume fallback's problem — the
+    // conversation was never reached — so report it straight through.
+    connect(m_proc, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                emit stderrText(
+                    QStringLiteral(
+                        "Claude Code could not be started in %1 (the working "
+                        "directory may be gone, or `claude` is not on PATH).\n")
+                        .arg(m_cwd));
+                reportExit(-1);
+            });
 
     // Run through a login shell so the user's PATH (e.g. ~/.local/bin) resolves
     // `claude`, exactly like the embedded terminal does. `exec` hands stdin/out
@@ -50,54 +117,58 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
     QString cmd = QStringLiteral(
         "exec claude --output-format stream-json --input-format stream-json "
         "--verbose --include-partial-messages");
-    if (skipPermissions)
+    if (m_skipPermissions)
         cmd += QStringLiteral(" --dangerously-skip-permissions");
     // Run as the model the user picked in the quick-add bar (adhoc #261). The
     // value is a CLI alias ("opus"/"sonnet"/…) or a full model id; single-quote
     // it defensively like the resume id below.
-    if (!model.trimmed().isEmpty())
-        cmd += QStringLiteral(" --model '%1'").arg(model.trimmed());
+    if (!m_model.trimmed().isEmpty())
+        cmd += QStringLiteral(" --model '%1'").arg(m_model.trimmed());
     // Effort level and fallback models from the footer slash-actions menu
     // (adhoc #116). Values are fixed CLI keywords / model aliases, but
     // single-quote them defensively like the model above.
-    if (!effort.trimmed().isEmpty())
-        cmd += QStringLiteral(" --effort '%1'").arg(effort.trimmed());
-    if (!fallbackModels.trimmed().isEmpty())
-        cmd += QStringLiteral(" --fallback-model '%1'").arg(fallbackModels.trimmed());
+    if (!m_effort.trimmed().isEmpty())
+        cmd += QStringLiteral(" --effort '%1'").arg(m_effort.trimmed());
+    if (!m_fallbackModels.trimmed().isEmpty())
+        cmd += QStringLiteral(" --fallback-model '%1'").arg(m_fallbackModels.trimmed());
     // Resume a prior conversation so the agent picks up its full context (the
     // files it touched, what it had figured out, what's left). The id is a UUID
     // from the CLI's own stream, but single-quote it defensively all the same.
-    if (!resumeSessionId.isEmpty())
-        cmd += QStringLiteral(" --resume '%1'").arg(resumeSessionId);
+    if (!m_resumeSessionId.isEmpty())
+        cmd += QStringLiteral(" --resume '%1'").arg(m_resumeSessionId);
     // Jail (adhoc #236): cap the agent's memory before handing the shell to
     // claude. The rlimit survives the exec and is inherited by subprocesses.
-    cmd = AgentJail::wrapCommand(cmd, memoryLimitMb);
-    const forkmesh::vm::LaunchCommand launch =
+    cmd = AgentJail::wrapCommand(cmd, m_memoryLimitMb);
+    const forkmesh::vm::LaunchCommand launchCmd =
         forkmesh::vm::isolateCommand(
             QStringLiteral("bash"), {QStringLiteral("-lc"), cmd}, cwd);
-    if (!launch.error.isEmpty()) {
+    if (!launchCmd.error.isEmpty()) {
         QProcess *failed = m_proc;
         m_proc = nullptr;
         failed->deleteLater();
-        emit stderrText(QStringLiteral("KVM launch failed: %1").arg(launch.error));
-        QTimer::singleShot(0, this, [this] { emit finished(-1); });
+        emit stderrText(QStringLiteral("KVM launch failed: %1").arg(launchCmd.error));
+        // Reported straight to the caller, never through the resume fallback:
+        // nothing was wrong with the conversation, the host could not spawn a
+        // process at all, and a second attempt would fail the same way.
+        QTimer::singleShot(0, this, [this] { reportExit(-1); });
         return;
     }
-    m_proc->start(launch.program, launch.arguments);
+    m_proc->start(launchCmd.program, launchCmd.arguments);
 
     if (!initialPrompt.isEmpty())
         writeUserTurn(initialPrompt);
 }
 
-void ClaudeStreamSession::sendUserText(const QString &text)
+bool ClaudeStreamSession::sendUserText(const QString &text)
 {
-    if (!text.trimmed().isEmpty())
-        writeUserTurn(text);
+    if (text.trimmed().isEmpty())
+        return true; // nothing to deliver, so nothing failed to arrive
+    return writeUserTurn(text);
 }
 
-void ClaudeStreamSession::writeUserTurn(const QString &text)
+bool ClaudeStreamSession::writeUserTurn(const QString &text)
 {
-    writeLine(QJsonObject{
+    return writeLine(QJsonObject{
         {QStringLiteral("type"), QStringLiteral("user")},
         {QStringLiteral("message"),
          QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
@@ -124,11 +195,25 @@ void ClaudeStreamSession::sendToolResult(const QString &toolUseId,
                      {QStringLiteral("content"), QJsonArray{block}}}}});
 }
 
-void ClaudeStreamSession::writeLine(const QJsonObject &msg)
+bool ClaudeStreamSession::writeLine(const QJsonObject &msg)
 {
     if (!running())
+        return false;
+    // A process can read as running while its stdin is already closed (it is
+    // exiting, or the pipe broke). write() reports that, and the caller needs to
+    // know: a turn that goes nowhere used to be indistinguishable from one the
+    // agent simply had not answered yet (adhoc #1618).
+    if (!m_proc->isWritable())
+        return false;
+    return m_proc->write(QJsonDocument(msg).toJson(QJsonDocument::Compact) + '\n') >= 0;
+}
+
+void ClaudeStreamSession::reportExit(int exitCode)
+{
+    if (m_exitReported)
         return;
-    m_proc->write(QJsonDocument(msg).toJson(QJsonDocument::Compact) + '\n');
+    m_exitReported = true;
+    emit finished(exitCode);
 }
 
 void ClaudeStreamSession::stop()
@@ -164,6 +249,11 @@ bool ClaudeStreamSession::running() const
     return m_proc && m_proc->state() != QProcess::NotRunning;
 }
 
+bool ClaudeStreamSession::acceptsInput() const
+{
+    return running() && m_proc->isWritable();
+}
+
 qint64 ClaudeStreamSession::processId() const
 {
     return running() ? m_proc->processId() : 0;
@@ -182,8 +272,16 @@ void ClaudeStreamSession::onStdout()
             continue;
         emit rawLine(QString::fromUtf8(line));
         const QJsonDocument doc = QJsonDocument::fromJson(line);
-        if (doc.isObject())
-            emit event(doc.object());
+        if (doc.isObject()) {
+            const QJsonObject ev = doc.object();
+            // The CLI opens every run — fresh or resumed — with a system/init
+            // line. Seeing one is what tells the finished handler this launch
+            // had a real conversation, so an exit after it is a genuine end and
+            // not a `--resume` that had nothing to open.
+            if (ev.value(QStringLiteral("type")).toString() == QLatin1String("system"))
+                m_conversationOpened = true;
+            emit event(ev);
+        }
     }
 }
 
