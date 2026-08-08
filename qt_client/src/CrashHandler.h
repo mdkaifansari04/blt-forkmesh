@@ -2,6 +2,10 @@
 
 #include <QString>
 
+#include <functional>
+
+class QObject;
+
 // Last-resort crash logging. The app "sometimes exits / crashes" with nothing
 // left behind to explain why, so we install handlers for the fatal signals
 // (SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL) and for unhandled C++ exceptions. When
@@ -26,6 +30,17 @@ namespace forkmesh {
 // is created if needed.
 void installCrashHandler(const QString &crashLogPath = QString(),
                          const QString &mainLogPath = QString());
+
+// Turn an external stop request (SIGTERM/SIGINT/SIGHUP/SIGQUIT) into an orderly
+// shutdown instead of an abrupt death. Call once, from the GUI thread, after the
+// application object and main window exist: onTerminate then runs on the event
+// loop for the first such signal — close the window and quit, so closeEvent()
+// still saves geometry, chat history, the pings journal and the network log. A
+// second signal, a signal arriving before this is armed, or a shutdown that
+// takes longer than the internal deadline still terminates the process
+// immediately. `context` owns the notifier and scopes the callback's lifetime.
+void enableGracefulTerminationShutdown(QObject *context,
+                                       std::function<void()> onTerminate);
 
 // Best-effort context included in the next fatal crash record. Keep it compact:
 // it is copied into a fixed buffer so the signal handler can dump it without

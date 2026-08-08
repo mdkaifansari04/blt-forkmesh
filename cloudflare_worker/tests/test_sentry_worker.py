@@ -517,6 +517,17 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "safeWriteMainLogSignalRecord" in CRASH_HANDLER_CPP_TEXT
     assert "ForkMesh signal: " in CRASH_HANDLER_CPP_TEXT
     assert "action workflow survived and will finish/fail normally" in CRASH_HANDLER_CPP_TEXT
+    # An external stop request is not a crash: it gets its own heading, no
+    # event-loop backtrace, and is handed to the event loop so closeEvent()
+    # still saves settings/chat/log before the process exits.
+    assert "===== ForkMesh shutdown signal =====" in CRASH_HANDLER_CPP_TEXT
+    assert "bool requestGracefulShutdown()" in CRASH_HANDLER_CPP_TEXT
+    assert "std::atomic_flag g_gracefulShutdownRequested" in CRASH_HANDLER_CPP_TEXT
+    assert "kGracefulShutdownDeadlineSeconds" in CRASH_HANDLER_CPP_TEXT
+    assert "::alarm(kGracefulShutdownDeadlineSeconds);" in CRASH_HANDLER_CPP_TEXT
+    assert "; shutting down cleanly" in CRASH_HANDLER_CPP_TEXT
+    assert "void enableGracefulTerminationShutdown(QObject *context," in CRASH_HANDLER_H_TEXT
+    assert "forkmesh::enableGracefulTerminationShutdown(&app," in MAIN_CPP_TEXT
     assert "void safeWriteSignalInfo(const siginfo_t *info)" in CRASH_HANDLER_CPP_TEXT
     assert "signal code: " in CRASH_HANDLER_CPP_TEXT
     assert "sender pid: " in CRASH_HANDLER_CPP_TEXT

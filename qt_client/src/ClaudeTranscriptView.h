@@ -165,6 +165,10 @@ public:
     // more options alongside a question mark (issue #212), e.g. "do you want
     // me to: 1. ... or 2. ...?". Shared with MainWindow so the same rule flags
     // the session "Waiting" (hand icon) as a real AskUserQuestion turn does.
+    // Deliberately strict, because a false positive parks a finished run on
+    // "Waiting" until a human looks at it (adhoc #1626): the options must be
+    // short, few, and end the turn, and the line right above them (or a short
+    // closing line below) must actually ask something.
     static bool parseInlineChoices(const QString &markdown, QStringList &options);
 
     // Turn repository references in transcript prose into private links the
