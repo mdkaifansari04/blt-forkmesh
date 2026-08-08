@@ -1841,6 +1841,71 @@ private:
     bool m_unreachable = false; // relay failed to answer the last probe
 };
 
+// The three chrome-line grids — agent sessions, mesh nodes, action runs — each
+// carry a caption naming the group in the smallest legible face, so the dots say
+// what they are without waiting on a tooltip. Shared here so all three grids
+// keep the same height and their captions sit on one baseline.
+namespace ChromeDotGrid {
+
+// Every grid is three deep in 7px cells, column-major, so the groups line up
+// row for row across their dividers.
+constexpr int kRows = 3;
+constexpr int kPitch = 7;
+constexpr int kGridHeight = kRows * kPitch;
+
+// Font is fixed at startup, so a once-computed static is safe. Painted rather
+// than set on a widget: the theme's global QWidget font-size rule would
+// override setFont(), and a QPainter face is immune to it.
+inline QFont captionFont()
+{
+    static const QFont font = [] {
+        QFont f = QGuiApplication::font();
+        f.setWeight(QFont::Normal);
+        f.setPixelSize(8); // as small as the caption can go and still read
+        return f;
+    }();
+    return font;
+}
+
+// The caption line under a grid: a hair of air above it, and enough below that
+// the descender in "Agents" is not shaved off by the widget's own edge.
+inline int captionHeight()
+{
+    static const int height = QFontMetrics(captionFont()).height() + 3;
+    return height;
+}
+
+inline int captionWidth(const QString &text)
+{
+    return QFontMetrics(captionFont()).horizontalAdvance(text);
+}
+
+// Grid plus its caption: what a chrome grid (and the divider beside it) is tall.
+inline int totalHeight() { return kGridHeight + captionHeight(); }
+
+// Paint the caption along the bottom of `widget`, left-aligned with the grid
+// above it and dimmed so it never competes with the dots it names.
+inline void paintCaption(QPainter &p, const QWidget *widget,
+                         const QString &text)
+{
+    QColor ink = widget->palette().color(QPalette::WindowText);
+    ink.setAlpha(170);
+    p.save();
+    p.setPen(ink);
+    p.setFont(captionFont());
+    p.drawText(QRect(0, kGridHeight, widget->width(), captionHeight()),
+               Qt::AlignLeft | Qt::AlignVCenter, text);
+    p.restore();
+}
+
+// What a grid this wide has to be: the dots, or the caption if it is wider.
+inline int widthFor(int columns, const QString &caption)
+{
+    return columns <= 0 ? 0 : qMax(columns * kPitch, captionWidth(caption));
+}
+
+} // namespace ChromeDotGrid
+
 // A matrix of tiny squares on the window-chrome line, one per agent session,
 // sitting immediately right of the "Agents (N)" button. Each square is painted
 // in the same colour as that session's status icon in the agents list, so the
@@ -1866,10 +1931,12 @@ public:
         double throughput = 0.0;
     };
 
+    static constexpr const char *kCaption = "Agents";
+
     explicit AgentDotMatrix(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedHeight(kRows * kPitch);
+        setFixedHeight(ChromeDotGrid::totalHeight());
         setFixedWidth(0); // nothing to show until the first setDots()
         setCursor(Qt::PointingHandCursor);
         hide();
@@ -1890,7 +1957,8 @@ public:
     {
         m_dots = dots;
         const int columns = (m_dots.size() + kRows - 1) / kRows;
-        setFixedWidth(columns * kPitch);
+        setFixedWidth(
+            ChromeDotGrid::widthFor(columns, QLatin1String(kCaption)));
         bool anyRunning = false;
         for (const Dot &d : std::as_const(m_dots))
             anyRunning = anyRunning || d.running;
@@ -1961,6 +2029,7 @@ protected:
                        side),
                 1.2, 1.2);
         }
+        ChromeDotGrid::paintCaption(p, this, QLatin1String(kCaption));
     }
 
 private:
@@ -1984,8 +2053,8 @@ private:
         return index < m_dots.size() ? index : -1;
     }
 
-    static constexpr int kRows = 3;        // squares stacked per column
-    static constexpr int kPitch = 7;       // cell size, including its gap
+    static constexpr int kRows = ChromeDotGrid::kRows;   // squares per column
+    static constexpr int kPitch = ChromeDotGrid::kPitch; // cell, including gap
     static constexpr double kSide = 4.5;   // painted square
     static constexpr double kSweepStep = 0.06; // per-square offset of the sweep
 
@@ -2012,10 +2081,12 @@ public:
         bool self = false; // this machine, ringed so it's findable
     };
 
+    static constexpr const char *kCaption = "Nodes";
+
     explicit NodeDotMatrix(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedHeight(kRows * kPitch);
+        setFixedHeight(ChromeDotGrid::totalHeight());
         setFixedWidth(0); // nothing to show until the first setDots()
         setCursor(Qt::PointingHandCursor);
         hide();
@@ -2029,7 +2100,8 @@ public:
     {
         m_dots = dots.mid(0, kRows * kMaxColumns);
         const int columns = (m_dots.size() + kRows - 1) / kRows;
-        setFixedWidth(columns * kPitch);
+        setFixedWidth(
+            ChromeDotGrid::widthFor(columns, QLatin1String(kCaption)));
         update();
     }
 
@@ -2075,6 +2147,7 @@ protected:
                 p.drawEllipse(center, kRadius + 1.0, kRadius + 1.0);
             }
         }
+        ChromeDotGrid::paintCaption(p, this, QLatin1String(kCaption));
     }
 
 private:
@@ -2098,8 +2171,8 @@ private:
         return index < m_dots.size() ? index : -1;
     }
 
-    static constexpr int kRows = 3;        // dots stacked per column
-    static constexpr int kPitch = 7;       // cell size, including its gap
+    static constexpr int kRows = ChromeDotGrid::kRows;   // dots per column
+    static constexpr int kPitch = ChromeDotGrid::kPitch; // cell, including gap
     static constexpr double kRadius = 2.3; // painted dot
     static constexpr int kMaxColumns = 12; // ~36 nodes before the tooltip takes over
 
@@ -2125,15 +2198,16 @@ public:
         bool running = false;
     };
 
-    static constexpr int kRows = 3;       // squares stacked per column
+    static constexpr int kRows = ChromeDotGrid::kRows; // squares per column
     static constexpr int kMaxColumns = 6; // before the tooltip takes over
     // How many runs the strip shows before the tooltip takes over.
     static constexpr int kMaxCells = kRows * kMaxColumns;
+    static constexpr const char *kCaption = "Actions";
 
     explicit ActionRunStrip(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedHeight(kRows * kPitch);
+        setFixedHeight(ChromeDotGrid::totalHeight());
         setFixedWidth(0); // nothing to show until the first setCells()
         setCursor(Qt::PointingHandCursor);
         hide();
@@ -2153,7 +2227,8 @@ public:
     {
         m_cells = cells.mid(0, kMaxCells);
         const int columns = (m_cells.size() + kRows - 1) / kRows;
-        setFixedWidth(columns * kPitch);
+        setFixedWidth(
+            ChromeDotGrid::widthFor(columns, QLatin1String(kCaption)));
         bool anyRunning = false;
         for (const Cell &c : std::as_const(m_cells))
             anyRunning = anyRunning || c.running;
@@ -2206,6 +2281,7 @@ protected:
                                      center.y() - kSide / 2.0, kSide, kSide),
                               1.2, 1.2);
         }
+        ChromeDotGrid::paintCaption(p, this, QLatin1String(kCaption));
     }
 
 private:
@@ -2229,7 +2305,7 @@ private:
         return index < m_cells.size() ? index : -1;
     }
 
-    static constexpr int kPitch = 7;     // cell size, including its gap
+    static constexpr int kPitch = ChromeDotGrid::kPitch; // cell, including gap
     static constexpr double kSide = 4.5; // painted square
     static constexpr double kPulseStep = 0.09; // per-square offset of the pulse
 
