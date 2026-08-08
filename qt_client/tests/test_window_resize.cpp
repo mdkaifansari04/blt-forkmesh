@@ -3176,6 +3176,24 @@ int main(int argc, char *argv[])
                       QStringLiteral("commit-waiting.txt")),
               QStringLiteral("clicking a working-tree file pins its sticky filename "
                              "at the top of the diff"));
+        // The same two marks as the branch range: a stroke on the row and an
+        // outline around that file's section of the combined diff.
+        check(window.testScmStrokedRowFile() ==
+                  QStringLiteral("commit-waiting.txt"),
+              QString("the working-tree file's CHANGES row carries the green "
+                      "stroke (stroked = \"%1\")")
+                  .arg(window.testScmStrokedRowFile()));
+        check(window.testScmOutlinedFile() ==
+                      QStringLiteral("commit-waiting.txt") &&
+                  window.testScmOutlineRect().width() > 0 &&
+                  window.testScmOutlineRect().height() > 0,
+              QString("the working-tree diff outlines the active file's section "
+                      "(outlined = \"%1\", rect = %2x%3)")
+                  .arg(window.testScmOutlinedFile().isEmpty()
+                           ? QStringLiteral("<none>")
+                           : window.testScmOutlinedFile())
+                  .arg(window.testScmOutlineRect().width())
+                  .arg(window.testScmOutlineRect().height()));
 
         // …and once that change is committed the row hands itself back to Sync,
         // which is the behaviour the swap was there for in the first place.

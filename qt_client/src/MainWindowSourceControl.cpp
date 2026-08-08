@@ -315,6 +315,21 @@ QString MainWindow::testScmStrokedRowFile() const
     }
     return QString();
 }
+
+// The section key carries the staged/unstaged side ("s|" / "u|"); the tests care
+// about the path the outline is drawn around.
+QString MainWindow::testScmOutlinedFile() const
+{
+    if (!m_scmDiffActiveOutline || !m_scmDiffActiveOutline->isVisible())
+        return QString();
+    const int index = m_scmSectionKeys.indexOf(m_scmActiveSectionKey);
+    return index < 0 ? QString() : m_scmSectionPaths.value(index);
+}
+
+QRect MainWindow::testScmOutlineRect() const
+{
+    return m_scmDiffActiveOutline ? m_scmDiffActiveOutline->geometry() : QRect();
+}
 #endif
 
 // Mark a CHANGES row current without letting currentItemChanged drive the diff.
@@ -1753,6 +1768,18 @@ void MainWindow::setupScmDiffPane()
     connect(m_scmDiff, &QTextBrowser::anchorClicked, this,
             &MainWindow::onScmDiffAnchorClicked);
 
+    // Selection outline for the file CHANGES points at, matching the branch/PR
+    // pane. Created before the sticky header so the header, which is raised on
+    // every update, keeps painting over it.
+    m_scmDiffActiveOutline = new QFrame(m_scmDiff->viewport());
+    m_scmDiffActiveOutline->setObjectName("diffActiveOutline");
+    m_scmDiffActiveOutline->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_scmDiffActiveOutline->setStyleSheet(
+        QStringLiteral("#diffActiveOutline{background:transparent;"
+                       "border:2px solid #2da44e;border-radius:6px;}"));
+    m_scmDiffActiveOutline->hide();
+    m_scmDiff->viewport()->installEventFilter(this);
+
     // Parented to the viewport so it floats over the text instead of scrolling
     // away with the document.
     m_scmStickyHeader = new QFrame(m_scmDiff->viewport());
@@ -1948,6 +1975,11 @@ void MainWindow::renderScmCombinedDiff()
     // The document (and its layout) was replaced; re-read the file positions once
     // the layout has settled.
     m_scmStickySection.clear();
+    // A section that is no longer rendered cannot stay outlined.
+    if (!m_scmSectionKeys.contains(m_scmActiveSectionKey))
+        m_scmActiveSectionKey.clear();
+    if (m_scmDiffActiveOutline)
+        m_scmDiffActiveOutline->hide(); // until the new layout is measured
     QTimer::singleShot(0, this, &MainWindow::updateScmDiffScrollState);
 }
 
@@ -2024,7 +2056,9 @@ void MainWindow::scrollScmDiffToFile(const QString &path, bool staged)
     // retries the same exact pin after the bounded background batches land.
     flushDiffStream(m_scmDiff);
     const QString key = m_scmSectionKeys.at(idx);
+    m_scmActiveSectionKey = key;
     scrollDiffToAnchor(m_scmDiff, m_scmSectionAnchors.at(idx));
+    updateScmDiffActiveOutline();
     if (pinScmDiffSectionToTop(idx))
         m_scmPendingScrollKey.clear();
     else
@@ -2106,6 +2140,50 @@ void MainWindow::computeScmFileTops()
     }
 }
 
+// The working-tree twin of updateBranchDiffActiveOutline(): outline the combined
+// diff's section for whichever file CHANGES currently points at.
+void MainWindow::updateScmDiffActiveOutline()
+{
+    if (!m_scmDiff || !m_scmDiffActiveOutline)
+        return;
+    const int index = m_scmActiveSectionKey.isEmpty()
+                          ? -1
+                          : m_scmSectionKeys.indexOf(m_scmActiveSectionKey);
+    QScrollBar *vbar = m_scmDiff->verticalScrollBar();
+    if (index < 0 || !vbar) {
+        m_scmDiffActiveOutline->hide();
+        return;
+    }
+    if (m_scmFileTops.size() != m_scmSectionAnchors.size())
+        computeScmFileTops();
+    // A section still streaming in has no measured top yet.
+    if (index >= m_scmFileTops.size() || m_scmFileTops.at(index) < 0) {
+        m_scmDiffActiveOutline->hide();
+        return;
+    }
+    const int docHeight =
+        m_scmDiff->document()->documentLayout()->documentSize().height();
+    const int top = m_scmFileTops.at(index);
+    const int bottom =
+        (index + 1 < m_scmFileTops.size() && m_scmFileTops.at(index + 1) >= 0)
+            ? m_scmFileTops.at(index + 1)
+            : docHeight;
+
+    const int viewTop = vbar->value();
+    const int height = m_scmDiff->viewport()->height();
+    if (bottom - viewTop <= 0 || top - viewTop >= height) {
+        m_scmDiffActiveOutline->hide();
+        return;
+    }
+    m_scmDiffActiveOutline->setGeometry(
+        1, top - viewTop, qMax(0, m_scmDiff->viewport()->width() - 2),
+        qMax(1, bottom - top));
+    m_scmDiffActiveOutline->show();
+    m_scmDiffActiveOutline->raise();
+    if (m_scmStickyHeader && m_scmStickyHeader->isVisible())
+        m_scmStickyHeader->raise(); // header stays above the outline
+}
+
 // Runs on every scroll tick of the combined diff (cheap; no re-render). Works out
 // which file sits at the top of the viewport, mirrors its header into the sticky
 // bar, advances the read-progress chart / percentage by how much of that file has
@@ -2116,6 +2194,8 @@ void MainWindow::updateScmDiffScrollState()
         return;
     if (m_scmSectionKeys.isEmpty()) {
         m_scmStickyHeader->hide();
+        if (m_scmDiffActiveOutline)
+            m_scmDiffActiveOutline->hide();
         return;
     }
     QScrollBar *vbar = m_scmDiff->verticalScrollBar();
@@ -2172,6 +2252,9 @@ void MainWindow::updateScmDiffScrollState()
         m_scmStickyPath->setText(m_scmStickyLabelHtml.value(key));
         selectScmFileInTree(path, key.startsWith(QLatin1String("s|")));
     }
+    // The tree's green stroke follows the scroll here (selectScmFileInTree), so
+    // the outline has to track the same section or the two would drift apart.
+    m_scmActiveSectionKey = key;
     m_scmStickyViewed->setText(isViewed ? QString::fromUtf8("\xE2\x98\x91 Viewed")
                                         : QString::fromUtf8("\xE2\x98\x90 Viewed"));
     m_scmStickyViewed->setChecked(isViewed);
@@ -2186,6 +2269,9 @@ void MainWindow::updateScmDiffScrollState()
     layoutScmStickyHeader();
     m_scmStickyHeader->show();
     m_scmStickyHeader->raise();
+    // Last, so it uses the section this tick just settled on and can re-raise
+    // the header above itself.
+    updateScmDiffActiveOutline();
 }
 
 struct ScmAutoViewedDelta {

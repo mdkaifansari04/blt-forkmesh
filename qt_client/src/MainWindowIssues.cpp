@@ -5311,13 +5311,16 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (handleFramelessResizeEvent(obj, event))
         return true;
 
-    // The branch/PR diff's overlays (sticky header, active-file outline) are
-    // sized against its viewport, so a splitter drag has to re-lay them out even
+    // A diff pane's overlays (sticky header, active-file outline) are sized
+    // against its viewport, so a splitter drag has to re-lay them out even
     // though nothing scrolled.
-    if (m_branchDiffView && obj == m_branchDiffView->viewport() &&
-        event->type() == QEvent::Resize) {
-        updateBranchDiffSticky();
-        updateBranchDiffActiveOutline();
+    if (event->type() == QEvent::Resize) {
+        if (m_branchDiffView && obj == m_branchDiffView->viewport()) {
+            updateBranchDiffSticky();
+            updateBranchDiffActiveOutline();
+        } else if (m_scmDiff && obj == m_scmDiff->viewport()) {
+            updateScmDiffScrollState();
+        }
     }
 
     // Up/Down in the CHANGES tree reviews the diff file by file: each step

@@ -972,6 +972,9 @@ public:
     // when nothing is outlined, plus that outline's viewport rect.
     QString testBranchOutlinedFile() const;
     QRect testBranchOutlineRect() const;
+    // The same pair for the working-tree combined diff.
+    QString testScmOutlinedFile() const;
+    QRect testScmOutlineRect() const;
     // The working-tree viewer reaches every edge of its right-hand surface — no
     // inherited layout or document gutter remains around the diff.
     bool testScmDiffUsesFullSurface() const;
@@ -4128,6 +4131,9 @@ private:
     // Keep the green outline drawn over the active file's extent in the branch
     // /PR range diff aligned with the document; cheap enough for a scroll tick.
     void updateBranchDiffActiveOutline();
+    // The same outline over the working-tree diff's combined sections, so the
+    // CHANGES tree marks its current file the same way in either right-hand pane.
+    void updateScmDiffActiveOutline();
     // Detached `git status` that only updates the activity rail's Git badge, so
     // the uncommitted-file count is right on every repo tab (and right after a
     // repo opens), not just while the changes panel is the visible view.
@@ -6914,6 +6920,10 @@ private:
     QStringList m_scmSectionPaths;   // repo-relative path per section
     QList<int> m_scmFileTops;        // cached absolute y of each section header
     QHash<QString, QString> m_scmStickyLabelHtml; // section key -> sticky label
+    // Green outline over the section CHANGES points at, the working-tree twin of
+    // m_branchDiffActiveOutline.
+    QFrame *m_scmDiffActiveOutline = nullptr;
+    QString m_scmActiveSectionKey;
     // A click may target a section whose HTML is still streaming. Keep its key
     // so onDiffStreamFinished() can pin it as soon as the anchor is laid out.
     QString m_scmPendingScrollKey;
