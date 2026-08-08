@@ -23,6 +23,7 @@
 #include "../src/MirrorCrypto.h"
 #include "../src/PrivateMirrorStore.h"
 #include "../src/McpConnector.h"
+#include "../src/MergeQueue.h"
 #include "../src/NetworkBackoff.h"
 #include "../src/NetworkReplyError.h"
 #include "../src/NodeDiagnostics.h"
@@ -8666,6 +8667,81 @@ int main(int argc, char *argv[])
         }
     }
 #endif
+
+    // Merge queue: the ordered list of pull requests the queue runner drains,
+    // covering membership, explicit reordering, persistence round-trips, and
+    // the states the runner records between passes.
+    {
+        MergeQueue queue;
+        check(queue.isEmpty() && queue.summary() == QStringLiteral("Empty"),
+              "a new merge queue is empty");
+        check(queue.enqueue(7, 1000) && queue.enqueue(3, 2000) &&
+                  queue.enqueue(12, 3000),
+              "pull requests join the merge queue");
+        check(!queue.enqueue(7, 4000),
+              "a pull request cannot join the merge queue twice");
+        check(!queue.enqueue(0, 4000) && !queue.enqueue(-2, 4000),
+              "invalid pull numbers never join the merge queue");
+        check(queue.numbers() == (QList<int>{7, 3, 12}),
+              "the merge queue preserves arrival order");
+        check(queue.front().number == 7,
+              "the front of the merge queue is the first entry");
+
+        check(queue.move(12, -1) && queue.numbers() == (QList<int>{7, 12, 3}),
+              "an entry moves one place towards the front");
+        check(queue.move(7, 5) && queue.numbers() == (QList<int>{12, 3, 7}),
+              "a move past the back clamps to the back");
+        check(!queue.move(12, -1),
+              "the front entry cannot move further forward");
+        check(!queue.move(99, 1), "moving an absent entry is refused");
+
+        check(queue.setState(3, MergeQueueState::Blocked,
+                             QStringLiteral("Waiting for peer\napproval"), 5000),
+              "an entry records the runner's verdict");
+        check(queue.at(3).state == MergeQueueState::Blocked &&
+                  queue.at(3).detail ==
+                      QStringLiteral("Waiting for peer approval"),
+              "state details are flattened to one line");
+        check(!queue.setState(99, MergeQueueState::Failed, QString(), 5000),
+              "a verdict for a departed entry is dropped");
+        check(queue.summary().contains(QStringLiteral("3 queued")) &&
+                  queue.summary().contains(QStringLiteral("1 blocked")),
+              "the summary counts queued and blocked entries");
+
+        // Persistence round-trip: order, states and details survive; the
+        // in-flight states deliberately do not (a merge interrupted by an app
+        // exit must come back as plain "queued", not "merging" forever).
+        check(queue.setState(12, MergeQueueState::Merging, QString(), 6000),
+              "the front entry can be marked merging");
+        const MergeQueue restored = MergeQueue::fromRows(queue.toRows());
+        check(restored.numbers() == queue.numbers(),
+              "the merge queue round-trips its order through rows");
+        check(restored.at(3).state == MergeQueueState::Blocked &&
+                  restored.at(3).detail ==
+                      QStringLiteral("Waiting for peer approval"),
+              "settled states round-trip through rows");
+        check(restored.at(12).state == MergeQueueState::Queued,
+              "an interrupted in-flight state reloads as queued");
+
+        // Tolerant loading: a bare number is a valid row (hand-edited or from
+        // an older build), garbage and duplicates are dropped.
+        const MergeQueue loose = MergeQueue::fromRows(
+            {QStringLiteral("5"), QStringLiteral("not-a-number"),
+             QStringLiteral("5\t123\tqueued\t"), QStringLiteral("8\tx\tbogus")});
+        check(loose.numbers() == (QList<int>{5, 8}),
+              "row loading keeps bare numbers, drops garbage and duplicates");
+        check(loose.at(8).state == MergeQueueState::Queued,
+              "an unknown persisted state degrades to queued");
+
+        check(queue.remove(3) && queue.numbers() == (QList<int>{12, 7}),
+              "an entry can be taken back out of the merge queue");
+        check(!queue.remove(3), "removing a departed entry is refused");
+        const QString longDetail(500, QLatin1Char('x'));
+        check(MergeQueue::sanitizeDetail(longDetail).size() <= 200,
+              "oversized state details are bounded");
+        queue.clear();
+        check(queue.isEmpty(), "clearing the merge queue empties it");
+    }
 
     if (failures) {
         qCritical("TESTS FAILED");

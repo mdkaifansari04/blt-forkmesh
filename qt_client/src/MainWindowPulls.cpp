@@ -475,6 +475,10 @@ QWidget *MainWindow::buildPullsTab()
     listLayout->setContentsMargins(0, 0, 0, 0);
     listLayout->setSpacing(0);
     listLayout->addWidget(m_pullTable, 1);
+    // The merge queue lives under the list, where the order it will merge in is
+    // visible next to the pull requests it is made of. Hidden entirely for
+    // repositories that have not switched the queue on.
+    listLayout->addWidget(buildMergeQueuePanel());
     floatingBar->show();
 
     // Right: PR detail — header + changed-files explorer + diff viewer.
@@ -515,6 +519,13 @@ QWidget *MainWindow::buildPullsTab()
         pullActionButton(QStringLiteral("Delete + branch"), "trash");
     m_pullMergeDeleteButton =
         pullActionButton(QStringLiteral("Merge + delete"), "check-circle");
+    // Merge queue: hand this PR to the queue rather than merging it here and
+    // now. Only shown for repositories with the queue switched on; the caption
+    // and tooltip flip once the PR is in it, so the same tile takes it back out.
+    m_pullQueueButton = pullActionButton(QStringLiteral("Queue"), "list-unordered");
+    m_pullQueueButton->hide();
+    connect(m_pullQueueButton, &QPushButton::clicked, this,
+            &MainWindow::toggleCurrentPullInMergeQueue);
     m_pullPreviewButton = pullActionButton(QStringLiteral("Preview"),
                                            "device-desktop");
     m_pullLinkIssueButton = pullActionButton(
@@ -661,6 +672,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullEditFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullQueueButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeDeleteButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullReopenButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullSendToSourceButton, 0, Qt::AlignTop);
@@ -1542,6 +1554,12 @@ void MainWindow::applyLoadedPulls(const PullStore &store,
     // already on screen; the badges drop in as each dry-run finishes).
     if (!m_pendingPullConflictChecks.isEmpty())
         QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+    // A fresh view of the pull requests is exactly what the merge queue runs on:
+    // repaint the queue with it and let it take another turn. The wake-up is
+    // delayed and coalesced, so the reload that a merge itself triggers cannot
+    // recurse straight back into the runner.
+    refreshMergeQueuePanel();
+    scheduleMergeQueueRun(2000);
 }
 
 void MainWindow::processPendingPullConflicts(quint64 gen)
@@ -4562,6 +4580,30 @@ void MainWindow::updatePullActionState()
             m_pullConversationMergeButton->setToolTip(m_pullMergeButton->toolTip());
         }
     }
+    // Merge queue tile: offered on any open PR of a queue-enabled repository
+    // this node can merge in — the queue itself is what waits for the approvals,
+    // the base-branch update and the conflict check, so it is deliberately not
+    // gated on merge-readiness the way the Merge button is.
+    if (m_pullQueueButton) {
+        const bool queueEnabled = mergeQueueEnabledForOpenRepo();
+        const bool offerQueue = queueEnabled && writable && have && open;
+        const MergeQueue queue = openRepoMergeQueue();
+        const bool queued = have && queue.contains(m_currentPullNumber);
+        m_pullQueueButton->setVisible(offerQueue);
+        m_pullQueueButton->setEnabled(offerQueue);
+        m_pullQueueButton->setText(queued ? QStringLiteral("Dequeue")
+                                          : QStringLiteral("Queue"));
+        m_pullQueueButton->setToolTip(
+            queued ? QStringLiteral("Take this pull request back out of the merge "
+                                    "queue")
+                   : QStringLiteral("Add this pull request to the merge queue — it "
+                                    "is updated from its base branch and merged in "
+                                    "turn, after the ones already queued"));
+        // The badge is this PR's place in the queue, so the tile says how much
+        // is in front of it.
+        setPullActionBadge(m_pullQueueButton,
+                           queued ? queue.indexOf(m_currentPullNumber) + 1 : 0);
+    }
     // "Merge + delete branch" gates on the same merge-readiness as Merge (it
     // merges first), and on no delete worker already running.
     if (m_pullMergeDeleteButton)
@@ -5110,10 +5152,15 @@ void MainWindow::mergeCurrentPull()
         QMessageBox::warning(this, "Merge pull request", error);
         return;
     }
-    logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
-    closeIssuesLinkedFromPull(current);
-    fundBountiesForMergedPull(current);
-    autoBountyForMergedPull(current);
+    afterPullMerged(current);
+}
+
+void MainWindow::afterPullMerged(PullRequest pr)
+{
+    logSystem(QStringLiteral("Merged pull request #%1.").arg(pr.number));
+    closeIssuesLinkedFromPull(pr);
+    fundBountiesForMergedPull(pr);
+    autoBountyForMergedPull(pr);
     // adhoc #100: mergePull just landed a new commit in this checkout, so the top
     // "Sync" button and the Changes panel would otherwise stay stale (showing 0
     // pending commits) until a manual refresh — force both to recheck now.
@@ -5121,7 +5168,7 @@ void MainWindow::mergeCurrentPull()
     reloadPulls();
     // Issue #291: flag the agent session behind this PR as landed in main (after
     // reloadPulls so the agent table's PR column also reflects the merge).
-    markAgentSessionsMerged(current.number, current.head, /*mergeVerified=*/true);
+    markAgentSessionsMerged(pr.number, pr.head, /*mergeVerified=*/true);
     // Adhoc #110: only push the merge (closed PR + any linked issue closes) to the
     // mirror and notify peers when the owner has opted into auto-sync-on-merge.
     // Off by default: the merge stays local, refreshSourceControl above has
