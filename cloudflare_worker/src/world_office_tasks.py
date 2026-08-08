@@ -1501,13 +1501,18 @@ async def _start(
 
 async def _apply_agent_status(
         runtime, org_bi, account_bi, actor, task_id, row, status, can_manage,
-        now):
+        now, agent_run=None):
     """Write one task's live agent state, returning "" or an error code.
 
     A desktop may report the task it created without receiving broad task-edit
     authority.  The signature is checked by the entrypoint; this second gate
     still verifies ownership and that the row is agent work — and it applies to
     a batched write exactly as it does to a single-task one.
+
+    ``agent_run`` carries the run's provenance (which bot, model, mode and local
+    session) so that a desktop picking up a task somebody else opened by hand
+    can say what is working it.  It layers onto whatever is already recorded,
+    exactly the way the completion report does.
     """
 
     if status not in AGENT_RUN_STATES:
@@ -1526,9 +1531,20 @@ async def _apply_agent_status(
         current = await runtime.open(row.get("data"))
     except Exception:
         current = None
-    if not isinstance(current, dict) or not isinstance(current.get("agent"), dict):
+    if not isinstance(current, dict):
         return "agent_run_unavailable"
-    agent = dict(current["agent"])
+    # A task opened by hand on the board holds no run provenance until a desktop
+    # starts an agent on it, so the first status write seeds the record instead
+    # of being refused — otherwise a run bound to an existing task could never
+    # report anything. The gates above are unchanged: this is still only
+    # reachable for agent work, by its creator or a manager.
+    agent = dict(current.get("agent") or {})
+    if isinstance(agent_run, dict):
+        agent.update({
+            field: value
+            for field, value in agent_run.items()
+            if value and field != "status"
+        })
     agent["status"] = status
     current["agent"] = _agent_run(agent)
     await runtime.d1_run(
@@ -1554,6 +1570,7 @@ async def _update_agent_status(
     error = await _apply_agent_status(
         runtime, org_bi, account_bi, actor, task_id, row,
         _text(data.get("status"), 16).lower(), can_manage, now,
+        agent_run=data.get("agent"),
     )
     if error:
         return _response(
@@ -1608,7 +1625,7 @@ async def _update_agent_status_batch(
             row = None
         error = await _apply_agent_status(
             runtime, org_bi, account_bi, actor, task_id, row, status,
-            can_manage, now,
+            can_manage, now, agent_run=entry.get("agent"),
         )
         results.append({
             "task": task_id,
