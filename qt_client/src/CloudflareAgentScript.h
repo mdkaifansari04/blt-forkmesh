@@ -29,8 +29,10 @@ inline QString forkmeshCloudflareAgentScript()
 """Minimal Workers AI coding agent for ForkMesh (relay /api/ai/agent, stdlib only)."""
 import json
 import os
+import select
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -45,6 +47,34 @@ USER_AGENT = "ForkMesh-AI-agent/1.0 (+https://forkmesh.com)"
 # Turns the relay throttled: how often to retry one turn before giving up.
 RATE_LIMIT_RETRIES = 3
 RATE_LIMIT_MAX_WAIT = 120
+# Consecutive turns whose every tool call was a command this run already ran.
+# The small instruction-tuned models behind this provider will otherwise loop
+# on one command forever: llama-3.3 kept re-issuing the same
+# `echo ... >> README.md` — appending the line again each turn, and only
+# stopping when the person watching pressed Stop (adhoc #1622). Three such
+# turns end the run instead, keeping whatever was already committed.
+STALLED_TURN_LIMIT = 3
+
+# Claude needs no coaching to finish an agent loop; a 70B instruct model does.
+# Spell out the two things it keeps getting wrong — that exit code 0 means the
+# command worked, and that finishing means answering with no tool call.
+SYSTEM_PROMPT = (
+    "You are a coding agent working in a checked-out git worktree, already on "
+    "the branch for this task. Use the `bash` tool for every action, one "
+    "command per call.\n"
+    "Rules:\n"
+    "- Read each tool result before acting. \"(exit code 0)\" means that "
+    "command already succeeded, so never send it a second time.\n"
+    "- Before appending text to a file, check whether it is already there "
+    "(for example `grep -F \"the text\" FILE`), so nothing is added twice.\n"
+    "- Make the smallest change that satisfies the request, then verify it "
+    "(for example `tail -n 5 FILE`).\n"
+    "- Commit the work on the current branch with `git add` and "
+    "`git commit -m`. The git identity is already configured: do not change "
+    "it, do not create a branch, and do not push.\n"
+    "- When the change is committed, stop calling tools and reply with one "
+    "short sentence saying what you did."
+)
 
 
 def log(text):
@@ -63,6 +93,71 @@ def read_prompt():
     return data
 
 
+def pending_user_input():
+    """Steering text ForkMesh has written to our stdin, or "" for none.
+
+    The task prompt arrives as a file argument, so stdin only ever carries the
+    instructions typed into the running session's steering box. Reading it must
+    never block the loop, so poll and drain whatever is buffered right now.
+    """
+    try:
+        fd = sys.stdin.fileno()
+    except (AttributeError, ValueError, OSError):
+        return ""
+    chunks = []
+    while True:
+        try:
+            # select() on a pipe is POSIX-only; on Windows this raises and the
+            # run simply carries on without steering.
+            if not select.select([fd], [], [], 0)[0]:
+                break
+            data = os.read(fd, 65536)
+        except Exception:
+            break
+        if not data:
+            break
+        chunks.append(data.decode("utf-8", "replace"))
+    return "".join(chunks).strip()
+
+
+def prepare_git_environment():
+    """Keep this run's git writes out of the person's own ~/.gitconfig.
+
+    Told to commit, these models reach for `git config --global user.email`
+    first — adhoc #1622 watched llama rewrite the desktop user's git identity
+    to its own. Point GIT_CONFIG_GLOBAL at a scratch file seeded with the
+    identity git already resolves here, so committing works out of the box and
+    that instinct, when it strikes anyway, stays inside the run.
+    """
+    identity = []
+    for key in ("name", "email"):
+        try:
+            proc = subprocess.run(
+                ["git", "config", "--get", "user." + key],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception:
+            continue
+        value = (proc.stdout or "").strip().splitlines()
+        if proc.returncode == 0 and value and value[0].strip():
+            identity.append((key, value[0].strip()))
+    if not identity:
+        identity = [("name", "ForkMesh Agent"),
+                    ("email", "agent@forkmesh.local")]
+    path = os.path.join(
+        tempfile.mkdtemp(prefix="forkmesh-cf-agent-git-"), "config")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("[user]\n")
+        for key, value in identity:
+            handle.write("\t%s = %s\n" % (key, value))
+    os.environ["GIT_CONFIG_GLOBAL"] = path
+    # A stray `git push` must fail rather than sit on a credential prompt for
+    # the whole 600s tool timeout.
+    os.environ["GIT_TERMINAL_PROMPT"] = "0"
+
+
 def run_bash(command):
     try:
         proc = subprocess.run(
@@ -71,12 +166,20 @@ def run_bash(command):
             capture_output=True,
             text=True,
             timeout=600,
+            # Our own stdin carries the session's steering text, and a command
+            # that waits on input would sit there for the full timeout: every
+            # tool call reads from /dev/null instead.
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         return "Command timed out after 600s."
     out = (proc.stdout or "") + (proc.stderr or "")
     if len(out) > TOOL_OUTPUT_LIMIT:
         out = out[:TOOL_OUTPUT_LIMIT] + "\n...[output truncated]..."
+    # Say so out loud: a bare exit line reads to a small model as "nothing
+    # happened", which is half of why they re-run a command that worked.
+    if not out.strip():
+        out = "(no output)"
     return "(exit code %d)\n%s" % (proc.returncode, out)
 
 
@@ -184,9 +287,24 @@ def main():
 
     log("==> Cloudflare AI agent (model %s) talking to the relay at %s."
         % (model or "relay default", host))
-    messages = [{"role": "user", "content": prompt}]
+    prepare_git_environment()
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+    # Loop guards (see STALLED_TURN_LIMIT): every command this run has run, the
+    # one it ran last, and how many turns in a row have added nothing new.
+    ran = {}
+    last_command = ""
+    stalled_turns = 0
 
     for turn in range(1, MAX_TURNS + 1):
+        steer = pending_user_input()
+        if steer:
+            log("\n==> Steering: %s" % steer)
+            messages.append({"role": "user", "content": steer})
+            # A fresh instruction deserves a fresh run at the turn budget.
+            stalled_turns = 0
         data = None
         for attempt in range(RATE_LIMIT_RETRIES + 1):
             net_request(turn, host, model or "default", len(messages))
@@ -244,6 +362,7 @@ def main():
         # validates, then execute each tool call locally.
         assistant = {"role": "assistant", "content": reply}
         results = []
+        progressed = False
         for index, call in enumerate(tool_calls):
             name = call.get("name") or ""
             arguments = call.get("arguments") or {}
@@ -260,9 +379,34 @@ def main():
             )
             if name == "bash":
                 command = arguments.get("command", "")
-                log("\n$ %s" % command)
-                result = run_bash(command)
-                log(result)
+                if not command.strip():
+                    result = ("No command was given. Put the shell command in "
+                              "the `command` argument.")
+                    log("\n!! %s" % result)
+                elif command == last_command:
+                    # Answer an immediate repeat from the first run instead of
+                    # executing it again: re-running `>> file` would append the
+                    # same line twice, and the model needs telling, not obeying.
+                    earlier_turn, result = ran[command]
+                    log("\n$ %s" % command)
+                    log("==> Not run again: this is the command from turn %d. "
+                        "Its result is being reported unchanged."
+                        % earlier_turn)
+                    result = (
+                        "This is the same command you already ran on turn %d, "
+                        "so it was not run again. Its result was:\n%s\n"
+                        "Do not send it a third time. If the task is done, "
+                        "reply with a one-sentence summary and no tool call; "
+                        "otherwise run a different command."
+                        % (earlier_turn, result))
+                else:
+                    log("\n$ %s" % command)
+                    result = run_bash(command)
+                    log(result)
+                    if command not in ran:
+                        progressed = True
+                    ran[command] = (turn, result)
+                    last_command = command
             else:
                 result = "Unknown tool: %s. Only `bash` is available." % name
                 log("\n!! %s" % result)
@@ -277,6 +421,12 @@ def main():
         messages.append(assistant)
         if results:
             messages.extend(results)
+            stalled_turns = 0 if progressed else stalled_turns + 1
+            if stalled_turns >= STALLED_TURN_LIMIT:
+                log("\n!! The model spent %d turns re-running commands it had "
+                    "already run, so this run is stopping here. Anything it "
+                    "committed is kept." % stalled_turns)
+                return 0
             continue
         log("\n==> Agent finished.")
         return 0

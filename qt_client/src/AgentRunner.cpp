@@ -497,7 +497,12 @@ void AgentRunner::launch(Phase phase, const QString &program,
                     m_noOutputTimer->stop();
                 if (!m_process)
                     return;
-                emitLog(QStringLiteral("!! ") + m_process->errorString());
+                // stop() terminates (then kills) the child, so Qt reports
+                // QProcess::Crashed for a run the user ended on purpose. The
+                // "Stopped." line already says what happened; "!! Process
+                // crashed" beside it only reads as a bug (adhoc #1622).
+                if (!m_stopping)
+                    emitLog(QStringLiteral("!! ") + m_process->errorString());
                 if (error == QProcess::FailedToStart)
                     complete(false, AgentStatus::Failed, m_process->errorString());
             });
