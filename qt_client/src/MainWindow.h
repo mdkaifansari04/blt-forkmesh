@@ -536,6 +536,34 @@ public:
     }
     int testCloudLogMonitorErrors() const { return m_cloudLogMonitorErrors; }
     int testCloudLogMonitorEvents() const { return m_cloudLogMonitorEvents; }
+    // Put the monitor back to "never started". On a machine that can actually
+    // run Wrangler the suite's own window starts a real tail of the live Worker
+    // at launch, whose hits land in the same log the cloud checks feed
+    // synthetic events into — and which, since a tail now survives its session
+    // expiring (adhoc #1623), keeps arriving for the whole run.
+    void testResetCloudLogMonitor()
+    {
+        setCloudLogMonitorEnabled(false);
+        cancelCloudLogMonitorRestart();
+        m_cloudLogMonitorErrors = 0;
+        m_cloudLogMonitorEvents = 0;
+        m_cloudLogMonitorRestarts = 0;
+        m_cloudLogMonitorIdleReason.clear();
+    }
+    // adhoc #1623: end the tail the way an expired tail session does — the
+    // child exits, nobody asked it to — and hand back how long the monitor
+    // means to wait before the next one (0 = it has given up). The pending
+    // restart is cancelled here so no test ever spawns a real Wrangler.
+    int testCloudLogMonitorTailEnded(int exitCode, qint64 uptimeMs)
+    {
+        handleCloudLogMonitorEnded(exitCode, uptimeMs);
+        const int pending = m_cloudLogMonitorRestartTimer &&
+                                    m_cloudLogMonitorRestartTimer->isActive()
+                                ? m_cloudLogMonitorRestartTimer->remainingTime()
+                                : 0;
+        cancelCloudLogMonitorRestart();
+        return pending;
+    }
     // Is a Wrangler tail actually running? The Monitor box being ticked no
     // longer implies one (adhoc #1632): the box is on by default and its tail
     // starts later, only where there is a token to start it with.
@@ -2071,6 +2099,19 @@ private:
     // recording the climb-down as the user's preference — the stored choice is
     // still "monitor", so the next launch tries again.
     void stopCloudLogMonitorAfterFailure();
+    // The tail's child ended and this app did not ask it to. Decide whether to
+    // bring it back — see planCloudflareTailRestart() for why that is the
+    // normal case rather than the exception.
+    void handleCloudLogMonitorEnded(int exitCode, qint64 uptimeMs);
+    void scheduleCloudLogMonitorRestart(int delayMs);
+    void cancelCloudLogMonitorRestart();
+    // Start a replacement tail, keeping the session's tallies: the CLOUD chip
+    // counts what this app has seen from the Worker, and reconnecting to it is
+    // not news about the Worker.
+    void restartCloudLogMonitor();
+    // Drop the tail's child, saying nothing about it. Both the deliberate stop
+    // and the automatic restart come through here; only the former reports it.
+    void releaseCloudLogMonitorProcess();
     // Open the footer's debug bar at startup when this account asks for it, or
     // when the preference is unset and the relay says this node is an admin
     // (adhoc #1632). Idempotent: it acts once per run.
@@ -6648,6 +6689,15 @@ private:
     int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
     int m_cloudLogMonitorEvents = 0;     // Worker events seen since then
     bool m_cloudLogMonitorStopping = false; // a deliberate stop, not a crash
+    // A tail ends on its own long before monitoring is over: Cloudflare expires
+    // a tail session after about an hour and Wrangler exits cleanly when it
+    // does. These carry the automatic restart that follows (adhoc #1623) —
+    // when the last tail started, how many died young in a row, and whether the
+    // start now under way is that restart rather than a fresh one.
+    QTimer *m_cloudLogMonitorRestartTimer = nullptr;
+    QElapsedTimer m_cloudLogMonitorUptime;
+    int m_cloudLogMonitorRestarts = 0;
+    bool m_cloudLogMonitorResuming = false;
     // Ticked, but with nothing to tail with: no Cloudflare token (adhoc #1632),
     // or no Node new enough for Wrangler (adhoc #1617). The automatic start says
     // which in the tooltip rather than unticking the box or writing a line into
