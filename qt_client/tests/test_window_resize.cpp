@@ -4475,6 +4475,13 @@ int main(int argc, char *argv[])
             excludeFile.write("wt-keep/\n");
             excludeFile.close();
         }
+        // The scenarios above left the branch's own worktree dirty (the staged
+        // base-delete.txt deletion, the restored auto-stash overlap edit), and
+        // the cleanup merge rightly refuses to delete a worktree holding
+        // uncommitted changes. Give it the clean worktree a finished review
+        // would have.
+        runGitChecked(wtPath, {"reset", "--hard", "HEAD"});
+        runGitChecked(wtPath, {"clean", "-fd"});
         window.testSwitchToBranchImmediateSelection(
             QStringLiteral("feature/keep-selected"));
         QApplication::processEvents();
@@ -4516,8 +4523,11 @@ int main(int argc, char *argv[])
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage())
                   .arg(mainTip.trimmed()));
-        check(window.testCompareIndicatorText() == QStringLiteral("main"),
-              QString("keeping the comparison preserves its main base indicator "
+        // The deleted branch can't stay selected — adhoc #15 leaves its row's
+        // animated check and selects nothing — so the compare header retires
+        // while the completed review itself stays on the page.
+        check(window.testCompareIndicatorText().isEmpty(),
+              QString("cleanup retires the compare header of the deleted branch "
                       "(base = %1)")
                   .arg(window.testCompareIndicatorText()));
         check(mainTip.contains(QStringLiteral("Merge feature/keep-selected into main")),

@@ -8995,19 +8995,34 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree,
         const RepositoryRecord repo = m_repositories.at(repoIndex);
         IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
                               m_userName);
-        if (!issueStore.canWrite()) {
-            flashMessage("Only the host can delete an agent session from the issue.",
-                         true);
-            return false;
+        // An issue that no longer exists has no agent event to clear. Treating a
+        // stale reference as a hard failure stranded the session — and, worse,
+        // silently aborted the whole merge-and-cleanup that was deleting it
+        // (worktree and branch survived with no visible reason). Skip missing
+        // issues exactly like closeIssuesForMerge does.
+        bool issueExists = false;
+        for (const Issue &issue : issueStore.loadAll()) {
+            if (issue.number == snapshot.issueNumber) {
+                issueExists = true;
+                break;
+            }
         }
-        QString error;
-        if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
-                                    AgentStatus::Cleared, &error)) {
-            flashMessage(error.isEmpty()
-                             ? QStringLiteral("Could not clear the issue agent.")
-                             : error,
-                         true);
-            return false;
+        if (issueExists) {
+            if (!issueStore.canWrite()) {
+                flashMessage(
+                    "Only the host can delete an agent session from the issue.",
+                    true);
+                return false;
+            }
+            QString error;
+            if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
+                                        AgentStatus::Cleared, &error)) {
+                flashMessage(error.isEmpty()
+                                 ? QStringLiteral("Could not clear the issue agent.")
+                                 : error,
+                             true);
+                return false;
+            }
         }
     }
 
