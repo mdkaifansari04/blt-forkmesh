@@ -1448,20 +1448,25 @@ def _cloudflare_agent_script(tmp_path):
     return path
 
 
-def _run_cloudflare_agent(tmp_path, turns, steer=None):
+def _run_cloudflare_agent(tmp_path, turns, steer=None, fail=None, reply=None):
     """Run the bundled script against a stub /api/ai/agent.
 
     `turns` is called with (turn number, conversation) and returns that turn's
-    toolCalls; returning [] ends the run the way a finished model does. Returns
-    (stdout, exit code, worktree, fake HOME, conversations) with the git identity
-    configured only in the fake HOME's ~/.gitconfig, so a run that reaches for
-    `git config --global` is caught.
+    toolCalls; returning [] ends the run the way a finished model does. `fail`
+    is called with the HTTP request count and returns a status to answer with
+    instead of a turn (0/None to serve it normally), so a run can be made to
+    meet the relay's transient failures. `reply` is called with (turn number,
+    toolCalls) for the assistant text, defaulting to "Done." on the turn that
+    stops calling tools. Returns (stdout, exit code, worktree, fake HOME,
+    conversations) with the git identity configured only in the fake HOME's
+    ~/.gitconfig, so a run that reaches for `git config --global` is caught.
     """
     if not shutil.which("git"):
         pytest.skip("git is not installed")
 
     script = _cloudflare_agent_script(tmp_path)
     seen = []
+    requests = []
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -1470,12 +1475,28 @@ def _run_cloudflare_agent(tmp_path, turns, steer=None):
         def do_POST(self):
             size = int(self.headers.get("content-length") or 0)
             body = json.loads(self.rfile.read(size))
+            requests.append(body)
+            status = (fail(len(requests)) if fail else 0) or 0
+            if status:
+                # What a wedged relay isolate actually returns: Cloudflare's
+                # own 1101 error document, not the relay's JSON.
+                detail = json.dumps({
+                    "title": "Error 1101: Worker threw exception",
+                    "status": status,
+                }).encode("utf-8")
+                self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(detail)))
+                self.end_headers()
+                self.wfile.write(detail)
+                return
             seen.append(body["messages"])
             calls = turns(len(seen), body["messages"])
             payload = json.dumps({
                 "ok": True,
                 "model": body.get("model"),
-                "reply": "" if calls else "Done.",
+                "reply": (reply(len(seen), calls) if reply
+                          else ("" if calls else "Done.")),
                 "toolCalls": calls,
                 "usage": {"inputTokens": 1, "outputTokens": 1},
             }).encode("utf-8")
@@ -1603,6 +1624,116 @@ def test_cloudflare_agent_script_works_the_task_and_takes_steering(tmp_path):
     assert "note" in subprocess.run(
         ["git", "log", "-1", "--pretty=%s"], cwd=repo, capture_output=True,
         text=True).stdout
+
+
+def test_cloudflare_agent_script_retries_a_relay_5xx_instead_of_dropping_run(
+        tmp_path):
+    # adhoc #1633: turn 2 of a real run came back as Cloudflare's 1101 "Worker
+    # threw exception" 500 — the relay's shared Python isolate wedged by
+    # unrelated traffic — and the script abandoned a task it was halfway
+    # through. The conversation is unchanged by a failed turn, so re-send it.
+    commands = ['echo "hello" >> README.md',
+                "git add -A && git commit -qm hello"]
+
+    def turns(turn, _messages):
+        if turn <= len(commands):
+            return [{"id": "c%d" % turn, "name": "bash",
+                     "arguments": {"command": commands[turn - 1]}}]
+        return []
+
+    out, code, repo, _home, seen = _run_cloudflare_agent(
+        tmp_path, turns, fail=lambda request: 500 if request == 2 else 0)
+
+    assert code == 0
+    assert "==> Relay error 500; retrying this turn" in out
+    # The run carried on rather than reporting the turn as fatal.
+    assert "!! Relay AI agent error 500" not in out
+    assert "==> Agent finished." in out
+    assert "hello" in (repo / "README.md").read_text(encoding="utf-8")
+    assert "hello" in subprocess.run(
+        ["git", "log", "-1", "--pretty=%s"], cwd=repo, capture_output=True,
+        text=True).stdout
+    # The retry replayed the same conversation, so no turn was lost.
+    assert len(seen) == 3
+
+
+def test_cloudflare_agent_script_gives_up_after_repeated_relay_failures(
+        tmp_path):
+    out, code, _repo, _home, seen = _run_cloudflare_agent(
+        tmp_path, lambda turn, messages: [], fail=lambda request: 503)
+
+    assert code == 1
+    assert not seen
+    assert "!! Relay AI agent error 503" in out
+    assert "failed this turn 5 times in a row" in out
+
+
+def test_cloudflare_agent_script_sees_through_a_requoted_repeat(tmp_path):
+    # The same run twice over: llama appended the line, then "re-ran" it with
+    # the other quote style, which the raw string comparison did not recognize
+    # as a repeat — so the line landed twice (adhoc #1633).
+    commands = ["echo 'hello' >> README.md",
+                'echo "hello" >> README.md',
+                "git add -A && git commit -qm hello"]
+
+    def turns(turn, _messages):
+        if turn <= len(commands):
+            return [{"id": "c%d" % turn, "name": "bash",
+                     "arguments": {"command": commands[turn - 1]}}]
+        return []
+
+    out, code, repo, _home, _seen = _run_cloudflare_agent(tmp_path, turns)
+
+    assert code == 0
+    assert "Not run again: this is the command from turn 1" in out
+    assert (repo / "README.md").read_text(encoding="utf-8") == \
+        "# Title\nhello\n"
+
+
+def test_cloudflare_agent_script_will_not_call_uncommitted_work_finished(
+        tmp_path):
+    # Stopping after an edit and before the commit is this provider's most
+    # common way to "finish": say what is missing instead of declaring success.
+    def turns(turn, _messages):
+        if turn == 1:
+            return [{"id": "c1", "name": "bash",
+                     "arguments": {"command": 'echo "hello" >> README.md'}}]
+        if turn == 3:
+            return [{"id": "c3", "name": "bash",
+                     "arguments": {"command": "git add -A && git commit -qm "
+                                              "hello"}}]
+        return []
+
+    out, code, repo, _home, seen = _run_cloudflare_agent(tmp_path, turns)
+
+    assert code == 0
+    assert "==> Not finished: the worktree has uncommitted changes." in out
+    # The model was told what was left, in the conversation and not just the log.
+    nudge = seen[2][-1]
+    assert nudge["role"] == "user"
+    assert "uncommitted changes" in nudge["content"]
+    assert "M  README.md" in nudge["content"] or \
+        " M README.md" in nudge["content"]
+    assert "hello" in subprocess.run(
+        ["git", "log", "-1", "--pretty=%s"], cwd=repo, capture_output=True,
+        text=True).stdout
+    assert "==> Agent finished." in out
+
+
+def test_cloudflare_agent_script_asks_again_after_a_turn_that_says_nothing(
+        tmp_path):
+    # A turn with neither a tool call nor an answer used to print "Agent
+    # finished" over a run that had done nothing at all.
+    out, code, _repo, _home, seen = _run_cloudflare_agent(
+        tmp_path, lambda turn, messages: [],
+        reply=lambda turn, calls: "" if turn == 1 else "Done.")
+
+    assert code == 0
+    assert "==> Empty turn (no tool call, no answer)." in out
+    assert len(seen) == 2
+    assert seen[1][-1]["content"].startswith(
+        "You sent neither a tool call nor an answer")
+    assert "==> Agent finished." in out
 
 
 def test_agent_runner_does_not_call_a_user_stop_a_crash():

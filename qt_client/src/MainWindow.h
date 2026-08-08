@@ -144,7 +144,6 @@ using forkmesh::ui::BusySpinner;
 using forkmesh::ui::ElidingStatusLabel;
 using forkmesh::ui::NodeDotMatrix;
 using forkmesh::ui::RelaySpeedDot;
-class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
 class ClaudeStreamSession;
@@ -536,6 +535,34 @@ public:
     }
     int testCloudLogMonitorErrors() const { return m_cloudLogMonitorErrors; }
     int testCloudLogMonitorEvents() const { return m_cloudLogMonitorEvents; }
+    // Put the monitor back to "never started". On a machine that can actually
+    // run Wrangler the suite's own window starts a real tail of the live Worker
+    // at launch, whose hits land in the same log the cloud checks feed
+    // synthetic events into — and which, since a tail now survives its session
+    // expiring (adhoc #1623), keeps arriving for the whole run.
+    void testResetCloudLogMonitor()
+    {
+        setCloudLogMonitorEnabled(false);
+        cancelCloudLogMonitorRestart();
+        m_cloudLogMonitorErrors = 0;
+        m_cloudLogMonitorEvents = 0;
+        m_cloudLogMonitorRestarts = 0;
+        m_cloudLogMonitorIdleReason.clear();
+    }
+    // adhoc #1623: end the tail the way an expired tail session does — the
+    // child exits, nobody asked it to — and hand back how long the monitor
+    // means to wait before the next one (0 = it has given up). The pending
+    // restart is cancelled here so no test ever spawns a real Wrangler.
+    int testCloudLogMonitorTailEnded(int exitCode, qint64 uptimeMs)
+    {
+        handleCloudLogMonitorEnded(exitCode, uptimeMs);
+        const int pending = m_cloudLogMonitorRestartTimer &&
+                                    m_cloudLogMonitorRestartTimer->isActive()
+                                ? m_cloudLogMonitorRestartTimer->remainingTime()
+                                : 0;
+        cancelCloudLogMonitorRestart();
+        return pending;
+    }
     // Is a Wrangler tail actually running? The Monitor box being ticked no
     // longer implies one (adhoc #1632): the box is on by default and its tail
     // starts later, only where there is a token to start it with.
@@ -2071,6 +2098,19 @@ private:
     // recording the climb-down as the user's preference — the stored choice is
     // still "monitor", so the next launch tries again.
     void stopCloudLogMonitorAfterFailure();
+    // The tail's child ended and this app did not ask it to. Decide whether to
+    // bring it back — see planCloudflareTailRestart() for why that is the
+    // normal case rather than the exception.
+    void handleCloudLogMonitorEnded(int exitCode, qint64 uptimeMs);
+    void scheduleCloudLogMonitorRestart(int delayMs);
+    void cancelCloudLogMonitorRestart();
+    // Start a replacement tail, keeping the session's tallies: the CLOUD chip
+    // counts what this app has seen from the Worker, and reconnecting to it is
+    // not news about the Worker.
+    void restartCloudLogMonitor();
+    // Drop the tail's child, saying nothing about it. Both the deliberate stop
+    // and the automatic restart come through here; only the former reports it.
+    void releaseCloudLogMonitorProcess();
     // Open the footer's debug bar at startup when this account asks for it, or
     // when the preference is unset and the relay says this node is an admin
     // (adhoc #1632). Idempotent: it acts once per run.
@@ -2580,10 +2620,22 @@ private:
     void pingVultrProvisionStage(int stage, bool ok,
                                  const QString &detail = QString());
     void renderVultrProvisionProgress(bool failed = false);
+    // Remember the detail/error text shown under a given numbered stage so the
+    // per-stage caption in the deploy rail keeps showing it after later stages
+    // advance past it (setVultrProvisionStage only tracks the CURRENT stage's
+    // text in m_vultrProvisionDetail).
+    void recordVultrStageDetail(int stage, const QString &detail);
+    void resetVultrStageDetails();
     void persistVultrProvisionState(const QString &state = QStringLiteral("active"),
                                     const QString &message = QString());
     void restoreVultrProvision();
     void resumeVultrProvision();
+    // Manually abandon the in-progress (or paused/failed) deployment so the
+    // operator can start a fresh one instead of waiting out a stuck boot poll
+    // or public-traffic verification. Any Vultr server already created is left
+    // running/billing — this only stops ForkMesh from tracking the attempt.
+    void endVultrProvision();
+    void updateVultrEndDeploymentButtonVisibility();
     QString vultrProvisionLogPath() const;
     void saveVultrProvisionLog();
     void scheduleVultrProvisionLogSave();
@@ -3055,7 +3107,9 @@ private:
     // Set a diff viewer's HTML. renderDiffStreamed retains bounded fragments and
     // streams them into one continuously scrollable document; font-size changes
     // repaint those fragments without retaining another full HTML copy.
-    void setDiffHtml(QTextEdit *view, const QString &html);
+    // `endCap` off for documents that are not a diff (notices, the merge
+    // celebration): the end-of-diff bar under one is just a black line.
+    void setDiffHtml(QTextEdit *view, const QString &html, bool endCap = true);
     // Hook run when a diff view has fully streamed; refreshes state derived from
     // its document (sticky file positions and search).
     void onDiffStreamFinished(QTextEdit *view);
@@ -4555,6 +4609,11 @@ private:
     // already gone — the desired end state either way.
     bool localBranchExists(const QString &repoPath, const QString &branch) const;
     void showBranchDiff(const QString &branch, int agentSessionId = -1);
+    // Take the range pane off a branch that no longer exists (merged & deleted,
+    // or its worktree torn down) before anything tries to diff it (adhoc #1628).
+    // By value: callers hand in m_branchDiffBranch itself, which this clears (see
+    // the git-pump aliasing family in the .cpp).
+    void showBranchDiffBranchGone(QString branch, QString base);
     // Paint the branch detail bar from already-gathered counts.
     void applyBranchDetailActions(const QString &branch, const QString &base,
                                   int behind, int ahead, bool hasConflict,
@@ -6648,6 +6707,15 @@ private:
     int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
     int m_cloudLogMonitorEvents = 0;     // Worker events seen since then
     bool m_cloudLogMonitorStopping = false; // a deliberate stop, not a crash
+    // A tail ends on its own long before monitoring is over: Cloudflare expires
+    // a tail session after about an hour and Wrangler exits cleanly when it
+    // does. These carry the automatic restart that follows (adhoc #1623) —
+    // when the last tail started, how many died young in a row, and whether the
+    // start now under way is that restart rather than a fresh one.
+    QTimer *m_cloudLogMonitorRestartTimer = nullptr;
+    QElapsedTimer m_cloudLogMonitorUptime;
+    int m_cloudLogMonitorRestarts = 0;
+    bool m_cloudLogMonitorResuming = false;
     // Ticked, but with nothing to tail with: no Cloudflare token (adhoc #1632),
     // or no Node new enough for Wrangler (adhoc #1617). The automatic start says
     // which in the tooltip rather than unticking the box or writing a line into
@@ -7008,6 +7076,9 @@ private:
     // logins to it, so the node can run agent sessions right away (adhoc #418).
     QCheckBox *m_vultrAgentClisCheck = nullptr;
     QPushButton *m_vultrCreateButton = nullptr;
+    // Abandons a stuck/paused deployment so a fresh one can start; visible only
+    // while there is a running or resumable checkpoint to abandon.
+    QPushButton *m_vultrEndDeploymentButton = nullptr;
     QLabel *m_vultrStatus = nullptr;
     QCheckBox *m_mirrorFleetEnabledCheck = nullptr;
     QSpinBox *m_mirrorFleetDesiredSpin = nullptr;
@@ -7023,6 +7094,11 @@ private:
     QWidget *m_vultrProgressPanel = nullptr;
     QList<QLabel *> m_vultrStageNumbers;
     QList<QLabel *> m_vultrStageLabels;
+    // Small caption under each stage's name showing that stage's latest status
+    // or error, so a stalled/failed step says why without hunting through the
+    // shared Live output log.
+    QList<QLabel *> m_vultrStageDetails;
+    QList<QString> m_vultrStageDetailText;
     QLabel *m_vultrLiveBadge = nullptr;
     bool m_vultrProvisionActive = false;
     bool m_vultrResumeRequested = false;
@@ -7728,13 +7804,13 @@ private:
     // every arrow press would be far too heavy for a large review.
     QFrame *m_branchDiffActiveOutline = nullptr;
     QString m_branchActiveFile; // file CHANGES currently points at
-    // Sticky header pinned over the branch/PR diff (same form as the PR viewer's:
-    // filename, Pac-Man read-progress chart, percent label and a Viewed toggle).
+    // Sticky header pinned over the branch/PR diff: the current file's own
+    // header row, two rich-text labels wide — the file label, and the controls
+    // (comment icon, Pac-Man read meter, Viewed pill) — both built by the same
+    // helpers that render the header itself (adhoc #423).
     QFrame *m_branchDiffSticky = nullptr;
     QLabel *m_branchStickyPath = nullptr;
-    PacmanProgress *m_branchStickyPacman = nullptr;
-    QLabel *m_branchStickyPercent = nullptr;
-    QPushButton *m_branchStickyViewed = nullptr;
+    QLabel *m_branchStickyControls = nullptr;
     QString m_branchStickyFile; // file the sticky bar currently mirrors
     QList<QPair<int, QString>> m_branchDiffFileSpans;
     // Ordered file paths of the diff currently in the branch view, so the
@@ -7744,9 +7820,9 @@ private:
     // the file still being read.
     QStringList m_branchDiffFilePaths;
     QStringList m_branchDiffFileAnchors;
-    // path -> sticky-bar label, built at render time while the parsed
-    // DiffFileEntry (status, +/- counts) is still to hand, exactly as the PR
-    // viewer and the working-tree diff do.
+    // path -> the one-line label that file's header was rendered with, built at
+    // render time while the parsed DiffFileEntry (status, +/- counts) is still
+    // to hand, exactly as the PR viewer and the working-tree diff do.
     QHash<QString, QString> m_branchStickyLabelHtml;
     // Last file a CHANGES-row action navigated to in either the branch-range or
     // working-tree diff. Also gives the window tests a stable assertion that
@@ -8134,11 +8210,11 @@ private:
     // reload and repo-update sweep, so this ran far more often than the working
     // tree actually changed.
     QString m_scmDiffSourceKey;
+    // The working-tree diff's sticky bar: the current file's own header row —
+    // its one-line label, and the read meter + Viewed pill (adhoc #423).
     QFrame *m_scmStickyHeader = nullptr;
     QLabel *m_scmStickyPath = nullptr;
-    PacmanProgress *m_scmStickyPacman = nullptr;
-    QLabel *m_scmStickyPercent = nullptr; // "42%" read-through of this file
-    QPushButton *m_scmStickyViewed = nullptr;
+    QLabel *m_scmStickyControls = nullptr;
     QString m_scmStickySection;      // section key shown in the sticky header
     QTimer *m_scmAutoViewedDebounce = nullptr;
     int m_scmLastAutoViewedScrollValue = 0;
@@ -8425,17 +8501,17 @@ private:
     // while scrolling the PR diff, mirroring GitHub's same-named setting).
     QPushButton *m_pullAutoViewedButton = nullptr;
     QTimer *m_pullAutoViewedDebounce = nullptr;
-    // Sticky diff header overlay (adhoc #56): floats a copy of the current
-    // file's header at the top of the scrolling diff so the filename / +/- stat
-    // / Viewed controls stay visible, with a Pac-Man progress chart that fills
-    // as the file scrolls past and auto-checks Viewed once the bottom is seen.
+    // Sticky diff header overlay (adhoc #56): floats the current file's own
+    // header row at the top of the scrolling diff so the filename / +/- stat /
+    // Viewed controls stay visible, with a Pac-Man read meter that fills as the
+    // file scrolls past and auto-checks Viewed once the bottom is seen. Two
+    // rich-text labels — file label and controls — carrying the very markup the
+    // rendered header uses (adhoc #423).
     QFrame *m_pullStickyHeader = nullptr;
     QLabel *m_pullStickyPath = nullptr;
-    PacmanProgress *m_pullStickyPacman = nullptr;
-    QLabel *m_pullStickyPercent = nullptr;
-    QPushButton *m_pullStickyViewed = nullptr;
+    QLabel *m_pullStickyControls = nullptr;
     QString m_pullStickyFile; // file path currently shown in the sticky header
-    // path -> compact rich-text label (icon + dir/name + +/-) for that header.
+    // path -> the one-line rich-text label that file's header was rendered with.
     QHash<QString, QString> m_pullStickyLabelHtml;
     // Absolute document y-position of each file header, aligned to
     // m_pullFileOrder (-1 if not located). Cached because locating anchors walks
@@ -9028,6 +9104,17 @@ private:
     // relay rate-limit this desktop (adhoc #1618).
     QHash<int, QString> m_orgTaskAgentStatusPending;
     bool m_orgTaskAgentStatusFlushQueued = false;
+    // Batches sent over the node event socket that have not been answered yet,
+    // oldest first. A socket write gets its verdict in a later frame, so the
+    // batches have to be remembered in order to match each verdict to the
+    // states it judged — and re-queued wholesale if the link drops first,
+    // because nothing else would ever notice they never landed.
+    QList<QList<QPair<int, QString>>> m_orgTaskAgentStatusInFlight;
+    // Bounds that wait. The relay answers every frame it reads, so silence
+    // means the frame was lost (an evicted Durable Object, a write that never
+    // reached it) — without this the states would stay "published" for as long
+    // as the link happened to stay up.
+    QTimer *m_orgTaskAgentStatusAckTimer = nullptr;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
@@ -9333,15 +9420,33 @@ private:
     bool authenticateOrgTaskRequest(QUrl &url, QNetworkRequest &request,
                                     const QString &proofPrefix,
                                     const QString &resource) const;
+    // The node/ts/sig triple behind that signature, for a write that has no
+    // URL to hang it on — the batched agent-status report travels as a node
+    // event socket frame. Same canonical string, so the relay verifies it with
+    // the same code either way. False => this node cannot sign.
+    bool signOrgTaskProof(const QString &proofPrefix, const QString &resource,
+                          QString *node, QString *ts, QString *sig) const;
     // POST /api/tasks for a freshly created session and record the id it gets
     // back on the session. No-op unless session.orgTask is set.
     void openOrgTaskForSession(const AgentSession &session);
     // Queue one session's live state for the board. The write itself is
-    // batched: POST /api/tasks/agent-status carries every queued session in a
-    // single signed request, so a restart publishes the whole fleet at once
-    // instead of one request per session (adhoc #1618).
+    // batched: every queued session goes out together in one signed
+    // agent-status report, so a restart publishes the whole fleet at once
+    // instead of one request per session (adhoc #1618). That report rides the
+    // node event socket this desktop already holds — no HTTP request at all —
+    // and falls back to POST /api/tasks/agent-status when the socket is down
+    // or the relay is too old to accept the frame.
     void syncOrgTaskAgentStatus(int sessionId);
     void flushOrgTaskAgentStatus();
+    // Apply the relay's verdict on a batch of published states: `ok` false
+    // un-publishes all of them, otherwise only the tasks reported refused.
+    void applyOrgTaskAgentStatusResult(const QList<QPair<int, QString>> &sent,
+                                       bool ok, const QJsonArray &results);
+    // Match the relay's next socket verdict to the oldest unanswered batch.
+    void onOrgTaskAgentStatusFrame(bool ok, const QJsonArray &results);
+    // Un-publish everything still waiting on a socket verdict. Called when the
+    // event socket drops, because the answer is never coming.
+    void requeueOrgTaskAgentStatusInFlight();
     // POST /api/tasks/<id>/complete once the run reaches a terminal status,
     // stamping the finishing bot. No-op without an org task, while the run is
     // still going, or once finishedByBot is already set.

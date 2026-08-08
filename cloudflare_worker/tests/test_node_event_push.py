@@ -3,9 +3,15 @@
 
 notify_repo_host fans a payload-free {"type":"event","topic"} frame out to the
 owner's connected desktop/headless nodes the moment a web submission lands;
-each node answers with its one signed GET /api/sync. The channel is advisory
-only: it must never carry repository bytes, inbox payloads, or control
-commands, and a notify failure must never fail the write that triggered it.
+each node answers with its one signed GET /api/sync. Relay -> node stays
+payload free: it must never carry repository bytes or inbox payloads, and a
+notify failure must never fail the write that triggered it.
+
+Node -> relay carries keepalives plus the key-signed writes named in
+NODE_FRAME_ACCEPTS — today the batched agent-status report a desktop would
+otherwise POST while already holding this socket (adhoc #1618). Those are
+transport only: the frame carries the same proof the HTTPS route demands and
+goes to the same handler, so holding the socket grants nothing.
 """
 
 import ast
@@ -48,6 +54,11 @@ CONSTANTS = {
     "NODE_EVENT_MSG_WINDOW_MS",
     "NODE_EVENT_MSG_MAX_PER_WINDOW",
     "NODE_EVENT_MAX_FRAME_BYTES",
+    "NODE_FRAME_ACCEPTS",
+    "MAX_NODE_NAME",
+    # The gate the DO's synthetic request has to satisfy for its proof to be
+    # checked at all; pulled from entry.py so the two cannot drift apart.
+    "ORG_TASK_AGENT_STATUS_BATCH_RE",
     "HOST_COUNT_TIMEOUT_MS",
     "EXPECTED_DEGRADED_HEADERS",
     "EXPECTED_DEGRADED_HEADER",
@@ -299,9 +310,11 @@ def test_write_paths_stay_wired_to_the_event_push():
     assert 'env, owner, record["name"], "commits")' in entry_only
 
 
-def test_channel_is_advisory_only():
-    # The DO and its notifier must never touch D1, decrypt anything, or move
-    # request bodies: a compromised relay can at most trigger a signed sync.
+def test_channel_carries_no_data_and_grants_no_authority():
+    # Nothing on this channel may read D1, decrypt a row, or move an inbound
+    # request body of its own. What the relay pushes down is payload free, and
+    # the one write a node may push up is authorized by the proof inside the
+    # frame — never by the fact that it arrived on a connected socket.
     for name in ("ForkMeshNodes", "notify_repo_host", "node_events_handler"):
         source = _source_of(name)
         assert "d1_" not in source
@@ -309,7 +322,15 @@ def test_channel_is_advisory_only():
         assert "request.bytes" not in source
         assert "request.text" not in source
         assert "request.json" not in source
-    assert "'type': 'event'" in _source_of("ForkMeshNodes")
+    nodes = _source_of("ForkMeshNodes")
+    assert "'type': 'event'" in nodes
+    # The write path re-signs nothing and invents no identity: it forwards the
+    # node's own node/ts/sig triple to the shared task handler, which runs the
+    # batch proof check and the per-task ownership gates exactly as on HTTPS.
+    for token in ("frame.get('node')", "frame.get('ts')", "frame.get('sig')"):
+        assert token in nodes
+    assert "organization_tasks_handler" in nodes
+    assert "'/api/tasks/agent-status'" in nodes
 
 
 # --- /api/nodes/events routing ----------------------------------------------
@@ -463,6 +484,191 @@ def test_do_rate_limits_chatty_sockets_without_closing_them():
         asyncio.run(do.webSocketMessage(ws, json.dumps({"type": "ping"})))
     assert len(ws.sent) == ns["NODE_EVENT_MSG_MAX_PER_WINDOW"]
     assert ws.closed is None
+
+
+# --- the batched agent-status write carried on the socket --------------------
+
+def _tasks_globals(calls, status=200, payload=None, raises=None):
+    """Capture what the DO hands the shared task handler."""
+
+    class _Response:
+        def __init__(self):
+            self.status = status
+
+        async def json(self):
+            return payload if payload is not None else {"ok": True}
+
+    async def organization_tasks_handler(_env, request, path):
+        calls.append((request, path))
+        if raises is not None:
+            raise raises
+        return _Response()
+
+    class _JsRequest:
+        @staticmethod
+        def new(url, init):
+            return SimpleNamespace(
+                url=url,
+                method=getattr(init, "method", None),
+                body=getattr(init, "body", None),
+                headers=getattr(init, "headers", None),
+            )
+
+    return {
+        **_base_globals(),
+        "organization_tasks_handler": organization_tasks_handler,
+        "JsRequest": _JsRequest,
+    }
+
+
+def _status_frame(**overrides):
+    frame = {
+        "type": "agent-status",
+        "node": "Alice",
+        "ts": "1786072265687",
+        "sig": "j4wIWDJLjNhC",
+        "statuses": [
+            {"task": "a" * 32, "status": "running"},
+            {"task": "b" * 32, "status": "success"},
+        ],
+    }
+    frame.update(overrides)
+    return json.dumps(frame)
+
+
+def test_signed_status_frame_goes_to_the_same_handler_as_the_https_write():
+    # The whole point of moving this write onto the socket: no request is
+    # made, and no authority is invented. The node's own proof rides through
+    # to the shared task handler, which re-checks it exactly as on HTTPS.
+    calls = []
+    ns = _load(_tasks_globals(calls, payload={
+        "ok": True,
+        "results": [{"task": "a" * 32, "ok": True, "error": ""},
+                    {"task": "b" * 32, "ok": False, "error": "task_not_found"}],
+    }))
+    do = _make_do(ns)
+    ws = _Sock(SimpleNamespace(id="a", last=NOW))
+    asyncio.run(do.webSocketMessage(ws, _status_frame()))
+
+    (request, path), = calls
+    assert path == "/api/tasks/agent-status"
+    assert request.method == "POST"
+    url = urlparse(request.url)
+    # The batch-proof gate in _org_task_signed_session matches on the path, so
+    # a synthetic request the real regex misses would fall through to "no
+    # session" and silently write nothing.
+    assert ns["ORG_TASK_AGENT_STATUS_BATCH_RE"].match(url.path)
+    # Lower-cased like the HTTPS gate does before verifying the signature.
+    assert parse_qs(url.query) == {
+        "node": ["alice"], "ts": ["1786072265687"], "sig": ["j4wIWDJLjNhC"]}
+    assert json.loads(request.body) == {"statuses": [
+        {"task": "a" * 32, "status": "running"},
+        {"task": "b" * 32, "status": "success"},
+    ]}
+    # Per-entry outcomes go back so one deleted row cannot strand the rest.
+    assert json.loads(ws.sent[0]) == {
+        "type": "agent-status-result",
+        "ok": True,
+        "results": [{"task": "a" * 32, "ok": True, "error": ""},
+                    {"task": "b" * 32, "ok": False, "error": "task_not_found"}],
+    }
+
+
+def test_status_frame_without_a_complete_proof_is_dropped():
+    # Being connected is not a credential: a frame missing any part of the
+    # triple never reaches the task handler at all.
+    for missing in ("node", "ts", "sig"):
+        calls = []
+        ns = _load(_tasks_globals(calls))
+        do = _make_do(ns)
+        ws = _Sock(SimpleNamespace(id="a", last=NOW))
+        asyncio.run(do.webSocketMessage(ws, _status_frame(**{missing: ""})))
+        assert calls == []
+        assert ws.sent == []
+    # So is a frame whose statuses are not a list.
+    calls = []
+    ns = _load(_tasks_globals(calls))
+    do = _make_do(ns)
+    ws = _Sock(SimpleNamespace(id="a", last=NOW))
+    asyncio.run(do.webSocketMessage(ws, _status_frame(statuses="all")))
+    assert calls == []
+    assert ws.sent == []
+
+
+def test_refused_status_write_still_answers_so_the_node_can_retry():
+    # The node marks these states published optimistically. An unanswered
+    # frame would leave runs showing a stale state on the board until
+    # something else changed them, so a refusal must come back as one.
+    for globals_ in (
+        _tasks_globals([], status=401, payload={"error": "invalid_session"}),
+        _tasks_globals([], raises=RuntimeError("handler exploded")),
+    ):
+        ns = _load(globals_)
+        do = _make_do(ns)
+        ws = _Sock(SimpleNamespace(id="a", last=NOW))
+        asyncio.run(do.webSocketMessage(ws, _status_frame()))
+        assert json.loads(ws.sent[0]) == {
+            "type": "agent-status-result", "ok": False, "results": []}
+
+
+def test_rate_limited_status_frames_do_no_work_but_are_still_refused():
+    # A node that floods writes gets the same budget as one that floods pings.
+    # Over budget the write never reaches the task handler — but it is still
+    # answered, because silence would leave the node believing it landed.
+    calls = []
+    budget = _load(_base_globals())["NODE_EVENT_MSG_MAX_PER_WINDOW"]
+    ns = _load(_tasks_globals(calls))
+    do = _make_do(ns)
+    ws = _Sock(SimpleNamespace(id="a", last=NOW))
+    for _ in range(budget + 5):
+        asyncio.run(do.webSocketMessage(ws, _status_frame()))
+    assert len(calls) == budget
+    assert len(ws.sent) == budget + 5
+    assert json.loads(ws.sent[-1]) == {
+        "type": "agent-status-result", "ok": False, "results": []}
+    assert ws.closed is None
+
+
+def test_rate_limited_keepalives_are_still_just_dropped():
+    # The refusal is for writes only: a node must never see a verdict for a
+    # frame it did not send, or it would retire a batch that is still pending.
+    ns = _load(_base_globals())
+    do = _make_do(ns)
+    ws = _Sock(SimpleNamespace(id="a", last=NOW))
+    for _ in range(ns["NODE_EVENT_MSG_MAX_PER_WINDOW"] + 5):
+        asyncio.run(do.webSocketMessage(ws, json.dumps({"type": "ping"})))
+    assert {json.loads(frame)["type"] for frame in ws.sent} == {"pong"}
+
+
+def test_frame_ceiling_fits_a_full_fleet_report():
+    # A desktop publishes one entry per live session, up to the task API's
+    # MAX_AGENT_STATUS_BATCH of 200, and each entry carries the run's
+    # provenance as well as its state. The socket's frame cap has to hold that
+    # much or a fleet-sized node would silently fall back to HTTPS for the one
+    # burst this whole change exists to keep off HTTPS.
+    ns = _load(_base_globals())
+    module = (ROOT / "src" / "world_office_tasks.py").read_text(
+        encoding="utf-8")
+    assert "MAX_AGENT_STATUS_BATCH = 200" in module
+    full = _status_frame(statuses=[
+        {
+            "task": "%032x" % index,
+            "status": "running",
+            "agent": {
+                "provider": "claude-code", "startedBy": "forkbot-longish",
+                "model": "claude-opus-5-20260101", "mode": "agent",
+                "strength": "high", "sessionId": "%d" % index,
+            },
+        }
+        for index in range(200)
+    ])
+    assert len(full.encode("utf-8")) < ns["NODE_EVENT_MAX_FRAME_BYTES"]
+    # ...and the cap stays inside the two-byte extended frame length the Qt
+    # client writes (NodeEventSocket::sendTextFrame).
+    assert ns["NODE_EVENT_MAX_FRAME_BYTES"] < 65_536
+    assert "constexpr int kMaxOutboundPayload = 60 * 1024;" in (
+        ROOT.parent / "qt_client" / "src" / "NodeEventSocket.cpp"
+    ).read_text(encoding="utf-8")
 
 
 # --- Deployment contract -----------------------------------------------------

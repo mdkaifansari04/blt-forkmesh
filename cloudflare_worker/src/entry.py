@@ -199,7 +199,18 @@ NODE_EVENT_MAX_SOCKETS = 64
 NODE_SOCKET_STALE_MS = 15 * 60 * 1000
 NODE_EVENT_MSG_WINDOW_MS = 10 * 1000
 NODE_EVENT_MSG_MAX_PER_WINDOW = 20
-NODE_EVENT_MAX_FRAME_BYTES = 4 * 1024
+# Sized for the one frame a node may send that is not a keepalive: a desktop
+# restart reports the live run state of every session it owns, and the batch
+# cap (MAX_AGENT_STATUS_BATCH) is 200 entries, each a task id, a run state and
+# the run's provenance block, plus one signature for the lot. Kept under 64 KiB
+# so the client's two-byte frame length stays valid; the real bound on the work
+# is MAX_AGENT_STATUS_BATCH, which the task API enforces either way.
+NODE_EVENT_MAX_FRAME_BYTES = 60 * 1024
+# What this relay can accept from a node over the socket, advertised in the
+# hello frame sent on accept. A desktop only diverts a write off HTTPS once it
+# has seen its name here, so an older relay keeps receiving the POST instead of
+# silently dropping an unknown frame.
+NODE_FRAME_ACCEPTS = ("agent-status",)
 SENTRY_CLIENT = "forkmesh-cloudflare-python/1.0"
 SENTRY_CRON_MONITOR_SLUG = "forkmesh-relay"
 SENTRY_CRON_CHECKIN_MARGIN_MINUTES = 1
@@ -45895,12 +45906,17 @@ class ForkMeshNodes(DurableObject):
     # duration. Connection state lives only in the runtime/socket attachments
     # — instance attributes would not survive eviction.
     #
-    # This DO deliberately carries NOTHING but payload-free
-    # {"type":"event","topic","repo"} frames (relay -> node) and
-    # {"type":"ping"} keepalives (node -> relay). Repository bytes, inbox
-    # items and control commands all stay on their existing signed HTTPS
-    # routes; a pushed frame only tells the node to run the one consolidated
-    # GET /api/sync it would otherwise run on the slow fallback poll.
+    # Relay -> node is payload-free by design: {"type":"event","topic","repo"}
+    # frames carry no data, only "run your one consolidated GET /api/sync now"
+    # instead of waiting out a poll. Repository bytes and inbox items stay on
+    # their existing signed HTTPS routes and never touch this socket.
+    #
+    # Node -> relay is {"type":"ping"} keepalives plus the small key-signed
+    # writes named in NODE_FRAME_ACCEPTS. Those are transport only: the frame
+    # carries the same node/ts/sig proof the HTTPS route demands and is handed
+    # to the very same handler, so holding this socket grants no authority the
+    # sender did not already have — the relay cannot forge one, and a frame
+    # reaches exactly the rows its signer could have written to over HTTPS.
     traffic_binding = "FORKMESH_NODES"
 
     async def fetch(self, request):
@@ -45946,6 +45962,19 @@ class ForkMeshNodes(DurableObject):
         server.serializeAttachment(to_js({
             "id": new_socket_id(), "last": int(Date.now()),
         }))
+        # Capability handshake, not a grant: it only tells the node which
+        # writes this relay knows how to take off the socket. A node that never
+        # sees its frame named keeps using the signed HTTPS route.
+        hello = json.dumps({
+            "type": "hello", "accepts": list(NODE_FRAME_ACCEPTS),
+        }, separators=(",", ":"))
+        # Deliberately unmetered, like the 101 itself: accepting a socket must
+        # stay free of D1 writes, or a fleet reconnecting after a relay deploy
+        # would bill one row per node just to say hello.
+        try:
+            server.send(hello)
+        except Exception:
+            pass
         return JsResponse.new(None, to_js({"status": 101, "webSocket": client}))
 
     def _live_node_sockets(self, close_stale=False):
@@ -45968,9 +45997,10 @@ class ForkMeshNodes(DurableObject):
         return sockets
 
     async def webSocketMessage(self, ws, message):
-        # Nodes only ever send small {"type":"ping"} keepalives; anything else
-        # is dropped (rate-limited) or the socket is closed. Each accepted
-        # frame refreshes the socket's staleness clock in its attachment.
+        # Nodes send {"type":"ping"} keepalives and the key-signed writes named
+        # in NODE_FRAME_ACCEPTS; anything else is dropped (rate-limited) or the
+        # socket is closed. Each accepted frame refreshes the socket's
+        # staleness clock in its attachment.
         if not isinstance(message, str):
             self._safe_close(ws, 1003, "text frames only")
             return
@@ -45996,11 +46026,18 @@ class ForkMeshNodes(DurableObject):
             }))
         except Exception:
             pass
-        if count > NODE_EVENT_MSG_MAX_PER_WINDOW:
-            return
         try:
             kind = json.loads(message).get("type")
         except Exception:
+            return
+        if count > NODE_EVENT_MSG_MAX_PER_WINDOW:
+            # Over budget: do no work. A dropped keepalive costs nothing, but a
+            # node that diverted a write onto this socket is waiting on a
+            # verdict and would otherwise be left believing it landed — answer
+            # the refusal, which reads to the node exactly like an HTTPS 429
+            # and puts the states back in its queue for the next flush.
+            if kind == "agent-status":
+                self._answer_agent_status(ws, False, [])
             return
         if kind == "ping":
             pong = json.dumps({"type": "pong"})
@@ -46011,6 +46048,94 @@ class ForkMeshNodes(DurableObject):
             else:
                 durable_object_traffic_note(
                     self, bytes_out=len(pong.encode("utf-8")))
+        elif kind == "agent-status":
+            await self._report_agent_status(ws, message)
+
+    async def _report_agent_status(self, ws, message):
+        """Apply a node's batched agent-status write carried on the socket.
+
+        A desktop mirrors each local session's run state onto its task row, so
+        the first reload after launch has a state to publish for every session
+        at once.  One signed POST per session is what made the relay
+        rate-limit its own client on a fleet-sized node (adhoc #1618); batching
+        them cut that to a single request, and carrying the batch here removes
+        the request entirely — the node is already holding this socket to be
+        pushed to, so the states ride back up it.
+
+        The socket is transport and nothing more.  The frame carries the same
+        node/ts/sig triple the HTTPS route requires, and it is handed to the
+        same handler, which re-runs the batch proof check and then the
+        per-task ownership and agent-row gates on every entry.  A frame
+        therefore reaches exactly the rows its signer could have written to one
+        HTTPS request at a time, and being connected proves nothing on its own.
+        """
+
+        try:
+            frame = json.loads(message)
+        except Exception:
+            return
+        if not isinstance(frame, dict):
+            return
+        node = clean_string(str(frame.get("node") or ""), MAX_NODE_NAME).lower()
+        ts = clean_string(str(frame.get("ts") or ""), 20)
+        sig = clean_string(str(frame.get("sig") or ""), 200)
+        statuses = frame.get("statuses")
+        if not node or not ts or not sig or not isinstance(statuses, list):
+            return
+        # An in-process handler call, not a subrequest: this is the whole point
+        # of moving the write onto the socket.
+        target = (
+            "https://forkmesh.internal/api/tasks/agent-status?node="
+            + quote(node, safe="") + "&ts=" + quote(ts, safe="")
+            + "&sig=" + quote(sig, safe="")
+        )
+        body = json.dumps({"statuses": statuses}, separators=(",", ":"))
+        ok, results = False, []
+        try:
+            response = await organization_tasks_handler(
+                self.env,
+                JsRequest.new(target, to_js({
+                    "method": "POST",
+                    "headers": {"content-type": "application/json"},
+                    "body": body,
+                })),
+                "/api/tasks/agent-status",
+            )
+            status = int(getattr(response, "status", 500) or 500)
+            payload = await response.json()
+            if hasattr(payload, "to_py"):
+                payload = payload.to_py()
+            if not isinstance(payload, dict):
+                # Same coercion as _remote_mcp_task_request: a converted JS
+                # object is mapping-like without being a dict.
+                try:
+                    payload = dict(payload)
+                except Exception:
+                    payload = {}
+            ok = 200 <= status < 300
+            if ok:
+                results = [
+                    entry for entry in (payload.get("results") or [])
+                    if isinstance(entry, dict)
+                ]
+        except Exception:
+            ok, results = False, []
+        # Always answer, including on refusal: the node marks these states
+        # published optimistically, and an unanswered frame would leave a run
+        # showing its old state on the board until something else changed.
+        self._answer_agent_status(ws, ok, results)
+        await durable_object_traffic_flush(self)
+
+    def _answer_agent_status(self, ws, ok, results):
+        reply = json.dumps({
+            "type": "agent-status-result", "ok": bool(ok), "results": results,
+        }, separators=(",", ":"))
+        try:
+            ws.send(reply)
+        except Exception:
+            return
+        durable_object_traffic_note(
+            self, bytes_out=len(reply.encode("utf-8")))
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._safe_close(ws, 1000, "")

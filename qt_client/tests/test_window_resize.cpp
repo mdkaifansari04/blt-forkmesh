@@ -54,6 +54,7 @@
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTextBlock>
 #include <QTextBrowser>
 #include <QWidget>
 
@@ -889,6 +890,10 @@ void checkChatPingAvatar(MainWindow &window)
 // as the tail's process would deliver them.
 void checkCloudLogMonitorAlert(MainWindow &window)
 {
+    // Silence the real tail first: where Wrangler can run, this window started
+    // one at launch and the live Worker's own hits would be counted alongside
+    // the events fed in below.
+    window.testResetCloudLogMonitor();
     window.testDismissTopMessage();
     window.testResetNetworkLog();
     window.testResetLoggedErrorAlerts();
@@ -981,6 +986,58 @@ void checkCloudLogMonitorAlert(MainWindow &window)
           QStringLiteral("a pretty-printed Worker exception spanning two reads "
                          "renders as one line and raises the alert"));
 
+    // adhoc #1623: Wrangler's tail is not a forever stream. Cloudflare expires a
+    // tail session after about an hour and Wrangler exits 0 the moment the
+    // server closes it — so a monitor that treats that exit as the end of
+    // monitoring simply stops showing the Worker's traffic mid-session, which is
+    // indistinguishable from no cloud logs ever arriving.
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+    // Counted as deltas, not totals: on a machine that can actually run
+    // Wrangler this suite's own monitor is tailing the live Worker alongside
+    // it, and its hits land in the same log.
+    const int cloudBefore = window.testLogFilterChipCount(QStringLiteral("CLOUD"));
+    const int redBefore = window.testLogFilterChipCount(QStringLiteral("ERROR"));
+    const int afterExpiry = window.testCloudLogMonitorTailEnded(0, 90 * 60 * 1000);
+    QApplication::processEvents();
+    const QString expiryLog = window.testNetworkLog().join(QChar(u'\n'));
+    check(afterExpiry > 0 &&
+              expiryLog.contains(
+                  QStringLiteral("the Worker log tail ended (exit 0)")) &&
+              !expiryLog.contains(QStringLiteral("could not stay connected")) &&
+              window.testLogFilterChipCount(QStringLiteral("CLOUD")) >
+                  cloudBefore &&
+              window.testLogFilterChipCount(QStringLiteral("ERROR")) == redBefore,
+          QStringLiteral("an expired tail session schedules a new tail and says "
+                         "so as a CLOUD line, not a red alert"));
+
+    // A tail that never gets going is a different matter: after a run of them
+    // there is nothing left to retry, and that failure does earn the card.
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+    int shortLived = 0;
+    while (window.testCloudLogMonitorTailEnded(1, 200) > 0 && shortLived < 20)
+        ++shortLived;
+    QApplication::processEvents();
+    const QString giveUpLog = window.testNetworkLog().join(QChar(u'\n'));
+    check(shortLived > 0 && shortLived < 20 &&
+              giveUpLog.count(QStringLiteral("could not stay connected")) == 1,
+          QStringLiteral("a tail that keeps dying young stops for good and "
+                         "reports it once, as an error"));
+    // Giving up unticks the Settings box (without recording it as the stored
+    // preference). Put the box back so the Settings checks later in this suite
+    // still find the run's own state — silently, or re-ticking it would start a
+    // real Wrangler.
+    if (auto *monitorSetting = window.findChild<QCheckBox *>(
+            QStringLiteral("cloudLogMonitorSettingCheck"))) {
+        monitorSetting->blockSignals(true);
+        monitorSetting->setChecked(true);
+        monitorSetting->blockSignals(false);
+    }
+
     window.testDismissTopMessage();
     window.testResetNetworkLog();
     window.testResetLoggedErrorAlerts();
@@ -993,6 +1050,7 @@ void checkCloudLogMonitorAlert(MainWindow &window)
 // reports whether the background tail is actually running.
 void checkCloudLogMerged(MainWindow &window)
 {
+    window.testResetCloudLogMonitor();
     window.testShowLogSection();
     window.testResetNetworkLog();
     QApplication::processEvents();
@@ -6218,6 +6276,32 @@ int main(int argc, char *argv[])
                       .arg(failHtml.left(120).simplified()));
         }
 
+        // adhoc #1628: a branch deleted while its range is on screen — a "Merge &
+        // delete" ends in refreshSourceControl(force), which re-reads the very
+        // range it just removed — used to leave the pane on git's own plumbing,
+        // "fatal: ambiguous argument 'main...<branch>': unknown revision", under a
+        // Retry link that could never bring the branch back. The deletion happens
+        // before the read, so the read has to notice the branch went away.
+        {
+            runGitChecked(wtRepo.path(), {"branch", "feature/vanishing", "main"});
+            window.testSwitchToBranchImmediateSelection(
+                QStringLiteral("feature/vanishing"));
+            check(waitForDiffText(QStringLiteral("No changes between")),
+                  QStringLiteral("a branch level with main opens its (empty) "
+                                 "range before it is deleted"));
+            runGitChecked(wtRepo.path(), {"branch", "-D", "feature/vanishing"});
+            window.testRefreshSourceControl(); // what the merge path does last
+            const bool told = waitForDiffText(QStringLiteral("was not found"));
+            const QString goneText = window.testBranchDiffText();
+            check(told && !goneText.contains(QStringLiteral("ambiguous argument")) &&
+                      !goneText.contains(QStringLiteral("Could not diff")) &&
+                      !goneText.contains(QStringLiteral("Retry")),
+                  QString("re-reading the range of a branch that was just deleted "
+                          "says where the branch went instead of showing git's "
+                          "unknown-revision error (adhoc #1628, pane = \"%1\")")
+                      .arg(goneText.left(90).simplified()));
+        }
+
         // adhoc #1594: right-clicking a file in the changes panel offers "Add to
         // .gitignore". The rule it writes has to name that one file — anchored at
         // the repository root, with glob metacharacters in the name escaped —
@@ -6360,6 +6444,75 @@ int main(int argc, char *argv[])
             check(html.contains(QStringLiteral("href='fmbranch:main'")),
                   QStringLiteral("the celebration links back to the base branch "
                                  "(adhoc #1615)"));
+
+            // adhoc #1631: the day per agent, for everyone who landed more than
+            // one branch. A single landing is already its own row below, so a
+            // tally of one would only restate it.
+            forkmesh::ui::MergeCelebrationRow second = landed;
+            second.branch = QStringLiteral("agent/adhoc-1631-more");
+            second.mergeCommit = QString(40, QLatin1Char('c'));
+            second.current = false;
+            second.files = 2;
+            second.insertions = 30;
+            second.deletions = 5;
+            const QList<forkmesh::ui::MergeActorTally> tallies =
+                forkmesh::ui::mergeCelebrationTallies({landed, second, kept});
+            check(tallies.size() == 1 &&
+                      tallies.first().actor == QStringLiteral("Opus 5") &&
+                      tallies.first().merges == 2 &&
+                      tallies.first().files == 5 &&
+                      tallies.first().insertions == 442 &&
+                      tallies.first().deletions == 42,
+                  QString("an agent's day is summed across its landings, and a "
+                          "single landing raises no tally (adhoc #1631, %1 "
+                          "tallies)").arg(tallies.size()));
+
+            const QString withTallies = forkmesh::ui::mergeCelebrationHtml(
+                landed, QStringLiteral("main"), {landed, second, kept}, 4, 0,
+                tallies);
+            check(withTallies.contains(QStringLiteral("MORE THAN ONE TODAY")) &&
+                      withTallies.contains(
+                          QStringLiteral("font-size:16px;'>2</b>")) &&
+                      withTallies.contains(QStringLiteral(" merges</span>")),
+                  QString("the celebration shows how many each repeat merger "
+                          "landed today (adhoc #1631, html = %1)")
+                      .arg(withTallies.section(QStringLiteral("MORE THAN ONE"), 1, 1)
+                               .left(200)));
+            check(forkmesh::ui::mergeCelebrationTallies({landed, kept}).isEmpty() &&
+                      !html.contains(QStringLiteral("MORE THAN ONE TODAY")),
+                  QStringLiteral("a day where everyone landed one branch raises "
+                                 "no tallies, so the section is absent rather "
+                                 "than empty (adhoc #1631)"));
+
+            // The end-of-diff bar is drawn as an image cap appended to the
+            // rendered document. Under a page carrying no diff — this
+            // celebration, or a plain notice — it was just a black line across
+            // the pane, so the renderer can be asked to leave it off.
+            const auto endCapDrawn = [](const QTextEdit &view) {
+                for (QTextBlock block = view.document()->begin(); block.isValid();
+                     block = block.next())
+                    for (QTextBlock::iterator it = block.begin(); !it.atEnd();
+                         ++it)
+                        if (it.fragment().isValid() &&
+                            it.fragment().charFormat().isImageFormat())
+                            return true;
+                return false;
+            };
+            const QString notice =
+                QStringLiteral("<p style='color:#8b949e'>Merged it.</p>");
+            QTextBrowser barred;
+            forkmesh::ui::renderDiffStreamed(&barred, notice,
+                                             forkmesh::ui::diffStyleSheet(12));
+            check(endCapDrawn(barred),
+                  QStringLiteral("a diff still ends in its end-of-diff bar "
+                                 "(adhoc #1631)"));
+            QTextBrowser bare;
+            forkmesh::ui::renderDiffStreamed(&bare, notice,
+                                             forkmesh::ui::diffStyleSheet(12),
+                                             /*endCap=*/false);
+            check(!endCapDrawn(bare),
+                  QStringLiteral("a page with no diff on it draws no bar under "
+                                 "itself (adhoc #1631)"));
         }
 
         // Leave the fixture as the branch/merge tests below expect it.

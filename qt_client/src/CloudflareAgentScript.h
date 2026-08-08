@@ -30,6 +30,7 @@ inline QString forkmeshCloudflareAgentScript()
 import json
 import os
 import select
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -47,6 +48,14 @@ USER_AGENT = "ForkMesh-AI-agent/1.0 (+https://forkmesh.com)"
 # Turns the relay throttled: how often to retry one turn before giving up.
 RATE_LIMIT_RETRIES = 3
 RATE_LIMIT_MAX_WAIT = 120
+# Turns the relay failed outright (5xx) or that never reached it. The relay is
+# a Cloudflare Worker whose Python isolate can be wedged by entirely unrelated
+# traffic sharing it, which answers one turn with a 1101 "Worker threw
+# exception" 500 while the next lands on a healthy isolate and works (adhoc
+# #1633). Throwing away a run that is already mid-task over that is the wrong
+# trade, so retry with a widening backoff.
+TRANSIENT_RETRIES = 4
+TRANSIENT_MAX_WAIT = 30
 # Consecutive turns whose every tool call was a command this run already ran.
 # The small instruction-tuned models behind this provider will otherwise loop
 # on one command forever: llama-3.3 kept re-issuing the same
@@ -54,6 +63,10 @@ RATE_LIMIT_MAX_WAIT = 120
 # stopping when the person watching pressed Stop (adhoc #1622). Three such
 # turns end the run instead, keeping whatever was already committed.
 STALLED_TURN_LIMIT = 3
+# How many times a model that stops early — no tool call, and either nothing to
+# say or edits it never committed — is told to finish the job before the run
+# ends anyway.
+UNFINISHED_NUDGE_LIMIT = 2
 
 # Claude needs no coaching to finish an agent loop; a 70B instruct model does.
 # Spell out the two things it keeps getting wrong — that exit code 0 means the
@@ -156,6 +169,41 @@ def prepare_git_environment():
     # A stray `git push` must fail rather than sit on a credential prompt for
     # the whole 600s tool timeout.
     os.environ["GIT_TERMINAL_PROMPT"] = "0"
+
+
+def command_key(command):
+    """What makes two tool calls "the same command" for the repeat guard.
+
+    `echo 'hello' >> README.md` and `echo "hello" >> README.md` are one
+    command spelled two ways, and llama-3.3 alternates between the spellings —
+    which slipped straight past a raw string comparison and appended the line
+    twice (adhoc #1633). Compare the shell tokens instead; a command shlex
+    cannot parse falls back to its stripped text.
+    """
+    try:
+        return tuple(shlex.split(command))
+    except ValueError:
+        return (command.strip(),)
+
+
+def uncommitted_changes():
+    """`git status --porcelain` for the worktree, or "" when it is clean."""
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    # rstrip only: porcelain's first column is a space for a change that is
+    # unstaged (" M README.md"), and stripping it turns the status the model
+    # is shown into a different one.
+    return (proc.stdout or "").rstrip()
 
 
 def run_bash(command):
@@ -292,11 +340,13 @@ def main():
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
-    # Loop guards (see STALLED_TURN_LIMIT): every command this run has run, the
-    # one it ran last, and how many turns in a row have added nothing new.
+    # Loop guards (see STALLED_TURN_LIMIT): every command this run has run
+    # (keyed by command_key), the one it ran last, and how many turns in a row
+    # have added nothing new. `nudges` is the separate early-stop budget.
     ran = {}
-    last_command = ""
+    last_key = ()
     stalled_turns = 0
+    nudges = 0
 
     for turn in range(1, MAX_TURNS + 1):
         steer = pending_user_input()
@@ -306,14 +356,18 @@ def main():
             # A fresh instruction deserves a fresh run at the turn budget.
             stalled_turns = 0
         data = None
-        for attempt in range(RATE_LIMIT_RETRIES + 1):
+        rate_retries = RATE_LIMIT_RETRIES
+        transient_retries = TRANSIENT_RETRIES
+        transient_backoff = 2
+        for _attempt in range(RATE_LIMIT_RETRIES + TRANSIENT_RETRIES + 1):
             net_request(turn, host, model or "default", len(messages))
             try:
                 data = call_relay(auth, model, max_tokens, messages)
                 break
             except urllib.error.HTTPError as err:
                 detail = err.read().decode("utf-8", "replace")
-                if err.code == 429 and attempt < RATE_LIMIT_RETRIES:
+                if err.code == 429 and rate_retries > 0:
+                    rate_retries -= 1
                     try:
                         wait_ms = int(json.loads(detail).get("retryAfterMs") or 0)
                     except (ValueError, AttributeError):
@@ -322,6 +376,22 @@ def main():
                     net_error(turn, err.code)
                     log("==> Relay rate window reached; retrying in %ds." % wait)
                     time.sleep(wait)
+                    continue
+                # A 5xx is this one request failing, not the run being turned
+                # away: the relay's shared Python isolate can be wedged by
+                # unrelated traffic, and the retry usually lands elsewhere and
+                # works (see TRANSIENT_RETRIES). The conversation is unchanged,
+                # so re-sending it costs nothing but the turn.
+                if err.code >= 500 and transient_retries > 0:
+                    transient_retries -= 1
+                    net_error(turn, err.code)
+                    log("==> Relay error %d; retrying this turn in %ds (%d "
+                        "%s left)."
+                        % (err.code, transient_backoff, transient_retries + 1,
+                           "try" if transient_retries == 0 else "tries"))
+                    time.sleep(transient_backoff)
+                    transient_backoff = min(TRANSIENT_MAX_WAIT,
+                                            transient_backoff * 2)
                     continue
                 net_error(turn, err.code)
                 log("!! Relay AI agent error %d: %s" % (err.code, detail))
@@ -336,8 +406,23 @@ def main():
                 elif err.code == 404:
                     log("!! This relay does not run AI agents yet (it needs a "
                         "newer deployment).")
+                elif err.code >= 500:
+                    log("!! The relay failed this turn %d times in a row; "
+                        "anything the run already committed is kept."
+                        % (TRANSIENT_RETRIES + 1))
                 return 1
             except urllib.error.URLError as err:
+                # Same call: a dropped connection mid-run is worth retrying
+                # before abandoning the task.
+                if transient_retries > 0:
+                    transient_retries -= 1
+                    net_error(turn, "unreachable")
+                    log("==> Could not reach the relay (%s); retrying this "
+                        "turn in %ds." % (err.reason, transient_backoff))
+                    time.sleep(transient_backoff)
+                    transient_backoff = min(TRANSIENT_MAX_WAIT,
+                                            transient_backoff * 2)
+                    continue
                 net_error(turn, "unreachable")
                 log("!! Could not reach the relay: %s" % err.reason)
                 return 1
@@ -383,11 +468,11 @@ def main():
                     result = ("No command was given. Put the shell command in "
                               "the `command` argument.")
                     log("\n!! %s" % result)
-                elif command == last_command:
+                elif command_key(command) == last_key:
                     # Answer an immediate repeat from the first run instead of
                     # executing it again: re-running `>> file` would append the
                     # same line twice, and the model needs telling, not obeying.
-                    earlier_turn, result = ran[command]
+                    earlier_turn, result = ran[last_key]
                     log("\n$ %s" % command)
                     log("==> Not run again: this is the command from turn %d. "
                         "Its result is being reported unchanged."
@@ -400,13 +485,14 @@ def main():
                         "otherwise run a different command."
                         % (earlier_turn, result))
                 else:
+                    key = command_key(command)
                     log("\n$ %s" % command)
                     result = run_bash(command)
                     log(result)
-                    if command not in ran:
+                    if key not in ran:
                         progressed = True
-                    ran[command] = (turn, result)
-                    last_command = command
+                    ran[key] = (turn, result)
+                    last_key = key
             else:
                 result = "Unknown tool: %s. Only `bash` is available." % name
                 log("\n!! %s" % result)
@@ -428,6 +514,37 @@ def main():
                     "committed is kept." % stalled_turns)
                 return 0
             continue
+
+        # No tool call: the model considers itself done. Take it at its word
+        # only if the worktree agrees. llama-3.3 routinely edits a file and
+        # then stops without committing — and sometimes stops on an empty
+        # answer, which used to log "Agent finished" over a run that had done
+        # nothing at all (adhoc #1633). Say what is missing and let it finish.
+        dirty = uncommitted_changes()
+        if (dirty or not reply) and nudges < UNFINISHED_NUDGE_LIMIT:
+            nudges += 1
+            if dirty:
+                note = (
+                    "You stopped calling tools, but this worktree still has "
+                    "uncommitted changes:\n%s\nCommit them on the current "
+                    "branch (`git add -A` then `git commit -m \"...\"`), or "
+                    "undo them with `git checkout -- .` if they are wrong. "
+                    "Then reply with one short sentence and no tool call."
+                    % dirty)
+                log("\n==> Not finished: the worktree has uncommitted "
+                    "changes. Asking the model to commit them.")
+            else:
+                note = (
+                    "You sent neither a tool call nor an answer. If the task "
+                    "is done, reply with one short sentence saying what you "
+                    "did; otherwise call the `bash` tool to carry on.")
+                log("\n==> Empty turn (no tool call, no answer). Asking the "
+                    "model again.")
+            messages.append({"role": "user", "content": note})
+            continue
+        if dirty:
+            log("\n!! The model stopped without committing; the worktree "
+                "changes below are kept as this run's patch.\n%s" % dirty)
         log("\n==> Agent finished.")
         return 0
 

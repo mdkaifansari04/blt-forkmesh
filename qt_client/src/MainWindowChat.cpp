@@ -8536,40 +8536,32 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
         return; // already monitoring (or still tearing the last one down)
 
     if (!enabled) {
+        // Stopping means stopping: a restart the last tail's death scheduled
+        // must not fire a minute later and quietly turn the monitor back on.
+        cancelCloudLogMonitorRestart();
+        m_cloudLogMonitorRestarts = 0;
         // Idempotent: the failed-start and died-on-its-own paths both come back
         // through here by unchecking the box, and neither should log a stop for
         // a monitor that is already gone.
         if (!m_cloudLogMonitorProcess)
             return;
-        m_cloudLogMonitorStopping = true;
-        if (m_cloudLogMonitorProcess->state() != QProcess::NotRunning) {
-            m_cloudLogMonitorProcess->terminate();
-            if (!m_cloudLogMonitorProcess->waitForFinished(1500)) {
-                m_cloudLogMonitorProcess->kill();
-                m_cloudLogMonitorProcess->waitForFinished(1000);
-            }
-        }
-        // The environment holds the API token, so it is dropped the moment the
-        // child that needed it is gone.
-        m_cloudLogMonitorProcess->setProcessEnvironment(QProcessEnvironment());
-        m_cloudLogMonitorProcess->disconnect(this);
-        m_cloudLogMonitorProcess->deleteLater();
-        m_cloudLogMonitorProcess = nullptr;
-        m_cloudLogMonitorStopping = false;
-        m_cloudLogMonitorBuffer.clear();
+        releaseCloudLogMonitorProcess();
+        // Worded around the log's own error scan: "error" in a line is what
+        // badges it ERROR and raises the red card, so the monitor's own status
+        // lines say "flagged" and stay in their CLOUD category. Only its
+        // genuine failures below use the vocabulary that alerts.
         logSystem(QStringLiteral(
-                      "Cloud: stopped monitoring the Worker log (%1 event%2, "
-                      "%3 error%4).")
+                      "Cloud: stopped watching the Worker log (%1 event%2 "
+                      "seen, %3 flagged).")
                       .arg(m_cloudLogMonitorEvents)
                       .arg(m_cloudLogMonitorEvents == 1 ? QString()
                                                         : QStringLiteral("s"))
-                      .arg(m_cloudLogMonitorErrors)
-                      .arg(m_cloudLogMonitorErrors == 1 ? QString()
-                                                        : QStringLiteral("s")));
+                      .arg(m_cloudLogMonitorErrors));
         updateCloudLogMonitorTooltip();
         return;
     }
 
+    cancelCloudLogMonitorRestart();
     QString token;
     QString workerDirectory;
     forkmesh::control::CloudflareBootstrapCommand command;
@@ -8581,8 +8573,14 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
     }
 
     m_cloudLogMonitorBuffer.clear();
-    m_cloudLogMonitorErrors = 0;
-    m_cloudLogMonitorEvents = 0;
+    // A restart carries the session's tallies over. Zeroing them would make the
+    // CLOUD chip's counts fall back to nothing every time a tail session
+    // expired, as though the Worker's traffic so far had been imagined.
+    if (!m_cloudLogMonitorResuming) {
+        m_cloudLogMonitorErrors = 0;
+        m_cloudLogMonitorEvents = 0;
+        m_cloudLogMonitorRestarts = 0;
+    }
     m_cloudLogMonitorStopping = false;
     m_cloudLogMonitorIdleReason.clear();
     m_cloudLogMonitorProcess = new QProcess(this);
@@ -8609,24 +8607,123 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
                 readCloudLogMonitorOutput();
                 if (m_cloudLogMonitorStopping)
                     return;
-                // The stream dying on its own is itself worth an alert: a
-                // monitor nobody knows has stopped is worse than no monitor.
-                logSystem(QStringLiteral(
-                              "Cloud: the Worker log monitor failed and "
-                              "stopped (exit %1).")
-                              .arg(exitCode));
-                stopCloudLogMonitorAfterFailure();
+                handleCloudLogMonitorEnded(
+                    exitCode, m_cloudLogMonitorUptime.isValid()
+                                  ? m_cloudLogMonitorUptime.elapsed()
+                                  : 0);
             });
     // Logged before start() so the order reads right even when the child fails
-    // to launch synchronously.
-    logSystem(QStringLiteral(
-        "Cloud: monitoring the deployed Worker's live log for errors."));
+    // to launch synchronously. Says "watching" rather than "monitoring … for
+    // errors": the word "errors" is what the log's own scan badges ERROR, so
+    // the monitor's opening line raised a red alert card about itself.
+    if (!m_cloudLogMonitorResuming) {
+        logSystem(QStringLiteral(
+            "Cloud: watching the deployed Worker's live log."));
+    }
     updateCloudLogMonitorTooltip();
+    m_cloudLogMonitorUptime.start();
     m_cloudLogMonitorProcess->start(command.program, command.arguments);
     // The token only ever lived in the child's environment and this local; both
     // copies go now that the process owns its own.
     token.fill(QChar(u'\0'));
     token.clear();
+}
+
+void MainWindow::releaseCloudLogMonitorProcess()
+{
+    if (!m_cloudLogMonitorProcess)
+        return;
+    m_cloudLogMonitorStopping = true;
+    if (m_cloudLogMonitorProcess->state() != QProcess::NotRunning) {
+        m_cloudLogMonitorProcess->terminate();
+        if (!m_cloudLogMonitorProcess->waitForFinished(1500)) {
+            m_cloudLogMonitorProcess->kill();
+            m_cloudLogMonitorProcess->waitForFinished(1000);
+        }
+    }
+    // The environment holds the API token, so it is dropped the moment the
+    // child that needed it is gone.
+    m_cloudLogMonitorProcess->setProcessEnvironment(QProcessEnvironment());
+    m_cloudLogMonitorProcess->disconnect(this);
+    m_cloudLogMonitorProcess->deleteLater();
+    m_cloudLogMonitorProcess = nullptr;
+    m_cloudLogMonitorStopping = false;
+    m_cloudLogMonitorBuffer.clear();
+    m_cloudLogMonitorUptime.invalidate();
+}
+
+void MainWindow::handleCloudLogMonitorEnded(int exitCode, qint64 uptimeMs)
+{
+    const forkmesh::control::CloudTailRestartPlan plan =
+        forkmesh::control::planCloudflareTailRestart(m_cloudLogMonitorRestarts,
+                                                     uptimeMs);
+    m_cloudLogMonitorRestarts =
+        uptimeMs >= forkmesh::control::kCloudTailHealthyUptimeMs
+            ? 0
+            : m_cloudLogMonitorRestarts + 1;
+    // Let go of the finished child first: setCloudLogMonitorEnabled() refuses to
+    // start a tail while one is still on the books.
+    releaseCloudLogMonitorProcess();
+
+    // On the way out nothing is worth saying: the tail is one of the many
+    // children a closing window reaps, and its exit is not news.
+    if (m_closingDown)
+        return;
+    if (!plan.restart ||
+        !QSettings().value(kCloudLogMonitorSetting, true).toBool()) {
+        // Nothing left to try. This one does say "could not", because it is the
+        // failure the red card is for: monitoring has stopped and only a fix on
+        // this machine will bring it back.
+        m_cloudLogMonitorIdleReason =
+            QStringLiteral("the Worker log tail would not stay connected");
+        logSystem(QStringLiteral("Cloud: the Worker log monitor could not stay "
+                                 "connected and stopped (exit %1).")
+                      .arg(exitCode));
+        stopCloudLogMonitorAfterFailure();
+        return;
+    }
+
+    const int seconds = qMax(1, (plan.delayMs + 999) / 1000);
+    m_cloudLogMonitorIdleReason =
+        QStringLiteral("the tail ended \xC2\xB7 opening a new one in %1s")
+            .arg(seconds);
+    // A CLOUD line, not an ERROR one: an expired tail session is how Cloudflare
+    // ends every tail, and an hourly red card for the expected thing is what
+    // trains someone to ignore the real ones.
+    logSystem(QStringLiteral("Cloud: the Worker log tail ended (exit %1) "
+                             "\xC2\xB7 opening a new one in %2s.")
+                  .arg(exitCode)
+                  .arg(seconds));
+    scheduleCloudLogMonitorRestart(plan.delayMs);
+    updateCloudLogMonitorTooltip();
+}
+
+void MainWindow::scheduleCloudLogMonitorRestart(int delayMs)
+{
+    if (!m_cloudLogMonitorRestartTimer) {
+        m_cloudLogMonitorRestartTimer = new QTimer(this);
+        m_cloudLogMonitorRestartTimer->setSingleShot(true);
+        connect(m_cloudLogMonitorRestartTimer, &QTimer::timeout, this,
+                &MainWindow::restartCloudLogMonitor);
+    }
+    m_cloudLogMonitorRestartTimer->start(qMax(0, delayMs));
+}
+
+void MainWindow::cancelCloudLogMonitorRestart()
+{
+    if (m_cloudLogMonitorRestartTimer)
+        m_cloudLogMonitorRestartTimer->stop();
+}
+
+void MainWindow::restartCloudLogMonitor()
+{
+    if (m_closingDown || m_cloudLogMonitorProcess)
+        return;
+    if (!QSettings().value(kCloudLogMonitorSetting, true).toBool())
+        return;
+    m_cloudLogMonitorResuming = true;
+    setCloudLogMonitorEnabled(true);
+    m_cloudLogMonitorResuming = false;
 }
 
 void MainWindow::readCloudLogMonitorOutput()
@@ -14364,10 +14461,15 @@ QWidget *MainWindow::buildHostsSection()
     stageRow->setSpacing(5);
     m_vultrStageNumbers.clear();
     m_vultrStageLabels.clear();
+    m_vultrStageDetails.clear();
     const QStringList stageNames = {
         QStringLiteral("Credentials"), QStringLiteral("Plan + image"),
         QStringLiteral("Create server"), QStringLiteral("Boot + connect"),
         QStringLiteral("Install"), QStringLiteral("Live traffic")};
+    m_vultrStageDetailText.clear();
+    m_vultrStageDetailText.reserve(stageNames.size());
+    for (int i = 0; i < stageNames.size(); ++i)
+        m_vultrStageDetailText.append(QString());
     for (int i = 0; i < stageNames.size(); ++i) {
         auto *stage = new QWidget(m_vultrProgressPanel);
         stage->setObjectName(QStringLiteral("vultrDeployStage%1").arg(i + 1));
@@ -14383,10 +14485,21 @@ QWidget *MainWindow::buildHostsSection()
         label->setAlignment(Qt::AlignCenter);
         label->setWordWrap(true);
         label->setMinimumWidth(72);
+        // Per-stage status/error caption (adhoc): a couple of words under the
+        // stage name saying what it's doing now or what went wrong, so a
+        // stalled deploy is diagnosable at a glance instead of only through the
+        // shared Live output log below.
+        auto *detail = new QLabel(stage);
+        detail->setAlignment(Qt::AlignCenter);
+        detail->setWordWrap(true);
+        detail->setMinimumWidth(72);
+        detail->setVisible(false);
         col->addWidget(number, 0, Qt::AlignHCenter);
         col->addWidget(label, 0, Qt::AlignHCenter);
+        col->addWidget(detail, 0, Qt::AlignHCenter);
         m_vultrStageNumbers.append(number);
         m_vultrStageLabels.append(label);
+        m_vultrStageDetails.append(detail);
         stageRow->addWidget(stage, 1);
         if (i + 1 < stageNames.size()) {
             auto *connector = new QFrame(m_vultrProgressPanel);
@@ -14546,11 +14659,29 @@ QWidget *MainWindow::buildHostsSection()
     connect(m_vultrCreateButton, &QPushButton::clicked, this,
             &MainWindow::createVultrMirrorFromForm);
     vultrRow->addWidget(m_vultrCreateButton);
+    // Hidden until a deployment is actually running or paused/failed
+    // (updateVultrEndDeploymentButtonVisibility); lets the operator abandon a
+    // stuck one instead of waiting out a boot poll or traffic-verification
+    // timeout before a fresh deploy is possible.
+    m_vultrEndDeploymentButton = new QPushButton(QStringLiteral("End deployment"));
+    m_vultrEndDeploymentButton->setObjectName("ghostButton");
+    m_vultrEndDeploymentButton->setCursor(Qt::PointingHandCursor);
+    m_vultrEndDeploymentButton->setToolTip(QStringLiteral(
+        "Stop ForkMesh from tracking the current deployment attempt so you can "
+        "start a fresh one. Any Vultr server already created for it keeps "
+        "running and billing until destroyed separately."));
+    setOcticon(m_vultrEndDeploymentButton, "stop", 12);
+    m_vultrEndDeploymentButton->setVisible(false);
+    connect(m_vultrEndDeploymentButton, &QPushButton::clicked, this,
+            &MainWindow::endVultrProvision);
+    vultrRow->addWidget(m_vultrEndDeploymentButton);
     m_vultrStatus = new QLabel;
     m_vultrStatus->setObjectName("mutedLabel");
     m_vultrStatus->setWordWrap(true);
-    m_vultrStatus->setStyleSheet(
-        QStringLiteral("color:#c9d1d9; font-size:11px;"));
+    m_vultrStatus->setStyleSheet(QStringLiteral("color:%1; font-size:11px;")
+                                     .arg(currentThemeIsDark()
+                                              ? QStringLiteral("#c9d1d9")
+                                              : QStringLiteral("#57606a")));
     vultrRow->addWidget(m_vultrStatus, 1);
     vultrCol->addLayout(vultrRow);
     // --- Live session / install output ------------------------------------
@@ -15024,7 +15155,16 @@ void MainWindow::updateMirrorFleetCountdownLabel()
         return;
     }
     // Round up so a freshly armed five-minute window reads 5:00, not 4:59.
-    const int seconds = (remainingMs + 999) / 1000;
+    //
+    // Clamp to the interval first. Qt gives any timer of 2s or more the
+    // Qt::CoarseTimer type, which is free to push the expiry out by up to 5% so
+    // the wakeup can coalesce with others, so remainingTime() right after
+    // start() reads *more* than the nominal five minutes (300187ms here). The
+    // round-up then turned that into "5:01" — a countdown that starts above the
+    // interval it is counting down, and a value that moves with whatever else
+    // the event loop has pending.
+    const int intervalMs = m_mirrorFleetCheckTimer->interval();
+    const int seconds = (qMin(remainingMs, intervalMs) + 999) / 1000;
     const QString countdown =
         QStringLiteral("next healthy-node check in %1:%2")
             .arg(seconds / 60)
@@ -21254,6 +21394,21 @@ void MainWindow::renderVultrProvisionProgress(bool failed)
 {
     const int current = qBound(0, m_vultrProvisionStage,
                                kVultrProvisionStageCount);
+    // The stage name/detail captions sit directly on the card's own background
+    // (no explicit background of their own, unlike the numbered circle), so
+    // their color has to follow the app's light/dark theme or one of the two
+    // reads as invisible — the near-white "reached this stage" color used to
+    // be hardcoded, which made every reached stage's caption unreadable against
+    // a light-theme card.
+    const bool dark = currentThemeIsDark();
+    const QString pendingBg = dark ? QStringLiteral("#30363d") : QStringLiteral("#eaeef2");
+    const QString pendingFg = dark ? QStringLiteral("#8b949e") : QStringLiteral("#57606a");
+    const QString pendingBorder = dark ? QStringLiteral("#484f58") : QStringLiteral("#d0d7de");
+    const QString reachedLabelColor = dark ? QStringLiteral("#f0f6fc") : QStringLiteral("#1f2328");
+    const QString pendingLabelColor = pendingFg;
+    const QString activeDetailColor = dark ? QStringLiteral("#58a6ff") : QStringLiteral("#0969da");
+    const QString failedDetailColor = dark ? QStringLiteral("#f85149") : QStringLiteral("#cf222e");
+    const QString completeDetailColor = dark ? QStringLiteral("#3fb950") : QStringLiteral("#1f883d");
     for (int i = 0; i < m_vultrStageNumbers.size(); ++i) {
         const int stage = i + 1;
         const bool complete =
@@ -21262,9 +21417,9 @@ void MainWindow::renderVultrProvisionProgress(bool failed)
         const bool active = current == stage &&
                             m_vultrProvisionState == QLatin1String("active");
         const bool stageFailed = failed && current == stage;
-        QString background = QStringLiteral("#30363d");
-        QString foreground = QStringLiteral("#8b949e");
-        QString border = QStringLiteral("#484f58");
+        QString background = pendingBg;
+        QString foreground = pendingFg;
+        QString border = pendingBorder;
         if (complete) {
             background = QStringLiteral("#238636");
             foreground = QStringLiteral("#ffffff");
@@ -21285,9 +21440,27 @@ void MainWindow::renderVultrProvisionProgress(bool failed)
         m_vultrStageLabels.at(i)->setStyleSheet(
             QStringLiteral("QLabel { color:%1; font-size:11px; %2 }")
                 .arg((complete || active || stageFailed)
-                         ? QStringLiteral("#f0f6fc")
-                         : QStringLiteral("#8b949e"),
+                         ? reachedLabelColor
+                         : pendingLabelColor,
                      active ? QStringLiteral("font-weight:700;") : QString()));
+        // Per-stage status/error caption: what this exact step is doing (while
+        // active), what went wrong (if it's the one that failed), or nothing
+        // for a stage not yet reached — a stalled deploy is diagnosable at a
+        // glance instead of only through the shared Live output log.
+        if (i < m_vultrStageDetails.size() && m_vultrStageDetails.at(i)) {
+            QLabel *detailLabel = m_vultrStageDetails.at(i);
+            const QString text =
+                i < m_vultrStageDetailText.size() ? m_vultrStageDetailText.at(i) : QString();
+            detailLabel->setText(text);
+            detailLabel->setVisible(!text.trimmed().isEmpty());
+            const QString detailColor = stageFailed
+                ? failedDetailColor
+                : active ? activeDetailColor
+                : complete ? completeDetailColor
+                : pendingLabelColor;
+            detailLabel->setStyleSheet(
+                QStringLiteral("QLabel { color:%1; font-size:9px; }").arg(detailColor));
+        }
     }
     if (m_vultrLiveBadge) {
         const bool live = m_vultrProvisionState == QLatin1String("succeeded");
@@ -21306,6 +21479,25 @@ void MainWindow::renderVultrProvisionProgress(bool failed)
                 : QStringLiteral("QLabel { color:#d29922; background:#2d2106; "
                                  "border:1px solid #9e6a03; border-radius:6px; "
                                  "padding:7px; font-weight:700; }"));
+    }
+}
+
+void MainWindow::recordVultrStageDetail(int stage, const QString &detail)
+{
+    const int idx = qBound(1, stage, kVultrProvisionStageCount) - 1;
+    if (idx >= 0 && idx < m_vultrStageDetailText.size())
+        m_vultrStageDetailText[idx] = detail;
+}
+
+void MainWindow::resetVultrStageDetails()
+{
+    for (QString &text : m_vultrStageDetailText)
+        text.clear();
+    for (QLabel *label : std::as_const(m_vultrStageDetails)) {
+        if (!label)
+            continue;
+        label->clear();
+        label->setVisible(false);
     }
 }
 
@@ -21353,8 +21545,10 @@ void MainWindow::setVultrProvisionStage(int stage, const QString &detail,
     m_vultrProvisionStage = m_vultrResumeChain
                                 ? qMax(m_vultrProvisionStage, bounded)
                                 : bounded;
-    if (!detail.isEmpty())
+    if (!detail.isEmpty()) {
         m_vultrProvisionDetail = detail;
+        recordVultrStageDetail(m_vultrProvisionStage, detail);
+    }
     if (failed) {
         pingVultrProvisionStage(m_vultrProvisionStage, false,
                                 m_vultrProvisionDetail);
@@ -21440,7 +21634,13 @@ void MainWindow::restoreVultrProvision()
         m_hostInstallLog->setPlainText(
             QString::fromUtf8(log.read(1024 * 1024)));
     const bool failed = m_vultrProvisionState == QLatin1String("failed");
+    // Seed the restored stage's caption so the deploy rail shows why it's
+    // paused/failed immediately, without waiting for the next transition.
+    resetVultrStageDetails();
+    if (!m_vultrProvisionDetail.isEmpty())
+        recordVultrStageDetail(m_vultrProvisionStage, m_vultrProvisionDetail);
     renderVultrProvisionProgress(failed);
+    updateVultrEndDeploymentButtonVisibility();
     if (m_vultrStatus) {
         const QString restored = !m_vultrProvisionMessage.isEmpty()
                                      ? m_vultrProvisionMessage
@@ -21485,6 +21685,7 @@ void MainWindow::resumeVultrProvision()
             m_vultrCreateButton->setText(
                 QStringLiteral("Resume deployment"));
         }
+        updateVultrEndDeploymentButtonVisibility();
         return;
     }
     const QMap<QString, QString> variables = ActionStore::variables();
@@ -21495,6 +21696,7 @@ void MainWindow::resumeVultrProvision()
         m_vultrCreateButton->setEnabled(false);
         m_vultrCreateButton->setText(QStringLiteral("Deployment running…"));
     }
+    updateVultrEndDeploymentButtonVisibility();
     appendHostInstallLog(QString::fromUtf8(
         "\n\xE2\x86\xBB Desktop restarted \xE2\x80\x94 resuming Vultr deployment at stage %1.\n")
         .arg(m_vultrProvisionStage));
@@ -21532,6 +21734,94 @@ void MainWindow::resumeVultrProvision()
     m_vultrResumeChain = true;
     m_vultrProvisionActive = false;
     createVultrMirrorFromForm();
+}
+
+void MainWindow::updateVultrEndDeploymentButtonVisibility()
+{
+    if (!m_vultrEndDeploymentButton)
+        return;
+    // Anything short-circuited by finishVultrProvision's success path already
+    // clears m_vultrProvisionState back to "succeeded", so this only stays true
+    // while a deployment is actually running or sitting paused/failed —
+    // exactly the situation that blocks starting a fresh one.
+    const bool hasDeployment =
+        m_vultrProvisionActive || m_vultrProvisionState == QLatin1String("active") ||
+        m_vultrProvisionState == QLatin1String("failed");
+    m_vultrEndDeploymentButton->setVisible(hasDeployment);
+}
+
+void MainWindow::endVultrProvision()
+{
+    const bool hasDeployment =
+        m_vultrProvisionActive || m_vultrProvisionState == QLatin1String("active") ||
+        m_vultrProvisionState == QLatin1String("failed");
+    if (!hasDeployment)
+        return;
+    const QString node = m_vultrProvisionNode;
+    const QString instanceId = m_vultrInstanceId;
+    QString warning = QStringLiteral(
+        "This stops ForkMesh from tracking the current deployment attempt%1 so "
+        "you can start a fresh one.")
+        .arg(node.isEmpty() ? QString()
+                            : QStringLiteral(" for \"%1\"").arg(node));
+    if (!instanceId.isEmpty()) {
+        warning += QStringLiteral(
+            " The Vultr server already created for it (instance %1) keeps "
+            "running and billing until you destroy it \xE2\x80\x94 from the "
+            "Vultr panel, or from this list's Destroy button once the host is "
+            "saved here.").arg(instanceId);
+    }
+    warning += QStringLiteral(" Continue?");
+    const auto reply = QMessageBox::question(
+        this, QStringLiteral("End deployment"), warning,
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes)
+        return;
+
+    // Every long-running step (boot polling, public-traffic verification) and
+    // finishVultrProvision() itself guard on this flag before acting further,
+    // so flipping it off first is what actually stops the abandoned chain from
+    // reviving the checkpoint this clears next.
+    m_vultrProvisionActive = false;
+    if (m_vultrSshProbeProcess) {
+        QProcess *probe = m_vultrSshProbeProcess;
+        m_vultrSshProbeProcess = nullptr;
+        probe->disconnect(this);
+        if (probe->state() != QProcess::NotRunning)
+            probe->kill();
+        probe->deleteLater();
+    }
+    m_vultrResumeRequested = false;
+    m_vultrResumeChain = false;
+    m_vultrProvisionState.clear();
+    m_vultrProvisionStage = 0;
+    m_vultrProvisionDetail.clear();
+    m_vultrProvisionMessage.clear();
+    m_vultrProvisionNode.clear();
+    m_vultrInstanceId.clear();
+    m_vultrInstanceIp.clear();
+    m_vultrIdentityFile.clear();
+    m_vultrDnsHostname.clear();
+    m_vultrHostMetadata = QJsonObject();
+    m_vultrPollCount = 0;
+    m_vultrInstallAttempts = 0;
+    m_vultrTunnelApiToken.clear();
+    resetVultrStageDetails();
+    QSettings().remove(kVultrProvisionSetting);
+    if (m_vultrNameEdit)
+        m_vultrNameEdit->clear();
+    if (m_vultrStatus)
+        m_vultrStatus->clear();
+    if (m_vultrCreateButton) {
+        m_vultrCreateButton->setEnabled(true);
+        m_vultrCreateButton->setText(QStringLiteral("Create Vultr mirror"));
+    }
+    appendHostInstallLog(QString::fromUtf8(
+        "\n\xE2\x9A\xA0 Deployment ended by request%1.\n")
+            .arg(node.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(node)));
+    renderVultrProvisionProgress();
+    updateVultrEndDeploymentButtonVisibility();
+    saveVultrProvisionLog();
 }
 
 void MainWindow::findVultrProvisionInstance(
@@ -21584,6 +21874,8 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
                                         : QStringLiteral("Retry deployment"));
     if (!ok && m_vultrStatus)
         m_vultrStatus->setText(QString::fromUtf8("\xE2\x9C\x98 ") + message);
+    if (!ok && !message.isEmpty())
+        recordVultrStageDetail(m_vultrProvisionStage, message);
     if (!message.isEmpty())
         appendHostInstallLog(
             (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
@@ -21604,6 +21896,7 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
                                   : QStringLiteral("failed"),
                                  message);
     renderVultrProvisionProgress(!ok);
+    updateVultrEndDeploymentButtonVisibility();
     m_vultrTunnelApiToken.clear();
     if (m_vultrCreateButton)
         m_vultrCreateButton->setEnabled(true);
@@ -21686,6 +21979,7 @@ void MainWindow::waitForVultrMirrorPublication(
             m_vultrProvisionDetail = QString::fromUtf8(
                 "Installed on %1; still waiting for healthy public traffic. "
                 "Verification continues automatically…").arg(node);
+            recordVultrStageDetail(m_vultrProvisionStage, m_vultrProvisionDetail);
             persistVultrProvisionState(QStringLiteral("active"));
             renderVultrProvisionProgress();
             QTimer::singleShot(
@@ -22177,7 +22471,10 @@ void MainWindow::createVultrMirrorFromForm()
         appendHostInstallLog(cloudflareStoreError + QLatin1Char('\n'));
 
     const bool resumedPreInstance = m_vultrResumeChain;
+    if (!resumedPreInstance)
+        resetVultrStageDetails(); // a brand-new run starts every caption blank
     m_vultrProvisionActive = true;
+    updateVultrEndDeploymentButtonVisibility();
     // Set this before the first transition so every stage ping identifies the
     // mirror it belongs to, including credentials and plan discovery.
     m_vultrProvisionNode = node;

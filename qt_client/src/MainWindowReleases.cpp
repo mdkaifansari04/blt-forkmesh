@@ -2732,8 +2732,20 @@ void MainWindow::loadMirrorNodesPanel()
             shownNames.insert(nodeName.toLower());
             const bool isSource =
                 nodeName.compare(sourceOwner, Qt::CaseInsensitive) == 0;
-            const bool online =
+            const bool roomOnline =
                 m.value("status").toString() == QLatin1String("online");
+            // A managed/headless mirror serves entirely through its own signed
+            // direct-HTTPS tunnel and can lose its relay-room presence (a
+            // reconnect, a long gap between heartbeats) while that tunnel keeps
+            // answering a fresh, signed health probe the whole time. Room
+            // presence alone then reported a healthy, actively-serving fleet as
+            // offline and the "Online only" filter (checked by default) hid
+            // every one of those rows from the Mirror nodes list. Trust the
+            // endpoint's own signed-fresh health probe as a second, independent
+            // "is this node actually up" signal.
+            const bool endpointAlive = m.value("endpointHealthy").toBool() &&
+                                       m.value("endpointFresh").toBool();
+            const bool online = roomOnline || endpointAlive;
             const bool integrityFailing =
                 m.value("integrity").toString() == QLatin1String("rejected");
             if (onlineOnly && !online)
@@ -2778,10 +2790,16 @@ void MainWindow::loadMirrorNodesPanel()
                               (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
                                   nodeName.toLower());
             nameItem->setToolTip(
-                online
+                roomOnline
                     ? (behind ? QString::fromUtf8("Online \xC2\xB7 out of sync")
                               : QStringLiteral("Online now"))
-                    : QStringLiteral("Published mirror \xC2\xB7 not in the live room"));
+                    : online
+                          ? QStringLiteral(
+                                "Not in the live relay room, but its direct-HTTPS "
+                                "tunnel just answered a fresh signed health probe "
+                                "\xE2\x80\x94 the mirror is up and serving.")
+                          : QStringLiteral(
+                                "Published mirror \xC2\xB7 not in the live room"));
             if (integrityFailing)
                 markPinRejected(nameItem, false);
             m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);
@@ -3221,6 +3239,20 @@ void MainWindow::fetchMirrorPendingCounts(const QString &owner,
     url.setPath(QStringLiteral("/api/repo/%1/%2/pending")
                     .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
                          QString::fromUtf8(QUrl::toPercentEncoding(repo))));
+    // Fetch-once only holds while fetches *succeed*: a failed one never stamps
+    // clientFetchedAt, so the guard above lets the next roster tick fire the
+    // same GET again — and loadMirrorNodesPanel() rebuilds on every presence
+    // blip. Against a relay refusing everything (the Cloudflare daily-quota
+    // 429) that turned this one-shot badge fetch back into a poller, retrying
+    // as fast as the roster flickers and filling the network log with
+    // "relay is rate-limited (HTTP 429); backing off" for /pending (adhoc
+    // #1629). Space the retries on the usual exponential curve instead; the
+    // first success clears the streak and restores fetch-once. Invalidation by
+    // a repo open or an inbox push rides the same curve — it zeroes
+    // clientFetchedAt, it doesn't excuse a cooling-down relay.
+    const QString backoffKey = url.toString();
+    if (!m_pollBackoff.ready(backoffKey, QDateTime::currentMSecsSinceEpoch()))
+        return;
     QNetworkRequest request(url);
     request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
                          QNetworkRequest::AlwaysNetwork);
@@ -3229,15 +3261,32 @@ void MainWindow::fetchMirrorPendingCounts(const QString &owner,
     request.setTransferTimeout(15000);
     m_mirrorPendingInFlight.insert(source);
     QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, source] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, source,
+                                                    backoffKey] {
         const int status = reply->attribute(
             QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray retryAfter = reply->rawHeader("Retry-After");
         QJsonObject result = QJsonDocument::fromJson(reply->readAll()).object();
         reply->deleteLater();
         m_mirrorPendingInFlight.remove(source);
         if (status < 200 || status >= 300 ||
-            !result.value(QStringLiteral("ok")).toBool())
+            !result.value(QStringLiteral("ok")).toBool()) {
+            // A 429 usually names its own cooldown via Retry-After; floor the
+            // exponential curve with it so a burst of roster ticks can never
+            // retry sooner than the relay asked for. A request the transport
+            // backoff answered locally lands here too (status 0), which is
+            // what stops the suppressed-request log spam at the source.
+            bool retryAfterOk = false;
+            const qint64 retryAfterMs =
+                QString::fromLatin1(retryAfter).trimmed().toLongLong(
+                    &retryAfterOk) * 1000;
+            m_pollBackoff.noteFailure(
+                backoffKey, QDateTime::currentMSecsSinceEpoch(),
+                NetworkBackoff::kDefaultBaseMs, NetworkBackoff::kDefaultCapMs,
+                retryAfterOk && retryAfterMs > 0 ? retryAfterMs : 0);
             return;
+        }
+        m_pollBackoff.noteSuccess(backoffKey);
         result.insert(QStringLiteral("clientFetchedAt"),
                       double(QDateTime::currentMSecsSinceEpoch()));
         m_mirrorPendingCache.insert(source, result);
