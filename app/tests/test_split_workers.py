@@ -333,3 +333,10 @@ def test_deploy_script_documents_safe_cutover_order():
     assert deploy.index("verify_legacy_api_alias", retire_function) < deploy.index(
         "pywrangler delete --name forkmesh-api", retire_function
     )
+
+
+def test_post_deploy_verifier_uses_an_explicit_operational_user_agent():
+    verifier = (APP_ROOT / "tools/verify_split_deployment.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"User-Agent": "forkmesh-deploy-verify/1.0"' in verifier

@@ -24,7 +24,12 @@ OPENER = build_opener(NoRedirect)
 
 
 def request(url, *, method="GET", headers=None, body=None):
-    item = Request(url, data=body, method=method, headers=headers or {})
+    request_headers = {
+        "User-Agent": "forkmesh-deploy-verify/1.0",
+        "Accept": "*/*",
+    }
+    request_headers.update(headers or {})
+    item = Request(url, data=body, method=method, headers=request_headers)
     try:
         with OPENER.open(item, timeout=25) as response:
             return response.status, dict(response.headers.items()), response.read()
@@ -60,13 +65,16 @@ def main():
     status, headers, _ = request(LEGACY + "/", method="HEAD")
     require(status == 308 and header(headers, "location") == APP + "/", "legacy canonical redirect failed")
 
-    status, headers, _ = request(
+    status, headers, body = request(
         WWW + "/api/version",
         method="POST",
         headers={"content-type": "application/json"},
         body=b"{}",
     )
-    require(status in (400, 405), "www POST did not reach the App service binding")
+    require(status in (200, 400, 405), "www POST did not reach the App service binding")
+    if status == 200:
+        marker = json.loads(body.decode("utf-8"))
+        require(marker.get("worker") == "app", "www POST reached the wrong Worker")
     require(not header(headers, "location"), "www POST was redirected instead of proxied")
 
     status, headers, _ = request(
