@@ -3,7 +3,7 @@ name: Attach desktop build to release
 # published (a tag drafted from the Releases panel). Each node it runs on builds
 # its own platform's binary and publishes it to the release, so to cover
 # Linux + macOS + Windows, the workflow runs on a node of each OS. The installer
-# (cloudflare_worker/public/install.sh) then autodetects the visitor's platform
+# (www/public/install.sh) then autodetects the visitor's platform
 # and downloads the matching prebuilt binary instead of compiling.
 #
 # Release binaries are NOT committed into git (issue #304). The binary bytes are
@@ -114,7 +114,7 @@ jobs:
           project_version="$(
             sed -nE \
               's/^project\(ForkMesh VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' \
-              qt_client/CMakeLists.txt | head -n1
+              desktop/CMakeLists.txt | head -n1
           )"
           # A manual workflow resolves the immutable tag for the committed
           # project version instead of letting the publisher guess a possibly
@@ -167,14 +167,14 @@ jobs:
           # AUTOGEN_PARALLEL's AUTO default sizes each AUTOMOC driver's thread
           # pool from the host's core count, which the sandbox cannot see; one
           # such pool per -j slot exhausts the cgroup's task ceiling (#1586).
-          cmake -S qt_client -B qt_client/build-release \
+          cmake -S desktop -B desktop/build-release \
             -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF \
             -DCMAKE_AUTOGEN_PARALLEL="$jobs" \
             -DFORKMESH_BUILD_COMMIT_OVERRIDE="$revision" \
             ${version:+-DFORKMESH_VERSION_OVERRIDE="$version"}
-          cmake --build qt_client/build-release -j"$jobs"
-          install_root="qt_client/build-release/install"
-          cmake --install qt_client/build-release --prefix "$install_root"
+          cmake --build desktop/build-release -j"$jobs"
+          install_root="desktop/build-release/install"
+          cmake --install desktop/build-release --prefix "$install_root"
 
           # Locate the executable inside the CMake install tree. That tree also
           # contains the pinned bootstrap/Tunnel/gateway tools plus the Worker
@@ -188,7 +188,7 @@ jobs:
             if [ -x "$cand" ]; then built="$cand"; break; fi
           done
           if [ -z "$built" ]; then
-            echo "ERROR: build did not produce an executable in qt_client/build-release" >&2
+            echo "ERROR: build did not produce an executable in desktop/build-release" >&2
             exit 1
           fi
           reported_version="$("$built" --version 2>&1)" || {
@@ -223,7 +223,7 @@ jobs:
           # CI-secret env vars; a packager with no cert/toolchain emits an
           # UNSIGNED artifact and warns rather than failing the release, and the
           # bare binary is always published too (headless/SSH installs use it).
-          # See docs/design/signed-installers.md.
+          # See www/docs/design/signed-installers.md.
           publish_assets=("$staged")
           package_input="$built"
           if [ "$os" = "macos" ]; then

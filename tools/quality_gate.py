@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = ROOT / "docs" / "engineering" / "quality-gates.json"
+CONFIG_PATH = ROOT / "www" / "docs" / "engineering" / "quality-gates.json"
 
 
 class GateError(RuntimeError):

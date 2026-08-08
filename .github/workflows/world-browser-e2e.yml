@@ -28,17 +28,17 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: cloudflare_worker/browser_tests/package-lock.json
+          cache-dependency-path: app/browser_tests/package-lock.json
           package-manager-cache: true
 
       - name: Install pinned browser test dependencies
-        working-directory: cloudflare_worker/browser_tests
+        working-directory: app/browser_tests
         run: npm ci
 
       - name: Install the pinned Chromium headless shell
-        working-directory: cloudflare_worker/browser_tests
+        working-directory: app/browser_tests
         run: npx playwright install --with-deps --only-shell chromium
 
       - name: Exercise WebGL, keyboard, touch, and two-client privacy
-        working-directory: cloudflare_worker/browser_tests
+        working-directory: app/browser_tests
         run: npm test

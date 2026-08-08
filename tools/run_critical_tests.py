@@ -16,25 +16,25 @@ TEST_BUDGET_SECONDS = 55
 
 PYTEST_SUITES = {
     "worker": (
-        "cloudflare_worker/tests/test_entry_call_arity.py",
-        "cloudflare_worker/tests/test_bounded_json_requests.py",
-        "cloudflare_worker/tests/test_browser_security_headers.py",
-        "cloudflare_worker/tests/test_crypto.py",
-        "cloudflare_worker/tests/test_edge_routing.py",
-        "cloudflare_worker/tests/test_static_route_canonicalization.py",
-        "cloudflare_worker/tests/test_offline_ci_workflow.py",
+        "app/tests/test_entry_call_arity.py",
+        "app/tests/test_bounded_json_requests.py",
+        "app/tests/test_browser_security_headers.py",
+        "app/tests/test_crypto.py",
+        "app/tests/test_edge_routing.py",
+        "app/tests/test_static_route_canonicalization.py",
+        "app/tests/test_offline_ci_workflow.py",
     ),
     "world": (
-        "cloudflare_worker/tests/test_world_backend.py::test_context_returns_only_country_and_shared_clock_fields",
-        "cloudflare_worker/tests/test_world_backend.py::test_presence_message_discards_sensitive_and_unknown_fields",
-        "cloudflare_worker/tests/test_world_backend.py::test_movement_is_bounded_quantized_and_profile_fields_cannot_change",
-        "cloudflare_worker/tests/test_world_backend.py::test_world_durable_object_is_transient_and_hibernating",
-        "cloudflare_worker/tests/test_world_backend.py::test_browser_world_socket_is_same_origin_only",
-        "cloudflare_worker/tests/test_world_backend.py::test_world_static_route_is_reserved_and_asset_first",
-        "cloudflare_worker/tests/test_world_frontend.py::test_world_boots_blank_with_a_ten_second_load_error_watchdog",
-        "cloudflare_worker/tests/test_world_frontend.py::test_world_entry_modules_have_valid_ecmascript_module_syntax",
-        "cloudflare_worker/tests/test_world_frontend.py::test_presence_client_uses_only_coarse_ephemeral_world_protocol",
-        "cloudflare_worker/tests/test_world_frontend.py::test_world_has_responsive_and_reduced_motion_fallbacks",
+        "app/tests/test_world_backend.py::test_context_returns_only_country_and_shared_clock_fields",
+        "app/tests/test_world_backend.py::test_presence_message_discards_sensitive_and_unknown_fields",
+        "app/tests/test_world_backend.py::test_movement_is_bounded_quantized_and_profile_fields_cannot_change",
+        "app/tests/test_world_backend.py::test_world_durable_object_is_transient_and_hibernating",
+        "app/tests/test_world_backend.py::test_browser_world_socket_is_same_origin_only",
+        "app/tests/test_world_backend.py::test_world_static_route_is_reserved_and_asset_first",
+        "app/tests/test_world_frontend.py::test_world_boots_blank_with_a_ten_second_load_error_watchdog",
+        "app/tests/test_world_frontend.py::test_world_entry_modules_have_valid_ecmascript_module_syntax",
+        "app/tests/test_world_frontend.py::test_presence_client_uses_only_coarse_ephemeral_world_protocol",
+        "app/tests/test_world_frontend.py::test_world_has_responsive_and_reduced_motion_fallbacks",
     ),
 }
 
@@ -66,7 +66,7 @@ def main() -> int:
     parser.add_argument(
         "--build-dir",
         type=Path,
-        default=ROOT / "qt_client" / "build",
+        default=ROOT / "desktop" / "build",
         help="configured Qt build directory (qt suite only)",
     )
     args = parser.parse_args()

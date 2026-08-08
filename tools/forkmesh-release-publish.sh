@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Publish prebuilt release binaries WITHOUT committing them into git (issue #304;
-# see docs/design/release-binary-publishing.md).
+# see www/docs/design/release-binary-publishing.md).
 #
 # For each binary you pass, this:
 #   1. computes its sha256 (its content address),

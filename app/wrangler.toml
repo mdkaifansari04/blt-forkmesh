@@ -1,0 +1,283 @@
+name = "forkmesh-relay"
+main = "src_build/entry.py"
+compatibility_flags = [ "python_workers" ]
+compatibility_date = "2026-08-03"
+
+[build]
+command = "python3 tools/build_dashboard_assets.py && python3 tools/build_worker_footprint.py && python3 tools/build_worker_python.py && python3 tools/build_site_assets.py app"
+
+
+[triggers]
+crons = ["* * * * *"]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+html_handling = "auto-trailing-slash"
+not_found_handling = "404-page"
+run_worker_first = [
+  "/",
+  "/api",
+  "/api/*",
+  "/developers",
+  "/health",
+  "/chat",
+  "/forgot-password",
+  "/leaderboards",
+  "/login",
+  "/mirror-payouts",
+  "/network",
+  "/referrals",
+  "/reset-password",
+  "/signup",
+  "/status",
+  "/simulate-sentry-error",
+  "/rss.xml",
+  "/feed.xml",
+  "/.well-known/*",
+  "/ap/*",
+  "/nodeinfo/*",
+  "/mcp",
+  "/mcp/*",
+  "/admin-*",
+  "/@*",
+  "/%40*",
+  "/blog",
+  "/blog/*",
+  "/docs",
+  "/docs/*",
+  "/world",
+  "/world/*",
+  "/about",
+  "/careers",
+  "/changelog",
+  "/desktop",
+  "/features",
+  "/homev2",
+  "/new-home",
+  "/outreach",
+  "/press",
+  "/pricing",
+  "/privacy",
+  "/security-report",
+  "/terms",
+  "/*.html",
+  "/dashboard",
+  "/dashboard/*",
+  "!/dashboard/repos",
+  "!/dashboard/network",
+  "!/dashboard/chat",
+  "!/dashboard/tasks",
+  "!/dashboard/notes",
+  "!/dashboard/settings",
+  "!/dashboard/profile",
+  "!/dashboard/profile/repositories",
+  "!/dashboard/partials/*",
+  "!/dashboard/js/*",
+  "!/dashboard/tailwind.css",
+  "/notes/*",
+  "/*/*",
+  "!/assets/*",
+  "!/favicon/*",
+]
+
+[[routes]]
+pattern = "app.forkmesh.com"
+custom_domain = true
+
+[[routes]]
+pattern = "api.forkmesh.com"
+custom_domain = true
+
+[vars]
+NODE_NAME = "forkmesh-mainnode"
+PUBLIC_BASE_URL = "https://forkmesh.com"
+API_ORIGIN = "https://app.forkmesh.com"
+APP_ORIGIN = "https://app.forkmesh.com"
+WWW_ORIGIN = "https://www.forkmesh.com"
+WORLD_ORIGIN = "https://world.forkmesh.com"
+CORS_ALLOWED_ORIGINS = "https://forkmesh.com,https://www.forkmesh.com,https://app.forkmesh.com,https://api.forkmesh.com,https://world.forkmesh.com"
+DISCORD_OAUTH_REDIRECT_URI = "https://app.forkmesh.com/api/integrations/discord/callback"
+NODE_SOLANA_ADDRESS = ""
+COMMUNITY_REWARD_NETWORK = "mainnet-beta"
+COMMUNITY_REWARD_RPC_URL = "https://api.mainnet-beta.solana.com"
+REWARD_INTERVAL_MS = "3600000"
+REWARD_JITTER_MAX_MS = "2700000"
+REWARD_AMOUNT_LAMPORTS = "100000"
+REWARD_MIN_UPTIME_MS = "1800000"
+REWARD_MIN_CONTRIBUTION_UNITS = "0"
+REWARD_HEALTH_FRESH_MS = "600000"
+FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+USERNAME_MODERATION_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+WORKER_ROLE = "app"
+SINGLE_WORKER_SITE = "false"
+
+[ai]
+binding = "AI"
+
+[[kv_namespaces]]
+binding = "REPOSITORY_METADATA"
+id = "ee8854d698c14e93a9950ec0f3e6538f"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_MAINNODE_ROOM"
+class_name = "ForkMeshRoom"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_WORLD"
+class_name = "ForkMeshWorld"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_OFFICE_ROOM"
+class_name = "ForkMeshOfficeRoom"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_NODES"
+class_name = "ForkMeshNodes"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_NOTE_ROOM"
+class_name = "ForkMeshNoteRoom"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_CRON_WATCHDOG"
+class_name = "ForkMeshCronWatchdog"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_CRON_RUNNER"
+class_name = "ForkMeshCronRunner"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_DISCORD_GATE"
+class_name = "ForkMeshDiscordGate"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "forkmesh"
+database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
+migrations_dir = "migrations"
+
+[[env.dev.d1_databases]]
+binding = "DB"
+database_name = "forkmesh-dev"
+database_id = "REPLACE_WITH_DEV_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[env.dev.vars]
+COMMUNITY_REWARD_NETWORK = "devnet"
+COMMUNITY_REWARD_RPC_URL = "https://api.devnet.solana.com"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_MAINNODE_ROOM"
+class_name = "ForkMeshRoom"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_WORLD"
+class_name = "ForkMeshWorld"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_OFFICE_ROOM"
+class_name = "ForkMeshOfficeRoom"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_NODES"
+class_name = "ForkMeshNodes"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_NOTE_ROOM"
+class_name = "ForkMeshNoteRoom"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_CRON_WATCHDOG"
+class_name = "ForkMeshCronWatchdog"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_CRON_RUNNER"
+class_name = "ForkMeshCronRunner"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_DISCORD_GATE"
+class_name = "ForkMeshDiscordGate"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ForkMeshRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ForkMeshCatalog"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["ForkMeshFiles"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["ForkMeshHost"]
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["ForkMeshAccounts"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["ForkMeshIssues"]
+
+[[migrations]]
+tag = "v7"
+new_sqlite_classes = ["ForkMeshPulls"]
+
+[[migrations]]
+tag = "v8"
+deleted_classes = [
+    "ForkMeshCatalog",
+    "ForkMeshFiles",
+    "ForkMeshAccounts",
+    "ForkMeshIssues",
+    "ForkMeshPulls",
+]
+
+[[migrations]]
+tag = "v9"
+new_sqlite_classes = ["ForkMeshWorld"]
+
+[[migrations]]
+tag = "v10"
+deleted_classes = ["ForkMeshHost"]
+
+[[migrations]]
+tag = "v11"
+new_sqlite_classes = ["ForkMeshOfficeRoom"]
+
+[[migrations]]
+tag = "v12"
+new_sqlite_classes = ["ForkMeshNodes"]
+
+[[migrations]]
+tag = "v13"
+new_sqlite_classes = ["ForkMeshCronWatchdog"]
+
+[[migrations]]
+tag = "v14"
+new_sqlite_classes = ["ForkMeshCronRunner"]
+
+[[migrations]]
+tag = "v15"
+new_sqlite_classes = ["ForkMeshDiscordGate"]
+
+[[migrations]]
+tag = "v16"
+new_sqlite_classes = ["ForkMeshNoteRoom"]
+
+
+[observability]
+enabled = true
+head_sampling_rate = 0.05
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 0.05
+invocation_logs = false
+
+[observability.traces]
+enabled = false

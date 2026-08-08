@@ -129,7 +129,7 @@ fi
 "$FLUTTER" config --android-sdk "$ANDROID_SDK_ROOT" >/dev/null
 
 # The script lives in <repo>/.forkmesh/shortcuts/, so the app is two levels up.
-cd "$(dirname "$0")/../../flutter_app"
+cd "$(dirname "$0")/../../mobile"
 
 echo "Resolving dependencies..." >&2
 "$FLUTTER" pub get

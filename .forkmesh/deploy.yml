@@ -12,26 +12,17 @@ jobs:
     steps:
       - name: Skip unless worker files changed
         run: |
-          # Determine which files this push changed. HEAD is normally a MERGE
-          # commit (agent branches land on main via merge), and a plain
-          # `git diff-tree HEAD` emits NOTHING for a merge — its default is the
-          # combined diff, which suppresses paths that match either parent. That
-          # made every merge-to-main skip this deploy even when the merged
-          # branch changed cloudflare_worker/ (issue #267). Diff against the
-          # first parent (the old main tip) instead, so a merge that brings in
-          # worker changes is detected; fall back to the empty tree for a root
-          # commit with no parent.
           if parent="$(git rev-parse --verify --quiet HEAD^1)"; then
             changed_files="$(git diff-tree --no-commit-id --name-only -r "$parent" HEAD)"
           else
             changed_files="$(git diff-tree --no-commit-id --name-only -r --root HEAD)"
           fi
-          worker_changes="$(printf '%s\n' "$changed_files" | sed -n '/^cloudflare_worker\//p')"
+          worker_changes="$(printf '%s\n' "$changed_files" | sed -n -E '/^(app|www|world)\//p')"
           if [ -z "$worker_changes" ]; then
-            echo "Skipping deploy; no cloudflare_worker/ changes in this commit."
+            echo "Skipping deploy; no App, World, or www changes in this commit."
             touch .forkmesh-skip-deploy
           else
-            echo "Deploying; cloudflare_worker/ changes detected:"
+            echo "Deploying changed Worker inputs:"
             printf '%s\n' "$worker_changes"
           fi
       # .env.production is gitignored, so materialize it from this node's ForkMesh
@@ -45,11 +36,10 @@ jobs:
       - name: Write production env
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0
-          cat > cloudflare_worker/.env.production <<'EOF'
+          cat > app/.env.production <<'EOF'
           CLOUDFLARE_ACCOUNT_ID=${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN=${{ vars.CLOUDFLARE_API_TOKEN }}
           ADMIN_PATH=${{ vars.ADMIN_PATH }}
-          ADMIN_USER=${{ vars.ADMIN_USER }}
           ADMIN_PASS=${{ vars.ADMIN_PASS }}
           TREASURY_SOLANA_ADDRESS=${{ vars.TREASURY_SOLANA_ADDRESS }}
           MIRROR_ROUTER_PUBLIC_KEY=${{ vars.MIRROR_ROUTER_PUBLIC_KEY }}
@@ -58,6 +48,7 @@ jobs:
           SSH_GATEWAY_PORT=${{ vars.SSH_GATEWAY_PORT }}
           SSH_GATEWAY_TOKEN=${{ vars.SSH_GATEWAY_TOKEN }}
           SSH_GATEWAY_REPOSITORIES=${{ vars.SSH_GATEWAY_REPOSITORIES }}
+          SSH_GATEWAY_NODE_HOSTS=${{ vars.SSH_GATEWAY_NODE_HOSTS }}
           MAILTRAP_API_TOKEN=${{ vars.MAILTRAP_API_TOKEN }}
           MAILTRAP_WEBHOOK_SECRET=${{ vars.MAILTRAP_WEBHOOK_SECRET }}
           DATA_KEY=${{ vars.DATA_KEY }}
@@ -69,4 +60,4 @@ jobs:
       - name: Deploy worker
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0
-          cd cloudflare_worker && ./deploy.sh
+          cd app && ./deploy.sh changed

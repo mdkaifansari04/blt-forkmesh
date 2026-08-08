@@ -1,0 +1,1589 @@
+<!doctype html>
+<html lang="en" data-dashboard-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="/api-client.js?v=583e3a3d9d7b"></script>
+    <script src="/posthog.js" defer></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Repository - ForkMesh</title>
+    <meta name="description" content="Inspect a repository mirrored by ForkMesh desktop nodes: files, issues, pulls, and mirrors." />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <script>
+      (() => {
+        const key = "forkmesh.dashboard.theme";
+        const siteKey = "forkmesh.theme";
+        let theme = "dark";
+        try {
+          const stored = localStorage.getItem(key) || localStorage.getItem(siteKey);
+          theme = stored === "light" ? "light" : "dark";
+        } catch (_) {}
+        document.documentElement.dataset.dashboardTheme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fb" : "#090909");
+      })();
+    </script>
+    <link rel="stylesheet" href="/dashboard/tailwind.css" />
+    <script>window.tailwind = window.tailwind || {};</script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Noto Sans", "Helvetica", "Arial", "sans-serif"],
+              mono: ["ForkMesh Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"],
+            },
+            colors: {
+              background: "rgb(var(--dashboard-background-rgb) / <alpha-value>)",
+              foreground: "rgb(var(--dashboard-foreground-rgb) / <alpha-value>)",
+              card: "rgb(var(--dashboard-card-rgb) / <alpha-value>)",
+              "card-foreground": "rgb(var(--dashboard-card-foreground-rgb) / <alpha-value>)",
+              popover: "rgb(var(--dashboard-popover-rgb) / <alpha-value>)",
+              "popover-foreground": "rgb(var(--dashboard-popover-foreground-rgb) / <alpha-value>)",
+              primary: "rgb(var(--dashboard-primary-rgb) / <alpha-value>)",
+              "primary-foreground": "rgb(var(--dashboard-primary-foreground-rgb) / <alpha-value>)",
+              secondary: "rgb(var(--dashboard-secondary-rgb) / <alpha-value>)",
+              "secondary-foreground": "rgb(var(--dashboard-secondary-foreground-rgb) / <alpha-value>)",
+              muted: "rgb(var(--dashboard-muted-rgb) / <alpha-value>)",
+              "muted-foreground": "rgb(var(--dashboard-muted-foreground-rgb) / <alpha-value>)",
+              accent: "rgb(var(--dashboard-accent-rgb) / <alpha-value>)",
+              "accent-foreground": "rgb(var(--dashboard-accent-foreground-rgb) / <alpha-value>)",
+              destructive: "rgb(var(--dashboard-destructive-rgb) / <alpha-value>)",
+              border: "rgb(var(--dashboard-border-rgb) / <alpha-value>)",
+              input: "transparent",
+              ring: "rgb(var(--dashboard-ring-rgb) / <alpha-value>)",
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+    <style>
+      @font-face {
+        font-family: "ForkMesh Dashboard Mono";
+        src: url("/assets/fonts/DejaVuSansMono.ttf") format("truetype");
+        font-weight: 400 500;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "ForkMesh Dashboard Mono";
+        src: url("/assets/fonts/DejaVuSansMono-Bold.ttf") format("truetype");
+        font-weight: 600 800;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      :root,
+      [data-dashboard-theme="dark"] {
+        --font-size: 15px;
+        --dashboard-header-rgb: 1 4 9;
+        --dashboard-sidebar-rgb: 12 17 23;
+        --dashboard-background-rgb: 1 4 9;
+        --dashboard-foreground-rgb: 240 246 252;
+        --dashboard-card-rgb: 13 17 23;
+        --dashboard-card-foreground-rgb: 240 246 252;
+        --dashboard-popover-rgb: 22 27 34;
+        --dashboard-popover-foreground-rgb: 240 246 252;
+        --dashboard-primary-rgb: 35 134 54;
+        --dashboard-primary-foreground-rgb: 255 255 255;
+        --dashboard-secondary-rgb: 33 38 45;
+        --dashboard-secondary-foreground-rgb: 201 209 217;
+        --dashboard-muted-rgb: 22 27 34;
+        --dashboard-muted-foreground-rgb: 139 148 158;
+        --dashboard-accent-rgb: 88 166 255;
+        --dashboard-accent-foreground-rgb: 255 255 255;
+        --dashboard-destructive-rgb: 248 81 73;
+        --dashboard-border-rgb: 48 54 61;
+        --dashboard-ring-rgb: 88 166 255;
+        --dashboard-scrollbar-rgb: 139 148 158;
+        --dashboard-link: #58a6ff;
+        --dashboard-link-hover: #79c0ff;
+        --contribution-commits: #58a6ff;
+        --contribution-issues: #3fb950;
+        --contribution-pulls: #bc8cff;
+        --contribution-reviews: #f0883e;
+        --contribution-repositories: #f778ba;
+        --contribution-empty: #161b22;
+        --contribution-unverified: #0d1117;
+        --contribution-grid-edge: #30363d;
+        --contribution-cube-top: rgb(255 255 255 / 0.22);
+        --contribution-cube-left: rgb(0 0 0 / 0.18);
+        --contribution-cube-right: rgb(0 0 0 / 0.34);
+        --contribution-tooltip-bg: #161b22;
+        --contribution-tooltip-fg: #f0f6fc;
+        --contribution-tooltip-border: #30363d;
+        --background: #010409;
+        --foreground: #f0f6fc;
+        --card: #0d1117;
+        --primary: #238636;
+        --primary-foreground: #ffffff;
+        --secondary: #21262d;
+        --muted-foreground: #8b949e;
+        --border: rgb(var(--dashboard-border-rgb));
+        color-scheme: dark;
+      }
+
+      [data-dashboard-theme="light"] {
+        --dashboard-header-rgb: 255 255 255;
+        --dashboard-sidebar-rgb: 255 255 255;
+        --dashboard-background-rgb: 255 255 255;
+        --dashboard-foreground-rgb: 0 0 0;
+        --dashboard-card-rgb: 255 255 255;
+        --dashboard-card-foreground-rgb: 0 0 0;
+        --dashboard-popover-rgb: 255 255 255;
+        --dashboard-popover-foreground-rgb: 0 0 0;
+        --dashboard-primary-rgb: 22 163 74;
+        --dashboard-primary-foreground-rgb: 255 255 255;
+        --dashboard-secondary-rgb: 255 255 255;
+        --dashboard-secondary-foreground-rgb: 0 0 0;
+        --dashboard-muted-rgb: 255 255 255;
+        --dashboard-muted-foreground-rgb: 0 0 0;
+        --dashboard-accent-rgb: 9 105 218;
+        --dashboard-accent-foreground-rgb: 255 255 255;
+        --dashboard-destructive-rgb: 220 38 38;
+        --dashboard-border-rgb: 226 232 240;
+        --dashboard-ring-rgb: 15 23 42;
+        --dashboard-scrollbar-rgb: 71 85 105;
+        --dashboard-link: #000000;
+        --dashboard-link-hover: #000000;
+        --contribution-commits: #0969da;
+        --contribution-issues: #1a7f37;
+        --contribution-pulls: #8250df;
+        --contribution-reviews: #bc4c00;
+        --contribution-repositories: #bf3989;
+        --contribution-empty: #ebedf0;
+        --contribution-unverified: #f6f8fa;
+        --contribution-grid-edge: #d0d7de;
+        --contribution-cube-top: rgb(255 255 255 / 0.42);
+        --contribution-cube-left: rgb(0 0 0 / 0.12);
+        --contribution-cube-right: rgb(0 0 0 / 0.22);
+        --contribution-tooltip-bg: #ffffff;
+        --contribution-tooltip-fg: #1f2328;
+        --contribution-tooltip-border: #d0d7de;
+        --background: #ffffff;
+        --foreground: #000000;
+        --card: #ffffff;
+        --primary: #16a34a;
+        --primary-foreground: #ffffff;
+        --secondary: #ffffff;
+        --muted-foreground: #000000;
+        --border: rgb(var(--dashboard-border-rgb));
+        color-scheme: light;
+      }
+
+      * {
+        border-color: var(--border);
+        box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      html {
+        font-size: var(--font-size);
+      }
+
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        font-weight: 500;
+        line-height: 1.5;
+      }
+
+      input {
+        font-weight: 400;
+        line-height: 1.5;
+      }
+
+      /* Edit / delete controls on your own chat messages. Hidden until the row
+         is hovered (or a control takes keyboard focus) so the transcript stays
+         quiet, like the full chat page. Hand-written because the pre-built
+         dashboard/tailwind.css carries no group-hover variant. */
+      .chat-message-actions {
+        opacity: 0;
+        transition: opacity 120ms ease;
+      }
+
+      [data-dashboard-chat-context-rail],
+      [data-dashboard-chat-scroll-rail],
+      [data-dashboard-chat-emotes] {
+        display: none;
+      }
+
+      .group:hover > .chat-message-actions,
+      .chat-message-actions:focus-within {
+        opacity: 1;
+      }
+
+      /* Touch devices never hover: keep the controls reachable there. */
+      @media (hover: none) {
+        .chat-message-actions {
+          opacity: 1;
+        }
+      }
+
+      .chat-reactions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 4px;
+      }
+
+      .chat-reactions:empty {
+        display: none;
+      }
+
+      .chat-reaction-chip,
+      .chat-reaction-picker button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 24px;
+        border: 1px solid rgb(var(--dashboard-border-rgb));
+        border-radius: 999px;
+        background: rgb(var(--dashboard-muted-rgb));
+        color: var(--foreground);
+        cursor: pointer;
+      }
+
+      .chat-reaction-chip {
+        gap: 4px;
+        padding: 1px 8px;
+        font-size: 12px;
+      }
+
+      .chat-reaction-chip.is-mine {
+        border-color: var(--dashboard-link);
+        background: color-mix(
+          in srgb,
+          var(--dashboard-link) 16%,
+          var(--background)
+        );
+      }
+
+      .chat-reaction-count {
+        color: rgb(var(--dashboard-muted-foreground-rgb));
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .chat-reaction-picker {
+        display: flex;
+        width: max-content;
+        max-width: 100%;
+        gap: 4px;
+        margin-top: 5px;
+        padding: 4px;
+        border: 1px solid rgb(var(--dashboard-border-rgb));
+        border-radius: 8px;
+        background: var(--background);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+      }
+
+      .chat-reaction-picker button {
+        width: 30px;
+        padding: 2px;
+        font-size: 16px;
+      }
+
+      .chat-reaction-chip:hover,
+      .chat-reaction-chip:focus-visible,
+      .chat-reaction-picker button:hover,
+      .chat-reaction-picker button:focus-visible {
+        border-color: var(--dashboard-link);
+        outline: none;
+      }
+
+      .chat-mention {
+        display: inline-block;
+        border-radius: 5px;
+        background: rgba(88, 166, 255, 0.12);
+        color: var(--dashboard-link);
+        font-weight: 700;
+        padding: 0 4px;
+        text-decoration: none;
+      }
+
+      .chat-mention:hover,
+      .chat-mention:focus {
+        background: rgba(88, 166, 255, 0.2);
+        color: var(--dashboard-link-hover);
+        outline: none;
+      }
+
+      .chat-mention-card {
+        position: absolute;
+        z-index: 1000;
+        display: grid;
+        width: min(260px, calc(100vw - 24px));
+        gap: 5px;
+        padding: 10px 12px;
+        border: 1px solid rgb(var(--dashboard-border-rgb));
+        border-radius: 8px;
+        background: rgb(var(--dashboard-popover-rgb));
+        box-shadow: 0 16px 45px rgb(0 0 0 / 0.32);
+        color: rgb(var(--dashboard-popover-foreground-rgb));
+        text-align: left;
+        text-decoration: none;
+      }
+
+      .chat-mention-card[hidden] {
+        display: none;
+      }
+
+      .chat-mention-card strong {
+        font-size: 13px;
+        color: rgb(var(--dashboard-popover-foreground-rgb));
+      }
+
+      .chat-mention-card span {
+        color: rgb(var(--dashboard-muted-foreground-rgb));
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .chat-mention-card small {
+        color: var(--dashboard-link);
+        font-size: 11px;
+      }
+
+      /* Shared loading indicator: inherits currentColor so it matches the
+         muted text it sits next to in either theme. */
+      .fm-spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 9999px;
+        opacity: 0.75;
+        vertical-align: -2px;
+        margin-right: 8px;
+        animation: fm-spin 0.7s linear infinite;
+      }
+
+      @keyframes fm-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .view {
+        display: none;
+      }
+
+      .view.active {
+        display: block;
+      }
+
+      .view.active.flex-view {
+        display: flex;
+      }
+
+      .copy-check {
+        display: none;
+      }
+
+      .copy-button.copied .copy-icon {
+        display: none;
+      }
+
+      .copy-button.copied .copy-check {
+        display: block;
+      }
+
+      .repo-card.is-hidden {
+        display: none;
+      }
+
+      .repo-list {
+        transition: opacity 160ms ease;
+      }
+
+      .repo-list.is-fetching {
+        opacity: 0.45;
+        pointer-events: none;
+      }
+
+      .repo-list.grid-mode {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 0.75rem;
+        padding: 0.75rem;
+      }
+
+      .repo-list.grid-mode .repo-card {
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+      }
+
+	      .repo-list.grid-mode .repo-layout {
+	        min-height: 10rem;
+	      }
+
+      .repo-activity-bars {
+        align-items: end;
+        display: grid;
+        gap: 1px;
+        grid-template-columns: repeat(52, minmax(0, 1fr));
+      }
+
+      .repo-activity-bar {
+        border-radius: 2px 2px 0 0;
+        min-width: 1px;
+      }
+
+      [data-mobile-sidebar-backdrop],
+      [data-mobile-drawer-close] {
+        display: none;
+      }
+
+      [data-mobile-menu-toggle] {
+        display: inline-flex;
+      }
+
+      [data-app-header] {
+        background: rgb(var(--dashboard-header-rgb));
+      }
+
+      [data-dashboard-root][data-dashboard-section="home"] [data-app-header] {
+        border-bottom: 1px solid var(--border);
+      }
+
+      body.dashboard-sidebar-open {
+        overflow: hidden;
+      }
+
+      [data-dashboard-shell] {
+        position: relative;
+      }
+
+      [data-dashboard-sidebar] {
+        position: fixed;
+        inset: 0 auto 0 0;
+        z-index: 70;
+        width: min(20rem, calc(100vw - 2rem)) !important;
+        max-width: calc(100vw - 2rem) !important;
+        height: 100dvh;
+        background-color: rgb(var(--dashboard-sidebar-rgb)) !important;
+        transform: translateX(-100%);
+        transition: transform 180ms ease, box-shadow 180ms ease;
+        box-shadow: none;
+      }
+
+      body.dashboard-sidebar-open [data-dashboard-sidebar] {
+        transform: translateX(0);
+        box-shadow: 24px 0 80px rgb(0 0 0 / 0.46);
+      }
+
+      [data-mobile-sidebar-backdrop] {
+        position: fixed;
+        inset: 0;
+        display: none;
+        background: rgb(0 0 0 / 0.62);
+        backdrop-filter: blur(6px);
+      }
+
+      [data-mobile-sidebar-backdrop] {
+        z-index: 60;
+      }
+
+      body.dashboard-sidebar-open [data-mobile-sidebar-backdrop] {
+        display: block;
+      }
+
+      [data-dashboard-theme="light"] .text-zinc-200,
+      [data-dashboard-theme="light"] .text-zinc-300 {
+        color: #000000 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-zinc-500 {
+        color: #000000 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-sky-300 {
+        color: #0369a1 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-emerald-300 {
+        color: #047857 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-amber-200,
+      [data-dashboard-theme="light"] .text-amber-300 {
+        color: #b45309 !important;
+      }
+
+      [data-dashboard-theme="light"] .bg-emerald-950\/40 {
+        background: rgb(220 252 231 / 0.86) !important;
+      }
+
+      [data-dashboard-theme="light"] .bg-rose-950\/40 {
+        background: rgb(254 226 226 / 0.86) !important;
+      }
+
+      .dashboard-accent-link {
+        color: var(--dashboard-link);
+      }
+
+      .dashboard-accent-link:hover {
+        color: var(--dashboard-link-hover);
+      }
+
+      [data-profile-contribution-card],
+      [data-profile-contribution-panorama],
+      [data-profile-contribution-skyline-panel],
+      [data-profile-contribution-insights],
+      [data-profile-contribution-metrics] {
+        min-width: 0;
+      }
+
+      [data-profile-contribution-panorama] {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(15rem, 18rem);
+        gap: 1rem;
+      }
+
+      [data-profile-contribution-skyline-panel] {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-row: span 2;
+        position: relative;
+      }
+
+      [data-profile-contribution-skyline-viewport] {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        padding: 0.75rem;
+        scrollbar-gutter: stable;
+      }
+
+      [data-profile-contribution-skyline-viewport]:focus-visible {
+        border-radius: 0.5rem;
+        outline: 2px solid rgb(var(--dashboard-ring-rgb));
+        outline-offset: -2px;
+      }
+
+      [data-profile-contribution-skyline] {
+        display: block;
+        width: 100%;
+        min-width: 46rem;
+        height: auto;
+        overflow: visible;
+      }
+
+      [data-profile-contribution-radar],
+      [data-profile-contribution-languages] {
+        display: block;
+        width: 100%;
+        height: auto;
+        overflow: visible;
+      }
+
+      [data-profile-contribution-skyline] [tabindex="0"] {
+        cursor: pointer;
+        transition: filter 140ms ease, opacity 140ms ease;
+      }
+
+      [data-profile-contribution-skyline] [tabindex="0"]:hover {
+        filter: brightness(1.12);
+      }
+
+      [data-profile-contribution-skyline] [tabindex="0"]:focus-visible {
+        filter: brightness(1.18) drop-shadow(0 0 0.2rem rgb(var(--dashboard-ring-rgb)));
+        outline: none;
+      }
+
+      [data-profile-contribution-tooltip] {
+        position: absolute;
+        z-index: 20;
+        max-width: min(18rem, calc(100% - 1.5rem));
+        pointer-events: none;
+        border: 1px solid var(--contribution-tooltip-border);
+        border-radius: 0.5rem;
+        background: var(--contribution-tooltip-bg);
+        box-shadow: 0 12px 32px rgb(0 0 0 / 0.28);
+        color: var(--contribution-tooltip-fg);
+        font-size: 0.75rem;
+        line-height: 1.4;
+        padding: 0.55rem 0.7rem;
+      }
+
+      [data-profile-contribution-loading],
+      [data-profile-contribution-error] {
+        position: absolute;
+        inset: 1rem;
+        z-index: 15;
+        min-height: 0;
+        border-radius: 0.75rem;
+        background: rgb(var(--dashboard-background-rgb) / 0.94);
+        backdrop-filter: blur(3px);
+      }
+
+      [data-profile-contribution-error] {
+        display: grid;
+        place-content: center;
+      }
+
+      [data-profile-contribution-metrics] {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        overflow: hidden;
+      }
+
+      [data-profile-contribution-metrics] > div {
+        min-width: 0;
+        padding: 0.75rem 0.9rem;
+      }
+
+      [data-profile-contribution-metrics] > div + div {
+        border-left: 1px solid rgb(var(--dashboard-border-rgb));
+      }
+
+      [data-profile-contribution-coverage] {
+        text-wrap: pretty;
+      }
+
+      @media (max-width: 1180px) {
+        [data-profile-contribution-panorama] {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        [data-profile-contribution-skyline-panel] {
+          grid-column: 1 / -1;
+          grid-row: auto;
+        }
+
+        [data-profile-contribution-insights] {
+          display: contents;
+        }
+      }
+
+      @media (max-width: 680px) {
+        [data-profile-contribution-panorama] {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        [data-profile-contribution-skyline-panel],
+        [data-profile-contribution-metrics] {
+          grid-column: auto;
+        }
+
+        [data-profile-contribution-insights] {
+          display: grid;
+        }
+
+        [data-profile-contribution-metrics] {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        [data-profile-contribution-metrics] > div {
+          border-bottom: 1px solid rgb(var(--dashboard-border-rgb));
+        }
+
+        [data-profile-contribution-metrics] > div + div {
+          border-left: 0;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        [data-profile-contribution-card] *,
+        [data-profile-contribution-card] *::before,
+        [data-profile-contribution-card] *::after {
+          scroll-behavior: auto !important;
+          transition: none !important;
+          animation: none !important;
+        }
+      }
+
+      @media (max-width: 1023px) {
+        [data-dashboard-root] {
+          height: 100dvh;
+        }
+
+        [data-app-header] {
+          height: 3.75rem;
+          gap: 0.75rem;
+          padding-left: 0.75rem;
+          padding-right: 0.75rem;
+        }
+
+        [data-top-nav] {
+          display: none;
+        }
+
+        [data-mobile-menu-toggle],
+        [data-mobile-drawer-close] {
+          display: inline-flex;
+        }
+
+        [data-repo-toolbar] {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        [data-repo-view-toggle] {
+          align-self: flex-end;
+        }
+
+        .repo-list.grid-mode {
+          grid-template-columns: minmax(0, 1fr);
+          padding: 0.5rem;
+        }
+
+      }
+
+      ::selection {
+        background: rgb(88 166 255 / 0.28);
+      }
+
+      ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: rgb(var(--dashboard-scrollbar-rgb) / 0.18);
+        border: 3px solid transparent;
+        border-radius: 999px;
+        background-clip: padding-box;
+      }
+
+      ::-webkit-scrollbar-thumb:hover {
+        background: rgb(var(--dashboard-scrollbar-rgb) / 0.28);
+        background-clip: padding-box;
+      }
+    </style>
+    <script src="/dashboard.js?v=6e105e01a070" defer></script>
+
+  </head>
+  <body class="bg-background text-foreground" data-page="repo">
+    <div data-dashboard-root data-dashboard-section="explore" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+      <header data-app-header class="relative h-14 flex items-center gap-3 px-4 shrink-0">
+        <button
+          data-mobile-menu-toggle
+          type="button"
+          aria-label="Open dashboard menu"
+          aria-controls="dashboardSidebar"
+          aria-expanded="false"
+          class="items-center justify-center rounded-md border border-border bg-background p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+        >
+          <i data-lucide="menu" class="h-4 w-4"></i>
+        </button>
+
+        <a data-dashboard-logo class="brand flex items-center gap-2 shrink-0" href="/dashboard" aria-label="Refresh ForkMesh Dashboard">
+          <img class="brand-mark h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+          <span
+            data-app-version
+            class="hidden rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground"
+            title="ForkMesh version"
+          ></span>
+        </a>
+
+        <div class="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-foreground">
+          <h1 class="min-w-0 truncate">
+            <span data-dashboard-header-context class="min-w-0 truncate">Dashboard</span>
+          </h1>
+          <div data-repo-header-meta class="hidden shrink-0 items-center gap-1.5">
+            <span data-repo-header-visibility class="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] font-normal text-muted-foreground"></span>
+            <span data-repo-header-terms></span>
+            <span data-repo-availability-status class="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] font-normal text-muted-foreground"></span>
+          </div>
+        </div>
+
+        <div data-global-search-shell class="relative ml-auto hidden h-9 w-full max-w-sm min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground focus-within:border-ring focus-within:text-foreground lg:flex">
+          <i data-lucide="search" class="h-4 w-4 shrink-0"></i>
+          <input
+            data-global-search
+            id="globalSearchInput"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Type / to search"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls="globalSearchResults"
+            aria-expanded="false"
+            aria-keyshortcuts="/"
+            class="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+          />
+          <span data-global-search-shortcut class="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">/</span>
+          <div
+            data-global-search-panel
+            id="globalSearchResults"
+            role="listbox"
+            class="hidden absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl shadow-background/50"
+          >
+            <div data-global-search-results class="max-h-96 overflow-y-auto py-1"></div>
+            <div
+              data-global-search-page-filter
+              class="hidden items-center gap-1.5 border-t border-border bg-secondary/40 px-3 py-2 text-[11px] text-muted-foreground"
+            ></div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1.5">
+          <a
+            href="https://world.forkmesh.com/"
+            class="hidden h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
+            title="Open ForkMesh World"
+            aria-label="Open ForkMesh World"
+          >
+            <i data-lucide="globe-2" class="h-4 w-4"></i>
+          </a>
+
+          <a
+            href="/mirror-payouts"
+            class="hidden h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
+            title="Mirror reward settings"
+            aria-label="Mirror reward settings"
+          >
+            <img src="/assets/sol.png" alt="" aria-hidden="true" class="h-4 w-4 shrink-0 rounded-full object-contain" />
+          </a>
+
+          <div class="relative">
+            <button
+              id="notificationToggle"
+              type="button"
+              aria-label="Open pings"
+              aria-expanded="false"
+              class="relative flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+            >
+              <i data-lucide="bell" class="w-4 h-4"></i>
+              <span data-notification-badge class="hidden absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-accent"></span>
+            </button>
+            <div
+              id="notificationDropdown"
+              class="hidden absolute right-0 top-full mt-2 w-80 rounded-lg border border-border bg-card shadow-2xl shadow-background/40 overflow-hidden z-50"
+            >
+              <div class="px-3 py-2 border-b border-border flex items-center justify-between">
+                <span class="text-xs font-medium text-foreground">Pings</span>
+                <span data-notification-count class="text-[10px] text-muted-foreground font-mono">0 new</span>
+              </div>
+              <div data-notification-preview-list class="py-1"></div>
+              <div class="border-t border-border p-2">
+                <button data-show-all-notifications type="button" class="w-full rounded-md px-3 py-2 text-center text-xs font-medium text-primary hover:bg-secondary transition-colors">
+                  Show all pings
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="relative">
+            <button
+              id="agentModalToggle"
+              type="button"
+              aria-label="Open owner-device agents"
+              title="Agents are controlled on the owner device"
+              class="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+            >
+              <i data-lucide="bot" class="w-4 h-4"></i>
+            </button>
+            <div
+              id="agentModal"
+              class="hidden absolute right-0 top-full mt-2 w-96 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/40 z-50"
+              role="dialog"
+              aria-labelledby="agentModalTitle"
+            >
+              <div class="flex items-center justify-between border-b border-border px-4 py-3">
+                <div class="min-w-0">
+                  <h2 id="agentModalTitle" class="flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="shield-check" class="h-4 w-4 text-primary"></i>Owner-device agents</h2>
+                  <p class="mt-0.5 text-xs text-muted-foreground">Private prompts and transcripts stay encrypted to a key held by the desktop node.</p>
+                </div>
+                <button data-agent-modal-close type="button" aria-label="Close agent information" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+                  <i data-lucide="x" class="h-4 w-4"></i>
+                </button>
+              </div>
+              <div class="grid gap-3 p-4 text-xs leading-5 text-muted-foreground">
+                <p>The browser deliberately has no owner private key, so the relay and its administrators cannot read agent sessions or turn a browser form into a plaintext prompt channel.</p>
+                <p>Start, inspect, and steer agents from the ForkMesh desktop app on the owner device.</p>
+                <a href="/desktop" class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 font-semibold text-primary-foreground hover:bg-primary/90">
+                  <i data-lucide="monitor-down" class="h-4 w-4"></i>
+                  Open desktop downloads
+                </a>
+                <p class="text-[11px]">Agent privacy boundary: agent-recipient private keys stay on your device and are never sent to the ForkMesh relay.</p>
+              </div>
+            </div>
+          </div>
+
+          <a
+            data-guest-auth-link
+            href="/signup"
+            class="hidden ml-0.5 items-center whitespace-nowrap rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
+          >Sign Up / Log In</a>
+
+          <a
+            data-admin-button
+            href="#"
+            class="hidden ml-0.5 h-9 w-9 inline-flex items-center justify-center rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 transition-colors"
+            title="Admin panel"
+            aria-label="Admin panel"
+          >
+            <i data-lucide="shield-alert" class="h-4 w-4"></i>
+          </a>
+
+          <a
+            data-node-reconnect
+            href="/dashboard/settings"
+            aria-label="Reconnect a node to this account"
+            title="No node is connected to drain this account — link one to sync issues, chats and more"
+            class="hidden ml-0.5 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-600 hover:bg-amber-500/20 transition-colors focus:outline-none focus:ring-1 focus:ring-amber-500/30 dark:text-amber-400"
+          >
+            <i data-lucide="plug-zap" class="h-3.5 w-3.5"></i>
+            <span>Reconnect node</span>
+          </a>
+
+          <div data-profile-settings-button class="relative ml-0.5">
+            <button
+              id="accountMenuToggle"
+              type="button"
+              aria-label="Open account menu"
+              aria-haspopup="true"
+              aria-expanded="false"
+              title="Account menu"
+              class="flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+            >
+              <span
+                data-dashboard-profile-avatar
+                class="avatar flex items-center justify-center rounded-full border shrink-0 font-mono font-semibold"
+                style="width: 32px; height: 32px; background: #818cf822; border-color: #818cf850; color: #818cf8; font-size: 11px"
+              >
+                <img data-dashboard-profile-avatar-image class="hidden h-full w-full rounded-full object-cover" alt="" />
+                <span data-avatar-initial>Y</span>
+              </span>
+              <span data-dashboard-profile-name class="sr-only">My Profile</span>
+            </button>
+            <div
+              id="accountMenuDropdown"
+              class="hidden absolute right-0 top-full z-50 mt-2 w-48 overflow-hidden rounded-lg border border-border bg-card py-1 shadow-2xl shadow-background/40"
+            >
+              <a href="/dashboard/profile" class="block px-3 py-2 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Your profile</a>
+              <a data-account-menu-public-profile href="/dashboard/profile" class="block px-3 py-2 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Public profile</a>
+              <a href="/dashboard/settings" class="block px-3 py-2 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Settings</a>
+              <button data-account-menu-logout type="button" class="block w-full px-3 py-2 text-left text-xs font-medium text-red-400 hover:bg-secondary transition-colors">Log out</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div
+        data-email-verification-banner
+        role="status"
+        class="hidden shrink-0 flex-col gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-200 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div class="flex min-w-0 items-start gap-2 sm:items-center">
+          <i data-lucide="mail-warning" class="mt-0.5 h-4 w-4 shrink-0"></i>
+          <p class="min-w-0">
+            <span data-email-verification-message class="font-medium">Your email is not verified yet.</span>
+            <span data-email-verification-hint class="text-amber-300"></span>
+          </p>
+        </div>
+        <button
+          data-email-verification-resend
+          type="button"
+          class="shrink-0 self-start rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 transition-colors"
+        >
+          Resend verification email
+        </button>
+      </div>
+
+
+      <button data-mobile-sidebar-backdrop type="button" aria-label="Close dashboard menu"></button>
+
+      <div data-dashboard-shell class="flex flex-1 min-h-0 overflow-hidden">
+      <aside id="dashboardSidebar" data-dashboard-sidebar aria-label="Dashboard navigation" class="flex h-full flex-col overflow-y-auto border-r border-border bg-[rgb(var(--dashboard-sidebar-rgb))]">
+        <div class="flex items-center justify-between border-b border-border px-4 py-4">
+          <a data-dashboard-logo class="flex items-center gap-2 text-sm font-semibold text-foreground" href="/dashboard" aria-label="Refresh ForkMesh Dashboard">
+            <img class="h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+            <span data-sidebar-user-name>ForkMesh</span>
+          </a>
+          <button data-mobile-drawer-close type="button" aria-label="Close dashboard menu" class="inline-flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="x" class="h-4 w-4"></i>
+          </button>
+        </div>
+
+        <nav data-sidebar-main-menu class="grid gap-1 border-b border-border px-3 py-3">
+          <a data-nav="home" data-nav-link href="/dashboard" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="home" class="h-4 w-4 text-muted-foreground"></i>
+            Dashboard
+          </a>
+          <a data-nav="profile" data-nav-link href="/dashboard/profile" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="user-round" class="h-4 w-4 text-muted-foreground"></i>
+            Profile
+          </a>
+          <a data-nav="repos" data-nav-link aria-current="page" href="/dashboard/repos" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
+            Repositories
+          </a>
+          <a data-nav="tasks" data-nav-link href="/dashboard/tasks" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="list-checks" class="h-4 w-4 text-muted-foreground"></i>
+            Tasks
+          </a>
+          <a data-nav="notes" data-nav-link href="/dashboard/notes" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="notebook-pen" class="h-4 w-4 text-muted-foreground"></i>
+            Notes
+          </a>
+          <a data-nav="network" data-nav-link href="/dashboard/network" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>
+            Network
+          </a>
+          <a data-nav="chat" data-nav-link href="/dashboard/chat" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="messages-square" class="h-4 w-4 text-muted-foreground"></i>
+            Chat
+          </a>
+          <a href="/docs" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="book-open" class="h-4 w-4 text-muted-foreground"></i>
+            Docs
+          </a>
+          <a href="/blog" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="newspaper" class="h-4 w-4 text-muted-foreground"></i>
+            Blog
+          </a>
+        </nav>
+
+        <div data-sidebar-top-repositories class="min-h-0 flex-1 px-3 py-3">
+          <div class="mb-2 flex items-center justify-between gap-2 px-1">
+            <span class="text-xs font-semibold text-muted-foreground">Top repositories</span>
+            <span data-sidebar-repo-count class="rounded-full border border-border bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground">0</span>
+          </div>
+          <div data-sidebar-repo-list class="grid gap-1"></div>
+        </div>
+      </aside>
+
+
+      <main data-dashboard-main class="flex-1 min-w-0 flex flex-col overflow-hidden">
+        <div id="content" class="flex-1 min-h-0 overflow-hidden">
+          <section data-view="explore" class="view active h-full overflow-y-auto">
+            <div data-explore-inner class="mx-auto w-full max-w-7xl">
+              <div data-repo-detail>
+                <p class="text-sm text-muted-foreground">Choose a repository to inspect it.</p>
+              </div>
+              <template id="dashboard-repo-feature-template">
+                <div class="panel-header-aside">
+                  <div class="issue-filter" role="group" aria-label="Issue state">
+                    <button id="issue-filter-open" type="button" data-state="open" class="is-active" aria-pressed="true">Open</button>
+                    <button id="issue-filter-closed" type="button" data-state="closed" aria-pressed="false">Closed</button>
+                    <button id="issue-filter-all" type="button" data-state="all" aria-pressed="false">All</button>
+                  </div>
+                </div>
+                <button id="tab-mirrors" type="button">Mirrors</button>
+                <section id="repo-mirrors" hidden aria-labelledby="mirrors-title">
+                  <h2 id="mirrors-title">Mirrors</h2>
+                  <div id="mirror-summary"></div>
+                  <div class="mirror-table-wrap">
+                    <table class="mirror-health-table">
+                      <thead>
+                        <tr>
+                          <th>Node</th>
+                          <th>Status</th>
+                          <th>Last seen</th>
+                          <th>Hosted since</th>
+                          <th>Sync age</th>
+                          <th>Clone available</th>
+                        </tr>
+                      </thead>
+                      <tbody id="mirror-list"></tbody>
+                    </table>
+                  </div>
+                </section>
+              </template>
+            </div>
+          </section>
+
+                <template data-profile-sidebar-template>
+                  <div class="flex items-start gap-4 lg:block">
+                    <span data-profile-page-avatar class="relative flex h-72 w-72 max-h-28 max-w-28 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-secondary text-4xl font-semibold text-foreground font-mono sm:max-h-36 sm:max-w-36 lg:max-h-none lg:max-w-none">
+                      <img data-profile-page-avatar-image class="hidden h-full w-full object-cover" alt="" />
+                      <span data-avatar-initial>F</span>
+                    </span>
+                    <div class="min-w-0 pt-1 lg:pt-4">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <h1 data-profile-page-node-name class="truncate text-2xl font-semibold leading-tight text-foreground">My Profile</h1>
+                        <span data-profile-kind-badge class="hidden shrink-0 inline-flex items-center gap-1 rounded-full border border-border bg-secondary px-2 py-0.5 text-xs font-semibold text-muted-foreground">
+                          <i data-lucide="server" class="h-3 w-3"></i>
+                          Node
+                        </span>
+                      </div>
+                      <p data-profile-page-email class="truncate text-xl font-normal leading-6 text-muted-foreground">Sign in to view email</p>
+                    </div>
+                  </div>
+                  <p data-profile-bio class="mt-4 text-base leading-6 text-foreground">No bio yet.</p>
+                  <div class="mt-4 grid gap-2">
+                    <a href="/dashboard/settings" class="flex w-full items-center justify-center rounded-md border border-border bg-secondary px-3 py-1.5 text-sm font-semibold text-foreground hover:bg-background">Edit profile</a>
+                  </div>
+                  <div data-profile-followers class="mt-4 flex items-center gap-1 text-sm text-muted-foreground">
+                    <i data-lucide="users" class="h-4 w-4"></i>
+                    <span data-profile-followers-count class="font-semibold text-foreground">0</span> followers · <span data-profile-following class="inline-flex items-center gap-1"><span data-profile-following-count class="font-semibold text-foreground">0</span> following</span> · <span data-profile-mirrors class="inline-flex items-center gap-1"><span data-profile-mirrors-count class="font-semibold text-foreground">0</span> mirrors</span>
+                  </div>
+                  <ul class="mt-4 grid gap-2 text-sm text-foreground">
+                    <li data-profile-node-status class="hidden flex items-center gap-2">
+                      <i data-lucide="circle" class="h-4 w-4 text-muted-foreground"></i>
+                      <span data-profile-node-status-text>Offline</span>
+                    </li>
+                    <li data-profile-location class="flex items-center gap-2">
+                      <i data-lucide="map-pin" class="h-4 w-4 text-muted-foreground"></i>
+                      <span data-profile-location-text>No location</span>
+                    </li>
+                    <li data-profile-timezone class="flex items-center gap-2">
+                      <i data-lucide="clock-3" class="h-4 w-4 text-muted-foreground"></i>
+                      <span data-profile-local-time>18:21 (UTC +05:30)</span>
+                    </li>
+                    <li class="flex items-center gap-2">
+                      <i data-lucide="link" class="h-4 w-4 text-muted-foreground"></i>
+                      <a data-profile-website href="https://forkmesh.com" class="min-w-0 truncate text-foreground hover:text-accent hover:underline">https://forkmesh.com</a>
+                    </li>
+                  </ul>
+                  <section data-profile-fediverse hidden class="mt-4 overflow-hidden rounded-md border border-border bg-card">
+                    <div class="flex items-center gap-2 border-b border-border px-3 py-2">
+                      <i data-lucide="globe" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
+                      <h2 class="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">Fediverse</h2>
+                      <a data-profile-fediverse-link href="#" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate text-xs text-muted-foreground hover:text-accent hover:underline"></a>
+                      <button data-profile-fediverse-popout type="button" title="Open this feed in a new window" aria-label="Open this feed in a new window" class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border text-muted-foreground hover:bg-secondary hover:text-foreground">
+                        <i data-lucide="external-link" class="h-3 w-3"></i>
+                      </button>
+                    </div>
+                    <div data-profile-fediverse-posts class="grid text-sm"></div>
+                  </section>
+                </template>
+        </div>
+      </main>
+
+	    </div>
+	    </div>
+
+    <div
+      data-profile-modal
+      class="hidden fixed inset-0 z-[90] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="profileModalTitle"
+    >
+      <button data-profile-modal-backdrop type="button" aria-label="Close profile settings" class="absolute inset-0 cursor-default"></button>
+      <div class="relative z-10 w-full max-w-lg overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
+        <div class="flex items-center justify-between border-b border-border px-4 py-3">
+          <div class="min-w-0">
+            <h2 id="profileModalTitle" class="text-sm font-semibold text-foreground">Profile settings</h2>
+            <p class="mt-0.5 text-xs text-muted-foreground">Verify email and optionally add a public Solana address for mirror rewards or direct community donations.</p>
+          </div>
+          <button data-profile-modal-close type="button" aria-label="Close profile settings" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="x" class="h-4 w-4"></i>
+          </button>
+        </div>
+        <div class="grid gap-4 p-4">
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <p class="text-xs font-medium text-foreground">Email verification</p>
+                <p data-profile-email-status class="mt-1 text-xs text-muted-foreground">Sign in to view email status.</p>
+              </div>
+              <button data-profile-verify-email type="button" class="shrink-0 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-secondary transition-colors">
+                Send link
+              </button>
+            </div>
+          </div>
+
+          <label class="grid gap-1.5 text-xs text-muted-foreground">
+            Solana payout address
+            <input data-profile-solana type="text" inputmode="latin" autocomplete="off" placeholder="Your public Solana address" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+            <span class="text-[11px] leading-4 text-muted-foreground">Used only for optional mirror rewards and direct community donations. Legacy bounty custody is disabled; you may leave it empty.</span>
+            <span class="text-[11px] leading-4 text-amber-300">Non-custodial: only this public address is saved. Keys and recovery phrases stay on your device. User funds, the community pool, pending rewards, and completed transfers are distinct states.</span>
+          </label>
+
+          <label class="grid gap-1.5 text-xs text-muted-foreground">
+            Current password
+            <input data-profile-password type="password" autocomplete="current-password" placeholder="Required to save payout changes" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+          </label>
+
+          <p data-profile-hint class="min-h-4 text-xs text-muted-foreground"></p>
+          <button data-profile-save type="button" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+            Save profile
+          </button>
+	        </div>
+	      </div>
+    </div>
+
+    <div
+      data-profile-about-modal
+      class="hidden fixed inset-0 z-[95] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="profileAboutModalTitle"
+    >
+      <button data-profile-about-modal-backdrop type="button" aria-label="Close about editor" class="absolute inset-0 cursor-default"></button>
+      <div class="relative z-10 flex max-h-[min(760px,calc(100vh-3rem))] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
+        <div class="flex items-center justify-between border-b border-border px-4 py-3">
+          <div class="min-w-0">
+            <h2 id="profileAboutModalTitle" class="text-sm font-semibold text-foreground">Edit about yourself</h2>
+            <p class="mt-0.5 text-xs text-muted-foreground">Markdown shown on your ForkMesh profile overview.</p>
+          </div>
+          <button data-profile-about-modal-close type="button" aria-label="Close about editor" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="x" class="h-4 w-4"></i>
+          </button>
+        </div>
+        <div class="grid min-h-0 gap-4 overflow-y-auto p-4">
+          <label class="grid gap-2 text-xs font-medium text-muted-foreground">
+            About yourself
+            <textarea data-profile-about-textarea rows="14" maxlength="32000" spellcheck="true" class="min-h-72 resize-y rounded-md border border-border bg-background px-3 py-2 font-mono text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground focus:border-ring" placeholder="# Hi, I'm ..."></textarea>
+          </label>
+          <p data-profile-about-hint class="min-h-4 text-xs text-muted-foreground"></p>
+        </div>
+        <div class="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3">
+          <button data-profile-about-cancel type="button" class="inline-flex h-9 items-center justify-center rounded-md border border-border px-4 text-sm font-semibold text-foreground hover:bg-secondary">Cancel</button>
+          <button data-profile-about-save type="button" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90">Save about</button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="notificationModal"
+      class="hidden fixed inset-0 z-[80] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="notificationModalTitle"
+    >
+      <button data-notification-modal-backdrop type="button" aria-label="Close pings" class="absolute inset-0 cursor-default"></button>
+      <div class="relative z-10 flex max-h-[min(760px,calc(100vh-3rem))] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
+        <div class="flex items-center justify-between border-b border-border px-4 py-3">
+          <div class="min-w-0">
+            <h2 id="notificationModalTitle" class="text-sm font-semibold text-foreground">Pings</h2>
+            <p class="mt-0.5 text-xs text-muted-foreground">Read node, repository, and network updates.</p>
+          </div>
+          <button data-close-notification-modal type="button" aria-label="Close pings" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="x" class="h-4 w-4"></i>
+          </button>
+        </div>
+
+        <div class="grid min-h-0 flex-1 md:grid-cols-[19rem_minmax(0,1fr)]">
+          <div data-notification-modal-list class="max-h-80 overflow-y-auto border-b border-border p-2 md:max-h-none md:border-b-0 md:border-r"></div>
+          <article data-notification-modal-detail class="min-h-0 overflow-y-auto p-5"></article>
+        </div>
+      </div>
+    </div>
+
+    <div
+      data-new-repo-modal
+      class="hidden fixed inset-0 z-[95] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="newRepoModalTitle"
+    >
+      <button data-new-repo-backdrop type="button" aria-label="Close new repository" class="absolute inset-0 cursor-default"></button>
+      <div class="relative z-10 flex max-h-[min(760px,calc(100vh-3rem))] w-full max-w-lg flex-col overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
+        <div class="flex items-center justify-between border-b border-border px-4 py-3">
+          <div class="min-w-0">
+            <h2 id="newRepoModalTitle" class="text-sm font-semibold text-foreground">Create &amp; mirror a repository</h2>
+            <p class="mt-0.5 text-xs text-muted-foreground">Describe the repo, then finish creating and mirroring it from your ForkMesh desktop node.</p>
+          </div>
+          <button data-new-repo-close type="button" aria-label="Close new repository" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="x" class="h-4 w-4"></i>
+          </button>
+        </div>
+
+        <form data-new-repo-form class="grid min-h-0 gap-4 overflow-y-auto p-4">
+          <label data-new-repo-name-wrap class="grid gap-1.5 text-xs text-muted-foreground">
+            Repository name
+            <input data-new-repo-name type="text" autocomplete="off" spellcheck="false" placeholder="my-project" required class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+          </label>
+
+          <div class="grid gap-1.5 text-xs text-muted-foreground">
+            Source
+            <div data-new-repo-source-toggle class="flex items-center rounded-md border border-border overflow-hidden text-xs">
+              <button data-new-repo-source="remote" type="button" aria-pressed="true" class="flex-1 bg-secondary text-foreground px-3 py-2 transition-colors">Remote clone URL</button>
+              <button data-new-repo-source="local" type="button" aria-pressed="false" class="flex-1 text-muted-foreground hover:text-foreground px-3 py-2 border-l border-border transition-colors">Local repository</button>
+              <button data-new-repo-source="provider" type="button" aria-pressed="false" class="flex-1 text-muted-foreground hover:text-foreground px-3 py-2 border-l border-border transition-colors">GitHub / GitLab / Codeberg</button>
+            </div>
+            <input data-new-repo-source-value type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/repo.git" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+            <span data-new-repo-source-hint class="text-[11px] leading-4 text-muted-foreground">ForkMesh clones this URL into a bare mirror. Local paths never leave your machine.</span>
+          </div>
+
+          <div data-new-repo-provider-options class="hidden grid gap-3 rounded-lg border border-border bg-background p-3">
+            <label class="grid gap-1.5 text-xs text-muted-foreground">
+              Import type
+              <select data-new-repo-import-mode class="h-9 rounded-md border border-border bg-card px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20">
+                <option value="import">Import permitted metadata</option>
+                <option value="stub">Create a non-mirrored stub</option>
+              </select>
+            </label>
+            <label class="grid gap-1.5 text-xs text-muted-foreground">
+              Provider access token <span class="text-[11px] font-normal">(required for private repositories; optional for public)</span>
+              <input data-new-repo-provider-token type="password" autocomplete="off" spellcheck="false" placeholder="One-request GitHub, GitLab, or Codeberg token" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+            </label>
+            <p class="text-[11px] leading-4 text-muted-foreground">The token passes through ForkMesh’s Worker only for this request and is forwarded to the provider; it is not persisted. Only metadata endpoints are read; source files are not fetched or sent to an external model.</p>
+          </div>
+
+          <label data-new-repo-visibility-wrap class="grid gap-1.5 text-xs text-muted-foreground">
+            Visibility
+            <select data-new-repo-visibility class="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20">
+              <option value="public">Public — listed in the catalog and browsable by anyone</option>
+              <option value="private">Private — encrypted mirror, contents stay hidden</option>
+            </select>
+          </label>
+
+          <label data-new-repo-description-wrap class="grid gap-1.5 text-xs text-muted-foreground">
+            Description <span class="text-[11px] font-normal text-muted-foreground">(optional)</span>
+            <textarea data-new-repo-description rows="2" maxlength="240" spellcheck="true" placeholder="What is this repository for?" class="resize-y rounded-md border border-border bg-background px-3 py-2 text-sm leading-6 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20"></textarea>
+          </label>
+
+          <p data-new-repo-hint class="min-h-4 text-xs text-muted-foreground"></p>
+
+          <div data-new-repo-steps class="hidden rounded-lg border border-border bg-background p-3">
+            <p class="text-xs font-semibold text-foreground">Finish in the ForkMesh desktop node</p>
+            <p class="mt-1 text-[11px] leading-4 text-muted-foreground">Publishing and mirroring run on your node so filesystem paths and private contents never touch the relay. Follow these steps with the details above:</p>
+            <ol data-new-repo-steps-list class="mt-2 grid gap-1.5 text-xs text-muted-foreground"></ol>
+            <a href="/desktop" class="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline">
+              <i data-lucide="download" class="h-3.5 w-3.5"></i>
+              Download the desktop app
+            </a>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <button data-new-repo-cancel type="button" class="inline-flex h-9 items-center justify-center rounded-md border border-border px-4 text-sm font-semibold text-foreground hover:bg-secondary transition-colors">Cancel</button>
+            <button data-new-repo-submit type="submit" class="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+              <i data-lucide="git-branch-plus" class="h-4 w-4"></i>
+              <span data-new-repo-submit-label>Create &amp; mirror</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+
+	    <script>
+      const avatarColors = ["#4ade80", "#818cf8", "#38bdf8", "#fb923c", "#f472b6", "#fbbf24"];
+
+	      function setProfilePopoverOpen(open) {
+	        const toggle = document.querySelector("[data-profile-toggle]");
+	        const popover = document.querySelector("[data-profile-popover]");
+	        if (!toggle || !popover) return;
+
+	        popover.classList.toggle("hidden", !open);
+	        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+		      }
+
+	      function handleLogout() {
+	        try {
+	          fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
+	          localStorage.removeItem("forkmesh.session");
+	        } catch (_) {}
+
+	        document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
+	        setProfilePopoverOpen(false);
+	        window.location.href = window.location.protocol === "file:" ? "index.html" : "/";
+	      }
+
+	      function initProfileMenu() {
+	        const toggle = document.querySelector("[data-profile-toggle]");
+	        const popover = document.querySelector("[data-profile-popover]");
+	        const logout = document.querySelector("[data-logout-button]");
+	        if (!toggle || !popover || !logout) return;
+
+	        toggle.addEventListener("click", (event) => {
+	          event.stopPropagation();
+	          setProfilePopoverOpen(popover.classList.contains("hidden"));
+	        });
+
+	        popover.addEventListener("click", (event) => {
+	          event.stopPropagation();
+	        });
+
+	        logout.addEventListener("click", handleLogout);
+	        document.addEventListener("click", () => setProfilePopoverOpen(false));
+	        document.addEventListener("keydown", (event) => {
+	          if (event.key === "Escape") setProfilePopoverOpen(false);
+	        });
+	      }
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") setProfilePopoverOpen(false);
+      });
+
+      const repoPageSize = 5;
+      let repoCurrentPage = 1;
+      let repoIsFetching = false;
+      let repoFetchTimer;
+
+      function repoCards() {
+        return [...document.querySelectorAll(".repo-card")];
+      }
+
+      function repoQuery() {
+        // The search box only exists on the repos page document.
+        return document.getElementById("repoSearch")?.value.trim().toLowerCase() || "";
+      }
+
+      function filteredRepoCards() {
+        const query = repoQuery();
+        return repoCards().filter((card) => !query || card.dataset.repo.includes(query));
+      }
+
+      function setRepoButtonDisabled(button, disabled) {
+        if (!button) return;
+        button.disabled = disabled;
+        button.classList.toggle("opacity-40", disabled);
+        button.classList.toggle("pointer-events-none", disabled);
+      }
+
+      function renderRepoPageButtons(totalPages) {
+        const pages = document.querySelector("[data-repo-pages]");
+        if (!pages) return;
+        pages.innerHTML = "";
+
+        for (let page = 1; page <= totalPages; page += 1) {
+          const button = document.createElement("button");
+          const active = page === repoCurrentPage;
+          button.type = "button";
+          button.setAttribute("data-repo-page-button", String(page));
+          button.textContent = String(page);
+          button.setAttribute("aria-label", `Show repository page ${page}`);
+          button.setAttribute("aria-current", active ? "page" : "false");
+          button.className = [
+            "h-8 min-w-8 rounded-md border px-2 text-xs font-mono transition-colors",
+            active
+              ? "border-border bg-secondary text-foreground"
+              : "border-transparent text-muted-foreground hover:border-border hover:bg-secondary hover:text-foreground",
+          ].join(" ");
+          button.disabled = repoIsFetching;
+          button.addEventListener("click", () => setRepoPage(page));
+          pages.appendChild(button);
+        }
+      }
+
+      function applyRepoVisibility() {
+        // Repo cards + pagination only exist on the repos page document.
+        const list = document.getElementById("repoList");
+        if (!list) return;
+        const cards = repoCards();
+        const matchedCards = filteredRepoCards();
+        const totalPages = Math.max(1, Math.ceil(matchedCards.length / repoPageSize));
+        repoCurrentPage = Math.min(repoCurrentPage, totalPages);
+
+        const start = (repoCurrentPage - 1) * repoPageSize;
+        const end = Math.min(start + repoPageSize, matchedCards.length);
+        const visibleCards = new Set(matchedCards.slice(start, end));
+
+        cards.forEach((card) => {
+          card.classList.toggle("is-hidden", !visibleCards.has(card));
+        });
+
+        list.classList.toggle("is-fetching", repoIsFetching);
+        document.querySelector("[data-repo-loading]")?.classList.toggle("hidden", !repoIsFetching);
+
+        const summary = document.querySelector("[data-repo-summary]");
+        if (summary) {
+          summary.textContent = matchedCards.length
+            ? `Showing ${start + 1}-${end} of ${matchedCards.length} mirrored repositories`
+            : "No repositories match this filter";
+        }
+
+        renderRepoPageButtons(totalPages);
+        setRepoButtonDisabled(document.querySelector("[data-repo-prev]"), repoIsFetching || repoCurrentPage === 1);
+        setRepoButtonDisabled(document.querySelector("[data-repo-next]"), repoIsFetching || repoCurrentPage === totalPages);
+      }
+
+      function setRepoPage(page, options = {}) {
+        const totalPages = Math.max(1, Math.ceil(filteredRepoCards().length / repoPageSize));
+        const targetPage = Math.min(Math.max(page, 1), totalPages);
+        if (targetPage === repoCurrentPage && !options.force) return;
+
+        window.clearTimeout(repoFetchTimer);
+        if (options.instant) {
+          repoCurrentPage = targetPage;
+          repoIsFetching = false;
+          applyRepoVisibility();
+          return;
+        }
+
+        repoIsFetching = true;
+        applyRepoVisibility();
+        repoFetchTimer = window.setTimeout(() => {
+          repoCurrentPage = targetPage;
+          repoIsFetching = false;
+          applyRepoVisibility();
+        }, 220);
+      }
+
+      document.getElementById("repoSearch")?.addEventListener("input", () => {
+        window.clearTimeout(repoFetchTimer);
+        repoCurrentPage = 1;
+        repoIsFetching = false;
+        applyRepoVisibility();
+      });
+
+      document.querySelector("[data-repo-prev]")?.addEventListener("click", () => setRepoPage(repoCurrentPage - 1));
+      document.querySelector("[data-repo-next]")?.addEventListener("click", () => setRepoPage(repoCurrentPage + 1));
+      applyRepoVisibility();
+
+      document.querySelectorAll("[data-view-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const mode = button.dataset.viewMode;
+          const gridMode = mode === "grid";
+          document.getElementById("repoList").classList.toggle("grid-mode", gridMode);
+          document.querySelectorAll("[data-view-mode]").forEach((control) => {
+            const active = control.dataset.viewMode === mode;
+            control.setAttribute("aria-pressed", active ? "true" : "false");
+            control.classList.toggle("bg-secondary", active);
+            control.classList.toggle("text-foreground", active);
+            control.classList.toggle("text-muted-foreground", !active);
+          });
+        });
+      });
+
+      document.querySelectorAll(".copy-button").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const text = button.dataset.copy;
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (error) {
+            const temp = document.createElement("textarea");
+            temp.value = text;
+            temp.setAttribute("readonly", "");
+            temp.style.position = "fixed";
+            temp.style.opacity = "0";
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand("copy");
+            temp.remove();
+          }
+          button.classList.add("copied");
+          window.setTimeout(() => button.classList.remove("copied"), 1600);
+        });
+      });
+
+      // Chat is wired by /dashboard-chat.js.
+	      initProfileMenu();
+	      // The lucide CDN script is deferred, so it has not executed yet while
+	      // this inline script parses; dashboard.js re-runs createIcons once
+	      // lucide exists. A bare call here throws on every page load.
+	      window.lucide?.createIcons();
+    </script>
+  </body>
+</html>

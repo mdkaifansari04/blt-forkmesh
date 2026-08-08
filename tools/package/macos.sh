@@ -76,14 +76,15 @@ plistbuddy="/usr/libexec/PlistBuddy"
 
 resource_root="$app/Contents/Resources/forkmesh"
 if [ ! -f "$resource_root/tools/cloudflare_bootstrap.py" ] \
-   || [ ! -f "$resource_root/cloudflare_worker/src/entry.py" ] \
-   || [ ! -d "$resource_root/cloudflare_worker/public" ] \
-   || [ ! -d "$resource_root/cloudflare_worker/migrations" ]; then
+   || [ ! -f "$resource_root/app/src/entry.py" ] \
+   || [ ! -x "$resource_root/app/deploy.sh" ] \
+   || [ ! -d "$resource_root/app/migrations" ] \
+   || [ ! -d "$resource_root/www/public" ] \
+   || [ ! -d "$resource_root/world/public" ]; then
   log "CMake-installed ForkMesh deployment resources are incomplete"
   exit 1
 fi
 
-# --- codesign + notarize ----------------------------------------------------
 if [ -n "${FORKMESH_APPLE_DEV_ID:-}" ]; then
   log "codesign: hardened-runtime signing with '${FORKMESH_APPLE_DEV_ID}'"
   codesign --force --deep --options runtime --timestamp \

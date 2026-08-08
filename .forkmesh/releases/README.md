@@ -74,12 +74,12 @@ source to publish, then run the explicit refresh from a clean worktree:
 
 ```sh
 FORKMESH_RELEASE_CAS=/absolute/path/to/the/served/forkmesh-releases \
-  cloudflare_worker/deploy.sh republish-release-binary
+  app/deploy.sh republish-release-binary
 ```
 
 The command refuses a dirty tracked worktree or an unspecified served CAS. It
 rebuilds the current platform in Release mode, pins the version from
-`qt_client/CMakeLists.txt`, verifies the executable's `--version`, replaces the
+`desktop/CMakeLists.txt`, verifies the executable's `--version`, replaces the
 content-addressed bytes, and checks that `release.json`, `SHASUMS256.txt`, the
 CAS hash, and the source commit all agree. It then commits the small release
 metadata update. Push that commit and let mirror catalogs refresh before using

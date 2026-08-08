@@ -7,9 +7,9 @@ show up now help shape the protocol. Human and AI contributors are both
 first-class here.
 
 This guide covers the complete change-to-review workflow. If you have not run a
-node yet, begin with [Getting started](docs/getting-started.md). For desktop
+node yet, begin with [Getting started](www/docs/getting-started.md). For desktop
 dependencies, navigation, logs, and troubleshooting, use the
-[Qt client guide](docs/qt-client.md).
+[Qt client guide](www/docs/qt-client.md).
 
 ---
 
@@ -32,10 +32,12 @@ or pick up a funded issue and hand it to an agent.
 
 ```text
 forkmesh/
-  qt_client/          Qt 6 desktop node
-  cloudflare_worker/  Python Worker relay + public website
-  flutter_app/        Mobile app
-  ide_extension/      Editor integration for ForkMesh agents
+  desktop/           Qt 6 desktop node
+  app/               Product UI plus Python API, Git, WebSocket, and DO Worker
+  www/               Marketing, docs, and blog Worker
+  world/             World code and media Worker
+  mobile/             Mobile app
+  extensions/         Editor integrations for ForkMesh agents
   tools/              Standalone helpers (MCP server, PR review)
   .forkmesh/          In-repo signed data: issues (the live roadmap),
                       discussions, commit comments, release metadata, workflows
@@ -82,34 +84,33 @@ Qt UI operate on the same working copy, so switching between them is safe.
 
 Please build and test the component you changed before opening a pull request.
 
-### Desktop node (`qt_client/`)
+### Desktop node (`desktop/`)
 
 Requirements: Qt 6.4+ (Widgets, Network), CMake 3.16+, OpenSSL dev headers, Git,
 a C++17 compiler, and the `openssl` CLI at runtime for the LAN TLS certificate.
 
 ```sh
-cd qt_client
+cd desktop
 ./run.sh          # incremental Release build and launch
 ./run.sh test     # sub-minute critical trust/mirror/agent contracts
 ```
 
-Additional test targets live in `qt_client/tests/` and are built via CMake. See
-the [Qt client guide](docs/qt-client.md#build-and-run-from-source) for dependency
+Additional test targets live in `desktop/tests/` and are built via CMake. See
+the [Qt client guide](www/docs/qt-client.md#build-and-run-from-source) for dependency
 commands, manual CMake usage, and focused-test troubleshooting.
 
-### Cloudflare relay + website (`cloudflare_worker/`)
+### Cloudflare Workers (`app/`, `www/`, `world/`)
 
-The relay hosts encrypted room WebSockets and the signed repository catalog. It
-runs on Cloudflare's Python Worker tooling (`pywrangler`) — there are no
-npm/TypeScript project dependencies.
+App hosts the product UI, API, encrypted WebSockets, Git protocols, and Durable
+Objects. www and World are lightweight JavaScript Workers with static assets.
 
 ```sh
-cd cloudflare_worker
+cd app
 uvx --from workers-py pywrangler dev      # run locally
 python3 tests/test_status_page.py         # run a single test module
 ```
 
-Tests live in `cloudflare_worker/tests/`. The bounded default contracts run from
+Backend tests live in `app/tests/`. The bounded default contracts run from
 the repository root with `python3 tools/run_critical_tests.py worker` and
 `python3 tools/run_critical_tests.py world`; run additional focused modules for
 the behavior you change. If you edit a JavaScript dashboard fragment, rebuild
@@ -118,25 +119,25 @@ the dashboard bundle so the packaged output stays in sync.
 The browser World smoke suite is also bounded to 55 seconds:
 
 ```sh
-npm --prefix cloudflare_worker/browser_tests test
+npm --prefix app/browser_tests test
 ```
 
-`npm --prefix cloudflare_worker/browser_tests run test:all` remains available
+`npm --prefix app/browser_tests run test:all` remains available
 for focused browser-test maintenance outside the default gate.
 
-### Mobile app (`flutter_app/`)
+### Mobile app (`mobile/`)
 
 ```sh
-cd flutter_app
+cd mobile
 flutter pub get
 flutter test
 flutter analyze
 ```
 
-### IDE extension (`ide_extension/`)
+### IDE extensions (`extensions/`)
 
 ```sh
-cd ide_extension
+cd extensions
 npm install
 npm run compile   # tsc -p ./
 ```
@@ -241,7 +242,7 @@ python3 tools/quality_gate.py run --profile release
 
 Record every command and result. If a required toolchain is unavailable, say so
 plainly in the PR; do not report a skipped suite as passing. The detailed policy
-is in the [definition of done](docs/engineering/definition-of-done.md).
+is in the [definition of done](www/docs/engineering/definition-of-done.md).
 
 ### 3. Open the native ForkMesh PR
 
@@ -257,7 +258,7 @@ In the Qt client:
 
 Base and head must differ, and the branch must contain a committed diff. If the
 repository says it is read-only, fork it first. The
-[Qt client PR guide](docs/qt-client.md#create-a-pull-request) also documents
+[Qt client PR guide](www/docs/qt-client.md#create-a-pull-request) also documents
 owner-local PRs, direct one-file mirror proposals, and common failure cases.
 
 MCP-capable agents can use the repository's configured

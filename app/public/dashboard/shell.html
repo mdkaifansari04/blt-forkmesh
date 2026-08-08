@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="en" data-dashboard-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="/api-client.js"></script>
+    <script src="/posthog.js" defer></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title><!--#page title--></title>
+    <meta name="description" content="<!--#page description-->" />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <script>
+      (() => {
+        const key = "forkmesh.dashboard.theme";
+        const siteKey = "forkmesh.theme";
+        let theme = "dark";
+        try {
+          const stored = localStorage.getItem(key) || localStorage.getItem(siteKey);
+          theme = stored === "light" ? "light" : "dark";
+        } catch (_) {}
+        document.documentElement.dataset.dashboardTheme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fb" : "#090909");
+      })();
+    </script>
+    <link rel="stylesheet" href="/dashboard/tailwind.css" />
+    <script>window.tailwind = window.tailwind || {};</script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Noto Sans", "Helvetica", "Arial", "sans-serif"],
+              mono: ["ForkMesh Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"],
+            },
+            colors: {
+              background: "rgb(var(--dashboard-background-rgb) / <alpha-value>)",
+              foreground: "rgb(var(--dashboard-foreground-rgb) / <alpha-value>)",
+              card: "rgb(var(--dashboard-card-rgb) / <alpha-value>)",
+              "card-foreground": "rgb(var(--dashboard-card-foreground-rgb) / <alpha-value>)",
+              popover: "rgb(var(--dashboard-popover-rgb) / <alpha-value>)",
+              "popover-foreground": "rgb(var(--dashboard-popover-foreground-rgb) / <alpha-value>)",
+              primary: "rgb(var(--dashboard-primary-rgb) / <alpha-value>)",
+              "primary-foreground": "rgb(var(--dashboard-primary-foreground-rgb) / <alpha-value>)",
+              secondary: "rgb(var(--dashboard-secondary-rgb) / <alpha-value>)",
+              "secondary-foreground": "rgb(var(--dashboard-secondary-foreground-rgb) / <alpha-value>)",
+              muted: "rgb(var(--dashboard-muted-rgb) / <alpha-value>)",
+              "muted-foreground": "rgb(var(--dashboard-muted-foreground-rgb) / <alpha-value>)",
+              accent: "rgb(var(--dashboard-accent-rgb) / <alpha-value>)",
+              "accent-foreground": "rgb(var(--dashboard-accent-foreground-rgb) / <alpha-value>)",
+              destructive: "rgb(var(--dashboard-destructive-rgb) / <alpha-value>)",
+              border: "rgb(var(--dashboard-border-rgb) / <alpha-value>)",
+              input: "transparent",
+              ring: "rgb(var(--dashboard-ring-rgb) / <alpha-value>)",
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+    <style>
+      @font-face {
+        font-family: "ForkMesh Dashboard Mono";
+        src: url("/assets/fonts/DejaVuSansMono.ttf") format("truetype");
+        font-weight: 400 500;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "ForkMesh Dashboard Mono";
+        src: url("/assets/fonts/DejaVuSansMono-Bold.ttf") format("truetype");
+        font-weight: 600 800;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      :root,
+      [data-dashboard-theme="dark"] {
+        --font-size: 15px;
+        --dashboard-header-rgb: 1 4 9;
+        --dashboard-sidebar-rgb: 12 17 23;
+        --dashboard-background-rgb: 1 4 9;
+        --dashboard-foreground-rgb: 240 246 252;
+        --dashboard-card-rgb: 13 17 23;
+        --dashboard-card-foreground-rgb: 240 246 252;
+        --dashboard-popover-rgb: 22 27 34;
+        --dashboard-popover-foreground-rgb: 240 246 252;
+        --dashboard-primary-rgb: 35 134 54;
+        --dashboard-primary-foreground-rgb: 255 255 255;
+        --dashboard-secondary-rgb: 33 38 45;
+        --dashboard-secondary-foreground-rgb: 201 209 217;
+        --dashboard-muted-rgb: 22 27 34;
+        --dashboard-muted-foreground-rgb: 139 148 158;
+        --dashboard-accent-rgb: 88 166 255;
+        --dashboard-accent-foreground-rgb: 255 255 255;
+        --dashboard-destructive-rgb: 248 81 73;
+        --dashboard-border-rgb: 48 54 61;
+        --dashboard-ring-rgb: 88 166 255;
+        --dashboard-scrollbar-rgb: 139 148 158;
+        --dashboard-link: #58a6ff;
+        --dashboard-link-hover: #79c0ff;
+        --contribution-commits: #58a6ff;
+        --contribution-issues: #3fb950;
+        --contribution-pulls: #bc8cff;
+        --contribution-reviews: #f0883e;
+        --contribution-repositories: #f778ba;
+        --contribution-empty: #161b22;
+        --contribution-unverified: #0d1117;
+        --contribution-grid-edge: #30363d;
+        --contribution-cube-top: rgb(255 255 255 / 0.22);
+        --contribution-cube-left: rgb(0 0 0 / 0.18);
+        --contribution-cube-right: rgb(0 0 0 / 0.34);
+        --contribution-tooltip-bg: #161b22;
+        --contribution-tooltip-fg: #f0f6fc;
+        --contribution-tooltip-border: #30363d;
+        --background: #010409;
+        --foreground: #f0f6fc;
+        --card: #0d1117;
+        --primary: #238636;
+        --primary-foreground: #ffffff;
+        --secondary: #21262d;
+        --muted-foreground: #8b949e;
+        --border: rgb(var(--dashboard-border-rgb));
+        color-scheme: dark;
+      }
+
+      [data-dashboard-theme="light"] {
+        --dashboard-header-rgb: 255 255 255;
+        --dashboard-sidebar-rgb: 255 255 255;
+        --dashboard-background-rgb: 255 255 255;
+        --dashboard-foreground-rgb: 0 0 0;
+        --dashboard-card-rgb: 255 255 255;
+        --dashboard-card-foreground-rgb: 0 0 0;
+        --dashboard-popover-rgb: 255 255 255;
+        --dashboard-popover-foreground-rgb: 0 0 0;
+        --dashboard-primary-rgb: 22 163 74;
+        --dashboard-primary-foreground-rgb: 255 255 255;
+        --dashboard-secondary-rgb: 255 255 255;
+        --dashboard-secondary-foreground-rgb: 0 0 0;
+        --dashboard-muted-rgb: 255 255 255;
+        --dashboard-muted-foreground-rgb: 0 0 0;
+        --dashboard-accent-rgb: 9 105 218;
+        --dashboard-accent-foreground-rgb: 255 255 255;
+        --dashboard-destructive-rgb: 220 38 38;
+        --dashboard-border-rgb: 226 232 240;
+        --dashboard-ring-rgb: 15 23 42;
+        --dashboard-scrollbar-rgb: 71 85 105;
+        --dashboard-link: #000000;
+        --dashboard-link-hover: #000000;
+        --contribution-commits: #0969da;
+        --contribution-issues: #1a7f37;
+        --contribution-pulls: #8250df;
+        --contribution-reviews: #bc4c00;
+        --contribution-repositories: #bf3989;
+        --contribution-empty: #ebedf0;
+        --contribution-unverified: #f6f8fa;
+        --contribution-grid-edge: #d0d7de;
+        --contribution-cube-top: rgb(255 255 255 / 0.42);
+        --contribution-cube-left: rgb(0 0 0 / 0.12);
+        --contribution-cube-right: rgb(0 0 0 / 0.22);
+        --contribution-tooltip-bg: #ffffff;
+        --contribution-tooltip-fg: #1f2328;
+        --contribution-tooltip-border: #d0d7de;
+        --background: #ffffff;
+        --foreground: #000000;
+        --card: #ffffff;
+        --primary: #16a34a;
+        --primary-foreground: #ffffff;
+        --secondary: #ffffff;
+        --muted-foreground: #000000;
+        --border: rgb(var(--dashboard-border-rgb));
+        color-scheme: light;
+      }
+
+      * {
+        border-color: var(--border);
+        box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      html {
+        font-size: var(--font-size);
+      }
+
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        font-weight: 500;
+        line-height: 1.5;
+      }
+
+      input {
+        font-weight: 400;
+        line-height: 1.5;
+      }
+
+      /* Edit / delete controls on your own chat messages. Hidden until the row
+         is hovered (or a control takes keyboard focus) so the transcript stays
+         quiet, like the full chat page. Hand-written because the pre-built
+         dashboard/tailwind.css carries no group-hover variant. */
+      .chat-message-actions {
+        opacity: 0;
+        transition: opacity 120ms ease;
+      }
+
+      [data-dashboard-chat-context-rail],
+      [data-dashboard-chat-scroll-rail],
+      [data-dashboard-chat-emotes] {
+        display: none;
+      }
+
+      .group:hover > .chat-message-actions,
+      .chat-message-actions:focus-within {
+        opacity: 1;
+      }
+
+      /* Touch devices never hover: keep the controls reachable there. */
+      @media (hover: none) {
+        .chat-message-actions {
+          opacity: 1;
+        }
+      }
+
+      .chat-reactions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 4px;
+      }
+
+      .chat-reactions:empty {
+        display: none;
+      }
+
+      .chat-reaction-chip,
+      .chat-reaction-picker button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 24px;
+        border: 1px solid rgb(var(--dashboard-border-rgb));
+        border-radius: 999px;
+        background: rgb(var(--dashboard-muted-rgb));
+        color: var(--foreground);
+        cursor: pointer;
+      }
+
+      .chat-reaction-chip {
+        gap: 4px;
+        padding: 1px 8px;
+        font-size: 12px;
+      }
+
+      .chat-reaction-chip.is-mine {
+        border-color: var(--dashboard-link);
+        background: color-mix(
+          in srgb,
+          var(--dashboard-link) 16%,
+          var(--background)
+        );
+      }
+
+      .chat-reaction-count {
+        color: rgb(var(--dashboard-muted-foreground-rgb));
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .chat-reaction-picker {
+        display: flex;
+        width: max-content;
+        max-width: 100%;
+        gap: 4px;
+        margin-top: 5px;
+        padding: 4px;
+        border: 1px solid rgb(var(--dashboard-border-rgb));
+        border-radius: 8px;
+        background: var(--background);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+      }
+
+      .chat-reaction-picker button {
+        width: 30px;
+        padding: 2px;
+        font-size: 16px;
+      }
+
+      .chat-reaction-chip:hover,
+      .chat-reaction-chip:focus-visible,
+      .chat-reaction-picker button:hover,
+      .chat-reaction-picker button:focus-visible {
+        border-color: var(--dashboard-link);
+        outline: none;
+      }
+
+      .chat-mention {
+        display: inline-block;
+        border-radius: 5px;
+        background: rgba(88, 166, 255, 0.12);
+        color: var(--dashboard-link);
+        font-weight: 700;
+        padding: 0 4px;
+        text-decoration: none;
+      }
+
+      .chat-mention:hover,
+      .chat-mention:focus {
+        background: rgba(88, 166, 255, 0.2);
+        color: var(--dashboard-link-hover);
+        outline: none;
+      }
+
+      .chat-mention-card {
+        position: absolute;
+        z-index: 1000;
+        display: grid;
+        width: min(260px, calc(100vw - 24px));
+        gap: 5px;
+        padding: 10px 12px;
+        border: 1px solid rgb(var(--dashboard-border-rgb));
+        border-radius: 8px;
+        background: rgb(var(--dashboard-popover-rgb));
+        box-shadow: 0 16px 45px rgb(0 0 0 / 0.32);
+        color: rgb(var(--dashboard-popover-foreground-rgb));
+        text-align: left;
+        text-decoration: none;
+      }
+
+      .chat-mention-card[hidden] {
+        display: none;
+      }
+
+      .chat-mention-card strong {
+        font-size: 13px;
+        color: rgb(var(--dashboard-popover-foreground-rgb));
+      }
+
+      .chat-mention-card span {
+        color: rgb(var(--dashboard-muted-foreground-rgb));
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .chat-mention-card small {
+        color: var(--dashboard-link);
+        font-size: 11px;
+      }
+
+      /* Shared loading indicator: inherits currentColor so it matches the
+         muted text it sits next to in either theme. */
+      .fm-spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 9999px;
+        opacity: 0.75;
+        vertical-align: -2px;
+        margin-right: 8px;
+        animation: fm-spin 0.7s linear infinite;
+      }
+
+      @keyframes fm-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .view {
+        display: none;
+      }
+
+      .view.active {
+        display: block;
+      }
+
+      .view.active.flex-view {
+        display: flex;
+      }
+
+      .copy-check {
+        display: none;
+      }
+
+      .copy-button.copied .copy-icon {
+        display: none;
+      }
+
+      .copy-button.copied .copy-check {
+        display: block;
+      }
+
+      .repo-card.is-hidden {
+        display: none;
+      }
+
+      .repo-list {
+        transition: opacity 160ms ease;
+      }
+
+      .repo-list.is-fetching {
+        opacity: 0.45;
+        pointer-events: none;
+      }
+
+      .repo-list.grid-mode {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 0.75rem;
+        padding: 0.75rem;
+      }
+
+      .repo-list.grid-mode .repo-card {
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+      }
+
+	      .repo-list.grid-mode .repo-layout {
+	        min-height: 10rem;
+	      }
+
+      .repo-activity-bars {
+        align-items: end;
+        display: grid;
+        gap: 1px;
+        grid-template-columns: repeat(52, minmax(0, 1fr));
+      }
+
+      .repo-activity-bar {
+        border-radius: 2px 2px 0 0;
+        min-width: 1px;
+      }
+
+      [data-mobile-sidebar-backdrop],
+      [data-mobile-drawer-close] {
+        display: none;
+      }
+
+      [data-mobile-menu-toggle] {
+        display: inline-flex;
+      }
+
+      [data-app-header] {
+        background: rgb(var(--dashboard-header-rgb));
+      }
+
+      [data-dashboard-root][data-dashboard-section="home"] [data-app-header] {
+        border-bottom: 1px solid var(--border);
+      }
+
+      body.dashboard-sidebar-open {
+        overflow: hidden;
+      }
+
+      [data-dashboard-shell] {
+        position: relative;
+      }
+
+      [data-dashboard-sidebar] {
+        position: fixed;
+        inset: 0 auto 0 0;
+        z-index: 70;
+        width: min(20rem, calc(100vw - 2rem)) !important;
+        max-width: calc(100vw - 2rem) !important;
+        height: 100dvh;
+        background-color: rgb(var(--dashboard-sidebar-rgb)) !important;
+        transform: translateX(-100%);
+        transition: transform 180ms ease, box-shadow 180ms ease;
+        box-shadow: none;
+      }
+
+      body.dashboard-sidebar-open [data-dashboard-sidebar] {
+        transform: translateX(0);
+        box-shadow: 24px 0 80px rgb(0 0 0 / 0.46);
+      }
+
+      [data-mobile-sidebar-backdrop] {
+        position: fixed;
+        inset: 0;
+        display: none;
+        background: rgb(0 0 0 / 0.62);
+        backdrop-filter: blur(6px);
+      }
+
+      [data-mobile-sidebar-backdrop] {
+        z-index: 60;
+      }
+
+      body.dashboard-sidebar-open [data-mobile-sidebar-backdrop] {
+        display: block;
+      }
+
+      [data-dashboard-theme="light"] .text-zinc-200,
+      [data-dashboard-theme="light"] .text-zinc-300 {
+        color: #000000 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-zinc-500 {
+        color: #000000 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-sky-300 {
+        color: #0369a1 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-emerald-300 {
+        color: #047857 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-amber-200,
+      [data-dashboard-theme="light"] .text-amber-300 {
+        color: #b45309 !important;
+      }
+
+      [data-dashboard-theme="light"] .bg-emerald-950\/40 {
+        background: rgb(220 252 231 / 0.86) !important;
+      }
+
+      [data-dashboard-theme="light"] .bg-rose-950\/40 {
+        background: rgb(254 226 226 / 0.86) !important;
+      }
+
+      .dashboard-accent-link {
+        color: var(--dashboard-link);
+      }
+
+      .dashboard-accent-link:hover {
+        color: var(--dashboard-link-hover);
+      }
+
+      [data-profile-contribution-card],
+      [data-profile-contribution-panorama],
+      [data-profile-contribution-skyline-panel],
+      [data-profile-contribution-insights],
+      [data-profile-contribution-metrics] {
+        min-width: 0;
+      }
+
+      [data-profile-contribution-panorama] {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(15rem, 18rem);
+        gap: 1rem;
+      }
+
+      [data-profile-contribution-skyline-panel] {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-row: span 2;
+        position: relative;
+      }
+
+      [data-profile-contribution-skyline-viewport] {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        padding: 0.75rem;
+        scrollbar-gutter: stable;
+      }
+
+      [data-profile-contribution-skyline-viewport]:focus-visible {
+        border-radius: 0.5rem;
+        outline: 2px solid rgb(var(--dashboard-ring-rgb));
+        outline-offset: -2px;
+      }
+
+      [data-profile-contribution-skyline] {
+        display: block;
+        width: 100%;
+        min-width: 46rem;
+        height: auto;
+        overflow: visible;
+      }
+
+      [data-profile-contribution-radar],
+      [data-profile-contribution-languages] {
+        display: block;
+        width: 100%;
+        height: auto;
+        overflow: visible;
+      }
+
+      [data-profile-contribution-skyline] [tabindex="0"] {
+        cursor: pointer;
+        transition: filter 140ms ease, opacity 140ms ease;
+      }
+
+      [data-profile-contribution-skyline] [tabindex="0"]:hover {
+        filter: brightness(1.12);
+      }
+
+      [data-profile-contribution-skyline] [tabindex="0"]:focus-visible {
+        filter: brightness(1.18) drop-shadow(0 0 0.2rem rgb(var(--dashboard-ring-rgb)));
+        outline: none;
+      }
+
+      [data-profile-contribution-tooltip] {
+        position: absolute;
+        z-index: 20;
+        max-width: min(18rem, calc(100% - 1.5rem));
+        pointer-events: none;
+        border: 1px solid var(--contribution-tooltip-border);
+        border-radius: 0.5rem;
+        background: var(--contribution-tooltip-bg);
+        box-shadow: 0 12px 32px rgb(0 0 0 / 0.28);
+        color: var(--contribution-tooltip-fg);
+        font-size: 0.75rem;
+        line-height: 1.4;
+        padding: 0.55rem 0.7rem;
+      }
+
+      [data-profile-contribution-loading],
+      [data-profile-contribution-error] {
+        position: absolute;
+        inset: 1rem;
+        z-index: 15;
+        min-height: 0;
+        border-radius: 0.75rem;
+        background: rgb(var(--dashboard-background-rgb) / 0.94);
+        backdrop-filter: blur(3px);
+      }
+
+      [data-profile-contribution-error] {
+        display: grid;
+        place-content: center;
+      }
+
+      [data-profile-contribution-metrics] {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        overflow: hidden;
+      }
+
+      [data-profile-contribution-metrics] > div {
+        min-width: 0;
+        padding: 0.75rem 0.9rem;
+      }
+
+      [data-profile-contribution-metrics] > div + div {
+        border-left: 1px solid rgb(var(--dashboard-border-rgb));
+      }
+
+      [data-profile-contribution-coverage] {
+        text-wrap: pretty;
+      }
+
+      @media (max-width: 1180px) {
+        [data-profile-contribution-panorama] {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        [data-profile-contribution-skyline-panel] {
+          grid-column: 1 / -1;
+          grid-row: auto;
+        }
+
+        [data-profile-contribution-insights] {
+          display: contents;
+        }
+      }
+
+      @media (max-width: 680px) {
+        [data-profile-contribution-panorama] {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        [data-profile-contribution-skyline-panel],
+        [data-profile-contribution-metrics] {
+          grid-column: auto;
+        }
+
+        [data-profile-contribution-insights] {
+          display: grid;
+        }
+
+        [data-profile-contribution-metrics] {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        [data-profile-contribution-metrics] > div {
+          border-bottom: 1px solid rgb(var(--dashboard-border-rgb));
+        }
+
+        [data-profile-contribution-metrics] > div + div {
+          border-left: 0;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        [data-profile-contribution-card] *,
+        [data-profile-contribution-card] *::before,
+        [data-profile-contribution-card] *::after {
+          scroll-behavior: auto !important;
+          transition: none !important;
+          animation: none !important;
+        }
+      }
+
+      @media (max-width: 1023px) {
+        [data-dashboard-root] {
+          height: 100dvh;
+        }
+
+        [data-app-header] {
+          height: 3.75rem;
+          gap: 0.75rem;
+          padding-left: 0.75rem;
+          padding-right: 0.75rem;
+        }
+
+        [data-top-nav] {
+          display: none;
+        }
+
+        [data-mobile-menu-toggle],
+        [data-mobile-drawer-close] {
+          display: inline-flex;
+        }
+
+        [data-repo-toolbar] {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        [data-repo-view-toggle] {
+          align-self: flex-end;
+        }
+
+        .repo-list.grid-mode {
+          grid-template-columns: minmax(0, 1fr);
+          padding: 0.5rem;
+        }
+
+      }
+
+      ::selection {
+        background: rgb(88 166 255 / 0.28);
+      }
+
+      ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: rgb(var(--dashboard-scrollbar-rgb) / 0.18);
+        border: 3px solid transparent;
+        border-radius: 999px;
+        background-clip: padding-box;
+      }
+
+      ::-webkit-scrollbar-thumb:hover {
+        background: rgb(var(--dashboard-scrollbar-rgb) / 0.28);
+        background-clip: padding-box;
+      }
+    </style>
+    <script src="/dashboard.js" defer></script>
+<!--#page chatscript-->
+  </head>
+  <body class="bg-background text-foreground" data-page="<!--#page id-->">
+    <div data-dashboard-root data-dashboard-section="<!--#page section-->" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+<!--#include partial="header"-->
+
+      <button data-mobile-sidebar-backdrop type="button" aria-label="Close dashboard menu"></button>
+
+      <div data-dashboard-shell class="flex flex-1 min-h-0 overflow-hidden">
+<!--#include partial="sidebar"-->
+
+<!--#include partial="main"-->
+	    </div>
+	    </div>
+
+<!--#include partial="modals"-->
+
+	    <script>
+      const avatarColors = ["#4ade80", "#818cf8", "#38bdf8", "#fb923c", "#f472b6", "#fbbf24"];
+
+	      function setProfilePopoverOpen(open) {
+	        const toggle = document.querySelector("[data-profile-toggle]");
+	        const popover = document.querySelector("[data-profile-popover]");
+	        if (!toggle || !popover) return;
+
+	        popover.classList.toggle("hidden", !open);
+	        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+		      }
+
+	      function handleLogout() {
+	        try {
+	          fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
+	          localStorage.removeItem("forkmesh.session");
+	        } catch (_) {}
+
+	        document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
+	        setProfilePopoverOpen(false);
+	        window.location.href = window.location.protocol === "file:" ? "index.html" : "/";
+	      }
+
+	      function initProfileMenu() {
+	        const toggle = document.querySelector("[data-profile-toggle]");
+	        const popover = document.querySelector("[data-profile-popover]");
+	        const logout = document.querySelector("[data-logout-button]");
+	        if (!toggle || !popover || !logout) return;
+
+	        toggle.addEventListener("click", (event) => {
+	          event.stopPropagation();
+	          setProfilePopoverOpen(popover.classList.contains("hidden"));
+	        });
+
+	        popover.addEventListener("click", (event) => {
+	          event.stopPropagation();
+	        });
+
+	        logout.addEventListener("click", handleLogout);
+	        document.addEventListener("click", () => setProfilePopoverOpen(false));
+	        document.addEventListener("keydown", (event) => {
+	          if (event.key === "Escape") setProfilePopoverOpen(false);
+	        });
+	      }
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") setProfilePopoverOpen(false);
+      });
+
+      const repoPageSize = 5;
+      let repoCurrentPage = 1;
+      let repoIsFetching = false;
+      let repoFetchTimer;
+
+      function repoCards() {
+        return [...document.querySelectorAll(".repo-card")];
+      }
+
+      function repoQuery() {
+        // The search box only exists on the repos page document.
+        return document.getElementById("repoSearch")?.value.trim().toLowerCase() || "";
+      }
+
+      function filteredRepoCards() {
+        const query = repoQuery();
+        return repoCards().filter((card) => !query || card.dataset.repo.includes(query));
+      }
+
+      function setRepoButtonDisabled(button, disabled) {
+        if (!button) return;
+        button.disabled = disabled;
+        button.classList.toggle("opacity-40", disabled);
+        button.classList.toggle("pointer-events-none", disabled);
+      }
+
+      function renderRepoPageButtons(totalPages) {
+        const pages = document.querySelector("[data-repo-pages]");
+        if (!pages) return;
+        pages.innerHTML = "";
+
+        for (let page = 1; page <= totalPages; page += 1) {
+          const button = document.createElement("button");
+          const active = page === repoCurrentPage;
+          button.type = "button";
+          button.setAttribute("data-repo-page-button", String(page));
+          button.textContent = String(page);
+          button.setAttribute("aria-label", `Show repository page ${page}`);
+          button.setAttribute("aria-current", active ? "page" : "false");
+          button.className = [
+            "h-8 min-w-8 rounded-md border px-2 text-xs font-mono transition-colors",
+            active
+              ? "border-border bg-secondary text-foreground"
+              : "border-transparent text-muted-foreground hover:border-border hover:bg-secondary hover:text-foreground",
+          ].join(" ");
+          button.disabled = repoIsFetching;
+          button.addEventListener("click", () => setRepoPage(page));
+          pages.appendChild(button);
+        }
+      }
+
+      function applyRepoVisibility() {
+        // Repo cards + pagination only exist on the repos page document.
+        const list = document.getElementById("repoList");
+        if (!list) return;
+        const cards = repoCards();
+        const matchedCards = filteredRepoCards();
+        const totalPages = Math.max(1, Math.ceil(matchedCards.length / repoPageSize));
+        repoCurrentPage = Math.min(repoCurrentPage, totalPages);
+
+        const start = (repoCurrentPage - 1) * repoPageSize;
+        const end = Math.min(start + repoPageSize, matchedCards.length);
+        const visibleCards = new Set(matchedCards.slice(start, end));
+
+        cards.forEach((card) => {
+          card.classList.toggle("is-hidden", !visibleCards.has(card));
+        });
+
+        list.classList.toggle("is-fetching", repoIsFetching);
+        document.querySelector("[data-repo-loading]")?.classList.toggle("hidden", !repoIsFetching);
+
+        const summary = document.querySelector("[data-repo-summary]");
+        if (summary) {
+          summary.textContent = matchedCards.length
+            ? `Showing ${start + 1}-${end} of ${matchedCards.length} mirrored repositories`
+            : "No repositories match this filter";
+        }
+
+        renderRepoPageButtons(totalPages);
+        setRepoButtonDisabled(document.querySelector("[data-repo-prev]"), repoIsFetching || repoCurrentPage === 1);
+        setRepoButtonDisabled(document.querySelector("[data-repo-next]"), repoIsFetching || repoCurrentPage === totalPages);
+      }
+
+      function setRepoPage(page, options = {}) {
+        const totalPages = Math.max(1, Math.ceil(filteredRepoCards().length / repoPageSize));
+        const targetPage = Math.min(Math.max(page, 1), totalPages);
+        if (targetPage === repoCurrentPage && !options.force) return;
+
+        window.clearTimeout(repoFetchTimer);
+        if (options.instant) {
+          repoCurrentPage = targetPage;
+          repoIsFetching = false;
+          applyRepoVisibility();
+          return;
+        }
+
+        repoIsFetching = true;
+        applyRepoVisibility();
+        repoFetchTimer = window.setTimeout(() => {
+          repoCurrentPage = targetPage;
+          repoIsFetching = false;
+          applyRepoVisibility();
+        }, 220);
+      }
+
+      document.getElementById("repoSearch")?.addEventListener("input", () => {
+        window.clearTimeout(repoFetchTimer);
+        repoCurrentPage = 1;
+        repoIsFetching = false;
+        applyRepoVisibility();
+      });
+
+      document.querySelector("[data-repo-prev]")?.addEventListener("click", () => setRepoPage(repoCurrentPage - 1));
+      document.querySelector("[data-repo-next]")?.addEventListener("click", () => setRepoPage(repoCurrentPage + 1));
+      applyRepoVisibility();
+
+      document.querySelectorAll("[data-view-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const mode = button.dataset.viewMode;
+          const gridMode = mode === "grid";
+          document.getElementById("repoList").classList.toggle("grid-mode", gridMode);
+          document.querySelectorAll("[data-view-mode]").forEach((control) => {
+            const active = control.dataset.viewMode === mode;
+            control.setAttribute("aria-pressed", active ? "true" : "false");
+            control.classList.toggle("bg-secondary", active);
+            control.classList.toggle("text-foreground", active);
+            control.classList.toggle("text-muted-foreground", !active);
+          });
+        });
+      });
+
+      document.querySelectorAll(".copy-button").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const text = button.dataset.copy;
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (error) {
+            const temp = document.createElement("textarea");
+            temp.value = text;
+            temp.setAttribute("readonly", "");
+            temp.style.position = "fixed";
+            temp.style.opacity = "0";
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand("copy");
+            temp.remove();
+          }
+          button.classList.add("copied");
+          window.setTimeout(() => button.classList.remove("copied"), 1600);
+        });
+      });
+
+      // Chat is wired by /dashboard-chat.js.
+	      initProfileMenu();
+	      // The lucide CDN script is deferred, so it has not executed yet while
+	      // this inline script parses; dashboard.js re-runs createIcons once
+	      // lucide exists. A bare call here throws on every page load.
+	      window.lucide?.createIcons();
+    </script>
+  </body>
+</html>

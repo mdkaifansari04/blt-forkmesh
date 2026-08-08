@@ -1,0 +1,1899 @@
+
+#include "MainWindowInternal.h"
+
+#include "ActionStore.h"
+#include "AgentStore.h"
+#include "PacmanProgress.h"
+#include "StartupSplash.h"
+
+namespace forkmesh::ui {
+
+QString openAiAuthHeader(const QString &apiKey)
+{
+    return QStringLiteral("Bearer ") + apiKey.trimmed();
+}
+
+QNetworkRequest openAiRequest(const QUrl &url, const QString &apiKey)
+{
+    QNetworkRequest request(url);
+    request.setRawHeader("Authorization", openAiAuthHeader(apiKey).toUtf8());
+    request.setRawHeader("Accept", "application/json");
+    return request;
+}
+
+QString apiErrorSummary(QNetworkReply *reply, const QByteArray &body)
+{
+    const int status =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    QString message = reply->errorString();
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    const QString apiMessage =
+        doc.object().value("error").toObject().value("message").toString();
+    if (!apiMessage.isEmpty())
+        message = apiMessage;
+    if (status > 0)
+        return QStringLiteral("HTTP %1: %2").arg(status).arg(message);
+    return message;
+}
+
+QString openAiResponseText(const QJsonObject &obj)
+{
+    const QString direct = obj.value(QStringLiteral("output_text")).toString().trimmed();
+    if (!direct.isEmpty())
+        return direct;
+
+    QStringList parts;
+    const QJsonArray output = obj.value(QStringLiteral("output")).toArray();
+    for (const QJsonValue &outputValue : output) {
+        const QJsonArray content =
+            outputValue.toObject().value(QStringLiteral("content")).toArray();
+        for (const QJsonValue &contentValue : content) {
+            const QJsonObject contentObj = contentValue.toObject();
+            const QString text = contentObj.value(QStringLiteral("text")).toString();
+            if (!text.trimmed().isEmpty())
+                parts << text.trimmed();
+        }
+    }
+    return parts.join(QStringLiteral("\n\n")).trimmed();
+}
+
+double openAiAskCostUsd(const QJsonObject &response, qint64 *inTokens,
+                        qint64 *outTokens)
+{
+    const QJsonObject usage = response.value(QStringLiteral("usage")).toObject();
+    const qint64 input = static_cast<qint64>(
+        usage.value(QStringLiteral("input_tokens")).toDouble());
+    const qint64 output = static_cast<qint64>(
+        usage.value(QStringLiteral("output_tokens")).toDouble());
+    if (inTokens)
+        *inTokens = input;
+    if (outTokens)
+        *outTokens = output;
+    constexpr double kInputPerMillion = 0.10;
+    constexpr double kOutputPerMillion = 0.40;
+    return (input * kInputPerMillion + output * kOutputPerMillion) / 1000000.0;
+}
+
+QString displayMirrorBranchNameForRef(const QString &ref)
+{
+    if (ref.startsWith(QLatin1String("refs/heads/")))
+        return ref.mid(QStringLiteral("refs/heads/").size());
+    if (!ref.startsWith(QLatin1String("refs/remotes/")))
+        return QString();
+    const QString remotePath = ref.mid(QStringLiteral("refs/remotes/").size());
+    const int slash = remotePath.indexOf(QLatin1Char('/'));
+    if (slash <= 0)
+        return QString();
+    const QString name = remotePath.mid(slash + 1);
+    if (name.isEmpty() || name == QLatin1String("HEAD"))
+        return QString();
+    return name;
+}
+
+QString mirrorCommitForRef(const QString &mirrorPath, const QString &ref)
+{
+    if (!QDir(mirrorPath).exists() || ref.trimmed().isEmpty() ||
+        ref.contains(QChar('\0')))
+        return QString();
+    QProcess p;
+    p.start("git", {"-C", mirrorPath, "rev-parse", "--verify", "-q",
+                    ref + QStringLiteral("^{commit}")});
+    if (!p.waitForFinished(5000) || p.exitCode() != 0)
+        return QString();
+    return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+}
+
+QString mirrorHeadBranch(const QString &mirrorPath)
+{
+    if (!QDir(mirrorPath).exists())
+        return QString();
+    QString head = headBranchFromFile(mirrorPath);
+    if (head.isEmpty()) {
+        QProcess p;
+        p.start("git", {"-C", mirrorPath, "symbolic-ref", "--short", "HEAD"});
+        if (p.waitForFinished(5000) && p.exitCode() == 0)
+            head = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+    }
+    if (!head.isEmpty() &&
+        (!mirrorCommitForRef(mirrorPath, QStringLiteral("HEAD")).isEmpty() ||
+         !mirrorCommitForRef(mirrorPath,
+                             QStringLiteral("refs/heads/") + head).isEmpty()))
+        return head;
+    QProcess refs;
+    refs.start("git", {"-C", mirrorPath, "for-each-ref",
+                       "--format=%(refname)", "refs/heads/", "refs/remotes/"});
+    if (!refs.waitForFinished(5000) || refs.exitCode() != 0)
+        return QString();
+    QStringList branches;
+    for (const QString &ref : QString::fromUtf8(refs.readAllStandardOutput())
+                                  .split('\n', Qt::SkipEmptyParts)) {
+        const QString display = displayMirrorBranchNameForRef(ref.trimmed());
+        if (!display.isEmpty() && !branches.contains(display))
+            branches.append(display);
+    }
+    for (const QString &preferred : {QStringLiteral("main"), QStringLiteral("master")})
+        if (branches.contains(preferred))
+            return preferred;
+    if (!branches.isEmpty())
+        return branches.first().trimmed();
+    return mirrorCommitForRef(mirrorPath, QStringLiteral("HEAD")).isEmpty()
+               ? QString()
+               : QStringLiteral("HEAD");
+}
+
+QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch)
+{
+    if (!QDir(mirrorPath).exists())
+        return QString();
+    const QString raw = branch.trimmed();
+    QStringList candidates;
+    auto add = [&candidates](const QString &ref) {
+        if (!ref.isEmpty() && !candidates.contains(ref))
+            candidates.append(ref);
+    };
+    if (raw.isEmpty() || raw == QLatin1String("HEAD")) {
+        add(QStringLiteral("HEAD"));
+    } else if (raw.startsWith(QLatin1String("refs/"))) {
+        add(raw);
+    } else {
+        add(QStringLiteral("refs/heads/") + raw);
+        add(QStringLiteral("refs/remotes/") + raw);
+        QProcess refs;
+        refs.start("git", {"-C", mirrorPath, "for-each-ref",
+                           "--format=%(refname)", "refs/remotes/"});
+        if (refs.waitForFinished(5000) && refs.exitCode() == 0) {
+            for (const QString &ref : QString::fromUtf8(refs.readAllStandardOutput())
+                                          .split('\n', Qt::SkipEmptyParts)) {
+                const QString trimmed = ref.trimmed();
+                if (displayMirrorBranchNameForRef(trimmed) == raw)
+                    add(trimmed);
+            }
+        }
+        add(raw);
+    }
+    for (const QString &candidate : std::as_const(candidates)) {
+        const QString commit = mirrorCommitForRef(mirrorPath, candidate);
+        if (!commit.isEmpty())
+            return commit;
+    }
+    return QString();
+}
+
+MirrorBranchTip mirrorPrimaryBranchTip(const QString &mirrorPath,
+                                       const QString &workTree)
+{
+    auto commitForBranch = [&](const QString &branch) -> QString {
+        if (branch.trimmed().isEmpty())
+            return QString();
+        QString commit = worktreeBranchCommit(workTree, branch);
+        if (commit.isEmpty())
+            commit = mirrorBranchCommit(mirrorPath, branch);
+        return commit;
+    };
+
+    for (const QString &preferred : {QStringLiteral("main"),
+                                     QStringLiteral("master")}) {
+        const QString commit = commitForBranch(preferred);
+        if (!commit.isEmpty())
+            return {preferred, commit};
+    }
+
+    const QString servedBranch = mirrorHeadBranch(mirrorPath);
+    QString servedCommit = mirrorBranchCommit(mirrorPath, servedBranch);
+    if (!servedCommit.isEmpty()) {
+        const QString sourceCommit = worktreeBranchCommit(workTree, servedBranch);
+        return {servedBranch, sourceCommit.isEmpty() ? servedCommit : sourceCommit};
+    }
+
+    const QString headBranch = worktreeHeadBranch(workTree);
+    QString headCommit = worktreeBranchCommit(workTree, headBranch);
+    if (headCommit.isEmpty())
+        headCommit = worktreeHeadCommit(workTree);
+    if (!headCommit.isEmpty())
+        return {headBranch, headCommit};
+
+    return {};
+}
+
+QString actionStatusText(const QString &status)
+{
+    if (status == ActionStatus::AwaitingApproval) return QStringLiteral("Awaiting approval");
+    if (status == ActionStatus::Queued) return QStringLiteral("Queued");
+    if (status == ActionStatus::Running) return QStringLiteral("Running");
+    if (status == ActionStatus::Success) return QStringLiteral("Success");
+    if (status == ActionStatus::Failed) return QStringLiteral("Failed");
+    if (status == ActionStatus::Rejected) return QStringLiteral("Rejected");
+    if (status == ActionStatus::Cancelled) return QStringLiteral("Cancelled");
+    if (status == ActionStatus::Skipped) return QStringLiteral("Skipped");
+    return status;
+}
+
+QColor actionStatusColor(const QString &status)
+{
+    if (status == ActionStatus::Success) return QColor("#3fb950");
+    if (status == ActionStatus::Failed) return QColor("#f85149");
+    if (status == ActionStatus::Running) return QColor("#58a6ff");
+    if (status == ActionStatus::AwaitingApproval) return QColor("#d29922");
+    if (status == ActionStatus::Rejected) return QColor("#8b949e");
+    if (status == ActionStatus::Cancelled) return QColor("#8b949e");
+    if (status == ActionStatus::Skipped) return QColor("#8b949e");
+    return QColor("#8b949e");
+}
+
+void logStartup(const QString &phase)
+{
+    forkmesh::logStartupTrace(phase);
+    if (phase.startsWith(QLatin1String("  ")))
+        startupDetail(phase.trimmed());
+    else if (auto *splash = activeStartupSplash())
+        splash->completeCurrentStep();
+}
+
+QElapsedTimer &restartClock()
+{
+    static QElapsedTimer t;
+    return t;
+}
+void beginRestartLog()
+{
+    restartClock().start();
+}
+void logRestart(const QString &phase)
+{
+    if (!restartClock().isValid())
+        restartClock().start();
+    qInfo().noquote() << QStringLiteral("[restart +%1ms] %2")
+                             .arg(restartClock().elapsed(), 5)
+                             .arg(phase);
+}
+
+
+
+namespace {
+
+constexpr qsizetype kDiffFirstPaintChars = 12'000;
+constexpr qsizetype kDiffStreamBatchChars = 12'000;
+constexpr qsizetype kDiffFragmentChars = 12'000;
+
+QStringList splitDiffFileBlocks(const QString &html)
+{
+    static const QString marker = QStringLiteral("<a name=\"file-");
+    int pos = html.indexOf(marker);
+    if (pos < 0)
+        return {html}; // no per-file anchors (e.g. an empty/notice body)
+    QStringList blocks;
+    if (pos > 0)
+        blocks.append(html.left(pos)); // preamble before the first file (if any)
+    while (pos >= 0) {
+        const int next = html.indexOf(marker, pos + marker.size());
+        blocks.append(html.mid(pos, next < 0 ? -1 : next - pos));
+        pos = next;
+    }
+    return blocks;
+}
+
+QStringList splitDiffFileFragments(const QString &block)
+{
+    if (block.size() <= kDiffFragmentChars)
+        return {block};
+
+    const QString tableMarker = QStringLiteral("<table class='difftable'");
+    const int table = block.indexOf(tableMarker);
+    const int tableOpenEnd = table < 0 ? -1 : block.indexOf(QLatin1Char('>'), table);
+    const int tableClose = block.lastIndexOf(QStringLiteral("</table>"));
+    if (table < 0 || tableOpenEnd < 0 || tableClose <= tableOpenEnd)
+        return {block}; // binary/collapsed/image-only block: already atomic
+
+    const int anchorEnd = block.indexOf(QStringLiteral("</a>"));
+    const int headerEnd = block.indexOf(QStringLiteral("</div>"),
+                                        qMax(0, anchorEnd));
+    if (anchorEnd < 0 || headerEnd < 0 || headerEnd >= table)
+        return {block};
+
+    const QString firstPrefix = block.left(tableOpenEnd + 1);
+    const QString continuationPrefix =
+        block.mid(anchorEnd + 4, headerEnd + 6 - (anchorEnd + 4)) +
+        QStringLiteral("<div class='diffcontinuation'>continued</div>") +
+        block.mid(table, tableOpenEnd - table + 1);
+    const QString closing = QStringLiteral("</table></div>");
+    const QString finalSuffix = block.mid(tableClose);
+
+    QStringList rows;
+    int cursor = tableOpenEnd + 1;
+    while (cursor < tableClose) {
+        const int rowEnd = block.indexOf(QStringLiteral("</tr>"), cursor);
+        if (rowEnd < 0 || rowEnd >= tableClose)
+            break;
+        const int after = rowEnd + 5;
+        rows.append(block.mid(cursor, after - cursor));
+        cursor = after;
+    }
+    // Unexpected table markup is safer left atomic than accidentally losing
+    // bytes. Normal unified/split renderers always produce complete <tr> rows.
+    if (rows.isEmpty() || cursor != tableClose)
+        return {block};
+
+    QStringList fragments;
+    QString current = firstPrefix;
+    bool hasRows = false;
+    for (const QString &row : rows) {
+        if (hasRows && current.size() + row.size() + closing.size() >
+                           kDiffFragmentChars) {
+            current += closing;
+            fragments.append(std::move(current));
+            current = continuationPrefix;
+            hasRows = false;
+        }
+        current += row;
+        hasRows = true;
+    }
+    current += finalSuffix;
+    fragments.append(std::move(current));
+    return fragments;
+}
+
+QStringList fragmentDiffHtml(const QString &html)
+{
+    QStringList fragments;
+    for (const QString &block : splitDiffFileBlocks(html))
+        fragments.append(splitDiffFileFragments(block));
+    if (fragments.isEmpty())
+        fragments.append(QString());
+    return fragments;
+}
+
+struct DiffStreamState {
+    QStringList fragments;
+    QStringList pending;
+    int gen = 0;
+    QString styleSheet;
+    QString pendingAnchor;
+    int endCapPosition = -1;
+    bool endCapResizePending = false;
+    bool endCapResizeFilterInstalled = false;
+    bool endCap = true;
+    QList<std::function<void()>> finishedHooks;
+};
+
+void renderDiffDocument(QTextEdit *view);
+
+QHash<QTextEdit *, DiffStreamState> &diffStreams()
+{
+    static QHash<QTextEdit *, DiffStreamState> streams;
+    return streams;
+}
+
+DiffStreamState &diffStreamState(QTextEdit *view)
+{
+    auto &streams = diffStreams();
+    auto it = streams.find(view);
+    if (it != streams.end())
+        return *it;
+    QObject::connect(view, &QObject::destroyed, qApp,
+                     [view] { diffStreams().remove(view); });
+    return streams[view];
+}
+
+const QUrl &diffEndCapResource()
+{
+    static const QUrl resource(QStringLiteral("forkmesh-diff-end-cap"));
+    return resource;
+}
+
+QImage diffEndCapImage(QTextEdit *view, int capHeight, int barHeight)
+{
+    QWidget *page = view->viewport();
+    QColor background = page->palette().color(page->backgroundRole());
+    if (!background.isValid())
+        background = qApp->palette().color(QPalette::Base);
+    QImage cap(1, qMax(1, capHeight), QImage::Format_ARGB32);
+    cap.fill(background);
+    QPainter painter(&cap);
+    painter.fillRect(0, 0, 1, qBound(1, barHeight, cap.height()), Qt::black);
+    painter.end();
+    return cap;
+}
+
+int diffEndCapBarHeight(QTextEdit *view)
+{
+    return qMax(1, view->fontMetrics().lineSpacing());
+}
+
+void resizeDiffEndCap(QTextEdit *view, DiffStreamState &state)
+{
+    if (!view || state.endCapPosition < 0)
+        return;
+    QTextCursor cursor(view->document());
+    cursor.setPosition(state.endCapPosition);
+    cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+    QTextImageFormat image = cursor.charFormat().toImageFormat();
+    if (!image.isValid())
+        return;
+    const int barHeight = diffEndCapBarHeight(view);
+    const int capHeight = qMax(barHeight, view->viewport()->height());
+    view->document()->addResource(QTextDocument::ImageResource,
+                                  diffEndCapResource(),
+                                  diffEndCapImage(view, capHeight, barHeight));
+    image.setWidth(qMax(1, view->viewport()->width()));
+    image.setHeight(capHeight);
+    cursor.setCharFormat(image);
+}
+
+class DiffEndCapResizeFilter final : public QObject
+{
+public:
+    explicit DiffEndCapResizeFilter(QTextEdit *view) : QObject(view), m_view(view) {}
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched != m_view || event->type() != QEvent::Resize)
+            return false;
+        auto it = diffStreams().find(m_view);
+        if (it == diffStreams().end() || it->endCapPosition < 0 ||
+            it->endCapResizePending)
+            return false;
+        it->endCapResizePending = true;
+        QPointer<QTextEdit> guard(m_view);
+        QTimer::singleShot(0, m_view, [guard] {
+            if (!guard)
+                return;
+            auto it = diffStreams().find(guard.data());
+            if (it == diffStreams().end())
+                return;
+            it->endCapResizePending = false;
+            resizeDiffEndCap(guard, *it);
+        });
+        return false;
+    }
+
+private:
+    QTextEdit *m_view = nullptr;
+};
+
+void installDiffEndCapResizeFilter(QTextEdit *view)
+{
+    view->installEventFilter(new DiffEndCapResizeFilter(view));
+}
+
+void appendDiffEndCap(QTextEdit *view, DiffStreamState &state)
+{
+    if (!view || !state.endCap || state.endCapPosition >= 0)
+        return;
+    QTextCursor cursor(view->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertBlock();
+    const int barHeight = diffEndCapBarHeight(view);
+    view->document()->addResource(
+        QTextDocument::ImageResource, diffEndCapResource(),
+        diffEndCapImage(view, qMax(barHeight, view->viewport()->height()),
+                        barHeight));
+    QTextImageFormat image;
+    image.setName(diffEndCapResource().toString());
+    state.endCapPosition = cursor.position();
+    cursor.insertImage(image);
+    resizeDiffEndCap(view, state);
+}
+
+void finishDiffStream(QTextEdit *view)
+{
+    auto it = diffStreams().find(view);
+    if (it == diffStreams().end())
+        return;
+    const QList<std::function<void()>> hooks = it->finishedHooks;
+    for (const std::function<void()> &hook : hooks)
+        hook();
+}
+
+void appendDiffStreamBatch(QTextEdit *view, const QString &batch)
+{
+    if (batch.isEmpty())
+        return;
+    BlockingCallScope crumb(QStringLiteral("diff html append (%1 chars, %2)")
+                                .arg(batch.size())
+                                .arg(view->objectName().isEmpty()
+                                         ? QStringLiteral("unnamed view")
+                                         : view->objectName()));
+    const forkmesh::BackgroundScope action(
+        QStringLiteral("diff"),
+        QStringLiteral("append %1 chars to %2")
+            .arg(batch.size())
+            .arg(view->objectName().isEmpty() ? QStringLiteral("unnamed view")
+                                               : view->objectName()),
+        forkmesh::ActionTelemetry::Execution::UiDeferred);
+    QTextCursor cur(view->document());
+    cur.movePosition(QTextCursor::End);
+    cur.insertHtml(batch);
+}
+
+void scrollLoadedDiffAnchor(QTextEdit *view, DiffStreamState &state,
+                            const QString &batch)
+{
+    if (state.pendingAnchor.isEmpty())
+        return;
+    const QString marker = QStringLiteral("name=\"") + state.pendingAnchor +
+                           QStringLiteral("\"");
+    if (!batch.contains(marker))
+        return;
+    if (auto *browser = qobject_cast<QTextBrowser *>(view))
+        browser->scrollToAnchor(state.pendingAnchor);
+    state.pendingAnchor.clear();
+}
+
+void scheduleDiffStreamBatch(QTextEdit *view, int gen)
+{
+    QPointer<QTextEdit> guard(view);
+    QTimer::singleShot(0, view, [guard, gen] {
+        if (!guard)
+            return;
+        auto it = diffStreams().find(guard.data());
+        if (it == diffStreams().end() || it->gen != gen || it->pending.isEmpty())
+            return;
+        QString batch;
+        while (!it->pending.isEmpty() &&
+               (batch.isEmpty() ||
+                batch.size() + it->pending.first().size() <=
+                    kDiffStreamBatchChars))
+            batch += it->pending.takeFirst();
+        const bool done = it->pending.isEmpty();
+        appendDiffStreamBatch(guard, batch);
+        if (!guard)
+            return;
+        scrollLoadedDiffAnchor(guard, *it, batch);
+        if (done) {
+            appendDiffEndCap(guard, *it);
+            finishDiffStream(guard);
+        } else {
+            scheduleDiffStreamBatch(guard, gen);
+        }
+    });
+}
+
+} // namespace
+
+void renderDiffStreamed(QTextEdit *view, const QString &html,
+                        const QString &styleSheet, bool endCap)
+{
+    if (!view)
+        return;
+    DiffStreamState &state = diffStreamState(view);
+    state.endCap = endCap;
+    if (!state.endCapResizeFilterInstalled) {
+        installDiffEndCapResizeFilter(view);
+        state.endCapResizeFilterInstalled = true;
+    }
+    ++state.gen; // supersede any batches still queued from a previous render
+    state.pending.clear();
+    state.fragments = fragmentDiffHtml(html);
+    state.styleSheet = styleSheet;
+    state.pendingAnchor.clear();
+    state.endCapPosition = -1;
+    state.endCapResizePending = false;
+    renderDiffDocument(view);
+}
+
+namespace {
+
+void renderDiffDocument(QTextEdit *view)
+{
+    if (!view)
+        return;
+    DiffStreamState &state = diffStreamState(view);
+    if (state.fragments.isEmpty())
+        return;
+    ++state.gen;
+    state.pending.clear();
+    const int gen = state.gen;
+
+    QStringList blocks = state.fragments;
+    QString first;
+    while (!blocks.isEmpty() &&
+           (first.isEmpty() ||
+            first.size() + blocks.first().size() <= kDiffFirstPaintChars))
+        first += blocks.takeFirst();
+    state.pending = blocks;
+    const bool streaming = !state.pending.isEmpty();
+    {
+        BlockingCallScope crumb(QStringLiteral("diff html layout (%1 chars, %2)")
+                                    .arg(first.size())
+                                    .arg(view->objectName().isEmpty()
+                                             ? QStringLiteral("unnamed view")
+                                             : view->objectName()));
+        const forkmesh::BackgroundScope action(
+            QStringLiteral("diff"),
+            QStringLiteral("layout %1 chars in %2")
+                .arg(first.size())
+                .arg(view->objectName().isEmpty()
+                         ? QStringLiteral("unnamed view")
+                         : view->objectName()),
+            forkmesh::ActionTelemetry::Execution::UiDeferred);
+        view->document()->setDefaultStyleSheet(state.styleSheet);
+        view->setHtml(first);
+    }
+    scrollLoadedDiffAnchor(view, state, first);
+    if (streaming) {
+        scheduleDiffStreamBatch(view, gen);
+    } else {
+        appendDiffEndCap(view, state);
+        finishDiffStream(view);
+    }
+}
+
+} // namespace
+
+bool restyleDiffStreamed(QTextEdit *view, const QString &styleSheet)
+{
+    auto it = diffStreams().find(view);
+    if (it == diffStreams().end() || it->fragments.isEmpty())
+        return false;
+    it->styleSheet = styleSheet;
+    it->endCapPosition = -1;
+    it->endCapResizePending = false;
+    renderDiffDocument(view);
+    return true;
+}
+
+void scrollDiffToAnchor(QTextEdit *view, const QString &anchor)
+{
+    if (!view || anchor.isEmpty())
+        return;
+    auto it = diffStreams().find(view);
+    if (it == diffStreams().end() || it->fragments.isEmpty()) {
+        if (auto *browser = qobject_cast<QTextBrowser *>(view))
+            browser->scrollToAnchor(anchor);
+        return;
+    }
+    const QString marker = QStringLiteral("name=\"") + anchor +
+                           QStringLiteral("\"");
+    const bool found = std::any_of(
+        it->fragments.cbegin(), it->fragments.cend(),
+        [&marker](const QString &fragment) { return fragment.contains(marker); });
+    if (!found) {
+        if (auto *browser = qobject_cast<QTextBrowser *>(view))
+            browser->scrollToAnchor(anchor);
+        return;
+    }
+    it->pendingAnchor = anchor;
+    if (auto *browser = qobject_cast<QTextBrowser *>(view))
+        browser->scrollToAnchor(anchor);
+}
+
+void flushDiffStream(QTextEdit *view)
+{
+    if (!view)
+        return;
+    auto it = diffStreams().find(view);
+    if (it == diffStreams().end() || it->pending.isEmpty())
+        return;
+}
+
+void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook)
+{
+    if (!view || !hook)
+        return;
+    diffStreamState(view).finishedHooks.append(std::move(hook));
+}
+
+QString agentCostText(double usd)
+{
+    return QStringLiteral("$%1").arg(usd, 0, 'f', 2);
+}
+
+QString linkifyIssueRefs(const QString &escaped)
+{
+    static const QRegularExpression re(QStringLiteral(
+        "#(\\d+)|\\b(?=[0-9a-f]*[a-f])([0-9a-f]{7,40})\\b"));
+    QString out;
+    int last = 0;
+    auto it = re.globalMatch(escaped);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        out += escaped.mid(last, m.capturedStart() - last);
+        if (!m.captured(1).isEmpty()) {
+            const QString num = m.captured(1);
+            out += QStringLiteral(
+                       "<a href=\"ref:%1\" style=\"color:#58a6ff;text-decoration:none\">"
+                       "#%1</a>")
+                       .arg(num);
+        } else {
+            const QString sha = m.captured(2);
+            out += QStringLiteral(
+                       "<a href=\"commit:%1\" style=\"color:#58a6ff;text-decoration:none\">"
+                       "%1</a>")
+                       .arg(sha);
+        }
+        last = m.capturedEnd();
+    }
+    out += escaped.mid(last);
+    return out;
+}
+
+const QRegularExpression &bodyReferenceRegex()
+{
+    static const QRegularExpression re(QStringLiteral(
+        "(forkmesh://(?:issue|pull|commit)/[^\\s<>()\\[\\]]*[^\\s<>()\\[\\].,;:!?'\"])"
+        "|(?<![\\w/#])#(\\d+)\\b"
+        "|\\b(?=[0-9a-f]*[a-f])([0-9a-f]{7,40})\\b"));
+    return re;
+}
+
+QString linkifyReferenceText(const QString &text)
+{
+    QString out;
+    int last = 0;
+    auto it = bodyReferenceRegex().globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        out += text.mid(last, m.capturedStart() - last);
+        if (!m.captured(1).isEmpty()) {
+            out += QStringLiteral("<%1>").arg(m.captured(1));
+        } else if (!m.captured(2).isEmpty()) {
+            const QString num = m.captured(2);
+            out += QStringLiteral("[#%1](forkmesh-ref:%1)").arg(num);
+        } else {
+            const QString sha = m.captured(3);
+            out += QStringLiteral("[%1](forkmesh-commit:%1)").arg(sha);
+        }
+        last = m.capturedEnd();
+    }
+    out += text.mid(last);
+    return out;
+}
+
+int markdownLinkSpanEnd(const QString &line, int start)
+{
+    const int close = line.indexOf(QLatin1Char(']'), start + 1);
+    if (close < 0)
+        return -1;
+    const int paren = close + 1;
+    if (paren >= line.size() || line.at(paren) != QLatin1Char('('))
+        return -1;
+    const int end = line.indexOf(QLatin1Char(')'), paren + 1);
+    return end < 0 ? -1 : end + 1;
+}
+
+int autolinkSpanEnd(const QString &line, int start)
+{
+    const int close = line.indexOf(QLatin1Char('>'), start + 1);
+    if (close < 0)
+        return -1;
+    if (!line.mid(start + 1, close - start - 1).contains(QStringLiteral("://")))
+        return -1;
+    return close + 1;
+}
+
+QString linkifyReferenceLine(const QString &line)
+{
+    QString out;
+    const int n = line.size();
+    int i = 0;
+    while (i < n) {
+        const QChar c = line.at(i);
+        if (c == QLatin1Char('`')) {
+            int run = 1;
+            while (i + run < n && line.at(i + run) == QLatin1Char('`'))
+                ++run;
+            const QString ticks = line.mid(i, run);
+            int close = i + run;
+            int found = -1;
+            while (close < n) {
+                const int idx = line.indexOf(ticks, close);
+                if (idx < 0)
+                    break;
+                const int after = idx + run;
+                if (after < n && line.at(after) == QLatin1Char('`')) {
+                    close = after; // part of a longer run; keep looking
+                    continue;
+                }
+                found = idx;
+                break;
+            }
+            if (found >= 0) {
+                out += line.mid(i, found + run - i);
+                i = found + run;
+            } else {
+                out += ticks; // unterminated: emit literally
+                i += run;
+            }
+            continue;
+        }
+        if (c == QLatin1Char('[')) {
+            const int end = markdownLinkSpanEnd(line, i);
+            if (end > i) {
+                out += line.mid(i, end - i);
+                i = end;
+                continue;
+            }
+            out += c;
+            ++i;
+            continue;
+        }
+        if (c == QLatin1Char('<')) {
+            const int end = autolinkSpanEnd(line, i);
+            if (end > i) {
+                out += line.mid(i, end - i);
+                i = end;
+                continue;
+            }
+            out += c;
+            ++i;
+            continue;
+        }
+        int j = i;
+        while (j < n) {
+            const QChar d = line.at(j);
+            if (d == QLatin1Char('`') || d == QLatin1Char('[') || d == QLatin1Char('<'))
+                break;
+            ++j;
+        }
+        out += linkifyReferenceText(line.mid(i, j - i));
+        i = j;
+    }
+    return out;
+}
+
+
+QString diffStickyStyleSheet(int fontPt)
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    return QStringLiteral("background:%1; border:1px solid %2; padding:6px 10px;"
+                          " font-family:monospace; font-size:%3px;")
+        .arg(dark ? QStringLiteral("#161b22") : QStringLiteral("#f6f8fa"),
+             dark ? QStringLiteral("#30363d") : QStringLiteral("#d0d7de"))
+        .arg(qBound(8, fontPt, 28));
+}
+
+void configureDiffStickyPathLabel(QLabel *label)
+{
+    if (!label)
+        return;
+    label->setWordWrap(false);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+}
+
+QString diffStickyPathText(const QString &path)
+{
+    constexpr int kMaxChars = 72;
+    if (path.size() <= kMaxChars)
+        return path;
+    return QString::fromUtf8("\xE2\x80\xA6") + path.right(kMaxChars - 1);
+}
+
+QString diffStickyPathHtml(const QString &fullPath)
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    const QString dirFg = dark ? QStringLiteral("#8b949e") : QStringLiteral("#6e7781");
+    const QString nameFg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    const QString path = diffStickyPathText(fullPath);
+    const int slash = path.lastIndexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        return QStringLiteral("<span style='color:%1'>%2</span>"
+                              "<span style='color:%3; font-weight:600'>%4</span>")
+            .arg(dirFg, path.left(slash + 1).toHtmlEscaped(), nameFg,
+                 path.mid(slash + 1).toHtmlEscaped());
+    return QStringLiteral("<span style='color:%1; font-weight:600'>%2</span>")
+        .arg(nameFg, path.toHtmlEscaped());
+}
+
+QString agentStatusText(const QString &status)
+{
+    if (status == AgentStatus::Queued) return QStringLiteral("Queued");
+    if (status == AgentStatus::Running) return QStringLiteral("Running");
+    if (status == AgentStatus::Waiting) return QStringLiteral("Waiting");
+    if (status == AgentStatus::Success) return QStringLiteral("Success");
+    if (status == AgentStatus::Failed) return QStringLiteral("Failed");
+    if (status == AgentStatus::Stopped) return QStringLiteral("Stopped");
+    if (status == AgentStatus::Cleared) return QStringLiteral("Cleared");
+    return status;
+}
+
+bool agentSessionActive(const AgentSession *s)
+{
+    return s && (s->status == AgentStatus::Running ||
+                 s->status == AgentStatus::Queued);
+}
+
+QColor agentStatusColor(const QString &status)
+{
+    if (status == AgentStatus::Success) return QColor("#3fb950");
+    if (status == AgentStatus::Failed) return QColor("#f85149");
+    if (status == AgentStatus::Running) return QColor(Theme::kRunning);
+    if (status == AgentStatus::Queued) return QColor("#d29922");
+    if (status == AgentStatus::Waiting) return QColor("#d29922");
+    if (status == AgentStatus::Stopped) return QColor("#8b949e");
+    if (status == AgentStatus::Cleared) return QColor("#8b949e");
+    return QColor("#8b949e");
+}
+
+QColor agentStatusIconColor(const AgentSession &s)
+{
+    if (s.merged) return QColor("#a371f7");
+    if (s.genieInFlight()) return QColor(Theme::kGenie);
+    if (s.status == AgentStatus::Running) return QColor(Theme::kRunning);
+    if (s.status == AgentStatus::Success) return QColor("#3fb950");
+    if (s.status == AgentStatus::Failed) return QColor("#f85149");
+    if (s.status == AgentStatus::Stopped) return QColor("#f85149");
+    if (s.status == AgentStatus::Waiting) return QColor("#e3742f");
+    if (s.status == AgentStatus::Queued) return QColor("#d29922");
+    return QColor("#8b949e"); // cleared / unknown
+}
+
+QIcon agentStatusOcticon(const AgentSession &s, int px)
+{
+    const QColor tint = agentStatusIconColor(s);
+    if (s.merged)
+        return themedOcticon("git-merge", tint, px);
+    if (s.genieInFlight())
+        return themedOcticon("sparkle", tint, px);
+    if (s.status == AgentStatus::Running)
+        return themedOcticon("sync", tint, px);
+    if (s.status == AgentStatus::Success)
+        return themedOcticon("check-circle", tint, px);
+    if (s.status == AgentStatus::Failed)
+        return themedOcticon("x", tint, px);
+    if (s.status == AgentStatus::Stopped)
+        return themedOcticon("stop", tint, px);
+    if (s.status == AgentStatus::Waiting)
+        return themedOcticon("hand", tint, px);
+    if (s.status == AgentStatus::Queued)
+        return themedOcticon("history", tint, px);
+    return themedOcticon("circle-slash", tint, px);
+}
+
+
+QString diffImageMimeForPath(const QString &path)
+{
+    const QString lower = path.toLower();
+    if (lower.endsWith(QStringLiteral(".png")))
+        return QStringLiteral("image/png");
+    if (lower.endsWith(QStringLiteral(".jpg")) || lower.endsWith(QStringLiteral(".jpeg")))
+        return QStringLiteral("image/jpeg");
+    if (lower.endsWith(QStringLiteral(".gif")))
+        return QStringLiteral("image/gif");
+    if (lower.endsWith(QStringLiteral(".webp")))
+        return QStringLiteral("image/webp");
+    if (lower.endsWith(QStringLiteral(".bmp")))
+        return QStringLiteral("image/bmp");
+    if (lower.endsWith(QStringLiteral(".ico")))
+        return QStringLiteral("image/x-icon");
+    return QString();
+}
+
+// A diff can carry an attacker-influenced image straight into an auto-rendered
+// view (an untrusted PR's asset, or a file an issue agent fetched), so it isn't
+// enough to trust the ".png" extension and hand the bytes to QTextDocument's
+// image loader. QImageReader::canRead() sniffs the actual content, and size()
+// reads just the format header for PNG/JPEG/GIF/BMP — no pixel decode yet — so
+// this rejects both non-images and "decompression bomb" images (a small file
+// whose declared dimensions would blow up to a huge pixel buffer once decoded)
+// without paying the decode cost ourselves.
+bool diffImageSafeToDecode(const QByteArray &bytes)
+{
+    QBuffer buf;
+    buf.setData(bytes);
+    buf.open(QIODevice::ReadOnly);
+    QImageReader reader(&buf);
+    if (!reader.canRead())
+        return false;
+    const QSize size = reader.size();
+    constexpr qint64 kMaxPixels = 40'000'000; // ~40MP, comfortably above any diff asset
+    return !size.isValid() ||
+           qint64(size.width()) * qint64(size.height()) <= kMaxPixels;
+}
+
+QString diffImageCellHtml(const QString &label, const QString &path,
+                          const QString &mime, const QByteArray &bytes)
+{
+    const QString caption =
+        QStringLiteral("<div class='imgcaption'>%1</div>").arg(label);
+    if (bytes.isEmpty())
+        return QStringLiteral("<td class='imgcell'><div class='imgempty'>Not "
+                              "present</div>%1</td>")
+            .arg(caption);
+    if (!diffImageSafeToDecode(bytes))
+        return QStringLiteral("<td class='imgcell'><div class='imgempty'>Preview "
+                              "skipped (unrecognized or oversized image)</div>%1"
+                              "</td>")
+            .arg(caption);
+    return QStringLiteral("<td class='imgcell'><img alt=\"%1: %2\" src=\"data:%3;"
+                          "base64,%4\">%5</td>")
+        .arg(label.toHtmlEscaped(), path.toHtmlEscaped(), mime,
+             QString::fromLatin1(bytes.toBase64()), caption);
+}
+
+QByteArray diffImageBlob(const QString &dir, const QString &ref, const QString &path)
+{
+    constexpr qint64 kBlobTtlMs = 30'000;
+    struct CachedBlob {
+        QByteArray bytes;
+        qint64 readAtMs = 0;
+    };
+    const QString key = dir + QLatin1Char('\n') + ref + QLatin1Char('\n') + path;
+    static QMutex mutex;
+    static QHash<QString, CachedBlob> cache;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    {
+        QMutexLocker locker(&mutex);
+        const auto hit = cache.constFind(key);
+        if (hit != cache.constEnd() && now - hit->readAtMs < kBlobTtlMs)
+            return hit->bytes;
+    }
+    QByteArray bytes;
+    if (!runGitCapture(dir, {QStringLiteral("show"), ref + QLatin1Char(':') + path},
+                       &bytes, nullptr))
+        bytes.clear();
+    QMutexLocker locker(&mutex);
+    if (cache.size() > 64)
+        cache.clear();
+    cache.insert(key, CachedBlob{bytes, now});
+    return bytes;
+}
+
+QString diffImagePreviewHtml(const QString &dir, const QString &base,
+                             const QString &head, const DiffFileEntry &f)
+{
+    constexpr int kMaxInlineImageBytes = 512 * 1024;
+    const QString &path = f.path;
+    const QString mime = diffImageMimeForPath(path);
+    if (mime.isEmpty())
+        return QString();
+
+    QByteArray oldBytes;
+    if (f.status != QLatin1String("added") && !dir.isEmpty()) {
+        const QString oldRef = base.isEmpty() ? QStringLiteral("HEAD") : base;
+        oldBytes = diffImageBlob(dir, oldRef, path);
+        if (oldBytes.size() > kMaxInlineImageBytes)
+            oldBytes.clear();
+    }
+    QByteArray newBytes;
+    if (f.status != QLatin1String("deleted")) {
+        if (head.isEmpty()) {
+            if (!dir.isEmpty()) {
+                QFile file(QDir(dir).filePath(path));
+                if (file.open(QIODevice::ReadOnly))
+                    newBytes = file.readAll();
+            }
+        } else {
+            newBytes = diffImageBlob(dir, head, path);
+        }
+        if (newBytes.size() > kMaxInlineImageBytes)
+            newBytes.clear();
+    }
+    if (oldBytes.isEmpty() && newBytes.isEmpty())
+        return QString();
+
+    return QStringLiteral("<table class='imagetable' width='100%' cellspacing='0' "
+                          "cellpadding='0'><tr>%1%2</tr></table>")
+        .arg(diffImageCellHtml(QStringLiteral("Before"), path, mime, oldBytes),
+             diffImageCellHtml(QStringLiteral("After"), path, mime, newBytes));
+}
+
+QString gutterCellHtml(const QString &cls, const QString &num, const QString &side,
+                       bool anchors, const QString &path)
+{
+    if (num.isEmpty())
+        return QStringLiteral("<td class='ln %1'></td>").arg(cls);
+    if (!anchors)
+        return QStringLiteral("<td class='ln %1'>%2</td>").arg(cls, num);
+    const QString enc = QString::fromLatin1(QUrl::toPercentEncoding(path));
+    return QStringLiteral("<td class='ln lnlink %1'>"
+                          "<a href='cmt:%2?s=%3&l=%4' title='Comment on this line'>"
+                          "%4</a></td>")
+        .arg(cls, enc, side, num);
+}
+
+QString lineNoteRows(const QHash<QString, QString> &lineNotes, const QString &path,
+                     const QString &oldNum, const QString &newNum, int columns)
+{
+    QString out;
+    const auto addNote = [&](const QString &key) {
+        const QString note = lineNotes.value(key);
+        if (!note.isEmpty())
+            out += QStringLiteral("<tr><td class='notecell' colspan='%1'>%2</td></tr>")
+                       .arg(columns)
+                       .arg(note);
+    };
+    const QString prefix = path + QLatin1Char('\x1f');
+    if (!oldNum.isEmpty())
+        addNote(prefix + QStringLiteral("old:") + oldNum);
+    if (!newNum.isEmpty())
+        addNote(prefix + QStringLiteral("new:") + newNum);
+    return out;
+}
+
+QString diffBinaryRowHtml(const DiffFileEntry &f, int columns)
+{
+    QString verb = QStringLiteral("changed");
+    if (f.status == QLatin1String("added"))
+        verb = QStringLiteral("added");
+    else if (f.status == QLatin1String("deleted"))
+        verb = QStringLiteral("removed");
+    else if (f.status == QLatin1String("renamed"))
+        verb = QStringLiteral("renamed");
+    return QString::fromUtf8("<tr><td class='code ctx' colspan='%1'>"
+                             "<i>Binary file %2 \xE2\x80\x94 content not shown</i>"
+                             "</td></tr>")
+        .arg(columns)
+        .arg(verb);
+}
+
+static void diffFileStatusLook(const DiffFileEntry &f, QString *icon, QColor *tint,
+                               QString *word)
+{
+    *icon = QStringLiteral("file-diff");
+    *tint = QColor(QStringLiteral("#d29922"));
+    *word = QStringLiteral("Modified");
+    if (f.status == QLatin1String("added")) {
+        *icon = QStringLiteral("diff");
+        *tint = QColor(QStringLiteral("#3fb950"));
+        *word = QStringLiteral("Added");
+    } else if (f.status == QLatin1String("deleted")) {
+        *icon = QStringLiteral("trash");
+        *tint = QColor(QStringLiteral("#f85149"));
+        *word = QStringLiteral("Removed");
+    } else if (f.status == QLatin1String("renamed")) {
+        *tint = QColor(QStringLiteral("#58a6ff"));
+        *word = QStringLiteral("Renamed");
+    }
+}
+
+QString diffFileLabelHtml(const DiffFileEntry &f, bool viewed)
+{
+    QString icon, word;
+    QColor tint;
+    diffFileStatusLook(f, &icon, &tint, &word);
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    const QString muted = QStringLiteral("#8b949e");
+    const QString fg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    const QString kindFg = tint.name();
+
+    QString pathHtml;
+    const int slash = f.path.lastIndexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        pathHtml = QStringLiteral("<span style='font-family:monospace;font-size:13px;"
+                                  "color:%1'>%2</span>"
+                                  "<span style='font-family:monospace;color:%3;"
+                                  "font-weight:700;font-size:14px'>%4</span>")
+                       .arg(muted, f.path.left(slash + 1).toHtmlEscaped(), fg,
+                            f.path.mid(slash + 1).toHtmlEscaped());
+    else
+        pathHtml = QStringLiteral("<span style='font-family:monospace;color:%1;"
+                                  "font-weight:700;font-size:14px'>%2</span>")
+                       .arg(fg, f.path.toHtmlEscaped());
+
+    const int total = f.adds + f.dels;
+    QString bar;
+    if (total > 0) {
+        int green = qRound(5.0 * f.adds / total);
+        if (f.adds > 0 && green == 0)
+            green = 1;
+        if (f.dels > 0 && green == 5)
+            green = 4;
+        const int red = 5 - green;
+        if (green > 0)
+            bar += QStringLiteral("<span style='font-family:monospace;"
+                                  "font-size:12px;color:#3fb950;"
+                                  "letter-spacing:-1px'>%1</span>")
+                       .arg(QString(green, QChar(0x2588)));
+        if (red > 0)
+            bar += QStringLiteral("<span style='font-family:monospace;"
+                                  "font-size:12px;color:#f85149;"
+                                  "letter-spacing:-1px'>%1</span>")
+                       .arg(QString(red, QChar(0x2588)));
+    }
+
+    const QString statHtml =
+        f.binary
+            ? QStringLiteral("<span style='font-family:monospace;color:%1;"
+                             "font-size:12px'> BIN</span>")
+                  .arg(muted)
+            : QString::fromUtf8(
+                  "<span style='font-family:monospace;font-size:12px'> "
+                  "<span style='font-family:monospace;font-size:12px;"
+                  "color:#3fb950;font-weight:700'>+%1</span> "
+                  "<span style='font-family:monospace;font-size:12px;"
+                  "color:#f85149;font-weight:700'>\xE2\x88\x92%2</span> "
+                  "%3</span>")
+                  .arg(QString::number(f.adds), QString::number(f.dels), bar);
+
+    QString metaHtml =
+        QStringLiteral("<span style='font-family:monospace;color:%1;"
+                       "font-weight:700;letter-spacing:1px;font-size:11px'>"
+                       "%2</span>")
+            .arg(kindFg, word.toUpper());
+    if (!f.binary)
+        metaHtml += QString::fromUtf8("<span style='font-family:monospace;"
+                                      "color:%1;font-size:11px'>"
+                                      " \xC2\xB7 %2 changed line%3</span>")
+                        .arg(muted, QString::number(total),
+                             total == 1 ? QString() : QStringLiteral("s"));
+    else
+        metaHtml += QString::fromUtf8("<span style='font-family:monospace;"
+                                      "color:%1;font-size:11px'>"
+                                      " \xC2\xB7 binary</span>")
+                        .arg(muted);
+    if (viewed)
+        metaHtml += QString::fromUtf8("<span style='font-family:monospace;"
+                                      "color:%1;font-size:11px'>"
+                                      " \xC2\xB7 collapsed</span>")
+                        .arg(muted);
+
+    return QStringLiteral("<span style='font-family:monospace;font-size:13px'>"
+                          "%1&nbsp;&nbsp;%2%3&nbsp;&nbsp;%4</span>")
+        .arg(octiconMarkup(icon, 16, tint), pathHtml, statHtml, metaHtml);
+}
+
+static QString diffReadMeterHtml(double progress, bool viewed)
+{
+    const double value = viewed ? 1.0 : qBound(0.0, progress, 1.0);
+    const QColor color = value >= 0.999 ? QColor(0x3f, 0xb9, 0x50)
+                                        : QColor(0x58, 0xa6, 0xff);
+    static QMutex cacheGuard;
+    static QHash<int, QString> cache;
+    const int percent = qBound(0, qRound(value * 100.0), 100);
+    QMutexLocker locked(&cacheGuard);
+    QString img = cache.value(percent);
+    if (img.isEmpty()) {
+        const qreal dpr = iconDevicePixelRatio();
+        QImage chart(qRound(16 * dpr), qRound(16 * dpr),
+                     QImage::Format_ARGB32_Premultiplied);
+        chart.setDevicePixelRatio(dpr);
+        chart.fill(Qt::transparent);
+        {
+            QPainter painter(&chart);
+            paintPacmanProgress(painter, QRectF(0, 0, 16, 16), value, color);
+        }
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        chart.save(&buffer, "PNG");
+        img = QStringLiteral("<img src='data:image/png;base64,%1' width='16' "
+                             "height='16'>")
+                  .arg(QString::fromLatin1(png.toBase64()));
+        cache.insert(percent, img);
+    }
+    return QStringLiteral("%1&nbsp;<span style='font-family:monospace;font-size:12px;"
+                          "color:#8b949e'>%2%&nbsp;read</span>")
+        .arg(img, QString::number(percent));
+}
+
+static QString diffViewedPillHtml(const QString &path, bool viewed)
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    const QString fg = viewed ? QStringLiteral("#3fb950")
+                              : (dark ? QStringLiteral("#e6edf3")
+                                      : QStringLiteral("#1f2328"));
+    const QString pillBg = dark ? QStringLiteral("#21262d") : QStringLiteral("#eaeef2");
+    return QStringLiteral("<a href='viewed:%1' title='%5' style='color:%2;"
+                          "text-decoration:none;font-family:monospace;font-size:13px;"
+                          "font-weight:700;background:%3'>"
+                          "&nbsp;<span style='font-family:monospace;font-size:24px'>%4</span>"
+                          " Viewed&nbsp;"
+                          "</a>")
+        .arg(QString::fromLatin1(QUrl::toPercentEncoding(path)), fg, pillBg,
+             viewed ? QString::fromUtf8("\xE2\x98\x91")
+                    : QString::fromUtf8("\xE2\x98\x90"),
+             viewed ? QStringLiteral("Reopen this file")
+                    : QStringLiteral("Collapse this file and mark it viewed"));
+}
+
+static QString diffFileCommentPillHtml(const QString &path)
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    return QStringLiteral("<a href='filecomment:%1' title='Comment on this file' "
+                          "style='color:%2;text-decoration:none;"
+                          "font-family:monospace;font-size:20px;"
+                          "background:%3'>&nbsp;%4&nbsp;</a>")
+        .arg(QString::fromLatin1(QUrl::toPercentEncoding(path)),
+             dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328"),
+             dark ? QStringLiteral("#21262d") : QStringLiteral("#eaeef2"),
+             QString::fromUtf8("\xF0\x9F\x92\xAC"));
+}
+
+QString diffRowControlsHtml(const QString &path, double progress, bool viewed,
+                            bool comments)
+{
+    const QString gap = QStringLiteral("&nbsp;&nbsp;");
+    return QStringLiteral("<span style='font-family:monospace;font-size:13px'>"
+                          "%1%2%3%4</span>")
+        .arg(comments ? diffFileCommentPillHtml(path) + gap : QString(),
+             diffReadMeterHtml(progress, viewed), gap,
+             diffViewedPillHtml(path, viewed));
+}
+
+QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
+{
+    return QString::fromUtf8(
+               "<a name=\"%1\"></a><div class='fileblock%4'>"
+               "<table class='fileheader' width='100%' cellspacing='0' "
+               "cellpadding='0'><tr>"
+               "<td class='fpathcell' valign='middle' "
+               "style='padding:9px 4px 9px 12px'>%2</td>"
+               "<td class='fctlcell' align='right' valign='middle' "
+               "style='padding:9px 12px 9px 4px'>%3</td>"
+               "</tr></table>")
+        .arg(f.anchor, diffFileLabelHtml(f, viewed),
+             diffRowControlsHtml(f.path, 0.0, viewed, anchors),
+             viewed ? QStringLiteral(" viewed") : QString());
+}
+
+QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
+                              const QString &dir, const QString &base,
+                              const QString &head,
+                              const QString &anchorFile = QString(),
+                              const QHash<QString, QString> &lineNotes = {},
+                              const QSet<QString> &viewedFiles = {})
+{
+    static const QRegularExpression hunkRe(
+        QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
+    const bool anchors = !anchorFile.isEmpty();
+    QString html;
+    html.reserve(patch.size() * 3);
+    QString fileBody;
+    const QStringList lines = patch.split(QLatin1Char('\n'));
+    int oldNo = 0, newNo = 0, fileIdx = -1;
+    bool inFile = false;
+    bool inBinary = false;
+    const auto curPath = [&] {
+        return fileIdx >= 0 ? files[fileIdx].path : QString();
+    };
+
+    auto emitFileHeader = [&](int idx) {
+        const DiffFileEntry &f = files[idx];
+        const bool viewed = viewedFiles.contains(f.path);
+        html += diffFileHeaderHtml(f, viewed, anchors);
+        if (!viewed) {
+            html += diffImagePreviewHtml(dir, base, head, f);
+            html += QStringLiteral(
+                "<table class='difftable' width='100%' cellspacing='0' "
+                "cellpadding='0'>");
+        }
+    };
+    auto closeFile = [&] {
+        if (inFile) {
+            const DiffFileEntry &f = files[fileIdx];
+            const bool viewed = viewedFiles.contains(f.path);
+            emitFileHeader(fileIdx);
+            if (viewed) {
+                html += QStringLiteral("</div>");
+            } else {
+                html += fileBody;
+                html += QStringLiteral("</table></div>");
+            }
+            fileBody.clear();
+            inFile = false;
+        }
+    };
+
+    for (const QString &line : lines) {
+        if (line.startsWith(QLatin1String("diff --git "))) {
+            closeFile();
+            QString path = line;
+            const int bpos = line.indexOf(QLatin1String(" b/"));
+            if (bpos >= 0)
+                path = line.mid(bpos + 3);
+            DiffFileEntry f;
+            f.path = path;
+            f.anchor = QStringLiteral("file-%1").arg(files.size());
+            files.append(f);
+            fileIdx = files.size() - 1;
+            inFile = true;
+            inBinary = false;
+            continue;
+        }
+        if (!inFile)
+            continue;
+        if (fileIdx >= 0) {
+            if (line.startsWith(QLatin1String("new file")))
+                files[fileIdx].status = QStringLiteral("added");
+            else if (line.startsWith(QLatin1String("deleted file")))
+                files[fileIdx].status = QStringLiteral("deleted");
+            else if (line.startsWith(QLatin1String("rename ")) ||
+                     line.startsWith(QLatin1String("similarity ")))
+                files[fileIdx].status = QStringLiteral("renamed");
+        }
+        if (line.startsWith(QLatin1String("GIT binary patch")) ||
+            line.startsWith(QLatin1String("Binary files "))) {
+            if (fileIdx >= 0 && !files[fileIdx].binary) {
+                files[fileIdx].binary = true;
+                const bool oneSided =
+                    files[fileIdx].status == QLatin1String("added") ||
+                    files[fileIdx].status == QLatin1String("deleted");
+                fileBody += diffBinaryRowHtml(files[fileIdx], oneSided ? 2 : 3);
+            }
+            inBinary = true;
+            continue;
+        }
+        if (inBinary)
+            continue;
+        if (line.startsWith(QLatin1String("index ")) ||
+            line.startsWith(QLatin1String("--- ")) ||
+            line.startsWith(QLatin1String("+++ ")) ||
+            line.startsWith(QLatin1String("new file")) ||
+            line.startsWith(QLatin1String("deleted file")) ||
+            line.startsWith(QLatin1String("similarity ")) ||
+            line.startsWith(QLatin1String("rename ")) ||
+            line.startsWith(QLatin1String("old mode")) ||
+            line.startsWith(QLatin1String("new mode")))
+            continue;
+        const bool addOnly =
+            fileIdx >= 0 && files[fileIdx].status == QLatin1String("added");
+        const bool delOnly =
+            fileIdx >= 0 && files[fileIdx].status == QLatin1String("deleted");
+        const bool oneSided = addOnly || delOnly;
+        if (line.startsWith(QLatin1String("@@"))) {
+            const QRegularExpressionMatch m = hunkRe.match(line);
+            if (m.hasMatch()) {
+                oldNo = m.captured(1).toInt();
+                newNo = m.captured(2).toInt();
+            }
+            fileBody += QStringLiteral("<tr>%1<td class='code hunk'>%2</td></tr>")
+                            .arg(oneSided
+                                     ? QStringLiteral("<td class='ln hunk'></td>")
+                                     : QStringLiteral("<td class='ln hunk'></td>"
+                                                      "<td class='ln hunk'></td>"),
+                                 line.toHtmlEscaped());
+            continue;
+        }
+
+        const QChar c0 = line.isEmpty() ? QLatin1Char(' ') : line.at(0);
+        QString text = line.isEmpty() ? QString() : line.mid(1);
+        QString cls, oldCell, newCell;
+        if (c0 == QLatin1Char('+')) {
+            cls = QStringLiteral("add");
+            newCell = QString::number(newNo++);
+            if (fileIdx >= 0)
+                ++files[fileIdx].adds;
+        } else if (c0 == QLatin1Char('-')) {
+            cls = QStringLiteral("del");
+            oldCell = QString::number(oldNo++);
+            if (fileIdx >= 0)
+                ++files[fileIdx].dels;
+        } else if (c0 == QLatin1Char('\\')) { // "\ No newline at end of file"
+            cls = QStringLiteral("ctx");
+            text = line;
+        } else {
+            cls = QStringLiteral("ctx");
+            oldCell = QString::number(oldNo++);
+            newCell = QString::number(newNo++);
+        }
+        QString gutters;
+        if (addOnly)
+            gutters = gutterCellHtml(cls, newCell, QStringLiteral("new"), anchors,
+                                     curPath());
+        else if (delOnly)
+            gutters = gutterCellHtml(cls, oldCell, QStringLiteral("old"), anchors,
+                                     curPath());
+        else
+            gutters =
+                gutterCellHtml(cls, oldCell, QStringLiteral("old"), anchors,
+                               curPath()) +
+                gutterCellHtml(cls, newCell, QStringLiteral("new"), anchors,
+                               curPath());
+        fileBody += QStringLiteral(
+                        "<tr>%1<td class='code %2' width='99%'>%3</td></tr>")
+                        .arg(gutters, cls,
+                             text.isEmpty() ? QStringLiteral("&nbsp;")
+                                            : text.toHtmlEscaped());
+        if (anchors)
+            fileBody += lineNoteRows(lineNotes, curPath(), oldCell, newCell,
+                                     oneSided ? 2 : 3);
+    }
+    closeFile();
+    return html;
+}
+
+QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
+                            const QString &dir, const QString &base,
+                            const QString &head,
+                            const QString &anchorFile = QString(),
+                            const QHash<QString, QString> &lineNotes = {},
+                            const QSet<QString> &viewedFiles = {})
+{
+    static const QRegularExpression hunkRe(
+        QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
+    const bool anchors = !anchorFile.isEmpty();
+    QString html;
+    html.reserve(patch.size() * 3);
+    QString fileBody;
+    const QStringList lines = patch.split(QLatin1Char('\n'));
+    int oldNo = 0, newNo = 0, fileIdx = -1;
+    bool inFile = false;
+    bool inBinary = false; // see renderUnifiedDiffHtml
+
+    const auto curPath = [&] {
+        return fileIdx >= 0 ? files[fileIdx].path : QString();
+    };
+    const auto gut = [&](const QString &extraCls, const QString &num,
+                         const QString &side) {
+        if (num.isEmpty())
+            return QStringLiteral("<td class='ln %1'></td>").arg(extraCls);
+        if (!anchors)
+            return QStringLiteral("<td class='ln %1'>%2</td>").arg(extraCls, num);
+        const QString enc = QString::fromLatin1(QUrl::toPercentEncoding(curPath()));
+        return QStringLiteral("<td class='ln lnlink %1'>"
+                              "<a href='cmt:%2?s=%3&l=%4' title='Comment on this line'>"
+                              "%4</a></td>")
+            .arg(extraCls, enc, side, num);
+    };
+
+    QStringList pendingDel, pendingAdd;
+    const auto emitText = [](const QString &t) {
+        return t.isEmpty() ? QStringLiteral("&nbsp;") : t.toHtmlEscaped();
+    };
+    const auto oneSidedKind = [&]() -> int {
+        if (fileIdx < 0)
+            return 0;
+        if (files[fileIdx].status == QLatin1String("added"))
+            return 1; // add-only
+        if (files[fileIdx].status == QLatin1String("deleted"))
+            return -1; // del-only
+        return 0;
+    };
+    const auto flushPairs = [&] {
+        if (const int kind = oneSidedKind()) {
+            const bool addOnly = kind > 0;
+            const QStringList &buf = addOnly ? pendingAdd : pendingDel;
+            const QString cls =
+                addOnly ? QStringLiteral("add") : QStringLiteral("del");
+            const QString side =
+                addOnly ? QStringLiteral("new") : QStringLiteral("old");
+            for (const QString &t : buf) {
+                const QString ln = QString::number(addOnly ? newNo++ : oldNo++);
+                fileBody += QStringLiteral(
+                                 "<tr>%1<td class='code %2' width='99%'>%3</td></tr>")
+                                 .arg(gut(cls, ln, side), cls, emitText(t));
+                if (anchors)
+                    fileBody += lineNoteRows(lineNotes, curPath(),
+                                             addOnly ? QString() : ln,
+                                             addOnly ? ln : QString(), 2);
+            }
+            pendingDel.clear();
+            pendingAdd.clear();
+            return;
+        }
+        const int n = qMax(pendingDel.size(), pendingAdd.size());
+        for (int i = 0; i < n; ++i) {
+            const bool hasDel = i < pendingDel.size();
+            const bool hasAdd = i < pendingAdd.size();
+            const QString oldLn = hasDel ? QString::number(oldNo++) : QString();
+            const QString newLn = hasAdd ? QString::number(newNo++) : QString();
+            const QString delCls = hasDel ? QStringLiteral("del") : QString();
+            const QString addCls = hasAdd ? QStringLiteral("add") : QString();
+            fileBody += QStringLiteral("<tr>%1<td class='code ocode %2' width='49%'>%3</td>"
+                                       "%4<td class='code ncode %5' width='49%'>%6</td></tr>")
+                            .arg(gut(delCls, oldLn, QStringLiteral("old")), delCls,
+                                 hasDel ? emitText(pendingDel.at(i)) : QStringLiteral("&nbsp;"),
+                                 gut(QStringLiteral("nln ") + addCls, newLn,
+                                     QStringLiteral("new")),
+                                 addCls,
+                                 hasAdd ? emitText(pendingAdd.at(i)) : QStringLiteral("&nbsp;"));
+            if (anchors)
+                fileBody += lineNoteRows(lineNotes, curPath(), oldLn, newLn, 4);
+        }
+        pendingDel.clear();
+        pendingAdd.clear();
+    };
+
+    auto emitFileHeader = [&](int idx) {
+        const DiffFileEntry &f = files[idx];
+        const bool viewed = viewedFiles.contains(f.path);
+        html += diffFileHeaderHtml(f, viewed, anchors);
+        if (!viewed) {
+            html += diffImagePreviewHtml(dir, base, head, f);
+            html += QStringLiteral(
+                "<table class='difftable' width='100%' cellspacing='0' "
+                "cellpadding='0'>");
+        }
+    };
+    auto closeFile = [&] {
+        if (inFile) {
+            const bool viewed = viewedFiles.contains(files[fileIdx].path);
+            flushPairs();
+            emitFileHeader(fileIdx);
+            if (viewed) {
+                html += QStringLiteral("</div>");
+            } else {
+                html += fileBody;
+                html += QStringLiteral("</table></div>");
+            }
+            fileBody.clear();
+            inFile = false;
+        }
+    };
+
+    for (const QString &line : lines) {
+        if (line.startsWith(QLatin1String("diff --git "))) {
+            closeFile();
+            QString path = line;
+            const int bpos = line.indexOf(QLatin1String(" b/"));
+            if (bpos >= 0)
+                path = line.mid(bpos + 3);
+            DiffFileEntry f;
+            f.path = path;
+            f.anchor = QStringLiteral("file-%1").arg(files.size());
+            files.append(f);
+            fileIdx = files.size() - 1;
+            inFile = true;
+            inBinary = false;
+            continue;
+        }
+        if (!inFile)
+            continue;
+        if (fileIdx >= 0) {
+            if (line.startsWith(QLatin1String("new file")))
+                files[fileIdx].status = QStringLiteral("added");
+            else if (line.startsWith(QLatin1String("deleted file")))
+                files[fileIdx].status = QStringLiteral("deleted");
+            else if (line.startsWith(QLatin1String("rename ")) ||
+                     line.startsWith(QLatin1String("similarity ")))
+                files[fileIdx].status = QStringLiteral("renamed");
+        }
+        if (line.startsWith(QLatin1String("GIT binary patch")) ||
+            line.startsWith(QLatin1String("Binary files "))) {
+            if (fileIdx >= 0 && !files[fileIdx].binary) {
+                files[fileIdx].binary = true;
+                fileBody += diffBinaryRowHtml(files[fileIdx],
+                                              oneSidedKind() ? 2 : 4);
+            }
+            inBinary = true;
+            continue;
+        }
+        if (inBinary)
+            continue;
+        if (line.startsWith(QLatin1String("index ")) ||
+            line.startsWith(QLatin1String("--- ")) ||
+            line.startsWith(QLatin1String("+++ ")) ||
+            line.startsWith(QLatin1String("new file")) ||
+            line.startsWith(QLatin1String("deleted file")) ||
+            line.startsWith(QLatin1String("similarity ")) ||
+            line.startsWith(QLatin1String("rename ")) ||
+            line.startsWith(QLatin1String("old mode")) ||
+            line.startsWith(QLatin1String("new mode")))
+            continue;
+        if (line.startsWith(QLatin1String("@@"))) {
+            flushPairs();
+            const QRegularExpressionMatch m = hunkRe.match(line);
+            if (m.hasMatch()) {
+                oldNo = m.captured(1).toInt();
+                newNo = m.captured(2).toInt();
+            }
+            fileBody += oneSidedKind()
+                            ? QStringLiteral("<tr><td class='ln hunk'></td>"
+                                             "<td class='code hunk' width='99%'>"
+                                             "%1</td></tr>")
+                                  .arg(line.toHtmlEscaped())
+                            : QStringLiteral("<tr><td class='code hunk' "
+                                             "colspan='4'>%1</td></tr>")
+                                  .arg(line.toHtmlEscaped());
+            continue;
+        }
+
+        const QChar c0 = line.isEmpty() ? QLatin1Char(' ') : line.at(0);
+        const QString text = line.isEmpty() ? QString() : line.mid(1);
+        if (c0 == QLatin1Char('+')) {
+            pendingAdd << text;
+            if (fileIdx >= 0)
+                ++files[fileIdx].adds;
+        } else if (c0 == QLatin1Char('-')) {
+            pendingDel << text;
+            if (fileIdx >= 0)
+                ++files[fileIdx].dels;
+        } else if (c0 == QLatin1Char('\\')) { // "\ No newline at end of file"
+            flushPairs();
+            fileBody += oneSidedKind()
+                            ? QStringLiteral("<tr><td class='ln'></td>"
+                                             "<td class='code' width='99%'>%1</td>"
+                                             "</tr>")
+                                  .arg(line.toHtmlEscaped())
+                            : QStringLiteral(
+                                  "<tr><td class='ln'></td>"
+                                  "<td class='code ocode' width='49%'>%1</td>"
+                                  "<td class='ln nln'></td>"
+                                  "<td class='code ncode' width='49%'>%1</td></tr>")
+                                  .arg(line.toHtmlEscaped());
+        } else if (const int kind = oneSidedKind()) {
+            flushPairs();
+            const bool addOnly = kind > 0;
+            const QString ln = QString::number(addOnly ? newNo++ : oldNo++);
+            if (addOnly)
+                ++oldNo;
+            else
+                ++newNo;
+            fileBody += QStringLiteral(
+                            "<tr>%1<td class='code' width='99%'>%2</td></tr>")
+                            .arg(gut(QString(), ln,
+                                     addOnly ? QStringLiteral("new")
+                                             : QStringLiteral("old")),
+                                 emitText(text));
+        } else {
+            flushPairs();
+            const QString ln1 = QString::number(oldNo++);
+            const QString ln2 = QString::number(newNo++);
+            fileBody += QStringLiteral(
+                            "<tr>%1<td class='code ocode' width='49%'>%3</td>"
+                            "%2<td class='code ncode' width='49%'>%3</td></tr>")
+                            .arg(gut(QString(), ln1, QStringLiteral("old")),
+                                 gut(QStringLiteral("nln"), ln2, QStringLiteral("new")),
+                                 emitText(text));
+            if (anchors)
+                fileBody += lineNoteRows(lineNotes, curPath(), ln1, ln2, 4);
+        }
+    }
+    closeFile();
+    return html;
+}
+
+bool diffSplitPref()
+{
+    return QSettings().value(QStringLiteral("view/diffSplit"), true).toBool();
+}
+void setDiffSplitPref(bool split)
+{
+    QSettings().setValue(QStringLiteral("view/diffSplit"), split);
+}
+
+bool autoMarkViewedOnScrollPref()
+{
+    return QSettings()
+        .value(QStringLiteral("view/autoMarkViewedOnScroll"), false)
+        .toBool();
+}
+void setAutoMarkViewedOnScrollPref(bool on)
+{
+    QSettings().setValue(QStringLiteral("view/autoMarkViewedOnScroll"), on);
+}
+
+void applyDiffSearchHighlights(QTextBrowser *diff,
+                               const QList<QTextCursor> &matches, int activeIndex,
+                               QLabel *countLabel, bool termEmpty)
+{
+    QList<QTextEdit::ExtraSelection> sels;
+    QTextCharFormat matchFmt;
+    matchFmt.setBackground(QColor("#e3b341"));
+    matchFmt.setForeground(QColor("#0d1117"));
+    QTextCharFormat currentFmt;
+    currentFmt.setBackground(QColor("#f78166"));
+    currentFmt.setForeground(QColor("#0d1117"));
+    for (int i = 0; i < matches.size(); ++i) {
+        QTextEdit::ExtraSelection sel;
+        sel.cursor = matches.at(i);
+        sel.format = (i == activeIndex) ? currentFmt : matchFmt;
+        sels.append(sel);
+    }
+    diff->setExtraSelections(sels);
+
+    if (!countLabel)
+        return;
+    countLabel->setText(termEmpty
+                            ? QString()
+                            : matches.isEmpty()
+                                  ? QStringLiteral("No results")
+                                  : QStringLiteral("%1/%2")
+                                        .arg(activeIndex + 1)
+                                        .arg(matches.size()));
+}
+
+constexpr int kDiffEndRunwayLines = 14;
+
+QString renderDiffHtmlSplit(bool split, const QString &patch,
+                            QList<DiffFileEntry> &files, const QString &dir,
+                            const QString &base, const QString &head,
+                            const QString &anchorFile,
+                            const QHash<QString, QString> &lineNotes,
+                            const QSet<QString> &viewedFiles)
+{
+    QString html =
+        split ? renderSplitDiffHtml(patch, files, dir, base, head,
+                                    anchorFile, lineNotes, viewedFiles)
+              : renderUnifiedDiffHtml(patch, files, dir, base, head,
+                                      anchorFile, lineNotes, viewedFiles);
+    if (html.isEmpty())
+        return html;
+    QString runway;
+    for (int i = 0; i < kDiffEndRunwayLines; ++i)
+        runway += QStringLiteral("&nbsp;<br>");
+    html += QStringLiteral("<div class='diffendspacer'>%1</div>"
+                           "<div class='diffend'>END OF DIFF</div>")
+                .arg(runway);
+    return html;
+}
+
+QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
+                       const QString &dir, const QString &base, const QString &head,
+                       const QString &anchorFile,
+                       const QHash<QString, QString> &lineNotes,
+                       const QSet<QString> &viewedFiles)
+{
+    return renderDiffHtmlSplit(diffSplitPref(), patch, files, dir, base, head,
+                               anchorFile, lineNotes, viewedFiles);
+}
+
+QString diffStyleSheet(int fontPt)
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    const QString addBg = dark ? "#12261c" : "#e6ffec";
+    const QString delBg = dark ? "#2d1416" : "#ffebe9";
+    const QString hunkBg = dark ? "#0d1d33" : "#ddf4ff";
+    const QString hunkFg = dark ? "#58a6ff" : "#0969da";
+    const QString lnFg = "#8b949e";
+    const QString headBg = dark ? "#161b22" : "#f6f8fa";
+    const QString border = dark ? "#30363d" : "#d0d7de";
+    const QString gutterBg = dark ? "#0d1117" : "#f6f8fa";
+    const QString fg = dark ? "#e6edf3" : "#1f2328";
+    return QStringLiteral(
+               ".fileblock { margin:0 0 14px 0; }"
+               ".fileheader { background:%1; font-family:monospace; "
+               "font-size:13px; }"
+               ".fileheader td { background:%1; }"
+               "td.fpathcell { white-space:nowrap; }"
+               "td.fctlcell { white-space:nowrap; }"
+               ".difftable { font-family:monospace; font-size:%10px; width:100%; "
+               "border-left:1px solid %7; border-right:1px solid %7; "
+               "border-bottom:1px solid %7; }"
+               ".imagetable { border-left:1px solid %7; border-right:1px solid %7; }"
+               ".imgcell { width:50%; padding:10px; text-align:center; }"
+               ".imgcell img { max-width:100%; max-height:360px; }"
+               ".imgempty { color:%2; padding:60px 0; border:1px solid %7; }"
+               ".imgcaption { color:%2; font-size:12px; margin-top:6px; }"
+               "td.ln { color:%2; text-align:right; padding:0 10px; width:1%; "
+               "font-size:%10px; white-space:nowrap; background:%9; "
+               "border-right:1px solid %7; }"
+               "td.code { white-space:pre-wrap; padding:0 10px; color:%8; "
+               "font-size:%10px; }"
+               "td.ocode, td.ncode { width:49%; }"
+               ".add { background:%3; } .del { background:%4; }"
+               ".hunk { color:%5; background:%6; }"
+               "td.ln.hunk { background:%6; border-right:1px solid %7; }"
+               "td.nln { border-left:1px solid %7; }"
+               "td.lnlink a { color:%2; text-decoration:none; }"
+               "td.notecell { padding:8px 12px; background:%1; "
+               "border:1px solid %7; color:%8; white-space:normal; }"
+               ".reviewthread { font-family:sans-serif; }"
+               ".threadhead { color:%8; font-size:12px; margin-bottom:8px; }"
+               ".threadstate { font-size:10px; font-weight:700; padding:1px 6px; "
+               "border:1px solid %7; }"
+               ".threadstate.resolved { color:#3fb950; }"
+               ".threadstate.unresolved { color:#d29922; }"
+               ".threadevent { margin-top:8px; padding-top:8px; "
+               "border-top:1px solid %7; }"
+               ".threadbody { color:%8; }"
+               ".threadsystem { color:%2; font-size:11px; margin-top:6px; }"
+               ".threadactions { margin-top:8px; }"
+               ".threadactions a { color:#58a6ff; text-decoration:none; }"
+               ".diffcontinuation { color:%2; padding:4px 12px; "
+               "border-left:1px solid %7; border-right:1px solid %7; "
+               "background:%1; font-size:11px; font-style:italic; }"
+               ".suggestion { background:%9; border:1px solid %7; color:%8; "
+               "padding:8px; margin-top:6px; white-space:pre; }"
+               ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }"
+               ".diffendspacer { background:%9; }"
+               ".diffend { background:#000000; color:#ffffff; "
+               "font-family:sans-serif; font-size:11px; font-weight:700; "
+               "letter-spacing:2px; text-align:center; padding:10px; }")
+        .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg, border, fg, gutterBg)
+        .arg(qBound(8, fontPt, 28));
+}
+
+
+} // namespace forkmesh::ui

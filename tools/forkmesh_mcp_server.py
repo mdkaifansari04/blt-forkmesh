@@ -29,9 +29,9 @@ no privileged side door. Issues are signed-event JSON records at
 .forkmesh/issues/{open,closed}/<n>/issue-<n>.json, projects at
 .forkmesh/projects/<n>/project-<n>.json, milestone definitions at
 .forkmesh/issues/milestones.json. The signing is reproduced byte-for-byte from:
-    qt_client/src/IssueStore.cpp::canonicalString / contentForSigning
-    qt_client/src/ProjectStore.cpp::canonicalString / contentForSigning
-    qt_client/src/PullStore.cpp    (see tools/branch_pr_review.py)
+    desktop/src/IssueStore.cpp::canonicalString / contentForSigning
+    desktop/src/ProjectStore.cpp::canonicalString / contentForSigning
+    desktop/src/PullStore.cpp    (see tools/branch_pr_review.py)
 
 Identity key (Ed25519 PEM):
     $XDG_DATA_HOME/ForkMesh/ForkMesh/identity/ed25519.pem
@@ -87,7 +87,6 @@ def log(msg):
     sys.stderr.flush()
 
 
-# ----------------------------------------------------------------- git helpers
 def git(repo, *args, text=True):
     return subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True,
@@ -109,12 +108,10 @@ def is_git_repo(path):
     return (p / ".git").exists()
 
 
-# ----------------------------------------------------------------- repo lookup
 def default_repo():
     env = os.environ.get("FORKMESH_REPO")
     if env:
         return Path(env).resolve()
-    # The git repo this script lives in (tools/ is at the repo root).
     return Path(__file__).resolve().parent.parent
 
 
@@ -144,7 +141,6 @@ def resolve_repo(name):
     raise ValueError(f"unknown repo: {name!r}")
 
 
-# ------------------------------------------------------------------- identity
 _key = None
 _pub = None
 
@@ -165,7 +161,6 @@ def b64url(data):
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
 
-# ------------------------------------------------------------------ connector
 def connector_record():
     """The minted connector, or {} when this node has not published one."""
     try:
@@ -264,8 +259,7 @@ def read_frontmatter(path):
     return fields, m.group(2).lstrip("\n")
 
 
-# -------------------------------------------------------- issue signing/writing
-# Native signed-event tracker records, mirroring qt_client/src/IssueStore.cpp
+# Native signed-event tracker records, mirroring desktop/src/IssueStore.cpp
 # byte-for-byte (contentForSigning / canonicalString; the relay Worker's
 # issue_event_content is the same spine).
 ISSUES_REL = ".forkmesh/issues"
@@ -507,7 +501,6 @@ def search_issues(repo, query, status=None):
     return out
 
 
-# ------------------------------------------------------- milestone definitions
 # .forkmesh/issues/milestones.json — a plain list of {title, due, status,
 # description}, the same file IssueStore::saveMilestones writes.
 def milestones_path(repo):
@@ -581,8 +574,7 @@ def update_milestone(repo, title, due=None, status=None, description=None):
     save_milestones(repo, milestones)
 
 
-# ------------------------------------------------------ project signing/writing
-# Mirrors qt_client/src/ProjectStore.cpp byte-for-byte.
+# Mirrors desktop/src/ProjectStore.cpp byte-for-byte.
 PROJECTS_REL = ".forkmesh/projects"
 
 
@@ -775,8 +767,7 @@ def update_project(repo, number, start_date=None, end_date=None,
                               {"type": "issues", "issues": linked}, "issues")
 
 
-# ---------------------------------------------------------- pull signing/writing
-# Mirrors qt_client/src/PullStore.cpp (see tools/branch_pr_review.py).
+# Mirrors desktop/src/PullStore.cpp (see tools/branch_pr_review.py).
 def sign_pull(title, base, head, patch_bytes, commits_bytes, ts, author):
     content = (title.encode() + b"\x00" + base.encode() + b"\x00" + head.encode()
                + b"\x00" + patch_bytes + b"\x00" + commits_bytes)
@@ -787,7 +778,7 @@ def sign_pull(title, base, head, patch_bytes, commits_bytes, ts, author):
 
 
 def pulls_dir(repo):
-    return Path(repo) / "pulls"
+    return Path(repo) / ".forkmesh" / "pulls"
 
 
 def next_pull_number(repo):
@@ -848,7 +839,7 @@ def open_pr_from_branch(repo, branch, title, description, base):
         f"sig: {sig}", "---", "",
     ])
     (pdir / "pull.md").write_text(front + "\n" + (description or "") + "\n")
-    _commit(repo, f"pulls/{number}", f"pull #{number}: open")
+    _commit(repo, f".forkmesh/pulls/{number}", f"pull #{number}: open")
     return {"number": number, "existing": False}
 
 
@@ -880,7 +871,6 @@ def _commit(repo, pathspec, message):
             raise ValueError(f"git commit failed: {err}")
 
 
-# ----------------------------------------------------------------------- tools
 def tool_whoami(_args):
     """Who the agent is acting as, and what it is allowed to do.
 
@@ -1200,7 +1190,6 @@ TOOLS = [
 TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
 
 
-# ------------------------------------------------------------- JSON-RPC / stdio
 def tools_list_payload():
     return {"tools": [{k: t[k] for k in ("name", "description", "inputSchema")}
                       for t in TOOLS]}

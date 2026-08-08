@@ -1,19 +1,10 @@
 #!/usr/bin/env bash
-# Ensure a Flutter + Android SDK + JDK toolchain is available on this host,
-# installing whatever piece is missing under $HOME/.forkmesh/toolchain (no
-# root required). Meant to be SOURCED, not executed, from
-# .forkmesh/build-android.yml so the Android build doesn't depend on a CI
-# node having Flutter pre-installed — mirrors how cloudflare_worker/
-# pywrangler.sh self-installs its own deploy toolchain (workers-py, wrangler)
-# instead of assuming the host has it, so deploys "do not depend on global
-# tools". JDK/Android-SDK bootstrap logic is duplicated from
-# .forkmesh/shortcuts/launch-flutter-android.sh (that script also creates an
-# emulator/AVD for interactive `flutter run`, which a headless build doesn't
-# need).
+# Provide a rootless Flutter, Android SDK, and JDK toolchain under
+# $HOME/.forkmesh/toolchain. Source this file from .forkmesh/build-android.yml;
+# the interactive shortcut also creates an emulator that CI does not need.
 #
-# Contract for callers. The caller normally runs under `set -e`, so this script
-# never calls exit and never returns non-zero for a toolchain it cannot build —
-# it reports through variables and lets the caller decide:
+# Setup failures are reported through variables so callers using `set -e` can
+# distinguish an offline runner from a broken toolchain:
 #
 #   FLUTTER_TOOLCHAIN_READY   1 when a usable toolchain is set up, else 0
 #   FLUTTER_TOOLCHAIN_STATUS  ready | offline | failed. "offline" is a policy
@@ -24,23 +15,11 @@
 #   FLUTTER                   path to a working `flutter` (only when ready)
 #   JAVA_HOME, ANDROID_HOME, ANDROID_SDK_ROOT, PATH  exported when ready
 #
-# Every missing piece is a download (apt archives, dl.google.com, github.com),
-# and `flutter pub get` plus Gradle's dependency resolution need egress even
-# when the toolchain is already installed. ForkMesh Actions run with the network
-# namespace unshared unless the node sets FORKMESH_ACTIONS_ALLOW_NETWORK, so on
-# a normal node NONE of that can work. The first version of this script found
-# that out the hard way: `apt-get download` failed with its output redirected to
-# /dev/null, and under the step's `set -e` the whole run died as a bare "exit
-# code 100" one line after printing "Setting up JDK (OpenJDK 21)...". Probe for
-# egress up front instead, and report a reason the run log can explain.
+# Setup, `flutter pub get`, and Gradle dependency resolution require egress.
 
 _fm_toolchain_dir="$HOME/.forkmesh/toolchain"
 
-# Is there any egress? Inside an Actions sandbox with --unshare-net there is no
-# route off loopback (and no /etc/resolv.conf), so both probes fail immediately;
-# on a normal host at least one succeeds. DNS is tried first because that is
-# what every downloader below actually needs, with a raw TCP connect as a second
-# opinion for hosts that have egress but lock resolution down.
+# Try DNS first, then raw TCP for hosts with egress but restricted resolution.
 _fm_have_network() {
   if timeout 5 getent ahosts dl.google.com >/dev/null 2>&1; then
     return 0
@@ -96,7 +75,6 @@ _fm_find_flutter() {
   return 1
 }
 
-# --- JDK ---------------------------------------------------------------
 _fm_install_jdk() {
   local build_dir="$_fm_toolchain_dir/_jdk_build" jvm_dir deb target candidate
   echo "Setting up JDK (OpenJDK 21)..." >&2
@@ -152,7 +130,6 @@ _fm_install_jdk() {
   return 0
 }
 
-# --- Android SDK cmdline-tools ------------------------------------------
 _fm_install_cmdline_tools() {
   local sdk_root="$1" cli_zip attempt downloaded=false
   echo "Setting up Android SDK..." >&2
@@ -185,7 +162,6 @@ _fm_install_cmdline_tools() {
   return 0
 }
 
-# --- Flutter -------------------------------------------------------------
 _fm_install_flutter() {
   echo "Installing Flutter (stable channel)..." >&2
   rm -rf "$_fm_toolchain_dir/flutter"
@@ -209,10 +185,7 @@ _fm_toolchain_setup() {
   [ -n "$flutter_bin" ] || missing="$missing Flutter,"
   missing="${missing%,}"
 
-  # Bail out before touching the network when there isn't any. Note this gates
-  # a complete toolchain too: `flutter pub get` and Gradle both resolve
-  # dependencies over the network, so an offline build cannot succeed either
-  # way — better to say so in one line than to fail minutes later inside Gradle.
+  # Even a complete toolchain needs egress for pub and Gradle resolution.
   if ! _fm_have_network; then
     FLUTTER_TOOLCHAIN_STATUS="offline"
     if [ -n "$missing" ]; then

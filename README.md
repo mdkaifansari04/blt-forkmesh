@@ -1,205 +1,202 @@
 # ForkMesh
 
-**ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider.**
+<p align="center">
+  <img src="logo.png" alt="ForkMesh" width="120">
+</p>
 
-ForkMesh is a peer-to-peer developer platform for hosting, browsing, discussing, and shipping software without handing your code, identity, or community to one central company. A developer can run a node, any permitted node can mirror a repository, and an eligible, healthy, integrity-matching mirror can keep the project available when its source host goes offline.
+<p align="center"><strong>Own your Git home. Keep it available through a mesh of independent mirrors.</strong></p>
 
-It is open source, free-plan-hostable at the edge, and already doing real work today — issues, pull requests, CI-style actions, AI coding agents, non-custodial reward coordination, and a live public website — all running on the network right now.
+ForkMesh is an open-source developer platform for publishing, browsing,
+mirroring, discussing, and shipping software without making one hosting
+provider the permanent owner of the project. Git remains the source of truth;
+the edge routes traffic and collaboration metadata while repository bytes stay
+on developer-operated hosts.
 
-> **This is early, and that's the point.** The foundation is built and working. The people who show up now help shape the protocol, earn recognition for the repositories they preserve, and get their nodes on the leaderboards before the mesh fills up. Build a node, mirror a project you care about, and you're already part of it.
+<p align="center">
+  <a href="https://app.forkmesh.com">App</a> ·
+  <a href="https://world.forkmesh.com">World</a> ·
+  <a href="https://www.forkmesh.com/docs">Docs</a> ·
+  <a href="https://app.forkmesh.com/api">API</a> ·
+  <a href="https://forkmesh.com/status">Status</a>
+</p>
 
-## Start here
+## What works today
 
-| I want to… | Read |
-| --- | --- |
-| Install ForkMesh and complete the first-run setup | [Getting started](docs/getting-started.md) |
-| Build, run, or troubleshoot the desktop app | [Qt client guide](docs/qt-client.md) |
-| Change the project and open a pull request | [Contributing](CONTRIBUTING.md) |
-| Browse repository development and operations docs | [Documentation index](docs/README.md) |
-| Read the protocol reference or release history | [Hosted docs](https://forkmesh.com/docs) and [changelog](https://forkmesh.com/changelog) |
+- Browse and clone public repositories through a stable URL backed by live,
+  signed, integrity-checked mirrors.
+- Create signed issues, discussions, pull requests, review conversations,
+  projects, milestones, and release metadata that travel with the repository.
+- Assign work to Codex or Claude Code, run multiple agents in isolated
+  worktrees, inspect live transcripts and diffs, and turn finished work into a
+  pull request.
+- Run repository Actions on labeled desktop or server nodes with streaming
+  logs, artifacts, checks, and release publishing.
+- Chat in authenticated repository rooms, share encrypted private notes, and
+  use ActivityPub discovery without giving the relay custody of Git history.
+- Switch between local and remote ForkMesh accounts from the avatar menu and
+  manage the relay instance and mirror servers associated with each session.
+- Operate a Qt desktop node, a compact Go mirror server, a Flutter mobile
+  client, and editor extensions from one repository.
+- Explore repositories, active nodes, agents, and collaboration activity in
+  ForkMesh World.
 
----
+ForkMesh is actively developed and its public network is real, but it is not a
+finished replacement for every centralized forge workflow. The public roadmap
+and acceptance evidence live in [`.forkmesh/projects`](.forkmesh/projects) and
+[`.forkmesh/issues`](.forkmesh/issues).
 
-## ✅ What's Working Today
+## Architecture
 
-ForkMesh is well past "prototype." Here's what you can do right now:
+The hosted edge is split by responsibility so a busy 3D scene, documentation
+crawl, or API burst cannot consume the same deployment and isolate budget.
 
-**Identity & accounts**
-- Accounts can start on the web with email/password or on desktop with a local Ed25519 key.
-- Key-bound actions remain signed and verifiable across nodes.
-- Signed profile and repository metadata, verifiable across nodes.
+```text
+forkmesh.com / www.forkmesh.com  →  www    landing, marketing, docs, blog
+app.forkmesh.com                 →  app    Git UI + REST, WebSockets, routing
+world.forkmesh.com               →  world  optional interactive 3D network
+                                              │
+                                              ▼
+                                   independent server mirrors
+                                   (Git bytes + signed health)
+```
 
-**Hosting & mirroring**
-- Local bare Git mirrors via `git clone --mirror` / `git fetch --prune`.
-- A public, Worker-served **website** and repository catalog — explicitly public repositories are browsable on the web; authorized private entries stay session-gated.
-- **Browse before you mirror:** explore any repository's files, commits, and diffs on demand, streamed from a live host with nothing stored on the relay.
-- **Mirror failover:** when the source machine goes offline and an eligible, healthy, integrity-matching mirror exists, the Worker can serve clones and browsing in its place without changing the public URL.
-- Content-addressed **release** artifacts and tags, with a sha256-verified one-line installer.
+Browser and native clients use the configured `https://app.forkmesh.com`
+app/API origin. Credentialed CORS is restricted to configured trusted origins;
+preflights, CSRF checks, and WebSocket upgrades use the same origin policy.
+Each Cloudflare unit has its own deploy action and input fingerprint, so a
+change deploys only the workers it can affect.
 
-**Collaboration**
-- **Issues** with open/closed states, priorities, custom fields, and signed, append-only history that syncs and stays editable across nodes.
-- **Pull requests** as signed patch submissions, browsable on the web and in the desktop client, with mergeability checks and AI-assisted review.
-- **Actions:** run real workflows on push, with the latest live log always one click away, rendered in a native in-app terminal with full color and emoji. A workflow can name the nodes it belongs on — `runs-on: mac1` keeps the iOS build on the Mac, `runs-on: [mirror2, mirror3]` sends Cloudflare deploys to a mirror — and every other node skips it. A node answers to its node name, its platform (`linux`/`macos`/`windows`) and any extra labels set under Settings → Node labels.
-- **Authenticated shared-key room chat**, per repository — the Town Square compatibility room derives `SHA-256(DATA_KEY + ":room-chat-passphrase-v1")`; every other repository derives `SHA-256(DATA_KEY + ":room-chat-passphrase-v2:" + lower(owner + "/" + repo))`. The endpoint releases a scoped passphrase only to an authenticated account or signed node authorized for that repository. Clients derive the AES-256-GCM room key with PBKDF2-HMAC-SHA256 (210,000 rounds and a room-scoped salt). This encrypts frames in transit and at rest, but it is *not* end-to-end encryption: the relay operator can derive the default key and read messages. Persisted frames are capped at the newest 500 per room and expire after 7 days. Use an out-of-band participant passphrase in clients that support it when the relay must not know the key.
+The combined app is also the self-hosting unit. Deploy it at an address such as
+`forkmesh.example.com` to get the complete Git, account, API, realtime, and
+routing surface. A World deployment at `forkmesh-world.example.com` is
+optional; ForkMesh does not require operators to reproduce the public
+marketing site or maintain a second backend domain.
 
-**AI agents, built in**
-- Assign any issue to **Claude Code** or **Codex** straight from the issue view. The agent works on a connected fork and opens a real pull request when it's done.
-- Run **multiple agents in parallel**, resume past sessions, and watch live activity indicators as they work.
-- Kick off agents from your editor with the **IDE extension**.
-- **Owner-device agent privacy:** agent sessions, transcripts, results, and steering prompts are hybrid-encrypted before relay storage. Starting, inspecting, and steering private agent work requires the owner’s desktop key; the browser and platform administrators receive no decryption override.
+The API stores discovery, authorization, collaboration, and health metadata in
+Cloudflare D1, KV, and Durable Objects. It does not retain Git packfiles. Clone
+and repository-read traffic is routed to an eligible direct HTTPS mirror whose
+signed proof is fresh and whose refs match an accepted source revision.
 
-**Funding**
-- **Legacy issue bounties are frozen:** historical Worker-custodied deposit and automatic payout paths are read-only pending explicit offline reconciliation. New incentives use owner-controlled external wallets and reviewed, non-custodial signing.
-- Profiles and repositories can publish Solana donation addresses.
+## Install
 
-**Reach**
-- A **Flutter mobile app** — browse repositories, follow activity, chat, and submit signed issue and pull-request updates. It is an access client, not a Git mirror host; durable mirroring stays on desktop/headless nodes.
-- QR handoffs, node profile pages, and network presence throughout.
-
-The mesh currently runs on a Cloudflare Python Worker relay (Durable Objects, no npm/TypeScript project dependencies in the repo) and a Qt 6 desktop node — see the [changelog](https://forkmesh.com/changelog) for the full release-by-release story.
-
----
-
-## 🔜 What's Coming
-
-The canonical roadmap is public in [Project #2](.forkmesh/projects/2/project-2.json), with one signed epic per outcome under [`.forkmesh/issues/`](.forkmesh/issues/). The desktop client's **Projects** and **Issues** tabs render the same append-only records, and the [public Projects view](https://forkmesh.com/forkmesh/forkmesh/projects) exposes them without an account.
-
-Highlights on the horizon:
-
-- **Preservation public alpha** — full-fidelity migration, public discovery, verified availability, stable clone paths, release preservation, and an accountless browser journey.
-- **Collaboration public beta** — portable identity, authenticated push, complete review, signed collaboration objects, and continuous two-way forge synchronization.
-- **Hosted teams and revenue GA** — paid managed network services, private organization workspaces, delivery pipelines, and verifiable availability contracts with a self-hosted exit path.
-- **An open, resilient ecosystem** — independently self-hostable services, formal specifications, conformance tests, community governance, offline operation, privacy transports, and disaster recovery.
-
-The 44 epics start from a 30% evidence-based product baseline. None is marked complete until its full acceptance criteria, compatibility tests, security gates, documentation, telemetry, and rollout evidence pass.
-
----
-
-## Get Started
-
-### Desktop Node
-
-For normal use, install the published, SHA-256-verified binary:
+Install the current desktop release with its published SHA-256 verification:
 
 ```sh
 curl -fsSL https://forkmesh.com/install.sh | bash
 ```
 
-For development, clone the repository and launch the source build:
+Or build the desktop application from source:
 
 ```sh
 git clone https://forkmesh.com/forkmesh/forkmesh
 cd forkmesh
-./qt_client/run.sh
+./desktop/run.sh
 ```
 
-The client creates its device identity, connects to the mainnode, and starts
-syncing the ForkMesh project automatically. Continue with
-[Getting started](docs/getting-started.md) for the first-run workflow or the
-[Qt client guide](docs/qt-client.md) for platform dependencies, UI navigation,
-pull requests, logs, tests, and troubleshooting.
+Continue with [Getting started](www/docs/getting-started.md) for first-run
+setup, or the [desktop guide](www/docs/qt-client.md) for dependencies,
+troubleshooting, and development workflows.
 
-### Cloudflare Relay
+### Run a mirror server
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://forkmesh.com/forkmesh/forkmesh)
-
-
-The relay hosts encrypted room WebSockets and the signed repository catalog:
-
-```text
-/api/repo/{owner}/{repo}/rooms/{room}/ws     # per-repo encrypted chat
-/api/repositories                            # signed catalog records
-```
-
-The Durable Object relays AES-GCM ciphertext and retains only frames marked for persistence, capped at the newest 500 per room for 7 days. Default passphrases are repository-scoped and derived from the relay's `DATA_KEY` (with a v1 compatibility derivation for `mainnode/forkmesh`), so this is authenticated shared-key transport and the relay operator can decrypt it. Private and missing repository rooms are rejected before Durable Object access. (`/api/room/{room}/ws` remains as a temporary public compatibility route.)
-
-Run and deploy with Cloudflare's Python Worker tooling:
+The headless Go service supervises repository synchronization, the direct Git
+gateway, signed endpoint publication, and its Cloudflare Tunnel. Production
+hosts can be created and checked from **App → Network → Hosts**. For a manual
+build:
 
 ```sh
-cd cloudflare_worker
-uvx --from workers-py pywrangler dev      # local
-uvx --from workers-py pywrangler deploy   # deploy
+cd server
+go test ./...
+go build ./cmd/forkmesh-mirror-node
 ```
 
-The ForkMesh deploy pipeline runs `cloudflare_worker/deploy.sh`, which uses `pywrangler` and bootstraps the local tool when needed.
+Deployment and recovery details are in the
+[mirror-node operations guide](www/docs/operations/mirror-node.md).
 
-Local relay testing URL:
+### Develop the Cloudflare services
+
+The Python Worker source, app assets, D1 migrations, deployment coordinator,
+and edge test suite live together in `app/`. The deploy coordinator can target
+`app`, `www`, or `world`, or calculate the changed targets from Git:
+
+```sh
+cd app
+./deploy.sh dry-run
+./deploy.sh changed
+```
+
+Production credentials belong in the ignored, responsibility-scoped
+environment files described by the deployment guide. Never commit them.
+
+## Repository layout
 
 ```text
-ws://127.0.0.1:8787/api/repo/mainnode/forkmesh/rooms/general/ws
+.forkmesh/   portable project records, workflows, releases, and pull data
+.github/     forge compatibility and repository automation
+app/         Git UI, API/relay, accounts, migrations, tests, and deploy control
+desktop/     Qt 6 desktop node and desktop-owned icons
+extensions/  editor integrations
+mobile/      Flutter client and owned mobile Git engine work
+server/      Go mirror daemon and server packaging
+tools/       reviewed standalone maintenance, MCP, and security helpers
+world/       ForkMesh World worker and 3D client assets
+www/         landing site, marketing pages, authored docs, and blog
 ```
 
----
+Issues, pull requests, discussions, commits, workflows, and releases are
+designed to remain useful from a clone. Pull-request records live under
+`.forkmesh/pulls`; hosted views are projections of repository state rather
+than the only copy of it.
 
-## Repository Layout
+## Developer interfaces
+
+The public API page at [app.forkmesh.com/api](https://app.forkmesh.com/api)
+provides live service statistics and entry points. Representative routes are:
 
 ```text
-forkmesh/
-  qt_client/          Qt 6 desktop node
-  cloudflare_worker/  Python Worker relay + public website
-  flutter_app/        Mobile app
-  ide_extension/      Editor integration for ForkMesh agents
-  .forkmesh/          In-repo signed data: issues (the live roadmap),
-                      discussions, commit comments, release metadata, workflows
-  tools/              Standalone helpers (MCP server, PR review)
+GET  /api/repositories
+GET  /api/repo/{owner}/{repo}/tree
+GET  /api/status
+WS   /api/repo/{owner}/{repo}/rooms/{room}/ws
 ```
 
-Repository-specific onboarding, engineering, security, design, and operations
-docs live under [`docs/`](docs/README.md). The complete protocol reference,
-per-client reference, and changelog remain at
-[forkmesh.com/docs](https://forkmesh.com/docs).
+`tools/forkmesh_mcp_server.py` exposes read and signed-write tools over MCP for
+compatible coding agents. Generate a connector token in **Desktop → Settings →
+MCP** for write access; omit it for browse-only access. Tokens are device-local
+and revocable.
 
-### MCP server
+## Security model
 
-`tools/forkmesh_mcp_server.py` exposes the mesh to any MCP-capable agent (Claude Code, Codex, …) as tools over the stdio transport: `whoami`, `list_repos`, `read_file`, `search_issues`, `get_pr_diff` for reads, and `create_issue`, `comment_on_issue`, `create_milestone`, `update_milestone`, `create_project`, `update_project`, `open_pr_from_branch` for writes. The write tools sign with the node identity key and produce the exact same native `issues/` and `pulls/` entries the desktop node writes — no privileged side door. The `.mcp.json` at the repo root registers it so Claude Code discovers it automatically. Run `python3 tools/test_forkmesh_mcp_server.py` to exercise it end-to-end.
+- Node and protocol actions use local Ed25519 identities and signed records.
+- Public mirror eligibility requires a fresh account-bound signature, healthy
+  direct HTTPS endpoint, allowed status, and an integrity-matching repository
+  proof.
+- The relay stores routing and collaboration data, not Git packfiles.
+- Default repository chat is authenticated shared-key encryption, not
+  end-to-end encryption from the relay operator. Use a separately exchanged
+  participant passphrase where operator confidentiality is required.
+- Owner-device agent transcripts and steering payloads are hybrid-encrypted;
+  the browser and hosted platform do not receive an administrative decryption
+  override.
+- Legacy Worker-custodied bounty deposits and automatic payouts are frozen.
+  Current rewards use reviewed, non-custodial signing and externally owned
+  wallets.
 
-**Connecting an agent.** Because the write tools act as your node, the desktop client gates them behind a connector token. Open **Settings → MCP**, press *Generate token*, and copy the configuration block it shows into the agent (`.mcp.json` for Claude Code, or use *Copy CLI command* for a `claude mcp add` one-liner); *Test connection* runs the same handshake the agent will and reports the tools it got back. The token is stored owner-only at `<app data>/mcp/connector.json` and travels to the agent as `FORKMESH_MCP_TOKEN`. Reads work without it — hand out the config with that line removed for browse-only access — and *Revoke* demotes every agent still holding the old token to read-only. A node that has never generated a token keeps the original behaviour: a locally launched server with no gate.
+See [SECURITY.md](SECURITY.md) for reporting and the security documentation in
+[www/docs/security](www/docs/security) for protocol-specific boundaries.
 
----
+## Contributing
 
-## Core Model
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). Keep changes scoped, add the
+closest contract or integration test, and run the affected component suite
+before opening a pull request. The complete engineering and operations index is
+[www/docs/README.md](www/docs/README.md).
 
-- **Identity:** local Ed25519 keys for signed protocol actions, with email/password login for web and cross-device account access.
-- **Repositories:** signed metadata plus Git remotes.
-- **Mirrors:** a permitted node can host a bare mirror; it can serve a public repository during a source outage only while it is eligible, healthy, and integrity-matching.
-- **Chat:** repository communities talk through authenticated shared-key mainnode rooms; default-room keys are relay-derived and relay-readable.
-- **Funding:** profiles and repositories can publish self-custodial Solana addresses; legacy issue-bounty custody is frozen.
-- **Federation:** relay nodes run independently, in the spirit of Matrix or Mastodon.
-- **Mainnodes:** hosted nodes provide authenticated shared-key relay rooms, repository catalogs, mirror-health indexing, Solana metadata, and leaderboards — without owning user identity or repository history.
+ForkMesh measures progress by shipped evidence: an implementation is not called
+complete until its compatibility, security, documentation, observability, and
+rollout gates match the claim. If you want to help, run a node, mirror a project,
+pick an issue, or give an agent a well-bounded task.
 
-## Design Principles
+## License
 
-- **Git first.** Chat, agents, and bounties exist to serve repositories, mirrors, issues, releases, and maintainer coordination.
-- **Lean, free-hostable edge.** Nothing is stored on the relay that doesn't have to be; browsing and clone are served on demand from a connected host, and the relay stays inside a free Cloudflare plan.
-- **Repo-centric routes.** The API leads with repository identity, not generic room names.
-- **No heavy edge toolchains in-repo.** Cloudflare code is Python Workers + `pywrangler`; no npm or TypeScript project dependencies are committed.
-
-## Security Notes
-
-- Relay chat payloads use AES-256-GCM, but default rooms are not end-to-end encrypted: the relay derives and distributes a repository-scoped passphrase, so its operator can derive the room key and read messages. The Town Square keeps the v1 compatibility derivation; other repositories use the v2 owner/repository derivation above. Clients use PBKDF2-HMAC-SHA256 with 210,000 rounds and the first 16 bytes of `SHA-256("ForkMesh room:" + roomName)` as salt. The relay retains at most 500 persisted frames per room for 7 days. Use an out-of-band participant passphrase in clients that support it for confidentiality from the relay.
-- Profile and repository metadata are signed by the local Ed25519 identity.
-
-## Roadmap
-
-**Product promise:** ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider.
-
-The full prototype loop works today: publish a repository, browse and clone it on the web, open signed issues, review pull requests, run actions, assign coding agents, and fund work. The remaining gaps are substantial: delegated protected push, complete collaboration convergence, full-fidelity migration, multi-provider synchronization, independent service operation, private-team key lifecycle, and commercial service operations do not yet meet their final acceptance gates.
-
-The canonical [2026–2027 project](.forkmesh/projects/2/project-2.json) links 44 outcome epics, each with scope, measurable acceptance criteria, dependencies, dates, a unique priority, an evidence-based progress baseline, and product or business measures.
-
-### Milestones
-
-1. **Product contract & measurement — August 14, 2026.** Freeze the promise, free/paid boundary, success measures, terminology, dependency map, comparison standard, and optional-incentive invariant.
-2. **Preservation public alpha — October 30, 2026.** Make full-fidelity migration, accountless browsing, public discovery, Git compatibility, releases, availability proof, secret safety, installation, and daily UX dependable.
-3. **Collaboration public beta — January 29, 2027.** Complete signed objects, recoverable identity, protected push, pull-request review, two-way forge sync, social discovery, and scoped community trust.
-4. **Hosted teams & revenue GA — April 30, 2027.** Launch managed network services, encrypted private organizations, operator policy, delivery pipelines, dependable node operations, support, billing, and availability contracts.
-5. **Open platform & ecosystem — July 30, 2027.** Publish stable interfaces and formal specifications, self-host every role, prove interoperability, establish governance, and fund ecosystem work transparently.
-6. **Adversarial resilience & disaster readiness — September 30, 2027.** Prove offline, low-bandwidth, privacy-route, removable-media, primary-service-loss, and recovery workflows through observed drills.
-
-Commercial work intentionally overlaps product work: pricing interviews and cost measurement start with the product contract, hosted-service trials begin during public alpha, and paid relay/index/backup/sync enters beta alongside collaboration. Organization and availability products reach GA only after their security, recovery, policy, service-level, and support gates pass.
-
-Progress is based on shipped evidence, not effort: specification 10%, core journey 35%, interoperability and edge cases 15%, security/privacy 10%, automated validation 15%, UX/docs/operations 10%, and telemetry/rollout 5%. An epic cannot exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and production-rollout evidence. A milestone exits only when all of its P0 epics are closed, compatibility tests are green, and no critical security or data-loss defect remains.
-
----
-
-**Ready to join the mesh?** Build a node, mirror a project you love, open an issue, and hand it to an agent. The network is small enough that you'll matter, and far enough along that you'll ship something real today.
+ForkMesh is released under the terms in [LICENSE](LICENSE).

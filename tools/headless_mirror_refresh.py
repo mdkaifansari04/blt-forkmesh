@@ -1539,8 +1539,8 @@ def _source_pull_count(config: RefreshConfig) -> int | None:
         else _source_revision(config)
     )
     return _numbered_metadata_count(
-        _source_tree_paths(config, revision, "pulls"),
-        b"pulls",
+        _source_tree_paths(config, revision, ".forkmesh/pulls"),
+        b".forkmesh/pulls",
     )
 
 
@@ -3352,7 +3352,7 @@ def _merge_metadata_blob(
     config: RefreshConfig,
     request: Mapping[str, Any],
 ) -> tuple[bytes, str] | None:
-    path = "pulls/%d/pull.md" % request["pullNumber"]
+    path = ".forkmesh/pulls/%d/pull.md" % request["pullNumber"]
     try:
         _code, entry = _merge_git(
             config,
@@ -3415,7 +3415,7 @@ def _merge_peer_review_gate(
     pull_author = str((metadata or {}).get("author") or "")
     if not pull_author:
         return False
-    prefix = "pulls/%d/" % request["pullNumber"]
+    prefix = ".forkmesh/pulls/%d/" % request["pullNumber"]
     try:
         _code, listing = _merge_git(
             config,
@@ -3429,7 +3429,7 @@ def _merge_peer_review_gate(
         path.decode("utf-8")
         for path in listing.split(b"\x00")
         if path and re.fullmatch(
-            rb"pulls/[1-9][0-9]*/[0-9]{4,}-review\.md", path)
+            rb"\.forkmesh/pulls/[1-9][0-9]*/[0-9]{4,}-review\.md", path)
     )[:1000]
     latest: dict[str, str] = {}
     for path in paths:
@@ -3606,7 +3606,7 @@ def _merge_metadata_commit(
     *,
     object_directory: Path,
 ) -> str:
-    path = "pulls/%d/pull.md" % request["pullNumber"]
+    path = ".forkmesh/pulls/%d/pull.md" % request["pullNumber"]
     # Pull metadata is a committed UTF-8 document, so hash its exact bytes
     # rather than the canonical-JSON encoding used for job records.
     _code, raw = _merge_git(
@@ -3637,15 +3637,20 @@ def _merge_metadata_commit(
         # A merged pull retains metadata and review history, but its patch and
         # commit-series payload are open-PR data. Remove both from the exact
         # metadata tree atomically with the status transition.
-        for payload in ("changes.patch", "commits.mbox"):
-            _merge_git(
-                config,
-                ["update-index", "--force-remove",
-                 "pulls/%d/%s" % (request["pullNumber"], payload)],
-                index_file=index,
-                object_directory=object_directory,
-                maximum_output=256,
-            )
+        removals = b"".join(
+            b"0 " + blob.encode("ascii") + b"\t" +
+            (".forkmesh/pulls/%d/%s" %
+             (request["pullNumber"], payload)).encode("utf-8") + b"\n"
+            for payload in ("changes.patch", "commits.mbox")
+        )
+        _merge_git(
+            config,
+            ["update-index", "--index-info"],
+            input_bytes=removals,
+            index_file=index,
+            object_directory=object_directory,
+            maximum_output=256,
+        )
         _code, tree_raw = _merge_git(
             config, ["write-tree"], index_file=index,
             object_directory=object_directory, maximum_output=256)

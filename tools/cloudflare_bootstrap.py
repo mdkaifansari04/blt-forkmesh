@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provision an independent ForkMesh relay on Cloudflare.
+"""Provision an independent, self-contained ForkMesh App on Cloudflare.
 
 The bootstrapper deliberately keeps the Cloudflare API token in process memory:
 it reads the token from the environment, a terminal prompt, or stdin; passes it
@@ -20,12 +20,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import getpass
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -37,7 +39,8 @@ from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKER_DIR = ROOT / "cloudflare_worker"
+WORKER_DIR = ROOT / "app"
+WORLD_DIR = ROOT / "world"
 WRANGLER_TEMPLATE = WORKER_DIR / "wrangler.toml"
 API_BASE = "https://api.cloudflare.com/client/v4"
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -222,13 +225,24 @@ def staged_public_assets(
 ) -> Iterable[Path]:
     """Stage assets without writing the deployment manifest into the checkout."""
 
+    try:
+        subprocess.run(
+            [sys.executable, "tools/build_site_assets.py", "single"],
+            cwd=WORKER_DIR,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise BootstrapError(
+            f"App asset staging failed with exit code {exc.returncode}"
+        ) from exc
+
     if mirror_manifest is None:
-        yield WORKER_DIR / "public"
+        yield WORKER_DIR / "dist"
         return
     with tempfile.TemporaryDirectory(prefix="forkmesh-bootstrap-assets-") as temp:
         destination = Path(temp) / "public"
         shutil.copytree(
-            WORKER_DIR / "public",
+            WORKER_DIR / "dist",
             destination,
             copy_function=shutil.copy2,
         )
@@ -236,6 +250,33 @@ def staged_public_assets(
             json.dumps(mirror_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        yield destination
+
+
+@contextmanager
+def self_host_asset_copy(
+    source: Path, app_origin: str, world_origin: str
+) -> Iterable[Path]:
+    with tempfile.TemporaryDirectory(prefix="forkmesh-self-host-assets-") as temp:
+        destination = Path(temp) / "public"
+        shutil.copytree(source, destination, copy_function=shutil.copy2)
+        replacements = (
+            ("wss://api.forkmesh.com", "wss" + app_origin[5:]),
+            ("https://world.forkmesh.com", world_origin),
+            ("https://api.forkmesh.com", app_origin),
+            ("https://app.forkmesh.com", app_origin),
+            ("https://www.forkmesh.com", app_origin),
+            ("https://forkmesh.com", app_origin),
+        )
+        for path in destination.rglob("*"):
+            if not path.is_file() or path.suffix not in {
+                ".css", ".html", ".js", ".json", ".sh", ".webmanifest"
+            }:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for old, new in replacements:
+                text = text.replace(old, new)
+            path.write_text(text, encoding="utf-8")
         yield destination
 
 
@@ -278,10 +319,12 @@ def render_wrangler_config(
     worker_name: str,
     database_name: str,
     database_id: str,
+    namespace_id: str,
     public_base_url: str,
     node_name: str,
     relay_label: str,
     main_relay_url: str,
+    world_origin: str,
     assets_directory: str | None = None,
 ) -> str:
     """Render a temporary production config without mutating wrangler.toml."""
@@ -290,10 +333,23 @@ def render_wrangler_config(
     output: list[str] = []
     section = ""
     production_d1_seen = False
+    production_kv_seen = False
     vars_seen = False
     vars_values = {
         "NODE_NAME": node_name,
         "PUBLIC_BASE_URL": public_base_url,
+        "API_ORIGIN": public_base_url,
+        "APP_ORIGIN": public_base_url,
+        "WWW_ORIGIN": public_base_url,
+        "WORLD_ORIGIN": world_origin,
+        "CORS_ALLOWED_ORIGINS": ",".join(
+            dict.fromkeys((public_base_url, world_origin))
+        ),
+        "SINGLE_WORKER_SITE": "true",
+        "DISCORD_OAUTH_REDIRECT_URI": (
+            public_base_url.rstrip("/")
+            + "/api/integrations/discord/callback"
+        ),
         "RELAY_LABEL": relay_label,
         "MAIN_RELAY_URL": main_relay_url,
     }
@@ -312,24 +368,27 @@ def render_wrangler_config(
         if stripped.startswith("[") and stripped.endswith("]"):
             flush_missing_vars()
             section = stripped.strip("[]")
+            if stripped == "[[routes]]":
+                section = "routes"
+                continue
             if stripped == "[[d1_databases]]":
                 section = "d1_databases"
                 if not production_d1_seen:
                     production_d1_seen = True
+            elif stripped == "[[kv_namespaces]]":
+                section = "kv_namespaces"
+                production_kv_seen = True
             elif stripped == "[vars]":
                 section = "vars"
                 vars_seen = True
             output.append(line)
             continue
 
+        if section == "routes":
+            continue
+
         if index == 0 and re.match(r"^\s*name\s*=", line):
             output.append(f"name = {_toml_string(worker_name)}")
-            continue
-        if section == "build" and re.match(r"^\s*command\s*=", line):
-            # Migrations are applied explicitly with this generated config.  The
-            # repository's migrate.sh intentionally uses the checked-in config,
-            # so invoking it from here could target the original deployment.
-            output.append('command = "python3 tools/build_dashboard_assets.py"')
             continue
         if (
             section == "assets"
@@ -352,6 +411,10 @@ def render_wrangler_config(
             if re.match(r"^\s*database_id\s*=", line):
                 output.append(f'database_id = {_toml_string(database_id)}')
                 continue
+        if section == "kv_namespaces" and production_kv_seen:
+            if re.match(r"^\s*id\s*=", line):
+                output.append(f'id = {_toml_string(namespace_id)}')
+                continue
         output.append(line)
 
     flush_missing_vars()
@@ -359,10 +422,40 @@ def render_wrangler_config(
         raise BootstrapError("wrangler template has no production D1 binding")
     if not vars_seen:
         raise BootstrapError("wrangler template has no [vars] section")
+    if not production_kv_seen:
+        raise BootstrapError("wrangler template has no production KV binding")
     rendered = "\n".join(output) + "\n"
     if "CLOUDFLARE_API_TOKEN" in rendered:
         raise BootstrapError("refusing to render an API token into Wrangler config")
     return rendered
+
+
+def render_world_wrangler_config(
+    *, worker_name: str, app_origin: str, www_origin: str, assets_directory: Path
+) -> str:
+    return "\n".join(
+        (
+            f"name = {_toml_string(worker_name)}",
+            f"main = {_toml_string(str(WORLD_DIR / 'worker.js'))}",
+            'compatibility_date = "2026-08-03"',
+            "",
+            "[assets]",
+            f"directory = {_toml_string(str(assets_directory))}",
+            'binding = "ASSETS"',
+            'html_handling = "none"',
+            'not_found_handling = "404-page"',
+            "run_worker_first = true",
+            "",
+            "[vars]",
+            f"APP_ORIGIN = {_toml_string(app_origin)}",
+            f"WWW_ORIGIN = {_toml_string(www_origin)}",
+            "",
+            "[observability]",
+            "enabled = true",
+            "head_sampling_rate = 0.05",
+            "",
+        )
+    )
 
 
 class CloudflareAPI:
@@ -548,6 +641,42 @@ class CloudflareAPI:
             raise BootstrapError("Cloudflare created D1 without returning its id")
         return database_id, True
 
+    def ensure_kv_namespace(
+        self, account_id: str, namespace_name: str
+    ) -> tuple[str, bool]:
+        path = f"/accounts/{account_id}/storage/kv/namespaces"
+        result = self.request("GET", path, query={"per_page": 100})
+        for namespace in result if isinstance(result, list) else []:
+            if (
+                isinstance(namespace, dict)
+                and namespace.get("title") == namespace_name
+            ):
+                namespace_id = str(namespace.get("id") or "")
+                if namespace_id:
+                    return namespace_id, False
+        created = self.request("POST", path, body={"title": namespace_name})
+        namespace_id = str((created or {}).get("id") or "")
+        if not namespace_id:
+            raise BootstrapError(
+                "Cloudflare created a KV namespace without returning its id"
+            )
+        return namespace_id, True
+
+    def worker_secret_names(self, account_id: str, worker_name: str) -> set[str]:
+        try:
+            result = self.request(
+                "GET",
+                f"/accounts/{account_id}/workers/scripts/{worker_name}/secrets",
+            )
+        except BootstrapError as error:
+            if "HTTP 404" in str(error):
+                return set()
+            raise
+        return {
+            str(item.get("name") or "")
+            for item in result if isinstance(item, dict) and item.get("name")
+        } if isinstance(result, list) else set()
+
     def ensure_dns(
         self,
         zone_id: str,
@@ -645,15 +774,42 @@ class WranglerRunner:
         }:
             env.pop(name, None)
         try:
+            for script in (
+                "tools/build_dashboard_assets.py",
+                "tools/build_worker_footprint.py",
+            ):
+                arguments = [sys.executable, script]
+                subprocess.run(
+                    arguments,
+                    cwd=self.worker_dir,
+                    env=env,
+                    check=True,
+                )
+        except subprocess.CalledProcessError as exc:
+            raise BootstrapError(
+                f"dashboard asset build failed with exit code {exc.returncode}"
+            ) from exc
+
+    def build_world_assets(self, *, hidden_env_names: Iterable[str] = ()) -> None:
+        env = os.environ.copy()
+        for name in {
+            "CLOUDFLARE_API_TOKEN",
+            "CF_API_TOKEN",
+            "CLOUDFLARE_TOKEN",
+            "CF_TOKEN",
+            *hidden_env_names,
+        }:
+            env.pop(name, None)
+        try:
             subprocess.run(
-                [sys.executable, "tools/build_dashboard_assets.py"],
+                [sys.executable, "tools/build_site_assets.py", "world"],
                 cwd=self.worker_dir,
                 env=env,
                 check=True,
             )
         except subprocess.CalledProcessError as exc:
             raise BootstrapError(
-                f"dashboard asset build failed with exit code {exc.returncode}"
+                f"World asset build failed with exit code {exc.returncode}"
             ) from exc
 
     def run(
@@ -706,6 +862,10 @@ class BootstrapOptions:
     replace_route: bool = False
     dry_run: bool = False
     secret_env: tuple[str, ...] = ()
+    data_key_backup: Path | None = None
+    deploy_world: bool = False
+    world_hostname: str = ""
+    world_worker_name: str = ""
     verify_health: bool = True
     publish_mirror_manifest: bool = True
     mirror_public_key: str = ""
@@ -723,6 +883,57 @@ def _validate_secret_names(names: Iterable[str]) -> tuple[str, ...]:
         if name not in result:
             result.append(name)
     return tuple(result)
+
+
+def _data_key_backup_path(path: Path) -> Path:
+    candidate = Path(os.path.abspath(path.expanduser()))
+    try:
+        candidate.resolve(strict=False).relative_to(ROOT.resolve())
+    except ValueError:
+        return candidate
+    raise BootstrapError("the DATA_KEY recovery file must be outside the repository")
+
+
+def _read_data_key_backup(path: Path) -> str:
+    path = _data_key_backup_path(path)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return ""
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise BootstrapError("the DATA_KEY recovery path must be a regular file")
+    if stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise BootstrapError("the DATA_KEY recovery file permissions must be 0600")
+    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+        raise BootstrapError("the DATA_KEY recovery file must be owned by this user")
+    value = path.read_text(encoding="utf-8").strip()
+    if not value:
+        raise BootstrapError("the DATA_KEY recovery file is empty")
+    return value
+
+
+def _write_data_key_backup(path: Path, value: str) -> bool:
+    path = _data_key_backup_path(path)
+    existing = _read_data_key_backup(path)
+    if existing:
+        if not hmac.compare_digest(existing, value):
+            raise BootstrapError(
+                "the DATA_KEY recovery file does not match the selected key"
+            )
+        return False
+    parent_existed = path.parent.exists()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not parent_existed:
+        path.parent.chmod(0o700)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as stream:
+            stream.write(value + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(descriptor)
+    return True
 
 
 def _health_check(hostname: str, attempts: int = 6) -> None:
@@ -744,6 +955,60 @@ def _health_check(hostname: str, attempts: int = 6) -> None:
         if attempt + 1 < attempts:
             time.sleep(min(10, 1 + attempt * 2))
     raise BootstrapError(f"deployed relay did not pass its health check at {url}")
+
+
+def _functional_readiness_check(
+    hostname: str, data_key: str, attempts: int = 6
+) -> None:
+    url = f"https://{hostname}/api/bootstrap/readiness"
+    for attempt in range(attempts):
+        timestamp = str(int(time.time() * 1000))
+        canonical = "forkmesh-bootstrap-readiness-v1\n" + timestamp
+        proof = hmac.new(
+            data_key.encode(), canonical.encode(), hashlib.sha256
+        ).hexdigest()
+        try:
+            request = Request(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": "Bearer " + proof,
+                    "X-ForkMesh-Readiness-Timestamp": timestamp,
+                    "User-Agent": "forkmesh-cloudflare-bootstrap/1",
+                },
+            )
+            with urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8") or "{}")
+                if 200 <= response.status < 300 and payload.get("ok") is True:
+                    return
+        except (HTTPError, URLError, TimeoutError, ValueError):
+            pass
+        if attempt + 1 < attempts:
+            time.sleep(min(10, 1 + attempt * 2))
+    raise BootstrapError(
+        "deployed App did not pass its authenticated database/encryption check"
+    )
+
+
+def _world_health_check(hostname: str, attempts: int = 6) -> None:
+    url = f"https://{hostname}/"
+    for attempt in range(attempts):
+        try:
+            request = Request(
+                url,
+                headers={"User-Agent": "forkmesh-cloudflare-bootstrap/1"},
+            )
+            with urlopen(request, timeout=30) as response:
+                if (
+                    200 <= response.status < 300
+                    and response.headers.get("x-forkmesh-worker") == "world"
+                ):
+                    return
+        except (HTTPError, URLError, TimeoutError):
+            pass
+        if attempt + 1 < attempts:
+            time.sleep(min(10, 1 + attempt * 2))
+    raise BootstrapError(f"deployed World did not pass its check at {url}")
 
 
 def _announce_join(hostname: str, attempts: int = 3) -> str:
@@ -791,6 +1056,8 @@ def bootstrap(
         [dict[str, Any] | None], Any
     ] = staged_public_assets,
     health_check: Callable[[str], None] = _health_check,
+    readiness_check: Callable[[str, str], None] = _functional_readiness_check,
+    world_health_check: Callable[[str], None] = _world_health_check,
     announce: Callable[[str], str] = _announce_join,
     output: Callable[[str], None] = print,
 ) -> dict[str, Any]:
@@ -803,6 +1070,22 @@ def bootstrap(
     worker_name = validate_resource_name(options.worker_name, "worker name")
     database_name = validate_resource_name(options.database_name, "database name")
     node_name = validate_resource_name(options.node_name, "node name")
+    world_hostname = normalize_hostname(
+        options.world_hostname or f"forkmesh-world.{zone_name}"
+    )
+    if world_hostname != zone_name and not world_hostname.endswith("." + zone_name):
+        raise BootstrapError(
+            f"World hostname {world_hostname} is not inside Cloudflare zone {zone_name}"
+        )
+    default_world_name = worker_name + "-world"
+    if len(default_world_name) > 63:
+        digest = hashlib.sha256(default_world_name.encode("ascii")).hexdigest()[:10]
+        default_world_name = worker_name[:51].rstrip("-") + "-" + digest
+    world_worker_name = validate_resource_name(
+        options.world_worker_name or default_world_name, "World worker name"
+    )
+    if world_worker_name == worker_name:
+        raise BootstrapError("App and World worker names must be different")
     secret_names = _validate_secret_names(options.secret_env)
     secret_values: dict[str, str] = {}
     for name in secret_names:
@@ -845,6 +1128,11 @@ def bootstrap(
             "hostname": hostname,
             "workerName": worker_name,
             "databaseName": database_name,
+            "world": {
+                "enabled": options.deploy_world,
+                "hostname": world_hostname,
+                "workerName": world_worker_name,
+            },
             "secrets": list(secret_names),
             "mirrorManifest": {
                 "published": options.publish_mirror_manifest,
@@ -870,80 +1158,137 @@ def bootstrap(
         )
 
     database_id, database_created = api.ensure_d1(account_id, database_name)
-    runner.build_assets(hidden_env_names=secret_names)
-    with asset_stager(mirror_manifest) as assets_directory:
-        template = WRANGLER_TEMPLATE.read_text(encoding="utf-8")
-        rendered = render_wrangler_config(
-            template,
-            worker_name=worker_name,
-            database_name=database_name,
-            database_id=database_id,
-            public_base_url=f"https://{hostname}",
-            node_name=node_name,
-            relay_label=relay_label,
-            main_relay_url=options.main_relay_url.rstrip("/"),
-            assets_directory=str(Path(assets_directory).resolve()),
+    remote_secret_names = api.worker_secret_names(account_id, worker_name)
+    remote_has_data_key = "DATA_KEY" in remote_secret_names
+    backup_path = options.data_key_backup
+    backup_data_key = _read_data_key_backup(backup_path) if backup_path else ""
+    readiness_data_key = secret_values.get("DATA_KEY", "") or backup_data_key
+    generated_data_key = False
+    data_key_backup_created = False
+    if not readiness_data_key:
+        if database_created:
+            if backup_path is None:
+                raise BootstrapError(
+                    "a new instance requires a DATA_KEY recovery path; use "
+                    "--data-key-backup outside the repository"
+                )
+            readiness_data_key = base64.urlsafe_b64encode(os.urandom(32)).decode(
+                "ascii"
+            ).rstrip("=")
+            generated_data_key = True
+        elif remote_has_data_key:
+            raise BootstrapError(
+                "the Worker has DATA_KEY but no local recovery copy is available; "
+                "restore the key from the operator secret store with --secret-env "
+                "DATA_KEY before redeploying"
+            )
+        else:
+            raise BootstrapError(
+                "the existing D1 database has no DATA_KEY Worker secret or local "
+                "recovery copy; restore it with --secret-env DATA_KEY"
+            )
+    if backup_path is not None:
+        data_key_backup_created = _write_data_key_backup(
+            backup_path, readiness_data_key
         )
-
-        config_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                prefix=".forkmesh-bootstrap-",
-                suffix=".toml",
-                dir=WORKER_DIR,
-                delete=False,
-            ) as handle:
-                handle.write(rendered)
-                config_path = Path(handle.name)
-            config_path.chmod(0o600)
-            relative_config = config_path.name
-
-            output(f"Applying ForkMesh migrations to D1 {database_name}...")
-            runner.run(
-                [
-                    "d1",
-                    "migrations",
-                    "apply",
-                    database_name,
-                    "--remote",
-                    "--config",
-                    relative_config,
-                    "--env",
-                    "",
-                ],
-                token=token,
-                account_id=account_id,
-                hidden_env_names=secret_names,
+        if data_key_backup_created:
+            output(
+                f"Stored the DATA_KEY recovery copy at "
+                f"{_data_key_backup_path(backup_path)} with mode 0600."
             )
-            output(f"Deploying Worker {worker_name}...")
-            runner.run(
-                ["deploy", "--config", relative_config, "--env", ""],
-                token=token,
-                account_id=account_id,
-                hidden_env_names=secret_names,
+    if database_created or not remote_has_data_key:
+        secret_values["DATA_KEY"] = readiness_data_key
+        if "DATA_KEY" not in secret_names:
+            secret_names = (*secret_names, "DATA_KEY")
+    else:
+        secret_values.pop("DATA_KEY", None)
+    namespace_name = _derived_resource_name(hostname) + "-repository-metadata"
+    namespace_id, namespace_created = api.ensure_kv_namespace(
+        account_id, namespace_name
+    )
+    runner.build_assets(hidden_env_names=secret_names)
+    app_origin = f"https://{hostname}"
+    world_origin = f"https://{world_hostname}"
+    with asset_stager(mirror_manifest) as staged_assets:
+        with self_host_asset_copy(
+            Path(staged_assets), app_origin, world_origin
+        ) as assets_directory:
+            template = WRANGLER_TEMPLATE.read_text(encoding="utf-8")
+            rendered = render_wrangler_config(
+                template,
+                worker_name=worker_name,
+                database_name=database_name,
+                database_id=database_id,
+                namespace_id=namespace_id,
+                public_base_url=app_origin,
+                node_name=node_name,
+                relay_label=relay_label,
+                main_relay_url=options.main_relay_url.rstrip("/"),
+                world_origin=world_origin,
+                assets_directory=str(Path(assets_directory).resolve()),
             )
-            for name, value in secret_values.items():
-                output(f"Setting Worker secret {name} from the local environment...")
+
+            config_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    prefix=".forkmesh-bootstrap-",
+                    suffix=".toml",
+                    dir=WORKER_DIR,
+                    delete=False,
+                ) as handle:
+                    handle.write(rendered)
+                    config_path = Path(handle.name)
+                config_path.chmod(0o600)
+                relative_config = config_path.name
+
+                output(f"Applying ForkMesh migrations to D1 {database_name}...")
                 runner.run(
                     [
-                        "secret",
-                        "put",
+                        "d1",
+                        "migrations",
+                        "apply",
+                        database_name,
+                        "--remote",
                         "--config",
                         relative_config,
                         "--env",
                         "",
-                        name,
                     ],
                     token=token,
                     account_id=account_id,
-                    stdin_text=value + "\n",
                     hidden_env_names=secret_names,
                 )
-        finally:
-            if config_path is not None:
-                config_path.unlink(missing_ok=True)
+                output(f"Deploying Worker {worker_name}...")
+                runner.run(
+                    ["deploy", "--config", relative_config, "--env", ""],
+                    token=token,
+                    account_id=account_id,
+                    hidden_env_names=secret_names,
+                )
+                for name, value in secret_values.items():
+                    output(
+                        f"Setting Worker secret {name} from the local environment..."
+                    )
+                    runner.run(
+                        [
+                            "secret",
+                            "put",
+                            "--config",
+                            relative_config,
+                            "--env",
+                            "",
+                            name,
+                        ],
+                        token=token,
+                        account_id=account_id,
+                        stdin_text=value + "\n",
+                        hidden_env_names=secret_names,
+                    )
+            finally:
+                if config_path is not None:
+                    config_path.unlink(missing_ok=True)
 
     dns, dns_changed = api.ensure_dns(
         zone_id, hostname, replace=options.replace_dns
@@ -956,6 +1301,53 @@ def bootstrap(
     )
     if options.verify_health:
         health_check(hostname)
+        if readiness_data_key:
+            readiness_check(hostname, readiness_data_key)
+    world_dns: dict[str, Any] | None = None
+    world_dns_changed = False
+    world_route: dict[str, Any] | None = None
+    world_route_changed = False
+    if options.deploy_world:
+        runner.build_world_assets(hidden_env_names=secret_names)
+        rendered_world = render_world_wrangler_config(
+            worker_name=world_worker_name,
+            app_origin=app_origin,
+            www_origin="https://www.forkmesh.com",
+            assets_directory=(WORLD_DIR / "dist").resolve(),
+        )
+        world_config_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix=".forkmesh-world-bootstrap-",
+                suffix=".toml",
+                dir=WORKER_DIR,
+                delete=False,
+            ) as handle:
+                handle.write(rendered_world)
+                world_config_path = Path(handle.name)
+            world_config_path.chmod(0o600)
+            runner.run(
+                ["deploy", "--config", world_config_path.name, "--env", ""],
+                token=token,
+                account_id=account_id,
+                hidden_env_names=secret_names,
+            )
+        finally:
+            if world_config_path is not None:
+                world_config_path.unlink(missing_ok=True)
+        world_dns, world_dns_changed = api.ensure_dns(
+            zone_id, world_hostname, replace=options.replace_dns
+        )
+        world_route, world_route_changed = api.ensure_worker_route(
+            zone_id,
+            f"{world_hostname}/*",
+            world_worker_name,
+            replace=options.replace_route,
+        )
+        if options.verify_health:
+            world_health_check(world_hostname)
     join_status = ""
     if options.main_relay_url.strip():
         # The launched instance pings its main relay as a request to join
@@ -982,6 +1374,9 @@ def bootstrap(
         "databaseName": database_name,
         "databaseId": database_id,
         "databaseCreated": database_created,
+        "repositoryMetadataNamespace": namespace_name,
+        "repositoryMetadataNamespaceId": namespace_id,
+        "repositoryMetadataNamespaceCreated": namespace_created,
         "dnsRecordId": str((dns or {}).get("id") or ""),
         "dnsChanged": dns_changed,
         "routeId": str((route or {}).get("id") or ""),
@@ -991,7 +1386,23 @@ def bootstrap(
             "announced": bool(join_status),
             "status": join_status,
         },
-        "workerSecretsSet": list(secret_names),
+        "workerSecretsSet": list(secret_values),
+        "dataKeyGenerated": generated_data_key,
+        "dataKeyBackupCreated": data_key_backup_created,
+        "dataKeyRecoveryAvailable": bool(readiness_data_key),
+        "functionalReadinessVerified": bool(
+            options.verify_health and readiness_data_key
+        ),
+        "world": {
+            "enabled": options.deploy_world,
+            "hostname": world_hostname,
+            "workerName": world_worker_name,
+            "dnsRecordId": str((world_dns or {}).get("id") or ""),
+            "dnsChanged": world_dns_changed,
+            "routeId": str((world_route or {}).get("id") or ""),
+            "routeChanged": world_route_changed,
+            "healthVerified": bool(options.deploy_world and options.verify_health),
+        },
         "mirrorManifest": {
             "published": mirror_manifest is not None,
             "path": MIRROR_MANIFEST_PATH if mirror_manifest is not None else None,
@@ -1000,7 +1411,7 @@ def bootstrap(
                 if mirror_manifest is not None
                 else None
             ),
-            "schema": "docs/mirror-endpoint.schema.json",
+            "schema": "www/docs/mirror-endpoint.schema.json",
             "payloadSha256": (
                 mirror_manifest["signature"]["payloadSha256"]
                 if mirror_manifest is not None
@@ -1155,11 +1566,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--relay-label", default="")
     parser.add_argument(
         "--main-relay-url",
-        default="https://forkmesh.com",
+        default="https://app.forkmesh.com",
         help="upstream relay mesh URL; pass an empty string for a main relay",
     )
     parser.add_argument("--replace-dns", action="store_true")
     parser.add_argument("--replace-route", action="store_true")
+    parser.add_argument(
+        "--with-world",
+        action="store_true",
+        help="also deploy the optional World Worker for this self-hosted App",
+    )
+    parser.add_argument(
+        "--world-hostname",
+        default="",
+        help="defaults to forkmesh-world.<zone>",
+    )
+    parser.add_argument(
+        "--world-worker-name",
+        default="",
+        help="defaults to the App Worker name with a -world suffix",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--secret-env",
@@ -1169,6 +1595,19 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "read NAME from the local environment and pipe it to Wrangler secret "
             "put; may be repeated"
+        ),
+    )
+    parser.add_argument(
+        "--data-key-backup",
+        type=Path,
+        default=(
+            Path(os.environ["FORKMESH_DATA_KEY_BACKUP"])
+            if os.environ.get("FORKMESH_DATA_KEY_BACKUP")
+            else None
+        ),
+        help=(
+            "0600 recovery file for DATA_KEY; defaults outside the repository "
+            "under the user's ForkMesh config directory"
         ),
     )
     parser.add_argument(
@@ -1238,10 +1677,31 @@ def main(argv: list[str] | None = None) -> int:
             account_id = args.account_id
         derived_name = _derived_resource_name(hostname)
         signer_command = tuple(shlex.split(args.manifest_signer_command))
+        has_mirror_key = bool(args.mirror_public_key.strip())
+        has_mirror_signer = bool(signer_command)
+        if has_mirror_key != has_mirror_signer:
+            raise BootstrapError(
+                "trusted mirror publication needs both --mirror-public-key "
+                "and --manifest-signer-command"
+            )
+        publish_mirror_manifest = (
+            not args.skip_mirror_manifest
+            and has_mirror_key
+            and has_mirror_signer
+        )
+        worker_name = args.worker_name or derived_name
+        data_key_backup = args.data_key_backup
+        if data_key_backup is None:
+            config_root = Path(
+                os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+            )
+            data_key_backup = (
+                config_root / "forkmesh" / "secrets" / f"{worker_name}.data-key"
+            )
         options = BootstrapOptions(
             hostname=hostname,
             zone_name=zone_name,
-            worker_name=args.worker_name or derived_name,
+            worker_name=worker_name,
             database_name=args.database_name or args.worker_name or derived_name,
             node_name=args.node_name or args.worker_name or derived_name,
             relay_label=args.relay_label,
@@ -1251,8 +1711,12 @@ def main(argv: list[str] | None = None) -> int:
             replace_route=args.replace_route,
             dry_run=args.dry_run,
             secret_env=tuple(args.secret_env),
+            data_key_backup=data_key_backup,
+            deploy_world=args.with_world,
+            world_hostname=args.world_hostname,
+            world_worker_name=args.world_worker_name,
             verify_health=not args.skip_health_check,
-            publish_mirror_manifest=not args.skip_mirror_manifest,
+            publish_mirror_manifest=publish_mirror_manifest,
             mirror_public_key=args.mirror_public_key,
             manifest_signer_command=signer_command,
         )

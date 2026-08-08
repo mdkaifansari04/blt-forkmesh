@@ -3,28 +3,28 @@ on: [push, workflow_dispatch]
 jobs:
   android:
     steps:
-      # Only build when this push actually touched flutter_app/. Mirrors the
+      # Only build when this push actually touched mobile/. Mirrors the
       # deploy workflow's "skip unless changed" gate: a sentinel file written
       # here is checked by the build step so it no-ops on unrelated commits.
-      - name: Skip unless flutter_app/ changed
+      - name: Skip unless mobile/ changed
         run: |
           # HEAD is normally a MERGE commit (agent branches land on main via
           # merge), and a plain `git diff-tree HEAD` emits NOTHING for a merge
           # (combined-diff default), so every merge-to-main skipped this build.
           # Diff against the first parent (old main tip) so a merge that brings
-          # in flutter_app/ changes is detected; fall back to the empty tree for
+          # in mobile/ changes is detected; fall back to the empty tree for
           # a root commit. Mirrors the deploy workflow's fix for issue #267.
           if parent="$(git rev-parse --verify --quiet HEAD^1)"; then
             changed_files="$(git diff-tree --no-commit-id --name-only -r "$parent" HEAD)"
           else
             changed_files="$(git diff-tree --no-commit-id --name-only -r --root HEAD)"
           fi
-          app_changes="$(printf '%s\n' "$changed_files" | sed -n '/^flutter_app\//p')"
+          app_changes="$(printf '%s\n' "$changed_files" | sed -n '/^mobile\//p')"
           if [ -z "$app_changes" ]; then
-            echo "Skipping Android build; no flutter_app/ changes in this commit."
+            echo "Skipping Android build; no mobile/ changes in this commit."
             touch .forkmesh-skip-android
           else
-            echo "flutter_app/ changes detected:"
+            echo "mobile/ changes detected:"
             printf '%s\n' "$app_changes"
           fi
 
@@ -40,7 +40,7 @@ jobs:
 
           # Self-install Flutter + the Android SDK + a JDK under
           # $HOME/.forkmesh/toolchain when this node doesn't already have them,
-          # the same way cloudflare_worker/pywrangler.sh self-installs the
+          # the same way app/pywrangler.sh self-installs the
           # deploy toolchain instead of assuming the host has it
           # pre-provisioned.
           . tools/flutter-android-toolchain.sh
@@ -52,7 +52,7 @@ jobs:
           # them), and then for `flutter pub get` and Gradle's own dependency
           # and NDK downloads. Report that as a skip instead of a red run — the
           # old code just let `apt-get download` fail under `set -e`, so every
-          # push touching flutter_app/ died as a bare "exit code 100".
+          # push touching mobile/ died as a bare "exit code 100".
           if [ "$FLUTTER_TOOLCHAIN_STATUS" = "offline" ]; then
             echo "Skipping the Android build: $FLUTTER_TOOLCHAIN_REASON."
             echo "To build APKs here, allow network access for Actions on this"
@@ -69,7 +69,7 @@ jobs:
           fi
           "$FLUTTER" --version
 
-          cd flutter_app
+          cd mobile
           "$FLUTTER" pub get
           "$FLUTTER" build apk --release
 

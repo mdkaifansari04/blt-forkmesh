@@ -109,7 +109,7 @@ SYSTEM_ACTIONS_SUMMARY_PATH = Path(
     "/var/lib/forkmesh-mirror/gateway/actions-summary.json"
 )
 HOSTED_PUBLIC_GIT_ROOT = Path("/srv/forkmesh-git/imports")
-COLLABORATION_TREE_ROOTS = frozenset({"pulls", ".forkmesh/issues"})
+COLLABORATION_TREE_ROOTS = frozenset({".forkmesh/pulls", ".forkmesh/issues"})
 PUBLIC_OPERATIONS = frozenset(
     {
         "git-info-refs",

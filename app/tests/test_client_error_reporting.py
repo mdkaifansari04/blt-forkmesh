@@ -1,0 +1,182 @@
+"""Browser-error persistence and administrator World HUD contracts."""
+
+import ast
+import re
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ENTRY = (
+    (ROOT / "src" / "entry.py").read_text(encoding="utf-8") + "\n"
+    + (ROOT / "src" / "admin_console.py").read_text(encoding="utf-8")
+)
+REPORTER = (ROOT.parent / "www" / "public" / "posthog.js").read_text(encoding="utf-8")
+WORLD = (ROOT.parent / "world" / "public" / "world" / "world.js").read_text(encoding="utf-8")
+WORLD_CSS = (ROOT.parent / "world" / "public" / "world" / "world.css").read_text(
+    encoding="utf-8")
+
+
+def _client_error_fields():
+    tree = ast.parse(ENTRY)
+    names = {
+        "CLIENT_ERROR_SURFACES",
+        "CLIENT_ERROR_KINDS",
+    }
+    body = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in names
+            for target in node.targets
+        ):
+            body.append(node)
+        elif (
+            isinstance(node, ast.FunctionDef)
+            and node.name in {
+                "_sanitize_client_error_text",
+                "_client_error_fields",
+            }
+        ):
+            body.append(node)
+    namespace = {"re": re}
+    exec(compile(ast.Module(body=body, type_ignores=[]), "<entry>", "exec"),
+         namespace)
+    return namespace["_client_error_fields"]
+
+
+def test_uncaught_errors_and_rejections_use_the_private_collector():
+    assert 'window.addEventListener(\n    "error"' in REPORTER
+    assert 'window.addEventListener("unhandledrejection"' in REPORTER
+    assert 'const CLIENT_ERROR_ENDPOINT = "/api/client-errors"' in REPORTER
+    assert 'credentials: "same-origin"' in REPORTER
+    assert "keepalive: true" in REPORTER
+    assert "recentClientErrors" in REPORTER
+    assert "[redacted-secret]" in REPORTER
+    assert "[redacted-email]" in REPORTER
+    assert "[redacted-id]" in REPORTER
+    assert "[redacted-url]" in REPORTER
+
+
+def test_expected_abort_rejections_do_not_pollute_operational_errors():
+    assert 'reason?.name === "AbortError"' in REPORTER
+    assert "signal is aborted|operation was aborted" in REPORTER
+
+
+def test_client_collector_is_bounded_redacted_and_stored_in_error_log():
+    assert "async def client_error_handler(env, request):" in ENTRY
+    assert "_request_same_origin(request)" in ENTRY
+    assert "CLIENT_ERROR_MAX_BODY" in ENTRY
+    assert "CLIENT_ERROR_RATE_PER_CLIENT" in ENTRY
+    assert "CLIENT_ERROR_RATE_GLOBAL" in ENTRY
+    assert "await _write_error_log(" in ENTRY
+    assert '"/client-error/" + surface' in ENTRY
+    assert 'if url.path in ("/api/client-errors", "/api/client-errors/"):' in ENTRY
+
+
+def test_client_errors_are_identified_as_javascript_in_admin():
+    assert "def _admin_error_source(method, path):" in ENTRY
+    assert 'str(method or "").strip().upper() == "JS"' in ENTRY
+    assert 'str(path or "").startswith("/client-error/")' in ENTRY
+    assert 'return "JavaScript" if is_javascript else "Worker"' in ENTRY
+    assert 'class="error-source %s"' in ENTRY
+
+
+def test_client_error_fields_remove_identity_urls_and_credentials():
+    fields = _client_error_fields()({
+        "kind": "error",
+        "surface": "world",
+        "message": (
+            "token=super-secret-value user@example.com "
+            "https://forkmesh.com/alice/private-repo?token=abc"),
+        "stack": (
+            "at run (https://forkmesh.com/alice/private-repo/world.js:44:2)"),
+        "source": "https://forkmesh.com/private/path/world.js?account=alice",
+        "line": 44,
+        "column": 2,
+    })
+    assert fields is not None
+    surface, detail = fields
+    assert surface == "world"
+    assert "super-secret-value" not in detail
+    assert "user@example.com" not in detail
+    assert "alice/private-repo" not in detail
+    assert "world.js:44:2" in detail
+
+
+def test_admin_hud_counts_only_rows_after_the_local_seen_cursor():
+    assert "async def world_admin_errors_handler(env, request):" in ENTRY
+    assert '"platform_administrator"' in ENTRY
+    assert '"SELECT COUNT(*) AS n FROM error_log WHERE id>?"' in ENTRY
+    assert '"FROM error_log ORDER BY id DESC LIMIT 100"' in ENTRY
+    assert 'query.get("include", ["0"])[0] == "1"' in ENTRY
+    assert '"/api/world/admin/errors"' in ENTRY
+    assert "ADMIN_ERROR_SEEN_KEY" in WORLD
+    assert "seen === null" in WORLD
+    assert "this.storeAdminErrorSeenId(this.adminErrorLatestId)" in WORLD
+    assert "data-world-admin-error-count" in WORLD
+    assert "this.identity?.isAdmin !== true" in WORLD
+    assert "world-admin-error-arrival" in WORLD_CSS
+    assert "prefers-reduced-motion: reduce" in WORLD_CSS
+    assert 'method not in ("GET", "POST", "DELETE")' in ENTRY
+    assert '"DELETE FROM error_log WHERE id=?"' in ENTRY
+    assert "_admin_error_create_bot_task(" in ENTRY
+    assert 'payload["groups"]' in ENTRY
+    assert 'payload["hourly"]' in ENTRY
+    assert '"hours": [0] * 24' in ENTRY
+    assert "world-error-group-table" in WORLD
+    assert "world-error-chart" in WORLD
+    assert "world-error-sparkline" in WORLD
+    assert "world-error-table-header" in WORLD
+    assert "data-world-admin-error-delete" in WORLD
+    assert "data-world-admin-error-task" in WORLD
+    assert "data-world-admin-error-group-delete" in WORLD
+    assert "data-world-admin-error-group-task" in WORLD
+    assert "data-world-admin-error-copy" in WORLD
+    assert "async deleteAdminError(" in WORLD
+    assert "async createTaskFromAdminError(" in WORLD
+    assert "async deleteAdminErrorGroup(" in WORLD
+    assert "async createTaskFromAdminErrorGroup(" in WORLD
+    assert "relativeTime(group.firstSeen)" in WORLD
+    assert 'title="${escapeHTML(exactTime(group.firstSeen))}"' in WORLD
+    assert ".world-error-actor-stack" in WORLD_CSS
+
+
+def test_newly_logged_errors_are_announced_not_only_counted():
+    # adhoc #57: the badge said a number had changed somewhere off screen, so
+    # new errors never reached the activity stream the operational pings use.
+    assert (
+        '"SELECT id,ts,status,method,path FROM error_log ORDER BY id DESC "'
+        in ENTRY)
+    assert '"latestStatus": latest_status,' in ENTRY
+    assert '"latestSource": _admin_error_source(' in ENTRY
+    start = WORLD.index("  async refreshAdminErrors() {")
+    refresh = WORLD[start:WORLD.index("\n  }", start)]
+    assert "const previousCount = this.adminErrorCount;" in refresh
+    assert "const arrived = nextCount > previousCount;" in refresh
+    assert "this.activityNoticesSettled() &&" in refresh
+    # An error storm is one card a minute carrying the real total, and the
+    # arrivals in between are carried forward rather than dropped.
+    assert "this.adminErrorPendingAnnounce =" in refresh
+    assert "ADMIN_ERROR_ANNOUNCE_GAP_MS" in refresh
+    assert "this.adminErrorPendingAnnounce = 0;" in refresh
+    assert "New error logged" in refresh
+    assert "new errors logged" in refresh
+    assert 'kind: "error",' in refresh
+    assert "const announcedErrorId = this.adminErrorLatestId;" in refresh
+    assert "this.openAdminErrors(null, announcedErrorId)" in refresh
+    assert 'data-world-admin-error-detail="' in WORLD
+    assert "openAdminErrorDetail(errorId)" in WORLD
+    assert 'query.get("id", ["0"])[0]' in ENTRY
+    assert '"FROM error_log WHERE id=? LIMIT 1"' in ENTRY
+    # Status and source only: no route, message, ray or actor in the HUD.
+    assert "payload?.latestStatus" in refresh
+    assert "payload?.latestSource" in refresh
+    assert "payload?.path" not in refresh
+    assert "payload?.message" not in refresh
+    assert "payload?.ray" not in refresh
+
+
+def test_world_admin_error_chart_height_expression_keeps_ternary_balanced():
+    assert (
+        'style="height:${chartPeak ? Math.max(2, '
+        'Math.round((132 * count) / chartPeak)) : 2}px"'
+    ) in WORLD

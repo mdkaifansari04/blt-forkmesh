@@ -340,7 +340,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", required=True)
     parser.add_argument("--repository", required=True)
-    parser.add_argument("--relay-url", default="https://forkmesh.com")
+    parser.add_argument("--relay-url", default="https://app.forkmesh.com")
     parser.add_argument(
         "--state-dir",
         default=str(Path.home() / ".local" / "state" / "forkmesh" / "scans"))

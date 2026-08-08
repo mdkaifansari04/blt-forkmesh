@@ -1,0 +1,556 @@
+"""Focused contract tests for atomic Worker-secret publication."""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEPLOY = ROOT / "deploy.sh"
+PYWRANGLER = ROOT / "pywrangler.sh"
+
+REQUIRED = {
+    "ADMIN_PATH": "/admin-test",
+    "ADMIN_PASS": "admin-pass-secret",
+    "MAILTRAP_API_TOKEN": "mail-token",
+    "MAILTRAP_WEBHOOK_SECRET": "mail-webhook-secret",
+    "DATA_KEY": 'quotes-" slash-\\ tab-\t unicode-☃',
+    "TREASURY_SOLANA_ADDRESS": "solana-address",
+    "MIRROR_ROUTER_PUBLIC_KEY": "router-public",
+    "MIRROR_ROUTER_SIGNING_SEED": "router-seed",
+    "DISCORD_CLIENT_ID": "1531910102578102322",
+    "DISCORD_CLIENT_SECRET": "discord-client-secret",
+    "DISCORD_BOT_TOKEN": "discord-bot-token",
+}
+
+
+def _sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    shutil.copy2(DEPLOY, worker / "deploy.sh")
+    shutil.copy2(PYWRANGLER, worker / "pywrangler.sh")
+
+    env_lines = [
+        "CLOUDFLARE_ACCOUNT_ID=test-account",
+        "CLOUDFLARE_API_TOKEN=cloudflare-token-must-not-be-published",
+        "VULTR_API_KEY=vultr-key-must-not-be-published",
+        *(f"{key}={value}" for key, value in REQUIRED.items()),
+        "OPTIONAL_SECRET=optional=value with spaces",
+        "ADMIN_USER=obsolete-admin-user",
+        "EMPTY_SECRET=",
+    ]
+    (worker / ".env.production").write_text(
+        "\n".join(env_lines) + "\n", encoding="utf-8"
+    )
+
+    fake_venv = tmp_path / "fake-pywrangler"
+    fake_bin = fake_venv / "bin"
+    fake_bin.mkdir(parents=True)
+    log = tmp_path / "calls.log"
+    captured = tmp_path / "captured.json"
+    fake = fake_bin / "pywrangler"
+    fake.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '<%s>' "$@" >> "$FAKE_WRANGLER_LOG"
+printf '\\n' >> "$FAKE_WRANGLER_LOG"
+if [ "$1" = "secret" ] && [ "$2" = "bulk" ]; then
+    payload="${@: -1}"
+    python3 - "$payload" "$FAKE_WRANGLER_CAPTURE" <<'PY'
+import json
+import os
+import shutil
+import stat
+import sys
+
+mode = stat.S_IMODE(os.stat(sys.argv[1]).st_mode)
+if mode != 0o600:
+    raise SystemExit(f"secret payload mode is {mode:o}, expected 600")
+with open(sys.argv[1], encoding="utf-8") as stream:
+    json.load(stream)
+shutil.copyfile(sys.argv[1], sys.argv[2])
+PY
+    printf '%s' "$payload" > "$FAKE_WRANGLER_CAPTURE.path"
+    transient="${FAKE_WRANGLER_TRANSIENT_BULK_FAILURES:-0}"
+    if [ "$transient" != "0" ]; then
+        counter="$FAKE_WRANGLER_CAPTURE.transient"
+        seen=0
+        if [ -f "$counter" ]; then
+            seen="$(cat "$counter")"
+        fi
+        if [ "$transient" = "always" ] || [ "$seen" -lt "$transient" ]; then
+            echo $((seen + 1)) > "$counter"
+            echo "🚨 Secrets failed to upload" >&2
+            echo "✘ [ERROR] A request to the Cloudflare API (/accounts/a/workers/scripts/forkmesh-relay/settings) failed." >&2
+            echo "  An unknown error has occurred. [code: 10013]" >&2
+            exit 1
+        fi
+    fi
+    [ "${FAKE_WRANGLER_FAIL_BULK:-0}" != "1" ] || exit 23
+elif [ "$1" = "secret" ] && [ "$2" = "list" ]; then
+    python3 - "$FAKE_WRANGLER_CAPTURE" "${FAKE_WRANGLER_REMOTE_NAMES:-}" <<'PY'
+import json
+import os
+import sys
+
+names = {name for name in sys.argv[2].split(",") if name}
+if os.path.exists(sys.argv[1]):
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        names.update(json.load(stream))
+print(json.dumps([{"name": key} for key in sorted(names)]))
+PY
+else
+    echo "unexpected fake pywrangler invocation" >&2
+    exit 97
+fi
+""",
+        encoding="utf-8",
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    return worker, log, captured
+
+
+def _run_secrets(
+    tmp_path: Path,
+    *,
+    fail_bulk: bool = False,
+    transient_bulk_failures: int | str = 0,
+    attempts: int | None = None,
+    remote_names: tuple[str, ...] = (),
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    worker, log, captured = _sandbox(tmp_path)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
+            "FAKE_WRANGLER_LOG": str(log),
+            "FAKE_WRANGLER_CAPTURE": str(captured),
+            "FAKE_WRANGLER_FAIL_BULK": "1" if fail_bulk else "0",
+            "FAKE_WRANGLER_TRANSIENT_BULK_FAILURES": str(transient_bulk_failures),
+            # Keep the retry pauses out of the test's wall clock.
+            "FORKMESH_SECRET_BULK_BACKOFF": "0",
+            "FAKE_WRANGLER_REMOTE_NAMES": ",".join(remote_names),
+        }
+    )
+    if attempts is not None:
+        env["FORKMESH_SECRET_BULK_ATTEMPTS"] = str(attempts)
+    result = subprocess.run(
+        ["bash", "deploy.sh", "secrets"],
+        cwd=worker,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, log, captured
+
+
+def test_secrets_command_uses_one_secure_bulk_update_and_verifies_names(tmp_path):
+    result, log, captured = _run_secrets(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in calls if "<secret><bulk>" in line]) == 1
+    assert len([line for line in calls if "<secret><list>" in line]) == 2
+    assert all("<secret><put>" not in line for line in calls)
+
+    payload = json.loads(captured.read_text(encoding="utf-8"))
+    assert payload == {
+        **REQUIRED,
+        "WORKERS_OBSERVABILITY_ACCOUNT_ID": "test-account",
+    }
+    assert "CLOUDFLARE_ACCOUNT_ID" not in payload
+    assert "CLOUDFLARE_API_TOKEN" not in payload
+    assert "EMPTY_SECRET" not in payload
+    assert "OPTIONAL_SECRET" not in payload
+    assert "ADMIN_USER" not in payload
+    assert "skip (not an App runtime secret): ADMIN_USER" in result.stderr
+    # The desktop app keeps its Vultr provisioning key in this file; the Worker
+    # has no Vultr code path, so it must never reach the runtime (adhoc #127).
+    assert "VULTR_API_KEY" not in payload
+    assert "Pushed 12 secret(s) from .env.production in one bulk update." in result.stdout
+    combined_output = result.stdout + result.stderr
+    for value in (
+        *payload.values(),
+        "cloudflare-token-must-not-be-published",
+        "vultr-key-must-not-be-published",
+    ):
+        assert value not in combined_output
+
+    temporary_payload = Path(
+        (captured.with_suffix(captured.suffix + ".path")).read_text()
+    )
+    assert not temporary_payload.exists()
+
+
+def test_failed_bulk_update_is_not_retried_per_secret_and_cleans_payload(tmp_path):
+    result, log, captured = _run_secrets(tmp_path, fail_bulk=True)
+
+    assert result.returncode != 0
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in calls if "<secret><bulk>" in line]) == 1
+    assert all("<secret><put>" not in line for line in calls)
+    assert len([line for line in calls if "<secret><list>" in line]) == 1
+    assert "no per-secret retry was attempted" in result.stderr
+
+    temporary_payload = Path(
+        (captured.with_suffix(captured.suffix + ".path")).read_text()
+    )
+    assert not temporary_payload.exists()
+
+
+def test_transient_cloudflare_error_resends_the_same_bulk_update(tmp_path):
+    # Cloudflare's script-settings endpoint 500s with [code: 10013] every so
+    # often; the identical payload publishes on a later attempt. Re-sending the
+    # one atomic update must recover the deploy without any `secret put`.
+    result, log, captured = _run_secrets(tmp_path, transient_bulk_failures=2)
+
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in calls if "<secret><bulk>" in line]) == 3
+    assert len([line for line in calls if "<secret><list>" in line]) == 2
+    assert all("<secret><put>" not in line for line in calls)
+    assert "Bulk secret update succeeded on attempt 3/4." in result.stdout
+
+    payload = json.loads(captured.read_text(encoding="utf-8"))
+    assert payload["ADMIN_PATH"] == REQUIRED["ADMIN_PATH"]
+    assert "CLOUDFLARE_API_TOKEN" not in payload
+
+    combined_output = result.stdout + result.stderr
+    for value in payload.values():
+        assert value not in combined_output
+
+    temporary_payload = Path(
+        (captured.with_suffix(captured.suffix + ".path")).read_text()
+    )
+    assert not temporary_payload.exists()
+
+
+def test_unrelenting_transient_error_stops_at_the_attempt_budget(tmp_path):
+    result, log, captured = _run_secrets(
+        tmp_path, transient_bulk_failures="always", attempts=3
+    )
+
+    assert result.returncode != 0
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in calls if "<secret><bulk>" in line]) == 3
+    assert all("<secret><put>" not in line for line in calls)
+    assert len([line for line in calls if "<secret><list>" in line]) == 1
+    assert "transient Cloudflare API error on all 3 attempts" in result.stderr
+    assert "re-run './deploy.sh secrets'" in result.stderr
+
+    temporary_payload = Path(
+        (captured.with_suffix(captured.suffix + ".path")).read_text()
+    )
+    assert not temporary_payload.exists()
+
+
+def test_missing_required_secret_fails_before_any_bulk_mutation(tmp_path):
+    worker, log, _captured = _sandbox(tmp_path)
+    env_file = worker / ".env.production"
+    lines = [
+        line
+        for line in env_file.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("DATA_KEY=")
+    ]
+    env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
+            "FAKE_WRANGLER_LOG": str(log),
+            "FAKE_WRANGLER_CAPTURE": str(tmp_path / "captured.json"),
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", "deploy.sh", "secrets"],
+        cwd=worker,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "missing both locally and on the Worker" in result.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1
+    assert "<secret><list>" in calls[0]
+    assert all("<secret><bulk>" not in line for line in calls)
+
+
+def test_existing_remote_webhook_secret_is_preserved_when_local_value_is_absent(
+    tmp_path,
+):
+    worker, log, captured = _sandbox(tmp_path)
+    env_file = worker / ".env.production"
+    env_file.write_text(
+        "\n".join(
+            line
+            for line in env_file.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("MAILTRAP_WEBHOOK_SECRET=")
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
+            "FAKE_WRANGLER_LOG": str(log),
+            "FAKE_WRANGLER_CAPTURE": str(captured),
+            "FAKE_WRANGLER_REMOTE_NAMES": "MAILTRAP_WEBHOOK_SECRET",
+            "FORKMESH_SECRET_BULK_BACKOFF": "0",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", "deploy.sh", "secrets"],
+        cwd=worker,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in calls if "<secret><list>" in line]) == 2
+    assert len([line for line in calls if "<secret><bulk>" in line]) == 1
+    assert "preserving existing remote secret(s): MAILTRAP_WEBHOOK_SECRET" in result.stdout
+    payload = json.loads(captured.read_text(encoding="utf-8"))
+    assert "MAILTRAP_WEBHOOK_SECRET" not in payload
+
+
+def test_existing_remote_data_key_is_authenticated_and_never_bulk_replaced(
+    tmp_path,
+):
+    worker, log, captured = _sandbox(tmp_path)
+    probe_log = tmp_path / "probe.log"
+    curl = tmp_path / "fake-pywrangler" / "bin" / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '<%s>' \"$@\" > \"$FAKE_DATA_KEY_PROBE_LOG\"\n"
+        "printf '{\"ok\":true}\\n200'\n",
+        encoding="utf-8",
+    )
+    curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
+            "FAKE_WRANGLER_LOG": str(log),
+            "FAKE_WRANGLER_CAPTURE": str(captured),
+            "FAKE_WRANGLER_REMOTE_NAMES": "DATA_KEY",
+            "FAKE_DATA_KEY_PROBE_LOG": str(probe_log),
+            "FORKMESH_SECRET_BULK_BACKOFF": "0",
+            "PATH": str(curl.parent) + os.pathsep + env["PATH"],
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", "deploy.sh", "secrets"],
+        cwd=worker,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(captured.read_text(encoding="utf-8"))
+    assert "DATA_KEY" not in payload
+    assert "preserving authenticated remote secret: DATA_KEY" in result.stdout
+    probe_arguments = probe_log.read_text(encoding="utf-8")
+    assert REQUIRED["DATA_KEY"] not in probe_arguments
+    assert "X-ForkMesh-Readiness-Timestamp" in probe_arguments
+
+
+def test_first_cutover_preserves_remote_key_then_requires_postdeploy_proof(
+    tmp_path,
+):
+    worker, log, captured = _sandbox(tmp_path)
+    probe_log = tmp_path / "probe.log"
+    curl = tmp_path / "fake-pywrangler" / "bin" / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '<%s>' \"$@\" >> \"$FAKE_DATA_KEY_PROBE_LOG\"\n"
+        "printf '\\n' >> \"$FAKE_DATA_KEY_PROBE_LOG\"\n"
+        "status=\"${FAKE_DATA_KEY_PROBE_STATUS:-404}\"\n"
+        "if [ \"$status\" = 200 ]; then body='{\"ok\":true}'; "
+        "else body='{\"error\":\"not_found\"}'; fi\n"
+        "printf '%s\\n%s' \"$body\" \"$status\"\n",
+        encoding="utf-8",
+    )
+    curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
+            "FAKE_WRANGLER_LOG": str(log),
+            "FAKE_WRANGLER_CAPTURE": str(captured),
+            "FAKE_WRANGLER_REMOTE_NAMES": "DATA_KEY",
+            "FAKE_DATA_KEY_PROBE_LOG": str(probe_log),
+            "FORKMESH_SECRET_BULK_BACKOFF": "0",
+            "PATH": str(curl.parent) + os.pathsep + env["PATH"],
+        }
+    )
+
+    preflight = subprocess.run(
+        ["bash", "deploy.sh", "validate-secrets"],
+        cwd=worker,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert preflight.returncode == 0, preflight.stderr
+    assert "first-cutover preflight" in preflight.stdout
+    assert not captured.exists()
+    assert all(
+        "<secret><bulk>" not in line
+        for line in log.read_text(encoding="utf-8").splitlines()
+    )
+
+    env["FAKE_DATA_KEY_PROBE_STATUS"] = "200"
+    publish = subprocess.run(
+        ["bash", "deploy.sh", "secrets"],
+        cwd=worker,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert publish.returncode == 0, publish.stderr
+    payload = json.loads(captured.read_text(encoding="utf-8"))
+    assert "DATA_KEY" not in payload
+    assert "preserving authenticated remote secret: DATA_KEY" in publish.stdout
+
+
+def test_remote_data_key_requires_a_local_recovery_value(tmp_path):
+    worker, log, captured = _sandbox(tmp_path)
+    env_file = worker / ".env.production"
+    env_file.write_text(
+        "\n".join(
+            line
+            for line in env_file.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("DATA_KEY=")
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
+            "FAKE_WRANGLER_LOG": str(log),
+            "FAKE_WRANGLER_CAPTURE": str(captured),
+            "FAKE_WRANGLER_REMOTE_NAMES": "DATA_KEY",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", "deploy.sh", "secrets"],
+        cwd=worker,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "no local recovery value" in result.stderr
+    assert not captured.exists()
+
+
+def test_invalid_discord_client_id_fails_before_any_bulk_mutation(tmp_path):
+    worker, log, _captured = _sandbox(tmp_path)
+    env_file = worker / ".env.production"
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8").replace(
+            "DISCORD_CLIENT_ID=1531910102578102322",
+            "DISCORD_CLIENT_ID=not-a-snowflake",
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
+            "FAKE_WRANGLER_LOG": str(log),
+            "FAKE_WRANGLER_CAPTURE": str(tmp_path / "captured.json"),
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", "deploy.sh", "secrets"],
+        cwd=worker,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "DISCORD_CLIENT_ID must be a 17-20 digit" in result.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1 and "<secret><list>" in calls[0]
+
+
+def test_push_secrets_contains_bulk_contract_without_put_loop():
+    source = DEPLOY.read_text(encoding="utf-8")
+    start = source.index("push_secrets() {")
+    end = source.index("\n}\n\npublish_release_binary", start)
+    function = source[start:end]
+
+    assert function.count("pywrangler secret bulk") == 1
+    assert "pywrangler secret put" not in function
+    # Retries re-send that one atomic update; they never fan out per secret.
+    assert "_secret_bulk_error_is_transient" in function
+    assert 'chmod 0600 "$secret_bulk_file"' in function
+    assert "trap 'rm -f -- \"$secret_bulk_file\"' EXIT" in function
+
+
+def test_production_deploy_preflights_discord_secrets_before_mutation():
+    source = DEPLOY.read_text(encoding="utf-8")
+    start = source.index("deploy_app_target() {")
+    deploy_app = source[start:source.index("\n}\n\nretire_legacy_api_worker", start)]
+
+    assert deploy_app.index("push_secrets validate") < deploy_app.index("./migrate.sh")
+    assert deploy_app.index("push_secrets validate") < deploy_app.index(
+        "deploy_app_version"
+    )
+    assert deploy_app.index("push_secrets validate") < deploy_app.index(
+        "push_secrets\n"
+    )
+
+
+def test_production_manifest_sets_canonical_discord_public_urls():
+    wrangler = (ROOT / "wrangler.toml").read_text(encoding="utf-8")
+
+    assert 'PUBLIC_BASE_URL = "https://forkmesh.com"' in wrangler
+    assert 'API_ORIGIN = "https://app.forkmesh.com"' in wrangler
+    assert (
+        'DISCORD_OAUTH_REDIRECT_URI = '
+        '"https://app.forkmesh.com/api/integrations/discord/callback"'
+    ) in wrangler
+    assert "DISCORD_BOT_TOKEN" not in wrangler
+    assert "DISCORD_CLIENT_SECRET" not in wrangler
+
+
+def test_forkmesh_deploy_materializes_discord_secrets_from_secure_variables():
+    workflow = (ROOT.parent / ".forkmesh" / "deploy.yml").read_text(
+        encoding="utf-8")
+
+    for name in (
+        "DISCORD_CLIENT_ID",
+        "DISCORD_CLIENT_SECRET",
+        "DISCORD_BOT_TOKEN",
+    ):
+        assert f"{name}=${{{{ vars.{name} }}}}" in workflow

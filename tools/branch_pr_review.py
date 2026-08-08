@@ -6,12 +6,12 @@ Run from the repo root:
     python3 tools/branch_pr_review.py        # serves http://127.0.0.1:8799
 
 For every local `port/*` branch it shows the diff vs `main` and a "Create PR"
-button. Clicking it writes a real, signed ForkMesh native pull under `pulls/N/`.
+button. Clicking it writes a real, signed ForkMesh native pull under `.forkmesh/pulls/N/`.
 Because every pull originates from a real branch, pull.md stores immutable base
 and head commit pointers; the diff and commit series are derived from Git rather
 than duplicated into large changes.patch and commits.mbox files.
 
-Signing matches qt_client/src/PullStore.cpp::canonicalString:
+Signing matches desktop/src/PullStore.cpp::canonicalString:
     content      = title \0 base \0 head \0 patch \0 commits      (utf-8 bytes)
     contentHash  = sha256(content).hexdigest()
     canonical    = "forkmesh-pull-event-v1\n{author}\n{ts}\n{contentHash}"
@@ -42,7 +42,6 @@ DATA_HOME = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
 KEY_PATH = Path(DATA_HOME) / "ForkMesh/ForkMesh/identity/ed25519.pem"
 
 
-# ----------------------------------------------------------------------------- git helpers
 def git(*args, text=True):
     return subprocess.run(
         ["git", *args], cwd=REPO, capture_output=True,
@@ -81,9 +80,8 @@ def branch_info(branch):
     }
 
 
-# ----------------------------------------------------------------------------- pulls
 def pulls_dir():
-    return REPO / "pulls"
+    return REPO / ".forkmesh" / "pulls"
 
 
 def next_pull_number():
@@ -111,7 +109,6 @@ def existing_pr_for_head(head):
     return None
 
 
-# ----------------------------------------------------------------------------- signing
 _key = None
 _pub = None
 
@@ -184,16 +181,17 @@ def create_pull(branch, title, description):
     ])
     (pdir / "pull.md").write_text(front + "\n" + description + "\n")
 
-    add = git("add", f"pulls/{number}")
+    add = git("add", f".forkmesh/pulls/{number}")
     if add.returncode != 0:
         return {"ok": False, "error": f"git add failed: {add.stderr}"}
-    commit = git("commit", "-m", f"pull #{number}: open", "--", f"pulls/{number}")
+    commit = git(
+        "commit", "-m", f"pull #{number}: open", "--",
+        f".forkmesh/pulls/{number}")
     if commit.returncode != 0:
         return {"ok": False, "error": f"git commit failed: {commit.stderr or commit.stdout}"}
     return {"ok": True, "number": number, "existing": False}
 
 
-# ----------------------------------------------------------------------------- diff -> html
 def diff_html(branch):
     raw = git_out("diff", f"{BASE}..{branch}")
     rows = []
@@ -248,7 +246,7 @@ button:hover{{background:#2ea043}} button:disabled{{opacity:.5;cursor:default}}
 .msg{{font-size:12px;margin-left:4px}} .msg.ok{{color:#3fb950}} .msg.err{{color:#f85149}}
 </style></head><body>
 <header><h1>ForkMesh · port/* branch review</h1>
-<p>Identity <code>{pub}</code> · base <code>{base}</code> · {n} branch(es). Create PR writes a signed pull under <code>pulls/</code>.
+<p>Identity <code>{pub}</code> · base <code>{base}</code> · {n} branch(es). Create PR writes a signed pull under <code>.forkmesh/pulls/</code>.
 <a href="#" onclick="setAll(true);return false" style="color:#58a6ff;margin-left:8px">expand all</a> ·
 <a href="#" onclick="setAll(false);return false" style="color:#58a6ff">collapse all</a></p></header>
 <div class="wrap">{cards}</div>
@@ -306,7 +304,6 @@ def card_html(info):
 </div></div>"""
 
 
-# ----------------------------------------------------------------------------- server
 _ALLOWED_HOSTS = frozenset({f"127.0.0.1:{PORT}", f"localhost:{PORT}"})
 _ALLOWED_ORIGINS = frozenset({f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"})
 

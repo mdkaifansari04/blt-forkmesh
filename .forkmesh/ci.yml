@@ -47,8 +47,8 @@ jobs:
       - name: Worker syntax + config
         run: |
           set -eu
-          python3 -c "import ast; ast.parse(open('cloudflare_worker/src/entry.py').read()); print('entry.py OK')"
-          python3 -c "import tomllib; tomllib.load(open('cloudflare_worker/wrangler.toml','rb')); print('wrangler.toml OK')"
+          python3 -c "import ast; ast.parse(open('app/src/entry.py').read()); print('entry.py OK')"
+          python3 -c "import tomllib; [tomllib.load(open(f'{unit}/wrangler.toml','rb')) for unit in ('app','www','world')]; print('Worker manifests OK')"
 
       - name: Critical Qt client contracts
         run: |
@@ -77,11 +77,11 @@ jobs:
           # build asked for eight of them at once and pthread_create failed
           # against TasksMax with "Resource temporarily unavailable" (#1586).
           # Pin the pools to the same budget the compiles are sized from.
-          cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON -DCMAKE_AUTOGEN_PARALLEL="$jobs"
+          cmake -S desktop -B desktop/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON -DCMAKE_AUTOGEN_PARALLEL="$jobs"
 
           # `critical-tests` is defined next to the "critical" CTest label, so
           # it always covers exactly the binaries the runner is about to
           # execute. Naming the suites here instead let the two lists drift,
           # and an unbuilt suite only surfaces as a ctest "***Not Run".
-          cmake --build qt_client/build-ci -j "$jobs" --target critical-tests
-          python3 tools/run_critical_tests.py qt --build-dir qt_client/build-ci
+          cmake --build desktop/build-ci -j "$jobs" --target critical-tests
+          python3 tools/run_critical_tests.py qt --build-dir desktop/build-ci

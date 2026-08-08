@@ -36,7 +36,7 @@ sys.modules[_REFRESH_SPEC.name] = refresh
 _REFRESH_SPEC.loader.exec_module(refresh)
 
 
-IMPORTS_URL = "https://forkmesh.com/api/repository-imports"
+IMPORTS_URL = "https://app.forkmesh.com/api/repository-imports"
 SOURCE_ROOT = Path("/srv/forkmesh-git/imports")
 SIDECAR_FILE = "hosted-repositories.json"
 PENDING_FILE = ".hosted-repository-deletions.json"

@@ -2,7 +2,7 @@
 
 This folder holds **per-commit comment threads**, stored inside the repository
 so they travel with every clone and mirror — exactly like `.forkmesh/issues/`
-and `pulls/`. The desktop client's commit view reads and writes these files; the
+and `.forkmesh/pulls/`. The desktop client's commit view reads and writes these files; the
 relay only relays signed comments from people who don't have write access (the
 owner drains the inbox and commits them).
 

@@ -560,7 +560,7 @@ def provision_tunnel(
         },
         "manifest": {
             "written": manifest is not None,
-            "schema": "docs/mirror-gateway-manifest.schema.json",
+            "schema": "www/docs/mirror-gateway-manifest.schema.json",
             "path": str(options.manifest_output.expanduser().resolve())
             if options.manifest_output is not None
             else None,

@@ -40,9 +40,11 @@ chmod 0755 "$appdir/usr/bin/forkmesh"
 install_root="${FORKMESH_PKG_INSTALL_ROOT:-}"
 resource_root="${install_root%/}/share/forkmesh"
 if [ -z "$install_root" ] || [ ! -f "$resource_root/tools/cloudflare_bootstrap.py" ] \
-   || [ ! -f "$resource_root/cloudflare_worker/src/entry.py" ] \
-   || [ ! -d "$resource_root/cloudflare_worker/public" ] \
-   || [ ! -d "$resource_root/cloudflare_worker/migrations" ]; then
+   || [ ! -f "$resource_root/app/src/entry.py" ] \
+   || [ ! -x "$resource_root/app/deploy.sh" ] \
+   || [ ! -d "$resource_root/app/migrations" ] \
+   || [ ! -d "$resource_root/www/public" ] \
+   || [ ! -d "$resource_root/world/public" ]; then
   log "CMake-installed ForkMesh deployment resources are incomplete"
   exit 1
 fi
@@ -63,8 +65,8 @@ cp "$appdir/forkmesh.desktop" "$appdir/usr/share/applications/forkmesh.desktop"
 
 # A 1x1 placeholder icon keeps appimagetool happy when the repo icon is absent.
 icon="$appdir/forkmesh.png"
-if [ -f "qt_client/resources/forkmesh.png" ]; then
-  cp qt_client/resources/forkmesh.png "$icon"
+if [ -f "desktop/resources/icons/forkmesh.png" ]; then
+  cp desktop/resources/icons/forkmesh.png "$icon"
 else
   printf '\x89PNG\r\n\x1a\n' > "$icon"  # placeholder; replaced when a real icon exists
 fi

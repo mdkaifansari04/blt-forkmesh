@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 # Install the public Git SSH gateway (read-only) on one mirror host.
 #
-# ssh.forkmesh.com used to be a single machine (mirror2). When that node was
-# retired the published ssh:// clone URL died with it, because nothing else
-# in the fleet ran the gateway. This script makes any mirror able to serve
-# that URL so the name can round-robin across several of them —
-# docs/operations/git-ssh-gateway.md describes the security model it
-# implements.
+# See www/docs/operations/git-ssh-gateway.md for the security model.
 #
 #   tools/provision_ssh_gateway.sh <host-ip> [<repo-owner>/<repo-name>]
 #
@@ -37,13 +32,13 @@ SOURCE_ROOT="${FORKMESH_GATEWAY_SOURCE_ROOT:-$SOURCE_ROOT_DEFAULT}"
 REPO_DIR="${FORKMESH_GATEWAY_REPO_DIR:-$REPO_DIR_DEFAULT}"
 
 cd "$(dirname "$0")/.."
-ENV_FILE="cloudflare_worker/.env.production"
+ENV_FILE="app/.env.production"
 SSH_KEY="${FORKMESH_FLEET_SSH_KEY:-$HOME/.local/share/ForkMesh/ForkMesh/ssh/vultr_mirror_ed25519}"
 
 token="$(sed -n 's/^SSH_GATEWAY_TOKEN=//p' "$ENV_FILE" | tr -d '\r' | head -n1)"
-api_origin="$(sed -n 's/^PUBLIC_BASE_URL = "//p' cloudflare_worker/wrangler.toml |
+api_origin="$(sed -n 's/^API_ORIGIN = "//p' app/wrangler.toml |
     tr -d '"' | head -n1)"
-api_origin="${api_origin:-https://forkmesh.com}"
+api_origin="${api_origin:-https://app.forkmesh.com}"
 if [ -z "$token" ]; then
     echo "ERROR: SSH_GATEWAY_TOKEN missing from $ENV_FILE." >&2
     exit 1
@@ -62,8 +57,8 @@ umask 077
 printf '%s\n' "$token" > "$stage/ssh-gateway.token"
 cp tools/ssh_gateway.py "$stage/ssh_gateway.py"
 cp tools/ssh_authorization_broker.py "$stage/broker.py"
-cp packaging/ssh/ssh-gateway-entrypoint "$stage/entrypoint"
-cp packaging/ssh/ssh-refresh-notify "$stage/notifier"
+cp server/packaging/ssh/ssh-gateway-entrypoint "$stage/entrypoint"
+cp server/packaging/ssh/ssh-refresh-notify "$stage/notifier"
 
 ssh "${SSH_OPTS[@]}" "root@$HOST" \
     'rm -rf /root/.forkmesh-gateway-stage && mkdir -m 0700 -p /root/.forkmesh-gateway-stage'
@@ -81,7 +76,6 @@ for required in ssh_gateway.py broker.py entrypoint notifier ssh-gateway.token; 
     [ -s "$staging/$required" ] || { echo "ERROR: staged $required missing." >&2; exit 1; }
 done
 
-# --- accounts -----------------------------------------------------------
 getent group forkmesh-ssh-gateway >/dev/null || groupadd --system forkmesh-ssh-gateway
 for account in git forkmesh-ssh-auth forkmesh-ssh-lookup; do
     getent passwd "$account" >/dev/null || \
@@ -115,7 +109,6 @@ chmod o+x /var/lib/forkmesh /var/lib/forkmesh/.local \
     /var/lib/forkmesh/.local/share/ForkMesh/ForkMesh "$SOURCE_ROOT" 2>/dev/null || true
 chmod -R o+rX "$source_path" 2>/dev/null || true
 
-# --- programs -----------------------------------------------------------
 install -d -m 0755 -o root -g root /opt/forkmesh-mirror
 install -m 0755 -o root -g root "$staging/ssh_gateway.py" /opt/forkmesh-mirror/ssh_gateway.py
 install -m 0755 -o root -g root "$staging/broker.py" /opt/forkmesh-mirror/ssh_authorization_broker.py
@@ -138,7 +131,6 @@ chmod 0755 /opt/forkmesh-mirror/ssh-gateway-authorized-key
 install -m 0640 -o root -g adm /dev/null /var/log/forkmesh-ssh-gateway.log 2>/dev/null || true
 chmod 0622 /var/log/forkmesh-ssh-gateway.log
 
-# --- configuration ------------------------------------------------------
 install -d -m 0755 -o root -g root /etc/forkmesh
 # private=True in the broker: 0600, and owned by the broker account itself
 install -m 0600 -o forkmesh-ssh-auth -g forkmesh-ssh-auth "$staging/ssh-gateway.token" /etc/forkmesh/ssh-gateway.token
@@ -225,7 +217,6 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now forkmesh-ssh-auth.service
 
-# --- sshd ---------------------------------------------------------------
 # Additive Match block, applied only after sshd -t validates it.
 conf_dir=/etc/ssh/sshd_config.d
 install -d -m 0755 "$conf_dir"

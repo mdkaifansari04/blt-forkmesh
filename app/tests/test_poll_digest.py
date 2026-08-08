@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Consolidated /api/poll status digest remains available for compatibility,
+but the dashboard no longer runs a periodic client poll."""
+from pathlib import Path
+import re
+
+from _dashboard_bundle import assembled_dashboard_js
+
+ROOT = Path(__file__).resolve().parents[1]
+ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+# dashboard.js is built from ordered public/dashboard/js/*.js fragments before
+# deploy (see src/dashboard_bundle.py).
+DASHBOARD_JS = assembled_dashboard_js()
+
+
+def test_worker_registers_poll_route_and_handler():
+    assert 'url.path in ("/api/poll", "/api/poll/")' in ENTRY_TEXT
+    assert "return await poll_handler(self.env, request)" in ENTRY_TEXT
+    assert "async def poll_handler(env, request):" in ENTRY_TEXT
+
+
+def test_poll_handler_returns_cheap_change_tokens():
+    # Grab just the handler body.
+    start = ENTRY_TEXT.index("async def poll_handler(env, request):")
+    body = ENTRY_TEXT[start:start + 2600]
+    # Build rev + profile + notification digests, all in one response.
+    assert '"rev": _build_rev(env)' in body
+    assert '"profile"' in body
+    assert '"notif"' in body
+    # Notifications are summarised with an aggregate query, NOT by decrypting
+    # every row (that was the per-request cost we are removing from the tick).
+    assert "COUNT(*)" in body and "MAX(ts)" in body
+    assert "decrypt_row" not in body
+
+
+def test_version_endpoint_shares_build_rev_helper():
+    assert "def _build_rev(env):" in ENTRY_TEXT
+    assert '"rev": _build_rev(self.env)' in ENTRY_TEXT
+
+
+def test_dashboard_does_not_run_periodic_profile_or_notification_polling():
+    assert "async function pollStatus(" not in DASHBOARD_JS
+    assert "`/api/poll?node=${encodeURIComponent(node)}`" not in DASHBOARD_JS
+    assert "function startProfileSync()" not in DASHBOARD_JS
+    assert not re.search(
+        r"(?:window\.)?setInterval\(\s*(?:loadNotifications|"
+        r"hydrateCanonicalProfile|refreshPublicProfile)\b",
+        DASHBOARD_JS,
+    )
+    assert "hydrateCanonicalProfile(session).then(() => loadNotifications())" in DASHBOARD_JS
+
+
+def test_periodic_session_validation_only_logs_out_on_authoritative_revocation():
+    session_watch = DASHBOARD_JS.split(
+        "function startAccountSessionWatch()", 1
+    )[1].split("function escapeHtml", 1)[0]
+    assert 'fetch("/api/accounts/sessions"' in session_watch
+    assert "window.setInterval(validate, 20_000);" in session_watch
+    assert "if (response.status === 401) logout();" in session_watch
+    assert "loadNotifications" not in session_watch
+    assert "hydrateCanonicalProfile" not in session_watch
+    assert "/api/poll" not in session_watch
