@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "EXQD1SPqlvL_bdHbwNnzg6jWQNu9YuyHA97F_qgaFg0",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1786179081,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "EXQD1SPqlvL_bdHbwNnzg6jWQNu9YuyHA97F_qgaFg0",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1786179081",
+            "sig": "HnORYYHUn5wry2e6dJVZJmmM9iyoqM0Jac7iw1ekzU1g8YLsRcZjFHL9Lo_NrkbUBBbV91zY2lMxHVwhThYOAg",
+            "title": "Allow for deleting issues from the web app",
+            "ts": 1786179081,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 582,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Allow for deleting issues from the web app",
+    "updatedAt": 1786179081,
+    "votes": 0
+}
