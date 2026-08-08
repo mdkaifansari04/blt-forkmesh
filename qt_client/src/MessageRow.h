@@ -5,6 +5,7 @@
 #include <QFrame>
 #include <QHash>
 #include <QMap>
+#include <QPixmap>
 #include <QString>
 #include <QStringList>
 
@@ -26,6 +27,13 @@ public:
 
     QString messageId() const { return m_message.id; }
     QString senderId() const { return m_message.senderId; }
+
+    // The fallback avatar a sender wears until their real one arrives: their
+    // initial on a tile in their own name colour. Public because the alert
+    // bubble draws the same face for a chat ping (adhoc #1612) — the person in
+    // the toast has to be recognisably the person in the transcript.
+    static QPixmap initialsAvatar(const QString &name, const QString &color,
+                                  int side = 36);
 
     void setAvatar(const QPixmap &pixmap);
     // emoji -> reactor display names
