@@ -79,6 +79,7 @@ bool isTransientGitError(const QString &err);
 QString branchDiffErrorHtml(const QString &branch, const QString &err,
                             int attempts);
 QString gitignoreRuleForPath(const QString &relPath);
+QString gitArgsCrumb(const QString &program, const QStringList &args);
 }
 } // namespace forkmesh
 
@@ -6167,6 +6168,58 @@ int main(int argc, char *argv[])
                                  "it off the pattern (adhoc #1594)"));
         }
 
+        // adhoc #1620: the background strip and the stall log name the git
+        // command that is running. A diff scoped to the whole changed-file set
+        // passes hundreds of pathspecs, so the pathspec list is summarised
+        // rather than pasted (or blindly chopped two files in).
+        {
+            QStringList many{"-C", "/home/f/projects/forkmesh", "diff", "main",
+                             "--"};
+            for (int i = 0; i < 291; ++i)
+                many << QStringLiteral(":(literal)cloudflare_worker/tests/"
+                                       "test_world_%1.py")
+                            .arg(i);
+            const QString crumb =
+                forkmesh::ui::gitArgsCrumb(QStringLiteral("git"), many);
+            check(crumb == QStringLiteral(
+                               "git diff main -- test_world_0.py, "
+                               "test_world_1.py, test_world_2.py, "
+                               "test_world_3.py, test_world_4.py +286 more "
+                               "(forkmesh)"),
+                  QString("a pathspec flood collapses to a few names and a count "
+                          "(adhoc #1620, crumb = %1)").arg(crumb));
+            check(crumb.size() < 200,
+                  QString("the crumb stays one readable log line (adhoc #1620, "
+                          "%1 chars)").arg(crumb.size()));
+
+            const QString few = forkmesh::ui::gitArgsCrumb(
+                QStringLiteral("git"),
+                {"-C", "/repos/forkmesh", "diff", "main", "--", "docs/a.md"});
+            check(few == QStringLiteral("git diff main -- docs/a.md (forkmesh)"),
+                  QString("a short pathspec list is still shown verbatim "
+                          "(crumb = %1)").arg(few));
+
+            // A private-repo fetch carries the signed view token as a "-c
+            // http.extraHeader=…" override, and a crumb reaches the log file and
+            // actions.jsonl — so the key survives and the credential does not.
+            const QString authed = forkmesh::ui::gitArgsCrumb(
+                QStringLiteral("git"),
+                {"-c", "http.extraHeader=Authorization: Basic c2VjcmV0OnRva2Vu",
+                 "-C", "/repos/forkmesh", "fetch", "--prune", "origin"});
+            check(!authed.contains(QStringLiteral("c2VjcmV0OnRva2Vu")) &&
+                      authed.startsWith(QString::fromUtf8(
+                          "git -c http.extraHeader=\xE2\x80\xA6 fetch")) &&
+                      authed.endsWith(QStringLiteral("(forkmesh)")),
+                  QString("the crumb keeps the config key but never logs the "
+                          "view token (adhoc #1620, crumb = %1)").arg(authed));
+
+            const QString noPaths = forkmesh::ui::gitArgsCrumb(
+                QStringLiteral("git"), {"log", "--numstat", "-n", "5"});
+            check(noPaths == QStringLiteral("git log --numstat -n 5"),
+                  QString("a command with no pathspecs is untouched (crumb = %1)")
+                      .arg(noPaths));
+        }
+
         // adhoc #1615: a merged-and-deleted branch used to leave one grey line in
         // the range pane. It now leaves a congratulation that names who landed
         // the branch and lists every other merge of the day beside it, so the
@@ -8300,6 +8353,42 @@ int main(int argc, char *argv[])
                   window.testLogBadgeFor(stored.last()) == QStringLiteral("BGBLOCK"),
               QStringLiteral("work that was not backgrounded badges as BGBLOCK, "
                              "its own category"));
+
+        // adhoc #1620: the crumb an outcome line quotes is a git command, and a
+        // pathspec list names whatever files the read was scoped to — including
+        // this repo's own test_client_error_reporting.py. The substring error
+        // scan claimed the line and painted a healthy run red.
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 2, 224,
+            QStringLiteral("git diff main -- test_client_error_reporting.py, "
+                           "test_offline_ci_workflow.py +286 more (forkmesh)"),
+            /*backgrounded=*/true));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) ==
+                      QStringLiteral("BGTASK"),
+              QStringLiteral("a ✓ outcome line keeps its BGTASK badge when the "
+                             "command it quotes names a file with \"error\" in "
+                             "it (adhoc #1620)"));
+
+        // The ✕ half is likewise classified from its own marker, not from the
+        // vocabulary of the crumb.
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 1, 900,
+            QStringLiteral("git log --grep failed -- error_log.py"),
+            /*backgrounded=*/false));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) ==
+                      QStringLiteral("BGBLOCK"),
+              QStringLiteral("a ✕ outcome line stays BGBLOCK rather than being "
+                             "reclassified as a failure (adhoc #1620)"));
+
+        window.testResetNetworkLog();
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 1, 48, QString(), /*backgrounded=*/true));
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 3, 1400, QString(), /*backgrounded=*/false));
 
         // adhoc #1594: a line that only mentions background work is not a
         // finished run, and counting it as one is what made the BGTASK tally

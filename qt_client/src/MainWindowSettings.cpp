@@ -4391,6 +4391,19 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
     if (lower.startsWith(QLatin1String("git: merged ")) &&
         lower.contains(QLatin1String(" in its linked worktree")))
         return {QStringLiteral("#a371f7"), QStringLiteral("MERGE")};
+    // A footer outcome line quotes the command it summarises, and a git crumb
+    // routinely names files the error scan below matches on — a diff scoped to
+    // this repo's own tests lists test_client_error_reporting.py, so a healthy
+    // ✓ run was painted red (adhoc #1620). The line's own marker already states
+    // the outcome, so classify it from that rather than from the crumb it
+    // carries: ✓ / ✕ is exactly the distinction the two badges exist to draw,
+    // and a genuine failure is not what these lines report in the first place.
+    if (lower.startsWith(QLatin1String("background "))) {
+        if (lower.contains(QLatin1String(" not backgrounded")))
+            return {QStringLiteral("#f0883e"), QStringLiteral("BGBLOCK")};
+        if (lower.contains(QLatin1String(" backgrounded")))
+            return {QStringLiteral("#8b949e"), QStringLiteral("BGTASK")};
+    }
     // Category should reflect *what drove the request*, not the payload the
     // server happened to return. The verbose "net" log line embeds a peeked
     // response snippet as "[body: …]", and a repository object always carries

@@ -11819,26 +11819,95 @@ inline void pumpKeepAlive()
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
 }
 
-// A compact one-line breadcrumb naming a git subprocess (subcommand + repo) for
-// stall reports — e.g. "git log --numstat (forkmesh)". Drops the "-C <dir>" prefix
-// our helpers use to target a working tree but keeps the repo's basename, and caps
-// length so a long --pretty format or path can't bloat the stall log line.
-inline QString gitBlockingCrumb(const QProcess &process)
+// How one pathspec reads inside a crumb: the pathspec magic our callers use
+// (":(literal)docs/notes.txt", ":!vendor", ":^build") is noise once the list is
+// only there to say *which* files, so show the plain file name.
+inline QString gitPathspecCrumbName(const QString &pathspec)
 {
-    QStringList args = process.arguments();
+    QString path = pathspec;
+    if (path.startsWith(QLatin1String(":("))) {
+        const int close = path.indexOf(QLatin1Char(')'));
+        if (close > 0)
+            path = path.mid(close + 1);
+    } else if (path.startsWith(QLatin1String(":!")) ||
+               path.startsWith(QLatin1String(":^"))) {
+        path = path.mid(2);
+    }
+    const int slash = path.lastIndexOf(QLatin1Char('/'));
+    return slash < 0 ? path : path.mid(slash + 1);
+}
+
+// A compact one-line breadcrumb naming a git subprocess (subcommand + repo) for
+// stall reports and the footer's background strip — e.g. "git log --numstat
+// (forkmesh)". Drops the "-C <dir>" prefix our helpers use to target a working
+// tree but keeps the repo's basename, and caps length so a long --pretty format
+// or path can't bloat the line.
+//
+// A file-scoped read ("git diff main -- <pathspec> …") can carry hundreds of
+// pathspecs — the changed-file diffs pass the whole set — which is thousands of
+// characters of one-line log entry. Blind truncation there names two files and
+// hides the rest, so the pathspec list is collapsed to the first few names plus
+// a count instead (adhoc #1620).
+inline QString gitArgsCrumb(const QString &program, const QStringList &argsIn)
+{
+    QStringList args = argsIn;
     QString repo;
+    // Leading "-c key=value" overrides come first on our fetch/clone lines, and
+    // the value is a secret: viewAuthGitArgs/importAuthGitArgs pass the signed
+    // view token as "-c http.extraHeader=Authorization: Basic <base64>". A crumb
+    // reaches the log file and actions.jsonl, so keep the key (an authed read is
+    // worth seeing) and drop the credential.
+    QStringList config;
+    while (args.size() >= 2 && args.first() == QLatin1String("-c")) {
+        const QString pair = args.at(1);
+        const int eq = pair.indexOf(QLatin1Char('='));
+        config << QStringLiteral("-c ") +
+                      (eq < 0 ? pair
+                              : pair.left(eq + 1) + QString::fromUtf8("…"));
+        args = args.mid(2);
+    }
     if (args.size() >= 2 && args.first() == QLatin1String("-C")) {
         repo = QFileInfo(args.at(1)).fileName();
         args = args.mid(2);
     }
-    QString cmd = (process.program() + QLatin1Char(' ') + args.join(QLatin1Char(' ')))
+    // Everything past a bare "--" is pathspecs, however many there are.
+    constexpr int kShownPaths = 5;
+    QString paths;
+    const int sep = args.indexOf(QLatin1String("--"));
+    if (sep >= 0) {
+        const QStringList pathspecs = args.mid(sep + 1);
+        args = args.mid(0, sep + 1); // keep the "--" on the command
+        if (pathspecs.size() > kShownPaths) {
+            QStringList shown;
+            for (int i = 0; i < kShownPaths; ++i)
+                shown << gitPathspecCrumbName(pathspecs.at(i));
+            paths = shown.join(QStringLiteral(", ")) +
+                    QStringLiteral(" +%1 more")
+                        .arg(pathspecs.size() - kShownPaths);
+        } else {
+            paths = pathspecs.join(QLatin1Char(' '));
+        }
+    }
+    QString cmd = (program + QLatin1Char(' ') +
+                   (config + args).join(QLatin1Char(' ')))
                       .simplified();
-    constexpr int kMax = 80;
-    if (cmd.size() > kMax)
-        cmd = cmd.left(kMax - 1) + QStringLiteral("…");
+    constexpr int kMaxCommand = 80;
+    if (cmd.size() > kMaxCommand)
+        cmd = cmd.left(kMaxCommand - 1) + QStringLiteral("…");
+    if (!paths.isEmpty()) {
+        cmd += QLatin1Char(' ') + paths.simplified();
+        constexpr int kMaxLine = 200; // backstop for five very long names
+        if (cmd.size() > kMaxLine)
+            cmd = cmd.left(kMaxLine - 1) + QStringLiteral("…");
+    }
     if (!repo.isEmpty())
         cmd += QStringLiteral(" (%1)").arg(repo);
     return cmd;
+}
+
+inline QString gitBlockingCrumb(const QProcess &process)
+{
+    return gitArgsCrumb(process.program(), process.arguments());
 }
 
 // The full command line of a git subprocess, uncapped, for error text a reader
