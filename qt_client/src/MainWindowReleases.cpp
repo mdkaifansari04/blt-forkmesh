@@ -2732,8 +2732,20 @@ void MainWindow::loadMirrorNodesPanel()
             shownNames.insert(nodeName.toLower());
             const bool isSource =
                 nodeName.compare(sourceOwner, Qt::CaseInsensitive) == 0;
-            const bool online =
+            const bool roomOnline =
                 m.value("status").toString() == QLatin1String("online");
+            // A managed/headless mirror serves entirely through its own signed
+            // direct-HTTPS tunnel and can lose its relay-room presence (a
+            // reconnect, a long gap between heartbeats) while that tunnel keeps
+            // answering a fresh, signed health probe the whole time. Room
+            // presence alone then reported a healthy, actively-serving fleet as
+            // offline and the "Online only" filter (checked by default) hid
+            // every one of those rows from the Mirror nodes list. Trust the
+            // endpoint's own signed-fresh health probe as a second, independent
+            // "is this node actually up" signal.
+            const bool endpointAlive = m.value("endpointHealthy").toBool() &&
+                                       m.value("endpointFresh").toBool();
+            const bool online = roomOnline || endpointAlive;
             const bool integrityFailing =
                 m.value("integrity").toString() == QLatin1String("rejected");
             if (onlineOnly && !online)
@@ -2778,10 +2790,16 @@ void MainWindow::loadMirrorNodesPanel()
                               (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
                                   nodeName.toLower());
             nameItem->setToolTip(
-                online
+                roomOnline
                     ? (behind ? QString::fromUtf8("Online \xC2\xB7 out of sync")
                               : QStringLiteral("Online now"))
-                    : QStringLiteral("Published mirror \xC2\xB7 not in the live room"));
+                    : online
+                          ? QStringLiteral(
+                                "Not in the live relay room, but its direct-HTTPS "
+                                "tunnel just answered a fresh signed health probe "
+                                "\xE2\x80\x94 the mirror is up and serving.")
+                          : QStringLiteral(
+                                "Published mirror \xC2\xB7 not in the live room"));
             if (integrityFailing)
                 markPinRejected(nameItem, false);
             m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);

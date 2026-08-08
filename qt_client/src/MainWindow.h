@@ -2620,10 +2620,22 @@ private:
     void pingVultrProvisionStage(int stage, bool ok,
                                  const QString &detail = QString());
     void renderVultrProvisionProgress(bool failed = false);
+    // Remember the detail/error text shown under a given numbered stage so the
+    // per-stage caption in the deploy rail keeps showing it after later stages
+    // advance past it (setVultrProvisionStage only tracks the CURRENT stage's
+    // text in m_vultrProvisionDetail).
+    void recordVultrStageDetail(int stage, const QString &detail);
+    void resetVultrStageDetails();
     void persistVultrProvisionState(const QString &state = QStringLiteral("active"),
                                     const QString &message = QString());
     void restoreVultrProvision();
     void resumeVultrProvision();
+    // Manually abandon the in-progress (or paused/failed) deployment so the
+    // operator can start a fresh one instead of waiting out a stuck boot poll
+    // or public-traffic verification. Any Vultr server already created is left
+    // running/billing — this only stops ForkMesh from tracking the attempt.
+    void endVultrProvision();
+    void updateVultrEndDeploymentButtonVisibility();
     QString vultrProvisionLogPath() const;
     void saveVultrProvisionLog();
     void scheduleVultrProvisionLogSave();
@@ -7064,6 +7076,9 @@ private:
     // logins to it, so the node can run agent sessions right away (adhoc #418).
     QCheckBox *m_vultrAgentClisCheck = nullptr;
     QPushButton *m_vultrCreateButton = nullptr;
+    // Abandons a stuck/paused deployment so a fresh one can start; visible only
+    // while there is a running or resumable checkpoint to abandon.
+    QPushButton *m_vultrEndDeploymentButton = nullptr;
     QLabel *m_vultrStatus = nullptr;
     QCheckBox *m_mirrorFleetEnabledCheck = nullptr;
     QSpinBox *m_mirrorFleetDesiredSpin = nullptr;
@@ -7079,6 +7094,11 @@ private:
     QWidget *m_vultrProgressPanel = nullptr;
     QList<QLabel *> m_vultrStageNumbers;
     QList<QLabel *> m_vultrStageLabels;
+    // Small caption under each stage's name showing that stage's latest status
+    // or error, so a stalled/failed step says why without hunting through the
+    // shared Live output log.
+    QList<QLabel *> m_vultrStageDetails;
+    QList<QString> m_vultrStageDetailText;
     QLabel *m_vultrLiveBadge = nullptr;
     bool m_vultrProvisionActive = false;
     bool m_vultrResumeRequested = false;
