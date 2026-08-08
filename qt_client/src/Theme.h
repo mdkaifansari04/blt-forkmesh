@@ -227,12 +227,6 @@ QPushButton#socialIconButton:hover { border-color: #6e7681; }
 /* Right-hand tool cluster (Restart / Resize / Log). The items paint themselves
    like every other rail entry, so the host only holds them off the edge. */
 #debugBarTools { background: transparent; }
-/* "Monitor" (adhoc #1615) sits in that cluster beside the Cloud button it
-   belongs to. It is the one plain checkbox in the strip, so it carries the
-   caption size the rail items paint and turns the Cloud blue when armed. */
-#cloudLogMonitorCheck { color: #8b949e; font-size: 11px; spacing: 4px; }
-#cloudLogMonitorCheck:hover { color: #58a6ff; }
-#cloudLogMonitorCheck:checked { color: #58a6ff; }
 #debugLogTail {
     background-color: #0d1117; border-top: 1px solid #30363d;
     color: #8b949e; padding: 2px 8px;
@@ -431,12 +425,11 @@ QPushButton#relayJoinApproveButton:hover { background-color: #f85149; }
    always visible, with a clear selected state. */
 #topNavBar { background: transparent; }
 #navDivider { background-color: #21262d; border: none; }
-QPushButton#topNavButton, QPushButton#cloudflareWorkerLogsButton {
+QPushButton#topNavButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #8b949e; font-size: 13px; font-weight: 600; padding: 5px 12px;
 }
-QPushButton#topNavButton:hover,
-QPushButton#cloudflareWorkerLogsButton:hover {
+QPushButton#topNavButton:hover {
     background-color: #161b22; color: #e6edf3;
 }
 QPushButton#topNavButton:checked {
@@ -1905,12 +1898,11 @@ QPushButton#relayJoinApproveButton:hover { background-color: #a40e26; }
    always visible, with a clear selected state. */
 #topNavBar { background: transparent; }
 #navDivider { background-color: #d0d7de; border: none; }
-QPushButton#topNavButton, QPushButton#cloudflareWorkerLogsButton {
+QPushButton#topNavButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #656d76; font-size: 13px; font-weight: 600; padding: 5px 12px;
 }
-QPushButton#topNavButton:hover,
-QPushButton#cloudflareWorkerLogsButton:hover {
+QPushButton#topNavButton:hover {
     background-color: #eaeef2; color: #1f2328;
 }
 QPushButton#topNavButton:checked {
@@ -2415,10 +2407,6 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #debugBarScroll QScrollBar:horizontal { height: 7px; }
 /* See the dark rule: the tool items are painted, the host is just a layout. */
 #debugBarTools { background: transparent; }
-/* See the dark rule: the cloud log monitor toggle beside the Cloud button. */
-#cloudLogMonitorCheck { color: #57606a; font-size: 11px; spacing: 4px; }
-#cloudLogMonitorCheck:hover { color: #0969da; }
-#cloudLogMonitorCheck:checked { color: #0969da; }
 #debugLogTail {
     background-color: #ffffff; border-top: 1px solid #d0d7de;
     color: #57606a; padding: 2px 8px;

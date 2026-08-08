@@ -1780,44 +1780,13 @@ QWidget *MainWindow::buildStatusBar()
     toolsSeparator->setFixedHeight(32);
     debugToolsRow->addWidget(toolsSeparator, 0, Qt::AlignVCenter);
 
-    // The relay's live tail is a section of this strip now (adhoc #1559) rather
-    // than a button on the Log page: it sits beside the Worker status dots it
-    // explains, and one click opens the full viewer.
-    auto *cloudflareButton = new ActivityRailButton(QStringLiteral("cloud"),
-                                                    QStringLiteral("Cloud"));
-    cloudflareButton->setObjectName(
-        QStringLiteral("cloudflareWorkerLogsButton"));
-    cloudflareButton->setCheckable(false);
-    cloudflareButton->setCursor(Qt::PointingHandCursor);
-    cloudflareButton->setIconSize(QSize(kRailIconPx, kRailIconPx));
-    cloudflareButton->setToolTip(
-        QStringLiteral("Open the deployed Cloudflare Worker's live logs in a "
-                       "window of their own, with its errors charted over time"));
-    connect(cloudflareButton, &QPushButton::clicked, this,
-            &MainWindow::showCloudflareWorkerLogs);
+    // The Cloudflare Worker live tail moved to the Log page's quick-filter row
+    // (adhoc #1636): it reads as one of the categories it explains instead of
+    // a button-plus-checkbox pair off on its own, with the same icon+badge
+    // shape and a checked state that shows monitoring is actually running,
+    // not just requested. See rebuildLogFilterButtons().
 
-    // Beside the button that opens that tail, the checkbox that keeps it
-    // running without one (adhoc #1615): while it is ticked a background
-    // Wrangler tail feeds every Worker error into the log, where it raises the
-    // same red card as any other failure. On by default and remembered across
-    // runs now (adhoc #1632) — a Worker failure nobody is watching for is worth
-    // more than the idling tail costs. The tick is set before the signal is
-    // connected so building the window never spawns anything: the tail is
-    // started, once, from startCloudLogMonitorIfConfigured().
-    m_cloudLogMonitorCheck = new QCheckBox(QStringLiteral("Monitor"));
-    m_cloudLogMonitorCheck->setObjectName(QStringLiteral("cloudLogMonitorCheck"));
-    m_cloudLogMonitorCheck->setCursor(Qt::PointingHandCursor);
-    m_cloudLogMonitorCheck->setChecked(
-        QSettings().value(kCloudLogMonitorSetting, true).toBool());
-    updateCloudLogMonitorTooltip();
-    connect(m_cloudLogMonitorCheck, &QCheckBox::toggled, this, [this](bool on) {
-        QSettings().setValue(kCloudLogMonitorSetting, on);
-        if (m_cloudLogMonitorSettingCheck)
-            m_cloudLogMonitorSettingCheck->setChecked(on);
-        setCloudLogMonitorEnabled(on);
-    });
-
-    // Third tool: grow the window by a five-line live tail of the log, so the
+    // Second tool: grow the window by a five-line live tail of the log, so the
     // newest lines are readable without opening the footer overlay or the full
     // Log page. Checkable — it is a state, not a one-shot action.
     auto *logTailButton = new ActivityRailButton(QStringLiteral("list-unordered"),
@@ -1831,8 +1800,6 @@ QWidget *MainWindow::buildStatusBar()
     connect(logTailButton, &QPushButton::toggled, this,
             [this](bool on) { setDebugLogTailVisible(on); });
 
-    debugToolsRow->addWidget(cloudflareButton, 0, Qt::AlignVCenter);
-    debugToolsRow->addWidget(m_cloudLogMonitorCheck, 0, Qt::AlignVCenter);
     for (QPushButton *tool : {m_navRebuildButton, m_navResizeButton,
                               static_cast<QPushButton *>(logTailButton)})
         if (tool)
@@ -8361,7 +8328,7 @@ QString MainWindow::testLogTimelineSummary() const
 }
 #endif
 
-// Shared by the live viewer and the debug bar's Monitor toggle: both need the
+// Shared by the live viewer and the Log page's Cloud chip: both need the
 // same Worker directory, the same pinned Wrangler invocation, and the same
 // credential — and neither may ever put that credential in argv.
 bool MainWindow::prepareCloudflareTail(
@@ -8391,7 +8358,7 @@ bool MainWindow::prepareCloudflareTail(
     }
     if (token->isEmpty()) {
         // A background monitor must never be the thing that pops a modal —
-        // it can be switched on from the debug bar at any moment, including
+        // it can be switched on from the Log page at any moment, including
         // on a headless node with nobody there to type.
         if (!allowPrompt) {
             flashMessage(
@@ -8597,9 +8564,9 @@ void MainWindow::updateCloudLogWindowNotice()
         return;
     if (cloudLogMonitorRunning()) {
         m_cloudLogWindowNotice->setText(QStringLiteral(
-            "Attached to the debug bar's cloud log monitor. Every request "
+            "Attached to the Log page's cloud log monitor. Every request "
             "shows the user agent behind it; Worker errors also raise an "
-            "alert. Unchecking Monitor stops the stream."));
+            "alert. Clicking the Cloud chip again stops the stream."));
         return;
     }
     if (cloudLogViewerRunning() || m_cloudLogViewerProcess) {
@@ -8619,8 +8586,8 @@ void MainWindow::updateCloudLogWindowNotice()
         return;
     }
     m_cloudLogWindowNotice->setText(QStringLiteral(
-        "Nothing is streaming. Click Cloud in the debug bar again to start a "
-        "fresh tail, or tick Monitor to keep one running in the background."));
+        "Nothing is streaming. Click the Cloud chip on the Log page to start "
+        "a fresh tail and keep it running in the background."));
 }
 
 // "Monitoring · 114 events · 41 errors · paused · 12 new lines below".
@@ -8630,7 +8597,7 @@ void MainWindow::updateCloudLogWindowStatus()
         return;
     const bool monitoring = cloudLogMonitorRunning();
     // Counts come from the stream that is feeding the pane, and — once both
-    // have stopped — from the one that last did, so switching the Monitor box
+    // have stopped — from the one that last did, so switching the Cloud chip
     // off does not blank the totals it just reported.
     const bool fromMonitor =
         monitoring || (!cloudLogViewerRunning() && m_cloudLogWindowFromMonitor);
@@ -8731,7 +8698,7 @@ void MainWindow::appendCloudLogWindowLine(const QString &line, bool)
     updateCloudLogWindowStatus();
 }
 
-// The viewer's own Wrangler tail, for when the debug bar's Monitor box is off.
+// The viewer's own Wrangler tail, for when the Log page's Cloud chip is off.
 // Owned by the window rather than by a modal exec(): the pane is a window you
 // can leave open beside the app, so the process outlives the call that started
 // it and is torn down when the window closes (or the monitor takes over).
@@ -8986,7 +8953,7 @@ void MainWindow::buildCloudflareLogWindow()
             [this](const QString &line, bool isError) {
                 appendCloudLogWindowLine(line, isError);
             });
-    // Closing the window stops the tail it owns; the debug bar's monitor, which
+    // Closing the window stops the tail it owns; the Log page's monitor, which
     // is nobody's window, keeps running.
     connect(dialog, &QDialog::finished, this,
             [this] { stopCloudflareLogViewerTail(); });
@@ -9003,7 +8970,7 @@ void MainWindow::buildCloudflareLogWindow()
 
 void MainWindow::showCloudflareWorkerLogs()
 {
-    // The debug bar's Monitor toggle already holds a tail open against this
+    // The Log page's Cloud chip already holds a tail open against this
     // Worker. Cloudflare caps how many tails one script can carry, and a second
     // one would double the traffic for the same lines, so the viewer attaches
     // to the running monitor instead: its backlog fills the pane and every new
@@ -9119,13 +9086,13 @@ bool MainWindow::cloudLogMonitorTokenAvailable() const
 
 // The stored preference, acted on once the window is up. A node with no token
 // says so in the tooltip and does nothing else: the automatic start neither
-// unticks the box (the preference is still "monitor" — storing a token and
+// flips the preference off (it is still "monitor" — storing a token and
 // relaunching is all it takes) nor writes a line into the log every launch.
 void MainWindow::startCloudLogMonitorIfConfigured()
 {
-    if (m_closingDown || m_cloudLogMonitorProcess || !m_cloudLogMonitorCheck)
+    if (m_closingDown || m_cloudLogMonitorProcess)
         return;
-    if (!m_cloudLogMonitorCheck->isChecked())
+    if (!QSettings().value(kCloudLogMonitorSetting, true).toBool())
         return;
     m_cloudLogMonitorAwaitingToken = !cloudLogMonitorTokenAvailable();
     if (m_cloudLogMonitorAwaitingToken) {
@@ -9137,10 +9104,6 @@ void MainWindow::startCloudLogMonitorIfConfigured()
 
 void MainWindow::stopCloudLogMonitorAfterFailure()
 {
-    if (m_cloudLogMonitorCheck) {
-        const QSignalBlocker blocker(*m_cloudLogMonitorCheck);
-        m_cloudLogMonitorCheck->setChecked(false);
-    }
     if (m_cloudLogMonitorSettingCheck) {
         const QSignalBlocker blocker(*m_cloudLogMonitorSettingCheck);
         m_cloudLogMonitorSettingCheck->setChecked(false);
@@ -9149,8 +9112,8 @@ void MainWindow::stopCloudLogMonitorAfterFailure()
     updateCloudLogMonitorTooltip();
 }
 
-// The debug bar's Monitor checkbox. Checked, it holds one Wrangler tail open in
-// the background and turns every Worker failure into an ERROR-badged log line —
+// The Log page's Cloud chip. Checked, it holds one Wrangler tail open in the
+// background and turns every Worker failure into an ERROR-badged log line —
 // which is all it takes for alertOnLoggedError() to raise the same red card any
 // other failure gets (adhoc #1615). Healthy hits are not logged: they would bury
 // the app's own log under Worker traffic. The viewer sees them instead.
@@ -9204,9 +9167,8 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
     QString token;
     QString workerDirectory;
     forkmesh::control::CloudflareBootstrapCommand command;
-    // allowPrompt=false: a checkbox in the debug bar must not open a modal
-    // asking for a credential. Without a stored token it explains itself and
-    // pops back out.
+    // allowPrompt=false: a chip click must not open a modal asking for a
+    // credential. Without a stored token it explains itself and pops back out.
     if (!prepareCloudflareTail(&token, &workerDirectory, &command, nullptr,
                                false)) {
         stopCloudLogMonitorAfterFailure();
@@ -9327,31 +9289,9 @@ void MainWindow::handleCloudLogMonitorLine(const QString &line)
 void MainWindow::updateCloudLogMonitorTooltip()
 {
     // Called from every point the monitor's counters move, so the open viewer's
-    // status line rides along with the checkbox's tooltip.
+    // status line rides along with the Cloud chip's checked state and tooltip.
     updateCloudLogWindowStatus();
-    if (!m_cloudLogMonitorCheck)
-        return;
-    const bool running = m_cloudLogMonitorProcess &&
-                         m_cloudLogMonitorProcess->state() !=
-                             QProcess::NotRunning;
-    m_cloudLogMonitorCheck->setToolTip(
-        running ? QStringLiteral(
-                      "Watching the deployed Worker's live log \xC2\xB7 %1 "
-                      "event%2, %3 error%4. Errors raise an alert.")
-                      .arg(m_cloudLogMonitorEvents)
-                      .arg(m_cloudLogMonitorEvents == 1 ? QString()
-                                                        : QStringLiteral("s"))
-                      .arg(m_cloudLogMonitorErrors)
-                      .arg(m_cloudLogMonitorErrors == 1 ? QString()
-                                                        : QStringLiteral("s"))
-        : m_cloudLogMonitorAwaitingToken
-                ? QStringLiteral(
-                      "Ready to watch the deployed Worker's live log and alert "
-                      "on its errors \xC2\xB7 waiting for a Cloudflare API "
-                      "token (Settings > Secrets)")
-                : QStringLiteral(
-                      "Watch the deployed Cloudflare Worker's live log and "
-                      "alert on every error it reports"));
+    updateCloudLogFilterChip();
 }
 
 QWidget *MainWindow::buildBreadcrumb()

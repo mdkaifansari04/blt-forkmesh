@@ -1131,9 +1131,10 @@ QWidget *MainWindow::buildSettingsSection()
                     m_statusVersionButton->setChecked(enabled);
             });
 
-    // The cloud monitor's off switch for nodes that keep the debug bar closed:
+    // The cloud monitor's off switch for nodes that never open the Log page:
     // it is on by default (adhoc #1632), so it must be reachable from Settings
-    // and not only from the bar's own Monitor box. The two mirror each other.
+    // and not only from the Log page's own Cloud chip. The two mirror each
+    // other (adhoc #1636).
     m_cloudLogMonitorSettingCheck =
         new QCheckBox("Monitor the deployed Worker's log for errors");
     m_cloudLogMonitorSettingCheck->setObjectName(
@@ -1146,11 +1147,6 @@ QWidget *MainWindow::buildSettingsSection()
         "error. Needs a stored Cloudflare API token; on by default.");
     connect(m_cloudLogMonitorSettingCheck, &QCheckBox::toggled, this,
             [this](bool enabled) {
-                if (m_cloudLogMonitorCheck) {
-                    // The debug bar's box owns the preference and the tail.
-                    m_cloudLogMonitorCheck->setChecked(enabled);
-                    return;
-                }
                 QSettings().setValue(kCloudLogMonitorSetting, enabled);
                 setCloudLogMonitorEnabled(enabled);
             });
@@ -4950,6 +4946,30 @@ void MainWindow::rebuildLogFilterButtons()
     m_logFilterGroup = new QButtonGroup(this);
     m_logFilterGroup->setExclusive(true);
 
+    // The Cloudflare Worker's live-tail monitor rides the same row, in the
+    // same icon+badge shape, as the categories it explains (adhoc #1636): not
+    // a filter — clicking it does not narrow the log — just the app's one
+    // on/off switch for the background Wrangler tail, checked exactly while
+    // that tail is actually live. That is the fix for the old debug-bar
+    // checkbox, which showed "on" from the stored preference alone and could
+    // read checked even when the tail had failed to start or had no token to
+    // start with. Built first and left out of m_logFilterGroup so a click
+    // toggles it instead of selecting a filter.
+    auto *cloudChip = new forkmesh::ui::VerticalIconButton(
+        QStringLiteral("Cloud"), forkmesh::ui::VerticalIconButton::Tab);
+    cloudChip->setObjectName(QStringLiteral("cloudLogFilterChip"));
+    cloudChip->setCheckable(true);
+    cloudChip->setOcticonName(QStringLiteral("cloud"));
+    m_cloudLogFilterChip = cloudChip;
+    m_logFilterRow->addWidget(cloudChip);
+    connect(cloudChip, &QPushButton::clicked, this, [this] {
+        const bool wasRunning = cloudLogMonitorRunning();
+        setCloudLogMonitorEnabled(!wasRunning);
+        if (!wasRunning)
+            showCloudflareWorkerLogs();
+    });
+    updateCloudLogFilterChip();
+
     auto addChip = [this](const QString &label, const QString &category,
                           const QString &tip = QString()) {
         // The same icon-over-caption tile the repo tabs and the activity rail
@@ -5059,11 +5079,50 @@ void MainWindow::updateLogFilterChipCounts()
         auto *chip = item ? dynamic_cast<forkmesh::ui::VerticalIconButton *>(
                                 item->widget())
                           : nullptr;
-        if (!chip)
+        // The Cloud chip is not a category (it carries no logChipCategory
+        // property) and keeps its own counts via updateCloudLogFilterChip();
+        // treating its missing property as an empty category would badge it
+        // with the whole log's size instead of the monitor's own tally.
+        if (!chip || chip->objectName() == QStringLiteral("cloudLogFilterChip"))
             continue;
         chip->setBadgeCount(
             logFilterChipCount(chip->property("logChipCategory").toString()));
     }
+}
+
+// Keeps the Log page's Cloud chip in step with the monitor's actual state
+// (adhoc #1636): a blue badge for events, the same red alert badge a Pulls
+// tab uses for "waiting on you" counts for errors, and checked exactly while
+// the background tail is live — not merely requested, which is what let the
+// old debug-bar checkbox read "on" for a token-less or crashed monitor.
+// Called from every point the monitor's counters or running state move.
+void MainWindow::updateCloudLogFilterChip()
+{
+    if (!m_cloudLogFilterChip)
+        return;
+    const bool running = cloudLogMonitorRunning();
+    m_cloudLogFilterChip->setChecked(running);
+    m_cloudLogFilterChip->setBadgeCount(m_cloudLogMonitorEvents);
+    m_cloudLogFilterChip->setAlertBadgeCount(m_cloudLogMonitorErrors);
+    m_cloudLogFilterChip->setToolTip(
+        running ? QStringLiteral(
+                      "Watching the deployed Worker's live log \xC2\xB7 %1 "
+                      "event%2, %3 error%4. Click to stop. Errors raise an "
+                      "alert.")
+                      .arg(m_cloudLogMonitorEvents)
+                      .arg(m_cloudLogMonitorEvents == 1 ? QString()
+                                                        : QStringLiteral("s"))
+                      .arg(m_cloudLogMonitorErrors)
+                      .arg(m_cloudLogMonitorErrors == 1 ? QString()
+                                                        : QStringLiteral("s"))
+        : m_cloudLogMonitorAwaitingToken
+                ? QStringLiteral(
+                      "Ready to watch the deployed Worker's live log and alert "
+                      "on its errors \xC2\xB7 waiting for a Cloudflare API "
+                      "token (Settings > Secrets)")
+                : QStringLiteral(
+                      "Click to watch the deployed Cloudflare Worker's live "
+                      "log and alert on every error it reports"));
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
