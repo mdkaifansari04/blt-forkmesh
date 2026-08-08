@@ -8224,6 +8224,9 @@ private:
             {"SAVE", "#3fb950", "check-circle"},
             {"CLIP", "#8b949e", "copy"},
             {"NETWORK", "#f2cc60", "broadcast"},
+            // The deployed Cloudflare Worker's live tail, which lands in this
+            // log like any other subsystem's traffic (adhoc #1613).
+            {"CLOUD", "#f6821f", "cloud"},
             {"STALL", "#d29922", "alert"},
             {"ERROR", "#f85149", "x"},
             {"INFO", "#6e7681", "info"},
@@ -8235,7 +8238,7 @@ private:
 
     // One entry per row of categories() above; the per-lane arrays below and the
     // compact grid are both sized from it.
-    static constexpr int kCategoryCount = 32;
+    static constexpr int kCategoryCount = 33;
     static constexpr int categoryCount() { return kCategoryCount; }
     static constexpr int kCompactRows = 3;
     // Enough columns to hold the whole taxonomy in those rows, so adding a

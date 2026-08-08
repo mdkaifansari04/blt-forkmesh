@@ -159,10 +159,10 @@ void checkFooterOverlayGeometry(MainWindow &window)
         QStringLiteral("statusVersionButton"));
     check(dock && log && prompt && lights && header && debugBar && version &&
               !log->isVisible() && !debugBar->isVisible() && lights->isDebug() &&
-              lights->lightCount() == 32 &&
+              lights->lightCount() == 33 &&
               prompt->geometry().center().x() > dock->rect().center().x() &&
               prompt->geometry().bottom() == dock->rect().bottom(),
-          QStringLiteral("all 32 labeled log categories start collapsed in the "
+          QStringLiteral("all 33 labeled log categories start collapsed in the "
                          "version-controlled debug bar"));
     if (version && debugBar) {
         version->click();
@@ -646,12 +646,12 @@ void checkFooterOverlayGeometry(MainWindow &window)
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
     check(log && lights && header && log->isVisible() && lights->isVisible() &&
-              header->isVisible() && header->lightCount() == 32 &&
+              header->isVisible() && header->lightCount() == 33 &&
               log->geometry().center().x() < dock->rect().center().x() &&
               log->geometry().bottom() == dock->rect().bottom() &&
               header->geometry().top() >= log->rect().top(),
           QStringLiteral("the compact log opens at the lower-left with its "
-                         "expanded 31-category header"));
+                         "expanded 33-category header"));
 
     window.testShowLogSection();
     QApplication::processEvents();
@@ -830,10 +830,11 @@ void checkAgentDoneCelebration(MainWindow &window)
     QApplication::processEvents();
 }
 
-// adhoc #1615: with the debug bar's Monitor box ticked, a Worker failure has to
-// reach the same red card as any other failure — and the healthy traffic around
-// it must not, or the app's own log would drown in Worker hits. Lines are fed in
-// as the tail's process would deliver them.
+// adhoc #1615/#1613: with the monitor running, a Worker failure has to reach the
+// same red card as any other failure, and the healthy traffic around it has to
+// reach this app's own log — under its own CLOUD category, so it can be read or
+// filtered out there instead of in a second log window. Lines are fed in as the
+// tail's process would deliver them.
 void checkCloudLogMonitorAlert(MainWindow &window)
 {
     window.testDismissTopMessage();
@@ -847,14 +848,18 @@ void checkCloudLogMonitorAlert(MainWindow &window)
         "\"headers\":{\"user-agent\":\"Mozilla/5.0 (X11; Linux) Chrome/126\"}},"
         "\"response\":{\"status\":200}}}"));
     QApplication::processEvents();
+    const QStringList afterHealthyHit = window.testNetworkLog();
     check(!window.testErrorBorderVisible() &&
-              window.testNetworkLog().isEmpty() &&
               window.testCloudLogMonitorEvents() == 1 &&
-              window.testCloudLogMonitorRecent().size() == 1 &&
-              window.testCloudLogMonitorRecent().constFirst().contains(
-                  QStringLiteral("UA Mozilla/5.0 (X11; Linux) Chrome/126")),
-          QStringLiteral("a healthy Worker hit is kept with its user agent and "
-                         "stays out of the app's own log"));
+              afterHealthyHit.size() == 1 &&
+              afterHealthyHit.constFirst().contains(
+                  QStringLiteral("Cloud hit: GET https://forkmesh.com/api/"
+                                 "status")) &&
+              afterHealthyHit.constFirst().contains(
+                  QStringLiteral("UA Mozilla/5.0 (X11; Linux) Chrome/126")) &&
+              window.testLogFilterChipCount(QStringLiteral("CLOUD")) == 1,
+          QStringLiteral("a healthy Worker hit lands in the app's own log, with "
+                         "its user agent, under the CLOUD category"));
 
     window.testCloudLogMonitorLine(QStringLiteral(
         "{\"outcome\":\"exception\",\"eventTimestamp\":2000,\"event\":{"
@@ -874,7 +879,7 @@ void checkCloudLogMonitorAlert(MainWindow &window)
 
     // adhoc #1623: the real stream is not one event per line. Wrangler
     // pretty-prints it, and a read boundary can fall mid-event — which is what
-    // dropped the whole expanded object into the viewer and left the Monitor box
+    // dropped the whole expanded object into the log and left the monitor
     // raising nothing. Fed here exactly as the process delivers it.
     window.testDismissTopMessage();
     window.testResetNetworkLog();
@@ -910,12 +915,14 @@ void checkCloudLogMonitorAlert(MainWindow &window)
         "    ]\n"
         "}\n"));
     QApplication::processEvents();
+    const QStringList afterSplitEvent = window.testNetworkLog();
     check(window.testCloudLogMonitorEvents() == eventsBefore + 1 &&
               window.testCloudLogMonitorErrors() == errorsBefore + 1 &&
               window.testErrorBorderVisible() &&
-              window.testCloudLogMonitorRecent().constLast().contains(
+              !afterSplitEvent.isEmpty() &&
+              afterSplitEvent.constLast().contains(
                   QStringLiteral("UA curl/8.5.0")) &&
-              !window.testCloudLogMonitorRecent().constLast().contains(
+              !afterSplitEvent.constLast().contains(
                   QStringLiteral("\"outcome\"")) &&
               window.testTopMessageRaw().contains(
                   QStringLiteral("RangeError: stack overflow")),
@@ -928,95 +935,72 @@ void checkCloudLogMonitorAlert(MainWindow &window)
     QApplication::processEvents();
 }
 
-// adhoc #1626: the cloud icon used to open a small modal box of text. The Worker
-// tail now reads like the app's own full log screen — its own window, an
-// activity chart of the errors over time above the stream, and a Pause control,
-// because a log that scrolls out from under the pointer cannot be read.
-void checkCloudflareLogWindow(MainWindow &window)
+// adhoc #1613: the Worker tail has no window of its own any more. Its traffic is
+// this log's CLOUD category, and the cloud icon is that category's chip in the
+// quick-filter row — a filter like every other chip beside it, which also
+// reports whether the background tail is actually running.
+void checkCloudLogMerged(MainWindow &window)
 {
-    window.testOpenCloudflareLogWindow();
+    window.testShowLogSection();
+    window.testResetNetworkLog();
     QApplication::processEvents();
 
-    QWidget *viewer = window.testCloudflareLogWindow();
-    QWidget *chart =
-        viewer ? viewer->findChild<QWidget *>(
-                     QStringLiteral("cloudflareWorkerLogsChart"))
-               : nullptr;
-    auto *pane = viewer ? viewer->findChild<QPlainTextEdit *>(
-                              QStringLiteral("cloudflareWorkerLiveLogs"))
-                        : nullptr;
-    auto *pause = viewer ? viewer->findChild<QPushButton *>(
-                               QStringLiteral("cloudflareWorkerLogsPause"))
-                         : nullptr;
-    check(viewer && viewer->isWindow() && chart && pane && pause,
-          QStringLiteral("the Worker log viewer opens as a window of its own, "
-                         "with an activity chart and a pause control"));
-    if (!viewer || !pane || !pause)
-        return;
-
-    // Counts are read as deltas: the monitor checks above have already put a
-    // few events on the same timeline.
-    const int errorsBefore = window.testCloudflareLogTimelineCount();
-    window.testSetCloudflareLogErrorsOnly(false);
-    const int eventsBefore = window.testCloudflareLogTimelineCount();
-    window.testSetCloudflareLogErrorsOnly(true);
-
-    constexpr int kLines = 240;
-    for (int index = 0; index < kLines; ++index) {
-        window.testCloudflareLogLine(
-            QStringLiteral("GET https://forkmesh.com/api/status - %1 @ line %2")
-                .arg(index % 6 == 0 ? QStringLiteral("500 Exception Thrown")
-                                    : QStringLiteral("200 Ok"))
-                .arg(index),
-            index % 6 == 0);
+    for (int index = 0; index < 12; ++index) {
+        window.testCloudLogMonitorLine(
+            QStringLiteral(
+                "{\"outcome\":\"ok\",\"eventTimestamp\":%1,\"event\":{"
+                "\"request\":{\"method\":\"GET\",\"url\":\"https://"
+                "forkmesh.com/api/error_log?n=%2\",\"headers\":{"
+                "\"user-agent\":\"curl/8.5.0\"}},\"response\":{"
+                "\"status\":200}}}")
+                .arg(4000 + index)
+                .arg(index));
     }
     QApplication::processEvents();
-    check(window.testCloudflareLogText().contains(QStringLiteral("line 239")) &&
-              window.testCloudflareLogAtBottom(),
-          QStringLiteral("the live stream renders into the pane and follows the "
-                         "tail while nobody has stopped it"));
-    check(window.testCloudflareLogTimelineCount() - errorsBefore == kLines / 6,
-          QStringLiteral("the chart plots the Worker's errors over time, not "
-                         "every request it served"));
-    window.testSetCloudflareLogErrorsOnly(false);
-    check(window.testCloudflareLogTimelineCount() - eventsBefore == kLines &&
-              window.testCloudflareLogTimelineSummary().contains(
-                  QStringLiteral("event")),
-          QStringLiteral("unticking Errors only charts every Worker event"));
-    window.testSetCloudflareLogErrorsOnly(true);
 
-    pause->click();
+    // A healthy hit on a URL that spells "error" is still a healthy hit: the
+    // red badge — and the alert riding on it — belongs to the Worker's own
+    // failures alone.
+    check(window.testLogFilterChipCount(QStringLiteral("CLOUD")) == 12 &&
+              window.testLogFilterChipCount(QStringLiteral("ERROR")) == 0 &&
+              !window.testErrorBorderVisible(),
+          QStringLiteral("Worker traffic lands in the app log as CLOUD, even "
+                         "when the URL it names contains \"error\""));
+
+    // One failure among them, which does earn the red badge — so the filter
+    // below has something to leave out.
+    window.testCloudLogMonitorLine(QStringLiteral(
+        "{\"outcome\":\"exception\",\"eventTimestamp\":5000,\"event\":{"
+        "\"request\":{\"method\":\"GET\",\"url\":\"https://forkmesh.com/api/"
+        "sync\",\"headers\":{\"user-agent\":\"curl/8.5.0\"}}},"
+        "\"exceptions\":[{\"name\":\"TypeError\",\"message\":\"boom\"}]}"));
     QApplication::processEvents();
-    const int held = pane->verticalScrollBar()->value();
-    for (int index = 0; index < 40; ++index) {
-        window.testCloudflareLogLine(
-            QStringLiteral("GET https://forkmesh.com/api/sync - 200 Ok @ held %1")
-                .arg(index),
-            false);
+
+    QPushButton *cloudChip = window.testLogFilterChip(QStringLiteral("CLOUD"));
+    check(cloudChip && !window.testCloudLogMonitorRunning() &&
+              cloudChip->toolTip().contains(QStringLiteral("not monitoring")),
+          QStringLiteral("the cloud icon sits in the log's own chip row and "
+                         "reports the tail's actual, not-yet-running state"));
+    if (cloudChip) {
+        cloudChip->click();
+        QApplication::processEvents();
+        QTextBrowser *view = window.testNetworkLogView();
+        const QString filtered = view ? view->toPlainText() : QString();
+        check(filtered.contains(QStringLiteral("Cloud hit:")) &&
+                  !filtered.contains(QStringLiteral("Worker error")),
+              QStringLiteral("clicking it filters the log to the Worker's own "
+                             "traffic, like every other chip in the row"));
+        // Back to the unfiltered view for whatever the suite checks next.
+        if (QPushButton *all = window.testLogFilterChip(QString())) {
+            all->click();
+            QApplication::processEvents();
+        }
     }
-    QApplication::processEvents();
-    check(window.testCloudflareLogPaused() &&
-              pane->verticalScrollBar()->value() == held &&
-              !window.testCloudflareLogAtBottom() &&
-              window.testCloudflareLogText().contains(
-                  QStringLiteral("held 39")) &&
-              window.testCloudflareLogStatusText().contains(
-                  QStringLiteral("paused")),
-          QStringLiteral("pausing stops the pane scrolling while the lines "
-                         "themselves keep arriving"));
 
-    pause->click();
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
     QApplication::processEvents();
-    check(!window.testCloudflareLogPaused() &&
-              window.testCloudflareLogAtBottom() &&
-              !window.testCloudflareLogStatusText().contains(
-                  QStringLiteral("paused")),
-          QStringLiteral("resuming jumps back to the tail"));
-
-    viewer->close();
-    QApplication::processEvents();
-    check(!window.testCloudflareLogWindow(),
-          QStringLiteral("closing the viewer takes its window with it"));
 }
 
 // adhoc #1444: the alert stack has to hug its own content and read as one evenly
@@ -1808,7 +1792,7 @@ int main(int argc, char *argv[])
         checkLoggedErrorAlert(window);
         checkFiledPingSyncState(window);
         checkCloudLogMonitorAlert(window);
-        checkCloudflareLogWindow(window);
+        checkCloudLogMerged(window);
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
@@ -2523,17 +2507,17 @@ int main(int argc, char *argv[])
           QStringLiteral("API token tab lists the required permissions up front"));
     window.testShowLogSection();
     QApplication::processEvents();
-    // The Cloud chip rides the quick-filter row now (adhoc #1636), checked
-    // exactly while the tail is actually running rather than from the stored
-    // preference alone — which is on by default, but the tail itself is
-    // deferred, so building the window must not have spawned one.
-    auto *cloudChip = window.findChild<QPushButton *>(
-        QStringLiteral("cloudLogFilterChip"));
+    // The Worker tail is a category of this log now (adhoc #1613), so its chip
+    // is in the quick-filter row with the rest — and it reports whether the
+    // tail is actually running rather than what the stored preference says.
+    // That preference is on by default, but the tail itself is deferred, so
+    // building the window must not have spawned one.
+    auto *cloudChip = window.testLogFilterChip(QStringLiteral("CLOUD"));
     check(cloudChip &&
               window.findChild<QPushButton *>(
                   QStringLiteral("logPopoutButton")) != nullptr &&
               !cloudChip->isChecked() && !window.testCloudLogMonitorRunning() &&
-              cloudChip->toolTip().contains(QStringLiteral("alert")),
+              cloudChip->toolTip().contains(QStringLiteral("not monitoring")),
           QStringLiteral("the Log page's Cloud chip shows the tail's actual, "
                          "not-yet-running state, and the page still pops the "
                          "whole log out"));
@@ -2741,10 +2725,9 @@ int main(int argc, char *argv[])
             QApplication::processEvents();
         }
 
-        // The cloud monitor runs by default now, so its off switch has to be
-        // reachable without opening the Log page. Settings mirrors the stored
-        // preference the Log page's Cloud chip also reads (adhoc #1636), and
-        // unticking either one is what gets remembered.
+        // The cloud monitor runs by default now, and the Log page's chip
+        // filters rather than switches it (adhoc #1613), so Settings is where
+        // it is turned off — and unticking it is what gets remembered.
         auto *monitorSetting = window.findChild<QCheckBox *>(
             QStringLiteral("cloudLogMonitorSettingCheck"));
         check(monitorSetting && monitorSetting->isChecked() &&
@@ -2802,7 +2785,7 @@ int main(int argc, char *argv[])
     checkFiledPingSyncState(window);
     checkAgentDoneCelebration(window);
     checkCloudLogMonitorAlert(window);
-    checkCloudflareLogWindow(window);
+    checkCloudLogMerged(window);
 
     // adhoc #1389: notification actions are caption-height controls, not the
     // full-height buttons shown in the reference screenshot. The queued cards
