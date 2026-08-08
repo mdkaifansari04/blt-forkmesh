@@ -337,7 +337,13 @@ void applyDiffSearchHighlights(QTextBrowser *diff,
                                const QList<QTextCursor> &matches, int activeIndex,
                                QLabel *countLabel, bool termEmpty);
 QString diffStickyStyleSheet(int fontPt);
-QString diffStickyPathHtml(const QString &path);
+QString diffStickyPathHtml(const QString &fullPath);
+// A path shortened (leading ellipsis, basename kept) to what one line of the
+// sticky filename bar holds, so the bar never wraps or squeezes its buttons out.
+QString diffStickyPathText(const QString &path);
+// Keep a sticky filename label to a single line: no word wrap, and a size policy
+// that lets it clip rather than force the bar's controls off the right edge.
+void configureDiffStickyPathLabel(QLabel *label);
 QString agentCostText(double usd);
 QString agentStatusText(const QString &status);
 QColor agentStatusColor(const QString &status);
@@ -363,6 +369,7 @@ public:
         m_sticky = new QLabel(m_diff->viewport());
         m_sticky->setObjectName(QStringLiteral("diffStickyHeader"));
         m_sticky->setTextFormat(Qt::RichText);
+        configureDiffStickyPathLabel(m_sticky);
         m_sticky->hide();
         QObject::connect(m_diff->verticalScrollBar(), &QScrollBar::valueChanged,
                          this, [this] {
