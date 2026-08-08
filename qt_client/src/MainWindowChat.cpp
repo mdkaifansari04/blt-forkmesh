@@ -9683,6 +9683,17 @@ QWidget *MainWindow::buildBreadcrumb()
                                         QSizePolicy::Minimum);
     m_topMessageAgentRow->hide();
 
+    // Whoever the card is about, drawn down its left edge exactly as the
+    // transcript draws them (adhoc #1612). Chat pings fill it; every other kind
+    // of event hides it and keeps the full bubble width for its message.
+    m_topMessageAvatar = new QLabel;
+    m_topMessageAvatar->setObjectName("topMessageAvatar");
+    m_topMessageAvatar->setFocusPolicy(Qt::NoFocus);
+    m_topMessageAvatar->setFixedSize(kToastAvatarPx, kToastAvatarPx);
+    m_topMessageAvatar->setScaledContents(false);
+    m_topMessageAvatar->setAlignment(Qt::AlignCenter);
+    m_topMessageAvatar->hide();
+
     m_topMessagePromptImages = new QWidget;
     m_topMessagePromptImages->setObjectName("topMessagePromptImages");
     auto *promptImagesRow = new QHBoxLayout(m_topMessagePromptImages);
@@ -9841,11 +9852,23 @@ QWidget *MainWindow::buildBreadcrumb()
     topMessageActionRow->addWidget(m_topMessageSendToPrompt);
     topMessageActionRow->addWidget(m_topMessageClose);
 
+    // The avatar sits beside the message rather than above it, so a chat card
+    // reads like the transcript row it came from: face on the left, what was
+    // said to the right of it, and the caption row spanning both underneath.
+    m_topMessageContentRow = new QWidget;
+    m_topMessageContentRow->setObjectName("topMessageContentRow");
+    m_topMessageContentRow->setFocusPolicy(Qt::NoFocus);
+    auto *topMessageContentLayout = new QHBoxLayout(m_topMessageContentRow);
+    topMessageContentLayout->setContentsMargins(0, 0, 0, 0);
+    topMessageContentLayout->setSpacing(kToastAvatarGap);
+    topMessageContentLayout->addWidget(m_topMessageAvatar, 0, Qt::AlignTop);
+    topMessageContentLayout->addWidget(m_topMessageScroll, 1);
+
     auto *topMessageColumn = new QVBoxLayout(m_topMessageContainer);
     topMessageColumn->setContentsMargins(kToastPadLeft, kToastPadTop,
                                          kToastPadRight, kToastPadBottom);
     topMessageColumn->setSpacing(kToastRowSpacing);
-    topMessageColumn->addWidget(m_topMessageScroll, 1);
+    topMessageColumn->addWidget(m_topMessageContentRow, 1);
     topMessageColumn->addWidget(m_topMessageActions);
     for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
                             static_cast<QWidget *>(m_topMessageBody),
@@ -9855,6 +9878,8 @@ QWidget *MainWindow::buildBreadcrumb()
                             static_cast<QWidget *>(m_topMessageAgentHeadline),
                             static_cast<QWidget *>(m_topMessagePromptStatusLabel),
                             static_cast<QWidget *>(m_topMessagePromptImages),
+                            static_cast<QWidget *>(m_topMessageContentRow),
+                            static_cast<QWidget *>(m_topMessageAvatar),
                             static_cast<QWidget *>(m_topMessageScroll),
                             static_cast<QWidget *>(m_topMessageScroll->viewport()),
                             static_cast<QWidget *>(m_topMessageActions),

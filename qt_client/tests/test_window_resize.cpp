@@ -830,6 +830,58 @@ void checkAgentDoneCelebration(MainWindow &window)
     QApplication::processEvents();
 }
 
+// adhoc #1612: a chat message's alert says who is talking before its text is
+// read — the card wears the sender's face, in its own lane, and the message is
+// wrapped inside what is left rather than running underneath it. Events that
+// are nobody's in particular (a build, a push) keep the full width.
+void checkChatPingAvatar(MainWindow &window)
+{
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+
+    window.testDeliverChatMessage(QStringLiteral("#general"),
+                                  QStringLiteral("peer-avatar-fixture"),
+                                  QStringLiteral("Ada"),
+                                  QStringLiteral("the mirror is back up"));
+    QApplication::processEvents();
+
+    // Measuring the bubble is what lays its content row out, so let that settle
+    // before reading the lane's geometry back.
+    const QRect withAvatar = window.testTopMessageRect();
+    QApplication::processEvents();
+    check(window.testTopMessageAvatarShown() &&
+              window.testTopMessageRaw().contains(QStringLiteral("Ada")) &&
+              window.testTopMessageRaw().contains(
+                  QStringLiteral("the mirror is back up")),
+          QStringLiteral("a chat alert shows the avatar of the person "
+                         "chatting"));
+
+    QLabel *avatar =
+        window.findChild<QLabel *>(QStringLiteral("topMessageAvatar"));
+    QWidget *toastText =
+        window.findChild<QWidget *>(QStringLiteral("topMessageScroll"));
+    check(avatar && toastText && avatar->isVisible() &&
+              avatar->geometry().right() <= toastText->geometry().left() &&
+              withAvatar.height() >= avatar->height(),
+          QStringLiteral("the chat alert's avatar sits beside the message, "
+                         "never over it"));
+
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    window.testFlashMessage(QStringLiteral("Mirror push rejected"), true);
+    QApplication::processEvents();
+    check(!window.testTopMessageAvatarShown() && (!avatar || !avatar->isVisible()),
+          QStringLiteral("an alert that is nobody's in particular wears no "
+                         "face"));
+
+    window.testDismissTopMessage();
+    window.testResetNetworkLog();
+    window.testResetLoggedErrorAlerts();
+    QApplication::processEvents();
+}
+
 // adhoc #1615: with the debug bar's Monitor box ticked, a Worker failure has to
 // reach the same red card as any other failure — and the healthy traffic around
 // it must not, or the app's own log would drown in Worker hits. Lines are fed in
@@ -2801,6 +2853,7 @@ int main(int argc, char *argv[])
     checkLoggedErrorAlert(window);
     checkFiledPingSyncState(window);
     checkAgentDoneCelebration(window);
+    checkChatPingAvatar(window);
     checkCloudLogMonitorAlert(window);
     checkCloudflareLogWindow(window);
 

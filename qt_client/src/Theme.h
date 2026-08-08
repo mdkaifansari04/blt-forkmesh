@@ -513,6 +513,13 @@ QPushButton#agentsMagicButton:checked {
 #topMessageAgentHeadline {
     background: transparent; border: none; font-size: 13px; font-weight: 700;
 }
+/* The chat sender's face on an alert card, and the lane it sits in beside the
+   message (adhoc #1612). The avatar is a pixmap of its own — anything painted
+   behind it would show through the rounded corners of the tile. */
+#topMessageContentRow, #topMessageAvatar,
+#topMessageQueueContentRow, #topMessageQueueAvatar {
+    background: transparent; border: none;
+}
 #topMessagePromptImage {
     background: rgba(48,54,61,0.35); border: 1px solid #30363d;
     border-radius: 5px; padding: 3px;
@@ -1971,6 +1978,11 @@ QPushButton#agentsMagicButton:checked {
 #topMessageAgentRow, #topMessageAgentIcon { background: transparent; border: none; }
 #topMessageAgentHeadline {
     background: transparent; border: none; font-size: 13px; font-weight: 700;
+}
+/* See the dark rules: the chat sender's face and the lane it sits in. */
+#topMessageContentRow, #topMessageAvatar,
+#topMessageQueueContentRow, #topMessageQueueAvatar {
+    background: transparent; border: none;
 }
 #topMessagePromptImage {
     background: #f6f8fa; border: 1px solid #d0d7de;
