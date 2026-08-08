@@ -259,15 +259,24 @@ def test_leaderboard_contents_are_always_mounted_in_the_open_district():
     assert "leaderboardCoverContainsWorldPoint" not in scene
 
 
-def test_only_office_and_beach_switch_to_isolated_scenes():
+def test_only_office_beach_and_the_sealed_repository_ring_isolate_scenes():
+    """The repository ring is the one satellite district that closes over you.
+
+    It earns that because a visitor standing inside the portal circle is
+    looking at a room, and the shell lets the whole rest of the World stop
+    drawing. The other satellites stay open: no cover, no gate, no doorway.
+    """
     scene = source()
     isolation = scene.split("function syncEnclosureSceneVisibility", 1)[1].split(
-        "function compactDistrictDiagnostics", 1
+        "function ensureRepositoryEnclosure", 1
     )[0]
-    for mode in ("office", "beach"):
+    for mode in ("office", "beach", "repositories"):
         assert f'? "{mode}"' in isolation or f': "{mode}"' in isolation
-    for open_district in ("leaderboards", "repositories", "members", "nodes"):
+    for open_district in ("leaderboards", "members", "nodes"):
         assert f'"{open_district}"' not in isolation
+    # Repositories isolate only while the shell is actually closed, so walking
+    # out through the door restores the World before the dissolve plays.
+    assert 'repositoryEnclosureState === "sealed"' in isolation
     assert "enclosureHiddenWorldRoots.set(root, root.visible)" in isolation
     assert "root.visible = false" in isolation
     assert "enclosureHiddenWorldRoots.forEach" in isolation

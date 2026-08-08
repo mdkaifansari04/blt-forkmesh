@@ -3256,6 +3256,19 @@ const QString kSolanaLastBalanceSettingPrefix =
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 // Opt-in: show a small rebuild+restart button in the top nav (off by default).
 const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton");
+// Reveal the footer's debug bar at launch instead of waiting for a click on the
+// version button (adhoc #1632). Unset means "follow this account": admins get
+// the bar, everybody else does not, and either can say otherwise in Settings.
+const QString kShowDebugBarOnStartupSetting =
+    QStringLiteral("ui/showDebugBarOnStartup");
+// On by default: the debug bar's Monitor checkbox holds a background Wrangler
+// tail open so a deployed-Worker failure raises its red card without anybody
+// switching it on first (adhoc #1632). Stored, so switching it off sticks.
+const QString kCloudLogMonitorSetting =
+    QStringLiteral("diagnostics/cloudLogMonitor");
+// Launch is busy enough without npx: the monitor's tail starts this long after
+// the window is built rather than during construction.
+constexpr int kCloudLogMonitorStartupDelayMs = 5000;
 // Opt-in: log every HTTP request that flows through the shared network manager
 // to the network log (method + status + URL). Off by default; a diagnostic aid
 // for spotting chatty background traffic (adhoc #74).

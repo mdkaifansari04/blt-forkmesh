@@ -2528,12 +2528,13 @@ constexpr int kDeferredErrorReportFlushMs = 2 * 60 * 1000;
 void MainWindow::reportUserVisibleError(const QString &kind,
                                         const QString &title,
                                         const QString &message,
-                                        const QString &surface)
+                                        const QString &surface,
+                                        qint64 pingId)
 {
     if (!QSettings()
              .value(forkmesh::kReportUserVisibleErrorsSetting, true)
              .toBool())
-        return;
+        return; // the ping was already filed as local-only; see initialPingSync
     // A modal on a headless mirror is a node parked until somebody clicks OK;
     // the same modal on a desktop is a person reading it. The relay keeps the
     // two apart, so the ping says which one just happened.
@@ -2541,12 +2542,24 @@ void MainWindow::reportUserVisibleError(const QString &kind,
         !surface.isEmpty() ? surface
                            : (m_headless ? QStringLiteral("headless")
                                          : QStringLiteral("app"));
-    const forkmesh::ClientErrorReports::Report report =
+    forkmesh::ClientErrorReports::Report report =
         forkmesh::ClientErrorReports::build(
             kind, area, title, message,
             QDateTime::currentMSecsSinceEpoch());
-    if (!m_errorReports.accept(report))
+    report.pingId = pingId;
+    if (!m_errorReports.accept(report)) {
+        // Not a failure to sync: the same failure already went out inside the
+        // dedupe window (or this node has hit its hourly cap). The mesh knows
+        // about the problem; this particular row simply stayed here.
+        setPingSync(pingId, forkmesh::PingSync::LocalOnly,
+                    QStringLiteral("an identical failure was already reported "
+                                   "to the relay; this copy stayed local"));
         return;
+    }
+    // From here a request really is going out for this row, so this is where it
+    // becomes "Syncing…" — nothing else claims that state (see initialPingSync).
+    setPingSync(pingId, forkmesh::PingSync::Pending,
+                QStringLiteral("queued for the relay"));
     // Send on the next turn of the event loop, never from where the failure was
     // announced: the dialog path reports from inside QMessageBox's own show
     // event, and issuing a request there can open the firewall prompt's nested
@@ -2562,13 +2575,21 @@ void MainWindow::sendUserVisibleErrorReport(
     // only stores reports carrying a signed owner token, never anonymous ones.
     const QString owner = accountOwner();
     if (!m_networkAccess || owner.isEmpty() || !m_profileIdentity.isValid()
-        || !hasOwnerSigningCapability(owner))
+        || !hasOwnerSigningCapability(owner)) {
+        setPingSync(report.pingId, forkmesh::PingSync::Offline,
+                    QStringLiteral("no signed-in account to sign a report "
+                                   "with, so nothing was sent"));
         return;
+    }
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/desktop-errors"));
     const QUrlQuery query = signedInboxQuery(owner);
-    if (query.isEmpty())
+    if (query.isEmpty()) {
+        setPingSync(report.pingId, forkmesh::PingSync::Offline,
+                    QStringLiteral("this account's signing key is locked, so "
+                                   "nothing was sent"));
         return;
+    }
     url.setQuery(query);
 
     // The relay being rate-limited is exactly the failure most worth reporting,
@@ -2577,8 +2598,16 @@ void MainWindow::sendUserVisibleErrorReport(
     const auto *network =
         qobject_cast<BackoffNetworkAccessManager *>(m_networkAccess);
     if (network && !url.host().isEmpty() && network->hostInCooldown(url.host())) {
-        m_errorReports.defer(report);
-        scheduleDeferredErrorReportFlush();
+        if (m_errorReports.defer(report)) {
+            setPingSync(report.pingId, forkmesh::PingSync::Pending,
+                        QStringLiteral("the relay is rate-limited; parked for "
+                                       "a retry"));
+            scheduleDeferredErrorReportFlush();
+        } else {
+            setPingSync(report.pingId, forkmesh::PingSync::Failed,
+                        QStringLiteral("the relay stayed rate-limited and the "
+                                       "report was given up on"));
+        }
         return;
     }
 
@@ -2591,12 +2620,44 @@ void MainWindow::sendUserVisibleErrorReport(
             .toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [this, reply, report] {
         reply->deleteLater();
-        if (reply->error() == QNetworkReply::NoError)
+        if (reply->error() == QNetworkReply::NoError) {
+            setPingSync(report.pingId, forkmesh::PingSync::Synced,
+                        QStringLiteral("the relay recorded this failure"));
             return;
+        }
+        // A transport error is this node being offline; anything else is a relay
+        // that was reachable and did not take the report. The Pings page keeps
+        // the two apart, because only the second one is a fault worth chasing.
+        const bool offline =
+            reply->error() == QNetworkReply::ConnectionRefusedError ||
+            reply->error() == QNetworkReply::RemoteHostClosedError ||
+            reply->error() == QNetworkReply::HostNotFoundError ||
+            reply->error() == QNetworkReply::TimeoutError ||
+            reply->error() == QNetworkReply::TemporaryNetworkFailureError ||
+            reply->error() == QNetworkReply::NetworkSessionFailedError ||
+            reply->error() == QNetworkReply::UnknownNetworkError;
+        const QString detail = reply->errorString().simplified();
         // Deliberately silent: a failed error report must never raise a toast or
         // a dialog of its own, or one relay outage becomes a feedback loop.
-        m_errorReports.defer(report);
-        scheduleDeferredErrorReportFlush();
+        if (m_errorReports.defer(report)) {
+            setPingSync(report.pingId, forkmesh::PingSync::Pending,
+                        (offline ? QStringLiteral("this node is offline (%1); "
+                                                  "parked for a retry")
+                                 : QStringLiteral("the relay didn't take it "
+                                                  "(%1); parked for a retry"))
+                            .arg(detail));
+            scheduleDeferredErrorReportFlush();
+        } else {
+            setPingSync(report.pingId,
+                        offline ? forkmesh::PingSync::Offline
+                                : forkmesh::PingSync::Failed,
+                        (offline
+                             ? QStringLiteral("this node was offline (%1) and "
+                                              "the relay never got it")
+                             : QStringLiteral("the relay refused it (%1) and "
+                                              "the report was given up on"))
+                            .arg(detail));
+        }
     });
 }
 
@@ -2628,8 +2689,16 @@ void MainWindow::flushDeferredErrorReports()
         return; // still refusing; the next tick tries again
     if (m_errorReportFlushTimer)
         m_errorReportFlushTimer->stop();
+    QList<forkmesh::ClientErrorReports::Report> expired;
     const QList<forkmesh::ClientErrorReports::Report> ready =
-        m_errorReports.takeDeferred(QDateTime::currentMSecsSinceEpoch());
+        m_errorReports.takeDeferred(QDateTime::currentMSecsSinceEpoch(),
+                                    &expired);
+    // A report that waited out the whole deferral window is never going to be
+    // sent; its Pings row says "not synced" instead of "syncing…" forever.
+    for (const forkmesh::ClientErrorReports::Report &report : expired)
+        setPingSync(report.pingId, forkmesh::PingSync::Failed,
+                    QStringLiteral("the relay was unreachable for hours and "
+                                   "the report was dropped"));
     for (const forkmesh::ClientErrorReports::Report &report : ready)
         sendUserVisibleErrorReport(report);
     // A send that failed again re-parked itself; keep the timer running for it.

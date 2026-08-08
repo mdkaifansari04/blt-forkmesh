@@ -6173,11 +6173,14 @@ void MainWindow::applyRepoMentions(const RepositoryRecord &repo,
         const QString body =
             QString::fromUtf8("%1 mentioned you in %2 %3: \xE2\x80\x9C%4\xE2\x80\x9D")
                 .arg(who, repoKey, humanLocator, snippet);
+        // The page row first, then the OS notification for the same mention:
+        // postNotification files anything it is not already the toast for, and
+        // recognises this pairing by the text they share (adhoc #1629).
+        addNotification(QStringLiteral("Mention"), body, false, link);
         if (notifyEnabled(kMentionAlertSetting)) {
             QApplication::alert(this, 0);
             postNotification(who + QStringLiteral(" mentioned you"), body);
         }
-        addNotification(QStringLiteral("Mention"), body, false, link);
     };
     // Issues/PRs: preserve the existing "<repo>#<kind><number>:<eventId>" dedup
     // key (so upgrades don't re-fire historical mentions) and "<kind> #<n>"

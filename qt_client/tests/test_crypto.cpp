@@ -9,6 +9,7 @@
 #include "../src/ChatHistoryLimits.h"
 #include "../src/ChatVisitorPresence.h"
 #include "../src/ClientErrorReports.h"
+#include "../src/PingSyncState.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
 #include "../src/DirectorySizeScan.h"
@@ -8533,6 +8534,91 @@ int main(int argc, char *argv[])
                   && body.value(QStringLiteral("message")).toString()
                          == relayText,
               "the posted body carries exactly the four fields the relay reads");
+
+        // The Pings row a report came from rides along so its Status column can
+        // follow the report's fate, but it is local bookkeeping only: it never
+        // goes on the wire, and two sightings of one failure still dedupe to a
+        // single report (adhoc #1629).
+        ClientErrorReports::Report filed = ClientErrorReports::build(
+            QStringLiteral("dialog"), QString(), QStringLiteral("Sync inbox"),
+            relayText, t0);
+        filed.pingId = 42;
+        check(!ClientErrorReports::payload(filed).contains(
+                  QStringLiteral("pingId")),
+              "the ping row id stays on the machine");
+        ClientErrorReports rows;
+        check(rows.accept(filed), "the first sighting is reported");
+        ClientErrorReports::Report second = filed;
+        second.pingId = 43;
+        check(!rows.accept(second),
+              "a second sighting filed as its own ping is still one report");
+
+        // A report parked past the deferral window is never sent, so the page
+        // row waiting on it has to be told — takeDeferred hands the expired ones
+        // back instead of dropping them silently.
+        ClientErrorReports abandoned;
+        abandoned.defer(filed);
+        QList<ClientErrorReports::Report> expired;
+        check(abandoned
+                  .takeDeferred(t0 + ClientErrorReports::kMaxDeferralMs + 1,
+                                &expired)
+                  .isEmpty()
+                  && expired.size() == 1 && expired.first().pingId == 42,
+              "a report dropped for age is handed back with the row it belongs to");
+    }
+
+    {
+        // --- Where a filed ping stands with the cloud (adhoc #1629) ---------
+        // Every alert the desktop raises is filed on the Pings page, and the
+        // page has to be honest about which of those rows exist anywhere else:
+        // one raised while the node was offline never left the machine, and one
+        // that should have synced and didn't must not read like one that did.
+        using forkmesh::PingSync;
+
+        check(forkmesh::pingSyncLabel(PingSync::Offline)
+                      == QStringLiteral("Offline")
+                  && forkmesh::pingSyncLabel(PingSync::Failed)
+                         == QStringLiteral("Not synced")
+                  && forkmesh::pingSyncLabel(PingSync::Synced)
+                         == QStringLiteral("Synced"),
+              "the Status column names each state the operator can act on");
+        check(forkmesh::pingSyncLabel(PingSync::Offline)
+                  != forkmesh::pingSyncLabel(PingSync::Failed),
+              "\"nothing was sent\" and \"it was refused\" are different rows");
+
+        for (PingSync state :
+             {PingSync::LocalOnly, PingSync::Offline, PingSync::Pending,
+              PingSync::Synced, PingSync::Failed}) {
+            check(forkmesh::pingSyncFromToken(forkmesh::pingSyncToken(state))
+                      == state,
+                  "a ping's cloud state survives the on-disk journal");
+            check(!forkmesh::pingSyncDescription(state).isEmpty(),
+                  "every state explains itself on hover");
+        }
+        check(forkmesh::pingSyncFromToken(QStringLiteral("nonsense"))
+                      == PingSync::LocalOnly
+                  && forkmesh::pingSyncFromToken(QString())
+                         == PingSync::LocalOnly,
+              "an unreadable journal entry claims the least, not the most");
+
+        check(forkmesh::pingSyncIsUnsynced(PingSync::Offline)
+                  && forkmesh::pingSyncIsUnsynced(PingSync::Failed)
+                  && forkmesh::pingSyncIsUnsynced(PingSync::Pending)
+                  && !forkmesh::pingSyncIsUnsynced(PingSync::Synced),
+              "the rows the mesh does not have are the unsynced ones");
+
+        // Nothing re-queues a report that only ever existed in memory, so a row
+        // still in flight at shutdown is resolved on load rather than left
+        // counting down forever.
+        check(forkmesh::pingSyncAfterRestart(PingSync::Pending)
+                      == PingSync::Failed
+                  && !forkmesh::pingSyncRestartReason().isEmpty(),
+              "a ping still syncing when the app closed comes back \"not synced\"");
+        check(forkmesh::pingSyncAfterRestart(PingSync::Offline)
+                      == PingSync::Offline
+                  && forkmesh::pingSyncAfterRestart(PingSync::Synced)
+                         == PingSync::Synced,
+              "a settled ping is not re-judged by a restart");
     }
 #if defined(Q_OS_LINUX)
     {
