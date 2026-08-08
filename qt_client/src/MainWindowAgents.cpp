@@ -30,31 +30,6 @@
 
 using namespace forkmesh::ui;
 
-namespace {
-
-QIcon agentDoneImageIcon(int sidePx)
-{
-    static const QString kAgentDoneImageFile = QStringLiteral("paste-IxNUZi.png");
-    static const QString kLegacyAgentDoneImagePath =
-        QStringLiteral("/home/f/.local/share/ForkMesh/ForkMesh/agent-images/"
-                       "paste-IxNUZi.png");
-    static QHash<int, QIcon> cache;
-    const int side = qMax(1, sidePx);
-    if (const auto it = cache.constFind(side); it != cache.constEnd())
-        return *it;
-
-    QIcon icon;
-    QPixmap source(AgentPromptImages::directory() + QLatin1Char('/') + kAgentDoneImageFile);
-    if (source.isNull())
-        source = QPixmap(kLegacyAgentDoneImagePath);
-    if (!source.isNull())
-        icon.addPixmap(roundedRectPixmap(source, side, 4.0));
-    cache.insert(side, icon);
-    return icon;
-}
-
-} // namespace
-
 // ---- Agents ---------------------------------------------------------------
 
 QString MainWindow::agentProviderName(const QString &provider) const
@@ -1115,35 +1090,26 @@ QPixmap agentLeadGlyphPixmap(const AgentSession &session,
         const QRect statusRect(kAgentIdentityCirclePx + kAgentLeadGlyphGapPx,
                                (kAgentIdentityCirclePx - kAgentStatusGlyphPx) / 2,
                                kAgentStatusGlyphPx, kAgentStatusGlyphPx);
-        if (session.status == AgentStatus::Success) {
-            const QIcon doneIcon = agentDoneImageIcon(kAgentStatusGlyphPx);
-            if (!doneIcon.isNull())
-                doneIcon.paint(&p, statusRect);
-            else {
-                const QIcon icon = themedOcticon(statusIcon,
-                                                 agentStatusIconColor(session),
-                                                 kAgentStatusGlyphPx);
-                icon.paint(&p, statusRect);
-            }
+        // Every state — a finished run's green check-circle included — is the
+        // themed octicon named by agentStatusCellIconName(), so the column reads
+        // as one set of glyphs rather than a pasted bitmap among line art.
+        const QIcon icon = themedOcticon(statusIcon,
+                                         agentStatusIconColor(session),
+                                         kAgentStatusGlyphPx);
+        if (running) {
+            // The status glyph is a rasterized octicon pixmap, and this is a
+            // freehand rotation (not a multiple of 90 degrees) driven by
+            // activityAngle every tick — without SmoothPixmapTransform, Qt
+            // resamples it nearest-neighbour and the spin reads as jagged.
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            p.save();
+            p.translate(statusRect.center());
+            p.rotate(activityAngle);
+            p.translate(-statusRect.center());
+            icon.paint(&p, statusRect);
+            p.restore();
         } else {
-            const QIcon icon = themedOcticon(statusIcon,
-                                             agentStatusIconColor(session),
-                                             kAgentStatusGlyphPx);
-            if (running) {
-                // The status glyph is a rasterized octicon pixmap, and this is a
-                // freehand rotation (not a multiple of 90 degrees) driven by
-                // activityAngle every tick — without SmoothPixmapTransform, Qt
-                // resamples it nearest-neighbour and the spin reads as jagged.
-                p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-                p.save();
-                p.translate(statusRect.center());
-                p.rotate(activityAngle);
-                p.translate(-statusRect.center());
-                icon.paint(&p, statusRect);
-                p.restore();
-            } else {
-                icon.paint(&p, statusRect);
-            }
+            icon.paint(&p, statusRect);
         }
     }
     p.end();
@@ -6231,6 +6197,11 @@ void MainWindow::reloadAgents()
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
     updateAgentsTabIndicator();
+    // Every agent status transition reaches this reload, so an open pull request
+    // whose branch an agent is working shows that progress as it happens — no
+    // poll of its own. It is a no-op unless that pull is on screen and its
+    // agent actually moved.
+    refreshPullAgentActivity();
     refreshAgentDotMatrix();
     for (const AgentSession &session : std::as_const(m_agentSessions))
         syncOrgTaskAgentStatus(session.id);
@@ -7412,11 +7383,19 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber,
     // it ran on (issue #257). Scope to the detail repo so a like-named branch in
     // another repo can't false-match, skip sessions already bound to a different
     // PR, and prefer the most recent matching session.
-    if (!headBranch.isEmpty() && m_repoDetailIndex >= 0 &&
+    //
+    // A cross-node head is decorated "<node>:<branch>" for attribution, the same
+    // label resolvablePullHead() undecorates before handing it to Git. A session
+    // records the plain branch it ran on, so match against that portion —
+    // comparing the decorated label found nothing and left every such pull
+    // looking like it had no agent.
+    const QString branch =
+        headBranch.section(QLatin1Char(':'), -1, -1).trimmed();
+    if (!branch.isEmpty() && m_repoDetailIndex >= 0 &&
         m_repoDetailIndex < m_repositories.size()) {
         for (auto it = m_agentSessions.crbegin(); it != m_agentSessions.crend();
              ++it) {
-            if (it->branchName == headBranch && it->owner == repo.owner &&
+            if (it->branchName == branch && it->owner == repo.owner &&
                 it->name == repo.name &&
                 (it->prNumber == 0 || it->prNumber == prNumber))
                 return &*it;
@@ -14049,32 +14028,55 @@ void MainWindow::applyAgentDiff(int sessionId, const AgentDiffProbe &probe,
     const QSet<QString> &uncommitted = probe.uncommitted;
 
     if (m_agentFilesList) {
-        QSignalBlocker block(m_agentFilesList);
-        m_agentFilesList->clear();
-        for (const DiffFileEntry &f : files) {
-            const QString name = f.path.section(QLatin1Char('/'), -1);
-            const bool isUncommitted = uncommitted.contains(f.path);
-            auto *item = new QListWidgetItem(
-                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3%4")
-                    .arg(name, QString::number(f.adds), QString::number(f.dels),
-                         isUncommitted ? QString::fromUtf8("  \xE2\x97\x8F")
-                                       : QString()));
-            QColor tint("#d29922");
-            QString icon = "file-diff";
-            if (f.status == QLatin1String("added")) { icon = "diff"; tint = QColor("#3fb950"); }
-            else if (f.status == QLatin1String("deleted")) { icon = "trash"; tint = QColor("#f85149"); }
-            item->setIcon(themedOcticon(icon, tint, 14));
-            const QString abs = dir.isEmpty() ? f.path : QDir(dir).filePath(f.path);
-            item->setData(Qt::UserRole, abs);          // open on activate
-            item->setData(Qt::UserRole + 1, f.anchor); // scroll diff on select
-            item->setToolTip(
-                isUncommitted
-                    ? QString::fromUtf8("%1 \xC2\xB7 %2 \xC2\xB7 uncommitted")
-                          .arg(f.status, f.path)
-                    : QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
-            m_agentFilesList->addItem(item);
+        QString selectedAnchor;
+        if (QListWidgetItem *current = m_agentFilesList->currentItem())
+            selectedAnchor = current->data(Qt::UserRole + 1).toString();
+        int selectedRow = -1;
+        {
+            QSignalBlocker block(m_agentFilesList);
+            m_agentFilesList->clear();
+            for (const DiffFileEntry &f : files) {
+                const QString name = f.path.section(QLatin1Char('/'), -1);
+                const bool isUncommitted = uncommitted.contains(f.path);
+                auto *item = new QListWidgetItem(
+                    QString::fromUtf8("%1   +%2 \xE2\x88\x92%3%4")
+                        .arg(name, QString::number(f.adds), QString::number(f.dels),
+                             isUncommitted ? QString::fromUtf8("  \xE2\x97\x8F")
+                                           : QString()));
+                QColor tint("#d29922");
+                QString icon = "file-diff";
+                if (f.status == QLatin1String("added")) {
+                    icon = "diff";
+                    tint = QColor("#3fb950");
+                } else if (f.status == QLatin1String("deleted")) {
+                    icon = "trash";
+                    tint = QColor("#f85149");
+                }
+                item->setIcon(themedOcticon(icon, tint, 14));
+                const QString abs =
+                    dir.isEmpty() ? f.path : QDir(dir).filePath(f.path);
+                item->setData(Qt::UserRole, abs);          // open on activate
+                item->setData(Qt::UserRole + 1, f.anchor); // scroll diff on select
+                item->setToolTip(
+                    isUncommitted
+                        ? QString::fromUtf8("%1 \xC2\xB7 %2 \xC2\xB7 uncommitted")
+                              .arg(f.status, f.path)
+                        : QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
+                m_agentFilesList->addItem(item);
+            }
+            fitFileListToWidestEntry(m_agentFilesList);
+            for (int row = 0; row < m_agentFilesList->count(); ++row) {
+                if (m_agentFilesList->item(row)->data(Qt::UserRole + 1).toString() ==
+                    selectedAnchor) {
+                    selectedRow = row;
+                    break;
+                }
+            }
         }
-        fitFileListToWidestEntry(m_agentFilesList);
+        if (selectedRow < 0 && m_agentFilesList->count() > 0)
+            selectedRow = 0;
+        if (selectedRow >= 0)
+            m_agentFilesList->setCurrentRow(selectedRow);
     }
     if (!m_agentDiffNav && m_agentFilesList)
         m_agentDiffNav = new DiffFileNavigator(m_agentDiffView, m_agentFilesList,

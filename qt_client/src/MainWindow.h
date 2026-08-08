@@ -217,6 +217,20 @@ class DiffFileNavigator;  // file-list <-> diff-view sync
 struct DiffFileEntry;     // one changed file parsed out of a patch
 }
 
+// One commit of the pull request currently on screen, in the form the
+// Conversation feed needs. renderPullCommits() already walks base..head (or the
+// signed mbox) for the Commits tab, so it records what it found and
+// renderPullThread() reuses it: the conversation must not repeat that walk,
+// which pumps the GUI event loop (adhoc #119/#124).
+struct PullActivityCommit {
+    QString sha;
+    QString subject;
+    QString author;
+    QString when;         // absolute, already formatted for display
+    qint64 committedSecs = 0;
+    QString agentTrailer; // ForkMesh-Agent trailer, when the commit has one
+};
+
 // A configured mainnode the user can connect to. The client connects to one at
 // a time; the favicon rail switches the active one.
 struct ServerConfig {
@@ -1081,6 +1095,18 @@ public:
     {
         return resolvablePullHead(std::move(pr));
     }
+    // Stand in for the base..head walk renderPullCommits() normally does, so a
+    // test can drive the conversation feed without a repository on disk.
+    void testSeedPullActivityCommits(int prNumber,
+                                     const QList<PullActivityCommit> &commits)
+    {
+        m_pullActivityCommitsNumber = prNumber;
+        m_pullActivityCommits = commits;
+    }
+    void testRenderPullThread(const PullRequest &pr) { renderPullThread(pr); }
+    // Header line of every card the conversation currently holds, oldest first.
+    QStringList testPullThreadCardHeaders() const;
+    int testPullActivityExtraCards() const { return m_pullActivityExtraCards; }
     bool testBindAgentSessionsToPull(int prNumber, const QString &headBranch)
     {
         return bindAgentSessionsToPull(prNumber, headBranch);
@@ -1277,6 +1303,25 @@ public:
     // Select a CHANGES row and report whether the right-hand diff navigation
     // targeted that exact file.
     bool testClickSourceControlPath(const QString &path);
+    // Send one Up/Down to the CHANGES tree and report the file that ends up
+    // selected, so the arrow-key review walk can be asserted end to end.
+    QString testArrowOnSourceControl(bool down);
+    // The file the CHANGES tree's sticky diff header currently names.
+    QString testBranchStickyHeaderText() const;
+    // The file the right-hand diff was last navigated to from CHANGES.
+    QString testLastSourceControlDiffPath() const
+    {
+        return m_lastSourceControlDiffPath;
+    }
+    // The file whose CHANGES row currently wears the green selection stroke.
+    QString testScmStrokedRowFile() const;
+    // The file the range diff currently draws its green outline around, empty
+    // when nothing is outlined, plus that outline's viewport rect.
+    QString testBranchOutlinedFile() const;
+    QRect testBranchOutlineRect() const;
+    // The same pair for the working-tree combined diff.
+    QString testScmOutlinedFile() const;
+    QRect testScmOutlineRect() const;
     // The working-tree viewer reaches every edge of its right-hand surface — no
     // inherited layout or document gutter remains around the diff.
     bool testScmDiffUsesFullSurface() const;
@@ -3024,6 +3069,29 @@ private:
     void renderPullCommits(PullRequest pr);         // commits that make up the PR
                                                     // (by value: pumps a git read,
                                                     // see adhoc #119/#124)
+    // What renderPullCommits() found for the pull on screen (see
+    // PullActivityCommit), reused by renderPullThread().
+    QList<PullActivityCommit> m_pullActivityCommits;
+    int m_pullActivityCommitsNumber = 0; // PR the list above was collected for
+    // Re-render the open pull's conversation when its agent's state moved. Called
+    // from reloadAgents(), which every agent status transition already reaches, so
+    // a running agent's progress shows on the PR page without a poll of its own.
+    void refreshPullAgentActivity();
+    // Status/timing digest of the agent attached to the pull on screen. Compared
+    // before re-rendering so an unrelated agent reload does not rebuild the
+    // conversation (and scroll it) for nothing.
+    QString pullAgentActivityDigest(const PullRequest &pr) const;
+    QString m_pullAgentActivityDigest;
+    // Commit and agent cards renderPullThread() added on top of the signed review
+    // items, and the review-item count updatePullSubTabCounts() derived. Held so
+    // the Conversation badge can be corrected after a live agent re-render
+    // without repeating that function's git-backed tallies.
+    int m_pullActivityExtraCards = 0;
+    int m_pullActivityCardsNumber = 0; // PR the count above belongs to
+    int m_pullConversationBaseCount = 0;
+    // Set while refreshPullAgentActivity() is rebuilding: its git walk pumps the
+    // GUI event loop, and it is itself reached from reloadAgents().
+    bool m_pullActivityRefreshing = false;
     // The next two and runIdsForPull/updatePullSubTabCounts take the PR by
     // value on purpose: they pump the event loop (git reads), and callers often
     // pass references into m_currentPulls, which a nested reloadPulls() can
@@ -4522,6 +4590,11 @@ private:
     // user selects, or after kBranchMergedFlashMs.
     void flashMergedBranchRow(const QString &branch);
     void clearMergedBranchFlash();
+    // The congratulation the range pane shows in place of the deleted branch's
+    // diff: who landed it, every other branch that reached `base` today and who
+    // was behind each, and the ways on from there.
+    QString mergedBranchCelebrationHtml(const QString &branch, const QString &base,
+                                        const QString &dir);
     // Delete every branch that is fully merged into the default branch (0 behind
     // and 0 ahead of it), skipping the default and the checked-out branch.
     void deleteMergedBranches();
@@ -4805,7 +4878,24 @@ private:
     void clearRangeFilesInSourceControl();
     bool sourceControlShowsRange() const;
     QString sourceControlGitDir() const;
-    void scrollBranchDiffToFile(const QString &path);
+    // `moveFocus` hands the keyboard to the diff view once the jump lands, which
+    // is what an explicit "open this file" action wants. Navigation driven from
+    // the CHANGES tree passes false: stealing focus there ends arrow-key file
+    // navigation after the very first file.
+    void scrollBranchDiffToFile(const QString &path, bool moveFocus = true);
+    // Move the CHANGES tree's selection to the previous/next file row, skipping
+    // the group headers. Returns false when there is nothing further that way.
+    bool stepScmTreeFile(int delta);
+    // Make a CHANGES row current — green stroke and all — without letting
+    // currentItemChanged drive the diff. Used when the tree is rebuilt beneath
+    // an unchanged diff: the highlight has to survive, the scroll must not move.
+    void setScmCurrentItemSilently(QTreeWidgetItem *item);
+    // Keep the green outline drawn over the active file's extent in the branch
+    // /PR range diff aligned with the document; cheap enough for a scroll tick.
+    void updateBranchDiffActiveOutline();
+    // The same outline over the working-tree diff's combined sections, so the
+    // CHANGES tree marks its current file the same way in either right-hand pane.
+    void updateScmDiffActiveOutline();
     // Detached `git status` that only updates the activity rail's Git badge, so
     // the uncommitted-file count is right on every repo tab (and right after a
     // repo opens), not just while the changes panel is the visible view.
@@ -7550,6 +7640,12 @@ private:
     // worktree this lets the one Git view include committed, staged, unstaged,
     // and untracked changes rather than only the branch tip.
     QString m_branchDiffWorkDir;
+    // Green outline drawn over the extent of the file selected in CHANGES, so
+    // the row's stroke and the diff section it points at read as one selection.
+    // An overlay rather than a rendered border: re-rendering the whole diff on
+    // every arrow press would be far too heavy for a large review.
+    QFrame *m_branchDiffActiveOutline = nullptr;
+    QString m_branchActiveFile; // file CHANGES currently points at
     // Sticky header pinned over the branch/PR diff (same form as the PR viewer's:
     // filename, Pac-Man read-progress chart, percent label and a Viewed toggle).
     QFrame *m_branchDiffSticky = nullptr;
@@ -7566,6 +7662,10 @@ private:
     // the file still being read.
     QStringList m_branchDiffFilePaths;
     QStringList m_branchDiffFileAnchors;
+    // path -> sticky-bar label, built at render time while the parsed
+    // DiffFileEntry (status, +/- counts) is still to hand, exactly as the PR
+    // viewer and the working-tree diff do.
+    QHash<QString, QString> m_branchStickyLabelHtml;
     // Last file a CHANGES-row action navigated to in either the branch-range or
     // working-tree diff. Also gives the window tests a stable assertion that
     // does not depend on viewport height or font metrics.
@@ -7934,6 +8034,10 @@ private:
     QStringList m_scmSectionPaths;   // repo-relative path per section
     QList<int> m_scmFileTops;        // cached absolute y of each section header
     QHash<QString, QString> m_scmStickyLabelHtml; // section key -> sticky label
+    // Green outline over the section CHANGES points at, the working-tree twin of
+    // m_branchDiffActiveOutline.
+    QFrame *m_scmDiffActiveOutline = nullptr;
+    QString m_scmActiveSectionKey;
     // A click may target a section whose HTML is still streaming. Keep its key
     // so onDiffStreamFinished() can pin it as soon as the anchor is laid out.
     QString m_scmPendingScrollKey;
@@ -9310,6 +9414,11 @@ private:
     QString m_branchMergedFlashBranch;
     QString m_branchMergedFlashDir;
     int m_branchMergedFlashRow = -1;
+    // The congratulation the range pane shows in place of that branch's diff,
+    // built on the merge path (mergedBranchCelebrationHtml) rather than during
+    // the rebuild that paints it: its git reads would otherwise pump the event
+    // loop in the middle of renderBranchesPanel.
+    QString m_branchMergedFlashHtml;
     // How long the check outlives the merge. It never moves the selection by
     // itself: expiring only means the next natural rebuild of the panel drops the
     // row, so a long-idle Branches tab eventually returns to normal.

@@ -37,6 +37,11 @@ import urllib.request
 
 MAX_TURNS = 60
 TOOL_OUTPUT_LIMIT = 30000
+# forkmesh.com sits behind Cloudflare's browser-integrity check, which bans the
+# stdlib default "Python-urllib/3.x" signature: the edge answers 403 with
+# "error code: 1010" before the relay Worker ever runs, which used to read as a
+# rejected run ticket (adhoc #1619). Identify as ForkMesh instead.
+USER_AGENT = "ForkMesh-AI-agent/1.0 (+https://forkmesh.com)"
 # Turns the relay throttled: how often to retry one turn before giving up.
 RATE_LIMIT_RETRIES = 3
 RATE_LIMIT_MAX_WAIT = 120
@@ -118,8 +123,21 @@ def call_relay(auth, model, max_tokens, messages):
     ).encode("utf-8")
     request = urllib.request.Request(auth["url"], data=body, method="POST")
     request.add_header("content-type", "application/json")
+    request.add_header("accept", "application/json")
+    request.add_header("user-agent", USER_AGENT)
     with urllib.request.urlopen(request, timeout=600) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def edge_blocked(detail):
+    """True when Cloudflare's edge answered, not the relay Worker.
+
+    Those blocks come back as a bare "error code: NNNN" line or a challenge
+    page, never the relay's JSON, so the account behind the run ticket is not
+    the problem and re-signing in cannot help.
+    """
+    low = (detail or "").lower()
+    return "error code: 10" in low or ("cloudflare" in low and "<html" in low)
 
 
 # Network-traffic markers. ForkMesh's agent detail page parses lines beginning
@@ -189,7 +207,12 @@ def main():
                     continue
                 net_error(turn, err.code)
                 log("!! Relay AI agent error %d: %s" % (err.code, detail))
-                if err.code in (401, 403):
+                if edge_blocked(detail):
+                    log("!! Cloudflare's edge blocked this request before it "
+                        "reached the relay, so the account sign-in is fine. "
+                        "Update ForkMesh to a build whose agent turns send a "
+                        "ForkMesh user agent.")
+                elif err.code in (401, 403):
                     log("!! This node is not authorized to sign for the "
                         "account (or the run ticket expired).")
                 elif err.code == 404:

@@ -1695,6 +1695,96 @@ int main(int argc, char *argv[])
     qInstallMessageHandler(startupPrevious);
     g_capturedMessages = nullptr;
 
+    // The shared branch/PR/working-tree renderer leaves room to scroll the
+    // final changed lines clear of the viewport and ends with an explicit dark
+    // terminator (adhoc #1450).
+    QList<forkmesh::ui::DiffFileEntry> footerFiles;
+    const QString footerHtml = forkmesh::ui::renderDiffHtmlSplit(
+        false,
+        QStringLiteral("diff --git a/a.txt b/a.txt\n"
+                       "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"),
+        footerFiles, QString(), QStringLiteral("main"),
+        QStringLiteral("feature"), QString(), {}, {});
+    check(footerHtml.contains(QStringLiteral("class='diffendspacer'")) &&
+              footerHtml.endsWith(
+                  QStringLiteral("<div class='diffend'>END OF DIFF</div>")),
+          QStringLiteral("diffs have bottom review space and an explicit end bar"));
+    // Every caller reads an empty render as "nothing to show" and substitutes
+    // its own notice, so an empty patch must stay empty rather than becoming a
+    // terminator bar under a diff that never began.
+    QList<forkmesh::ui::DiffFileEntry> emptyFooterFiles;
+    check(forkmesh::ui::renderDiffHtmlSplit(
+              false, QString(), emptyFooterFiles, QString(),
+              QStringLiteral("main"), QStringLiteral("feature"), QString(), {},
+              {})
+              .isEmpty(),
+          QStringLiteral("an empty diff renders no end bar, so the caller's "
+                         "own empty-state notice still shows"));
+
+    // The changed-file list owns keyboard focus after a click: Up/Down must
+    // select the adjacent file, scroll its diff section into place, and update
+    // the floating header with the same file metadata.
+    {
+        QTextBrowser navDiff;
+        navDiff.resize(420, 140);
+        QListWidget navList;
+        auto *first = new QListWidgetItem(QStringLiteral("one.cpp"), &navList);
+        auto *second = new QListWidgetItem(QStringLiteral("two.cpp"), &navList);
+        first->setData(Qt::UserRole, QStringLiteral("file-0"));
+        second->setData(Qt::UserRole, QStringLiteral("file-1"));
+        QList<forkmesh::ui::DiffFileEntry> navFiles;
+        forkmesh::ui::DiffFileEntry one;
+        one.path = QStringLiteral("one.cpp");
+        one.anchor = QStringLiteral("file-0");
+        one.adds = 1;
+        forkmesh::ui::DiffFileEntry two;
+        two.path = QStringLiteral("two.cpp");
+        two.anchor = QStringLiteral("file-1");
+        two.adds = 2;
+        navFiles << one << two;
+        QString navHtml =
+            QStringLiteral("<a name=\"file-0\"></a><div>one.cpp</div>");
+        for (int i = 0; i < 80; ++i)
+            navHtml += QStringLiteral("<div>line %1</div>").arg(i);
+        navHtml += QStringLiteral("<a name=\"file-1\"></a><div>two.cpp</div>");
+        // The renderer leaves a scroll runway past the last file (see the end-bar
+        // check above). Without it the jump to the final file only reaches the
+        // scrollbar's maximum, leaving the *previous* file at the top edge — so
+        // the fixture has to carry the same trailing room the real diff does.
+        for (int i = 0; i < 20; ++i)
+            navHtml += QStringLiteral("<div>&nbsp;</div>");
+        navDiff.setHtml(navHtml);
+        forkmesh::ui::DiffFileNavigator navigator(
+            &navDiff, &navList, Qt::UserRole, &navDiff);
+        navigator.rebuild(navFiles, 12);
+        // The sticky header is a child of the diff's viewport, so it only ever
+        // reports itself visible once that top-level widget is shown.
+        navDiff.show();
+        QApplication::processEvents();
+        navList.setCurrentRow(0);
+        navList.setFocus();
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+        QApplication::sendEvent(&navList, &down);
+        QApplication::processEvents();
+        auto *sticky = navDiff.findChild<QLabel *>(
+            QStringLiteral("diffStickyHeader"));
+        check(navList.currentRow() == 1 && sticky && sticky->isVisible() &&
+                  sticky->text().contains(QStringLiteral("two.cpp")),
+              QString("file-list Down selects the next file and updates its "
+                      "header (row=%1, sticky=%2, scroll=%3, names=%4)")
+                  .arg(navList.currentRow())
+                  .arg(!sticky ? QStringLiteral("missing")
+                               : sticky->isVisible() ? QStringLiteral("visible")
+                                                     : QStringLiteral("hidden"))
+                  .arg(navDiff.verticalScrollBar()->value())
+                  .arg(!sticky ? QStringLiteral("-")
+                               : QStringLiteral("one=%1 two=%2")
+                                     .arg(sticky->text().contains(
+                                         QStringLiteral("one.cpp")))
+                                     .arg(sticky->text().contains(
+                                         QStringLiteral("two.cpp")))));
+    }
+
     // Prompt shortcut headers can dedicate a fresh run to one exact CLI model.
     // Those routing fields configure the launcher and must not leak into the
     // task text the model receives.
@@ -3926,7 +4016,99 @@ int main(int argc, char *argv[])
                   QStringLiteral("fix/stall-filter-test-isolation"),
           QStringLiteral("opening a cross-node head diffs the branch portion, not "
                          "the cache-socket node label"));
+    // The pull conversation is the whole activity feed, not only the signed
+    // review events: the commits behind the pull and the lifecycle of an agent
+    // working its branch interleave with the comments in time order. Without
+    // this a pull opened from an agent branch showed nothing but its opening
+    // card, which is what made the page look empty.
+    {
+        PullRequest activity;
+        activity.number = 406;
+        activity.base = QStringLiteral("main");
+        // Reuse the cross-node branch above rather than inventing one: the head
+        // stays decorated "<node>:<branch>" while the session records the plain
+        // branch it ran on, so this also covers agentSessionForPull() matching
+        // the branch portion instead of the label.
+        activity.head =
+            QStringLiteral("cache-socket-2632:fix/stall-filter-test-isolation");
+        activity.author = QStringLiteral("jett");
+        activity.authorName = QStringLiteral("jett");
+        activity.title = QStringLiteral("fix: add clear network log");
+        activity.description = QStringLiteral("Drain queued MetaCalls.");
+        activity.ts = 1000;
+        PullEvent comment;
+        comment.type = QStringLiteral("comment");
+        comment.author = QStringLiteral("reviewer");
+        comment.authorName = QStringLiteral("reviewer");
+        comment.body = QStringLiteral("Looks good.");
+        comment.ts = 3000;
+        activity.events = {comment};
+
+        AgentSession working;
+        working.id = 91510;
+        working.owner = QStringLiteral("me");
+        working.name = QStringLiteral("r");
+        working.provider = QStringLiteral("claude-code");
+        working.branchName = QStringLiteral("fix/stall-filter-test-isolation");
+        working.status = AgentStatus::Running;
+        working.createdAtMs = 1500;
+        working.startedAtMs = 2500;
+        window.testAddAgentSession(working);
+
+        // Stands in for renderPullCommits()' base..head walk. The second commit
+        // lands after the pull was opened — the case that matters, because it is
+        // the agent still pushing to the branch.
+        window.testSeedPullActivityCommits(
+            activity.number,
+            {{QStringLiteral("bbbbccccddddeeee"), QStringLiteral("original commit"),
+              QStringLiteral("jett"), QStringLiteral("2026-08-05 12:00"), 2,
+              QString()},
+             {QStringLiteral("ccccddddeeeeffff"), QStringLiteral("agent follow-up"),
+              QStringLiteral("agent"), QStringLiteral("2026-08-05 18:00"), 4,
+              QStringLiteral("claude-code")}});
+        window.testRenderPullThread(activity);
+        const QStringList cards = window.testPullThreadCardHeaders();
+
+        check(cards.size() == 7,
+              QStringLiteral("the pull conversation carries every activity card "
+                             "(got %1)").arg(cards.size()));
+        if (cards.size() == 7) {
+            check(cards.at(0).contains(QStringLiteral("opened this pull request")) &&
+                      cards.at(1).contains(QStringLiteral("was queued")) &&
+                      cards.at(2).contains(QStringLiteral("bbbbccccdddd")) &&
+                      cards.at(3).contains(QStringLiteral("started working")) &&
+                      cards.at(4).contains(QStringLiteral("commented")) &&
+                      cards.at(5).contains(QStringLiteral("ccccddddeeee")),
+                  QStringLiteral("commits and agent transitions interleave with the "
+                                 "review events in time order"));
+            // The live status pins to the bottom: it is where the run is now,
+            // not a transition that already happened.
+            check(cards.at(6).contains(QStringLiteral("is <b>running</b>")),
+                  QStringLiteral("a working agent's current status closes the feed"));
+            // The agent cards exist at all only because the decorated head
+            // matched the plain branch the session ran on. The header carries a
+            // bounded label (a long branch there would set the window's minimum
+            // width), so match its leading portion.
+            check(cards.at(6).contains(QStringLiteral("fix/stall-filter")) &&
+                      !cards.at(6).contains(QStringLiteral("cache-socket-2632")),
+                  QStringLiteral("a cross-node head still finds its agent, and the "
+                                 "card names the branch not the node label"));
+        }
+        check(cards.join(QLatin1Char('\n'))
+                  .contains(QStringLiteral("as claude-code")),
+              QStringLiteral("an agent-authored commit says so on its card"));
+        check(window.testPullActivityExtraCards() == 5,
+              QStringLiteral("the Conversation badge counts the commits and agent "
+                             "cards alongside the review items"));
+        window.testRemoveAgentSession(working.id);
+        // Leave the conversation empty: these cards would otherwise stay mounted
+        // for the rest of the suite, and the window's minimum width is the
+        // widest page's (issue #369 budgets that at 900px).
+        window.testRenderPullThread(PullRequest());
+    }
+
     window.testSwitchToWorktreeGitBranch(QStringLiteral("main"));
+
 
     // adhoc #55: the status strip names the commit the open branch is on —
     // short SHA, date, subject and author. The read is detached (it must not
@@ -4811,6 +4993,24 @@ int main(int argc, char *argv[])
                       QStringLiteral("commit-waiting.txt")),
               QStringLiteral("clicking a working-tree file pins its sticky filename "
                              "at the top of the diff"));
+        // The same two marks as the branch range: a stroke on the row and an
+        // outline around that file's section of the combined diff.
+        check(window.testScmStrokedRowFile() ==
+                  QStringLiteral("commit-waiting.txt"),
+              QString("the working-tree file's CHANGES row carries the green "
+                      "stroke (stroked = \"%1\")")
+                  .arg(window.testScmStrokedRowFile()));
+        check(window.testScmOutlinedFile() ==
+                      QStringLiteral("commit-waiting.txt") &&
+                  window.testScmOutlineRect().width() > 0 &&
+                  window.testScmOutlineRect().height() > 0,
+              QString("the working-tree diff outlines the active file's section "
+                      "(outlined = \"%1\", rect = %2x%3)")
+                  .arg(window.testScmOutlinedFile().isEmpty()
+                           ? QStringLiteral("<none>")
+                           : window.testScmOutlinedFile())
+                  .arg(window.testScmOutlineRect().width())
+                  .arg(window.testScmOutlineRect().height()));
 
         // …and once that change is committed the row hands itself back to Sync,
         // which is the behaviour the swap was there for in the first place.
@@ -5489,6 +5689,74 @@ int main(int argc, char *argv[])
                   window.testCommitWorkspacePage() == 2,
               QStringLiteral("clicking a branch file in CHANGES scrolls the "
                              "right-hand range diff to that file"));
+        // Having clicked a file, Up/Down must keep reviewing from the tree: the
+        // click may not hand the keyboard to the diff pane, and the arrows step
+        // over the "Changes against main" group header rather than stalling on
+        // it. The sticky diff header names whichever file the walk lands on.
+        {
+            const QStringList reviewFiles = window.testSourceControlPaths();
+            check(reviewFiles.size() >= 2,
+                  QString("the branch range lists enough files to review with "
+                          "the keyboard (files = %1)")
+                      .arg(reviewFiles.join(QStringLiteral(", "))));
+            if (reviewFiles.size() >= 2) {
+                // Walk to the top of the list, then down through every file.
+                for (int i = 0; i < reviewFiles.size(); ++i)
+                    window.testArrowOnSourceControl(/*down=*/false);
+                const QString first = window.testArrowOnSourceControl(false);
+                check(first == reviewFiles.first(),
+                      QString("Up stops on the first changed file instead of "
+                              "selecting the group header (landed on \"%1\")")
+                          .arg(first.isEmpty() ? QStringLiteral("<none>") : first));
+                QStringList walked;
+                for (int i = 1; i < reviewFiles.size(); ++i)
+                    walked << window.testArrowOnSourceControl(/*down=*/true);
+                check(walked == reviewFiles.mid(1),
+                      QString("Down walks the branch review file by file "
+                              "(walked = %1, expected = %2)")
+                          .arg(walked.join(QStringLiteral(", ")),
+                               reviewFiles.mid(1).join(QStringLiteral(", "))));
+                check(window.testLastSourceControlDiffPath() == reviewFiles.last(),
+                      QString("each arrow step scrolls the range diff to the "
+                              "newly selected file (diff at \"%1\", tree at "
+                              "\"%2\")")
+                          .arg(window.testLastSourceControlDiffPath(),
+                               reviewFiles.last()));
+                // One more Down at the end must not wrap or clear the review.
+                const QString past = window.testArrowOnSourceControl(true);
+                check(past == reviewFiles.last(),
+                      QString("Down past the last file keeps it selected "
+                              "(landed on \"%1\")")
+                          .arg(past.isEmpty() ? QStringLiteral("<none>") : past));
+
+                // The selection reads as one thing in two places: a green
+                // stroke on the CHANGES row, and a green outline around that
+                // file's section of the diff.
+                check(window.testScmStrokedRowFile() == reviewFiles.last(),
+                      QString("the current file's CHANGES row carries the green "
+                              "stroke (stroked = \"%1\", current = \"%2\")")
+                          .arg(window.testScmStrokedRowFile(),
+                               reviewFiles.last()));
+                check(window.testBranchOutlinedFile() == reviewFiles.last() &&
+                          window.testBranchOutlineRect().width() > 0 &&
+                          window.testBranchOutlineRect().height() > 0,
+                      QString("the range diff outlines the active file's section "
+                              "(outlined = \"%1\", rect = %2x%3)")
+                          .arg(window.testBranchOutlinedFile().isEmpty()
+                                   ? QStringLiteral("<none>")
+                                   : window.testBranchOutlinedFile())
+                          .arg(window.testBranchOutlineRect().width())
+                          .arg(window.testBranchOutlineRect().height()));
+                // Stepping back moves both marks together.
+                const QString back = window.testArrowOnSourceControl(false);
+                check(window.testScmStrokedRowFile() == back &&
+                          window.testBranchOutlinedFile() == back,
+                      QString("stroke and outline follow the walk together "
+                              "(file = \"%1\", stroke = \"%2\", outline = \"%3\")")
+                          .arg(back, window.testScmStrokedRowFile(),
+                               window.testBranchOutlinedFile()));
+            }
+        }
         // Every diff keeps the same universal source-control composer and
         // changes tree above the branch's commit graph. The global prompt stays
         // visible below it, so an agent can be launched directly from Git.
@@ -5800,6 +6068,76 @@ int main(int argc, char *argv[])
                       QStringLiteral("/odd name\\ "),
                   QStringLiteral("a trailing space is escaped so git doesn't strip "
                                  "it off the pattern (adhoc #1594)"));
+        }
+
+        // adhoc #1615: a merged-and-deleted branch used to leave one grey line in
+        // the range pane. It now leaves a congratulation that names who landed
+        // the branch and lists every other merge of the day beside it, so the
+        // credit survives the cleanup that deletes the agent session.
+        {
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Merge agent/adhoc-1615-nice into main")) ==
+                      QStringLiteral("agent/adhoc-1615-nice"),
+                  QStringLiteral("the app's own merge subject names its branch "
+                                 "(adhoc #1615)"));
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Merge branch 'fix/pill' of git@host:o/r")) ==
+                      QStringLiteral("fix/pill"),
+                  QStringLiteral("git's own merge subject names its branch "
+                                 "(adhoc #1615)"));
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Merge pull request #7 from owner/agent/x")) ==
+                      QStringLiteral("agent/x"),
+                  QStringLiteral("a pull-request merge names the head branch, "
+                                 "slashes and all (adhoc #1615)"));
+            check(forkmesh::ui::mergedBranchFromMergeSubject(
+                      QStringLiteral("Fix the branch list")).isEmpty(),
+                  QStringLiteral("an ordinary commit subject is not read as a "
+                                 "branch name (adhoc #1615)"));
+
+            forkmesh::ui::MergeCelebrationRow landed;
+            landed.branch = QStringLiteral("agent/adhoc-1615-nice");
+            landed.mergeCommit = QString(40, QLatin1Char('a'));
+            landed.whenSecs = QDateTime::currentSecsSinceEpoch() - 60;
+            landed.files = 3;
+            landed.insertions = 412;
+            landed.deletions = 37;
+            landed.actor = QStringLiteral("Opus 5");
+            landed.detail = QStringLiteral("Agent #1615");
+            landed.byAgent = true;
+            landed.current = true;
+            forkmesh::ui::MergeCelebrationRow kept;
+            kept.branch = QStringLiteral("fix/pill");
+            kept.mergeCommit = QString(40, QLatin1Char('b'));
+            kept.branchStillExists = true;
+            kept.actor = QStringLiteral("Jett");
+            const QString html = forkmesh::ui::mergeCelebrationHtml(
+                landed, QStringLiteral("main"), {landed, kept}, 4, 2);
+            check(html.contains(QStringLiteral("Merged!")) &&
+                      html.contains(landed.branch) &&
+                      html.contains(QStringLiteral("Opus 5")) &&
+                      html.contains(QStringLiteral("Agent #1615")),
+                  QStringLiteral("the celebration credits the agent that landed "
+                                 "the branch (adhoc #1615)"));
+            check(html.contains(QStringLiteral("MERGED INTO MAIN TODAY &#183; 4")),
+                  QString("today's count covers the rows dropped past the display "
+                          "cap as well (adhoc #1615, html = %1)")
+                      .arg(html.section(QStringLiteral("MERGED"), 1, 1).left(40)));
+            check(html.contains(QStringLiteral("2 earlier merges today are not "
+                                               "listed")),
+                  QStringLiteral("a truncated day says what it left out rather "
+                                 "than reading as the whole day (adhoc #1615)"));
+            check(html.contains(QStringLiteral("href='fmbranch:fix%2Fpill'")),
+                  QString("a branch that still exists is opened by name, "
+                          "percent-encoded (adhoc #1615, html = %1)")
+                      .arg(html.section(QStringLiteral("fmbranch"), 1, 1).left(40)));
+            check(html.contains(QStringLiteral("href='fmcommit:") +
+                                landed.mergeCommit),
+                  QStringLiteral("a branch that was deleted with its merge is "
+                                 "opened by its merge commit (adhoc #1615)"));
+            check(html.contains(QStringLiteral("href='fmbranch:main'")),
+                  QStringLiteral("the celebration links back to the base branch "
+                                 "(adhoc #1615)"));
         }
 
         // Leave the fixture as the branch/merge tests below expect it.
