@@ -7905,6 +7905,42 @@ int main(int argc, char *argv[])
               QStringLiteral("work that was not backgrounded badges as BGBLOCK, "
                              "its own category"));
 
+        // adhoc #1620: the crumb an outcome line quotes is a git command, and a
+        // pathspec list names whatever files the read was scoped to — including
+        // this repo's own test_client_error_reporting.py. The substring error
+        // scan claimed the line and painted a healthy run red.
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 2, 224,
+            QStringLiteral("git diff main -- test_client_error_reporting.py, "
+                           "test_offline_ci_workflow.py +286 more (forkmesh)"),
+            /*backgrounded=*/true));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) ==
+                      QStringLiteral("BGTASK"),
+              QStringLiteral("a ✓ outcome line keeps its BGTASK badge when the "
+                             "command it quotes names a file with \"error\" in "
+                             "it (adhoc #1620)"));
+
+        // The ✕ half is likewise classified from its own marker, not from the
+        // vocabulary of the crumb.
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 1, 900,
+            QStringLiteral("git log --grep failed -- error_log.py"),
+            /*backgrounded=*/false));
+        stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) ==
+                      QStringLiteral("BGBLOCK"),
+              QStringLiteral("a ✕ outcome line stays BGBLOCK rather than being "
+                             "reclassified as a failure (adhoc #1620)"));
+
+        window.testResetNetworkLog();
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 1, 48, QString(), /*backgrounded=*/true));
+        window.testLogSystem(forkmesh::backgroundOutcomeLine(
+            QStringLiteral("git"), 3, 1400, QString(), /*backgrounded=*/false));
+
         // adhoc #1594: a line that only mentions background work is not a
         // finished run, and counting it as one is what made the BGTASK tally
         // untrustworthy. It gets its own dim badge instead.
