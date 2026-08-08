@@ -4,14 +4,15 @@
 # so it shows the ForkMesh logo in the dock/overview and can be pinned.
 #
 # This is a USER-level install: it writes only under $HOME (no root, no sudo).
-# It does not copy the binary — the .desktop launcher points straight at the
-# build output, so a plain `cmake --build build` is picked up next launch and
-# the in-app quick-update keeps working.
+# The editable checkout and installed running copy are deliberately separate:
+# the .desktop launcher points at ~/.local/bin/forkmesh, never at build output
+# inside the working copy. Rebuild-only developer actions can still run the
+# checkout binary directly; Update & restart owns the installed copy.
 #
 # Re-run it any time; it overwrites its own files and refreshes the icon cache.
 #
 # Usage:  ./install.sh                    # build if needed, then install
-#         ./install.sh --uninstall        # remove desktop integration only
+#         ./install.sh --uninstall        # remove installed executables/integration
 #         ./install.sh --uninstall --purge # also erase ALL user data
 set -euo pipefail
 
@@ -20,6 +21,7 @@ BUILD_DIR="$SCRIPT_DIR/build"
 BIN="$BUILD_DIR/forkmesh"
 MIRROR_NODE_SOURCE="$SCRIPT_DIR/../mirror_node"
 USER_BIN_DIR="$HOME/.local/bin"
+CLIENT_BIN="$USER_BIN_DIR/forkmesh"
 MIRROR_NODE_BIN="$USER_BIN_DIR/forkmesh-mirror-node"
 
 # Run a command under a hard time limit when coreutils `timeout` is available, so
@@ -50,6 +52,7 @@ uninstall() {
     find "$ICON_BASE" -name "$DESKTOP_ID.png" -delete 2>/dev/null || true
     rm -f "$DATA_HOME/icons/$DESKTOP_ID.png"
     rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/$DESKTOP_ID.desktop"
+    rm -f "$CLIENT_BIN"
     rm -f "$MIRROR_NODE_BIN"
     refresh_caches
 
@@ -63,7 +66,8 @@ uninstall() {
         local cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
         local d
         for d in "$config_home/ForkMesh" "$DATA_HOME/ForkMesh" \
-                 "$cache_home/ForkMesh" "$HOME/.forkmesh"; do
+                 "$cache_home/ForkMesh" "$HOME/.forkmesh" \
+                 "$HOME/.local/share/forkmesh"; do
             if [[ -e "$d" ]]; then rm -rf -- "$d" && echo "  removed $d"; fi
         done
         echo "All user data removed."
@@ -112,6 +116,16 @@ if [[ ! -x "$BIN" ]]; then
     cmake --build "$BUILD_DIR" --target forkmesh -j"$(nproc 2>/dev/null || echo 4)"
 fi
 [[ -x "$BIN" ]] || { echo "error: build did not produce $BIN" >&2; exit 1; }
+
+# Install through a temporary sibling and atomic rename so an interrupted
+# install never truncates the runnable copy. The source-tree build stays intact.
+mkdir -p "$USER_BIN_DIR"
+CLIENT_BIN_TMP="$(mktemp "$USER_BIN_DIR/.forkmesh.XXXXXX")"
+trap 'rm -f "${CLIENT_BIN_TMP:-}"' EXIT
+install -m 0755 "$BIN" "$CLIENT_BIN_TMP"
+mv -f "$CLIENT_BIN_TMP" "$CLIENT_BIN"
+CLIENT_BIN_TMP=""
+trap - EXIT
 
 # The Qt client manages a tiny Go mirror-node supervisor for every source-of-
 # truth desktop. Install it beside the user's other local executables so the
@@ -188,7 +202,7 @@ Version=1.0
 Name=ForkMesh
 GenericName=Decentralized Git
 Comment=Peer-to-peer Git hosting, chat, issues, and CI
-Exec="$BIN" %u
+Exec="$CLIENT_BIN" %u
 Icon=$DESKTOP_ID
 Terminal=false
 Categories=Development;RevisionControl;
@@ -204,7 +218,7 @@ refresh_caches
 
 echo "ForkMesh installed for the desktop."
 echo "  launcher : $DESKTOP_FILE"
-echo "  runs     : $BIN"
+echo "  runs     : $CLIENT_BIN"
 echo
 echo "Open the Activities/app grid, search \"ForkMesh\", launch it, then"
 echo "right-click its dock icon -> \"Pin to Dash\" (GNOME) to keep it there."

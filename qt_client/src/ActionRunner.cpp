@@ -1,6 +1,7 @@
 #include "ActionRunner.h"
 
 #include "CrashHandler.h"
+#include "SystemStats.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -37,18 +38,6 @@ constexpr qsizetype kActionProcessLogMaxLineChars = 4096;
 constexpr qsizetype kActionCrashOutputTailBytes = 12 * 1024;
 constexpr qsizetype kActionCrashContextMaxChars = 12000;
 constexpr qint64 kMaxLandedArtifactBytes = 1024LL * 1024 * 1024;
-
-// CPU share a sandboxed step may use, as a systemd CPUQuota percentage. A
-// hard-wired 200% starved the heaviest workflow this repository has — a
-// from-scratch release build of the desktop client — into the step deadline
-// (adhoc #329). Leave one core to the node itself and never take the whole
-// machine; CPUWeight (set alongside the quota) keeps the interactive app ahead
-// of a step whenever they do compete.
-int actionCpuQuotaPercent()
-{
-    const int cores = qMax(1, QThread::idealThreadCount());
-    return qBound(200, (cores - 1) * 100, 800);
-}
 
 // Where a run's disposable trees live. These used to sit under QDir::tempPath(),
 // which on this fleet is a size-capped tmpfs shared with every other checkout on
@@ -179,6 +168,64 @@ QString diagnosticSafeText(const QString &input, qsizetype maxChars)
 }
 
 } // namespace
+
+// CPU share a sandboxed step may use, as a systemd CPUQuota percentage. A
+// hard-wired 200% starved the heaviest workflow this repository has — a
+// from-scratch release build of the desktop client — into the step deadline
+// (adhoc #329). Leave one core to the node itself and never take the whole
+// machine; CPUWeight (set alongside the quota) keeps the interactive app ahead
+// of a step whenever they do compete.
+int actionCpuQuotaPercent()
+{
+    const int cores = qMax(1, QThread::idealThreadCount());
+    return qBound(200, (cores - 1) * 100, 800);
+}
+
+qint64 actionScopeMemoryBytes(const ActionSandboxLimits &limits)
+{
+    const qint64 floorBytes =
+        qMax<qint64>(64 * 1024 * 1024, limits.maxMemoryBytes);
+    if (limits.maxScopeMemoryBytes > 0)
+        return qMax(floorBytes, limits.maxScopeMemoryBytes);
+    // Steps size their job count from FORKMESH_ACTIONS_CPUS, so the memory
+    // ceiling has to grow with the same quota. A flat 4 GiB against this
+    // repository's own "CI tests" workflow meant a 36-core node ran the Qt
+    // client build at -j8, and seven concurrent MainWindow*.cpp compiles hit
+    // the ceiling exactly — systemd's OOMPolicy then stopped the scope, which
+    // the runner could only report as the opaque "exit code 15" (adhoc #1582).
+    // 1.5 GiB per granted CPU is what those translation units actually peak at
+    // in a Release build, plus a gigabyte for the build tool, the linker and
+    // the step's shell so a step that spends its whole per-CPU share on
+    // compiles still has somewhere to link.
+    const qint64 perCpuBytes = 3LL * 1024 * 1024 * 1024 / 2;
+    qint64 bytes = 1024LL * 1024 * 1024 +
+                   qint64(qMax(1, actionCpuQuotaPercent() / 100)) * perCpuBytes;
+    const qint64 host = SystemStats::totalMemoryBytes();
+    if (host > 0)
+        bytes = qMin(bytes, host / 2);
+    return qMax(bytes, floorBytes);
+}
+
+int actionScopeTasksMax(const ActionSandboxLimits &limits)
+{
+    if (limits.maxProcesses > 0)
+        return qMax(8, limits.maxProcesses);
+    // systemd's TasksMax counts *threads*, not just processes, so this ceiling
+    // has to grow with the CPU quota for the same reason MemoryMax does. A flat
+    // 128 let the "CI tests" Qt build die on `std::system_error: Resource
+    // temporarily unavailable` — pthread_create hitting the cgroup pids limit —
+    // once make -j8 had six AUTOMOC drivers running at once (adhoc #1586).
+    //
+    // A step gets one tool process per granted CPU, and a tool that sizes its
+    // own thread pool does it from the host's core count: nothing inside the
+    // sandbox can see the quota. AUTOMOC is exactly that tool, so budget the
+    // worst case honestly — quota jobs times host threads — plus a base for the
+    // shell, the build tool and its bookkeeping. Still bounded, so a runaway
+    // fork loop stays contained.
+    const int cpus = qMax(1, actionCpuQuotaPercent() / 100);
+    const int hostThreads = qMax(1, QThread::idealThreadCount());
+    return qBound(128, 64 + cpus * hostThreads, 4096);
+}
 
 ActionRunner::ActionRunner(ActionStore *store, QObject *parent)
     : QObject(parent), m_store(store)
@@ -531,8 +578,8 @@ void ActionRunner::launch(Phase phase, const QString &program,
         env.insert(QStringLiteral("FORKMESH_ACTIONS_CPUS"),
                    QString::number(qMax(1, actionCpuQuotaPercent() / 100)));
         env.insert(QStringLiteral("FORKMESH_ACTIONS_MEMORY_MB"),
-                   QString::number(
-                       qMax<qint64>(64, m_limits.maxMemoryBytes / (1024 * 1024))));
+                   QString::number(qMax<qint64>(
+                       64, actionScopeMemoryBytes(m_limits) / (1024 * 1024))));
         for (auto it = m_exposedVariables.constBegin();
              it != m_exposedVariables.constEnd(); ++it)
             env.insert(it.key(), it.value());
@@ -573,10 +620,11 @@ void ActionRunner::launch(Phase phase, const QString &program,
         emitProcessOutput(process->readAllStandardOutput());
     });
     connect(child, &QProcess::finished, this,
-            [this, process](int exitCode, QProcess::ExitStatus) {
+            [this, process](int exitCode, QProcess::ExitStatus status) {
                 if (!process || m_process != process.data())
                     return;
-                onProcessFinished(exitCode);
+                onProcessFinished(exitCode,
+                                  status == QProcess::CrashExit);
             });
     connect(child, &QProcess::errorOccurred, this,
             [this, process](QProcess::ProcessError) {
@@ -768,10 +816,9 @@ void ActionRunner::launchSandboxedStep(const QString &command)
         QStringLiteral("--quiet"),
         QStringLiteral("--unit=") + m_systemdUnit,
         QStringLiteral("--property=TasksMax=%1")
-            .arg(qMax(8, m_limits.maxProcesses)),
+            .arg(actionScopeTasksMax(m_limits)),
         QStringLiteral("--property=MemoryMax=%1")
-            .arg(qMax<qint64>(64 * 1024 * 1024,
-                              m_limits.maxMemoryBytes)),
+            .arg(actionScopeMemoryBytes(m_limits)),
         QStringLiteral("--property=MemorySwapMax=0"),
         QStringLiteral("--property=CPUQuota=%1%").arg(actionCpuQuotaPercent()),
         QStringLiteral("--property=CPUWeight=20"),
@@ -837,7 +884,7 @@ bool ActionRunner::workspaceWithinQuota(QString *reason) const
     return true;
 }
 
-void ActionRunner::onProcessFinished(int exitCode)
+void ActionRunner::onProcessFinished(int exitCode, bool crashed)
 {
     m_stepTimer->stop();
     m_systemdUnit.clear();
@@ -932,7 +979,25 @@ void ActionRunner::onProcessFinished(int exitCode)
         return;
     }
 
-    // A step finished.
+    // A step finished. On a crash exit QProcess reports the terminating signal
+    // in `exitCode`, so printing it as an exit code is not just useless but
+    // wrong: the 15 in "Step failed with exit code 15" was SIGTERM from systemd
+    // stopping the scope after the cgroup OOM killer fired, and reading it as a
+    // status sent every reader looking for a compiler error that was never
+    // there (adhoc #1582). Name the signal and the budget it points at.
+    if (crashed) {
+        complete(false,
+                 QStringLiteral(
+                     "%1 was killed by signal %2 rather than exiting. The "
+                     "sandbox stops a step this way when it exceeds its %3 MiB "
+                     "memory budget (FORKMESH_ACTIONS_MEMORY_MB) — build with "
+                     "fewer parallel jobs — or when something outside the run "
+                     "terminates its scope.")
+                     .arg(m_currentStepLabel)
+                     .arg(exitCode)
+                     .arg(actionScopeMemoryBytes(m_limits) / (1024 * 1024)));
+        return;
+    }
     if (exitCode != 0) {
         complete(false, QStringLiteral("Step failed with exit code %1.")
                             .arg(exitCode));

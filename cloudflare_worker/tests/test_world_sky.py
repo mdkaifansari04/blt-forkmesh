@@ -37,6 +37,260 @@ def run_sky_script(body):
     return json.loads(result.stdout)
 
 
+# Just enough of the Three.js surface that createWorldSky() touches to observe
+# its visibility bookkeeping in Node, with no GPU and no WebGL context.
+THREE_STUB = """
+class Vec {
+  constructor() { this.x = 0; this.y = 0; this.z = 0; }
+  set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+  setScalar(value) { return this.set(value, value, value); }
+}
+class Obj {
+  constructor() {
+    this.children = [];
+    this.parent = null;
+    this.visible = true;
+    this.position = new Vec();
+    this.scale = new Vec();
+    this.matrix = { x: 0, y: 0, z: 0, scale: 0 };
+  }
+  add(child) { this.children.push(child); child.parent = this; }
+  remove(child) {
+    const index = this.children.indexOf(child);
+    if (index >= 0) this.children.splice(index, 1);
+    child.parent = null;
+  }
+  clear() { this.children = []; }
+  lookAt() {}
+  updateMatrix() {
+    this.matrix = {
+      x: this.position.x,
+      y: this.position.y,
+      z: this.position.z,
+      scale: this.scale.x,
+    };
+  }
+}
+class Geometry {
+  constructor() { this.attributes = {}; this.disposed = false; }
+  setAttribute(name, value) { this.attributes[name] = value; }
+  dispose() { this.disposed = true; }
+}
+class Material {
+  constructor(params = {}) { Object.assign(this, params); this.disposed = false; }
+  dispose() { this.disposed = true; }
+}
+class Points extends Obj {
+  constructor(geometry, material) {
+    super();
+    this.geometry = geometry;
+    this.material = material;
+  }
+}
+class InstancedMesh extends Obj {
+  constructor(geometry, material, capacity) {
+    super();
+    this.geometry = geometry;
+    this.material = material;
+    this.capacity = capacity;
+    this.count = capacity;
+    this.matrices = new Array(capacity).fill(null);
+    this.colors = new Array(capacity).fill(null);
+    this.instanceMatrix = { needsUpdate: false, setUsage() {} };
+    this.instanceColor = { needsUpdate: false };
+  }
+  setMatrixAt(index, matrix) { this.matrices[index] = { ...matrix }; }
+  setColorAt(index, color) { this.colors[index] = color.value; }
+}
+const THREE = {
+  Group: Obj,
+  Object3D: Obj,
+  BufferGeometry: Geometry,
+  BufferAttribute: class {
+    constructor(array, itemSize) { this.array = array; this.itemSize = itemSize; }
+  },
+  Points,
+  PointsMaterial: Material,
+  InstancedMesh,
+  MeshBasicMaterial: Material,
+  SphereGeometry: Geometry,
+  RingGeometry: Geometry,
+  OctahedronGeometry: Geometry,
+  Color: class {
+    constructor() { this.value = ""; }
+    set(value) { this.value = String(value); return this; }
+  },
+  DynamicDrawUsage: 35048,
+  DoubleSide: 2,
+  AdditiveBlending: 2,
+};
+"""
+
+
+def test_deep_sky_is_drawn_only_while_a_night_sky_is_looked_at():
+    result = run_sky_script(
+        THREE_STUB
+        + """
+        const NOW = Date.parse("2026-07-26T00:00:00Z");
+        const engineCalls = { propagations: 0 };
+        const countedEngine = {
+          json2satrec: (record) => sgp4Engine.json2satrec(record),
+          sgp4(satrec, minutes) {
+            engineCalls.propagations += 1;
+            return sgp4Engine.sgp4(satrec, minutes);
+          },
+        };
+        const parent = new THREE.Group();
+        const layer = sky.createWorldSky({ THREE, parent, starCount: 32 });
+        layer.update({
+          ok: true,
+          schemaVersion: 1,
+          fetchedAt: NOW,
+          satellites: [{
+            OBJECT_NAME: "ISS (ZARYA)",
+            OBJECT_ID: "1998-067A",
+            EPOCH: "2026-07-26T00:00:00Z",
+            MEAN_MOTION: 15.5,
+            ECCENTRICITY: 0.0004,
+            INCLINATION: 51.64,
+            RA_OF_ASC_NODE: 123.4,
+            ARG_OF_PERICENTER: 24.5,
+            MEAN_ANOMALY: 335.5,
+            NORAD_CAT_ID: "25544",
+            BSTAR: 0.0002,
+            MEAN_MOTION_DOT: 0.00001,
+            MEAN_MOTION_DDOT: 0,
+          }],
+        }, countedEngine);
+
+        const sample = (label) => ({
+          ...layer.getState(),
+          label,
+          starsVisible: layer.stars.visible,
+          satellitesVisible: layer.satellites.visible,
+          planetCount: layer.planets.count,
+          propagations: engineCalls.propagations,
+          sunY: layer.planets.matrices[0].y,
+          moonY: layer.planets.matrices[1].y,
+        });
+
+        // Noon, view level with the horizon.
+        layer.setDaylightMinute(12 * 60, 1);
+        layer.tick(NOW, { x: 0, y: 2, z: 0 }, { x: 0, y: 0, z: -1 });
+        const noon = sample("noon");
+        // Still daytime, but now craning at the sun.
+        layer.tick(NOW + 5_000, null, { x: 0, y: 1, z: -0.2 });
+        const noonLookingUp = sample("noonLookingUp");
+
+        // Midnight, still looking at the horizon.
+        layer.setDaylightMinute(0, 0);
+        layer.tick(NOW + 10_000, null, { x: 0, y: 0, z: -1 });
+        const midnight = sample("midnight");
+        // Midnight, looking up.
+        layer.tick(NOW + 20_000, null, { x: 0, y: 1, z: -0.2 });
+        const midnightLookingUp = sample("midnightLookingUp");
+        // Hysteresis: a shallow rise keeps the layer that is already up.
+        layer.tick(NOW + 30_000, null, { x: 0, y: 0.09, z: -1 });
+        const midnightShallowUp = sample("midnightShallowUp");
+        // …and does not turn it on once it has dropped below the exit angle.
+        layer.tick(NOW + 40_000, null, { x: 0, y: -0.5, z: -1 });
+        layer.tick(NOW + 50_000, null, { x: 0, y: 0.09, z: -1 });
+        const midnightShallowDown = sample("midnightShallowDown");
+
+        process.stdout.write(JSON.stringify({
+          samples: [
+            noon,
+            noonLookingUp,
+            midnight,
+            midnightLookingUp,
+            midnightShallowUp,
+            midnightShallowDown,
+          ],
+          sunColor: layer.planets.colors[0],
+          moonColor: layer.planets.colors[1],
+          planetCapacity: layer.planets.capacity,
+          attached: parent.children.includes(layer.group),
+        }));
+        """
+    )
+
+    samples = {sample["label"]: sample for sample in result["samples"]}
+    assert result["sunColor"] == "#ffd45f"
+    assert result["moonColor"] == "#dff5ff"
+    assert result["planetCapacity"] == 8
+    assert result["attached"] is True
+    # The two surviving instances are the ones that belong to their half of the
+    # day: the sun is up at noon, the moon is up at midnight.
+    assert samples["noon"]["sunY"] > 0 > samples["noon"]["moonY"]
+    assert samples["midnight"]["moonY"] > 0 > samples["midnight"]["sunY"]
+
+    # Daylight draws the sun and the moon and nothing else, whichever way the
+    # visitor is facing.
+    for label in ("noon", "noonLookingUp", "midnight"):
+        assert samples[label]["starsVisible"] is False, label
+        assert samples[label]["satellitesVisible"] is False, label
+        assert samples[label]["planetCount"] == 2, label
+        assert samples[label]["deepSkyVisible"] is False, label
+        assert samples[label]["drawCalls"] == 2, label
+    assert samples["noon"]["night"] is False
+    assert samples["noonLookingUp"]["lookingUp"] is True
+    assert samples["midnight"]["night"] is True
+    assert samples["midnight"]["lookingUp"] is False
+
+    # Looking up at a night sky is the only state that pays for the full layer.
+    for label in ("midnightLookingUp", "midnightShallowUp"):
+        assert samples[label]["starsVisible"] is True, label
+        assert samples[label]["satellitesVisible"] is True, label
+        assert samples[label]["planetCount"] == 8, label
+        assert samples[label]["drawCalls"] == 4, label
+    assert samples["midnightShallowDown"]["deepSkyVisible"] is False
+
+    # SGP4 runs only while the satellites are on screen, and resumes on the
+    # first tick after they return.
+    assert samples["midnight"]["propagations"] == 0
+    assert samples["midnightLookingUp"]["propagations"] == 1
+    assert samples["midnightShallowUp"]["propagations"] == 2
+    assert samples["midnightShallowDown"]["propagations"] == 2
+
+
+def test_look_up_gate_has_hysteresis_and_ignores_malformed_directions():
+    result = run_sky_script(
+        """
+        const check = (direction, previous) =>
+          sky.worldSkyLookingUp(direction, previous);
+        process.stdout.write(JSON.stringify({
+          enter: sky.WORLD_SKY_LOOK_UP_ENTER,
+          exit: sky.WORLD_SKY_LOOK_UP_EXIT,
+          steepFromDown: check({ x: 0, y: 1, z: 0 }, false),
+          levelFromDown: check({ x: 0, y: 0, z: -1 }, false),
+          bandFromDown: check({ x: 0, y: 0.1, z: -1 }, false),
+          bandFromUp: check({ x: 0, y: 0.1, z: -1 }, true),
+          belowExitFromUp: check({ x: 0, y: 0.01, z: -1 }, true),
+          // Length must not change the answer.
+          scaled: check({ x: 0, y: 40, z: -8 }, false),
+          zeroLength: check({ x: 0, y: 0, z: 0 }, true),
+          missing: check(null, true),
+          nonFinite: check({ x: 0, y: Number.NaN, z: -1 }, true),
+          nonFiniteFromDown: check({ x: 0, y: Number.NaN, z: -1 }, false),
+        }));
+        """
+    )
+
+    assert result["exit"] < result["enter"]
+    assert result["steepFromDown"] is True
+    assert result["levelFromDown"] is False
+    # Inside the band the previous answer wins, in both directions.
+    assert result["bandFromDown"] is False
+    assert result["bandFromUp"] is True
+    assert result["belowExitFromUp"] is False
+    assert result["scaled"] is True
+    # Unusable input never flips the layer.
+    assert result["zeroLength"] is True
+    assert result["missing"] is True
+    assert result["nonFinite"] is True
+    assert result["nonFiniteFromDown"] is False
+
+
 def test_seeded_star_field_is_deterministic_bounded_and_above_the_horizon():
     result = run_sky_script(
         """
@@ -270,16 +524,20 @@ def test_sky_module_keeps_rendering_and_lifecycle_work_bounded():
     assert "solveEccentricAnomaly" not in source
     assert "EARTH_MU_KM3_S2" not in source
     assert "transform.updateMatrix();" in source
-    assert "const sunInstanceIndex = WORLD_SKY_PLANETS.length;" in source
-    assert "const moonInstanceIndex = sunInstanceIndex + 1;" in source
+    # The sun and moon hold the leading instance slots so daylight can drop the
+    # six planets by shortening `count` alone.
+    assert "const sunInstanceIndex = 0;" in source
+    assert "const moonInstanceIndex = 1;" in source
+    assert "const planetInstanceOffset = moonInstanceIndex + 1;" in source
     assert "function setDaylightMinute(" in source
+    assert "function applyDeepSkyVisibility(" in source
     assert "sunAndMoon: 2" in source
-    assert "drawCalls: 4" in source
     assert "forkmesh-world-sun-moon-glows" in source
     assert "new THREE.RingGeometry(1.08, 1.62, 28)" in source
     assert "THREE.AdditiveBlending" in source
     for method in (
         "setDaylightMinute,",
+        "setViewDirection,",
         "update,",
         "tick,",
         "dispose,",

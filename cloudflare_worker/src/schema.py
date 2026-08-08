@@ -493,7 +493,8 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS contributor_activity (
         author_bi TEXT PRIMARY KEY, name TEXT NOT NULL,
         issues INTEGER NOT NULL DEFAULT 0, pulls INTEGER NOT NULL DEFAULT 0,
-        commits INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,
+        commits INTEGER NOT NULL DEFAULT 0, discussions INTEGER NOT NULL DEFAULT 0,
+        total INTEGER NOT NULL DEFAULT 0,
         last_ts INTEGER)""",
     "CREATE INDEX IF NOT EXISTS idx_contributor_activity_total ON contributor_activity(total)",
     # Cumulative funds (lamports) actually disbursed to each recipient, for the
@@ -2678,6 +2679,17 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY(note_id, viewer_key))""",
     "CREATE INDEX IF NOT EXISTS idx_note_views_note "
     "ON note_views(note_id, last_at DESC)",
+    # Per-minute /api traffic buckets behind the api.forkmesh.com diagnostics
+    # page (src/api_metrics.py): minute × masked route group × status class,
+    # written in batched upserts and pruned to seven days on the flush path.
+    """CREATE TABLE IF NOT EXISTS api_metrics_minute (
+        minute_ts INTEGER NOT NULL,
+        route_group TEXT NOT NULL,
+        status_class TEXT NOT NULL,
+        requests INTEGER NOT NULL DEFAULT 0,
+        dur_ms_sum INTEGER NOT NULL DEFAULT 0,
+        dur_ms_max INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(minute_ts, route_group, status_class))""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

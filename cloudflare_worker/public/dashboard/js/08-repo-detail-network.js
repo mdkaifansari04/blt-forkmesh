@@ -477,6 +477,120 @@
       </div>`;
   }
 
+  const repoTreeContextMenuState = { path: "", kind: "tree" };
+
+  function repoTreeContextMenu() {
+    let menu = $("[data-repo-tree-context-menu]");
+    if (menu) return menu;
+    menu = document.createElement("div");
+    menu.dataset.repoTreeContextMenu = "1";
+    menu.className = "fixed z-50 hidden w-56 overflow-hidden rounded-md border border-border bg-background py-1 shadow-lg";
+    menu.setAttribute("role", "menu");
+    document.body.appendChild(menu);
+    return menu;
+  }
+
+  function closeRepoTreeContextMenu() {
+    repoTreeContextMenu()?.classList.add("hidden");
+  }
+
+  function formatRepoContextCopyPath(repo, path) {
+    const repoLabel = repoDisplayKey(repo) || repoKey(repo) || "repo";
+    return path ? `${repoLabel}/${path}` : repoLabel;
+  }
+
+  function formatRepoGitIgnoreLine(path, kind) {
+    const clean = String(path || "").trim();
+    if (!clean) return "";
+    const normalized = clean.replace(/[\\/]?$/, "");
+    return kind === "tree" ? `${normalized}/` : normalized;
+  }
+
+  function renderRepoTreeContextMenuItems(kind) {
+    const downloadItem = kind === "blob"
+      ? `<button type="button" data-repo-tree-context-action="download" role="menuitem" class="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[11px] text-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"><i data-lucide="download" class="h-3.5 w-3.5 text-muted-foreground"></i><span>Download</span></button>`
+      : "";
+    return `
+      <button type="button" data-repo-tree-context-action="open" role="menuitem" class="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[11px] text-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"><i data-lucide="folder-open" class="h-3.5 w-3.5 text-muted-foreground"></i><span>Open</span></button>
+      <button type="button" data-repo-tree-context-action="open-in-tab" role="menuitem" class="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[11px] text-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"><i data-lucide="external-link" class="h-3.5 w-3.5 text-muted-foreground"></i><span>Open in new tab</span></button>
+      <button type="button" data-repo-tree-context-action="copy-path" role="menuitem" class="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[11px] text-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"><i data-lucide="copy" class="h-3.5 w-3.5 text-muted-foreground"></i><span>Copy Path</span></button>
+      <button type="button" data-repo-tree-context-action="copy-relative-path" role="menuitem" class="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[11px] text-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"><i data-lucide="link-2" class="h-3.5 w-3.5 text-muted-foreground"></i><span>Copy Relative Path</span></button>
+      <button type="button" data-repo-tree-context-action="git-ignore" role="menuitem" class="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[11px] text-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"><i data-lucide="circle-minus" class="h-3.5 w-3.5 text-muted-foreground"></i><span>Copy as .gitignore entry</span></button>
+      ${downloadItem}
+    `;
+  }
+
+  function openRepoTreeContextMenu(event, { path = "", kind = "tree" }) {
+    const menu = repoTreeContextMenu();
+    if (!state.selectedRepo) return;
+    repoTreeContextMenuState.path = String(path || "");
+    repoTreeContextMenuState.kind = kind;
+    menu.dataset.repoTreeContextPath = repoTreeContextMenuState.path;
+    menu.dataset.repoTreeContextKind = repoTreeContextMenuState.kind;
+    menu.innerHTML = `
+      <div class="px-2 py-1.5 border-b border-border text-[10px] font-medium text-muted-foreground">${escapeHtml(formatRepoGitIgnoreLine(path, kind) || ".")}</div>
+      ${renderRepoTreeContextMenuItems(kind)}
+    `;
+    window.lucide?.createIcons();
+    menu.classList.remove("hidden");
+    menu.style.visibility = "hidden";
+    menu.style.left = `${event.clientX + 6}px`;
+    menu.style.top = `${event.clientY + 6}px`;
+    const rect = menu.getBoundingClientRect();
+    const left = Math.max(8, Math.min(event.clientX + 6, window.innerWidth - rect.width - 8));
+    const top = Math.max(8, Math.min(event.clientY + 6, window.innerHeight - rect.height - 8));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.style.visibility = "visible";
+  }
+
+  async function handleRepoTreeContextAction(actionButton) {
+    if (!state.selectedRepo) {
+      closeRepoTreeContextMenu();
+      return;
+    }
+    const action = actionButton?.dataset?.repoTreeContextAction || "";
+    const path = repoTreeContextMenuState.path || "";
+    const kind = repoTreeContextMenuState.kind || "tree";
+    const repo = state.selectedRepo;
+    if (!path && kind === "blob") {
+      closeRepoTreeContextMenu();
+      return;
+    }
+    if (action === "open") {
+      if (kind === "tree") loadRepositoryTree(repo, path);
+      else loadRepositoryBlob(repo, path);
+      closeRepoTreeContextMenu();
+      return;
+    }
+    if (action === "open-in-tab") {
+      window.open(repoPathUrl(repo, kind, path), "_blank", "noopener,noreferrer");
+      closeRepoTreeContextMenu();
+      return;
+    }
+    if (action === "download" && kind === "blob") {
+      downloadRepoRawBlob({ rawUrl: repoRawUrl(repo, path), path });
+      closeRepoTreeContextMenu();
+      return;
+    }
+    if (action === "copy-path") {
+      await copyTextToClipboard(formatRepoContextCopyPath(repo, path));
+      closeRepoTreeContextMenu();
+      return;
+    }
+    if (action === "copy-relative-path") {
+      await copyTextToClipboard(path);
+      closeRepoTreeContextMenu();
+      return;
+    }
+    if (action === "git-ignore") {
+      await copyTextToClipboard(formatRepoGitIgnoreLine(path, kind));
+      closeRepoTreeContextMenu();
+      return;
+    }
+    closeRepoTreeContextMenu();
+  }
+
   function findRepository(key) {
     const wanted = String(key || "").trim();
     if (!wanted) return null;
@@ -1856,6 +1970,9 @@
       if (!event.target.closest("[data-repo-code-wrap]")) {
         $$("[data-repo-code-menu]").forEach((m) => m.classList.add("hidden"));
       }
+      if (!event.target.closest("[data-repo-tree-context-menu]")) {
+        closeRepoTreeContextMenu();
+      }
 
       const aboutEditButton = event.target.closest("[data-repo-about-edit]");
       if (aboutEditButton && state.selectedRepo && sessionOwnsRepo(state.selectedRepo)) {
@@ -2070,7 +2187,7 @@
       const issueNewButton = event.target.closest("[data-repo-issue-new]");
       if (issueNewButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openIssueCompose(state.selectedRepo);
@@ -2080,7 +2197,7 @@
       const issueImportButton = event.target.closest("[data-repo-issue-import]");
       if (issueImportButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openIssueImport(state.selectedRepo);
@@ -2096,7 +2213,7 @@
       const pullNewButton = event.target.closest("[data-repo-pull-new]");
       if (pullNewButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
-          location.href = "/login";
+          location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
           return;
         }
         openPullCompose(state.selectedRepo);
@@ -2368,6 +2485,12 @@
         return;
       }
 
+      const contextMenuAction = event.target.closest("[data-repo-tree-context-action]");
+      if (contextMenuAction) {
+        await handleRepoTreeContextAction(contextMenuAction);
+        return;
+      }
+
       const agentsRefreshButton = event.target.closest("[data-repo-agents-refresh]");
       if (agentsRefreshButton && state.selectedRepo) {
         // On the detail page, Refresh reloads that agent's transcript; on the
@@ -2398,6 +2521,29 @@
         closeRepoAgentDetail(state.selectedRepo);
         return;
       }
+  });
+
+  document.addEventListener("contextmenu", (event) => {
+    const treePathButton = event.target.closest("[data-dashboard-tree-path]");
+    const blobPathButton = event.target.closest("[data-dashboard-blob-path]");
+    if (!treePathButton && !blobPathButton) {
+      closeRepoTreeContextMenu();
+      return;
+    }
+    if (!state.selectedRepo) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (treePathButton) {
+      openRepoTreeContextMenu(event, {
+        path: treePathButton.dataset.dashboardTreePath || "",
+        kind: "tree",
+      });
+      return;
+    }
+    openRepoTreeContextMenu(event, {
+      path: blobPathButton?.dataset.dashboardBlobPath || "",
+      kind: "blob",
+    });
   });
 
   document.addEventListener("submit", async (event) => {
@@ -2744,6 +2890,7 @@
 	      setAgentModalOpen(false);
 	      setNewRepoModalOpen(false);
 	      closeRepoBranchMenus();
+	      closeRepoTreeContextMenu();
 	      closeRepoFileFinder();
 	      closeGlobalSearch();
 	      closeMobileDrawers();

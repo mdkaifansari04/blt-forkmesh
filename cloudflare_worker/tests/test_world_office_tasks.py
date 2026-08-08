@@ -1414,6 +1414,7 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
                 "mode": "Auto mode",
                 "strength": "XHIGH",
                 "sessionId": "418",
+                "status": "queued",
                 "finishedBy": "",
             },
         }),
@@ -1431,6 +1432,7 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
         "mode": "Auto mode",
         "strength": "xhigh",
         "sessionId": "418",
+        "status": "queued",
     }
     stored = runtime.db.execute(
         "SELECT data FROM organization_tasks WHERE task_id=?",
@@ -1438,6 +1440,18 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     ).fetchone()[0]
     assert "claude-code@workstation" not in stored
     assert "Auto mode" not in stored
+
+    waiting = await tasks_api.handle(
+        runtime.use("POST", "wendy", {"status": "waiting"}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/agent-status",
+    )
+    assert waiting["status"] == 200
+    assert waiting["data"]["task"]["agent"]["status"] == "waiting"
+    denied_status = await tasks_api.handle(
+        runtime.use("POST", "carol", {"status": "running"}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/agent-status",
+    )
+    assert denied_status["status"] == 403
 
     # The bot has no member assignee_bi, so the desktop that opened the task —
     # a plain member without manager rights — reports the run as finished.
@@ -1447,6 +1461,7 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
             "agent": {
                 "finishedBy": "claude-code@workstation",
                 "model": "sonnet",
+                "status": "success",
             },
         }),
         f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/complete",
@@ -1460,6 +1475,101 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     assert finished["agent"]["model"] == "sonnet"
     assert finished["agent"]["mode"] == "Auto mode"
     assert finished["agent"]["strength"] == "xhigh"
+    assert finished["agent"]["status"] == "success"
+
+
+@run_async_test
+async def test_agent_status_batch_reports_a_whole_fleet_in_one_write():
+    """adhoc #1618: a restart published one request per session, and the relay
+    rate-limited its own desktop. The batch reports every run at once, with the
+    per-task ownership gate applied to each entry."""
+
+    runtime = FakeRuntime()
+    ids = []
+    for index in range(3):
+        opened = await tasks_api.handle(
+            runtime.use("POST", "wendy", {
+                "title": "Fleet run %d" % index,
+                "department": "engineering",
+                "repository": "forkmesh/forkmesh",
+                "assigneeKind": "agent",
+                "agent": {"provider": "claude-code", "sessionId": str(index),
+                          "status": "queued"},
+            }),
+            tasks_api.UNIVERSAL_PREFIX,
+        )
+        assert opened["status"] == 201
+        ids.append(opened["data"]["task"]["id"])
+
+    # A plain member's task, which the reporting desktop does not own.
+    others = await tasks_api.handle(
+        runtime.use("POST", "carol", {
+            "title": "Someone else's run",
+            "department": "engineering",
+            "repository": "forkmesh/forkmesh",
+            "assigneeKind": "agent",
+            "agent": {"provider": "codex", "sessionId": "9", "status": "queued"},
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert others["status"] == 201
+    foreign = others["data"]["task"]["id"]
+
+    batch = await tasks_api.handle(
+        runtime.use("POST", "wendy", {"statuses": [
+            {"task": ids[0], "status": "running"},
+            {"task": ids[1], "status": "waiting"},
+            {"task": ids[2], "status": "success"},
+            {"task": foreign, "status": "failed"},
+            {"task": "f" * 32, "status": "running"},
+            {"task": ids[0], "status": "stopped"},   # duplicate: ignored
+            {"task": ids[1], "status": "sleeping"},  # not a run state
+            {"task": "not-a-task-id", "status": "running"},
+        ]}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert batch["status"] == 200
+    results = {row["task"]: row for row in batch["data"]["results"]}
+    assert results[ids[0]]["ok"] and results[ids[1]]["ok"] and results[ids[2]]["ok"]
+    # Not this desktop's task, a task that does not exist, and a status that is
+    # not a run state each fail alone rather than failing the whole write.
+    assert results[foreign] == {"task": foreign, "ok": False, "error": "forbidden"}
+    assert results["f" * 32]["error"] == "task_not_found"
+    assert len(batch["data"]["results"]) == 5
+    assert results[ids[0]]["ok"] is True  # the first entry won, not the dup
+
+    for task_id, expected in zip(ids, ("running", "waiting", "success")):
+        current = await tasks_api.handle(
+            runtime.use("GET", "wendy", {}),
+            f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+        )
+        assert current["data"]["task"]["agent"]["status"] == expected
+    foreign_now = await tasks_api.handle(
+        runtime.use("GET", "carol", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{foreign}",
+    )
+    assert foreign_now["data"]["task"]["agent"]["status"] == "queued"
+
+    for body in ({}, {"statuses": []}, {"statuses": "running"},
+                 {"statuses": [{"task": "nope", "status": "running"}]}):
+        refused = await tasks_api.handle(
+            runtime.use("POST", "wendy", body),
+            f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+        )
+        assert refused["status"] == 400, body
+    oversized = await tasks_api.handle(
+        runtime.use("POST", "wendy", {"statuses": [
+            {"task": ids[0], "status": "running"}
+        ] * (tasks_api.MAX_AGENT_STATUS_BATCH + 1)}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert oversized["status"] == 400
+    assert oversized["data"]["error"] == "agent_status_batch_too_large"
+    not_allowed = await tasks_api.handle(
+        runtime.use("GET", "wendy", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/agent-status",
+    )
+    assert not_allowed["status"] == 405
 
     # An unrelated member still cannot close somebody else's agent run out.
     other = await tasks_api.handle(

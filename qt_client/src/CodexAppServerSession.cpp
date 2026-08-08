@@ -60,6 +60,19 @@ QString sandboxForMode(const QString &mode)
                : QStringLiteral("workspace-write");
 }
 
+// GPT-5.3 Spark doesn't advertise support for any configured OpenAI service
+// tier, so Codex logs "Configured service tier `...` is not advertised as
+// supported for model `gpt-5.3-spark` and will be omitted from requests" on
+// every turn. Codex already drops the tier from the actual request, but the
+// warning still surfaces to the user as if something failed, so launch this
+// model without a configured tier at all.
+bool codexModelSkipsServiceTier(const QString &model)
+{
+    const QString trimmed = model.trimmed();
+    return trimmed == QLatin1String("gpt-5.3-spark") ||
+           trimmed == QLatin1String("gpt-5.3-codex-spark");
+}
+
 QStringList gitMetadataRoots(const QString &cwd)
 {
     // A linked worktree's .git is a file which points outside cwd.  Git needs
@@ -217,6 +230,7 @@ void CodexAppServerSession::start(const QString &cwd,
 
     QString program;
     QStringList arguments;
+    const bool skipServiceTier = codexModelSkipsServiceTier(m_model);
     if (!m_program.isEmpty()) {
         program = m_program;
         arguments = m_arguments;
@@ -224,13 +238,19 @@ void CodexAppServerSession::start(const QString &cwd,
 #ifdef Q_OS_WIN
         program = QStringLiteral("codex");
         arguments = {QStringLiteral("app-server")};
+        if (skipServiceTier)
+            arguments = QStringList{QStringLiteral("-c"),
+                                    QStringLiteral("service_tier=auto")} +
+                       arguments;
 #else
         // A login shell gives GUI launches the same PATH as an interactive terminal.
         program = QStringLiteral("bash");
-        arguments = {
-            QStringLiteral("-lc"),
-            AgentJail::wrapCommand(QStringLiteral("exec codex app-server"),
-                                   memoryLimitMb)};
+        const QString codexCommand =
+            skipServiceTier
+                ? QStringLiteral("exec codex -c service_tier=auto app-server")
+                : QStringLiteral("exec codex app-server");
+        arguments = {QStringLiteral("-lc"),
+                    AgentJail::wrapCommand(codexCommand, memoryLimitMb)};
 #endif
     }
     const forkmesh::vm::LaunchCommand launch =
@@ -303,17 +323,19 @@ void CodexAppServerSession::onProcessFinished(int exitCode)
     emit finished(exitCode);
 }
 
-void CodexAppServerSession::sendUserText(const QString &text)
+bool CodexAppServerSession::sendUserText(const QString &text)
 {
-    if (text.trimmed().isEmpty() || !running())
-        return;
+    if (text.trimmed().isEmpty())
+        return true;
+    if (!running())
+        return false;
     if (!m_threadReady || (m_turnActive && m_turnId.isEmpty())) {
         m_queuedUserTexts.append(text);
-        return;
+        return true;
     }
     if (!m_turnActive) {
         beginTurn(text);
-        return;
+        return true;
     }
 
     QJsonObject params{{QStringLiteral("threadId"), m_threadId},
@@ -321,15 +343,17 @@ void CodexAppServerSession::sendUserText(const QString &text)
                        {QStringLiteral("expectedTurnId"), m_turnId}};
     const qint64 requestId = sendRequest(QStringLiteral("turn/steer"), params);
     m_pendingSteerTexts.insert(requestId, text);
+    return true;
 }
 
 void CodexAppServerSession::setTurnOptions(const QString &model,
                                            const QString &mode,
                                            const QString &effort)
 {
-    m_model = model.trimmed();
-    if (!m_model.isEmpty())
-        m_effectiveModel = m_model;
+    if (const QString trimmed = model.trimmed(); !trimmed.isEmpty()) {
+        m_model = trimmed;
+        m_effectiveModel = trimmed;
+    }
     m_mode = mode;
     m_effort = effort.trimmed();
 }
@@ -468,6 +492,11 @@ void CodexAppServerSession::interrupt()
 bool CodexAppServerSession::running() const
 {
     return m_proc && m_proc->state() != QProcess::NotRunning;
+}
+
+bool CodexAppServerSession::acceptsInput() const
+{
+    return running() && m_proc->isWritable();
 }
 
 qint64 CodexAppServerSession::processId() const

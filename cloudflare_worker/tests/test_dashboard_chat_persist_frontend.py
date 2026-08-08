@@ -236,9 +236,10 @@ def test_dashboard_picker_and_paste_attachments_send_without_an_extra_click():
         CHAT.index('inputEl.addEventListener("paste"'):
         CHAT.index('inputEl.addEventListener("keydown"')
     ]
-    assert "void sendDashboardDraft(control);" in picker
-    # Returning the upload promise keeps the paste chain ordered while still
-    # sending immediately after staging, with no second user action.
+    # Both surfaces send inside the staging promise chain — staging is async,
+    # so an unchained send would read an empty draft — with no second user
+    # action needed.
+    assert "return sendDashboardDraft(control);" in picker
     assert "return sendDashboardDraft(attachmentControl);" in paste
 
 

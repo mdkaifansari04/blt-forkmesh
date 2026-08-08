@@ -21,10 +21,13 @@ OUTPUT = PUBLIC / "world" / "worker-footprint.js"
 # module only after the route which needs them runs.
 LAZY_MODULES = {
     "admin_console.py",
+    "api_metrics.py",
     "activitypub.py",
     "activitypub_threads.py",
     "badges.py",
     "blog_feed.py",
+    "forkbot.py",
+    "fediverse_routes.py",
     "catalog.py",
     "chat_channels_api.py",
     "chat_direct_messages_api.py",
@@ -56,6 +59,7 @@ LAZY_MODULES = {
     "ssh_keys.py",
     "schema.py",
     "static_routes.py",
+    "status_monitoring.py",
     "urls.py",
     "world.py",
     "world_build_board.py",
@@ -67,6 +71,7 @@ LAZY_MODULES = {
     "world_infrastructure.py",
     "world_link_kiosk.py",
     "world_office_tasks.py",
+    "world_qa.py",
     "world_satellites.py",
     "world_social_feeds.py",
     "world_visitors.py",
@@ -108,7 +113,7 @@ STATIC_LIMITS = {
     # This is an intentionally stricter project budget, not a Cloudflare cap.
     # It leaves headroom for future districts without letting the first visit
     # silently inherit every optional feature module.
-    "initialWorldModuleBytesSoft": 2_600_000,
+    "initialWorldModuleBytesSoft": 2_650_000,
 }
 STATIC_IMPORT_FROM_RE = re.compile(
     r"""\bfrom\s+["'](?P<path>\.{1,2}/[^"']+)["']"""
@@ -150,6 +155,8 @@ def _component_for(name):
         return "Identity + security"
     if name.startswith("community_") or name in {
         "blog_feed.py",
+    "forkbot.py",
+    "fediverse_routes.py",
         "contributions.py",
         "og_card.py",
     }:

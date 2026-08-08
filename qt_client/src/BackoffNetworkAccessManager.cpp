@@ -137,6 +137,9 @@ public:
         setError(QNetworkReply::UnknownNetworkError,
                  QStringLiteral(
                      "ForkMesh relay is rate-limited (HTTP 429); backing off"));
+        // Lets a call site recognise the cooldown without parsing that string.
+        setAttribute(
+            BackoffNetworkAccessManager::kBackoffSuppressedAttribute, true);
         setOpenMode(QIODevice::ReadOnly);
         // Real replies always finish asynchronously and callers routinely
         // connect to finished()/errorOccurred() right after issuing the
@@ -290,6 +293,19 @@ bool BackoffNetworkAccessManager::hostInCooldown(const QString &host) const
     // Same channel key createRequest() uses: the lowercased URL host.
     return !m_backoff.ready(normalizedHost(host),
                             QDateTime::currentMSecsSinceEpoch());
+}
+
+qint64 BackoffNetworkAccessManager::hostCooldownRemainingMs(
+    const QString &host) const
+{
+    return m_backoff.msUntilReady(normalizedHost(host),
+                                  QDateTime::currentMSecsSinceEpoch());
+}
+
+bool BackoffNetworkAccessManager::isBackoffSuppressed(const QNetworkReply *reply)
+{
+    return reply
+           && reply->attribute(kBackoffSuppressedAttribute).toBool();
 }
 
 QString BackoffNetworkAccessManager::normalizedHost(const QString &host)
@@ -708,10 +724,18 @@ QNetworkReply *BackoffNetworkAccessManager::createRequest(
         // full cadence because only 429 was treated as backpressure.
         const bool overloaded =
             code == 429 || (code >= 500 && code <= 599 && !tunnelContent);
-        if (overloaded)
+        if (overloaded) {
+            // A 429 often names its own cooldown via Retry-After; floor the
+            // exponential delay at that so this host's next request doesn't
+            // fire before the server said it would even consider it.
+            const QByteArray retryAfter = reply->rawHeader("Retry-After");
+            bool retryAfterOk = false;
+            const qint64 retryAfterMs =
+                QString::fromLatin1(retryAfter).trimmed().toLongLong(&retryAfterOk) * 1000;
             m_backoff.noteFailure(channel, QDateTime::currentMSecsSinceEpoch(),
-                                  kBaseMs, kCapMs);
-        else if (reply->error() == QNetworkReply::NoError)
+                                  kBaseMs, kCapMs,
+                                  retryAfterOk && retryAfterMs > 0 ? retryAfterMs : 0);
+        } else if (reply->error() == QNetworkReply::NoError)
             m_backoff.noteSuccess(channel);
     });
     return reply;

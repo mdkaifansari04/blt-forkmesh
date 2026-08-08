@@ -10,7 +10,15 @@ ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 
 
 def _load_handler(store):
-    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    tree = ast.parse((
+    # entry.py + its lazily-split domain modules
+    (ENTRY.parent / "forkbot.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + (ENTRY.parent / "fediverse_routes.py").read_text(encoding="utf-8")
+    + "\n\n\n"
+    + ENTRY.read_text(encoding="utf-8")
+    + "\n\n\n"
+), filename=str(ENTRY))
     selected = [
         node for node in tree.body
         if isinstance(node, ast.AsyncFunctionDef)
