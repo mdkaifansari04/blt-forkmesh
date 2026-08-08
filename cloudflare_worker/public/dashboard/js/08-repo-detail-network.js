@@ -2276,6 +2276,7 @@
         if (["pulls", "discussions", "issues"].includes(kind)) {
           navigateHistory(`${repoPathUrl(state.selectedRepo)}/${kind}`);
         }
+        if (kind === "pulls") stopRepoPullActivityRefresh();
         state.repoRecordDetail = null;
         if (kind === "issues") {
           // A deep-linked refresh straight into the issue detail never loaded
@@ -2960,6 +2961,7 @@
             if (/^\d+$/.test(path)) {
               loadRepoRecordDetail(repo, kind, path);
             } else if (state.repoRecordDetail?.kind === kind) {
+              if (kind === "pulls") stopRepoPullActivityRefresh();
               state.repoRecordDetail = null;
               // Issues re-render through their filtered list (loadRepoCollection
               // would leak closed issues into the default Open view); fetch it

@@ -69,6 +69,10 @@
     homeOrganizationRepositories: [],
     repoCommitDetail: null,
     repoRecordDetail: null,
+    // A pull page can have a running organization agent attached to its head
+    // branch. Keep the one short-lived timer here so navigating to another
+    // record always supersedes the previous live poll.
+    repoPullActivityRefreshTimer: 0,
     // Last rendered pull/discussion list per kind, and the last rendered code
     // tree listing. Both are held so the header search box can re-filter what
     // is already on screen (adhoc #37) without a second mirror read.

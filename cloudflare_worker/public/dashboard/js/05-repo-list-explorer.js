@@ -1486,6 +1486,10 @@
   // records doesn't fire record reads for tabs nobody opened.
   function activateRepoTab(tab) {
     setRepoTab(tab);
+    // Pull activity only polls while the pull detail is actually visible.
+    // Leaving the tab must cancel immediately instead of waiting for the next
+    // timer tick to notice the now-hidden record.
+    if (tab !== "pulls") stopRepoPullActivityRefresh();
     // The Agents auto-refresh poll only makes sense while that tab is the one
     // on screen; leaving it (to any other tab) stops the poll.
     if (tab !== "agents") {

@@ -497,7 +497,12 @@ void AgentRunner::launch(Phase phase, const QString &program,
                     m_noOutputTimer->stop();
                 if (!m_process)
                     return;
-                emitLog(QStringLiteral("!! ") + m_process->errorString());
+                // stop() terminates (then kills) the child, so Qt reports
+                // QProcess::Crashed for a run the user ended on purpose. The
+                // "Stopped." line already says what happened; "!! Process
+                // crashed" beside it only reads as a bug (adhoc #1622).
+                if (!m_stopping)
+                    emitLog(QStringLiteral("!! ") + m_process->errorString());
                 if (error == QProcess::FailedToStart)
                     complete(false, AgentStatus::Failed, m_process->errorString());
             });
@@ -974,6 +979,17 @@ QString AgentRunner::detectAuthIssue(const QString &chunk)
     if (m_session.provider == QLatin1String("cloudflare-ai")) {
         // The bundled Workers AI agent script's own failure lines (see
         // CloudflareAgentScript.h): a rejected run ticket or a missing one.
+        // A Cloudflare edge block answers 403 before the relay Worker runs, so
+        // check it first — it is not a sign-in problem (adhoc #1619).
+        if (has("cloudflare's edge blocked this request") ||
+            has("error code: 1010")) {
+            m_attentionRaised = true;
+            return QStringLiteral(
+                "Cloudflare's edge blocked this node's AI agent request before "
+                "it reached the relay, so the account sign-in is fine. Update "
+                "ForkMesh to a build that identifies agent turns as ForkMesh, "
+                "then restart the session.");
+        }
         if (has("not authorized to sign for the account") ||
             has("no signed relay ticket")) {
             m_attentionRaised = true;

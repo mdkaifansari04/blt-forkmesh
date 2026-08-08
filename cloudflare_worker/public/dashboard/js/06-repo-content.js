@@ -1438,6 +1438,20 @@
   // thread-reply, thread-state, suggestion-state.
   function pullEventTypeMeta(ev) {
     const neutral = "border-border bg-secondary/60 text-muted-foreground";
+    if (ev.type === "open") return { label: "opened", tone: neutral };
+    if (ev.type === "commit") return { label: "commit", tone: "border-primary/30 bg-primary/10 text-primary" };
+    if (ev.type === "agent") {
+      const status = String(ev.status || "active").replace(/_/g, " ");
+      const active = pullAgentStatusIsActive(ev.status);
+      return {
+        label: `agent ${status}`,
+        tone: active
+          ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+          : ev.status === "completed"
+            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+            : "border-border bg-secondary/60 text-muted-foreground",
+      };
+    }
     if (ev.type === "review") {
       if (ev.state === "approved") return { label: "approved", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" };
       if (ev.state === "changes_requested") return { label: "requested changes", tone: "border-red-500/30 bg-red-500/10 text-red-300" };
@@ -1521,14 +1535,21 @@
   function renderPullConversationEvent(ev) {
     const meta = pullEventTypeMeta(ev);
     const anchor = pullEventAnchorLabel(ev);
-    const author = ev.authorName || ev.author || "unknown";
+    const author = ev.authorName || ev.author || (ev.type === "agent" ? "Agent" : "unknown");
     const date = formatRecordDate(ev.ts);
     const body = String(ev.body || "").trim();
+    const commit = String(ev.hash || "").slice(0, 12);
+    const detail = ev.type === "commit" && commit
+      ? `<span class="font-mono text-[10px]">${escapeHtml(commit)}</span>`
+      : ev.type === "agent" && ev.branchName
+        ? `<span class="font-mono text-[10px]">${escapeHtml(ev.branchName)}</span>`
+        : "";
     return `
       <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
         <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span class="font-medium text-foreground">${escapeHtml(author)}</span>
           <span class="rounded-md border px-1.5 py-0.5 text-[10px] uppercase ${meta.tone}">${escapeHtml(meta.label)}</span>
+          ${detail}
           ${anchor ? `<span class="font-mono">${escapeHtml(anchor)}</span>` : ""}
           <span>&middot;</span>
           <span>${escapeHtml(date)}</span>
@@ -1541,6 +1562,307 @@
     const rows = Array.isArray(events) ? events : [];
     if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No conversation yet on this pull request.</div>';
     return rows.map(renderPullConversationEvent).join("");
+  }
+
+  function pullTimestamp(value) {
+    const numeric = Number(value) || 0;
+    if (numeric) return numeric < 1000000000000 ? numeric * 1000 : numeric;
+    const parsed = Date.parse(String(value || ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  // commits.mbox is authoritative for patch-backed pulls. Branch-backed pulls
+  // deliberately omit it, so their bounded head history is used only when it
+  // reaches the immutable creation base; this prevents unrelated branch
+  // history being presented as pull activity.
+  function parsePullCommitMbox(mbox) {
+    const messages = String(mbox || "").split(/(?=^From [0-9a-f]{7,64} )/mi);
+    return messages.map((message) => {
+      const hash = (message.match(/^From ([0-9a-f]{7,64}) /mi) || [])[1] || "";
+      if (!hash) return null;
+      const header = (name) => {
+        const match = message.match(new RegExp(`^${name}:\\s*([^\\n]*(?:\\n[ \\t][^\\n]*)*)`, "mi"));
+        // mbox folds a long header across continuation lines; unfold them back
+        // onto one line rather than rendering the embedded newline.
+        return match ? match[1].replace(/\n[ \t]+/g, " ").trim() : "";
+      };
+      return {
+        id: `commit:${hash}`,
+        type: "commit",
+        hash,
+        authorName: header("From") || "unknown",
+        ts: pullTimestamp(header("Date")),
+        body: header("Subject").replace(/^\[PATCH[^\]]*\]\s*/i, "") || "Commit",
+      };
+    }).filter(Boolean);
+  }
+
+  // "changes" while no commit is readable from this mirror yet, so the header
+  // never claims a count it does not have.
+  function pullCommitPhrase(count) {
+    return count
+      ? `${escapeHtml(formatCount(count))} commit${count === 1 ? "" : "s"}`
+      : "changes";
+  }
+
+  function renderRepoPullCommits(commits) {
+    if (!commits.length) {
+      return `<div class="px-4 py-3 text-sm text-muted-foreground">No pull-specific commits are available from this mirror yet.</div>`;
+    }
+    return commits.map((commit) => `<div class="grid gap-1 px-4 py-3"><span class="text-sm font-medium text-foreground">${escapeHtml(commit.body || "Commit")}</span><span class="font-mono text-[11px] text-muted-foreground">${escapeHtml(String(commit.hash || "").slice(0, 12))} · ${escapeHtml(commit.authorName || "unknown")}</span></div>`).join("");
+  }
+
+  function normalizePullHistoryCommit(commit) {
+    const hash = String(commit?.hash || commit?.sha || "").trim();
+    if (!hash) return null;
+    return {
+      id: `commit:${hash}`,
+      type: "commit",
+      hash,
+      authorName: String(commit.author || commit.authorName || "unknown"),
+      ts: pullTimestamp(commit.timestamp || commit.date || commit.committedAt),
+      body: String(commit.subject || commit.message || "Commit"),
+    };
+  }
+
+  // pull.md records the head as the plain branch name for same-repo pulls and
+  // as "<contributor>:<branch>" for forked ones. Only the branch segment names
+  // a ref this mirror can resolve.
+  function pullHeadBranchRef(values) {
+    const head = String(values?.head || "").trim();
+    return (head.includes(":") ? head.slice(head.lastIndexOf(":") + 1) : head).trim();
+  }
+
+  // Bounded head history, kept only when it still reaches the pull's immutable
+  // creation base; that guard is what stops an unrelated branch of the same
+  // name being presented as this pull's activity.
+  async function loadRepoPullBranchCommits(repo, ref, base) {
+    const data = await fetchRepoJson(repoLiveUrl(repo, "history", { ref }));
+    const history = (Array.isArray(data?.commits) ? data.commits : [])
+      .map(normalizePullHistoryCommit).filter(Boolean);
+    const baseIndex = history.findIndex((commit) =>
+      commit.hash.toLowerCase() === base.toLowerCase());
+    return baseIndex >= 0 ? history.slice(0, baseIndex) : [];
+  }
+
+  async function loadRepoPullCommits(repo, number, metadataCommit, values) {
+    const metadataRef = immutableGitCommit(metadataCommit)
+      || await resolveRepoPullMetadataCommit(repo);
+    try {
+      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", {
+        path: `pulls/${number}/commits.mbox`, ref: metadataRef,
+      }));
+      const commits = parsePullCommitMbox(blobText(blob));
+      if (commits.length) return commits;
+    } catch (_) { /* branch-backed pulls have no mbox */ }
+
+    const base = immutableGitCommit(values?.creationBaseOid);
+    if (!base) return [];
+    // An agent working the head branch keeps pushing after the pull was
+    // opened, so the live branch tip is read first and the immutable creation
+    // head is the fallback for branches that are gone or have been rebased
+    // off the recorded base.
+    const branch = pullHeadBranchRef(values);
+    const refs = [];
+    if (branch && String(values?.status || "open").toLowerCase() === "open") {
+      refs.push(branch);
+    }
+    const head = immutableGitCommit(values?.creationHeadOid);
+    if (head) refs.push(head);
+    for (const ref of refs) {
+      try {
+        const commits = await loadRepoPullBranchCommits(repo, ref, base);
+        if (commits.length) return commits;
+      } catch (_) { /* try the immutable creation head instead */ }
+    }
+    return [];
+  }
+
+  function pullAgentStatusIsActive(status) {
+    return ["security_pending", "queued", "running"].includes(
+      String(status || "").toLowerCase(),
+    );
+  }
+
+  // Organization sessions keep execution details under agentInfo. Flatten only
+  // the non-sensitive routing/status fields for the branch badge and pull
+  // timeline; prompts and transcripts never leave their dedicated view.
+  function repoAgentStatusSnapshot(session) {
+    const info = session?.agentInfo && typeof session.agentInfo === "object"
+      ? session.agentInfo : {};
+    return {
+      ...session,
+      status: String(info.status || session?.status || ""),
+      provider: String(info.provider || session?.provider || ""),
+      branchName: String(info.branchName || session?.branchName || ""),
+      prNumber: Number(info.prNumber || session?.prNumber || 0),
+      lastError: String(info.lastError || session?.lastError || ""),
+    };
+  }
+
+  function pullAgentActivityEvent(session, number, headBranch) {
+    const snapshot = repoAgentStatusSnapshot(session);
+    const info = session?.agentInfo && typeof session.agentInfo === "object"
+      ? session.agentInfo : {};
+    const branchName = snapshot.branchName.trim();
+    const prNumber = snapshot.prNumber;
+    if (prNumber !== Number(number) &&
+        branchName.toLowerCase() !== String(headBranch || "").toLowerCase()) {
+      return null;
+    }
+    const status = String(snapshot.status || "unknown").toLowerCase();
+    const provider = String(snapshot.provider || "agent");
+    const error = snapshot.lastError.trim();
+    return {
+      id: `agent:${session.id || branchName}:${session.updatedAt || info.finishedAt || info.startedAt || ""}`,
+      type: "agent",
+      status,
+      authorName: provider,
+      branchName,
+      ts: Number(info.finishedAt || info.startedAt || session.updatedAt || session.createdAt || 0),
+      body: error || `Status: ${status.replace(/_/g, " ")}.`,
+    };
+  }
+
+  async function loadRepoPullAgentActivity(repo, number, values) {
+    if (!state.session?.sessionToken) return [];
+    try {
+      const payload = await orgAgentRequest("GET", orgAgentEndpoint(repo));
+      const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+      state.agentsView.agents = sessions.map(repoAgentStatusSnapshot);
+      if (state.selectedRepo && repoMatchesKey(state.selectedRepo, repoKey(repo))) {
+        updateRepoBranchControls(repo, null);
+      }
+      const events = [];
+      sessions.forEach((session) => {
+        const current = pullAgentActivityEvent(session, number, pullHeadBranchRef(values));
+        if (!current) return;
+        // The server keeps bounded agent history.  Render only its lifecycle
+        // state (not the encrypted/private prompt or transcript) so the pull
+        // timeline records queued/running/completed transitions as well as the
+        // current status.
+        const history = Array.isArray(session.history) ? session.history : [];
+        history.forEach((entry, index) => {
+          const status = String(entry?.state || "").toLowerCase();
+          if (!status) return;
+          events.push({
+            ...current,
+            id: `agent:${session.id || current.branchName}:history:${index}:${entry.at || ""}`,
+            status,
+            ts: Number(entry.at || 0),
+            body: `Status: ${status.replace(/_/g, " ")}.`,
+          });
+        });
+        events.push(current);
+      });
+      return events;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function buildRepoPullTimeline(values, conversation, commits, agents) {
+    const opener = {
+      id: "open",
+      type: "open",
+      author: values?.author || "",
+      authorName: values?.authorName || values?.author || "unknown",
+      ts: values?.ts || values?.createdAt || 0,
+      body: "",
+    };
+    return [opener, ...(commits || []), ...(conversation || []), ...(agents || [])]
+      .filter(Boolean)
+      .sort((left, right) => pullTimestamp(left.ts) - pullTimestamp(right.ts));
+  }
+
+  function stopRepoPullActivityRefresh() {
+    if (state.repoPullActivityRefreshTimer) {
+      window.clearTimeout(state.repoPullActivityRefreshTimer);
+      state.repoPullActivityRefreshTimer = 0;
+    }
+  }
+
+  function pullDetailIsCurrent(repo, number) {
+    const detail = state.repoRecordDetail;
+    return detail?.kind === "pulls" && Number(detail.number) === Number(number)
+      && state.selectedRepo && repoMatchesKey(state.selectedRepo, repoKey(repo));
+  }
+
+  function pullAgentSignature(events) {
+    return (events || []).map((event) => `${event.id}:${event.status}`).join("|");
+  }
+
+  // Two cadences. While an agent is working the branch every read repeats, so
+  // its status and any commit it pushes land within seconds. Otherwise only the
+  // (cheap, worker-side) session list is watched, so an agent started after
+  // this page opened still gets noticed without re-reading the mirror on a
+  // timer.
+  async function refreshRepoPullActivity(repo, number, agentsOnly = false) {
+    const detail = state.repoRecordDetail;
+    if (!detail || !pullDetailIsCurrent(repo, number)) return;
+    const parsed = detail.parsed || {};
+    const values = parsed.values || {};
+    let watched = null;
+    if (agentsOnly) {
+      watched = await loadRepoPullAgentActivity(repo, number, values);
+      if (!pullDetailIsCurrent(repo, number)) return;
+      if (!watched.some((event) => pullAgentStatusIsActive(event.status))
+        && pullAgentSignature(watched) === pullAgentSignature(parsed.pullAgents)) {
+        scheduleRepoPullActivityRefresh(repo, number, false);
+        return;
+      }
+    }
+    const [conversation, commits, agents] = await Promise.all([
+      loadRepoPullConversation(repo, number, parsed.pullMetadataCommit || ""),
+      loadRepoPullCommits(repo, number, parsed.pullMetadataCommit || "", values),
+      // The escalating tick already has this read in hand; only the steady
+      // active poll needs a fresh one.
+      watched || loadRepoPullAgentActivity(repo, number, values),
+    ]);
+    if (!pullDetailIsCurrent(repo, number)) return;
+    parsed.pullConversation = conversation;
+    parsed.pullCommits = commits;
+    parsed.pullAgents = agents;
+    parsed.pullTimeline = buildRepoPullTimeline(values, conversation, commits, agents);
+    const timeline = $("[data-repo-pull-conversation]");
+    if (timeline) {
+      timeline.dataset.empty = parsed.pullTimeline.length ? "false" : "true";
+      timeline.innerHTML = renderRepoPullConversation(parsed.pullTimeline);
+    }
+    const count = $("[data-repo-pull-timeline-count]");
+    if (count) count.textContent = formatCount(parsed.pullTimeline.length);
+    // An agent pushing to the head branch also grows the Commits tab, which
+    // stays mounted (hidden) behind the conversation.
+    const commitList = $("[data-repo-pull-commits]");
+    if (commitList) commitList.innerHTML = renderRepoPullCommits(commits);
+    const commitCount = $("[data-repo-pull-commit-count]");
+    if (commitCount) commitCount.textContent = formatCount(commits.length);
+    const commitPhrase = $("[data-repo-pull-commit-phrase]");
+    if (commitPhrase) commitPhrase.innerHTML = pullCommitPhrase(commits.length);
+    const reviewers = $("[data-repo-pull-reviewers]");
+    if (reviewers) reviewers.innerHTML = renderPullReviewers(
+      conversation, values.author || "",
+    );
+    updateRepoPullMergePanel(repo, number, parsed);
+    window.lucide?.createIcons();
+    scheduleRepoPullActivityRefresh(repo, number,
+      agents.some((event) => pullAgentStatusIsActive(event.status)));
+  }
+
+  function scheduleRepoPullActivityRefresh(repo, number, active) {
+    stopRepoPullActivityRefresh();
+    if (!pullDetailIsCurrent(repo, number)) return;
+    // A short poll keeps a running branch agent's status current without a
+    // long-lived socket or a background request after the user leaves the PR;
+    // the idle watch backs right off so an untouched pull page is not a timer
+    // pointed at the mirrors.
+    const delay = active
+      ? (document.hidden ? 15000 : 3000)
+      : (document.hidden ? 120000 : 30000);
+    state.repoPullActivityRefreshTimer = window.setTimeout(() => {
+      state.repoPullActivityRefreshTimer = 0;
+      refreshRepoPullActivity(repo, number, !active);
+    }, delay);
   }
 
   async function loadRepoPullConversation(repo, number, metadataCommit = "") {
@@ -1722,15 +2044,20 @@
         body,
         pending: true,
       };
-      const list = form.parentElement?.querySelector("[data-repo-pull-conversation]");
-      if (list) {
-        if (list.dataset.empty === "true") list.innerHTML = "";
-        list.dataset.empty = "false";
-        list.insertAdjacentHTML("beforeend", renderPullConversationEvent(newEvent));
-      }
       if (state.repoRecordDetail?.kind === "pulls" && String(state.repoRecordDetail.number) === String(number)) {
         const conversation = [...(state.repoRecordDetail.parsed.pullConversation || []), newEvent];
         state.repoRecordDetail.parsed.pullConversation = conversation;
+        const parsed = state.repoRecordDetail.parsed;
+        parsed.pullTimeline = buildRepoPullTimeline(
+          parsed.values || {}, conversation, parsed.pullCommits || [], parsed.pullAgents || [],
+        );
+        const list = form.parentElement?.querySelector("[data-repo-pull-conversation]");
+        if (list) {
+          list.dataset.empty = parsed.pullTimeline.length ? "false" : "true";
+          list.innerHTML = renderRepoPullConversation(parsed.pullTimeline);
+        }
+        const count = $("[data-repo-pull-timeline-count]");
+        if (count) count.textContent = formatCount(parsed.pullTimeline.length);
         const reviewers = document.querySelector("[data-repo-pull-reviewers]");
         if (reviewers) {
           reviewers.innerHTML = renderPullReviewers(
@@ -2366,11 +2693,15 @@
       : "";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
+    const pullTimeline = parsed.pullTimeline || buildRepoPullTimeline(
+      values, pullConversation, parsed.pullCommits || [], parsed.pullAgents || [],
+    );
+    const pullCommitCount = (parsed.pullCommits || []).length;
     const pullViewed = isPulls
       ? loadRepoPullViewed(repo, number, parsed.pullMetadataCommit || "")
       : new Set();
     const pullConversationSection = isPulls ? `
-          <div data-repo-pull-conversation data-empty="${pullConversation.length ? "false" : "true"}" class="border-t border-border">${renderRepoPullConversation(pullConversation)}</div>
+          <div data-repo-pull-conversation data-empty="${pullTimeline.length ? "false" : "true"}" class="border-t border-border">${renderRepoPullConversation(pullTimeline)}</div>
           ${renderPullReviewForm(number)}` : "";
     const pullFilesSection = isPulls ? `
         <section class="overflow-hidden rounded-lg border border-border">
@@ -2395,8 +2726,8 @@
         </section>` : "";
     const recordTabs = isPulls ? `
         <nav class="flex min-w-0 overflow-x-auto border-b border-border" aria-label="Pull request sections">
-          <button type="button" data-repo-record-tab="conversation" aria-selected="true" class="inline-flex h-11 items-center gap-2 border-b-2 border-primary px-3 text-xs font-semibold text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5"></i>Conversation<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullConversation.length)}</span></button>
-          <button type="button" data-repo-record-tab="commits" aria-selected="false" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5"></i>Commits<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">1</span></button>
+          <button type="button" data-repo-record-tab="conversation" aria-selected="true" class="inline-flex h-11 items-center gap-2 border-b-2 border-primary px-3 text-xs font-semibold text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5"></i>Conversation<span data-repo-pull-timeline-count class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullTimeline.length)}</span></button>
+          <button type="button" data-repo-record-tab="commits" aria-selected="false" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5"></i>Commits<span data-repo-pull-commit-count class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullCommitCount)}</span></button>
           <button type="button" data-repo-record-tab="files" aria-selected="false" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="files" class="h-3.5 w-3.5"></i>Files changed<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullPatch.files.length)}</span></button>
           <button type="button" data-repo-record-tab="badge" aria-selected="false" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="fingerprint" class="h-3.5 w-3.5"></i>Badge</button>
         </nav>` : "";
@@ -2476,7 +2807,7 @@
           </form>` : ""}
           <p class="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
             <span data-repo-record-state class="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground"><i data-lucide="${config.icon}" class="h-3.5 w-3.5"></i>${escapeHtml(recordState)}</span>
-            <span><span class="font-semibold text-foreground">${escapeHtml(author)}</span> ${isPulls ? `wants to merge 1 commit into <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(baseBranch)}</span> from <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(headBranch)}</span>` : `opened this ${escapeHtml(config.itemLabel)} ${escapeHtml(date)}`}</span>
+            <span><span class="font-semibold text-foreground">${escapeHtml(author)}</span> ${isPulls ? `wants to merge <span data-repo-pull-commit-phrase>${pullCommitPhrase(pullCommitCount)}</span> into <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(baseBranch)}</span> from <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(headBranch)}</span>` : `opened this ${escapeHtml(config.itemLabel)} ${escapeHtml(date)}`}</span>
           </p>
           ${recordTabs}
         </header>
@@ -2511,11 +2842,8 @@
             ${isPulls ? `
               <div data-repo-record-panel="commits" class="hidden min-w-0">
                 <section class="overflow-hidden rounded-lg border border-border">
-                  <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5 text-primary"></i>Reviewed commit</div>
-                  <div class="grid gap-2 px-4 py-4">
-                    <p class="text-sm font-semibold text-foreground">${escapeHtml(title)}</p>
-                    <span class="break-all font-mono text-xs text-muted-foreground">${escapeHtml(values.creationHeadOid || "Commit unavailable from this mirror")}</span>
-                  </div>
+                  <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5 text-primary"></i>Pull request commits</div>
+                  <div data-repo-pull-commits class="divide-y divide-border">${renderRepoPullCommits(parsed.pullCommits || [])}</div>
                 </section>
               </div>
               <div data-repo-record-panel="files" class="hidden min-w-0">${pullFilesSection}</div>
@@ -2548,6 +2876,7 @@
     const config = repoCollectionConfig[kind];
     const container = $(`[data-repo-${kind}]`);
     if (!repo || !config || !container || !number) return;
+    stopRepoPullActivityRefresh();
     // Issues just submitted from this session await their mirror commit, so
     // there's nothing to fetch from the mirror yet - render
     // the detail straight from the local placeholder instead.
@@ -2603,10 +2932,16 @@
       if (pullPatch) parsed.pullPatch = pullPatch;
       if (kind === "pulls") {
         parsed.pullMetadataCommit = pullMetadataCommit;
-        parsed.pullConversation = await loadRepoPullConversation(
-          repo,
-          number,
-          pullMetadataCommit,
+        const [conversation, commits, agents] = await Promise.all([
+          loadRepoPullConversation(repo, number, pullMetadataCommit),
+          loadRepoPullCommits(repo, number, pullMetadataCommit, parsed.values || {}),
+          loadRepoPullAgentActivity(repo, number, parsed.values || {}),
+        ]);
+        parsed.pullConversation = conversation;
+        parsed.pullCommits = commits;
+        parsed.pullAgents = agents;
+        parsed.pullTimeline = buildRepoPullTimeline(
+          parsed.values || {}, conversation, commits, agents,
         );
         parsed.pullMergeAuthorized = await loadRepoPullMergeAuthorization(repo);
       }
@@ -2619,6 +2954,12 @@
       state.repoRecordDetail = { repo, kind, number, parsed };
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
       loadFederatedReplies(repo, kind, number, container);
+      // Members watch an open pull for agent activity; signed-out visitors
+      // cannot read organization sessions at all, so they get no timer.
+      if (kind === "pulls" && state.session?.sessionToken) {
+        scheduleRepoPullActivityRefresh(repo, number, (parsed.pullAgents || []).some(
+          (event) => pullAgentStatusIsActive(event.status)));
+      }
     } catch (_) {
       container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a reachable mirror host serves ${escapeHtml(recordPath)}.</div>`;
     } finally {
@@ -5185,7 +5526,7 @@
             Array.isArray(payload.sessions)
           ? payload.sessions
           : [];
-        state.agentsView.agents = sessions;
+        state.agentsView.agents = sessions.map(repoAgentStatusSnapshot);
         const accessReason = String(
           payload?.accessReason || payload?.message || "",
         ).trim();

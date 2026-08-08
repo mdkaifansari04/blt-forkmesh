@@ -8,12 +8,14 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QSet>
 #include <QStandardPaths>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace forkmesh::control {
@@ -1601,10 +1603,178 @@ QString cloudflareAccountIdFromVariables(
                             });
 }
 
+namespace {
+
+// `node --version` is a fast local exec; the ceiling is only there so a wedged
+// interpreter cannot hold the GUI thread while the monitor decides what to run.
+constexpr int kNodeVersionProbeTimeoutMs = 3000;
+
+// npx and node as this platform spells them. Windows ships npx as a .cmd
+// wrapper, which QStandardPaths knows about but a plain directory join does
+// not.
+QStringList executableNames(const QString &base)
+{
+#ifdef Q_OS_WIN
+    return {base + QStringLiteral(".cmd"), base + QStringLiteral(".exe"), base};
+#else
+    return {base};
+#endif
+}
+
+QString executableIn(const QString &binDir, const QString &base)
+{
+    const QDir dir(binDir);
+    for (const QString &name : executableNames(base)) {
+        const QString path = dir.absoluteFilePath(name);
+        if (QFileInfo(path).isExecutable())
+            return path;
+    }
+    return {};
+}
+
+// (major, minor, patch) for ordering. Missing components sort as 0.
+std::array<int, 3> nodeVersionTriple(const QString &text)
+{
+    static const QRegularExpression versionPattern(
+        QStringLiteral("v(\\d{1,4})(?:\\.(\\d{1,6}))?(?:\\.(\\d{1,6}))?"));
+    const auto match = versionPattern.match(text);
+    if (!match.hasMatch())
+        return {0, 0, 0};
+    return {match.captured(1).toInt(), match.captured(2).toInt(),
+            match.captured(3).toInt()};
+}
+
+// Every versioned install under a version manager's root, newest first. `suffix`
+// is the path from one version directory down to its bin (nvm and volta keep it
+// at bin/, fnm one level deeper).
+QStringList versionedNodeBinDirs(const QString &root, const QString &suffix)
+{
+    QDir rootDir(root);
+    if (!rootDir.exists())
+        return {};
+    QStringList versions =
+        rootDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::NoSort);
+    std::sort(versions.begin(), versions.end(),
+              [](const QString &left, const QString &right) {
+                  return nodeVersionTriple(left) > nodeVersionTriple(right);
+              });
+    QStringList bins;
+    bins.reserve(versions.size());
+    for (const QString &version : versions) {
+        bins.append(QDir(rootDir.absoluteFilePath(version))
+                        .absoluteFilePath(suffix));
+    }
+    return bins;
+}
+
+// `node --version` from one directory, or 0 when there is no runnable node
+// there. Authoritative: a directory name is only ever used for ordering.
+int probeNodeMajorVersion(const QString &binDir)
+{
+    const QString node = executableIn(binDir, QStringLiteral("node"));
+    if (node.isEmpty())
+        return 0;
+    QProcess process;
+    process.setProgram(node);
+    process.setArguments({QStringLiteral("--version")});
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.setStandardInputFile(QProcess::nullDevice());
+    process.start();
+    if (!process.waitForFinished(kNodeVersionProbeTimeoutMs)) {
+        process.kill();
+        process.waitForFinished(500);
+        return 0;
+    }
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
+        return 0;
+    return nodeMajorVersionFromText(
+        QString::fromUtf8(process.readAllStandardOutput()));
+}
+
+}  // namespace
+
+int nodeMajorVersionFromText(const QString &text)
+{
+    static const QRegularExpression versionPattern(
+        QStringLiteral("v?(\\d{1,4})\\.\\d{1,6}\\.\\d{1,6}"));
+    const auto match = versionPattern.match(text.trimmed());
+    return match.hasMatch() ? match.captured(1).toInt() : 0;
+}
+
+QStringList nodeBinDirectoryCandidates()
+{
+    QStringList dirs;
+    const auto add = [&dirs](const QString &dir) {
+        const QString trimmed = dir.trimmed();
+        if (trimmed.isEmpty())
+            return;
+        const QString canonical = QFileInfo(trimmed).canonicalFilePath();
+        if (canonical.isEmpty() || dirs.contains(canonical) ||
+            !QFileInfo(canonical).isDir()) {
+            return;
+        }
+        if (executableIn(canonical, QStringLiteral("npx")).isEmpty())
+            return;
+        dirs.append(canonical);
+    };
+
+    // An explicit override wins: a Node that neither PATH nor a version manager
+    // knows about is exactly what it is for.
+    add(qEnvironmentVariable("FORKMESH_NODE_BIN"));
+    // PATH next. On a machine already running a current Node there is nothing to
+    // search for and exactly one probe to run.
+    const QString pathNpx =
+        QStandardPaths::findExecutable(QStringLiteral("npx"));
+    if (!pathNpx.isEmpty())
+        add(QFileInfo(pathNpx).absolutePath());
+
+    // Version managers keep every install side by side, so the newest one is
+    // usually the one that satisfies Wrangler even when PATH does not.
+    const QDir home = QDir::home();
+    QString nvmDir = qEnvironmentVariable("NVM_DIR").trimmed();
+    if (nvmDir.isEmpty())
+        nvmDir = home.absoluteFilePath(QStringLiteral(".nvm"));
+    QStringList managed;
+    managed += versionedNodeBinDirs(
+        QDir(nvmDir).absoluteFilePath(QStringLiteral("versions/node")),
+        QStringLiteral("bin"));
+    managed += versionedNodeBinDirs(
+        home.absoluteFilePath(QStringLiteral(".local/share/fnm/node-versions")),
+        QStringLiteral("installation/bin"));
+    managed += versionedNodeBinDirs(
+        home.absoluteFilePath(QStringLiteral(".volta/tools/image/node")),
+        QStringLiteral("bin"));
+    managed += versionedNodeBinDirs(
+        home.absoluteFilePath(QStringLiteral(".asdf/installs/nodejs")),
+        QStringLiteral("bin"));
+    for (const QString &dir : managed)
+        add(dir);
+    return dirs;
+}
+
+NodeToolchain findNodeToolchain(int minimumMajor)
+{
+    NodeToolchain toolchain;
+    const QStringList candidates = nodeBinDirectoryCandidates();
+    for (const QString &dir : candidates) {
+        const int major = probeNodeMajorVersion(dir);
+        if (major <= 0 || major < minimumMajor)
+            continue;
+        toolchain.npx = executableIn(dir, QStringLiteral("npx"));
+        if (toolchain.npx.isEmpty())
+            continue;
+        toolchain.binDir = dir;
+        toolchain.majorVersion = major;
+        break;
+    }
+    return toolchain;
+}
+
 CloudflareBootstrapCommand buildCloudflareTailCommand(
     const QString &apiToken,
     const QString &accountId,
-    const QString &npxProgram)
+    const QString &npxProgram,
+    const QString &nodeBinDir)
 {
     CloudflareBootstrapCommand command;
     const QString token = apiToken.trimmed();
@@ -1632,6 +1802,20 @@ CloudflareBootstrapCommand buildCloudflareTailCommand(
         QStringLiteral("json"),
     };
     command.environment = QProcessEnvironment::systemEnvironment();
+    // Running npx out of a newer Node's bin directory is not enough on its own:
+    // npx and the wrangler bin it spawns are both `#!/usr/bin/env node` scripts,
+    // so without this the old node from PATH runs them and Wrangler exits 1 on
+    // its version check (adhoc #1617).
+    const QString nodeBin = nodeBinDir.trimmed();
+    if (!nodeBin.isEmpty()) {
+        const QString existingPath =
+            command.environment.value(QStringLiteral("PATH"));
+        command.environment.insert(
+            QStringLiteral("PATH"),
+            existingPath.isEmpty()
+                ? nodeBin
+                : nodeBin + QDir::listSeparator() + existingPath);
+    }
     command.environment.remove(QStringLiteral("CLOUDFLARE_API_KEY"));
     command.environment.remove(QStringLiteral("CLOUDFLARE_EMAIL"));
     command.environment.insert(QStringLiteral("CLOUDFLARE_API_TOKEN"),

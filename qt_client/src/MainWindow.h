@@ -15,6 +15,7 @@
 #include "ProjectStore.h"
 #include "PullStore.h"
 #include "PullReviewModel.h"
+#include "MergeQueue.h"
 #include "CoveStore.h"
 #include "ActionStore.h"
 #include "ActionFile.h"
@@ -217,6 +218,20 @@ class DiffFileNavigator;  // file-list <-> diff-view sync
 struct DiffFileEntry;     // one changed file parsed out of a patch
 }
 
+// One commit of the pull request currently on screen, in the form the
+// Conversation feed needs. renderPullCommits() already walks base..head (or the
+// signed mbox) for the Commits tab, so it records what it found and
+// renderPullThread() reuses it: the conversation must not repeat that walk,
+// which pumps the GUI event loop (adhoc #119/#124).
+struct PullActivityCommit {
+    QString sha;
+    QString subject;
+    QString author;
+    QString when;         // absolute, already formatted for display
+    qint64 committedSecs = 0;
+    QString agentTrailer; // ForkMesh-Agent trailer, when the commit has one
+};
+
 // A configured mainnode the user can connect to. The client connects to one at
 // a time; the favicon rail switches the active one.
 struct ServerConfig {
@@ -275,6 +290,15 @@ struct RepositoryRecord {
     // This is a repository policy (rather than a global preference) and stays
     // on by default for existing and newly added repositories.
     bool requirePeerApproval = true;
+    // Merge queue (off by default): when on, pull requests can be handed to the
+    // queue instead of merged by hand, and ForkMesh lands them one after the
+    // next — updating each head branch from the base branch it just moved before
+    // it merges. mergeQueue is the ordered queue itself, serialized by
+    // MergeQueue::toRows(); mergeQueuePaused holds the runner without losing the
+    // order the owner arranged.
+    bool mergeQueueEnabled = false;
+    bool mergeQueuePaused = false;
+    QStringList mergeQueue;
     // A gateway-managed serving repository must keep its own post-receive hook
     // and object database isolated from workflow-created objects. The remote
     // Actions helper therefore maintains a separate local bare mirror and this
@@ -472,9 +496,11 @@ public:
     // adhoc #1444: the alert stack has to hug its own content and stay one
     // evenly spaced column. These raise a real bubble (and a real queued card)
     // so the layout test can measure the geometry the user actually sees.
-    void testFlashMessage(const QString &text, bool error = false)
+    void testFlashMessage(const QString &text, bool error = false,
+                          const QString &clickHref = QString(),
+                          const QString &kind = QString())
     {
-        flashMessage(text, error);
+        flashMessage(text, error, clickHref, 0, kind);
     }
     // Files one event exactly as a feature would, so the ping funnel's "one
     // event, one row" contract can be measured (adhoc #1629).
@@ -1081,6 +1107,18 @@ public:
     {
         return resolvablePullHead(std::move(pr));
     }
+    // Stand in for the base..head walk renderPullCommits() normally does, so a
+    // test can drive the conversation feed without a repository on disk.
+    void testSeedPullActivityCommits(int prNumber,
+                                     const QList<PullActivityCommit> &commits)
+    {
+        m_pullActivityCommitsNumber = prNumber;
+        m_pullActivityCommits = commits;
+    }
+    void testRenderPullThread(const PullRequest &pr) { renderPullThread(pr); }
+    // Header line of every card the conversation currently holds, oldest first.
+    QStringList testPullThreadCardHeaders() const;
+    int testPullActivityExtraCards() const { return m_pullActivityExtraCards; }
     bool testBindAgentSessionsToPull(int prNumber, const QString &headBranch)
     {
         return bindAgentSessionsToPull(prNumber, headBranch);
@@ -1277,6 +1315,25 @@ public:
     // Select a CHANGES row and report whether the right-hand diff navigation
     // targeted that exact file.
     bool testClickSourceControlPath(const QString &path);
+    // Send one Up/Down to the CHANGES tree and report the file that ends up
+    // selected, so the arrow-key review walk can be asserted end to end.
+    QString testArrowOnSourceControl(bool down);
+    // The file the CHANGES tree's sticky diff header currently names.
+    QString testBranchStickyHeaderText() const;
+    // The file the right-hand diff was last navigated to from CHANGES.
+    QString testLastSourceControlDiffPath() const
+    {
+        return m_lastSourceControlDiffPath;
+    }
+    // The file whose CHANGES row currently wears the green selection stroke.
+    QString testScmStrokedRowFile() const;
+    // The file the range diff currently draws its green outline around, empty
+    // when nothing is outlined, plus that outline's viewport rect.
+    QString testBranchOutlinedFile() const;
+    QRect testBranchOutlineRect() const;
+    // The same pair for the working-tree combined diff.
+    QString testScmOutlinedFile() const;
+    QRect testScmOutlineRect() const;
     // The working-tree viewer reaches every edge of its right-hand surface — no
     // inherited layout or document gutter remains around the diff.
     bool testScmDiffUsesFullSurface() const;
@@ -2006,6 +2063,9 @@ private:
     // default (adhoc #1632), so the automatic start has to be able to stay quiet
     // on a node that has no token rather than greeting every launch with a toast.
     bool cloudLogMonitorTokenAvailable() const;
+    // The one sentence to show when no installed Node can run the pinned
+    // Wrangler (adhoc #1617).
+    QString cloudLogMonitorNodeRequirement() const;
     void startCloudLogMonitorIfConfigured();
     // Take the monitor down after a failed start or a tail that died, without
     // recording the climb-down as the user's preference — the stored choice is
@@ -3021,6 +3081,29 @@ private:
     void renderPullCommits(PullRequest pr);         // commits that make up the PR
                                                     // (by value: pumps a git read,
                                                     // see adhoc #119/#124)
+    // What renderPullCommits() found for the pull on screen (see
+    // PullActivityCommit), reused by renderPullThread().
+    QList<PullActivityCommit> m_pullActivityCommits;
+    int m_pullActivityCommitsNumber = 0; // PR the list above was collected for
+    // Re-render the open pull's conversation when its agent's state moved. Called
+    // from reloadAgents(), which every agent status transition already reaches, so
+    // a running agent's progress shows on the PR page without a poll of its own.
+    void refreshPullAgentActivity();
+    // Status/timing digest of the agent attached to the pull on screen. Compared
+    // before re-rendering so an unrelated agent reload does not rebuild the
+    // conversation (and scroll it) for nothing.
+    QString pullAgentActivityDigest(const PullRequest &pr) const;
+    QString m_pullAgentActivityDigest;
+    // Commit and agent cards renderPullThread() added on top of the signed review
+    // items, and the review-item count updatePullSubTabCounts() derived. Held so
+    // the Conversation badge can be corrected after a live agent re-render
+    // without repeating that function's git-backed tallies.
+    int m_pullActivityExtraCards = 0;
+    int m_pullActivityCardsNumber = 0; // PR the count above belongs to
+    int m_pullConversationBaseCount = 0;
+    // Set while refreshPullAgentActivity() is rebuilding: its git walk pumps the
+    // GUI event loop, and it is itself reached from reloadAgents().
+    bool m_pullActivityRefreshing = false;
     // The next two and runIdsForPull/updatePullSubTabCounts take the PR by
     // value on purpose: they pump the event loop (git reads), and callers often
     // pass references into m_currentPulls, which a nested reloadPulls() can
@@ -3122,6 +3205,13 @@ private:
     QHash<QString, QString> buildPullLineNotes(const PullRequest &pr);
     void updateCurrentPullBranch();
     void mergeCurrentPull();
+    // Everything that follows a successful PullStore::mergePull: close the
+    // issues the PR resolves, settle bounties, refresh the views the new commit
+    // invalidates and publish the merge when auto-sync-on-merge is on. Takes the
+    // pre-merge copy of the PR by value — it pumps the event loop, and callers
+    // hold references into m_currentPulls, which a nested reload reassigns
+    // (adhoc #119). Shared by the Merge button and the merge queue runner.
+    void afterPullMerged(PullRequest pr);
     void resolveCurrentPullConflicts(); // open the per-conflict merge editor
     // Shared modal merge-conflict editor (used by the PR and branch merge flows).
     // Returns true if the user committed the resolution, false if they cancelled.
@@ -3222,6 +3312,52 @@ private:
     void submitPullEventToInbox(int number, const PullEvent &ev);
     void updatePullActionState();
     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
+
+    // ---- Merge queue (MainWindowMergeQueue.cpp) ---------------------------
+    // Hand pull requests to ForkMesh instead of merging them by hand: the queue
+    // walks its entries in order and, for each, brings the head branch up to
+    // date with the base branch before merging it, so a queue drains one PR
+    // after the next even though every merge moves the base under the ones
+    // behind it. The queue belongs to the repository (it is persisted with the
+    // record) and advances while that repository is open.
+    QWidget *buildMergeQueuePanel();   // the editable queue in the Pulls pane
+    void refreshMergeQueuePanel();     // repaint it from the open repo's queue
+    bool mergeQueueEnabledForOpenRepo() const;
+    void setRepoMergeQueueEnabled(bool on);   // repository Settings toggle
+    void setMergeQueuePaused(bool paused);
+    // Queue membership. addPullToMergeQueue reports through the repo-detail
+    // notice, so it is also the entry point for the branch and PR buttons.
+    void addPullToMergeQueue(int number);
+    void removePullFromMergeQueue(int number);
+    void toggleCurrentPullInMergeQueue(); // the PR header's "Queue" tile
+    void moveMergeQueueSelection(int delta);
+    void removeMergeQueueSelection();
+    void clearMergeQueue();
+    // Send a branch to the queue: queues the open pull request for that branch,
+    // opening one first when the branch has none (adhoc: "send branches to the
+    // queue"). Reports through the repo-detail notice.
+    void queueBranchForMerge(const QString &branch);
+    // Runner. scheduleMergeQueueRun coalesces wake-ups (a later request never
+    // pushes an earlier one back); processMergeQueue performs at most one merge
+    // per pass and reschedules itself while work remains.
+    void scheduleMergeQueueRun(int delayMs);
+    void processMergeQueue();
+    // The queue of the repository currently open in the detail view, and the
+    // way back. Persisting names the repo by owner/name rather than by index
+    // because every git step in a pass pumps the GUI event loop, and the user
+    // may have switched repositories (or edited the queue) meanwhile.
+    MergeQueue openRepoMergeQueue() const;
+    MergeQueue mergeQueueFor(const QString &owner, const QString &name) const;
+    void saveMergeQueue(const QString &owner, const QString &name,
+                        const MergeQueue &queue);
+    // Single-entry edits the runner makes between pumping git steps. Each one
+    // re-reads the stored queue first, so a pass in flight can never write back
+    // an order the user has since changed or resurrect an entry they removed.
+    void setMergeQueueEntryState(const QString &owner, const QString &name,
+                                 int number, const QString &state,
+                                 const QString &detail);
+    void dropMergeQueueEntry(const QString &owner, const QString &name,
+                             int number);
     // Agent sessions tab: local OpenAI API / Claude API runs assigned from issues.
     QWidget *buildAgentsTab();
     void initAgents();
@@ -4462,7 +4598,10 @@ private:
     // Refresh the detail-pane action bar (Open in Codium / Pull / Fix with agent /
     // Create PR / Merge to main) for the currently selected branch.
     void updateBranchDetailActions(const QString &branch);
-    void createPullFromBranch(const QString &branch);
+    // Returns the new PR's number, or -1 when nothing was created (no changes,
+    // the title prompt was cancelled, …) so the merge queue can enqueue the PR
+    // it just opened for a branch.
+    int createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
     void updateBranchDiffSticky();
     QString diffViewedScope(const QString &context) const;
@@ -4519,6 +4658,11 @@ private:
     // user selects, or after kBranchMergedFlashMs.
     void flashMergedBranchRow(const QString &branch);
     void clearMergedBranchFlash();
+    // The congratulation the range pane shows in place of the deleted branch's
+    // diff: who landed it, every other branch that reached `base` today and who
+    // was behind each, and the ways on from there.
+    QString mergedBranchCelebrationHtml(const QString &branch, const QString &base,
+                                        const QString &dir);
     // Delete every branch that is fully merged into the default branch (0 behind
     // and 0 ahead of it), skipping the default and the checked-out branch.
     void deleteMergedBranches();
@@ -4802,7 +4946,24 @@ private:
     void clearRangeFilesInSourceControl();
     bool sourceControlShowsRange() const;
     QString sourceControlGitDir() const;
-    void scrollBranchDiffToFile(const QString &path);
+    // `moveFocus` hands the keyboard to the diff view once the jump lands, which
+    // is what an explicit "open this file" action wants. Navigation driven from
+    // the CHANGES tree passes false: stealing focus there ends arrow-key file
+    // navigation after the very first file.
+    void scrollBranchDiffToFile(const QString &path, bool moveFocus = true);
+    // Move the CHANGES tree's selection to the previous/next file row, skipping
+    // the group headers. Returns false when there is nothing further that way.
+    bool stepScmTreeFile(int delta);
+    // Make a CHANGES row current — green stroke and all — without letting
+    // currentItemChanged drive the diff. Used when the tree is rebuilt beneath
+    // an unchanged diff: the highlight has to survive, the scroll must not move.
+    void setScmCurrentItemSilently(QTreeWidgetItem *item);
+    // Keep the green outline drawn over the active file's extent in the branch
+    // /PR range diff aligned with the document; cheap enough for a scroll tick.
+    void updateBranchDiffActiveOutline();
+    // The same outline over the working-tree diff's combined sections, so the
+    // CHANGES tree marks its current file the same way in either right-hand pane.
+    void updateScmDiffActiveOutline();
     // Detached `git status` that only updates the activity rail's Git badge, so
     // the uncommitted-file count is right on every repo tab (and right after a
     // repo opens), not just while the changes panel is the visible view.
@@ -6473,10 +6634,12 @@ private:
     int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
     int m_cloudLogMonitorEvents = 0;     // Worker events seen since then
     bool m_cloudLogMonitorStopping = false; // a deliberate stop, not a crash
-    // Ticked, but with no Cloudflare token to tail with (adhoc #1632). The
-    // automatic start says so in the tooltip rather than unticking the box or
-    // writing a line into the log on every launch of a node that never deploys.
-    bool m_cloudLogMonitorAwaitingToken = false;
+    // Ticked, but with nothing to tail with: no Cloudflare token (adhoc #1632),
+    // or no Node new enough for Wrangler (adhoc #1617). The automatic start says
+    // which in the tooltip rather than unticking the box or writing a line into
+    // the log on every launch of a node that never deploys. Empty when the
+    // monitor is running or was never asked to.
+    QString m_cloudLogMonitorIdleReason;
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
@@ -7545,6 +7708,12 @@ private:
     // worktree this lets the one Git view include committed, staged, unstaged,
     // and untracked changes rather than only the branch tip.
     QString m_branchDiffWorkDir;
+    // Green outline drawn over the extent of the file selected in CHANGES, so
+    // the row's stroke and the diff section it points at read as one selection.
+    // An overlay rather than a rendered border: re-rendering the whole diff on
+    // every arrow press would be far too heavy for a large review.
+    QFrame *m_branchDiffActiveOutline = nullptr;
+    QString m_branchActiveFile; // file CHANGES currently points at
     // Sticky header pinned over the branch/PR diff (same form as the PR viewer's:
     // filename, Pac-Man read-progress chart, percent label and a Viewed toggle).
     QFrame *m_branchDiffSticky = nullptr;
@@ -7561,6 +7730,10 @@ private:
     // the file still being read.
     QStringList m_branchDiffFilePaths;
     QStringList m_branchDiffFileAnchors;
+    // path -> sticky-bar label, built at render time while the parsed
+    // DiffFileEntry (status, +/- counts) is still to hand, exactly as the PR
+    // viewer and the working-tree diff do.
+    QHash<QString, QString> m_branchStickyLabelHtml;
     // Last file a CHANGES-row action navigated to in either the branch-range or
     // working-tree diff. Also gives the window tests a stable assertion that
     // does not depend on viewport height or font metrics.
@@ -7600,6 +7773,10 @@ private:
     QComboBox *m_branchFixAgentCombo = nullptr;
     QComboBox *m_branchFixModelCombo = nullptr;
     QPushButton *m_branchPrButton = nullptr;    // "Create PR" from the branch
+    // "Queue merge": send this branch to the merge queue — queues its open PR,
+    // opening one first when it has none. Only shown for repositories with the
+    // merge queue switched on.
+    QPushButton *m_branchQueueButton = nullptr;
     QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
     // "Merge & delete all": the same merge, then tears down everything the branch
     // owned — its agent session(s), the branch itself and its worktree (adhoc #428).
@@ -7929,6 +8106,10 @@ private:
     QStringList m_scmSectionPaths;   // repo-relative path per section
     QList<int> m_scmFileTops;        // cached absolute y of each section header
     QHash<QString, QString> m_scmStickyLabelHtml; // section key -> sticky label
+    // Green outline over the section CHANGES points at, the working-tree twin of
+    // m_branchDiffActiveOutline.
+    QFrame *m_scmDiffActiveOutline = nullptr;
+    QString m_scmActiveSectionKey;
     // A click may target a section whose HTML is still streaming. Keep its key
     // so onDiffStreamFinished() can pin it as soon as the anchor is laid out.
     QString m_scmPendingScrollKey;
@@ -8159,10 +8340,29 @@ private:
     QPushButton *m_pullDeleteButton = nullptr;
     QPushButton *m_pullDeleteBranchButton = nullptr; // delete the PR and its head branch
     QPushButton *m_pullMergeDeleteButton = nullptr;  // merge, then delete the PR + branch
+    QPushButton *m_pullQueueButton = nullptr;        // add/remove this PR in the merge queue
     QPushButton *m_pullPreviewButton = nullptr;      // build the PR and launch the app
     QDialog *m_pullPreviewDialog = nullptr;          // live build log for the preview
     bool m_pullDeleteConfirmPending = false;
     bool m_pullDeleteInProgress = false; // a deletePull worker thread is running
+
+    // Merge queue panel, under the pull-request list (MainWindowMergeQueue.cpp).
+    // The whole section is hidden for repositories with the queue switched off.
+    QWidget *m_mergeQueuePanel = nullptr;
+    QLabel *m_mergeQueueSummary = nullptr;
+    QListWidget *m_mergeQueueList = nullptr;
+    QPushButton *m_mergeQueuePauseButton = nullptr;
+    QPushButton *m_mergeQueueUpButton = nullptr;
+    QPushButton *m_mergeQueueDownButton = nullptr;
+    QPushButton *m_mergeQueueRemoveButton = nullptr;
+    QPushButton *m_mergeQueueClearButton = nullptr;
+    // Coalesced wake-up for the runner; single-shot, restarted with the earliest
+    // pending delay (see scheduleMergeQueueRun).
+    QTimer *m_mergeQueueTimer = nullptr;
+    // A pass is running. Every git step in it pumps the GUI event loop, so a
+    // timer tick, a pull reload or a click can re-enter processMergeQueue()
+    // mid-merge; this makes the re-entry reschedule instead of merging twice.
+    bool m_mergeQueueBusy = false;
     QListWidget *m_pullFiles = nullptr;
     // Files-changed authorship filter (issue #365): All / Agent-authored /
     // Human-authored, driven by m_pullFileAuthorship. Hidden unless the PR mixes
@@ -8479,6 +8679,10 @@ private:
     QCheckBox *m_actionsAutoApproveCheck = nullptr;
     QCheckBox *m_settingsAutoApproveCheck = nullptr;
     QCheckBox *m_settingsRequirePeerApprovalCheck = nullptr;
+    // Per-repo "merge queue" toggle, driven by setRepoMergeQueueEnabled(). The
+    // queue panel in the Pulls pane and the PR/branch "Queue" tiles only appear
+    // while it is on.
+    QCheckBox *m_settingsMergeQueueCheck = nullptr;
     QCheckBox *m_secretScanCheck = nullptr;
     // Per-repo visibility toggle: when checked the repo is private (hidden from
     // the public catalog; browse/clone gated on the owner's view token).
@@ -9305,6 +9509,11 @@ private:
     QString m_branchMergedFlashBranch;
     QString m_branchMergedFlashDir;
     int m_branchMergedFlashRow = -1;
+    // The congratulation the range pane shows in place of that branch's diff,
+    // built on the merge path (mergedBranchCelebrationHtml) rather than during
+    // the rebuild that paints it: its git reads would otherwise pump the event
+    // loop in the middle of renderBranchesPanel.
+    QString m_branchMergedFlashHtml;
     // How long the check outlives the merge. It never moves the selection by
     // itself: expiring only means the next natural rebuild of the panel drops the
     // row, so a long-idle Branches tab eventually returns to normal.
