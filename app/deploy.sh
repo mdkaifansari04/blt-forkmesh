@@ -941,7 +941,7 @@ verify_legacy_api_alias() {
     fi
     headers="$(curl -sSI --max-time 25 "${base%/}/")" || return 1
     status="$(printf '%s\n' "$headers" | awk 'toupper($1) ~ /^HTTP\// { code=$2 } END { print code }')"
-    location="$(printf '%s\n' "$headers" | awk -F': *' 'tolower($1) == "location" { value=$2 } END { sub(/\r$/, "", value); print value }')"
+    location="$(printf '%s\n' "$headers" | awk 'tolower($1) == "location:" { value=$0; sub(/^[^:]*:[[:space:]]*/, "", value) } END { sub(/\r$/, "", value); print value }')"
     if [ "$status" != "308" ] || [ "$location" != "https://app.forkmesh.com/" ]; then
         echo "ERROR: ${base%/}/ returned HTTP ${status:-<none>} -> ${location:-<none>}; expected the canonical App redirect." >&2
         return 1

@@ -327,6 +327,8 @@ def test_deploy_script_documents_safe_cutover_order():
     assert "deploy_api_target" not in deploy
     assert "deploy_static_target app" not in deploy
     assert "verify_legacy_api_alias" in deploy
+    assert 'tolower($1) == "location:"' in deploy
+    assert 'sub(/^[^:]*:[[:space:]]*/, "", value)' in deploy
     retire_function = deploy.index("retire_legacy_api_worker()")
     assert deploy.index("verify_legacy_api_alias", retire_function) < deploy.index(
         "pywrangler delete --name forkmesh-api", retire_function
