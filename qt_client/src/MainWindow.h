@@ -144,7 +144,6 @@ using forkmesh::ui::BusySpinner;
 using forkmesh::ui::ElidingStatusLabel;
 using forkmesh::ui::NodeDotMatrix;
 using forkmesh::ui::RelaySpeedDot;
-class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
 class ClaudeStreamSession;
@@ -4598,6 +4597,11 @@ private:
     // already gone — the desired end state either way.
     bool localBranchExists(const QString &repoPath, const QString &branch) const;
     void showBranchDiff(const QString &branch, int agentSessionId = -1);
+    // Take the range pane off a branch that no longer exists (merged & deleted,
+    // or its worktree torn down) before anything tries to diff it (adhoc #1628).
+    // By value: callers hand in m_branchDiffBranch itself, which this clears (see
+    // the git-pump aliasing family in the .cpp).
+    void showBranchDiffBranchGone(QString branch, QString base);
     // Paint the branch detail bar from already-gathered counts.
     void applyBranchDetailActions(const QString &branch, const QString &base,
                                   int behind, int ahead, bool hasConflict,
@@ -7780,13 +7784,13 @@ private:
     // every arrow press would be far too heavy for a large review.
     QFrame *m_branchDiffActiveOutline = nullptr;
     QString m_branchActiveFile; // file CHANGES currently points at
-    // Sticky header pinned over the branch/PR diff (same form as the PR viewer's:
-    // filename, Pac-Man read-progress chart, percent label and a Viewed toggle).
+    // Sticky header pinned over the branch/PR diff: the current file's own
+    // header row, two rich-text labels wide — the file label, and the controls
+    // (comment icon, Pac-Man read meter, Viewed pill) — both built by the same
+    // helpers that render the header itself (adhoc #423).
     QFrame *m_branchDiffSticky = nullptr;
     QLabel *m_branchStickyPath = nullptr;
-    PacmanProgress *m_branchStickyPacman = nullptr;
-    QLabel *m_branchStickyPercent = nullptr;
-    QPushButton *m_branchStickyViewed = nullptr;
+    QLabel *m_branchStickyControls = nullptr;
     QString m_branchStickyFile; // file the sticky bar currently mirrors
     QList<QPair<int, QString>> m_branchDiffFileSpans;
     // Ordered file paths of the diff currently in the branch view, so the
@@ -7796,9 +7800,9 @@ private:
     // the file still being read.
     QStringList m_branchDiffFilePaths;
     QStringList m_branchDiffFileAnchors;
-    // path -> sticky-bar label, built at render time while the parsed
-    // DiffFileEntry (status, +/- counts) is still to hand, exactly as the PR
-    // viewer and the working-tree diff do.
+    // path -> the one-line label that file's header was rendered with, built at
+    // render time while the parsed DiffFileEntry (status, +/- counts) is still
+    // to hand, exactly as the PR viewer and the working-tree diff do.
     QHash<QString, QString> m_branchStickyLabelHtml;
     // Last file a CHANGES-row action navigated to in either the branch-range or
     // working-tree diff. Also gives the window tests a stable assertion that
@@ -8186,11 +8190,11 @@ private:
     // reload and repo-update sweep, so this ran far more often than the working
     // tree actually changed.
     QString m_scmDiffSourceKey;
+    // The working-tree diff's sticky bar: the current file's own header row —
+    // its one-line label, and the read meter + Viewed pill (adhoc #423).
     QFrame *m_scmStickyHeader = nullptr;
     QLabel *m_scmStickyPath = nullptr;
-    PacmanProgress *m_scmStickyPacman = nullptr;
-    QLabel *m_scmStickyPercent = nullptr; // "42%" read-through of this file
-    QPushButton *m_scmStickyViewed = nullptr;
+    QLabel *m_scmStickyControls = nullptr;
     QString m_scmStickySection;      // section key shown in the sticky header
     QTimer *m_scmAutoViewedDebounce = nullptr;
     int m_scmLastAutoViewedScrollValue = 0;
@@ -8477,17 +8481,17 @@ private:
     // while scrolling the PR diff, mirroring GitHub's same-named setting).
     QPushButton *m_pullAutoViewedButton = nullptr;
     QTimer *m_pullAutoViewedDebounce = nullptr;
-    // Sticky diff header overlay (adhoc #56): floats a copy of the current
-    // file's header at the top of the scrolling diff so the filename / +/- stat
-    // / Viewed controls stay visible, with a Pac-Man progress chart that fills
-    // as the file scrolls past and auto-checks Viewed once the bottom is seen.
+    // Sticky diff header overlay (adhoc #56): floats the current file's own
+    // header row at the top of the scrolling diff so the filename / +/- stat /
+    // Viewed controls stay visible, with a Pac-Man read meter that fills as the
+    // file scrolls past and auto-checks Viewed once the bottom is seen. Two
+    // rich-text labels — file label and controls — carrying the very markup the
+    // rendered header uses (adhoc #423).
     QFrame *m_pullStickyHeader = nullptr;
     QLabel *m_pullStickyPath = nullptr;
-    PacmanProgress *m_pullStickyPacman = nullptr;
-    QLabel *m_pullStickyPercent = nullptr;
-    QPushButton *m_pullStickyViewed = nullptr;
+    QLabel *m_pullStickyControls = nullptr;
     QString m_pullStickyFile; // file path currently shown in the sticky header
-    // path -> compact rich-text label (icon + dir/name + +/-) for that header.
+    // path -> the one-line rich-text label that file's header was rendered with.
     QHash<QString, QString> m_pullStickyLabelHtml;
     // Absolute document y-position of each file header, aligned to
     // m_pullFileOrder (-1 if not located). Cached because locating anchors walks
@@ -9080,6 +9084,17 @@ private:
     // relay rate-limit this desktop (adhoc #1618).
     QHash<int, QString> m_orgTaskAgentStatusPending;
     bool m_orgTaskAgentStatusFlushQueued = false;
+    // Batches sent over the node event socket that have not been answered yet,
+    // oldest first. A socket write gets its verdict in a later frame, so the
+    // batches have to be remembered in order to match each verdict to the
+    // states it judged — and re-queued wholesale if the link drops first,
+    // because nothing else would ever notice they never landed.
+    QList<QList<QPair<int, QString>>> m_orgTaskAgentStatusInFlight;
+    // Bounds that wait. The relay answers every frame it reads, so silence
+    // means the frame was lost (an evicted Durable Object, a write that never
+    // reached it) — without this the states would stay "published" for as long
+    // as the link happened to stay up.
+    QTimer *m_orgTaskAgentStatusAckTimer = nullptr;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
@@ -9385,15 +9400,33 @@ private:
     bool authenticateOrgTaskRequest(QUrl &url, QNetworkRequest &request,
                                     const QString &proofPrefix,
                                     const QString &resource) const;
+    // The node/ts/sig triple behind that signature, for a write that has no
+    // URL to hang it on — the batched agent-status report travels as a node
+    // event socket frame. Same canonical string, so the relay verifies it with
+    // the same code either way. False => this node cannot sign.
+    bool signOrgTaskProof(const QString &proofPrefix, const QString &resource,
+                          QString *node, QString *ts, QString *sig) const;
     // POST /api/tasks for a freshly created session and record the id it gets
     // back on the session. No-op unless session.orgTask is set.
     void openOrgTaskForSession(const AgentSession &session);
     // Queue one session's live state for the board. The write itself is
-    // batched: POST /api/tasks/agent-status carries every queued session in a
-    // single signed request, so a restart publishes the whole fleet at once
-    // instead of one request per session (adhoc #1618).
+    // batched: every queued session goes out together in one signed
+    // agent-status report, so a restart publishes the whole fleet at once
+    // instead of one request per session (adhoc #1618). That report rides the
+    // node event socket this desktop already holds — no HTTP request at all —
+    // and falls back to POST /api/tasks/agent-status when the socket is down
+    // or the relay is too old to accept the frame.
     void syncOrgTaskAgentStatus(int sessionId);
     void flushOrgTaskAgentStatus();
+    // Apply the relay's verdict on a batch of published states: `ok` false
+    // un-publishes all of them, otherwise only the tasks reported refused.
+    void applyOrgTaskAgentStatusResult(const QList<QPair<int, QString>> &sent,
+                                       bool ok, const QJsonArray &results);
+    // Match the relay's next socket verdict to the oldest unanswered batch.
+    void onOrgTaskAgentStatusFrame(bool ok, const QJsonArray &results);
+    // Un-publish everything still waiting on a socket verdict. Called when the
+    // event socket drops, because the answer is never coming.
+    void requeueOrgTaskAgentStatusInFlight();
     // POST /api/tasks/<id>/complete once the run reaches a terminal status,
     // stamping the finishing bot. No-op without an org task, while the run is
     // still going, or once finishedByBot is already set.

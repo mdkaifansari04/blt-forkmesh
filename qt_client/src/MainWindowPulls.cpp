@@ -9,7 +9,6 @@
 #include "MainWindowInternal.h"
 #include "FederatedThreadView.h"
 #include "KebabHeaderView.h"
-#include "PacmanProgress.h"
 #include "PullAiReview.h"
 #include "PullBadgeWidget.h"
 
@@ -830,68 +829,63 @@ QWidget *MainWindow::buildPullsTab()
             &MainWindow::onPullDiffAnchorClicked);
     registerDiffView(m_pullDiff);
 
-    // Sticky header overlay (adhoc #56): a compact bar pinned to the top of the
-    // diff viewport that mirrors the current file's header — filename, +/- stat,
-    // a Pac-Man progress chart, and a Viewed toggle — so those controls stay put
-    // while the file's body scrolls beneath. Parented to the viewport so it
-    // floats over the text and doesn't move as the document scrolls.
+    // Sticky header overlay (adhoc #56): the current file's own header row,
+    // pinned to the top of the diff viewport once the real one scrolls off —
+    // the same one-line label on the left and the same comment icon / Pac-Man
+    // read meter / Viewed pill on the right, built by the same helpers that
+    // render the header, so the hand-off is invisible (adhoc #423). Parented to
+    // the viewport so it floats over the text and doesn't move as the document
+    // scrolls.
     m_pullStickyHeader = new QFrame(m_pullDiff->viewport());
     m_pullStickyHeader->setObjectName("diffStickyHeader");
     {
         const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
         m_pullStickyHeader->setStyleSheet(
-            QStringLiteral(
-                "#diffStickyHeader{background:%1;border-bottom:1px solid %2;}"
-                "#diffStickyHeader QLabel{background:transparent;}"
-                "#diffStickyHeader QPushButton{background:transparent;border:none;"
-                "color:%3;font-size:11px;padding:2px 4px;}"
-                "#diffStickyHeader QPushButton:hover{color:#3fb950;}")
-                .arg(dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
-                     dark ? "#8b949e" : "#57606a"));
+            QStringLiteral("#diffStickyHeader{background:%1;border:none;}"
+                           "#diffStickyHeader QLabel{background:transparent;}")
+                .arg(dark ? "#161b22" : "#f6f8fa"));
         auto *sl = new QHBoxLayout(m_pullStickyHeader);
-        sl->setContentsMargins(10, 4, 8, 4);
-        sl->setSpacing(8);
+        // Matches the rendered header's padding (9px 12px) so the pinned row is
+        // the same height as the one it stands in for.
+        sl->setContentsMargins(12, 9, 12, 9);
+        sl->setSpacing(0);
         m_pullStickyPath = new QLabel(m_pullStickyHeader);
         m_pullStickyPath->setTextFormat(Qt::RichText);
         m_pullStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
         configureDiffStickyPathLabel(m_pullStickyPath);
         sl->addWidget(m_pullStickyPath, 1);
-        m_pullStickyPacman = new PacmanProgress(m_pullStickyHeader);
-        m_pullStickyPacman->setToolTip(
-            QStringLiteral("How much of this file you've scrolled through"));
-        sl->addWidget(m_pullStickyPacman, 0);
-        m_pullStickyPercent = new QLabel(QStringLiteral("0% read"),
-                                         m_pullStickyHeader);
-        m_pullStickyPercent->setObjectName("hintLabel");
-        m_pullStickyPercent->setMinimumWidth(52);
-        m_pullStickyPercent->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        sl->addWidget(m_pullStickyPercent, 0);
-        m_pullStickyViewed = new QPushButton(m_pullStickyHeader);
-        m_pullStickyViewed->setCursor(Qt::PointingHandCursor);
-        m_pullStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
-        connect(m_pullStickyViewed, &QPushButton::clicked, this, [this] {
-            if (m_pullStickyFile.isEmpty() || m_currentPullNumber < 0)
-                return;
-            const QString context =
-                QStringLiteral("pull/") + QString::number(m_currentPullNumber);
-            const QSet<QString> cur = loadDiffViewed(context);
-            const QString file = m_pullStickyFile;
-            const bool nowViewed = !cur.contains(file);
-            // Marking a file viewed walks the review on: the next file's header
-            // lands at the top of the viewport, so its Viewed button appears
-            // under the pointer that just clicked this one and the whole PR can
-            // be checked off without moving the mouse. Un-viewing stays put —
-            // the reviewer is reopening that file to look at it again.
-            const int at = m_pullFileOrder.indexOf(file);
-            const QString next =
-                nowViewed && at >= 0 && at + 1 < m_pullFileOrder.size()
-                    ? m_pullFileOrder.at(at + 1)
-                    : file;
-            setDiffViewed(context, file, nowViewed);
-            renderPullDiff();
-            scrollPullDiffToFile(next);
-        });
-        sl->addWidget(m_pullStickyViewed, 0);
+        m_pullStickyControls = new QLabel(m_pullStickyHeader);
+        m_pullStickyControls->setTextFormat(Qt::RichText);
+        m_pullStickyControls->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+        m_pullStickyControls->setCursor(Qt::PointingHandCursor);
+        connect(m_pullStickyControls, &QLabel::linkActivated, this,
+                [this](const QString &link) {
+                    const QUrl url(link);
+                    if (url.scheme() != QLatin1String("viewed") ||
+                        m_currentPullNumber < 0) {
+                        onPullDiffAnchorClicked(url);
+                        return;
+                    }
+                    // Marking a file viewed walks the review on: the next file's
+                    // header lands at the top of the viewport, so its Viewed pill
+                    // appears under the pointer that just clicked this one and
+                    // the whole PR can be checked off without moving the mouse.
+                    // Un-viewing stays put — the reviewer is reopening that file
+                    // to look at it again.
+                    const QString file = url.path();
+                    const QString context =
+                        QStringLiteral("pull/") + QString::number(m_currentPullNumber);
+                    const bool nowViewed = !loadDiffViewed(context).contains(file);
+                    const int at = m_pullFileOrder.indexOf(file);
+                    const QString next =
+                        nowViewed && at >= 0 && at + 1 < m_pullFileOrder.size()
+                            ? m_pullFileOrder.at(at + 1)
+                            : file;
+                    setDiffViewed(context, file, nowViewed);
+                    renderPullDiff();
+                    scrollPullDiffToFile(next);
+                });
+        sl->addWidget(m_pullStickyControls, 0);
         m_pullStickyHeader->hide();
     }
 
@@ -2478,7 +2472,8 @@ void MainWindow::renderPullDiff()
     for (const DiffFileEntry &f : files) {
         m_pullFileAnchors.insert(f.path, f.anchor);
         m_pullFileOrder.append(f.path);
-        m_pullStickyLabelHtml.insert(f.path, diffStickyLabelHtml(f));
+        m_pullStickyLabelHtml.insert(f.path,
+                                     diffFileLabelHtml(f, viewed.contains(f.path)));
     }
 
     const QString body =
@@ -2674,21 +2669,11 @@ void MainWindow::updatePullDiffScrollState()
         // The list follows the scroll: select whichever file is now on screen.
         selectPullFileInList(path);
     }
-    m_pullStickyViewed->setText(isViewed
-                                    ? QString::fromUtf8("\xE2\x98\x91 Viewed")
-                                    : QString::fromUtf8("\xE2\x98\x90 Viewed"));
-    // A completed / already-viewed file reads as done (full green Pac-Man);
+    // The controls carry the read meter, so they refresh on every tick. A
+    // completed / already-viewed file reads as done (full green Pac-Man);
     // otherwise the chart tracks scroll progress in blue and greens on arrival.
-    m_pullStickyPacman->setColor(progress >= 0.999 || isViewed
-                                     ? QColor(0x3f, 0xb9, 0x50)
-                                     : QColor(0x58, 0xa6, 0xff));
-    m_pullStickyPacman->setProgress(isViewed ? 1.0 : progress);
-    if (m_pullStickyPercent) {
-        const int percent =
-            isViewed ? 100 : qBound(0, qRound(progress * 100.0), 100);
-        m_pullStickyPercent->setText(
-            QStringLiteral("%1% read").arg(percent));
-    }
+    m_pullStickyControls->setText(
+        diffRowControlsHtml(path, progress, isViewed, /*comments=*/true));
 
     layoutPullStickyHeader();
     // Pinned for the whole file, its first screen included. The bar used to

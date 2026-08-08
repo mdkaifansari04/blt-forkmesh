@@ -6276,6 +6276,32 @@ int main(int argc, char *argv[])
                       .arg(failHtml.left(120).simplified()));
         }
 
+        // adhoc #1628: a branch deleted while its range is on screen — a "Merge &
+        // delete" ends in refreshSourceControl(force), which re-reads the very
+        // range it just removed — used to leave the pane on git's own plumbing,
+        // "fatal: ambiguous argument 'main...<branch>': unknown revision", under a
+        // Retry link that could never bring the branch back. The deletion happens
+        // before the read, so the read has to notice the branch went away.
+        {
+            runGitChecked(wtRepo.path(), {"branch", "feature/vanishing", "main"});
+            window.testSwitchToBranchImmediateSelection(
+                QStringLiteral("feature/vanishing"));
+            check(waitForDiffText(QStringLiteral("No changes between")),
+                  QStringLiteral("a branch level with main opens its (empty) "
+                                 "range before it is deleted"));
+            runGitChecked(wtRepo.path(), {"branch", "-D", "feature/vanishing"});
+            window.testRefreshSourceControl(); // what the merge path does last
+            const bool told = waitForDiffText(QStringLiteral("was not found"));
+            const QString goneText = window.testBranchDiffText();
+            check(told && !goneText.contains(QStringLiteral("ambiguous argument")) &&
+                      !goneText.contains(QStringLiteral("Could not diff")) &&
+                      !goneText.contains(QStringLiteral("Retry")),
+                  QString("re-reading the range of a branch that was just deleted "
+                          "says where the branch went instead of showing git's "
+                          "unknown-revision error (adhoc #1628, pane = \"%1\")")
+                      .arg(goneText.left(90).simplified()));
+        }
+
         // adhoc #1594: right-clicking a file in the changes panel offers "Add to
         // .gitignore". The rule it writes has to name that one file — anchored at
         // the repository root, with glob metacharacters in the name escaped —

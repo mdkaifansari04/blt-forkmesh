@@ -14,6 +14,7 @@
 #include "AgentWorktree.h"
 #include "KebabHeaderView.h"
 #include "CodexAppServerSession.h"
+#include "NodeEventSocket.h"
 #include "UsageLimitCalendar.h"
 
 #include <QTextLayout>
@@ -14444,17 +14445,8 @@ bool MainWindow::authenticateOrgTaskRequest(QUrl &url, QNetworkRequest &request,
                                  m_accountSessionToken.toUtf8());
         return true;
     }
-    const QString node = accountOwner().trimmed().toLower();
-    if (node.isEmpty() || !hasOwnerSigningCapability(node))
-        return false;
-    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-    // Must match _org_task_signed_session's canonical string byte for byte.
-    QString canonical = proofPrefix + QLatin1Char('\n') + node + QLatin1Char('\n');
-    if (!resource.isEmpty())
-        canonical += resource + QLatin1Char('\n');
-    canonical += ts;
-    const QString sig = m_profileIdentity.signData(canonical.toUtf8());
-    if (sig.isEmpty())
+    QString node, ts, sig;
+    if (!signOrgTaskProof(proofPrefix, resource, &node, &ts, &sig))
         return false;
     QUrlQuery query(url);
     query.addQueryItem(QStringLiteral("node"), node);
@@ -14462,6 +14454,32 @@ bool MainWindow::authenticateOrgTaskRequest(QUrl &url, QNetworkRequest &request,
     query.addQueryItem(QStringLiteral("sig"), sig);
     url.setQuery(query);
     request.setUrl(url);
+    return true;
+}
+
+bool MainWindow::signOrgTaskProof(const QString &proofPrefix,
+                                  const QString &resource, QString *node,
+                                  QString *ts, QString *sig) const
+{
+    const QString signer = accountOwner().trimmed().toLower();
+    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
+        return false;
+    const QString stamp = QString::number(QDateTime::currentMSecsSinceEpoch());
+    // Must match _org_task_signed_session's canonical string byte for byte.
+    QString canonical =
+        proofPrefix + QLatin1Char('\n') + signer + QLatin1Char('\n');
+    if (!resource.isEmpty())
+        canonical += resource + QLatin1Char('\n');
+    canonical += stamp;
+    const QString signature = m_profileIdentity.signData(canonical.toUtf8());
+    if (signature.isEmpty())
+        return false;
+    if (node)
+        *node = signer;
+    if (ts)
+        *ts = stamp;
+    if (sig)
+        *sig = signature;
     return true;
 }
 
@@ -14593,7 +14611,7 @@ void MainWindow::flushOrgTaskAgentStatus()
     m_orgTaskAgentStatusFlushQueued = false;
     const QHash<int, QString> pending = m_orgTaskAgentStatusPending;
     m_orgTaskAgentStatusPending.clear();
-    if (pending.isEmpty() || !m_networkAccess)
+    if (pending.isEmpty())
         return;
 
     // Re-resolve each session: queuing happened turns ago and m_agentSessions
@@ -14633,13 +14651,53 @@ void MainWindow::flushOrgTaskAgentStatus()
     if (statuses.isEmpty())
         return;
 
+    // The batch proof names no task: the ids ride in the body and the relay
+    // re-checks ownership for each one exactly as it does for a single write.
+    // Signing it up front lets the same proof travel either way.
+    QString node, ts, sig;
+    const bool haveProof = signOrgTaskProof(kOrgTaskAgentStatusBatchProof,
+                                            QString(), &node, &ts, &sig);
+
+    // This desktop is already holding a socket to the relay so the board can
+    // push to it. Sending the report back up that socket costs no request at
+    // all — which is the point, since the rate limiting that started this
+    // (adhoc #1618) was the relay refusing this node's own HTTP writes. The
+    // relay verifies the very same signature it would over HTTPS.
+    if (haveProof && m_nodeEventSocket &&
+        m_nodeEventSocket->sendSignedFrame(QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("agent-status")},
+            {QStringLiteral("node"), node},
+            {QStringLiteral("ts"), ts},
+            {QStringLiteral("sig"), sig},
+            {QStringLiteral("statuses"), statuses},
+        })) {
+        // The verdict arrives in a later frame; until then these count as
+        // published, and a dropped link or a lost frame re-queues them
+        // (onOrgTaskAgentStatusFrame / requeueOrgTaskAgentStatusInFlight).
+        m_orgTaskAgentStatusInFlight.append(sent);
+        if (!m_orgTaskAgentStatusAckTimer) {
+            m_orgTaskAgentStatusAckTimer = new QTimer(this);
+            m_orgTaskAgentStatusAckTimer->setSingleShot(true);
+            connect(m_orgTaskAgentStatusAckTimer, &QTimer::timeout, this,
+                    &MainWindow::requeueOrgTaskAgentStatusInFlight);
+        }
+        m_orgTaskAgentStatusAckTimer->start(kOrgTaskAgentStatusAckTimeoutMs);
+        return;
+    }
+
+    if (!haveProof || !m_networkAccess) {
+        for (const QPair<int, QString> &entry : std::as_const(sent))
+            if (m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
+                m_orgTaskAgentStatusSent.remove(entry.first);
+        return;
+    }
+    // No socket, or a relay too old to accept the frame: the signed HTTPS
+    // route, still one request for the whole fleet.
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/tasks/agent-status"));
     url.setQuery(QString());
     url.setFragment(QString());
     QNetworkRequest request;
-    // The batch proof names no task: the ids ride in the body and the relay
-    // re-checks ownership for each one exactly as it does for a single write.
     if (!authenticateOrgTaskRequest(url, request, kOrgTaskAgentStatusBatchProof,
                                     QString())) {
         for (const QPair<int, QString> &entry : std::as_const(sent))
@@ -14656,33 +14714,79 @@ void MainWindow::flushOrgTaskAgentStatus()
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QByteArray payload = reply->readAll();
         reply->deleteLater();
-        if (response >= 200 && response < 300) {
-            // Per-entry outcomes: a task the relay refused (row deleted, no
-            // longer agent work) is dropped from the cache so a later status
-            // change is still attempted.
-            QHash<QString, bool> ok;
-            for (const QJsonValue &value :
-                 QJsonDocument::fromJson(payload)
-                     .object()
-                     .value(QStringLiteral("results"))
-                     .toArray())
-                ok.insert(value.toObject().value(QStringLiteral("task")).toString(),
-                          value.toObject().value(QStringLiteral("ok")).toBool());
-            for (const QPair<int, QString> &entry : std::as_const(sent)) {
-                const AgentSession *session = findAgentSession(entry.first);
-                if (session && !ok.value(session->orgTaskId, true) &&
-                    m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
-                    m_orgTaskAgentStatusSent.remove(entry.first);
-            }
-            return;
-        }
-        // Rate limit, offline, signed-out, or a relay too old to know the batch
-        // path: let the next reload re-queue them. A retry is still one request
-        // for the whole fleet, never one per session.
-        for (const QPair<int, QString> &entry : std::as_const(sent))
+        applyOrgTaskAgentStatusResult(
+            sent, response >= 200 && response < 300,
+            QJsonDocument::fromJson(payload)
+                .object()
+                .value(QStringLiteral("results"))
+                .toArray());
+    });
+}
+
+void MainWindow::applyOrgTaskAgentStatusResult(
+    const QList<QPair<int, QString>> &sent, bool ok,
+    const QJsonArray &results)
+{
+    if (!ok) {
+        // Rate limit, offline, signed-out, or a relay that refused the batch
+        // outright: let the next reload re-queue them. A retry is still one
+        // write for the whole fleet, never one per session.
+        for (const QPair<int, QString> &entry : sent)
             if (m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
                 m_orgTaskAgentStatusSent.remove(entry.first);
-    });
+        return;
+    }
+    // Per-entry outcomes: a task the relay refused (row deleted, no longer
+    // agent work) is dropped from the cache so a later status change is still
+    // attempted. Entries the relay did not mention were accepted.
+    QHash<QString, bool> accepted;
+    for (const QJsonValue &value : results)
+        accepted.insert(
+            value.toObject().value(QStringLiteral("task")).toString(),
+            value.toObject().value(QStringLiteral("ok")).toBool());
+    for (const QPair<int, QString> &entry : sent) {
+        const AgentSession *session = findAgentSession(entry.first);
+        if (session && !accepted.value(session->orgTaskId, true) &&
+            m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
+            m_orgTaskAgentStatusSent.remove(entry.first);
+    }
+}
+
+void MainWindow::onOrgTaskAgentStatusFrame(bool ok, const QJsonArray &results)
+{
+    // The relay answers every agent-status frame it reads — refusals included,
+    // so a rate-limited write is not silence — and answers them in order on
+    // this socket. The oldest unanswered batch is therefore the one this
+    // verdict judged.
+    if (m_orgTaskAgentStatusInFlight.isEmpty())
+        return;
+    const QList<QPair<int, QString>> batch =
+        m_orgTaskAgentStatusInFlight.takeFirst();
+    if (m_orgTaskAgentStatusAckTimer) {
+        if (m_orgTaskAgentStatusInFlight.isEmpty())
+            m_orgTaskAgentStatusAckTimer->stop();
+        else
+            m_orgTaskAgentStatusAckTimer->start(
+                kOrgTaskAgentStatusAckTimeoutMs);
+    }
+    applyOrgTaskAgentStatusResult(batch, ok, results);
+}
+
+void MainWindow::requeueOrgTaskAgentStatusInFlight()
+{
+    // A socket write is answered in a later frame, so a link that drops first
+    // takes the verdict with it. Treat those states as unpublished: the next
+    // reloadAgents() re-queues them, and the flush after that goes out over
+    // whatever transport is available then.
+    const QList<QList<QPair<int, QString>>> stranded =
+        m_orgTaskAgentStatusInFlight;
+    m_orgTaskAgentStatusInFlight.clear();
+    if (m_orgTaskAgentStatusAckTimer)
+        m_orgTaskAgentStatusAckTimer->stop();
+    for (const QList<QPair<int, QString>> &batch : stranded)
+        for (const QPair<int, QString> &entry : batch)
+            if (m_orgTaskAgentStatusSent.value(entry.first) == entry.second)
+                m_orgTaskAgentStatusSent.remove(entry.first);
 }
 
 void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followUp)

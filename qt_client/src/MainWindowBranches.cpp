@@ -8,7 +8,6 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
-#include "PacmanProgress.h"
 
 #include <QComboBox>
 #include <QDateTime>
@@ -2294,6 +2293,12 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         flashMergedBranchRow(branch);
         if (!m_branchMergedFlashBranch.isEmpty())
             m_branchMergedFlashHtml = mergedBranchCelebrationHtml(branch, base, dir);
+        // The Branches panel handles its own row above, but the Git workspace can
+        // be sitting on this branch's range with the panel nowhere in sight — and
+        // the refreshes below re-read whatever range is on screen. Retire the pane
+        // now, while we still know the branch was merged, rather than letting it
+        // read a ref that was deleted a moment ago (adhoc #1628).
+        showBranchDiffBranchGone(branch, base);
     } else if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()) {
         const QString next = neighbourBranchInList(branch);
         if (!next.isEmpty())
@@ -3260,69 +3265,64 @@ QWidget *MainWindow::buildBranchRangePane()
     // Both overlays are sized against the viewport, which changes width when the
     // splitter moves without any scroll to trigger a refresh.
     m_branchDiffView->viewport()->installEventFilter(this);
-    // Sticky header overlay pinned over the diff viewport — same form as the PR
-    // viewer's: filename + Pac-Man read-progress + percent + a Viewed toggle.
+    // Sticky header overlay pinned over the diff viewport — the file's own
+    // header row, held in place once it scrolls off: the same one-line label on
+    // the left and the same comment icon / Pac-Man read meter / Viewed pill on
+    // the right, built by the same helpers the rendered header uses, so the
+    // hand-off between the two is invisible (adhoc #423).
     m_branchDiffSticky = new QFrame(m_branchDiffView->viewport());
     m_branchDiffSticky->setObjectName("diffStickyHeader");
     {
         const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
         m_branchDiffSticky->setStyleSheet(
-            QStringLiteral(
-                "#diffStickyHeader{background:%1;border-bottom:1px solid %2;}"
-                "#diffStickyHeader QLabel{background:transparent;}"
-                "#diffStickyHeader QPushButton{background:transparent;border:none;"
-                "color:%3;font-size:11px;padding:2px 4px;}"
-                "#diffStickyHeader QPushButton:hover{color:#3fb950;}")
-                .arg(dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
-                     dark ? "#8b949e" : "#57606a"));
+            QStringLiteral("#diffStickyHeader{background:%1;border:none;}"
+                           "#diffStickyHeader QLabel{background:transparent;}")
+                .arg(dark ? "#161b22" : "#f6f8fa"));
         auto *sl = new QHBoxLayout(m_branchDiffSticky);
-        sl->setContentsMargins(10, 4, 8, 4);
-        sl->setSpacing(8);
+        // Matches the rendered header's padding (9px 12px) so the pinned row is
+        // the same height as the one it stands in for.
+        sl->setContentsMargins(12, 9, 12, 9);
+        sl->setSpacing(0);
         m_branchStickyPath = new QLabel(m_branchDiffSticky);
         m_branchStickyPath->setTextFormat(Qt::RichText);
         m_branchStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
         configureDiffStickyPathLabel(m_branchStickyPath);
         sl->addWidget(m_branchStickyPath, 1);
-        m_branchStickyPacman = new PacmanProgress(m_branchDiffSticky);
-        m_branchStickyPacman->setToolTip(
-            QStringLiteral("How much of this file you've scrolled through"));
-        sl->addWidget(m_branchStickyPacman, 0);
-        m_branchStickyPercent = new QLabel(QStringLiteral("0% read"),
-                                           m_branchDiffSticky);
-        m_branchStickyPercent->setObjectName("hintLabel");
-        m_branchStickyPercent->setMinimumWidth(52);
-        m_branchStickyPercent->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        sl->addWidget(m_branchStickyPercent, 0);
-        m_branchStickyViewed = new QPushButton(m_branchDiffSticky);
-        m_branchStickyViewed->setCursor(Qt::PointingHandCursor);
-        m_branchStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
-        connect(m_branchStickyViewed, &QPushButton::clicked, this, [this] {
-            if (m_branchStickyFile.isEmpty())
-                return;
-            // Where the review goes next, worked out before the toggle
-            // re-renders: marking a file viewed advances to the file after it so
-            // the next Viewed button lands under the same pointer. Un-viewing
-            // holds position — that click is to look at this file again.
-            const QString file = m_branchStickyFile;
-            const QString context =
-                m_branchDiffViewedContext.isEmpty()
-                    ? QStringLiteral("branch/") + m_branchDiffBranch
-                    : m_branchDiffViewedContext;
-            const int at = m_branchDiffFilePaths.indexOf(file);
-            const bool advance = !loadDiffViewed(context).contains(file) &&
-                                 at >= 0 && at + 1 < m_branchDiffFilePaths.size();
-            const QString next =
-                advance ? m_branchDiffFilePaths.at(at + 1) : QString();
-            onBranchDiffAnchorClicked(
-                QUrl(QStringLiteral("viewed:") +
-                     QString::fromLatin1(QUrl::toPercentEncoding(file))));
-            // Scroll without taking focus: the reviewer may be walking the
-            // CHANGES tree with the keyboard, and this click is on the diff's
-            // own overlay, not an "open this file" action.
-            if (!next.isEmpty())
-                scrollBranchDiffToFile(next, /*moveFocus=*/false);
-        });
-        sl->addWidget(m_branchStickyViewed, 0);
+        m_branchStickyControls = new QLabel(m_branchDiffSticky);
+        m_branchStickyControls->setTextFormat(Qt::RichText);
+        m_branchStickyControls->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+        m_branchStickyControls->setCursor(Qt::PointingHandCursor);
+        connect(m_branchStickyControls, &QLabel::linkActivated, this,
+                [this](const QString &link) {
+                    const QUrl url(link);
+                    if (url.scheme() != QLatin1String("viewed")) {
+                        onBranchDiffAnchorClicked(url);
+                        return;
+                    }
+                    // Where the review goes next, worked out before the toggle
+                    // re-renders: marking a file viewed advances to the file
+                    // after it so the next Viewed pill lands under the same
+                    // pointer. Un-viewing holds position — that click is to look
+                    // at this file again.
+                    const QString file = url.path();
+                    const QString context =
+                        m_branchDiffViewedContext.isEmpty()
+                            ? QStringLiteral("branch/") + m_branchDiffBranch
+                            : m_branchDiffViewedContext;
+                    const int at = m_branchDiffFilePaths.indexOf(file);
+                    const bool advance =
+                        !loadDiffViewed(context).contains(file) && at >= 0 &&
+                        at + 1 < m_branchDiffFilePaths.size();
+                    const QString next =
+                        advance ? m_branchDiffFilePaths.at(at + 1) : QString();
+                    onBranchDiffAnchorClicked(url);
+                    // Scroll without taking focus: the reviewer may be walking
+                    // the CHANGES tree with the keyboard, and this click is on
+                    // the diff's own overlay, not an "open this file" action.
+                    if (!next.isEmpty())
+                        scrollBranchDiffToFile(next, /*moveFocus=*/false);
+                });
+        sl->addWidget(m_branchStickyControls, 0);
         m_branchDiffSticky->hide();
     }
     // Debounce the auto-mark-viewed sweep off scroll ticks, exactly as the PR
@@ -5386,6 +5386,56 @@ void MainWindow::showBranchDiff(const QString &branch, int agentSessionId)
     renderBranchScopeDiff();
 }
 
+// The range pane's branch has just been deleted — a "Merge & delete", a worktree
+// teardown, a manual delete. Nothing about that ref can be read any more, so take
+// the pane off it before anything asks git about it.
+//
+// adhoc #1628: this is the ordering the pane used to lose. Deleting the branch and
+// refreshing the view that was showing it happen in that order inside one merge
+// (mergeWorktreeIntoMain ends in refreshSourceControl(force), which re-reads the
+// range through renderBranchScopeDiff), so the read landed on a ref removed a
+// moment earlier and the reader was handed git's own plumbing —
+// "fatal: ambiguous argument 'main...agent/…': unknown revision" — under a Retry
+// link that could never succeed.
+//
+// Both strings are taken by value: the merge path hands in m_branchDiffBranch
+// itself, and showBranchDiff() below clears that member — a reference would go
+// empty half way through this function (the git-pump aliasing family).
+void MainWindow::showBranchDiffBranchGone(QString branch, QString base)
+{
+    if (branch.isEmpty())
+        return;
+    forgetBranchDiff(branch); // its patch describes a range that no longer exists
+    if (m_branchDiffBranch != branch)
+        return;
+    ++m_branchScopeDiffGen; // drop a read already in flight for the dead branch
+    m_branchDiffPendingFade = false;
+    m_branchDiffAgentSessionId = -1;
+    clearRangeFilesInSourceControl();
+    // Empties the pane and every per-file span, sticky header and outline built
+    // for the branch, and stops sourceControlShowsRange() pointing at it — the
+    // refreshes that follow a delete then scan the working tree instead of
+    // re-reading a range whose right-hand side is gone.
+    showBranchDiff(QString());
+    if (!m_branchDiffView)
+        return;
+    // A branch this app just merged and deleted already has its congratulation
+    // built (adhoc #1615); show that rather than a bare "it's gone" line.
+    if (m_branchMergedFlashBranch == branch && !m_branchMergedFlashHtml.isEmpty()) {
+        setDiffHtml(m_branchDiffView, m_branchMergedFlashHtml);
+        return;
+    }
+    const QString landed =
+        base.isEmpty() ? QStringLiteral("merged and deleted")
+                       : QStringLiteral("merged into %1 and deleted")
+                             .arg(base.toHtmlEscaped());
+    setDiffHtml(m_branchDiffView,
+                QStringLiteral("<p style='color:#8b949e'>%1 was not found in this "
+                               "repository. It may have been %2. Pick a branch to "
+                               "see its changes.</p>")
+                    .arg(branch.toHtmlEscaped(), landed));
+}
+
 // The "viewed" key a branch's range diff checks files off against. PR mode shares
 // the pull request viewer's key so a file ticked in either place stays ticked in
 // both (adhoc #107).
@@ -5590,6 +5640,7 @@ void MainWindow::renderBranchScopeDiff()
     const int gen = ++m_branchScopeDiffGen;
     struct ScopeDiff {
         bool ok = true;
+        bool branchGone = false;
         QByteArray out;
         QString err;
         QString emptyMessage;
@@ -5657,13 +5708,35 @@ void MainWindow::renderBranchScopeDiff()
                     break;
                 QThread::msleep(250 * attempt); // let the contention clear
             }
+            // A read that failed because the right-hand side of the range is no
+            // longer a ref is not a git problem the reader can retry: the branch
+            // was deleted under the pane (adhoc #1628). Ask which end went
+            // missing — a base that also stopped resolving means something wider
+            // is wrong, and that still deserves git's own words.
+            const auto resolves = [&dir](const QString &rev) {
+                return runGitCapture(
+                    dir,
+                    {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                     QStringLiteral("--quiet"), QStringLiteral("--end-of-options"),
+                     rev + QStringLiteral("^{commit}")},
+                    nullptr, nullptr);
+            };
+            if (!r.ok && !resolves(branch) && resolves(base))
+                r.branchGone = true;
             return r;
         },
-        [this, gen, branch, agentSessionId, cacheKey](ScopeDiff r) {
+        [this, gen, branch, base, agentSessionId, cacheKey](ScopeDiff r) {
             // Dropped if the branch changed while the read was in flight.
             if (gen != m_branchScopeDiffGen || !m_branchDiffView ||
                 m_branchDiffBranch != branch)
                 return;
+            if (r.branchGone) {
+                // The branch went away between this read starting and finishing
+                // (adhoc #1628) — say where it went instead of showing git's
+                // "unknown revision" under a Retry that can't bring it back.
+                showBranchDiffBranchGone(branch, base);
+                return;
+            }
             if (!r.ok) {
                 m_branchDiffPendingFade = false;
                 setDiffHtml(m_branchDiffView,
@@ -5741,7 +5814,10 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         m_branchDiffFilePaths.append(f.path);
         m_branchDiffFileAnchors.append(f.anchor);
         rangeStatuses.append(f.status);
-        m_branchStickyLabelHtml.insert(f.path, diffStickyLabelHtml(f));
+        // The sticky bar pins this file's own header row, so it reuses the very
+        // label that header was rendered with (adhoc #423).
+        m_branchStickyLabelHtml.insert(f.path,
+                                       diffFileLabelHtml(f, viewed.contains(f.path)));
     }
     showRangeFilesInSourceControl(m_branchDiffFilePaths, rangeStatuses);
 
@@ -7120,29 +7196,20 @@ void MainWindow::updateBranchDiffSticky()
     if (cur != m_branchStickyFile) {
         m_branchStickyFile = cur;
         if (m_branchStickyPath) {
-            // Prefer the labelled form (status word + octicon + +/- counts); the
-            // bare path is the fallback for a span whose entry did not survive a
-            // re-render.
+            // The label the file's own header carries, built once per render;
+            // the bare path is the fallback for a span whose entry did not
+            // survive a re-render.
             const QString label = m_branchStickyLabelHtml.value(cur);
             m_branchStickyPath->setText(label.isEmpty() ? diffStickyPathHtml(cur)
                                                         : label);
-            m_branchStickyPath->setToolTip(cur); // the bar may elide a long path
+            m_branchStickyPath->setToolTip(cur); // the bar may clip a long path
         }
     }
-    if (m_branchStickyViewed)
-        m_branchStickyViewed->setText(isViewed
-                                          ? QString::fromUtf8("\xE2\x98\x91 Viewed")
-                                          : QString::fromUtf8("\xE2\x98\x90 Viewed"));
-    if (m_branchStickyPacman) {
-        m_branchStickyPacman->setColor(progress >= 0.999 || isViewed
-                                           ? QColor(0x3f, 0xb9, 0x50)
-                                           : QColor(0x58, 0xa6, 0xff));
-        m_branchStickyPacman->setProgress(isViewed ? 1.0 : progress);
-    }
-    if (m_branchStickyPercent) {
-        const int percent = isViewed ? 100 : qBound(0, qRound(progress * 100.0), 100);
-        m_branchStickyPercent->setText(QStringLiteral("%1% read").arg(percent));
-    }
+    // The right-hand controls carry the read meter, so they refresh every tick.
+    // Comment icon only in PR mode, exactly as the rendered header does it.
+    if (m_branchStickyControls)
+        m_branchStickyControls->setText(diffRowControlsHtml(
+            cur, progress, isViewed, m_branchDiffPullNumber >= 0));
 
     m_branchDiffSticky->setGeometry(0, 0, m_branchDiffView->viewport()->width(),
                                     m_branchDiffSticky->sizeHint().height());
