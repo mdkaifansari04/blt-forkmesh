@@ -1606,6 +1606,78 @@ int main(int argc, char *argv[])
     const bool updateIsolationOnly =
         app.arguments().contains(QStringLiteral("--update-isolation-only"));
 
+    // adhoc #1626: only a real question parks a session on "Waiting". The
+    // inline-choice heuristic is what stands in for AskUserQuestion when the CLI
+    // just writes the options out, so it has to stay blind to a numbered
+    // *report* — the shape a finished run signs off with.
+    {
+        const auto asks = [](const QString &text) {
+            QStringList options;
+            return ClaudeTranscriptView::parseInlineChoices(text, options);
+        };
+
+        check(asks(QStringLiteral(
+                  "Do you want me to:\n"
+                  "1. Land the fix on this branch\n"
+                  "2. Open an issue and leave main alone")),
+              QStringLiteral("inline choices: a short numbered answer list after "
+                             "a question still asks"));
+        check(asks(QStringLiteral(
+                  "There are two ways to land this.\n\n"
+                  "1. Rebase onto main\n"
+                  "2. Merge main in\n\n"
+                  "Which do you prefer?")),
+              QStringLiteral("inline choices: a closing question below the list "
+                             "still asks"));
+
+        check(!asks(QStringLiteral(
+                  "**What changed** — all in the alert-stack geometry:\n"
+                  "1. **A ceiling, so cards stop below the page's buttons.** The stack "
+                  "used to grow from the prompt up to a 16px window margin, so a burst "
+                  "of long errors covered the toolbar of whatever page was open. It now "
+                  "gets `topMessageStackCeiling()`: at most half the band between the "
+                  "top of the content area and the prompt.\n"
+                  "2. **A real gap above the prompt, and an entry rise that can't cross "
+                  "it.** The anchor now also accepts the prompt overlay host, so a "
+                  "collapsed composer is cleared instead of sat on.\n"
+                  "3. **The queued column survives a giant card.** Capping the stack "
+                  "exposed a side effect: one huge failure ate the entire allowance and "
+                  "hid the queue.\n\n"
+                  "**Verification** — `forkmesh-window-tests --alert-stack-only` is "
+                  "green, including four new checks.")),
+              QStringLiteral("inline choices: a numbered summary of what changed "
+                             "is not a question (adhoc #1626)"));
+        check(!asks(QStringLiteral(
+                  "Which parts moved?\n"
+                  "1. Read the store\n"
+                  "2. Add the guard\n\n"
+                  "I started with the store: the guard could not be written before "
+                  "its shape was known, so the read lands first and the write path "
+                  "follows it. Both are covered by the new checks, and the suite is "
+                  "green apart from the twenty failures that were already there on "
+                  "main before any of this.")),
+              QStringLiteral("inline choices: prose continuing past the list means "
+                             "the agent is not blocked"));
+        check(!asks(QStringLiteral(
+                  "Which files should I touch?\n"
+                  "1. one\n2. two\n3. three\n4. four\n5. five\n6. six\n7. seven")),
+              QStringLiteral("inline choices: a long enumeration is a list, not a "
+                             "choice"));
+        check(!asks(QStringLiteral(
+                  "Which is it?\n\n"
+                  "1. The lease is taken by the mirror, which stands down on a 200 "
+                  "with an empty body, so the source never gets its turn and the "
+                  "inbox keeps every frame it was handed until the next sweep.\n"
+                  "2. The rewrite fails closed, so an aliased repo drains nothing at "
+                  "all and the frames sit there until somebody notices the queue "
+                  "depth on the status page.")),
+              QStringLiteral("inline choices: numbered paragraphs are prose, not "
+                             "clickable answers"));
+    }
+
+    if (app.arguments().contains(QStringLiteral("--inline-choices-only")))
+        return failures == 0 ? 0 : 1;
+
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     if (appDataPath.isEmpty()) {
