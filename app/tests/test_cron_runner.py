@@ -113,29 +113,16 @@ def test_trigger_kicks_the_alarm_runner_without_awaiting_in_python():
                    for node in ast.walk(scheduled_node))
     assert scheduled == (
         "async def scheduled(self, controller, env, ctx):\n"
-        "    self.ctx.waitUntil(_cron_runner_kick_promise(self.env))"
+        "    self.ctx.waitUntil(_cron_runner_kick(self.env))"
     )
-    promise = ast.unparse(next(
+    kick = ast.unparse(next(
         node for node in tree.body
         if isinstance(node, ast.FunctionDef)
-        and node.name == "_cron_runner_kick_promise"))
+        and node.name == "_cron_runner_kick"))
     assert "binding.fetch('https://forkmesh.internal/cron-runner/kick')" \
-        in promise
-    assert "await" not in promise
-    heartbeat = ast.unparse(next(
-        node for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_record_runner_status_heartbeat"))
-    assert "ON CONFLICT(minute_ts) DO UPDATE" in heartbeat
-    # The maintenance batch heartbeats BEFORE sampling (proving liveness
-    # even when it loses the minute's claim) and keeps its own sample call:
-    # with the claim row in record_status_sample exactly one caller records
-    # each minute, and the runner covers minutes where the trigger's Python
-    # wrapper was killed.
-    assert "_record_runner_status_heartbeat(self.env)" in jobs
+        in kick
+    assert "await" not in kick
     assert "record_status_sample(self.env, source='runner')" in jobs
-    assert jobs.index("_record_runner_status_heartbeat(self.env)") < \
-        jobs.index("record_status_sample(self.env, source='runner')")
     assert "https_mirror_health_cron" in jobs
     assert "_cron_watchdog_completion" in jobs
 

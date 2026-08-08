@@ -3807,17 +3807,7 @@ async def _cron_watchdog_completion(env):
         raise RuntimeError("cron watchdog rejected completion heartbeat")
 
 
-async def _cron_runner_kick(env):
-    """Seed/reconcile the independent alarm-backed minute runner."""
-    runner_id = env.FORKMESH_CRON_RUNNER.idFromName(CRON_RUNNER_NAME)
-    runner = env.FORKMESH_CRON_RUNNER.get(runner_id)
-    response = await runner.fetch(
-        "https://forkmesh.internal/cron-runner/kick")
-    if int(getattr(response, "status", 0) or 0) != 200:
-        raise RuntimeError("cron runner rejected trigger kick")
-
-
-def _cron_runner_kick_promise(env):
+def _cron_runner_kick(env):
     runner_id = env.FORKMESH_CRON_RUNNER.idFromName(CRON_RUNNER_NAME)
     runner = env.FORKMESH_CRON_RUNNER.get(runner_id)
     binding = getattr(runner, "_binding", None)
@@ -4034,31 +4024,14 @@ async def _record_status_deploy_sample(env, now):
     )
 
 
-async def _claim_status_sample_minute(env, now, source="trigger"):
-    """At-most-once gate for this minute's /status health sample.
-
-    Two independent schedulers call record_status_sample: the platform Cron
-    Trigger directly (the only per-minute schedule the platform itself
-    guarantees, so /status keeps landing samples even while Durable Objects
-    are wedged or over their free-tier quota) and the ForkMeshCronRunner
-    alarm batch. The daily/hourly rollups are checks-counter increments, so
-    a doubly-recorded minute would inflate an hour's coverage; whichever
-    caller INSERTs the minute's claim row first owns the sample and the
-    other returns without probing. D1's Python client exposes no reliable
-    changes() count, so the winner recognizes itself by reading back a
-    random token. Fails open on a claim-infrastructure error: a duplicated
-    minute costs one extra check count, while a skipped minute paints
-    public fake downtime.
-    """
+async def _claim_status_sample_minute(env, now, source="runner"):
+    """Claim this minute before incrementing status coverage counters."""
     minute_ts = (int(now) // STATUS_SAMPLE_WINDOW_MS) * STATUS_SAMPLE_WINDOW_MS
     try:
         rnd = js_crypto.getRandomValues(Uint8Array.new(16))
         claim = "".join("%02x" % int(rnd[i]) for i in range(16))
     except Exception:
         claim = ("%032x" % int(Date.now()))[-32:]
-    # The prefix records WHICH scheduler landed the minute, so the trigger
-    # can skip its expensive direct probe run while the runner is provably
-    # alive (see _runner_status_sample_is_stale).
     claim = str(source or "trigger") + "-" + claim
     try:
         await d1_run(
@@ -4077,59 +4050,6 @@ async def _claim_status_sample_minute(env, now, source="trigger"):
         return True
     winner = str((row or {}).get("claim") or "")
     return (not winner) or winner == claim
-
-
-# The runner's liveness heartbeat rides the claim table as one sentinel row.
-# Its minute_ts sits far above any real minute (year 9999) because retention
-# prunes `minute_ts < cutoff`; a low sentinel would be deleted every sweep.
-RUNNER_HEARTBEAT_SENTINEL_TS = 253402300800000
-
-
-async def _record_runner_status_heartbeat(env):
-    """Prove the alarm runner's batch ran, independent of the sample claim.
-
-    The runner usually LOSES the per-minute sample claim to the Cron
-    Trigger (which fires at second :00 while the alarm lands mid-minute),
-    so claim rows alone cannot show the runner is alive — the trigger would
-    keep probing directly forever. This sentinel row is updated on every
-    batch regardless of who won the minute.
-    """
-    await d1_run(
-        env,
-        "INSERT INTO system_status_sample_claim "
-        "(minute_ts, claim, claimed_at) VALUES (?, 'runner-heartbeat', ?) "
-        "ON CONFLICT(minute_ts) DO UPDATE SET "
-        "claimed_at=excluded.claimed_at",
-        RUNNER_HEARTBEAT_SENTINEL_TS, int(Date.now()),
-    )
-
-
-async def _runner_status_sample_is_stale(env, now):
-    """True when the alarm runner has not heartbeated for three minutes.
-
-    The Cron Trigger's direct sample exists so a wedged/over-quota Durable
-    Object subsystem cannot leave multi-hour fake-downtime gaps on /status.
-    But the direct probe run holds the scheduled wrapper open for ~25s of
-    awaited I/O every minute inside serving isolates, and overlapping a
-    request wrapper that long re-triggers the Pyodide "Cannot enter into
-    task" wedge that poisoned isolates on the git clone path (2026-08-06).
-    So the trigger only probes directly while the runner is provably NOT
-    running (heartbeat older than three minutes — at most a three-minute
-    sample gap once, exactly when the independent watchdog already emails).
-    One cheap D1 read replaces the probe run in the steady state; any claim
-    infrastructure error fails open into the direct sample.
-    """
-    try:
-        row = await d1_first(
-            env,
-            "SELECT claimed_at FROM system_status_sample_claim "
-            "WHERE minute_ts = ?",
-            RUNNER_HEARTBEAT_SENTINEL_TS,
-        )
-    except Exception:
-        return True
-    last = int((row or {}).get("claimed_at") or 0)
-    return int(now) - last > 3 * STATUS_SAMPLE_WINDOW_MS
 
 
 async def _email_delivery_status(env, now):
@@ -41396,7 +41316,7 @@ async def _https_mirror_proxy(
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
-        self.ctx.waitUntil(_cron_runner_kick_promise(self.env))
+        self.ctx.waitUntil(_cron_runner_kick(self.env))
 
     async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
         # Cron trigger (every minute, see [triggers] in wrangler.toml).
@@ -41444,10 +41364,6 @@ class Default(WorkerEntrypoint):
         # is what lets the Cron Trigger's scheduled() skip its own direct
         # probe run while this batch is provably alive
         # (_runner_status_sample_is_stale).
-        try:
-            await _record_runner_status_heartbeat(self.env)
-        except BaseException:
-            pass
         try:
             await record_status_sample(self.env, source="runner")
         except BaseException as error:

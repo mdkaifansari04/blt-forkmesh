@@ -252,13 +252,7 @@ async def _record_status_monitor_transitions(
             )
 
 
-async def record_status_sample(env, source="trigger"):
-    # Called once a minute by the platform Cron Trigger (scheduled()) and by
-    # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
-    # exactly one of them record each minute, and tags the claim with the
-    # caller so the trigger can tell whether the runner is still landing
-    # samples (see _runner_status_sample_is_stale). Best-effort per system
-    # so one failing check can't blank the rest of the page.
+async def record_status_sample(env, source="runner"):
     await ensure_schema(env)
     now = int(Date.now())
     if not await _claim_status_sample_minute(env, now, source):
