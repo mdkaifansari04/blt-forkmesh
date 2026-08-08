@@ -1190,6 +1190,66 @@ void checkAlertStackLayout(MainWindow &window)
     QApplication::processEvents();
     check(container && !container->isVisible() && queue && !queue->isVisible(),
           QStringLiteral("dismissing clears the whole alert stack"));
+
+    // adhoc #1621: the stack is an overlay over whatever page is open, and a
+    // burst of long failures used to grow it right to the top of the window —
+    // the reference screenshot has three error cards covering a commit's
+    // Side-by-side / Prev / Next row. It now stays in the lower band it shares
+    // with the prompt, and no part of it (at rest or mid-entry) reaches the
+    // composer.
+    auto *prompt = window.findChild<QWidget *>(QStringLiteral("promptWrapper"));
+    const int promptTop = prompt && prompt->isVisible()
+                              ? prompt->mapTo(&window, QPoint()).y()
+                              : window.height();
+    const QString wall =
+        QStringLiteral("net GET ERR 500 [body: <!DOCTYPE html> <!--[if lt IE 7]> "
+                       "<html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]--> "
+                       "<title>Worker threw exception | forkmesh.com | Cloudflare "
+                       "</title> https://forkmesh.com/ ");
+    for (int i = 0; i < 4; ++i)
+        window.testFlashMessage(wall.repeated(6) + QString::number(i), true);
+    settleAnimations();
+    const QRect burst = window.testTopMessageRect();
+    const QRect burstStack =
+        queue && queue->isVisible() ? burst.united(queue->geometry()) : burst;
+    // Half the height above the composer is the loose form of the ceiling: the
+    // real one is measured from the top of the content area, so it lands a little
+    // lower still. Before adhoc #1621 this stack reached the window's top margin.
+    check(burstStack.top() >= promptTop / 2,
+          QStringLiteral("a burst of long failures stays in the lower band beside "
+                         "the prompt instead of climbing over the page's toolbar"));
+    check(burstStack.bottom() < promptTop,
+          QStringLiteral("the whole stack rests clear of the composer"));
+    check(queue && queue->isVisible() && queue->height() > 0 &&
+              burst.height() < burstStack.height(),
+          QStringLiteral("one long failure scrolls its own text instead of "
+                         "filling the stack and hiding the cards behind it"));
+
+    // The whole window this time, not just the stack: what adhoc #1621 is about
+    // is where the stack sits relative to the page underneath it.
+    if (!qEnvironmentVariableIsEmpty("FORKMESH_ALERT_SHOT")) {
+        qInfo("ALERTSHOT burst stack=%d,%d %dx%d promptTop=%d window=%dx%d",
+              burstStack.x(), burstStack.y(), burstStack.width(),
+              burstStack.height(), promptTop, window.width(), window.height());
+        window.grab().save(qEnvironmentVariable("FORKMESH_ALERT_SHOT") +
+                           QStringLiteral(".burst.png"));
+    }
+
+    // The entry rise borrows the gap above the prompt, so even the first frame
+    // of an arriving card stays off it.
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    window.testFlashMessage(
+        QStringLiteral("Push rejected: remote has newer commits on main"), true);
+    QApplication::processEvents();
+    check(container && container->isVisible() &&
+              container->geometry().bottom() < promptTop,
+          QStringLiteral("an arriving card rises inside that gap rather than "
+                         "flying in over the prompt"));
+    settleAnimations();
+
+    window.testDismissTopMessage();
+    QApplication::processEvents();
 }
 
 QString widgetPath(QWidget *widget)
@@ -1603,6 +1663,8 @@ int main(int argc, char *argv[])
         app.arguments().contains(QStringLiteral("--footer-overlay-only"));
     const bool errorAlertOnly =
         app.arguments().contains(QStringLiteral("--error-alert-only"));
+    const bool alertStackOnly =
+        app.arguments().contains(QStringLiteral("--alert-stack-only"));
     const bool updateIsolationOnly =
         app.arguments().contains(QStringLiteral("--update-isolation-only"));
 
@@ -1843,7 +1905,7 @@ int main(int argc, char *argv[])
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
     if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly &&
-        !mirrorFleetOnly && !errorAlertOnly)
+        !mirrorFleetOnly && !errorAlertOnly && !alertStackOnly)
         check(detailedStartupSteps >= 7 &&
               startupLog.contains(QStringLiteral(
                   "BEGIN MainWindow: read connection state and cached model list")) &&
@@ -1969,6 +2031,15 @@ int main(int argc, char *argv[])
         window.show();
         QApplication::processEvents();
         checkFooterOverlayGeometry(window);
+        return failures == 0 ? 0 : 1;
+    }
+
+    if (alertStackOnly) {
+        window.resize(1200, 720);
+        window.show();
+        QApplication::processEvents();
+        checkAlertStackLayout(window);
+        stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
 
