@@ -2505,6 +2505,79 @@ int main(int argc, char *argv[])
                           "button->graphicsEffect() == faded")),
                   "sticky Viewed fade deletes its opacity effect once, guarded by QPointer");
 
+            // Reviewing a diff: Viewed is a click, never a side effect of
+            // scrolling; the filename bar is one line and stays pinned for the
+            // whole file; and checking a file off walks on to the next one so a
+            // reviewer keeps clicking the same spot. MainWindow*.cpp is compiled
+            // only by the app target, so these are asserted on the source.
+            const QDir srcDir(QFileInfo(QString::fromUtf8(__FILE__))
+                                  .absoluteDir()
+                                  .filePath(QStringLiteral("../src")));
+            const auto readSource = [&srcDir](const QString &name) {
+                QFile file(srcDir.filePath(name));
+                return file.open(QIODevice::ReadOnly)
+                           ? QString::fromUtf8(file.readAll())
+                           : QString();
+            };
+            const QString sharedSource =
+                readSource(QStringLiteral("MainWindowShared.cpp"));
+            const QString pullsSource =
+                readSource(QStringLiteral("MainWindowPulls.cpp"));
+            const QString branchesSource =
+                readSource(QStringLiteral("MainWindowBranches.cpp"));
+            check(sharedSource.contains(QStringLiteral(
+                      "\"view/autoMarkViewedOnScroll\"), false)")),
+                  "scrolling past a file does not mark it viewed by default");
+            const auto sweepHonoursPref = [](const QString &source,
+                                             const QString &function) {
+                const int start =
+                    source.indexOf(QStringLiteral("void MainWindow::") + function);
+                return start >= 0 &&
+                       source.mid(start, 900)
+                           .contains(QStringLiteral("!autoMarkViewedOnScrollPref()"));
+            };
+            check(sweepHonoursPref(pullsSource,
+                                   QStringLiteral("applyAutoMarkViewedOnScroll")) &&
+                      sweepHonoursPref(
+                          branchesSource,
+                          QStringLiteral("applyBranchAutoMarkViewedOnScroll")) &&
+                      sweepHonoursPref(
+                          scmSource,
+                          QStringLiteral("applyScmAutoMarkViewedOnScroll")),
+                  "every diff's auto-mark-viewed sweep honours the preference");
+            // One line: the per-file header no longer breaks the status onto a
+            // second row, and neither header cell may wrap.
+            const int headerStart =
+                sharedSource.indexOf(QStringLiteral("QString diffFileHeaderHtml("));
+            const int headerEnd =
+                sharedSource.indexOf(QStringLiteral("QString diffStickyLabelHtml("),
+                                     headerStart);
+            const QString headerBody =
+                headerStart >= 0 && headerEnd > headerStart
+                    ? sharedSource.mid(headerStart, headerEnd - headerStart)
+                    : QString();
+            check(!headerBody.isEmpty() &&
+                      !headerBody.contains(QStringLiteral("<br>")) &&
+                      sharedSource.contains(QStringLiteral(
+                          "td.fpathcell { white-space:nowrap; }")) &&
+                      sharedSource.contains(QStringLiteral(
+                          "td.fctlcell { white-space:nowrap; }")),
+                  "the diff's filename header is a single unwrapped line");
+            // Pinned for the whole file: neither sticky bar hides itself while
+            // the file's own header happens to be on screen.
+            check(!pullsSource.contains(QStringLiteral(
+                      "viewTop <= fileTop + m_pullStickyHeader")) &&
+                      !branchesSource.contains(QStringLiteral(
+                          "viewTop <= fileTop + m_branchDiffSticky")),
+                  "the sticky filename bar stays pinned across file boundaries");
+            check(pullsSource.contains(
+                      QStringLiteral("m_pullFileOrder.at(at + 1)")) &&
+                      branchesSource.contains(QStringLiteral(
+                          "m_branchDiffFilePaths.at(at + 1)")) &&
+                      scmSource.contains(QStringLiteral(
+                          "idx + 1 < m_scmSectionKeys.size() ? idx + 1 : idx")),
+                  "marking a file viewed advances the diff to the next file");
+
             RepoContributionPublicationCache scanCapacityCache(8, 2);
             check(scanCapacityCache.begin(contributionCacheKey, false) ==
                           CacheBegin::Started &&

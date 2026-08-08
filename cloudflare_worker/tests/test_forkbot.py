@@ -6,10 +6,18 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import re
+import shutil
+import subprocess
+import sys
+import threading
 import tomllib
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import quote
+
+import pytest
 
 from worker_test_helpers import json_from_request_double
 
@@ -1421,6 +1429,190 @@ def test_qt_composer_runs_cloudflare_models_as_agents():
     fallback = re.findall(r'QStringLiteral\("(@cf/[^"]+)"\)', internal)
     assert fallback
     assert set(fallback) == allowed
+
+
+# --- The bundled Workers AI agent script, run for real (adhoc #1622).
+#     The models behind this provider are small enough to loop on one command
+#     forever, so the script's guards are worth exercising rather than
+#     grepping: extract the Python out of the header and drive it against a
+#     stub relay in a throwaway git repo.
+
+
+def _cloudflare_agent_script(tmp_path):
+    header = (ROOT.parent / "qt_client" / "src" /
+              "CloudflareAgentScript.h").read_text(encoding="utf-8")
+    body = re.search(r'R"PYAGENT\((.*)\)PYAGENT"', header, re.S)
+    assert body, "CloudflareAgentScript.h no longer holds a PYAGENT literal"
+    path = tmp_path / "forkmesh_cloudflare_agent.py"
+    path.write_text(body.group(1), encoding="utf-8")
+    return path
+
+
+def _run_cloudflare_agent(tmp_path, turns, steer=None):
+    """Run the bundled script against a stub /api/ai/agent.
+
+    `turns` is called with (turn number, conversation) and returns that turn's
+    toolCalls; returning [] ends the run the way a finished model does. Returns
+    (stdout, exit code, worktree, fake HOME, conversations) with the git identity
+    configured only in the fake HOME's ~/.gitconfig, so a run that reaches for
+    `git config --global` is caught.
+    """
+    if not shutil.which("git"):
+        pytest.skip("git is not installed")
+
+    script = _cloudflare_agent_script(tmp_path)
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            size = int(self.headers.get("content-length") or 0)
+            body = json.loads(self.rfile.read(size))
+            seen.append(body["messages"])
+            calls = turns(len(seen), body["messages"])
+            payload = json.dumps({
+                "ok": True,
+                "model": body.get("model"),
+                "reply": "" if calls else "Done.",
+                "toolCalls": calls,
+                "usage": {"inputTokens": 1, "outputTokens": 1},
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text(
+        "[user]\n\tname = Real Person\n\temail = real@example.com\n",
+        encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = dict(os.environ, HOME=str(home))
+    env.pop("GIT_CONFIG_GLOBAL", None)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)],
+                   env=env, check=True)
+    (repo / "README.md").write_text("# Title\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, env=env,
+                   check=True)
+
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("add the note", encoding="utf-8")
+    env["FORKMESH_AI_AGENT_AUTH"] = json.dumps({
+        "url": "http://127.0.0.1:%d/api/ai/agent" % server.server_address[1],
+        "node": "jett", "ts": "1", "sig": "sig"})
+    env["FORKMESH_AGENT_MODEL"] = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    proc = subprocess.Popen(
+        [sys.executable, str(script), str(prompt)], cwd=repo, env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True)
+    if steer:
+        proc.stdin.write(steer)
+        proc.stdin.flush()
+    out = proc.stdout.read()
+    code = proc.wait(timeout=180)
+    server.shutdown()
+    return out, code, repo, home, seen
+
+
+UNTOUCHED_GITCONFIG = "[user]\n\tname = Real Person\n\temail = real@example.com\n"
+
+
+def test_cloudflare_agent_script_stops_a_model_that_repeats_one_command(
+        tmp_path):
+    # The shipped failure: llama-3.3 answered every turn with the same
+    # `echo ... >> README.md`, appending the line once per turn for as long as
+    # anyone let it run.
+    append = 'echo "edited by llama" >> README.md'
+    out, code, repo, home, seen = _run_cloudflare_agent(
+        tmp_path,
+        lambda turn, messages: [
+            {"id": "c%d" % turn, "name": "bash",
+             "arguments": {"command": append}}])
+
+    # The command lands once, however many times it is asked for, and the run
+    # ends by itself well inside the turn budget.
+    assert (repo / "README.md").read_text(encoding="utf-8") == \
+        "# Title\nedited by llama\n"
+    assert "Not run again: this is the command from turn 1" in out
+    assert "re-running commands it had already run" in out
+    assert out.count("request #") <= 5
+    # Exit 0: whatever the run did commit is still worth capturing as a patch.
+    assert code == 0
+    # Every turn carries the agent rules these small models need spelled out.
+    assert seen[0][0]["role"] == "system"
+    assert "stop calling tools" in seen[0][0]["content"]
+    assert (home / ".gitconfig").read_text(encoding="utf-8") == \
+        UNTOUCHED_GITCONFIG
+
+
+def test_cloudflare_agent_script_works_the_task_and_takes_steering(tmp_path):
+    commands = [
+        "tail -n 2 README.md",
+        'grep -qF "edited by llama" README.md || '
+        'echo "edited by llama" >> README.md',
+        "tail -n 2 README.md",  # a legitimate re-read, not a stalled repeat
+        'git config --global user.email "llama@cloudflare.com" && '
+        "git add -A && git commit -qm note",
+    ]
+    state = {"steered": False}
+
+    def turns(turn, messages):
+        # The steering arrives on stdin before the first turn; the script drains
+        # stdin at every turn boundary, so answer it once and then work through
+        # the command list.
+        pending = any(
+            message["role"] == "user" and "STEER" in (message.get("content") or "")
+            for message in messages)
+        if pending and not state["steered"]:
+            state["steered"] = True
+            return [{"id": "s", "name": "bash",
+                     "arguments": {"command": 'echo "STEERED" >> README.md'}}]
+        index = turn - (1 if state["steered"] else 0)
+        if index <= len(commands):
+            return [{"id": "c%d" % turn, "name": "bash",
+                     "arguments": {"command": commands[index - 1]}}]
+        return []
+
+    out, code, repo, home, _seen = _run_cloudflare_agent(
+        tmp_path, turns,
+        steer="\n\nAdditional user instruction:\nSTEER: add a second line\n")
+
+    assert code == 0
+    assert "==> Agent finished." in out
+    # The steering ForkMesh writes to the running script's stdin reaches the
+    # model instead of being swallowed (the prompt itself is a file argument, so
+    # nothing used to read stdin at all).
+    assert "==> Steering:" in out
+    assert "STEERED" in (repo / "README.md").read_text(encoding="utf-8")
+    # Re-reading a file the run read earlier is not treated as a stall.
+    assert "re-running commands it had already run" not in out
+    assert out.count("$ tail -n 2 README.md") == 2
+    # `git config --global` is sandboxed into the run, not the user's identity.
+    assert (home / ".gitconfig").read_text(encoding="utf-8") == \
+        UNTOUCHED_GITCONFIG
+    # The work is committed, so ForkMesh can stamp provenance and open a PR.
+    assert "note" in subprocess.run(
+        ["git", "log", "-1", "--pretty=%s"], cwd=repo, capture_output=True,
+        text=True).stdout
+
+
+def test_agent_runner_does_not_call_a_user_stop_a_crash():
+    # Stopping a session terminates the child, so Qt reports Crashed for a run
+    # the user ended on purpose — "!! Process crashed" beside "Stopped." read as
+    # a bug in the agent (adhoc #1622).
+    runner = (ROOT.parent / "qt_client" / "src" /
+              "AgentRunner.cpp").read_text(encoding="utf-8")
+    assert "if (!m_stopping)\n                    emitLog(QStringLiteral(\"!! \") + " \
+        "m_process->errorString());" in runner
 
 
 def test_web_composers_offer_the_cloudflare_model_picker():

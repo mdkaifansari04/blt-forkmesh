@@ -1160,6 +1160,32 @@ void checkAlertStackLayout(MainWindow &window)
             qEnvironmentVariable("FORKMESH_ALERT_SHOT"));
     }
 
+    // A finished run parked behind another card still offers the run itself:
+    // its caption button is "View agent", not the generic "Send to prompt", so
+    // the transcript is one click away without waiting out the countdown.
+    window.testFlashMessage(QStringLiteral("Committed the fix and stopped there."),
+                            /*error=*/false, QStringLiteral("fm:agent:12"),
+                            forkmesh::ui::kAgentDoneToastKind);
+    settleAnimations();
+    QWidget *doneCard = nullptr;
+    const QList<QWidget *> cards =
+        queue ? queue->findChildren<QWidget *>(
+                    QStringLiteral("topMessageQueueCard"))
+              : QList<QWidget *>();
+    for (QWidget *candidate : cards) {
+        auto *body =
+            candidate->findChild<QLabel *>(QStringLiteral("topMessageQueueText"));
+        if (body && body->text().contains(QStringLiteral("stopped there")))
+            doneCard = candidate;
+    }
+    auto *doneAction =
+        doneCard
+            ? doneCard->findChild<QPushButton *>(QStringLiteral("topMessageAction"))
+            : nullptr;
+    check(doneAction && doneAction->text() == QStringLiteral("View agent"),
+          QStringLiteral("a queued agent-done card opens the agent instead of "
+                         "the prompt composer"));
+
     window.testDismissTopMessage();
     QApplication::processEvents();
     check(container && !container->isVisible() && queue && !queue->isVisible(),
