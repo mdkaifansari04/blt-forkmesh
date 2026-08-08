@@ -1131,20 +1131,20 @@ QWidget *MainWindow::buildSettingsSection()
                     m_statusVersionButton->setChecked(enabled);
             });
 
-    // The cloud monitor's off switch for nodes that never open the Log page:
-    // it is on by default (adhoc #1632), so it must be reachable from Settings
-    // and not only from the Log page's own Cloud chip. The two mirror each
-    // other (adhoc #1636).
+    // The cloud monitor's on/off switch. It is on by default (adhoc #1632) and,
+    // since the tail's events are now log lines rather than a window of their
+    // own (adhoc #1613), this is the one place it is switched.
     m_cloudLogMonitorSettingCheck =
-        new QCheckBox("Monitor the deployed Worker's log for errors");
+        new QCheckBox("Watch the deployed Worker's log");
     m_cloudLogMonitorSettingCheck->setObjectName(
         QStringLiteral("cloudLogMonitorSettingCheck"));
     m_cloudLogMonitorSettingCheck->setChecked(
         QSettings().value(kCloudLogMonitorSetting, true).toBool());
     m_cloudLogMonitorSettingCheck->setToolTip(
-        "Keep a background tail of the deployed Worker's live log running, so "
-        "its exceptions and 5xx responses raise the same alert as any other "
-        "error. Needs a stored Cloudflare API token; on by default.");
+        "Keep a background tail of the deployed Worker's live log running. Its "
+        "traffic joins this app's own log under the Cloud filter, and its "
+        "exceptions and 5xx responses raise the same alert as any other error. "
+        "Needs a stored Cloudflare API token; on by default.");
     connect(m_cloudLogMonitorSettingCheck, &QCheckBox::toggled, this,
             [this](bool enabled) {
                 QSettings().setValue(kCloudLogMonitorSetting, enabled);
@@ -4230,6 +4230,13 @@ struct Rule {
 // glance; every other category (including HOST, previously pink) gets a
 // distinct non-red accent.
 const Rule kNetworkLogRules[] = {
+        // The deployed Worker's own live tail, merged into this log rather than
+        // shown in a window of its own (adhoc #1613). Matched first: a hit line
+        // carries a whole URL, and almost any rule below could claim one of
+        // those ("/api/sync", "/api/issues", …). networkLogStyleFor() short-
+        // circuits on the same prefix ahead of the error scan; the entry here is
+        // what gives the CLOUD chip its colour.
+        {"cloud hit: ", "#f6821f", "CLOUD"},
         // App start/stop/rebuild-restart markers — keep above "fork" so
         // "ForkMesh" in the start line doesn't get tagged FORK.
         {"session started", "#f2cc60", "SESSION"},
@@ -4368,6 +4375,13 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
     // "failed"/"unable" and would otherwise mis-badge the stall as ERROR.
     if (lower.contains(QLatin1String("ui stalled")))
         return {QString::fromLatin1(kStallAccent), QString::fromLatin1(kStallBadge)};
+    // A Worker hit the tail reported as healthy is a CLOUD line whatever it
+    // names (adhoc #1613): the request's own URL can carry the error vocabulary
+    // the scan below looks for — /api/error_log is a real route — and a 200 on
+    // it is not this app failing. The monitor's own failures use a different
+    // prefix and fall through to that scan, which is what alerts on them.
+    if (lower.startsWith(QLatin1String("cloud hit: ")))
+        return {QStringLiteral("#f6821f"), QStringLiteral("CLOUD")};
     // A successful "Git: merged <base> into <branch> in its linked worktree."
     // line embeds the branch name verbatim, and agent branches are slugged
     // from issue titles — so a branch like "…-am-unable-continue-agent" trips
@@ -4946,30 +4960,6 @@ void MainWindow::rebuildLogFilterButtons()
     m_logFilterGroup = new QButtonGroup(this);
     m_logFilterGroup->setExclusive(true);
 
-    // The Cloudflare Worker's live-tail monitor rides the same row, in the
-    // same icon+badge shape, as the categories it explains (adhoc #1636): not
-    // a filter — clicking it does not narrow the log — just the app's one
-    // on/off switch for the background Wrangler tail, checked exactly while
-    // that tail is actually live. That is the fix for the old debug-bar
-    // checkbox, which showed "on" from the stored preference alone and could
-    // read checked even when the tail had failed to start or had no token to
-    // start with. Built first and left out of m_logFilterGroup so a click
-    // toggles it instead of selecting a filter.
-    auto *cloudChip = new forkmesh::ui::VerticalIconButton(
-        QStringLiteral("Cloud"), forkmesh::ui::VerticalIconButton::Tab);
-    cloudChip->setObjectName(QStringLiteral("cloudLogFilterChip"));
-    cloudChip->setCheckable(true);
-    cloudChip->setOcticonName(QStringLiteral("cloud"));
-    m_cloudLogFilterChip = cloudChip;
-    m_logFilterRow->addWidget(cloudChip);
-    connect(cloudChip, &QPushButton::clicked, this, [this] {
-        const bool wasRunning = cloudLogMonitorRunning();
-        setCloudLogMonitorEnabled(!wasRunning);
-        if (!wasRunning)
-            showCloudflareWorkerLogs();
-    });
-    updateCloudLogFilterChip();
-
     auto addChip = [this](const QString &label, const QString &category,
                           const QString &tip = QString()) {
         // The same icon-over-caption tile the repo tabs and the activity rail
@@ -5015,6 +5005,14 @@ void MainWindow::rebuildLogFilterButtons()
             rebuildNetworkLogView();
             refreshLogTimelineChart();
         });
+        // The Worker tail's chip filters like the rest of the row and doubles as
+        // the monitor's light: updateCloudLogFilterChip() keeps its accent, its
+        // error badge and its tooltip on the background tail's live state
+        // (adhoc #1613).
+        if (category == QLatin1String("CLOUD")) {
+            m_cloudLogFilterChip = chip;
+            updateCloudLogFilterChip();
+        }
     };
 
     addChip(QStringLiteral("All"), QString());
@@ -5079,36 +5077,34 @@ void MainWindow::updateLogFilterChipCounts()
         auto *chip = item ? dynamic_cast<forkmesh::ui::VerticalIconButton *>(
                                 item->widget())
                           : nullptr;
-        // The Cloud chip is not a category (it carries no logChipCategory
-        // property) and keeps its own counts via updateCloudLogFilterChip();
-        // treating its missing property as an empty category would badge it
-        // with the whole log's size instead of the monitor's own tally.
-        if (!chip || chip->objectName() == QStringLiteral("cloudLogFilterChip"))
+        if (!chip)
             continue;
         chip->setBadgeCount(
             logFilterChipCount(chip->property("logChipCategory").toString()));
     }
 }
 
-// Keeps the Log page's Cloud chip in step with the monitor's actual state
-// (adhoc #1636): a blue badge for events, the same red alert badge a Pulls
-// tab uses for "waiting on you" counts for errors, and checked exactly while
-// the background tail is live — not merely requested, which is what let the
-// old debug-bar checkbox read "on" for a token-less or crashed monitor.
-// Called from every point the monitor's counters or running state move.
+// The CLOUD chip filters the log like every other chip in the row; what it also
+// has to say is whether the Worker tail feeding that category is actually
+// running (adhoc #1613). Lit in Cloudflare's orange while it is, grey while it
+// is not — never from the stored preference alone, which is what let the old
+// checkbox read "on" for a token-less or crashed monitor. The Worker's own
+// failures are ERROR lines, so they are counted onto the red alert badge here
+// rather than into the CLOUD tally. Called from every point the monitor's
+// counters or running state move.
 void MainWindow::updateCloudLogFilterChip()
 {
     if (!m_cloudLogFilterChip)
         return;
     const bool running = cloudLogMonitorRunning();
-    m_cloudLogFilterChip->setChecked(running);
-    m_cloudLogFilterChip->setBadgeCount(m_cloudLogMonitorEvents);
+    m_cloudLogFilterChip->setAccentColor(QColor(
+        running ? QStringLiteral("#f6821f") : QStringLiteral("#6e7681")));
     m_cloudLogFilterChip->setAlertBadgeCount(m_cloudLogMonitorErrors);
     m_cloudLogFilterChip->setToolTip(
         running ? QStringLiteral(
-                      "Watching the deployed Worker's live log \xC2\xB7 %1 "
-                      "event%2, %3 error%4. Click to stop. Errors raise an "
-                      "alert.")
+                      "Show only the deployed Worker's traffic \xC2\xB7 "
+                      "monitoring live: %1 event%2, %3 error%4. Errors are "
+                      "logged as errors and raise an alert.")
                       .arg(m_cloudLogMonitorEvents)
                       .arg(m_cloudLogMonitorEvents == 1 ? QString()
                                                         : QStringLiteral("s"))
@@ -5117,15 +5113,30 @@ void MainWindow::updateCloudLogFilterChip()
                                                         : QStringLiteral("s"))
         : m_cloudLogMonitorAwaitingToken
                 ? QStringLiteral(
-                      "Ready to watch the deployed Worker's live log and alert "
-                      "on its errors \xC2\xB7 waiting for a Cloudflare API "
-                      "token (Settings > Secrets)")
+                      "Show only the deployed Worker's traffic \xC2\xB7 not "
+                      "monitoring: waiting for a Cloudflare API token "
+                      "(Settings > Secrets)")
                 : QStringLiteral(
-                      "Click to watch the deployed Cloudflare Worker's live "
-                      "log and alert on every error it reports"));
+                      "Show only the deployed Worker's traffic \xC2\xB7 not "
+                      "monitoring (Settings > Watch the Cloudflare Worker log)"));
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
+QPushButton *MainWindow::testLogFilterChip(const QString &category) const
+{
+    if (!m_logFilterRow)
+        return nullptr;
+    for (int i = 0; i < m_logFilterRow->count(); ++i) {
+        QLayoutItem *item = m_logFilterRow->itemAt(i);
+        auto *chip = item ? dynamic_cast<forkmesh::ui::VerticalIconButton *>(
+                                item->widget())
+                          : nullptr;
+        if (chip && chip->property("logChipCategory").toString() == category)
+            return chip;
+    }
+    return nullptr;
+}
+
 QStringList MainWindow::testLogFilterChipLabels() const
 {
     QStringList labels;
@@ -5426,8 +5437,13 @@ void MainWindow::logSystemFrom(const QString &text, const QString &sourcePath,
     // Mirror the newest event onto the always-on footer log line so the latest
     // activity is visible at the bottom of the app even when the Log tab is closed.
     // Pass the full dated line (not just the message) so the bottom strip shows the
-    // same timestamped log line as the Log view.
-    setFooterUpdateLine(line);
+    // same timestamped log line as the Log view. The one exception is the
+    // deployed Worker's own traffic (adhoc #1613): it belongs in the log, but a
+    // busy Worker would hold the footer permanently, hiding what this app is
+    // doing behind hits it merely observed. Its failures are ERROR lines and
+    // still show, like any other failure.
+    if (badge != QLatin1String("CLOUD"))
+        setFooterUpdateLine(line);
 
     // Persist incrementally so the history survives a restart (even an unclean
     // one). Periodically rewrite the file to trim it back to the in-memory cap.
