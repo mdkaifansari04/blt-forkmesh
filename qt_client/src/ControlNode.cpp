@@ -2131,6 +2131,40 @@ CloudflareTailEvent parseCloudflareTailLine(const QString &line)
     return event;
 }
 
+namespace {
+
+// Waits before each restarted tail, one per consecutive short-lived attempt.
+// The list's length is also the give-up point: a tail that cannot stay up for a
+// minute four times running is not going to start working on the fifth.
+constexpr int kCloudTailRestartBackoffMs[] = {5'000, 15'000, 60'000, 300'000};
+constexpr int kCloudTailRestartBackoffCount =
+    static_cast<int>(sizeof(kCloudTailRestartBackoffMs) /
+                     sizeof(kCloudTailRestartBackoffMs[0]));
+// A tail that had been streaming comes back almost at once: the expiry case is
+// the common one, and an hour-wide hole in the log is the whole problem.
+constexpr int kCloudTailResumeDelayMs = 2'000;
+
+}  // namespace
+
+CloudTailRestartPlan planCloudflareTailRestart(int consecutiveFailures,
+                                               qint64 uptimeMs)
+{
+    CloudTailRestartPlan plan;
+    if (uptimeMs >= kCloudTailHealthyUptimeMs) {
+        plan.restart = true;
+        plan.delayMs = kCloudTailResumeDelayMs;
+        return plan;
+    }
+    const int attempts = qMax(0, consecutiveFailures);
+    if (attempts >= kCloudTailRestartBackoffCount) {
+        plan.giveUp = true;
+        return plan;
+    }
+    plan.restart = true;
+    plan.delayMs = kCloudTailRestartBackoffMs[attempts];
+    return plan;
+}
+
 QJsonObject parseCloudflareBootstrapResult(const QByteArray &output,
                                            QString *error)
 {

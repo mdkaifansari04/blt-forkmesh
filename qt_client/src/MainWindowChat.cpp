@@ -8536,40 +8536,32 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
         return; // already monitoring (or still tearing the last one down)
 
     if (!enabled) {
+        // Stopping means stopping: a restart the last tail's death scheduled
+        // must not fire a minute later and quietly turn the monitor back on.
+        cancelCloudLogMonitorRestart();
+        m_cloudLogMonitorRestarts = 0;
         // Idempotent: the failed-start and died-on-its-own paths both come back
         // through here by unchecking the box, and neither should log a stop for
         // a monitor that is already gone.
         if (!m_cloudLogMonitorProcess)
             return;
-        m_cloudLogMonitorStopping = true;
-        if (m_cloudLogMonitorProcess->state() != QProcess::NotRunning) {
-            m_cloudLogMonitorProcess->terminate();
-            if (!m_cloudLogMonitorProcess->waitForFinished(1500)) {
-                m_cloudLogMonitorProcess->kill();
-                m_cloudLogMonitorProcess->waitForFinished(1000);
-            }
-        }
-        // The environment holds the API token, so it is dropped the moment the
-        // child that needed it is gone.
-        m_cloudLogMonitorProcess->setProcessEnvironment(QProcessEnvironment());
-        m_cloudLogMonitorProcess->disconnect(this);
-        m_cloudLogMonitorProcess->deleteLater();
-        m_cloudLogMonitorProcess = nullptr;
-        m_cloudLogMonitorStopping = false;
-        m_cloudLogMonitorBuffer.clear();
+        releaseCloudLogMonitorProcess();
+        // Worded around the log's own error scan: "error" in a line is what
+        // badges it ERROR and raises the red card, so the monitor's own status
+        // lines say "flagged" and stay in their CLOUD category. Only its
+        // genuine failures below use the vocabulary that alerts.
         logSystem(QStringLiteral(
-                      "Cloud: stopped monitoring the Worker log (%1 event%2, "
-                      "%3 error%4).")
+                      "Cloud: stopped watching the Worker log (%1 event%2 "
+                      "seen, %3 flagged).")
                       .arg(m_cloudLogMonitorEvents)
                       .arg(m_cloudLogMonitorEvents == 1 ? QString()
                                                         : QStringLiteral("s"))
-                      .arg(m_cloudLogMonitorErrors)
-                      .arg(m_cloudLogMonitorErrors == 1 ? QString()
-                                                        : QStringLiteral("s")));
+                      .arg(m_cloudLogMonitorErrors));
         updateCloudLogMonitorTooltip();
         return;
     }
 
+    cancelCloudLogMonitorRestart();
     QString token;
     QString workerDirectory;
     forkmesh::control::CloudflareBootstrapCommand command;
@@ -8581,8 +8573,14 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
     }
 
     m_cloudLogMonitorBuffer.clear();
-    m_cloudLogMonitorErrors = 0;
-    m_cloudLogMonitorEvents = 0;
+    // A restart carries the session's tallies over. Zeroing them would make the
+    // CLOUD chip's counts fall back to nothing every time a tail session
+    // expired, as though the Worker's traffic so far had been imagined.
+    if (!m_cloudLogMonitorResuming) {
+        m_cloudLogMonitorErrors = 0;
+        m_cloudLogMonitorEvents = 0;
+        m_cloudLogMonitorRestarts = 0;
+    }
     m_cloudLogMonitorStopping = false;
     m_cloudLogMonitorIdleReason.clear();
     m_cloudLogMonitorProcess = new QProcess(this);
@@ -8609,24 +8607,123 @@ void MainWindow::setCloudLogMonitorEnabled(bool enabled)
                 readCloudLogMonitorOutput();
                 if (m_cloudLogMonitorStopping)
                     return;
-                // The stream dying on its own is itself worth an alert: a
-                // monitor nobody knows has stopped is worse than no monitor.
-                logSystem(QStringLiteral(
-                              "Cloud: the Worker log monitor failed and "
-                              "stopped (exit %1).")
-                              .arg(exitCode));
-                stopCloudLogMonitorAfterFailure();
+                handleCloudLogMonitorEnded(
+                    exitCode, m_cloudLogMonitorUptime.isValid()
+                                  ? m_cloudLogMonitorUptime.elapsed()
+                                  : 0);
             });
     // Logged before start() so the order reads right even when the child fails
-    // to launch synchronously.
-    logSystem(QStringLiteral(
-        "Cloud: monitoring the deployed Worker's live log for errors."));
+    // to launch synchronously. Says "watching" rather than "monitoring … for
+    // errors": the word "errors" is what the log's own scan badges ERROR, so
+    // the monitor's opening line raised a red alert card about itself.
+    if (!m_cloudLogMonitorResuming) {
+        logSystem(QStringLiteral(
+            "Cloud: watching the deployed Worker's live log."));
+    }
     updateCloudLogMonitorTooltip();
+    m_cloudLogMonitorUptime.start();
     m_cloudLogMonitorProcess->start(command.program, command.arguments);
     // The token only ever lived in the child's environment and this local; both
     // copies go now that the process owns its own.
     token.fill(QChar(u'\0'));
     token.clear();
+}
+
+void MainWindow::releaseCloudLogMonitorProcess()
+{
+    if (!m_cloudLogMonitorProcess)
+        return;
+    m_cloudLogMonitorStopping = true;
+    if (m_cloudLogMonitorProcess->state() != QProcess::NotRunning) {
+        m_cloudLogMonitorProcess->terminate();
+        if (!m_cloudLogMonitorProcess->waitForFinished(1500)) {
+            m_cloudLogMonitorProcess->kill();
+            m_cloudLogMonitorProcess->waitForFinished(1000);
+        }
+    }
+    // The environment holds the API token, so it is dropped the moment the
+    // child that needed it is gone.
+    m_cloudLogMonitorProcess->setProcessEnvironment(QProcessEnvironment());
+    m_cloudLogMonitorProcess->disconnect(this);
+    m_cloudLogMonitorProcess->deleteLater();
+    m_cloudLogMonitorProcess = nullptr;
+    m_cloudLogMonitorStopping = false;
+    m_cloudLogMonitorBuffer.clear();
+    m_cloudLogMonitorUptime.invalidate();
+}
+
+void MainWindow::handleCloudLogMonitorEnded(int exitCode, qint64 uptimeMs)
+{
+    const forkmesh::control::CloudTailRestartPlan plan =
+        forkmesh::control::planCloudflareTailRestart(m_cloudLogMonitorRestarts,
+                                                     uptimeMs);
+    m_cloudLogMonitorRestarts =
+        uptimeMs >= forkmesh::control::kCloudTailHealthyUptimeMs
+            ? 0
+            : m_cloudLogMonitorRestarts + 1;
+    // Let go of the finished child first: setCloudLogMonitorEnabled() refuses to
+    // start a tail while one is still on the books.
+    releaseCloudLogMonitorProcess();
+
+    // On the way out nothing is worth saying: the tail is one of the many
+    // children a closing window reaps, and its exit is not news.
+    if (m_closingDown)
+        return;
+    if (!plan.restart ||
+        !QSettings().value(kCloudLogMonitorSetting, true).toBool()) {
+        // Nothing left to try. This one does say "could not", because it is the
+        // failure the red card is for: monitoring has stopped and only a fix on
+        // this machine will bring it back.
+        m_cloudLogMonitorIdleReason =
+            QStringLiteral("the Worker log tail would not stay connected");
+        logSystem(QStringLiteral("Cloud: the Worker log monitor could not stay "
+                                 "connected and stopped (exit %1).")
+                      .arg(exitCode));
+        stopCloudLogMonitorAfterFailure();
+        return;
+    }
+
+    const int seconds = qMax(1, (plan.delayMs + 999) / 1000);
+    m_cloudLogMonitorIdleReason =
+        QStringLiteral("the tail ended \xC2\xB7 opening a new one in %1s")
+            .arg(seconds);
+    // A CLOUD line, not an ERROR one: an expired tail session is how Cloudflare
+    // ends every tail, and an hourly red card for the expected thing is what
+    // trains someone to ignore the real ones.
+    logSystem(QStringLiteral("Cloud: the Worker log tail ended (exit %1) "
+                             "\xC2\xB7 opening a new one in %2s.")
+                  .arg(exitCode)
+                  .arg(seconds));
+    scheduleCloudLogMonitorRestart(plan.delayMs);
+    updateCloudLogMonitorTooltip();
+}
+
+void MainWindow::scheduleCloudLogMonitorRestart(int delayMs)
+{
+    if (!m_cloudLogMonitorRestartTimer) {
+        m_cloudLogMonitorRestartTimer = new QTimer(this);
+        m_cloudLogMonitorRestartTimer->setSingleShot(true);
+        connect(m_cloudLogMonitorRestartTimer, &QTimer::timeout, this,
+                &MainWindow::restartCloudLogMonitor);
+    }
+    m_cloudLogMonitorRestartTimer->start(qMax(0, delayMs));
+}
+
+void MainWindow::cancelCloudLogMonitorRestart()
+{
+    if (m_cloudLogMonitorRestartTimer)
+        m_cloudLogMonitorRestartTimer->stop();
+}
+
+void MainWindow::restartCloudLogMonitor()
+{
+    if (m_closingDown || m_cloudLogMonitorProcess)
+        return;
+    if (!QSettings().value(kCloudLogMonitorSetting, true).toBool())
+        return;
+    m_cloudLogMonitorResuming = true;
+    setCloudLogMonitorEnabled(true);
+    m_cloudLogMonitorResuming = false;
 }
 
 void MainWindow::readCloudLogMonitorOutput()

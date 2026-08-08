@@ -27,6 +27,13 @@ type CatalogPublisher struct {
 	Owner    string
 	Node     string
 	Version  string
+	// CloneURL is the canonical public URL of the SOURCE repository this node
+	// mirrors (e.g. https://forkmesh.com/forkmesh/forkmesh). The relay parses its
+	// last two path segments to group every mirror of a repo together
+	// (build_repo_mirrors_payload -> clone_target); leaving it empty made a
+	// remote-clone fall back to grouping under its own node name. Empty only for a
+	// node with no configured upstream.
+	CloneURL string
 	Identity *Identity
 	Client   *http.Client
 }
@@ -182,7 +189,7 @@ func (p *CatalogPublisher) record(ctx context.Context, repo Repository, stateHas
 		"encryptedManifestHash": "", "encryptedManifestSig": "",
 		"sizeBytes": size, "description": "",
 		"logoMetadata": map[string]any{"description": "", "languages": map[string]int64{}, "topics": []string{}, "fileStructure": []string{}, "frameworks": []string{}, "projectCategory": ""},
-		"cloneUrl":     "", "solana": "", "channel": "#" + p.Owner + "-" + repo.Name,
+		"cloneUrl":     p.CloneURL, "solana": "", "channel": "#" + p.Owner + "-" + repo.Name,
 		"hostedSince": "", "lastSync": now, "updatedAt": now,
 		"rootCommit": rootCommit, "source": "remote-clone", "commit": commit, "branch": branch,
 		"issueCount": strconv.Itoa(issueCount), "issueMaxNumber": strconv.Itoa(issueMax),

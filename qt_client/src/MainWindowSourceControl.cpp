@@ -9,7 +9,6 @@
 #include "MainWindowInternal.h"
 #include "RepoStatsStore.h"
 #include "KebabHeaderView.h"
-#include "PacmanProgress.h"
 
 #include <QAbstractTextDocumentLayout>
 #include <QCheckBox>
@@ -1798,44 +1797,33 @@ void MainWindow::setupScmDiffPane()
     m_scmStickyHeader->setObjectName("diffStickyHeader");
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
     m_scmStickyHeader->setStyleSheet(
-        QStringLiteral("#diffStickyHeader{background:%1;border-bottom:1px solid %2;}"
-                       "#diffStickyHeader QLabel{background:transparent;color:%3;}"
-                       "#diffStickyHeader QPushButton{background:transparent;"
-                       "border:1px solid %2;border-radius:5px;color:%3;"
-                       "font-size:11px;padding:3px 7px;}"
-                       "#diffStickyHeader QPushButton:hover{color:#3fb950;"
-                       "border-color:#3fb950;}"
-                       "#diffStickyHeader QPushButton:checked{background:#238636;"
-                       "border-color:#2ea043;color:#ffffff;}")
-            .arg(dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
-                 dark ? "#8b949e" : "#57606a"));
+        QStringLiteral("#diffStickyHeader{background:%1;border:none;}"
+                       "#diffStickyHeader QLabel{background:transparent;color:%2;}")
+            .arg(dark ? "#161b22" : "#f6f8fa", dark ? "#8b949e" : "#57606a"));
     auto *sl = new QHBoxLayout(m_scmStickyHeader);
-    sl->setContentsMargins(10, 4, 8, 4);
-    sl->setSpacing(6);
+    // Matches the rendered header's padding (9px 12px) so the pinned row is the
+    // same height as the one it stands in for.
+    sl->setContentsMargins(12, 9, 12, 9);
+    sl->setSpacing(0);
     m_scmStickyPath = new QLabel(m_scmStickyHeader);
     m_scmStickyPath->setTextFormat(Qt::RichText);
     m_scmStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
     configureDiffStickyPathLabel(m_scmStickyPath);
     sl->addWidget(m_scmStickyPath, 1);
-    m_scmStickyPacman = new PacmanProgress(m_scmStickyHeader);
-    m_scmStickyPacman->setToolTip(
-        QStringLiteral("How much of this file you've scrolled through"));
-    sl->addWidget(m_scmStickyPacman, 0);
-    m_scmStickyPercent = new QLabel(m_scmStickyHeader);
-    m_scmStickyPercent->setToolTip(m_scmStickyPacman->toolTip());
-    sl->addWidget(m_scmStickyPercent, 0);
-    m_scmStickyViewed = new QPushButton(m_scmStickyHeader);
-    m_scmStickyViewed->setCheckable(true);
-    m_scmStickyViewed->setCursor(Qt::PointingHandCursor);
-    m_scmStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
-    connect(m_scmStickyViewed, &QPushButton::clicked, this, [this] {
+    // Read meter + Viewed pill, the same rich text the rendered header carries;
+    // the pill is an anchor, so a click arrives as linkActivated().
+    m_scmStickyControls = new QLabel(m_scmStickyHeader);
+    m_scmStickyControls->setTextFormat(Qt::RichText);
+    m_scmStickyControls->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+    m_scmStickyControls->setCursor(Qt::PointingHandCursor);
+    connect(m_scmStickyControls, &QLabel::linkActivated, this, [this] {
         const int idx = m_scmSectionKeys.indexOf(m_scmStickySection);
         if (idx < 0)
             return;
         const QString path = m_scmSectionPaths.at(idx);
         const QString ctx = scmViewedContext();
         const bool nowViewed = !loadDiffViewed(ctx).contains(path);
-        // Checking a file off advances to the next one, so its Viewed button
+        // Checking a file off advances to the next one, so its Viewed pill
         // arrives under the pointer that just clicked this one and the whole
         // working tree can be walked from a single spot. Un-viewing stays here.
         // Resolve the landing file now: the re-render below rebuilds the section
@@ -1846,34 +1834,34 @@ void MainWindow::setupScmDiffPane()
         const bool landingStaged =
             m_scmSectionKeys.at(landing).startsWith(QLatin1String("s|"));
         setDiffViewed(ctx, path, nowViewed);
-        // Give the completed whole-button checkbox a quick, restrained fade-in
-        // so the state change is noticeable without shifting the header.
-        auto *effect = new QGraphicsOpacityEffect(m_scmStickyViewed);
+        // Give the completed checkbox a quick, restrained fade-in so the state
+        // change is noticeable without shifting the header.
+        auto *effect = new QGraphicsOpacityEffect(m_scmStickyControls);
         effect->setOpacity(0.55);
         // setGraphicsEffect() owns and *deletes* whichever effect is already
         // installed, so it is the single delete for this one too: dropping it
         // with setGraphicsEffect(nullptr) below and then calling deleteLater()
         // on the same pointer was a use-after-free that crashed on the next
         // click (adhoc #52). Clicking again inside the 180ms fade likewise
-        // destroys this effect early, so hold it (and the button) by QPointer
-        // and only clear the effect that is still ours.
-        m_scmStickyViewed->setGraphicsEffect(effect);
+        // destroys this effect early, so hold it (and the pill) by QPointer and
+        // only clear the effect that is still ours.
+        m_scmStickyControls->setGraphicsEffect(effect);
         auto *animation =
-            new QPropertyAnimation(effect, "opacity", m_scmStickyViewed);
+            new QPropertyAnimation(effect, "opacity", m_scmStickyControls);
         animation->setDuration(180);
         animation->setStartValue(0.55);
         animation->setEndValue(1.0);
-        connect(animation, &QPropertyAnimation::finished, m_scmStickyViewed,
-                [button = QPointer<QPushButton>(m_scmStickyViewed),
+        connect(animation, &QPropertyAnimation::finished, m_scmStickyControls,
+                [pill = QPointer<QLabel>(m_scmStickyControls),
                  faded = QPointer<QGraphicsEffect>(effect)] {
-                    if (button && faded && button->graphicsEffect() == faded)
-                        button->setGraphicsEffect(nullptr); // deletes `faded`
+                    if (pill && faded && pill->graphicsEffect() == faded)
+                        pill->setGraphicsEffect(nullptr); // deletes `faded`
                 });
         animation->start(QAbstractAnimation::DeleteWhenStopped);
         renderScmCombinedDiff();
         scrollScmDiffToFile(landingPath, landingStaged);
     });
-    sl->addWidget(m_scmStickyViewed, 0);
+    sl->addWidget(m_scmStickyControls, 0);
     m_scmStickyHeader->hide();
 
     // Re-rendering (which collapses newly-viewed files) is far too heavy for
@@ -1974,7 +1962,8 @@ void MainWindow::renderScmCombinedDiff()
         m_scmSectionKeys.append(key);
         m_scmSectionAnchors.append(f.anchor);
         m_scmSectionPaths.append(f.path);
-        m_scmStickyLabelHtml.insert(key, diffStickyLabelHtml(f));
+        m_scmStickyLabelHtml.insert(key,
+                                    diffFileLabelHtml(f, viewed.contains(f.path)));
     }
 
     // Forget Viewed marks for paths that no longer have changes (after a commit,
@@ -2281,16 +2270,11 @@ void MainWindow::updateScmDiffScrollState()
     // The tree's green stroke follows the scroll here (selectScmFileInTree), so
     // the outline has to track the same section or the two would drift apart.
     m_scmActiveSectionKey = key;
-    m_scmStickyViewed->setText(isViewed ? QString::fromUtf8("\xE2\x98\x91 Viewed")
-                                        : QString::fromUtf8("\xE2\x98\x90 Viewed"));
-    m_scmStickyViewed->setChecked(isViewed);
-    // A finished / already-viewed file reads as done (full green circle);
+    // The controls carry the read meter, so they refresh on every tick. A
+    // finished / already-viewed file reads as done (full green circle);
     // otherwise the chart tracks the scroll in blue and greens on arrival.
-    const double shown = isViewed ? 1.0 : progress;
-    m_scmStickyPacman->setColor(shown >= 0.999 ? QColor(0x3f, 0xb9, 0x50)
-                                               : QColor(0x58, 0xa6, 0xff));
-    m_scmStickyPacman->setProgress(shown);
-    m_scmStickyPercent->setText(QStringLiteral("%1%").arg(qRound(shown * 100.0)));
+    m_scmStickyControls->setText(
+        diffRowControlsHtml(path, progress, isViewed, /*comments=*/false));
 
     layoutScmStickyHeader();
     m_scmStickyHeader->show();
