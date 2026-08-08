@@ -2994,6 +2994,27 @@ int main(int argc, char *argv[])
                   QStringLiteral("permanently destroys")),
           QStringLiteral(
               "Hosts exposes an explicit opt-in desired healthy mirror count with destructive scaling explained"));
+    QCheckBox *vultrAgentClis = window.findChild<QCheckBox *>(
+        QStringLiteral("vultrInstallAgentClisCheck"));
+    const QString vultrAgentClisSetting =
+        QStringLiteral("hosts/vultrProvision/installAgentClis");
+    check(vultrAgentClis && !vultrAgentClis->isChecked() &&
+              !QSettings().value(vultrAgentClisSetting, false).toBool(),
+          QStringLiteral(
+              "new Vultr mirrors do not install or copy agent credentials by default"));
+    if (vultrAgentClis) {
+        vultrAgentClis->setChecked(true);
+        QApplication::processEvents();
+        const bool storedOptIn =
+            QSettings().value(vultrAgentClisSetting).toBool();
+        vultrAgentClis->setChecked(false);
+        QApplication::processEvents();
+        check(storedOptIn &&
+                  !QSettings().value(vultrAgentClisSetting, true).toBool(),
+              QStringLiteral(
+                  "the Vultr agent credential opt-in is persisted explicitly"));
+        QSettings().remove(vultrAgentClisSetting);
+    }
     const QList<QPushButton *> inlineHelpButtons =
         window.findChildren<QPushButton *>(QStringLiteral("inlineHelpButton"));
     QSet<QString> inlineHelpNames;

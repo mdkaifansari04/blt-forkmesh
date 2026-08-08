@@ -91,7 +91,7 @@ def _load_runner(run_jobs):
     return namespace
 
 
-def test_trigger_samples_status_directly_then_kicks_the_alarm_runner():
+def test_trigger_kicks_the_alarm_runner_without_awaiting_in_python():
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
     default = next(
         node for node in tree.body
@@ -105,40 +105,23 @@ def test_trigger_samples_status_directly_then_kicks_the_alarm_runner():
         if isinstance(node, ast.AsyncFunctionDef)
         and node.name == "_run_scheduled_jobs"))
 
-    # The platform Cron Trigger is the only per-minute schedule the platform
-    # itself guarantees, so the /status sample must land from here even when
-    # the whole Durable Object subsystem is failing (wedged runner isolate,
-    # exhausted free-tier DO allowance). The sample runs FIRST so a kick that
-    # hangs on a dead object cannot starve it, and each half is isolated so
-    # one failing cannot suppress the other.
-    assert "record_status_sample(self.env)" in scheduled
-    assert "_cron_runner_kick(self.env)" in scheduled
-    assert scheduled.index("record_status_sample(self.env)") < \
-        scheduled.index("_cron_runner_kick(self.env)")
-    # ... but the direct probe run holds the scheduled wrapper open for ~25s
-    # of awaited I/O in a serving isolate, which re-triggered the Pyodide
-    # "Cannot enter into task" isolate wedge on the clone path (2026-08-06).
-    # The trigger therefore gates the direct sample behind one cheap D1
-    # staleness read: it probes only while the runner is provably not
-    # landing runner-tagged claims, and the gate FAILS OPEN into sampling.
-    assert "_runner_status_sample_is_stale(self.env" in scheduled
-    assert scheduled.index("_runner_status_sample_is_stale(self.env") < \
-        scheduled.index("record_status_sample(self.env)")
-    stale_gate = ast.unparse(next(
-        node for node in tree.body
+    scheduled_node = next(
+        node for node in default.body
         if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_runner_status_sample_is_stale"))
-    # The gate must read the runner's HEARTBEAT sentinel, not won claims:
-    # the trigger fires at second :00 and wins the per-minute claim race,
-    # so claim rows can never prove the runner alive. And it must fail
-    # OPEN (stale) so a claim-infrastructure error restores direct
-    # sampling rather than silencing /status.
-    assert "RUNNER_HEARTBEAT_SENTINEL_TS" in stale_gate
-    assert "return True" in stale_gate
-    # The sentinel minute_ts must sit above any real minute forever:
-    # retention prunes `minute_ts < cutoff` and would delete a low sentinel
-    # on every sweep.
-    assert "RUNNER_HEARTBEAT_SENTINEL_TS = 253402300800000" in ENTRY_TEXT
+        and node.name == "scheduled")
+    assert not any(isinstance(node, ast.Await)
+                   for node in ast.walk(scheduled_node))
+    assert scheduled == (
+        "async def scheduled(self, controller, env, ctx):\n"
+        "    workers_wait_until(_cron_runner_kick_promise(self.env))"
+    )
+    promise = ast.unparse(next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_cron_runner_kick_promise"))
+    assert "binding.fetch('https://forkmesh.internal/cron-runner/kick')" \
+        in promise
+    assert "await" not in promise
     heartbeat = ast.unparse(next(
         node for node in tree.body
         if isinstance(node, ast.AsyncFunctionDef)

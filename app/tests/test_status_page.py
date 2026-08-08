@@ -1701,7 +1701,7 @@ def test_worker_exposes_status_route_and_schema():
 
 
 def test_cron_samples_status_every_tick():
-    assert "await record_status_sample(self.env)" in ENTRY_TEXT
+    assert 'await record_status_sample(self.env, source="runner")' in ENTRY_TEXT
 
 
 def test_status_page_asset_and_redirect_exist():

@@ -127,6 +127,8 @@ QPushButton *makeInlineHelpButton(const QString &accessibleName,
 
 const QString kVultrProvisionSetting =
     QStringLiteral("hosts/vultrProvision/v1");
+const QString kVultrInstallAgentClisSetting =
+    QStringLiteral("hosts/vultrProvision/installAgentClis");
 constexpr int kVultrProvisionStageCount = 6;
 
 QString modelFamilyId(const QString &model)
@@ -12490,7 +12492,8 @@ QWidget *MainWindow::buildHostsSection()
         "access"));
     m_vultrAgentClisCheck->setObjectName(
         QStringLiteral("vultrInstallAgentClisCheck"));
-    m_vultrAgentClisCheck->setChecked(true);
+    m_vultrAgentClisCheck->setChecked(
+        QSettings().value(kVultrInstallAgentClisSetting, false).toBool());
     m_vultrAgentClisCheck->setToolTip(QString::fromUtf8(
         "After ForkMesh is installed, the official Claude Code and Codex CLIs "
         "are installed on the new mirror and this device's own logins "
@@ -12499,6 +12502,9 @@ QWidget *MainWindow::buildHostsSection()
         "copied to it, so it can run agent sessions immediately. The "
         "credentials travel only on the SSH session's stdin \xE2\x80\x94 never "
         "in a command line or in the log below."));
+    connect(m_vultrAgentClisCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kVultrInstallAgentClisSetting, enabled);
+    });
     vultrCol->addWidget(m_vultrAgentClisCheck);
 
     auto *vultrRow = new QHBoxLayout;

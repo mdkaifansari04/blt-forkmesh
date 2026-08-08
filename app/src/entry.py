@@ -14,6 +14,7 @@ from js import fetch as js_fetch
 from pyodide.ffi import jsnull
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
+from workers import waitUntil as workers_wait_until
 
 
 class _LazyModule:
@@ -3815,6 +3816,15 @@ async def _cron_runner_kick(env):
         "https://forkmesh.internal/cron-runner/kick")
     if int(getattr(response, "status", 0) or 0) != 200:
         raise RuntimeError("cron runner rejected trigger kick")
+
+
+def _cron_runner_kick_promise(env):
+    runner_id = env.FORKMESH_CRON_RUNNER.idFromName(CRON_RUNNER_NAME)
+    runner = env.FORKMESH_CRON_RUNNER.get(runner_id)
+    binding = getattr(runner, "_binding", None)
+    if binding is None:
+        raise RuntimeError("cron runner binding is unavailable")
+    return binding.fetch("https://forkmesh.internal/cron-runner/kick")
 
 
 # The /status sampler and its public history projection live in an
@@ -41387,52 +41397,7 @@ async def _https_mirror_proxy(
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
-        # The platform Cron Trigger does two things, cheapest and most public
-        # first.
-        #
-        # (1) It records the /status health sample DIRECTLY — but only while
-        # the alarm runner is provably not doing so. The trigger is the only
-        # per-minute schedule the platform itself guarantees, so the public
-        # minute strip must not depend on the Durable Object subsystem being
-        # healthy: a wedged runner isolate or exhausted free-tier DO
-        # allowance left multi-hour "no health sample was recorded" gaps
-        # that read as fake downtime. The direct probe run, however, holds
-        # this scheduled wrapper open for ~25s of awaited I/O inside a
-        # serving isolate, and that overlap re-triggered the Pyodide
-        # "Cannot enter into task" wedge on the clone path (2026-08-06) —
-        # so in the steady state the trigger spends one D1 read confirming
-        # runner-tagged claims exist and skips the probes. The per-minute
-        # claim inside record_status_sample still keeps this sample and the
-        # runner's own from double-counting — whichever lands first wins.
-        try:
-            if await _runner_status_sample_is_stale(self.env, Date.now()):
-                await record_status_sample(self.env)
-        except BaseException as error:
-            try:
-                await log_cron_error(
-                    self.env, "/cron/record-status-sample",
-                    "record_status_sample failed: " + _safe_error_text(error),
-                    error=error)
-            except BaseException:
-                pass
-        # (2) It starts (and then once a minute reconciles) the singleton
-        # Durable Object alarm that owns every other maintenance job. The
-        # alarm re-arms itself before work, so a stateless Python wrapper
-        # poisoned by another request or a killed maintenance batch cannot
-        # stop the runner. A failed kick must not erase the sample above or
-        # hide behind it: it is captured to Sentry only (an error_log row
-        # would paint the "errors" system red for a DO-plan-limit condition
-        # the independent watchdog already emails about).
-        try:
-            await _cron_runner_kick(self.env)
-        except BaseException as error:
-            try:
-                await capture_sentry_error(
-                    self.env, 500, "scheduled", "/cron/runner-kick",
-                    "cron runner kick failed: " + _safe_error_text(error),
-                    error=error)
-            except BaseException:
-                pass
+        workers_wait_until(_cron_runner_kick_promise(self.env))
 
     async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
         # Cron trigger (every minute, see [triggers] in wrangler.toml).
