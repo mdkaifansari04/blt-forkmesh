@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.16 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.18 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -158,6 +158,7 @@ set(FORKMESH_MAIN_WINDOW_SOURCES
     src/MainWindowChat.cpp
     src/MainWindowTasks.cpp
     src/MainWindowNotes.cpp
+    src/MainWindowFiles.cpp
     src/MainWindowIssues.cpp
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp
@@ -187,6 +188,8 @@ set(FORKMESH_APP_SOURCES
     src/CrashHandler.cpp
     src/PlatformLogFilter.h
     src/PlatformLogFilter.cpp
+    src/LogSource.h
+    src/LogSource.cpp
     src/SingleInstance.h
     src/SingleInstance.cpp
     src/StartupSplash.h
@@ -198,6 +201,8 @@ set(FORKMESH_APP_SOURCES
     src/ChatBackend.h
     src/ClientErrorReports.h
     src/ClientErrorReports.cpp
+    src/PingSyncState.h
+    src/PingSyncState.cpp
     src/MainnodeRoom.h
     src/RoomCrypto.h
     src/RoomCrypto.cpp
@@ -213,6 +218,7 @@ set(FORKMESH_APP_SOURCES
     src/PublicMirrorRuntime.cpp
     src/UpstreamCheckoutSync.h
     src/UpstreamCheckoutSync.cpp
+    src/MirrorPushOutcome.h
     src/CoveStore.h
     src/CoveStore.cpp
     src/ChatHistoryLimits.h
@@ -229,6 +235,7 @@ set(FORKMESH_APP_SOURCES
     src/ActionTelemetry.h
     src/ActionTelemetry.cpp
     src/NetworkBackoff.h
+    src/NetworkReplyError.h
     src/BackoffNetworkAccessManager.h
     src/BackoffNetworkAccessManager.cpp
     src/ControlNode.h
@@ -280,6 +287,7 @@ set(FORKMESH_APP_SOURCES
     src/AgentStore.h
     src/AgentStore.cpp
     src/AgentJail.h
+    src/AgentWorktree.h
     src/VirtualMachineRuntime.h
     src/VirtualMachineRuntime.cpp
     src/AgentPromptImages.h
@@ -617,6 +625,7 @@ if(FORKMESH_BUILD_TESTS)
         src/GlobalSearchMatch.cpp
         src/AgentStore.h
         src/AgentStore.cpp
+        src/AgentWorktree.h
         src/UsageLimitCalendar.h
         src/UsageLimitCalendar.cpp
         src/ActionStore.h
@@ -639,6 +648,8 @@ if(FORKMESH_BUILD_TESTS)
         src/NodeDiagnostics.cpp
         src/ClientErrorReports.h
         src/ClientErrorReports.cpp
+        src/PingSyncState.h
+        src/PingSyncState.cpp
     )
     # Qt6::Concurrent: DirectorySizeScan scans top-level trees in parallel.
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent OpenSSL::Crypto)
@@ -710,6 +721,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ActionStore.cpp
         src/ActionRunner.h
         src/ActionRunner.cpp
+        src/SystemStats.h
+        src/SystemStats.cpp
     )
     target_include_directories(forkmesh-action-security-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -781,6 +794,25 @@ if(FORKMESH_BUILD_TESTS)
             MACOSX_BUNDLE FALSE)
     endif()
 
+    # The unattended SSH mirror fan-out pushes every stable ref at once without
+    # forcing, so a branch the gateway advanced first is rejected while the
+    # rest land and git still exits non-zero. This suite proves that partial
+    # rejection reads as a healthy push (and that an unreachable gateway or a
+    # hook denial still reads as a failure), against real local git repos.
+    qt_add_executable(forkmesh-ssh-mirror-push-tests
+        tests/test_ssh_mirror_push.cpp
+        src/MirrorGatewayHealth.h
+        src/MirrorPushOutcome.h
+        src/NetworkBackoff.h
+    )
+    target_include_directories(forkmesh-ssh-mirror-push-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(forkmesh-ssh-mirror-push-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-ssh-mirror-push-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
+    endif()
+
     # The first-instance owner's community reward-pool key remains inside a
     # passphrase-encrypted, owner-only desktop vault. These tests exercise key
     # import, strict transaction inspection, local signing, canonical owner
@@ -840,6 +872,23 @@ if(FORKMESH_BUILD_TESTS)
     target_link_libraries(forkmesh-codex-tests PRIVATE Qt6::Core)
     if(APPLE)
         set_target_properties(forkmesh-codex-tests PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
+    # The Claude Code stream transport's start/exit contract: a launch that never
+    # starts still has to end, and a turn that cannot be written has to be
+    # reported as undelivered (adhoc #1618).
+    qt_add_executable(forkmesh-agent-transport-tests
+        tests/test_agent_transport.cpp
+        src/AgentJail.h
+        src/ClaudeStreamSession.h
+        src/ClaudeStreamSession.cpp
+        src/VirtualMachineRuntime.h
+        src/VirtualMachineRuntime.cpp
+    )
+    target_link_libraries(forkmesh-agent-transport-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-agent-transport-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
     endif()
 
     # Boot-scoped Lima/QEMU command construction and host/guest boundary tests.
@@ -974,7 +1023,8 @@ if(FORKMESH_BUILD_TESTS)
     # FORKMESH_BUILD_TESTS=OFF anyway.
     set_target_properties(
         forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
-        forkmesh-codex-tests forkmesh-vm-runtime-tests
+        forkmesh-codex-tests forkmesh-agent-transport-tests
+        forkmesh-vm-runtime-tests
         forkmesh-control-tests forkmesh-chat-transport-tests
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
@@ -1007,6 +1057,8 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-world-speech-tests
              COMMAND forkmesh-world-speech-tests)
     add_test(NAME forkmesh-codex-tests COMMAND forkmesh-codex-tests)
+    add_test(NAME forkmesh-agent-transport-tests
+        COMMAND forkmesh-agent-transport-tests)
     add_test(NAME forkmesh-vm-runtime-tests COMMAND forkmesh-vm-runtime-tests)
     add_test(NAME forkmesh-control-tests COMMAND forkmesh-control-tests)
     add_test(NAME forkmesh-chat-transport-tests
@@ -1019,6 +1071,8 @@ if(FORKMESH_BUILD_TESTS)
              COMMAND forkmesh-public-mirror-tests)
     add_test(NAME forkmesh-upstream-sync-tests
              COMMAND forkmesh-upstream-sync-tests)
+    add_test(NAME forkmesh-ssh-mirror-push-tests
+             COMMAND forkmesh-ssh-mirror-push-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
     add_test(NAME forkmesh-mirror-fleet-window-tests
              COMMAND forkmesh-window-tests --mirror-fleet-only)
@@ -1056,12 +1110,14 @@ if(FORKMESH_BUILD_TESTS)
         USES_TERMINAL)
     add_dependencies(check forkmesh-tests forkmesh-ide-tests
         forkmesh-world-speech-tests forkmesh-codex-tests
+        forkmesh-agent-transport-tests
         forkmesh-vm-runtime-tests
         forkmesh-control-tests forkmesh-chat-transport-tests
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
         forkmesh-upstream-sync-tests
+        forkmesh-ssh-mirror-push-tests
         forkmesh-window-tests forkmesh-perf-tests forkmesh-e2e
         forkmesh-e2e-stub-agent)
 

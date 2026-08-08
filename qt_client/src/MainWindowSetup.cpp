@@ -14,6 +14,7 @@
 
 #include <QFutureWatcher>
 #include <QNetworkInformation>
+#include <QProcessEnvironment>
 #include <QtConcurrent/QtConcurrentRun>
 
 using namespace forkmesh::ui;
@@ -1377,6 +1378,68 @@ QString MainWindow::testNetworkRepoMirrorHeader() const
     return m_networkReposTable->horizontalHeaderItem(2)->text();
 }
 
+QStringList MainWindow::testNetworkTabLabels() const
+{
+    QStringList labels;
+    if (m_networkTabs)
+        for (int index = 0; index < m_networkTabs->count(); ++index)
+            labels.append(m_networkTabs->tabText(index));
+    return labels;
+}
+
+void MainWindow::testRenderNetworkWebRequests(const QJsonObject &payload)
+{
+    showSection(kNetworkDiagnosticsSectionIndex);
+    if (m_networkTabs)
+        m_networkTabs->setCurrentIndex(m_networkWebRequestsTabIndex);
+    // The real fetch the tab switch starts (if any) only answers on the event
+    // loop and only renders an ok payload; the fixture below owns the widgets
+    // deterministically.
+    renderNetworkWebRequests(payload);
+}
+
+QStringList MainWindow::testNetworkWebRequestsGroups() const
+{
+    QStringList groups;
+    if (!m_networkWebRequestsTable)
+        return groups;
+    for (int row = 0; row < m_networkWebRequestsTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_networkWebRequestsTable->item(row, 0))
+            groups.append(item->text());
+    }
+    return groups;
+}
+
+QString MainWindow::testNetworkWebRequestsCellText(int row,
+                                                   const QString &header) const
+{
+    if (!m_networkWebRequestsTable)
+        return QString();
+    for (int column = 0; column < m_networkWebRequestsTable->columnCount();
+         ++column) {
+        QTableWidgetItem *head =
+            m_networkWebRequestsTable->horizontalHeaderItem(column);
+        if (!head || head->text() != header)
+            continue;
+        QTableWidgetItem *item = m_networkWebRequestsTable->item(row, column);
+        return item ? item->text() : QString();
+    }
+    return QString();
+}
+
+QString MainWindow::testNetworkWebRequestsStatusText() const
+{
+    return m_networkWebRequestsStatus ? m_networkWebRequestsStatus->text()
+                                      : QString();
+}
+
+int MainWindow::testNetworkWebRequestsChartHeight() const
+{
+    return m_networkWebRequestsChart
+               ? m_networkWebRequestsChart->minimumHeight()
+               : 0;
+}
+
 QStringList MainWindow::testNetworkRepoColumns() const
 {
     QStringList labels;
@@ -1864,9 +1927,13 @@ void MainWindow::sendNodeHeartbeat()
         const bool wasAdmin = m_isAdmin;
         m_isAdmin = resp.value("isAdmin").toBool();
         // Admin status is learned after the initial nav render, so refresh the
-        // avatar crown badge once when it flips.
-        if (m_isAdmin != wasAdmin)
+        // avatar crown badge once when it flips — and give the debug bar, whose
+        // unset startup preference follows this same flag, its answer too
+        // (adhoc #1632).
+        if (m_isAdmin != wasAdmin) {
             updateAdminCrownBadge();
+            applyDebugBarStartupPreference();
+        }
         // A freshly launched instance's request to join rides the same signed
         // heartbeat reply for admins (adhoc #97): light the red dot over the
         // relay favicon and show the Approve button beside it.
@@ -1879,9 +1946,11 @@ void MainWindow::sendNodeHeartbeat()
         // Bring the World virtual office's channel conversations into the chat
         // sidebar (adhoc #412). Idempotent, so the heartbeat can just call it.
         startOfficeChannelMirror();
-        // Keep the bell's badge honest about alerts raised on the website
-        // (adhoc #59). Throttled inside, so this 60s beat costs one read per
-        // five minutes rather than one per beat.
+        // Seed the bell's badge with what the website already had waiting
+        // (adhoc #59). This is the first beat's job only: refreshWebAlerts()
+        // reads the inbox once per run and then goes quiet, leaving later
+        // pings to the relay's "pings" event frame. Every subsequent beat is a
+        // no-op unless that one read failed.
         refreshWebAlerts();
         if (m_isAdmin) {
             if (!m_adminPollTimer) {
@@ -2203,8 +2272,8 @@ void MainWindow::fetchRoomPassphrase()
 void MainWindow::startOfficeChannelMirror()
 {
     // A service-managed mirror keeps this Qt compatibility process only for
-    // repository inbox leases. Office/chat polling is user-facing desktop work
-    // and returned a predictable 401 every 30 seconds for node-only accounts.
+    // repository inbox leases. Office/chat mirroring is user-facing desktop
+    // work and returned a predictable 401 for node-only accounts.
     if (m_headless && qEnvironmentVariableIsSet(
                           "FORKMESH_EXTERNAL_MIRROR_NODE"))
         return;
@@ -2226,8 +2295,10 @@ void MainWindow::startOfficeChannelMirror()
             });
         connect(m_officeChannelMirror, &OfficeChannelMirror::messageArrived,
                 this, &MainWindow::onMessage);
-        connect(m_officeChannelMirror, &OfficeChannelMirror::sendActivity,
-                this, &MainWindow::logSystem);
+        // A lambda, not &MainWindow::logSystem: logSystem's origin arguments
+        // are defaults, which pointer-to-member connections cannot fill in.
+        connect(m_officeChannelMirror, &OfficeChannelMirror::sendActivity, this,
+                [this](const QString &text) { logSystem(text); });
         connect(m_officeChannelMirror, &OfficeChannelMirror::messageSendFailed,
                 this,
                 [this](const QString &conversation, const QString &text,
@@ -2260,7 +2331,9 @@ void MainWindow::startOfficeChannelMirror()
     m_officeChannelMirror->setApiBase(catalogApiUrl());
     m_officeChannelMirror->setIdentity(node, m_profileIdentity.publicKey(),
                                        chatDisplayName());
-    m_officeChannelMirror->start(); // no-op once polling
+    // One channel-list + backlog pass per run; office messages arrive on each
+    // room's socket afterwards, so this heartbeat call is a no-op from here on.
+    m_officeChannelMirror->start();
 }
 
 void MainWindow::showAdminVerifyDialog()
@@ -4090,6 +4163,16 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
         time = clean.mid(11, 8);
         message = clean.mid(21);
     }
+    // The origin the entry carries is rendered as its own trailing link rather
+    // than left in the message text (adhoc #1587), the same way the Log view
+    // shows it — and clicking it here opens the file too.
+    QString sourcePath;
+    int sourceLine = 0;
+    {
+        QString body;
+        if (forkmesh::splitLogSource(message, &body, &sourcePath, &sourceLine))
+            message = body;
+    }
     const QString badge = logBadgeFor(clean);
     const QString accent = logAccentFor(clean);
     QString html;
@@ -4102,11 +4185,19 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
                     .arg(time);
+    // Non-breaking padding, wide enough for the longest badge: plain trailing
+    // spaces collapse in HTML, which left this column ragged (adhoc #1559).
     html += QStringLiteral(
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
                 "<span style='color:#1f2328'>%3</span>")
-                .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
+                .arg(accent,
+                     badge.toHtmlEscaped() +
+                         QStringLiteral("&nbsp;")
+                             .repeated(qMax(0, 8 - badge.size())),
                      forkmesh::colorizeBackgroundMarker(message.toHtmlEscaped()));
+    // The strip's canvas is forced white, so the light-theme grey is the
+    // readable one here whatever theme the rest of the window is wearing.
+    html += logSourceAnchorHtml(sourcePath, sourceLine, /*dark=*/false);
     return html;
 }
 
@@ -4229,9 +4320,16 @@ QStringList MainWindow::testBuildAndPreviewSteps(const QString &gitDir,
 void MainWindow::runUpdateStep(const QString &program, const QStringList &arguments,
                                const QString &workingDir,
                                std::function<void()> onSuccess,
-                               std::function<void()> onFailure)
+                               std::function<void()> onFailure,
+                               const QMap<QString, QString> &extraEnv)
 {
-    const QString commandLine = (QStringList{program} + arguments).join(QLatin1Char(' '));
+    QStringList envPrefix;
+    for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+        envPrefix << (it.key() + QLatin1Char('=') + it.value());
+    // Show the overrides in the echoed command line so the log stays an exact
+    // record of what ran.
+    const QString commandLine =
+        (envPrefix + QStringList{program} + arguments).join(QLatin1Char(' '));
     logRestart(QStringLiteral("run: %1").arg(commandLine));
     // Echo the exact command and its working directory into the live log, then
     // stream the process's merged stdout+stderr as it runs.
@@ -4240,6 +4338,12 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
     stepTimer.start();
     auto *process = new QProcess(this);
     process->setWorkingDirectory(workingDir);
+    if (!extraEnv.isEmpty()) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+            env.insert(it.key(), it.value());
+        process->setProcessEnvironment(env);
+    }
     process->setProcessChannelMode(QProcess::MergedChannels);
     // Keep a bounded copy of the output so a failure can surface its tail in the
     // status label even though the full detail is already in the log window.
@@ -4274,7 +4378,8 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
                     }
                     stopRefreshSpin();
                     stopRestartSpin();
-                    setUpdateStatus("Update failed: " + output->trimmed().right(300), true);
+                    setUpdateStatus("Update failed: " + updateFailureSummary(*output),
+                                    true);
                     if (m_buildButton)
                         m_buildButton->setEnabled(true);
                     return;
@@ -4334,16 +4439,25 @@ void MainWindow::runUpdateStepUser(const QString &program,
                                    const QStringList &arguments,
                                    const QString &workingDir,
                                    std::function<void()> onSuccess,
-                                   std::function<void()> onFailure)
+                                   std::function<void()> onFailure,
+                                   const QMap<QString, QString> &extraEnv)
 {
     if (m_updateAsUser.isEmpty()) {
         runUpdateStep(program, arguments, workingDir, std::move(onSuccess),
-                      std::move(onFailure));
+                      std::move(onFailure), extraEnv);
         return;
     }
     // Run the command as the invoking non-root user so files it writes are owned
     // by them and land under their home, never under /root.
-    QStringList wrapped{"-u", m_updateAsUser, "-H", program};
+    QStringList wrapped{"-u", m_updateAsUser, "-H"};
+    // sudo resets the environment, so the overrides cannot ride along on the
+    // QProcess — hand them to the target through env(1) instead.
+    if (!extraEnv.isEmpty()) {
+        wrapped << "env";
+        for (auto it = extraEnv.cbegin(); it != extraEnv.cend(); ++it)
+            wrapped << (it.key() + QLatin1Char('=') + it.value());
+    }
+    wrapped << program;
     wrapped += arguments;
     runUpdateStep("sudo", wrapped, workingDir, std::move(onSuccess),
                   std::move(onFailure));
@@ -4357,20 +4471,89 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
                                 ? QCoreApplication::applicationFilePath()
                                 : relaunchPath;
     const QString buildDir = clientDir + "/build";
+
+    // Pre-flight the disk before touching anything. A rebuild that runs out of
+    // space dies at whichever translation unit happened to be compiling, and
+    // the only thing the user ever saw was a mid-word slice of the error tail.
+    // Refusing up front costs nothing (the running node is untouched either
+    // way) and can name the remedy.
+    const qint64 freeBytes = freeBytesForPath(buildDir);
+    const qint64 requiredBytes = rebuildFreeBytesRequired(buildDir);
+    if (freeBytes >= 0 && freeBytes < requiredBytes) {
+        stopRefreshSpin();
+        stopRestartSpin();
+        setUpdateStatus(QStringLiteral("Update cancelled: only %1 free on the "
+                                       "volume holding %2, and the rebuild "
+                                       "needs at least %3. Free some space and "
+                                       "try again — nothing was changed.")
+                            .arg(formatByteSize(freeBytes), buildDir,
+                                 formatByteSize(requiredBytes)),
+                        true);
+        if (m_buildButton)
+            m_buildButton->setEnabled(true);
+        return;
+    }
+
+    // Give the compiler its own scratch inside the build tree (see
+    // buildScratchDir) instead of letting it fill a RAM-backed /tmp, and clear
+    // whatever a previously killed build left behind there.
+    const QString scratchDir = buildScratchDir(buildDir);
     setRestartSpinProgress(35);
     setUpdateStatus("Configuring...");
-    runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
-                      clientDir, [this, buildDir, appPath] {
-        setRestartSpinProgress(60);
-        setUpdateStatus("Rebuilding...");
-        runUpdateStepUser("cmake",
-                          {"--build", buildDir, "-j",
-                           QString::number(ramCappedBuildJobs())},
-                          buildDir, [this, buildDir, appPath] {
-            const QString built = builtExecutablePath(buildDir);
-            installAndRelaunch(built, appPath);
+    runUpdateStepUser("rm", {"-rf", scratchDir}, clientDir,
+                      [this, clientDir, buildDir, scratchDir, buildType, appPath] {
+        runUpdateStepUser("mkdir", {"-p", scratchDir}, clientDir,
+                          [this, clientDir, buildDir, scratchDir, buildType, appPath] {
+            runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
+                              clientDir, [this, clientDir, buildDir, scratchDir, appPath] {
+                setRestartSpinProgress(60);
+                setUpdateStatus("Rebuilding...");
+                runUpdateStepUser("cmake",
+                                  {"--build", buildDir, "-j",
+                                   QString::number(ramCappedBuildJobs())},
+                                  buildDir, [this, clientDir, buildDir, appPath] {
+                    buildMirrorNodeCompanion(clientDir, buildDir,
+                                             [this, buildDir, appPath] {
+                        const QString built = builtExecutablePath(buildDir);
+                        installAndRelaunch(built, appPath);
+                    });
+                }, {}, {{QStringLiteral("TMPDIR"), scratchDir}});
+            });
         });
     });
+}
+
+void MainWindow::buildMirrorNodeCompanion(const QString &clientDir,
+                                          const QString &buildDir,
+                                          std::function<void()> onDone)
+{
+    // clientDir is .../src/qt_client, so the Go module sits one level up.
+    const QString mirrorSource =
+        QDir(clientDir).filePath(QStringLiteral("../mirror_node"));
+    const QString go = QStandardPaths::findExecutable(QStringLiteral("go"));
+    if (go.isEmpty() ||
+        !QFileInfo::exists(
+            QDir(mirrorSource).filePath(QStringLiteral("go.mod")))) {
+        appendUpdateLog(QStringLiteral(
+            "\nSkipping the Go mirror-node companion (Go toolchain or "
+            "mirror_node sources not available); host deploys need "
+            "forkmesh-mirror-node installed beside the client.\n"));
+        onDone();
+        return;
+    }
+    setUpdateStatus("Building the Go mirror-node companion...");
+    runUpdateStepUser(
+        go,
+        {QStringLiteral("build"), QStringLiteral("-trimpath"),
+         QStringLiteral("-ldflags=-s -w"), QStringLiteral("-o"),
+         QDir(buildDir).filePath(QStringLiteral("forkmesh-mirror-node")),
+         QStringLiteral("./cmd/forkmesh-mirror-node")},
+        mirrorSource, onDone, [this, onDone] {
+            appendUpdateLog(QStringLiteral(
+                "\nThe Go mirror-node companion failed to build; continuing "
+                "the client update without refreshing it.\n"));
+            onDone();
+        });
 }
 
 // Run `<binary> --version` (optionally as another user) and require a clean
@@ -4399,6 +4582,53 @@ static bool binaryPassesStartCheck(const QString &binary, const QString &asUser)
     return probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0;
 }
 
+// Where a freshly built Go companion for `built` lives: beside the built
+// client on Linux/Windows, or in the build root when the client is a macOS
+// bundle executable.
+static QString builtMirrorNodeCompanionPath(const QString &built)
+{
+    QDir dir = QFileInfo(built).dir();
+    QString candidate = dir.filePath(QStringLiteral("forkmesh-mirror-node"));
+    if (QFileInfo(candidate).isExecutable())
+        return candidate;
+#ifdef Q_OS_MACOS
+    // <build>/ForkMesh.app/Contents/MacOS/ForkMesh → companion in <build>/.
+    if (dir.cdUp() && dir.cdUp() && dir.cdUp()) {
+        candidate = dir.filePath(QStringLiteral("forkmesh-mirror-node"));
+        if (QFileInfo(candidate).isExecutable())
+            return candidate;
+    }
+#endif
+    return QString();
+}
+
+// Park the existing companion as .bak-update (its inode may back a running
+// mirror-node process; a rename keeps that alive where a copy-over would hit
+// ETXTBSY) and copy the new one into place.
+static bool installMirrorNodeCompanionFile(const QString &source,
+                                           const QString &binDir)
+{
+    const QString target =
+        QDir(binDir).filePath(QStringLiteral("forkmesh-mirror-node"));
+    if (!QFileInfo(source).canonicalFilePath().isEmpty() &&
+        QFileInfo(source).canonicalFilePath() ==
+            QFileInfo(target).canonicalFilePath())
+        return true;
+    const QString bak = target + QStringLiteral(".bak-update");
+    QFile::remove(bak);
+    if (QFileInfo::exists(target) && !QFile::rename(target, bak))
+        return false;
+    if (!QFile::copy(source, target)) {
+        QFile::rename(bak, target);
+        return false;
+    }
+    QFile::setPermissions(target, QFile::ReadOwner | QFile::WriteOwner |
+                                      QFile::ExeOwner | QFile::ReadGroup |
+                                      QFile::ExeGroup | QFile::ReadOther |
+                                      QFile::ExeOther);
+    return true;
+}
+
 void MainWindow::installAndRelaunch(const QString &built, const QString &appPath)
 {
     // The relaunch MUST carry the arguments this instance was started with:
@@ -4415,11 +4645,24 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
         // Keep the previous binary beside it: no failure past this point may
         // leave the box with nothing runnable at appPath.
         const QString binDir = QFileInfo(appPath).absolutePath();
-        const QString script =
+        QString script =
             QStringLiteral("mkdir -p %1 && { [ ! -e %3 ] || cp -f %3 %3.bak-update; }"
                            " && cp -f %2 %3 && chmod 0755 %3")
                 .arg(shellSingleQuote(binDir), shellSingleQuote(built),
                      shellSingleQuote(appPath));
+        // Refresh the Go mirror-node companion beside the client when this
+        // rebuild produced one. Best-effort (`|| true`): host deploys need it,
+        // but a companion hiccup must never abort the client install.
+        const QString companion = builtMirrorNodeCompanionPath(built);
+        if (!companion.isEmpty()) {
+            const QString companionTarget = QDir(binDir).filePath(
+                QStringLiteral("forkmesh-mirror-node"));
+            script += QStringLiteral(
+                          " && { { [ ! -e %2 ] || mv -f %2 %2.bak-update; } && "
+                          "cp -f %1 %2 && chmod 0755 %2 || true; }")
+                          .arg(shellSingleQuote(companion),
+                               shellSingleQuote(companionTarget));
+        }
         setUpdateStatus("Installing for " + m_updateAsUser + "...");
         const QString probeUser = m_updateAsUser;
         if (!binaryPassesStartCheck(built, probeUser)) {
@@ -4504,6 +4747,20 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
                               QFile::ExeOwner | QFile::ReadGroup |
                               QFile::ExeGroup | QFile::ReadOther |
                               QFile::ExeOther);
+    }
+    // Refresh the Go mirror-node companion beside the client when this rebuild
+    // produced one. Best-effort: host deploys upload it, but a companion
+    // hiccup must never abort a client update that already landed.
+    const QString companion = builtMirrorNodeCompanionPath(built);
+    if (!companion.isEmpty()) {
+        if (installMirrorNodeCompanionFile(companion,
+                                           QFileInfo(appPath).absolutePath()))
+            logRestart(QStringLiteral(
+                "installed the Go mirror-node companion beside %1").arg(appPath));
+        else
+            logRestart(QStringLiteral(
+                "could not install the Go mirror-node companion beside %1")
+                           .arg(appPath));
     }
     // The user closed the window while this build was still running in the
     // background; don't let it win the race and pop a new instance back up
@@ -4615,6 +4872,7 @@ bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
         QStringLiteral("\\A[0-9a-f]{64}\\z"));
     QString assetHash;
     QString assetName;
+    QString companionHash;
     const QJsonArray assets =
         manifest.value(QStringLiteral("assets")).toArray();
     for (const QJsonValue &value : assets) {
@@ -4630,9 +4888,19 @@ bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
                                  .toLower();
         if (!sha256Re.match(hash).hasMatch())
             continue;
-        assetHash = hash;
-        assetName = asset.value(QStringLiteral("name")).toString();
-        break;
+        const QString name = asset.value(QStringLiteral("name")).toString();
+        // The Go mirror-node companion shares the client asset's os/arch, so
+        // select by name: whichever order the manifest lists them in, the
+        // client slot must never receive the companion binary.
+        if (name.startsWith(QStringLiteral("forkmesh-mirror-node"))) {
+            if (companionHash.isEmpty())
+                companionHash = hash;
+            continue;
+        }
+        if (assetHash.isEmpty()) {
+            assetHash = hash;
+            assetName = name;
+        }
     }
     const QString manifestRepo =
         manifest.value(QStringLiteral("repo")).toString().trimmed();
@@ -4643,6 +4911,8 @@ bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
                       .arg(tag, wantOs, wantArch));
         return false;
     }
+    const QString owner = manifestRepo.left(slash);
+    const QString name = manifestRepo.mid(slash + 1);
 
     // Mirrors of the client repo replicate release artifacts into their CAS
     // (replicateReleaseArtifacts), so a node that mirrors it usually holds
@@ -4661,7 +4931,8 @@ bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
             logSystem(QStringLiteral("Auto-update: installing release %1 from "
                                      "this node's own artifact store (%2).")
                           .arg(tag, assetName));
-            installPrebuiltAndRelaunch(blob, tag);
+            installMirrorCompanionThenRelaunch(blob, tag, owner, name,
+                                               companionHash);
             return true;
         }
     }
@@ -4670,8 +4941,6 @@ bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
     // hashing as it downloads (same pattern as downloadNextReleaseBlob).
     if (!m_networkAccess)
         return false;
-    const QString owner = manifestRepo.left(slash);
-    const QString name = manifestRepo.mid(slash + 1);
     const QString staging =
         QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
             .filePath(QStringLiteral("forkmesh-update-") + assetHash.left(12));
@@ -4695,7 +4964,8 @@ bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
         hasher->addData(chunk);
     });
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, tmp, hasher, staging, assetHash, tag] {
+            [this, reply, tmp, hasher, staging, assetHash, tag, owner, name,
+             companionHash] {
                 const QByteArray rest = reply->readAll();
                 tmp->write(rest);
                 hasher->addData(rest);
@@ -4722,9 +4992,112 @@ bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
                     updateRebuildRestart();
                     return;
                 }
-                installPrebuiltAndRelaunch(staging, tag);
+                installMirrorCompanionThenRelaunch(staging, tag, owner, name,
+                                                   companionHash);
             });
     return true;
+}
+
+void MainWindow::installMirrorCompanionThenRelaunch(const QString &artifactPath,
+                                                    const QString &tag,
+                                                    const QString &owner,
+                                                    const QString &name,
+                                                    const QString &companionHash)
+{
+    const QString binDir =
+        QFileInfo(runningClientExecutable()).absolutePath();
+    const QString installed =
+        QDir(binDir).filePath(QStringLiteral("forkmesh-mirror-node"));
+    if (companionHash.isEmpty()) {
+        logSystem(QStringLiteral(
+                      "Auto-update: release %1 publishes no Go mirror-node "
+                      "companion; keeping the current one.")
+                      .arg(tag));
+        installPrebuiltAndRelaunch(artifactPath, tag);
+        return;
+    }
+    if (fileSha256Matches(installed, companionHash)) {
+        installPrebuiltAndRelaunch(artifactPath, tag);
+        return;
+    }
+    // A node that mirrors the client repo usually replicated the companion
+    // blob already; its content hash is verified, so any local copy will do.
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly || repo.mirrorPath.trimmed().isEmpty())
+            continue;
+        const QString blob =
+            mirrorReleaseBlobPath(repo.mirrorPath, companionHash);
+        if (QFile::exists(blob) && fileSha256Matches(blob, companionHash)) {
+            if (installMirrorNodeCompanionFile(blob, binDir))
+                logSystem(QStringLiteral(
+                              "Auto-update: installed the release %1 Go "
+                              "mirror-node companion from this node's own "
+                              "artifact store.")
+                              .arg(tag));
+            else
+                logSystem(QStringLiteral(
+                              "Auto-update: could not refresh the Go "
+                              "mirror-node companion for %1; continuing the "
+                              "client update.")
+                              .arg(tag));
+            installPrebuiltAndRelaunch(artifactPath, tag);
+            return;
+        }
+    }
+    if (!m_networkAccess) {
+        installPrebuiltAndRelaunch(artifactPath, tag);
+        return;
+    }
+    auto tmp = std::make_shared<QFile>(
+        QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+            .filePath(QStringLiteral("forkmesh-mirror-node-update-") +
+                      companionHash.left(12) + QStringLiteral(".part")));
+    if (!tmp->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        installPrebuiltAndRelaunch(artifactPath, tag);
+        return;
+    }
+    auto hasher =
+        std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256);
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/%1/%2/releases/blob/sha256/%3")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(name)),
+                         companionHash));
+    logSystem(QStringLiteral("Auto-update: downloading the release %1 Go "
+                             "mirror-node companion...")
+                  .arg(tag));
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::readyRead, this, [reply, tmp, hasher] {
+        const QByteArray chunk = reply->readAll();
+        tmp->write(chunk);
+        hasher->addData(chunk);
+    });
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, tmp, hasher, artifactPath, tag, companionHash,
+             binDir] {
+                const QByteArray rest = reply->readAll();
+                tmp->write(rest);
+                hasher->addData(rest);
+                const bool ok = reply->error() == QNetworkReply::NoError;
+                reply->deleteLater();
+                tmp->close();
+                const QString actual =
+                    QString::fromLatin1(hasher->result().toHex());
+                if (ok && actual == companionHash &&
+                    installMirrorNodeCompanionFile(tmp->fileName(), binDir))
+                    logSystem(QStringLiteral(
+                                  "Auto-update: installed the release %1 Go "
+                                  "mirror-node companion.")
+                                  .arg(tag));
+                else
+                    logSystem(QStringLiteral(
+                                  "Auto-update: could not refresh the Go "
+                                  "mirror-node companion for %1; continuing "
+                                  "the client update.")
+                                  .arg(tag));
+                QFile::remove(tmp->fileName());
+                installPrebuiltAndRelaunch(artifactPath, tag);
+            });
 }
 
 void MainWindow::installPrebuiltAndRelaunch(const QString &artifactPath,

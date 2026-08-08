@@ -43,7 +43,16 @@ QString managedMirrorNodeBinary()
         return binary;
     const QString sibling = QDir(QCoreApplication::applicationDirPath())
                                 .filePath(QStringLiteral("forkmesh-mirror-node"));
-    return QFileInfo(sibling).isExecutable() ? sibling : QString();
+    if (QFileInfo(sibling).isExecutable())
+        return sibling;
+    // Desktop-launched GUIs often run without ~/.local/bin in PATH, and a
+    // working-tree build's sibling directory holds no companion — check the
+    // installer-owned location install.sh and the update flow both write.
+    const QString installed =
+        QFileInfo(runningClientExecutable())
+            .dir()
+            .filePath(QStringLiteral("forkmesh-mirror-node"));
+    return QFileInfo(installed).isExecutable() ? installed : QString();
 }
 
 bool writeOwnerJson(const QString &path, const QJsonObject &object, QString *error)

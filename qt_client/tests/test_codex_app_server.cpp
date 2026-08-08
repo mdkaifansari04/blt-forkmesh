@@ -1441,6 +1441,65 @@ void runTurnOptionsTest(const QString &executable)
           "leaving Plan clears collaboration mode and restores workspace sandbox");
 }
 
+// A follow-up whose caller has no model to name — the desktop refuses to hand a
+// live ChatGPT thread the Claude model its composer is sitting on, which is what
+// silently ate "add" from an Opus composer to a running ChatGPT agent — must
+// still start its turn, on the model the thread already runs. An empty model is
+// "no opinion", never "clear the model".
+void runTurnOptionsKeepModelTest(const QString &executable)
+{
+    QTemporaryDir temp;
+    const QString logPath = temp.filePath(QStringLiteral("keep-model.jsonl"));
+    CodexAppServerSession session;
+    session.setAppServerCommand(executable,
+                                {QStringLiteral("--codex-stub"),
+                                 QStringLiteral("options"), logPath});
+    QList<QJsonObject> events;
+    bool finished = false;
+    QObject::connect(&session, &CodexAppServerSession::event,
+                     [&](const QJsonObject &event) { events.append(event); });
+    QObject::connect(&session, &CodexAppServerSession::finished,
+                     [&](int) { finished = true; });
+    session.start(temp.path(), QStringList(), QStringLiteral("first"), QString(),
+                  QStringLiteral("gpt-old"), QStringLiteral("Auto mode"),
+                  QStringLiteral("low"));
+    check(pump([&] {
+              return eventCount(events, QStringLiteral("result")) == 1 &&
+                     session.running();
+          }),
+          "keep-model stub completes its initial turn");
+    session.setTurnOptions(QString(), QStringLiteral("Auto mode"),
+                           QStringLiteral("high"));
+    session.sendUserText(QStringLiteral("second"));
+    check(pump([&] {
+              return eventCount(events, QStringLiteral("result")) == 2 &&
+                     session.running();
+          }),
+          "a follow-up naming no model still completes its turn");
+    // Third turn only so the stub exits and the log is complete.
+    session.sendUserText(QStringLiteral("third"));
+    check(pump([&] { return finished; }), "keep-model stub exits");
+
+    QList<QJsonObject> starts;
+    for (const QJsonObject &message : readMessages(logPath)) {
+        if (message.value(QStringLiteral("method")).toString() ==
+            QStringLiteral("turn/start"))
+            starts.append(message);
+    }
+    const QJsonObject params = starts.size() > 1
+                                   ? starts.at(1)
+                                         .value(QStringLiteral("params"))
+                                         .toObject()
+                                   : QJsonObject();
+    check(starts.size() == 3 &&
+              params.value(QStringLiteral("model")).toString() ==
+                  QStringLiteral("gpt-old") &&
+              params.value(QStringLiteral("effort")).toString() ==
+                  QStringLiteral("high"),
+          "an empty setTurnOptions model keeps the thread's own model and still "
+          "applies the rest");
+}
+
 void runFatalErrorTest(const QString &executable)
 {
     QTemporaryDir temp;
@@ -1520,6 +1579,70 @@ void runResumeIdentityTest()
 
     check(claudeResumeSessionId({}).isEmpty() && codexResumeThreadId({}).isEmpty(),
           "an empty transcript resumes nothing");
+}
+
+// One CLI, two logins. Each provider account is its own config root, so the
+// account that hit its usage limit owns the conversation, and the account picked
+// to carry on cannot open it — resuming it anyway fails the turn exactly like
+// handing Claude Code a Codex thread id.
+void runResumeAccountTest()
+{
+    using namespace forkmesh::agents;
+    auto claudeEvent = [](const QString &id, const QString &account) {
+        QJsonObject ev{{QStringLiteral("type"), QStringLiteral("assistant")},
+                       {QStringLiteral("session_id"), id}};
+        if (!account.isEmpty())
+            ev.insert(resumeAccountKey(), account);
+        return ev;
+    };
+    auto codexEvent = [](const QString &id, const QString &account) {
+        QJsonObject ev{{QStringLiteral("type"), QStringLiteral("assistant")},
+                       {QStringLiteral("session_id"), id},
+                       {QStringLiteral("thread_id"), id}};
+        if (!account.isEmpty())
+            ev.insert(resumeAccountKey(), account);
+        return ev;
+    };
+
+    const QList<QJsonObject> ranOutOnA{claudeEvent("claude-1", "acct-a")};
+    check(claudeResumeSessionId(ranOutOnA, QStringLiteral("acct-a")) ==
+              QStringLiteral("claude-1"),
+          "the account that ran the turn resumes its own conversation");
+    check(claudeResumeSessionId(ranOutOnA, QStringLiteral("acct-b")).isEmpty(),
+          "a second account is never handed the first account's conversation");
+    check(resumeConversationAccountId(ranOutOnA, /*codexTransport=*/false) ==
+              QStringLiteral("acct-a"),
+          "the hand-off notice can name the account that owns the work");
+
+    // Switched away and back: the account picked up its earlier conversation
+    // rather than starting over, exactly as a hand-back between CLIs does.
+    const QList<QJsonObject> bounced{claudeEvent("claude-1", "acct-a"),
+                                     claudeEvent("claude-2", "acct-b"),
+                                     claudeEvent("claude-3", "acct-a")};
+    check(claudeResumeSessionId(bounced, QStringLiteral("acct-b")) ==
+              QStringLiteral("claude-2"),
+          "each account resumes the newest conversation it owns");
+    check(claudeResumeSessionId(bounced, QStringLiteral("acct-a")) ==
+              QStringLiteral("claude-3"),
+          "a hand-back resumes that account's latest own conversation");
+
+    // Codex accounts are isolated by CODEX_HOME the same way.
+    const QList<QJsonObject> codexOnA{codexEvent("codex-1", "acct-a")};
+    check(codexResumeThreadId(codexOnA, QStringLiteral("acct-a")) ==
+              QStringLiteral("codex-1"),
+          "a Codex account resumes its own thread");
+    check(codexResumeThreadId(codexOnA, QStringLiteral("acct-b")).isEmpty(),
+          "a second Codex account is never handed the first's thread");
+
+    // Sessions recorded before conversations carried an account stamp must keep
+    // resuming: an unstamped turn is the selected account's until proven
+    // otherwise, so a long-lived single-account session is untouched.
+    const QList<QJsonObject> legacy{claudeEvent("claude-1", QString())};
+    check(claudeResumeSessionId(legacy, QStringLiteral("acct-a")) ==
+              QStringLiteral("claude-1"),
+          "an unstamped conversation still resumes under any account");
+    check(resumeConversationAccountId(legacy, /*codexTransport=*/false).isEmpty(),
+          "an unstamped conversation names no account to hand over from");
 }
 
 // How the transcript retells what a turn did (adhoc #34): Codex explores by
@@ -1607,8 +1730,10 @@ int main(int argc, char *argv[])
     runResumeFailureTest(executable);
     runInterruptTest(executable);
     runTurnOptionsTest(executable);
+    runTurnOptionsKeepModelTest(executable);
     runFatalErrorTest(executable);
     runResumeIdentityTest();
+    runResumeAccountTest();
     runTranscriptStyleTest();
 
     if (failures == 0)

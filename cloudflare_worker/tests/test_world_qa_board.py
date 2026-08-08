@@ -362,7 +362,7 @@ def test_cards_stack_only_deals_tasks_that_nobody_has_reviewed():
     assert "CARDS WAITING" in SCENE
 
 
-def test_shared_qa_deck_refreshes_while_world_remains_open():
+def test_shared_qa_deck_refreshes_while_the_visitor_stands_at_the_board():
     for contract in (
         "const WORLD_QA_POLL_MS = 15 * 1000;",
         "this.qaTimer = window.setInterval(() => {",
@@ -371,6 +371,20 @@ def test_shared_qa_deck_refreshes_while_world_remains_open():
         "window.clearInterval(this.qaTimer);",
     ):
         assert contract in WORLD
+    # A fifteen-second cadence is only affordable because it is scoped to a
+    # visitor actually standing at the board — it must start on approach and
+    # be cleared on departure, never run for the life of the page.
+    assert "object: worldQaBoard," in SCENE
+    assert "onEnter: (refetch) => onQaBoardNearby({ refetch })," in SCENE
+    assert "onExit: () => onQaBoardAway()," in SCENE
+    assert "onQaBoardNearby: ({ refetch } = {}) =>" in WORLD
+    assert "onQaBoardAway: () => this.stopQaDeckWatch()," in WORLD
+    watch = WORLD[
+        WORLD.index("  startQaDeckWatch("):
+        WORLD.index("  async refreshBuildBoard(")
+    ]
+    assert "}, WORLD_QA_POLL_MS);" in watch
+    assert "window.clearInterval(this.qaTimer);" in watch
     visibility = WORLD[
         WORLD.index("handleVisibility = () => {"):
         WORLD.index("handleStorage = (event) => {")

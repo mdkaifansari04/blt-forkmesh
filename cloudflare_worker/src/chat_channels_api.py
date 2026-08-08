@@ -133,6 +133,12 @@ async def _create_channel(runtime, account_bi, actor, data):
             (channel_id, member_bi, member_data, account_bi, now),
         ))
     await runtime.batch(statements)
+    # An invited member's channel list just changed for somebody else's reason.
+    # The chat page reads that list once when it opens and never on a timer, so
+    # tell them (adhoc #1604).
+    for _member_bi, canonical in initial_members:
+        if canonical != actor:
+            await runtime.notify_account(canonical, "private-channels")
     await runtime.audit(
         actor,
         "chat.channel.create",
@@ -312,6 +318,8 @@ async def _add_member(runtime, account_bi, actor, channel_id, data):
         account_bi,
         now,
     )
+    if canonical != actor:
+        await runtime.notify_account(canonical, "private-channels")
     await runtime.audit(
         actor,
         "chat.channel.member.add",

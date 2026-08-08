@@ -29,6 +29,62 @@ QString actionRunLogPath(const ActionRun &run)
            QString::number(run.id) + QStringLiteral("/log.txt");
 }
 
+constexpr int kActionStatusIconPx = 14;
+
+// How many locally raised pings the Pings page keeps — in memory and in the
+// on-disk journal that restores them (adhoc #1629). The rows that never reached
+// the cloud have no other copy, so this is the whole retention policy for them.
+constexpr int kMaxLocalPings = 100;
+
+// One event, raised twice (a filed ping plus the OS notification for it), is one
+// row: postNotification treats a ping filed this recently, whose text is the
+// same message, as the one it is about to repeat.
+constexpr qint64 kPingDedupeWindowMs = 5000;
+constexpr int kPingDedupeChars = 100;
+// How much of that text has to line up. The same message reaches the two
+// surfaces cut to different lengths — and split across the page's Title and
+// Detail columns — so they are compared as prefixes, never for equality.
+constexpr int kPingDedupeMinChars = 40;
+
+// Do these two spellings describe one event? Ellipses are dropped first: a copy
+// truncated for the OS toast ends in one, and the page's own Title/Detail split
+// adds another where it broke the line.
+bool sameAlertText(const QString &left, const QString &right)
+{
+    auto key = [](const QString &text) {
+        QString flat = text.simplified();
+        flat.remove(QChar(0x2026)); // …
+        flat.remove(QStringLiteral("..."));
+        return flat.simplified().left(kPingDedupeChars);
+    };
+    const QString a = key(left);
+    const QString b = key(right);
+    if (a.isEmpty() || b.isEmpty())
+        return false;
+    const qsizetype shared =
+        std::min<qsizetype>({a.size(), b.size(), kPingDedupeMinChars});
+    return a.left(shared) == b.left(shared);
+}
+
+QString actionRunStatusIconName(const QString &status)
+{
+    if (status == ActionStatus::Running)
+        return QStringLiteral("sync");
+    if (status == ActionStatus::Queued)
+        return QStringLiteral("history");
+    if (status == ActionStatus::AwaitingApproval)
+        return QStringLiteral("alert");
+    if (status == ActionStatus::Success)
+        return QStringLiteral("check-circle");
+    if (status == ActionStatus::Failed || status == ActionStatus::Rejected)
+        return QStringLiteral("x");
+    if (status == ActionStatus::Cancelled)
+        return QStringLiteral("circle-slash");
+    if (status == ActionStatus::Skipped)
+        return QStringLiteral("stop");
+    return QStringLiteral("terminal");
+}
+
 // First line (after the shebang) of the working-copy commit-signal hooks we
 // install; install/remove only ever touch a hook file carrying this marker.
 const char kCommitSignalMarker[] =
@@ -541,15 +597,18 @@ void MainWindow::scanActionSpool()
                     // refresh. Rebuild the gateway's exact refs pin before
                     // re-attesting the new catalog state, otherwise the direct
                     // endpoint stays online while quarantining the push it
-                    // just accepted.
-                    QString gatewayError;
-                    if (!rebuildDirectMirrorGatewayConfiguration(
-                            &gatewayError, true)) {
-                        logSystem(
-                            QStringLiteral(
-                                "Direct gateway refresh after pushed refs "
-                                "failed: %1")
-                                .arg(gatewayError));
+                    // just accepted. A relay-only node has no such endpoint,
+                    // so there is nothing to rebuild and nothing to report.
+                    if (directMirrorGatewayConfigured()) {
+                        QString gatewayError;
+                        if (!rebuildDirectMirrorGatewayConfiguration(
+                                &gatewayError, true)) {
+                            logSystem(
+                                QStringLiteral(
+                                    "Direct gateway refresh after pushed refs "
+                                    "failed: %1")
+                                    .arg(gatewayError));
+                        }
                     }
                     publishRepository(idx, false);
                 }
@@ -1721,6 +1780,9 @@ void MainWindow::notifyActionEvent(const QString &title, const QString &body,
     const QString mode = actionAlertMode();
     if (mode == QLatin1String("none"))
         return;
+    if (title == QLatin1String("Action started") &&
+        !QSettings().value(kActionAlertStartedSetting, false).toBool())
+        return;
     if (mode == QLatin1String("failed") && !warning)
         return;
     const QString icon = warning ? QStringLiteral("dialog-error")
@@ -1765,9 +1827,16 @@ void MainWindow::addNotification(const QString &title, const QString &body,
 
 // Every in-app event lands here: it is filed on the Pings page, counted on the
 // bell, and raised in the message area above the footer's mini-log so a new
-// event is seen without opening a page (adhoc #77).
-void MainWindow::recordNotification(AppNotification item)
+// event is seen without opening a page (adhoc #77). Since adhoc #1629 the row
+// also carries where the event stands with the cloud, and the whole list is
+// journalled to disk — a ping raised offline never leaves this machine, so
+// losing it on the next restart would lose the event entirely.
+qint64 MainWindow::recordNotification(AppNotification item)
 {
+    // Nothing to file, and nothing the journal would keep: the toast helpers
+    // pass an empty text to dismiss the bubble rather than to say something.
+    if (item.title.simplified().isEmpty() && item.body.simplified().isEmpty())
+        return 0;
     item.id = m_nextNotificationId++;
     if (item.timestampMs <= 0)
         item.timestampMs = QDateTime::currentMSecsSinceEpoch();
@@ -1776,14 +1845,259 @@ void MainWindow::recordNotification(AppNotification item)
                                         : QStringLiteral("desktop");
     if (item.repo.isEmpty() && !item.link.owner.isEmpty())
         item.repo = item.link.owner + QLatin1Char('/') + item.link.name;
+    if (!item.syncDecided) {
+        QString reason;
+        item.sync = initialPingSync(item, &reason);
+        item.syncReason = reason;
+    }
     m_notifications.prepend(item);
-    while (m_notifications.size() > 100)
-        m_notifications.removeLast();
+    trimLocalPings();
     updateNotificationButton();
-    flashNotification(item);
+    scheduleNotificationJournalSave();
+    // A modal or an OS notification is already on the operator's screen; filing
+    // it must not also raise an in-app card repeating it.
+    if (!item.quiet)
+        flashNotification(item);
     // Keep the open Pings page live as new alerts arrive.
     if (m_notificationsTable && m_sectionStack &&
         m_sectionStack->currentIndex() == 3)
+        refreshNotificationsTable();
+    return item.id;
+}
+
+// Hold the page to its cap without letting chatter push out the rows that
+// matter. Every toast this app raises is filed now, and most of them are
+// routine confirmations; an alert that never reached the cloud is the only copy
+// of that event anywhere, so the oldest *ordinary* row is the one that goes
+// first. Only when the list is nothing but unsynced alerts does the oldest of
+// those drop (adhoc #1629).
+void MainWindow::trimLocalPings()
+{
+    while (m_notifications.size() > kMaxLocalPings) {
+        int victim = -1;
+        for (int i = m_notifications.size() - 1; i >= 0; --i) {
+            const AppNotification &item = m_notifications.at(i);
+            if (!item.warning || !forkmesh::pingSyncIsUnsynced(item.sync)) {
+                victim = i;
+                break;
+            }
+        }
+        m_notifications.removeAt(victim >= 0 ? victim
+                                             : m_notifications.size() - 1);
+    }
+}
+
+// What a ping's cloud state is the moment it is filed, before anything has been
+// attempted (adhoc #1629).
+//
+// Only a failure has anywhere to go: it becomes a signed report in the relay's
+// error log (reportUserVisibleError), which is how an error on a headless node
+// or an unwatched machine is ever seen. Everything else is this machine's own
+// history and says so, rather than implying a sync that was never going to
+// happen. An alert raised with no relay to reach, or no account to sign with,
+// is Offline: nothing was sent and nothing is queued, and the Pings page is the
+// only record there will ever be of it.
+//
+// Deliberately never Pending: only the reporter knows whether a report is
+// actually going out for this row, and it moves the row there itself. A ping
+// nothing reports — a quiet OS notification, an alert raised with the in-app
+// cards switched off — would otherwise sit at "Syncing…" forever waiting on a
+// request nobody sent.
+forkmesh::PingSync MainWindow::initialPingSync(const AppNotification &item,
+                                               QString *reasonOut) const
+{
+    auto answer = [reasonOut](forkmesh::PingSync state, const QString &why) {
+        if (reasonOut)
+            *reasonOut = why;
+        return state;
+    };
+    if (!item.warning)
+        return answer(forkmesh::PingSync::LocalOnly,
+                      QStringLiteral("a desktop event, not a failure — the "
+                                     "cloud is never told about it"));
+    if (!QSettings()
+             .value(forkmesh::kReportUserVisibleErrorsSetting, true)
+             .toBool())
+        return answer(forkmesh::PingSync::LocalOnly,
+                      QStringLiteral("error reporting is turned off for this "
+                                     "node (Settings \xE2\x86\x92 Diagnostics)"));
+    if (!m_networkAccess)
+        return answer(forkmesh::PingSync::Offline,
+                      QStringLiteral("this node has no network access, so "
+                                     "nothing was sent"));
+    const QString owner = accountOwner();
+    if (owner.isEmpty() || !m_profileIdentity.isValid()
+        || !hasOwnerSigningCapability(owner))
+        return answer(forkmesh::PingSync::Offline,
+                      QStringLiteral("no signed-in account to sign a report "
+                                     "with, so nothing was sent"));
+    return answer(forkmesh::PingSync::LocalOnly,
+                  QStringLiteral("kept on this machine unless it is reported "
+                                 "to the relay"));
+}
+
+// The reporter answers on its own schedule — a POST reply, a deferred flush two
+// minutes later — so the row it belongs to may already have aged out of the
+// hundred the page keeps. Missing is not an error here.
+void MainWindow::setPingSync(qint64 pingId, forkmesh::PingSync state,
+                             const QString &reason)
+{
+    if (pingId <= 0)
+        return;
+    for (AppNotification &item : m_notifications) {
+        if (item.id != pingId)
+            continue;
+        if (item.sync == state && item.syncReason == reason)
+            return;
+        item.sync = state;
+        item.syncReason = reason;
+        scheduleNotificationJournalSave();
+        if (m_notificationsTable && m_sectionStack &&
+            m_sectionStack->currentIndex() == 3)
+            refreshNotificationsTable();
+        return;
+    }
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+// Reads the built table rather than the model behind it, so the test measures
+// the Status column the operator actually sees (adhoc #1629).
+QString MainWindow::testPingStatusFor(const QString &needle)
+{
+    constexpr int kTitleColumn = 2;
+    constexpr int kStatusColumn = 6;
+    if (m_notificationsTable) {
+        refreshNotificationsTable();
+        for (int row = 0; row < m_notificationsTable->rowCount(); ++row) {
+            QTableWidgetItem *title =
+                m_notificationsTable->item(row, kTitleColumn);
+            QTableWidgetItem *status =
+                m_notificationsTable->item(row, kStatusColumn);
+            if (title && status && title->text().contains(needle))
+                return status->text();
+        }
+        return {};
+    }
+    for (const AppNotification &item : std::as_const(m_notifications)) {
+        if (item.title.contains(needle) || item.body.contains(needle))
+            return forkmesh::pingSyncLabel(item.sync);
+    }
+    return {};
+}
+#endif
+
+// ------------------------------------------------------- the ping journal
+
+QString MainWindow::notificationJournalPath() const
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           QStringLiteral("/pings.json");
+}
+
+void MainWindow::scheduleNotificationJournalSave()
+{
+    if (!m_notificationJournalTimer) {
+        m_notificationJournalTimer = new QTimer(this);
+        m_notificationJournalTimer->setSingleShot(true);
+        m_notificationJournalTimer->setInterval(1500);
+        connect(m_notificationJournalTimer, &QTimer::timeout, this,
+                &MainWindow::saveNotificationJournal);
+    }
+    // A burst (a failing sync raising one ping a second) writes once.
+    m_notificationJournalTimer->start();
+}
+
+void MainWindow::saveNotificationJournal()
+{
+    const QString path = notificationJournalPath();
+    if (path.isEmpty())
+        return;
+    QJsonArray rows;
+    for (const AppNotification &item : std::as_const(m_notifications)) {
+        // No id: it is this run's row identity (delete, sync updates), handed
+        // out fresh on load so a restored row can never collide with one this
+        // run has already filed.
+        QJsonObject obj{
+            {QStringLiteral("title"), item.title},
+            {QStringLiteral("body"), item.body},
+            {QStringLiteral("ts"), item.timestampMs},
+            {QStringLiteral("warning"), item.warning},
+            {QStringLiteral("kind"), item.kind},
+            {QStringLiteral("actor"), item.actor},
+            {QStringLiteral("repo"), item.repo},
+            {QStringLiteral("sync"), forkmesh::pingSyncToken(item.sync)},
+            {QStringLiteral("syncReason"), item.syncReason}};
+        // The click destination, when the event had one. A run id is
+        // deliberately not restored: runs are reloaded from their own store and
+        // a stale id would open the wrong one.
+        if (item.link.isValid()) {
+            obj.insert(QStringLiteral("link"),
+                       QJsonObject{
+                           {QStringLiteral("kind"), item.link.kind},
+                           {QStringLiteral("owner"), item.link.owner},
+                           {QStringLiteral("name"), item.link.name},
+                           {QStringLiteral("number"), item.link.number},
+                           {QStringLiteral("ref"), item.link.ref}});
+        }
+        rows.append(obj);
+    }
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+    file.write(QJsonDocument(rows).toJson(QJsonDocument::Compact));
+    file.commit();
+}
+
+void MainWindow::loadNotificationJournal()
+{
+    const QString path = notificationJournalPath();
+    QFile file(path);
+    if (path.isEmpty() || !file.open(QIODevice::ReadOnly))
+        return;
+    const QJsonArray rows =
+        QJsonDocument::fromJson(file.readAll()).array();
+    QList<AppNotification> restored;
+    for (const QJsonValue &value : rows) {
+        const QJsonObject obj = value.toObject();
+        AppNotification item;
+        item.id = m_nextNotificationId++;
+        item.title = obj.value(QStringLiteral("title")).toString();
+        item.body = obj.value(QStringLiteral("body")).toString();
+        item.timestampMs = qint64(obj.value(QStringLiteral("ts")).toDouble());
+        item.warning = obj.value(QStringLiteral("warning")).toBool();
+        item.kind = obj.value(QStringLiteral("kind")).toString();
+        item.actor = obj.value(QStringLiteral("actor")).toString();
+        item.repo = obj.value(QStringLiteral("repo")).toString();
+        item.sync = forkmesh::pingSyncFromToken(
+            obj.value(QStringLiteral("sync")).toString());
+        item.syncReason = obj.value(QStringLiteral("syncReason")).toString();
+        // Nothing re-queues a report that only ever existed in this process's
+        // memory, so a row that was still in flight when the app closed is
+        // resolved now rather than left counting down forever.
+        const forkmesh::PingSync settled =
+            forkmesh::pingSyncAfterRestart(item.sync);
+        if (settled != item.sync) {
+            item.sync = settled;
+            item.syncReason = forkmesh::pingSyncRestartReason();
+        }
+        const QJsonObject link = obj.value(QStringLiteral("link")).toObject();
+        if (!link.isEmpty()) {
+            item.link.kind = link.value(QStringLiteral("kind")).toString();
+            item.link.owner = link.value(QStringLiteral("owner")).toString();
+            item.link.name = link.value(QStringLiteral("name")).toString();
+            item.link.number = link.value(QStringLiteral("number")).toInt();
+            item.link.ref = link.value(QStringLiteral("ref")).toString();
+        }
+        if (item.title.isEmpty() && item.body.isEmpty())
+            continue;
+        restored.append(item);
+    }
+    // Restored rows sit behind anything this run has already raised.
+    m_notifications.append(restored);
+    trimLocalPings();
+    updateNotificationButton();
+    if (m_notificationsTable)
         refreshNotificationsTable();
 }
 
@@ -1806,12 +2120,19 @@ void MainWindow::flashNotification(const AppNotification &item)
     const int duration = QSettings()
                              .value(kInAppNotificationDurationSetting, 5)
                              .toInt();
+    // This toast *is* the ping already filed above; say which row it belongs to
+    // so flashMessage follows its sync state instead of filing it again
+    // (adhoc #1629). Restored, not cleared, so a nested toast raised from inside
+    // one of these calls still resolves to the right owner.
+    const qint64 previousPingToast = m_pingToastId;
+    m_pingToastId = item.id;
     if (item.warning) {
         flashMessage(text, true, QString(), duration, item.kind, item.runId);
         flashErrorBorder();
     } else {
         flashMessage(text, false, QString(), duration, item.kind, item.runId);
     }
+    m_pingToastId = previousPingToast;
 }
 
 // Flash a 3px red border (plus a soft inner glow) around the whole window for
@@ -1866,6 +2187,60 @@ void MainWindow::flashErrorBorder()
     m_errorBorderOverlay->show();
     m_errorBorderOverlay->raise();
     m_errorBorderTimer->start(1500); // world-admin-error-arrival's 1.5s
+}
+
+// The good-news twin of flashErrorBorder: a green edge pulse when an agent
+// finishes (adhoc #1630), so a run that lands while the user is reading a diff
+// or another repo announces itself across the whole window rather than only in
+// the corner. Held a shade longer than the error flash — this one is meant to be
+// enjoyed, not just noticed — and re-flashing restarts the countdown.
+void MainWindow::flashCelebrationBorder()
+{
+    if (!m_celebrationBorderOverlay) {
+        class CelebrationBorderWidget : public QWidget
+        {
+        public:
+            explicit CelebrationBorderWidget(QWidget *parent) : QWidget(parent)
+            {
+                setAttribute(Qt::WA_TransparentForMouseEvents);
+                setAttribute(Qt::WA_NoSystemBackground);
+                setAttribute(Qt::WA_TranslucentBackground);
+                setObjectName(QStringLiteral("celebrationBorderOverlay"));
+            }
+
+        protected:
+            void paintEvent(QPaintEvent *) override
+            {
+                QPainter painter(this);
+                painter.setRenderHint(QPainter::Antialiasing, false);
+                // The same success green the Agents list and the toast use, so
+                // the pulse reads as "that finished" rather than a new colour.
+                QPen pen(QColor(63, 185, 80, 190), 3);
+                pen.setJoinStyle(Qt::MiterJoin);
+                painter.setPen(pen);
+                painter.drawRect(rect().adjusted(1, 1, -2, -2));
+                for (int step = 1; step <= 6; ++step) {
+                    const int inset = 2 + step * 3;
+                    QPen glow(QColor(63, 185, 80, 58 - step * 8), 3);
+                    glow.setJoinStyle(Qt::MiterJoin);
+                    painter.setPen(glow);
+                    painter.drawRect(
+                        rect().adjusted(inset, inset, -inset - 1, -inset - 1));
+                }
+            }
+        };
+        m_celebrationBorderOverlay = new CelebrationBorderWidget(this);
+        m_celebrationBorderTimer = new QTimer(this);
+        m_celebrationBorderTimer->setSingleShot(true);
+        connect(m_celebrationBorderTimer, &QTimer::timeout, this, [this] {
+            if (m_celebrationBorderOverlay)
+                m_celebrationBorderOverlay->hide();
+        });
+    }
+    m_celebrationBorderOverlay->setGeometry(rect());
+    m_celebrationBorderOverlay->show();
+    m_celebrationBorderOverlay->raise();
+    m_celebrationBorderTimer->start(2000);
 }
 
 // A restart can spend a while fetching or compiling while the relevant control
@@ -2285,6 +2660,7 @@ QWidget *MainWindow::buildNotificationsSection()
         m_notifications.clear();
         clearWebAlerts();
         updateNotificationButton();
+        saveNotificationJournal(); // emptied on disk too, not just on screen
         refreshNotificationsTable();
     });
 
@@ -2419,6 +2795,9 @@ void MainWindow::refreshNotificationsTable()
         QString repo;
         QString actor;
         QString status;
+        // Why the Status cell reads the way it does — e.g. which of the
+        // "Offline" reasons kept this ping on the machine (adhoc #1629).
+        QString statusTooltip;
         qint64 whenMs = 0;
         QString link;
         int runId = -1;
@@ -2465,12 +2844,16 @@ void MainWindow::refreshNotificationsTable()
             new QTableWidgetItem(data.link)};
         const QColor red("#f85149");
         const QColor green("#3fb950");
+        constexpr int kStatusColumn = 6;
         for (int column = 0; column < cells.size(); ++column) {
             QTableWidgetItem *cell = cells.at(column);
             // Long titles/details are elided by the column width, so keep the
             // full text one hover away rather than only in the toast.
             if (!cell->text().isEmpty())
                 cell->setToolTip(cell->text());
+            // "Offline" alone doesn't say *why* nothing was sent; the hover does.
+            if (column == kStatusColumn && !data.statusTooltip.isEmpty())
+                cell->setToolTip(data.statusTooltip);
             if (data.warning)
                 cell->setForeground(red);
             else if (data.good)
@@ -2504,7 +2887,16 @@ void MainWindow::refreshNotificationsTable()
         data.detail = notice.body;
         data.repo = notice.repo;
         data.actor = notice.actor;
-        data.status = QStringLiteral("Desktop");
+        // Where this one stands with the cloud, not merely that it came from the
+        // desktop — the Kind column already says that (adhoc #1629). A row that
+        // was raised offline, or whose report never landed, is the only copy of
+        // that event anywhere, and the page has to say so.
+        data.status = forkmesh::pingSyncLabel(notice.sync);
+        data.statusTooltip =
+            notice.syncReason.isEmpty()
+                ? forkmesh::pingSyncDescription(notice.sync)
+                : forkmesh::pingSyncDescription(notice.sync) +
+                      QString::fromUtf8("\n\xE2\x80\x94 ") + notice.syncReason;
         data.whenMs = notice.timestampMs;
         data.link = notificationLinkLabel(notice.link);
         data.runId = notice.runId;
@@ -2551,6 +2943,10 @@ void MainWindow::refreshNotificationsTable()
         data.actor = alert.value(QStringLiteral("actor")).toString().trimmed();
         data.status = unread ? QStringLiteral("Unread")
                              : QStringLiteral("Read");
+        // The counterpart of a desktop row's sync state: this one came *from*
+        // the account's cloud inbox, so it is in the cloud by definition.
+        data.statusTooltip =
+            QStringLiteral("Stored in your account's cloud ping inbox.");
         data.whenMs = qint64(alert.value(QStringLiteral("ts")).toDouble());
         data.link = href;
         // Worker failures and /status operational outages are both immediate
@@ -2656,6 +3052,9 @@ void MainWindow::deleteSelectedNotifications()
     for (const QString &alertId : std::as_const(webIds))
         deleteWebAlert(alertId);
     updateNotificationButton();
+    // The journal is the desktop rows' only storage, so a deletion has to reach
+    // it — otherwise the next start brings the row back.
+    scheduleNotificationJournalSave();
     refreshNotificationsTable();
 }
 
@@ -2726,10 +3125,16 @@ void MainWindow::refreshWebAlerts(bool force)
     if (node.isEmpty())
         return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    // The heartbeat calls this every minute; one read per five minutes is
-    // plenty for an inbox and keeps the relay's request budget intact.
-    if (!force && m_webAlertsFetchedAtMs > 0 &&
-        now - m_webAlertsFetchedAtMs < 300000)
+    // Not a poll: the ping inbox is read ONCE per run and is push-driven from
+    // then on. The relay fans a payload-free "pings" event frame to this
+    // account's node event socket the moment a ping is written
+    // (notify_account_event), and that frame — plus the socket's reconnect
+    // catch-up and explicit user actions — is what passes `force`. The
+    // heartbeat still calls this unforced, which after the first success is a
+    // no-op; it only matters as the retry that re-seeds a failed first read
+    // (docs/operations/polling-elimination.md).
+    if (m_webAlertsFetchedAtMs > 0 &&
+        (!force || now - m_webAlertsFetchedAtMs < kWebAlertPushFloorMs))
         return;
 
     QUrl url = catalogApiUrl();
@@ -2756,8 +3161,13 @@ void MainWindow::refreshWebAlerts(bool force)
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError || status < 200 ||
-            status >= 300)
+            status >= 300) {
+            // The one read of this run just failed, so there is nothing to sit
+            // on. Clearing the stamp lets the next heartbeat re-seed it (and
+            // only until one read succeeds).
+            m_webAlertsFetchedAtMs = 0;
             return;
+        }
         const QJsonObject payload =
             QJsonDocument::fromJson(reply->readAll()).object();
         m_webAlerts = payload.value(QStringLiteral("notifications")).toArray();
@@ -2788,6 +3198,9 @@ void MainWindow::refreshWebAlerts(bool force)
             m_flashedWebAlertIds.insert(id);
             if (loadingStartupBaseline)
                 continue;
+            if (kind == QLatin1String("operational_alert") &&
+                !QSettings().value(kSystemAlertSetting, true).toBool())
+                continue;
             const QString title =
                 alert.value(QStringLiteral("title")).toString().trimmed();
             // The recovery that closes an outage arrives on the same channel as
@@ -2807,6 +3220,11 @@ void MainWindow::refreshWebAlerts(bool force)
             ping.body = alert.value(QStringLiteral("body")).toString().trimmed();
             ping.warning = !recovery;
             ping.kind = kind;
+            // This one already has a row on the page — the website inbox's own,
+            // listed from m_webAlerts — and it is in the cloud by definition.
+            // The negative id says "raised for a row that isn't a local ping",
+            // so the toast is not filed a second time (adhoc #1629).
+            ping.id = -1;
             flashNotification(ping);
         }
         // Only repaint while the page is the one on screen; it rebuilds from
@@ -2876,6 +3294,42 @@ void MainWindow::showNotifications()
 void MainWindow::postNotification(const QString &title, const QString &body,
                                   bool warning, const QString &icon)
 {
+    // A desktop notification is an alert this app raised, so it belongs on the
+    // Pings page too — several of these (a node connecting, a push arriving, a
+    // wallet balance moving, the firewall asking) had no row at all before
+    // adhoc #1629. Most callers file their own ping and then post the OS toast
+    // for the same event; recognising that pairing here keeps one event to one
+    // row, and means a *new* call site is filed whether or not it remembers to.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // Matched on their opening words rather than on equality, because one event
+    // reaches the two surfaces worded differently: the OS toast often carries
+    // its own heading ("Ada mentioned you", "Agent #12 is done!") over the same
+    // message, and the page keeps that message split across Title and Detail.
+    const QString osText = (title + QLatin1Char(' ') + body).simplified();
+    const bool alreadyFiled = std::any_of(
+        m_notifications.cbegin(), m_notifications.cend(),
+        [&](const AppNotification &filed) {
+            if (now - filed.timestampMs > kPingDedupeWindowMs)
+                return false;
+            const QString filedText =
+                (filed.title + QLatin1Char(' ') + filed.body).simplified();
+            // Whole-for-whole (a caller that filed exactly what it posted),
+            // detail-for-detail (a different heading over the same message), or
+            // the filed heading against the posted message (a toast the page
+            // split at its first line).
+            return sameAlertText(filedText, osText)
+                   || sameAlertText(filed.body, body)
+                   || sameAlertText(filed.title, body);
+        });
+    if (!alreadyFiled && !osText.isEmpty()) {
+        AppNotification item;
+        item.title = title;
+        item.body = body;
+        item.warning = warning;
+        item.kind = QStringLiteral("desktop");
+        item.quiet = true; // the OS is already showing it
+        recordNotification(item);
+    }
     const QString iconName =
         !icon.isEmpty() ? icon
                         : (warning ? QStringLiteral("dialog-error")
@@ -2933,6 +3387,9 @@ void MainWindow::refreshActionsTable()
         // Flag failed runs so the delegate draws a red outline around the row.
         wfItem->setData(ActionFailureBorderDelegate::ActionFailedRole,
                         run.status == ActionStatus::Failed);
+        wfItem->setIcon(themedOcticon(actionRunStatusIconName(run.status),
+                                      actionStatusColor(run.status),
+                                      kActionStatusIconPx));
         auto *statusItem = new QTableWidgetItem(actionStatusText(run.status));
         statusItem->setForeground(actionStatusColor(run.status));
         // Show a human-friendly relative time ("5m ago") in the column, with the
@@ -2976,6 +3433,7 @@ void MainWindow::refreshActionsTable()
         if (run.id == m_selectedRunId)
             m_actionsTable->selectRow(row);
     }
+    updateActionsSpinTimer();
     updateActionsTabIndicator();
 }
 
@@ -3198,6 +3656,57 @@ void MainWindow::updateAgentsTabIndicator()
     }
     if (!m_agentsSpinTimer->isActive())
         m_agentsSpinTimer->start(kAgentSpinTickMs);
+}
+
+void MainWindow::updateActionsSpinTimer()
+{
+    if (!m_actionsTable)
+        return;
+    bool anyRunning = false;
+    for (int r = 0; r < m_actionsTable->rowCount(); ++r) {
+        QTableWidgetItem *item = m_actionsTable->item(r, 0);
+        if (!item)
+            continue;
+        const ActionRun *run = findRun(item->data(Qt::UserRole).toInt());
+        if (run && run->status == ActionStatus::Running) {
+            anyRunning = true;
+            break;
+        }
+    }
+    if (!anyRunning) {
+        if (m_actionsSpinTimer)
+            m_actionsSpinTimer->stop();
+        return;
+    }
+    if (!m_actionsSpinTimer) {
+        m_actionsSpinTimer = new QTimer(this);
+        connect(m_actionsSpinTimer, &QTimer::timeout, this,
+                &MainWindow::animateRunningActionIcons);
+    }
+    if (!m_actionsSpinTimer->isActive())
+        m_actionsSpinTimer->start(kAgentSpinTickMs);
+}
+
+void MainWindow::animateRunningActionIcons()
+{
+    if (!m_actionsTable)
+        return;
+    ++m_actionSpinTicks;
+    const qreal angle = qreal((m_actionSpinTicks * 11) % 360);
+    QSignalBlocker block(m_actionsTable);
+    for (int r = 0; r < m_actionsTable->rowCount(); ++r) {
+        QTableWidgetItem *item = m_actionsTable->item(r, 0);
+        if (!item)
+            continue;
+        const ActionRun *run = findRun(item->data(Qt::UserRole).toInt());
+        if (!run || run->status != ActionStatus::Running)
+            continue;
+        const QPixmap spinning = rotatedTintedOcticonPixmap(
+            actionRunStatusIconName(run->status), actionStatusColor(run->status),
+            kActionStatusIconPx, angle);
+        item->setIcon(QIcon(spinning));
+        m_actionsTable->viewport()->update(m_actionsTable->visualItemRect(item));
+    }
 }
 
 // The mirror-activity dot strip (adhoc #197) and the current-release pill
@@ -4244,7 +4753,7 @@ void MainWindow::maybeAutoFixFailedRun(const ActionRun &run)
                  run.ref, logTail);
     const QString workflowName = run.workflowName;
 
-    m_pendingSteerMessage.insert(sessionId, prompt);
+    queueAgentSteerMessage(sessionId, prompt);
     if (sessionProvider == QLatin1String("claude-code") ||
         agentIsCodexProvider(sessionProvider))
         applyTranscriptEvent(
@@ -4732,24 +5241,30 @@ void MainWindow::reloadVariablesList()
         auto *card = new QFrame;
         card->setObjectName(QStringLiteral("variableCard"));
         card->setFrameShape(QFrame::StyledPanel);
-        auto *cardLayout = new QVBoxLayout(card);
+        auto *cardLayout = new QHBoxLayout(card);
         cardLayout->setContentsMargins(12, 10, 12, 10);
-        cardLayout->setSpacing(6);
+        cardLayout->setSpacing(8);
 
-        auto *titleRow = new QHBoxLayout;
-        titleRow->setContentsMargins(0, 0, 0, 0);
         auto *nameLabel = new QLabel(name);
         nameLabel->setObjectName(QStringLiteral("variableName"));
         nameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        titleRow->addWidget(nameLabel);
-        titleRow->addStretch();
+        cardLayout->addWidget(nameLabel);
+
+        auto *valueEdit = new QLineEdit(value);
+        valueEdit->setReadOnly(true);
+        valueEdit->setEchoMode(m_varsRevealed ? QLineEdit::Normal
+                                              : QLineEdit::Password);
+        valueEdit->setToolTip(m_varsRevealed
+                                  ? QStringLiteral("Use Copy to copy this value")
+                                  : QStringLiteral("Reveal values to view or copy them"));
+        cardLayout->addWidget(valueEdit, 1);
 
         auto *editButton = new QPushButton(QStringLiteral("Edit\xE2\x80\xA6"));
         editButton->setObjectName(QStringLiteral("ghostButton"));
         editButton->setCursor(Qt::PointingHandCursor);
         connect(editButton, &QPushButton::clicked, this,
                 [this, name] { addOrEditVariable(name); });
-        titleRow->addWidget(editButton);
+        cardLayout->addWidget(editButton);
         auto *copyButton = new QPushButton(QStringLiteral("Copy"));
         copyButton->setObjectName(QStringLiteral("ghostButton"));
         copyButton->setCursor(Qt::PointingHandCursor);
@@ -4761,23 +5276,13 @@ void MainWindow::reloadVariablesList()
             QApplication::clipboard()->setText(value);
             logSystem(QStringLiteral("Copied %1 to clipboard.").arg(name));
         });
-        titleRow->addWidget(copyButton);
+        cardLayout->addWidget(copyButton);
         auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
         deleteButton->setObjectName(QStringLiteral("ghostButton"));
         deleteButton->setCursor(Qt::PointingHandCursor);
         connect(deleteButton, &QPushButton::clicked, this,
                 [this, name] { deleteVariable(name); });
-        titleRow->addWidget(deleteButton);
-        cardLayout->addLayout(titleRow);
-
-        auto *valueEdit = new QLineEdit(value);
-        valueEdit->setReadOnly(true);
-        valueEdit->setEchoMode(m_varsRevealed ? QLineEdit::Normal
-                                              : QLineEdit::Password);
-        valueEdit->setToolTip(m_varsRevealed
-                                  ? QStringLiteral("Use Copy to copy this value")
-                                  : QStringLiteral("Reveal values to view or copy them"));
-        cardLayout->addWidget(valueEdit);
+        cardLayout->addWidget(deleteButton);
         m_varsListLayout->addWidget(card);
     }
 

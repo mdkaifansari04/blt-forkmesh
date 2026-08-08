@@ -16,8 +16,10 @@
 #include "ActionRunner.h"
 #include "BackgroundActivity.h"
 #include "BackoffNetworkAccessManager.h"
+#include "FileTreeSupport.h"
 #include "GuiPump.h"
 #include "ClaudeAgentScript.h"
+#include "CloudflareAgentScript.h"
 #include "ClaudeIdeBridge.h"
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
@@ -505,6 +507,10 @@ constexpr int kToastStackGap = 6;
 // inside that gap and no frame of the motion can cover the composer.
 constexpr int kToastEntryRise = 14;
 constexpr int kToastEntryMs = 180;
+// The agent glyph on an "agent finished" card's headline row (adhoc #1630).
+// Larger than the 16px list icon: this card is the celebration, and the icon is
+// what identifies whose run just landed.
+constexpr int kToastAgentIconPx = 20;
 // How long the whole column takes to glide to its new anchor when a card
 // arrives or leaves. Short enough to feel immediate, long enough to read as
 // the stack sliding up rather than jumping.
@@ -3071,6 +3077,13 @@ const QString kMirrorFleetEnabledSetting =
     QStringLiteral("hosts/healthyMirrorFleet/enabled");
 const QString kMirrorFleetDesiredSetting =
     QStringLiteral("hosts/healthyMirrorFleet/desired");
+// Cadence of the automatic healthy-node check. The check reads the public
+// mirror catalog through the shared relay, which answers HTTP 429 long before
+// the 30-second saved-host probe cadence this loop used to ride on — and a
+// rate-limited check makes no fleet change at all, so short capacity was never
+// restored. Five minutes is slow enough to stay under the limit and is the
+// interval the countdown next to the checkbox counts down to.
+constexpr int kMirrorFleetCheckIntervalMs = 5 * 60 * 1000;
 const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
 const QString kServerUrlSetting = QStringLiteral("server/url");
@@ -3142,9 +3155,12 @@ const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
 // migration: older builds stored a plain bool here; new builds read/write
 // kActionAlertModeSetting ("all" / "failed" / "none") instead.
 const QString kActionAlertSetting = QStringLiteral("actions/runAlert");
-// Which action runs raise a desktop alert: "all" (start + every non-stopped
-// finish), "failed" (only failures), or "none" (never). Mirrors GitHub's
-// per-account Actions notification choice.
+// Default-off, separate toggle for start-run popups.
+const QString kActionAlertStartedSetting =
+    QStringLiteral("actions/runAlertStarted");
+// Which action runs raise a desktop alert on completion: "all" (every
+// non-stopped finish), "failed" (only failures), or "none" (never). Mirrors
+// GitHub's per-account Actions notification choice.
 const QString kActionAlertModeSetting = QStringLiteral("actions/runAlertMode");
 
 // Resolve the effective action-alert mode, migrating the legacy bool: an
@@ -3183,6 +3199,10 @@ const QString kInAppNotificationDurationSetting =
 // Every ERROR-badged log line flashes the window border and shows itself as a
 // card. On by default: a failure nobody sees is the thing this exists to stop.
 const QString kErrorLogAlertSetting = QStringLiteral("notifications/errorLogFlash");
+// The "System alert" ping (kind operational_alert: a mesh system going down or
+// recovering, per webPingKindLabel). On by default like kErrorLogAlertSetting —
+// this only gates the toast/border flash, the Pings page logs it regardless.
+const QString kSystemAlertSetting = QStringLiteral("notifications/systemAlert");
 const QString kEmailNotifyMentionSetting = QStringLiteral("notifications/email/mention");
 const QString kEmailNotifySubscribedSetting = QStringLiteral("notifications/email/subscribed");
 const QString kEmailNotifyPullSubmittedSetting = QStringLiteral("notifications/email/pullSubmitted");
@@ -3236,6 +3256,19 @@ const QString kSolanaLastBalanceSettingPrefix =
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 // Opt-in: show a small rebuild+restart button in the top nav (off by default).
 const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton");
+// Reveal the footer's debug bar at launch instead of waiting for a click on the
+// version button (adhoc #1632). Unset means "follow this account": admins get
+// the bar, everybody else does not, and either can say otherwise in Settings.
+const QString kShowDebugBarOnStartupSetting =
+    QStringLiteral("ui/showDebugBarOnStartup");
+// On by default: the debug bar's Monitor checkbox holds a background Wrangler
+// tail open so a deployed-Worker failure raises its red card without anybody
+// switching it on first (adhoc #1632). Stored, so switching it off sticks.
+const QString kCloudLogMonitorSetting =
+    QStringLiteral("diagnostics/cloudLogMonitor");
+// Launch is busy enough without npx: the monitor's tail starts this long after
+// the window is built rather than during construction.
+constexpr int kCloudLogMonitorStartupDelayMs = 5000;
 // Opt-in: log every HTTP request that flows through the shared network manager
 // to the network log (method + status + URL). Off by default; a diagnostic aid
 // for spotting chatty background traffic (adhoc #74).
@@ -3771,8 +3804,14 @@ const QString kOrganizationTaskOpenCountSetting =
 const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
 const QString kOrgTaskCompleteProof =
     QStringLiteral("forkmesh-org-task-complete-v1");
-const QString kOrgTaskAgentStatusProof =
-    QStringLiteral("forkmesh-org-task-agent-status-v1");
+// Live run state for every session at once. The first reload after launch has a
+// state to publish for each session, and the task-bound proof meant one signed
+// POST per session — a burst the relay answered 429 to (adhoc #1618). The relay
+// still accepts the per-task write for older desktops; this one signs the whole
+// fleet's batch. Must stay byte-identical to ORG_TASK_AGENT_STATUS_BATCH_PROOF
+// in entry.py.
+const QString kOrgTaskAgentStatusBatchProof =
+    QStringLiteral("forkmesh-org-task-agent-status-batch-v1");
 // Same key, reading the board. Without it the Tasks tab was empty for every
 // operator who launched normally instead of typing a password (adhoc #52).
 // Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
@@ -3807,6 +3846,11 @@ const QString kAccountAlertDeleteProof =
 // in entry.py.
 const QString kAccountAlertClearProof =
     QStringLiteral("forkmesh-account-alert-clear-v1");
+// The ping inbox is read once per run and thereafter only when the relay
+// pushes a "pings" event frame. A write path can raise several pings in one
+// go (a mention plus a thread subscription), so coalesce the resulting burst
+// of pushes into one read rather than one read per frame.
+constexpr qint64 kWebAlertPushFloorMs = 5000;
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
@@ -3841,6 +3885,23 @@ constexpr int kDebugLogTailLines = 5;
 
 const QString kCodexProvider = QStringLiteral("codex");
 
+// Toast `kind` carried by the celebration a finished agent raises (adhoc
+// #1630). It rides the ordinary notification path — so the card queues, logs
+// and badges like any other — and renderTopMessage() keys the headline row,
+// the agent's icon and the brighter styling off exactly this value. The click
+// target is "fm:agent:<id>", which is also where the renderer reads the
+// session back from once a queued card reaches the front.
+const QString kAgentDoneToastKind = QStringLiteral("agent-done");
+// How much of the agent's closing summary that card shows. Enough for a real
+// conclusion (a few sentences), short of pasting an entire final message into
+// the corner of the window — the whole thing is a click away in the transcript.
+constexpr int kAgentDoneSummaryChars = 400;
+// Gates the native OS notification (tray/notify-send) notifyAgentDone() raises
+// when the window is inactive. On by default, matching the always-on behavior
+// this had before the toggle existed; the in-app celebration card above is
+// unaffected and always shows.
+const QString kAgentDoneAlertSetting = QStringLiteral("notifications/agentDone");
+
 // Provider family helpers. The Anthropic-backed "Claude API" script (plus the
 // legacy "claude"/"claude-code" values) shares usage windows, spend tracking and
 // iconography. Codex uses the logged-in Codex CLI account; OpenAI API uses the
@@ -3855,16 +3916,29 @@ inline bool agentIsCodexProvider(const QString &provider)
     return provider == kCodexProvider;
 }
 
+// How the two CLI-backed providers are named to the user — the same words the
+// composer's agent dropdown and the transcript's hand-off notices use. Anything
+// else (an API provider, an id from a newer build) reads back as itself.
+inline QString cliProviderLabel(const QString &provider)
+{
+    if (agentIsCodexProvider(provider))
+        return QStringLiteral("Codex");
+    if (provider == QLatin1String("claude-code"))
+        return QStringLiteral("Claude Code");
+    return provider;
+}
+
 inline bool agentUsesOpenAiKey(const QString &provider)
 {
     return provider == QLatin1String("openai");
 }
 
-// Cloudflare Workers AI: picking one of these models in the composer sends the
-// typed prompt to the relay's Workers AI binding (POST /api/ai/ask) and shows
-// the answer. Deliberately NOT an agent provider — it starts no CLI, touches no
-// working tree, and opens no PR — but it shares the one composer model picker,
-// so every "is this an agent?" branch must exclude it explicitly.
+// Cloudflare Workers AI: a real agent provider since adhoc #1634. Picking one
+// of these models runs the bundled Workers AI agent script (see
+// CloudflareAgentScript.h) through AgentRunner — its own worktree and branch,
+// a bash tool, commits, and a PR — with the model itself running on the
+// relay's Workers AI binding (POST /api/ai/agent). It used to be a
+// composer-only chat choice whose prompt went to POST /api/ai/ask.
 const QString kCloudflareAiProvider = QStringLiteral("cloudflare-ai");
 
 inline bool agentIsCloudflareAiProvider(const QString &provider)
@@ -3887,7 +3961,8 @@ inline bool agentProviderIsKnown(const QString &provider)
     return agentIsCodexProvider(provider) ||
            provider == QLatin1String("openai") ||
            provider == QLatin1String("claude-api") ||
-           provider == QLatin1String("claude-code");
+           provider == QLatin1String("claude-code") ||
+           agentIsCloudflareAiProvider(provider);
 }
 
 inline QString defaultAgentProvider()
@@ -3906,10 +3981,9 @@ inline QString quickAddAgentProvider()
         QSettings().value(kQuickAddAgentProviderSetting).toString().trimmed();
     // "Manual (create issue)" is a quick-add-only pseudo-provider (adhoc #29): it
     // files an issue instead of running an agent, so it's not in the known-agent
-    // set but must still be restorable across launches. Cloudflare AI is the
-    // same kind of composer-only choice — it answers the prompt instead of
-    // starting an agent — and must likewise survive a restart.
-    if (value == QLatin1String("manual") || agentIsCloudflareAiProvider(value))
+    // set but must still be restorable across launches. (Cloudflare AI used to
+    // need the same carve-out; it is a known agent provider since adhoc #1634.)
+    if (value == QLatin1String("manual"))
         return value;
     return agentProviderIsKnown(value) ? value : defaultAgentProvider();
 }
@@ -4370,19 +4444,31 @@ inline bool agentModelIsClaudeStyle(const QString &model)
     return false;
 }
 
+// Whether a model id belongs to Cloudflare Workers AI. Every Workers AI model
+// id reads as "@cf/<vendor>/<model>", so the prefix is the whole test. Keeps a
+// "@cf/..." pick bound to the cloudflare-ai provider: it would otherwise pass
+// the "not Claude-style" check below and be handed to the Codex/OpenAI CLIs.
+inline bool agentModelIsCloudflareStyle(const QString &model)
+{
+    return model.trimmed().startsWith(QLatin1String("@cf/"));
+}
+
 // Whether `model` is compatible with `provider`. An empty model always matches
 // (the provider falls back to its own default). Claude providers need a
-// Claude-style model; the Codex/OpenAI CLIs need a non-Claude one. This lets a
-// session be continued by a different provider without the leftover model from
-// the previous provider breaking the run (adhoc #76).
+// Claude-style model, Cloudflare AI a "@cf/..." one; the Codex/OpenAI CLIs
+// need a model from neither family. This lets a session be continued by a
+// different provider without the leftover model from the previous provider
+// breaking the run (adhoc #76).
 inline bool agentModelMatchesProvider(const QString &provider, const QString &model)
 {
     if (model.trimmed().isEmpty())
         return true;
+    if (agentIsCloudflareAiProvider(provider))
+        return agentModelIsCloudflareStyle(model);
     if (provider == QLatin1String("claude-code") ||
         provider.startsWith(QLatin1String("claude")))
         return agentModelIsClaudeStyle(model);
-    return !agentModelIsClaudeStyle(model);
+    return !agentModelIsClaudeStyle(model) && !agentModelIsCloudflareStyle(model);
 }
 
 // Which of the World's seven bot portraits a model is named after, or -1 when
@@ -4510,8 +4596,8 @@ inline QString codexChatGptModelId(const QString &model)
     const QString trimmed = model.trimmed();
     if (trimmed.isEmpty())
         return QStringLiteral("gpt-5.5");
-    if (trimmed == QLatin1String("gpt-5.3-codex-spark"))
-        return QStringLiteral("gpt-5.3-spark");
+    if (trimmed == QLatin1String("gpt-5.3-spark"))
+        return QStringLiteral("gpt-5.3-codex-spark");
     if (trimmed == QLatin1String("gpt-5.5-codex"))
         return QStringLiteral("gpt-5.5");
     if (trimmed == QLatin1String("gpt-5.4"))
@@ -4532,6 +4618,7 @@ inline void populateCodexModelCombo(QComboBox *combo)
     combo->setEditable(false);
     combo->setInsertPolicy(QComboBox::NoInsert);
     combo->setProperty("allowAutoModel", false);
+    QSet<QString> seen;
     const QJsonArray live = QJsonDocument::fromJson(
                                 QSettings().value(kCodexModelsCacheSetting).toByteArray())
                                 .array();
@@ -4542,8 +4629,11 @@ inline void populateCodexModelCombo(QComboBox *combo)
         QString id = model.value(QStringLiteral("model")).toString().trimmed();
         if (id.isEmpty())
             id = model.value(QStringLiteral("id")).toString().trimmed();
-        if (!id.isEmpty())
+        id = codexChatGptModelId(id);
+        if (!id.isEmpty() && !seen.contains(id)) {
             combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
+            seen.insert(id);
+        }
     }
     if (combo->count() == 0) {
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
@@ -4642,9 +4732,10 @@ inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
     if (!combo || models.isEmpty())
         return;
     QSignalBlocker blocker(combo);
-    const QVariant selected = combo->currentData();
+    const QString selected = codexChatGptModelId(combo->currentData().toString());
     combo->clear();
     QString defaultId;
+    QSet<QString> seen;
     for (const QJsonValue &value : models) {
         const QJsonObject model = value.toObject();
         if (model.value(QStringLiteral("hidden")).toBool())
@@ -4652,10 +4743,12 @@ inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
         QString id = model.value(QStringLiteral("model")).toString().trimmed();
         if (id.isEmpty())
             id = model.value(QStringLiteral("id")).toString().trimmed();
-        if (!id.isEmpty()) {
+        id = codexChatGptModelId(id);
+        if (!id.isEmpty() && !seen.contains(id)) {
             combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
             if (model.value(QStringLiteral("isDefault")).toBool())
                 defaultId = id;
+            seen.insert(id);
         }
     }
     const int restored = combo->findData(selected);
@@ -4776,6 +4869,39 @@ inline int agentModelPowerRank(const QString &model, const QString &label)
     return 500 + int(version * 100.0 + 0.5) + tier;
 }
 
+// Which rows the composer's agent/model dropdown leaves out (adhoc #1557). The
+// menu lists every model each installed provider offers, which is more choice
+// than most people want in a picker they open dozens of times a day; this is the
+// set they have switched off in Settings → Agents.
+//
+// Stored as the *hidden* set rather than the shown one so a model that appears
+// after this list was last edited — a live /v1/models fetch, a new Codex catalog
+// entry — shows up by default instead of being silently suppressed.
+const QString kComposerHiddenModelsSetting =
+    QStringLiteral("agents/composerHiddenModels");
+
+// Stable identity for one composer row. Provider-only agents (OpenAI API, Claude
+// API, Manual) carry no model of their own, so their key is just the provider.
+inline QString composerModelKey(const QString &provider, const QString &model)
+{
+    return provider.trimmed().toLower() + QLatin1Char('\x1f') +
+           model.trimmed().toLower();
+}
+
+inline QSet<QString> hiddenComposerModels()
+{
+    const QStringList saved =
+        QSettings().value(kComposerHiddenModelsSetting).toStringList();
+    return QSet<QString>(saved.cbegin(), saved.cend());
+}
+
+inline void saveHiddenComposerModels(const QSet<QString> &hidden)
+{
+    QStringList keys(hidden.cbegin(), hidden.cend());
+    keys.sort(); // stable on disk, so a no-op edit doesn't rewrite the file
+    QSettings().setValue(kComposerHiddenModelsSetting, keys);
+}
+
 inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
@@ -4811,7 +4937,38 @@ inline QString agentModelLabel(const QString &model)
         {QStringLiteral("gpt-5.5"), QStringLiteral("GPT-5.5")},
         {QStringLiteral("gpt-5.5-codex"), QStringLiteral("GPT-5.5 Codex")},
     };
-    return kLabels.value(model.trimmed(), model.trimmed());
+    const QString id = model.trimmed();
+    if (const QString mapped = kLabels.value(id); !mapped.isEmpty())
+        return mapped;
+    // New Claude ids ship before this map learns them ("claude-opus-5" showed
+    // as its raw id in the status pill). Prettify "claude-<family>-<n>-<n>…"
+    // instead: capitalise the family word and dot-join the numeric version,
+    // dropping a trailing build-date stamp — "claude-opus-5" → "Opus 5",
+    // "claude-haiku-4-5-20251001" → "Haiku 4.5". Ids whose family slot isn't a
+    // word (the legacy "claude-3-5-sonnet" order) stay raw rather than mangled.
+    if (id.startsWith(QLatin1String("claude-"))) {
+        const QStringList parts =
+            id.mid(7).split(QLatin1Char('-'), Qt::SkipEmptyParts);
+        const auto numeric = [](const QString &p) {
+            return std::all_of(p.cbegin(), p.cend(),
+                               [](QChar c) { return c.isDigit(); });
+        };
+        if (!parts.isEmpty() && !numeric(parts.first())) {
+            QString family = parts.first();
+            family[0] = family.at(0).toUpper();
+            QStringList version;
+            for (int i = 1; i < parts.size(); ++i) {
+                if (!numeric(parts.at(i)) || parts.at(i).size() >= 8)
+                    break;
+                version << parts.at(i);
+            }
+            return version.isEmpty()
+                       ? family
+                       : family + QLatin1Char(' ') +
+                             version.join(QLatin1Char('.'));
+        }
+    }
+    return id;
 }
 
 // The running-session status pill has no room for "Opus 4.8" alongside its
@@ -4836,6 +4993,11 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
     if (!combo)
         return;
     combo->clear();
+    // populateCloudflareAiModelCombo marks the combo non-Claude so the live
+    // /v1/models merge leaves it alone; switching back to a Claude provider
+    // must undo that or the merge skips this combo for the rest of the run.
+    combo->setProperty("claudeModelCombo",
+                       agentIsClaudeProvider(provider));
     if (provider == QLatin1String("claude-code")) {
         combo->addItem(QStringLiteral("Sonnet 5"), QStringLiteral("claude-sonnet-5"));
         combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("claude-opus-4-8"));
@@ -4843,6 +5005,8 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
         combo->addItem(QStringLiteral("Fable 5"), QStringLiteral("claude-fable-5"));
     } else if (agentIsCodexProvider(provider)) {
         populateCodexModelCombo(combo);
+    } else if (agentIsCloudflareAiProvider(provider)) {
+        populateCloudflareAiModelCombo(combo);
     } else if (agentUsesOpenAiKey(provider)) {
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
         combo->addItem(QStringLiteral("GPT-5.5 Codex"),
@@ -4970,6 +5134,43 @@ inline QString claudeAgentScriptPath(const QString &directory = QString())
 inline QString defaultClaudeCommand()
 {
     QString quoted = claudeAgentScriptPath();
+    quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    return QStringLiteral("python3 '%1' {promptFile}").arg(quoted);
+}
+
+// Materialize the bundled Cloudflare Workers AI agent script (adhoc #1634)
+// into the app data dir and return its path. The script drives the tool-use
+// loop against the relay's POST /api/ai/agent using the signed run ticket
+// AgentRunner injects as FORKMESH_AI_AGENT_AUTH, so no CLI or API key is
+// required.
+inline QString cloudflareAgentScriptPath(const QString &directory = QString())
+{
+    const QString dir = directory.isEmpty()
+                            ? QStandardPaths::writableLocation(
+                                  QStandardPaths::AppDataLocation) +
+                                  QStringLiteral("/agents")
+                            : directory;
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/forkmesh_cloudflare_agent.py");
+    const QByteArray wanted = forkmeshCloudflareAgentScript().toUtf8();
+    QFile file(path);
+    bool needsWrite = true;
+    if (file.open(QIODevice::ReadOnly)) {
+        needsWrite = file.readAll() != wanted;
+        file.close();
+    }
+    if (needsWrite && file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(wanted);
+        file.close();
+    }
+    return path;
+}
+
+// Default Cloudflare AI command: run the bundled script with python3, feeding
+// it the prompt file, exactly like defaultClaudeCommand().
+inline QString defaultCloudflareAiCommand()
+{
+    QString quoted = cloudflareAgentScriptPath();
     quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
     return QStringLiteral("python3 '%1' {promptFile}").arg(quoted);
 }
@@ -5260,6 +5461,81 @@ inline int ramCappedBuildJobs()
     if (totalRam > 0)
         jobs = qBound(1, int(totalRam / (3LL * 1024 * 1024 * 1024)), jobs);
     return jobs;
+}
+
+// The scratch directory a rebuild points the toolchain's TMPDIR at. GCC and
+// Clang stream every translation unit's assembly through TMPDIR, so a -j<N>
+// build of qt_client has hundreds of megabytes of .s files live there at once.
+// On most desktop Linux installs /tmp is a RAM-backed tmpfs that ForkMesh also
+// shares with agent worktrees and mirror materializations, so a rebuild with
+// gigabytes free on the build disk still dies mid-compile with "No space left
+// on device" (adhoc #1563). Keeping the scratch inside the build tree puts it
+// on the one filesystem the build already has to fit on.
+inline QString buildScratchDir(const QString &buildDir)
+{
+    return buildDir + QStringLiteral("/.forkmesh-tmp");
+}
+
+// Free bytes on the filesystem holding `path`, walking up to the nearest
+// existing ancestor because the build directory may not exist yet. Returns -1
+// when the volume cannot be read, which callers must treat as "unknown" rather
+// than "full" so an unreadable mount never blocks an update.
+inline qint64 freeBytesForPath(const QString &path)
+{
+    QString probe = QDir::cleanPath(path);
+    while (!probe.isEmpty() && !QFileInfo::exists(probe)) {
+        const QString parent = QFileInfo(probe).absolutePath();
+        if (parent == probe || parent.isEmpty())
+            break;
+        probe = parent;
+    }
+    const QStorageInfo volume(probe);
+    if (!volume.isValid() || !volume.isReady())
+        return -1;
+    return volume.bytesAvailable();
+}
+
+// How much free space a rebuild into `buildDir` must have before it is worth
+// starting. A build tree from scratch is ~2 GB of objects plus the linked
+// binary and the assembler scratch above; an incremental rebuild overwrites
+// those objects in place, so it only needs headroom for the scratch and the
+// new binary. Getting this wrong in the strict direction would block a
+// perfectly viable update on a tight disk, so an existing tree is judged by
+// the smaller figure.
+inline qint64 rebuildFreeBytesRequired(const QString &buildDir)
+{
+    const bool incremental =
+        QFileInfo::exists(buildDir + QStringLiteral("/CMakeFiles/forkmesh.dir"));
+    return incremental ? 1024LL * 1024 * 1024 : 3LL * 1024 * 1024 * 1024;
+}
+
+// The one-line summary shown on the status label when an update step exits
+// non-zero. The raw output tail used to be chopped at a fixed 300 characters,
+// which routinely landed mid-word ("Update failed: vice") and told the user
+// nothing. Prefer the first real diagnostic — the tail of a parallel make is
+// just "gmake: *** [Makefile:136: all] Error 2" — and special-case a full disk,
+// which is the one failure with an obvious remedy.
+inline QString updateFailureSummary(const QString &output)
+{
+    if (output.contains(QLatin1String("No space left on device")))
+        return QStringLiteral(
+            "the disk filled up during the build. Free space on the volume "
+            "holding the build directory, then start the update again — "
+            "nothing was replaced.");
+    const QStringList lines = output.split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+        if (trimmed.contains(QLatin1String("error:")) ||
+            trimmed.startsWith(QLatin1String("fatal:")))
+            return trimmed.left(300);
+    }
+    // Nothing recognisable: fall back to the tail, but drop the partial first
+    // line so the label never starts mid-word.
+    QString tail = output.trimmed().right(300);
+    const int newline = tail.indexOf(QLatin1Char('\n'));
+    if (newline >= 0 && newline < tail.size() - 1)
+        tail = tail.mid(newline + 1);
+    return tail.trimmed();
 }
 
 inline QStringList cmakeConfigureArgs(const QString &clientDir, const QString &buildDir,
@@ -5937,8 +6213,9 @@ protected:
         }
         const QString target =
             rel.isEmpty() ? m_basePath : QDir(m_basePath).filePath(rel);
-        // File slices reveal their containing directory (a file itself can't
-        // be opened as a folder).
+        // Only offer the menu for something that is still on disk. File slices
+        // resolve to their containing directory — revealInDesktopFileManager
+        // applies that same rule when the action actually fires.
         const QFileInfo targetInfo(target);
         const QString dir = targetInfo.isDir()
                                 ? target
@@ -5952,7 +6229,7 @@ protected:
         QAction *open = menu.addAction(
             QStringLiteral("Open \"%1\" in file explorer").arg(label));
         connect(open, &QAction::triggered, this,
-                [dir] { QDesktopServices::openUrl(QUrl::fromLocalFile(dir)); });
+                [target] { revealInDesktopFileManager(target); });
         menu.exec(event->globalPos());
     }
 
@@ -7426,6 +7703,19 @@ public:
         QString status;
         QString reason;
         qint64 minuteTs = 0;
+        // Measured by this desktop (the Cloudflare edge probes) rather than
+        // graded by the relay, which changes what the timestamp means: a
+        // local check time, not the relay's newest completed sample minute.
+        bool local = false;
+        // The same system as seen from this desktop, folded into the relay's
+        // own row (adhoc #1602): the site and the /status page are checked from
+        // both sides, and one dot carries both verdicts. Empty when the relay
+        // is the only source for this row.
+        QString localStatus;
+        QString localReason;
+        qint64 localCheckedTs = 0;
+        // A check for this row is in flight right now, so the dot blinks.
+        bool checking = false;
     };
 
     explicit LogActivityLights(Presentation presentation = Compact,
@@ -7521,11 +7811,13 @@ public:
     void setWebsiteStatuses(const QList<WebsiteStatus> &statuses)
     {
         m_websiteStatuses = statuses;
+        noteWebsiteCheckCycles();
         if (m_presentation == Compact)
             updateCompactSize();
         else if (m_presentation == Debug)
             updateDebugSize();
         updateSummaryToolTip();
+        updateWebsiteAnimation();
         update();
     }
 
@@ -7535,6 +7827,28 @@ public:
     }
 
     int lightCount() const { return categoryCount(); }
+
+    // The category taxonomy this strip paints, published so the Log page's
+    // quick-filter chips can wear the same glyph, in the same order, for the
+    // same badge (adhoc #1559) instead of keeping a second list in step by hand.
+    static QStringList badges()
+    {
+        QStringList names;
+        names.reserve(categoryCount());
+        for (int i = 0; i < categoryCount(); ++i)
+            names << QString::fromLatin1(categories()[i].badge);
+        return names;
+    }
+
+    static QString iconForBadge(const QString &badge)
+    {
+        for (int i = 0; i < categoryCount(); ++i) {
+            if (badge == QLatin1String(categories()[i].badge))
+                return QString::fromLatin1(categories()[i].icon);
+        }
+        return QStringLiteral("info");
+    }
+
     quint64 countFor(const QString &badge) const
     {
         const int lane = categoryIndex(badge);
@@ -7555,10 +7869,21 @@ public:
         }
         return QString();
     }
+    // The desktop-measured half of a merged row, empty when this row is the
+    // relay's own report alone.
+    QString websiteLocalStatusFor(const QString &id) const
+    {
+        for (const WebsiteStatus &status : m_websiteStatuses) {
+            if (status.id == id)
+                return status.localStatus;
+        }
+        return QString();
+    }
     bool isHeader() const { return m_presentation == Header; }
     bool isDebug() const { return m_presentation == Debug; }
 
     std::function<void(const QString &category)> onCategoryClicked;
+    std::function<void(const QString &statusId)> onWebsiteClicked;
     std::function<void()> onStallClicked;
     std::function<void()> onStallContextMenu;
     std::function<void()> onClicked;
@@ -7620,7 +7945,7 @@ protected:
                                  Qt::AlignLeft | Qt::AlignTop, count);
 
                 QFont labelFont = painter.font();
-                labelFont.setPixelSize(5);
+                labelFont.setPixelSize(6);
                 labelFont.setBold(false);
                 painter.setFont(labelFont);
                 painter.setPen(unseen);
@@ -7637,13 +7962,22 @@ protected:
             painter.setPen(Qt::NoPen);
             for (int i = 0; i < m_websiteStatuses.size(); ++i) {
                 const QRect dotRect = websiteStatusRect(i);
-                const QColor color = websiteStatusColor(
+                const QColor verdict = websiteStatusColor(
                     m_websiteStatuses.at(i).status, dark);
+                // A dot being re-checked right now blinks between its verdict
+                // and the empty colour, so a row that is working is visibly
+                // working rather than looking identical to a stalled one.
+                const bool checking = websiteChecking(i);
+                const QColor color =
+                    checking && !m_websiteBlinkOn ? blinkOff : verdict;
                 painter.setBrush(color);
                 painter.drawEllipse(dotRect);
                 if (m_presentation == Debug) {
+                    // The ring around the dot empties over the minute between
+                    // checks, so the row also says how fresh the verdict is.
+                    paintWebsiteCountdown(painter, i, verdict, dark);
                     QFont labelFont = painter.font();
-                    labelFont.setPixelSize(6);
+                    labelFont.setPixelSize(7);
                     labelFont.setBold(false);
                     painter.setFont(labelFont);
                     painter.setPen(unseen);
@@ -7681,13 +8015,38 @@ protected:
                 QString tip = QStringLiteral("%1 — %2")
                                   .arg(status.label, status.status);
                 if (status.minuteTs > 0) {
-                    tip += QStringLiteral("\nLast completed minute: %1")
-                               .arg(QDateTime::fromMSecsSinceEpoch(status.minuteTs)
+                    tip += QStringLiteral("\n%1: %2")
+                               .arg(status.local
+                                        ? QStringLiteral("Checked from this desktop")
+                                        : QStringLiteral("Last completed minute"),
+                                    QDateTime::fromMSecsSinceEpoch(status.minuteTs)
                                         .toLocalTime()
                                         .toString(QStringLiteral("yyyy-MM-dd HH:mm")));
                 }
                 if (!status.reason.isEmpty())
                     tip += QLatin1Char('\n') + status.reason;
+                // A merged row was graded twice — once by the relay from inside
+                // Cloudflare and once here over the real public hostname — so
+                // the tooltip keeps both verdicts apart instead of hiding the
+                // one that lost the worst-wins merge.
+                if (!status.localStatus.isEmpty()) {
+                    tip += QStringLiteral("\nFrom this desktop: %1")
+                               .arg(status.localStatus);
+                    if (status.localCheckedTs > 0)
+                        tip += QStringLiteral(" (checked %1)")
+                                   .arg(QDateTime::fromMSecsSinceEpoch(
+                                            status.localCheckedTs)
+                                            .toLocalTime()
+                                            .toString(QStringLiteral("HH:mm")));
+                    if (!status.localReason.isEmpty())
+                        tip += QLatin1Char('\n') + status.localReason;
+                }
+                if (websiteChecking(website))
+                    tip += QStringLiteral("\nChecking now…");
+                if (onWebsiteClicked)
+                    tip += QStringLiteral(
+                        "\nClick to check again now and open the related "
+                        "website page.");
                 QToolTip::showText(help->globalPos(), tip, this);
                 return true;
             }
@@ -7699,9 +8058,19 @@ protected:
     {
         if (event->button() == Qt::LeftButton && rect().contains(event->pos())) {
             const int lane = categoryAt(event->pos());
-            if (lane == stallCategoryIndex() && onStallClicked)
+            if (lane == stallCategoryIndex() && onStallClicked) {
                 onStallClicked();
-            else if (m_presentation != Header) {
+            } else if (lane < 0) {
+                // Outside the category glyphs. The website dots are the relay's
+                // own health, so they open related pages in the website (adhoc
+                // #1559); nothing else in the strip claims this area. Reading
+                // categories()[-1] is what this branch used to do.
+                const int website = websiteStatusAt(event->pos());
+                if (website >= 0 && onWebsiteClicked) {
+                    onWebsiteClicked(m_websiteStatuses.at(website).id);
+                } else if (onClicked)
+                    onClicked();
+            } else if (m_presentation != Header) {
                 if (onCategoryClicked)
                     onCategoryClicked(categories()[lane].badge);
                 else if (onClicked)
@@ -7720,6 +8089,22 @@ protected:
             return;
         }
         QWidget::contextMenuEvent(event);
+    }
+
+    // The countdown rings and the checking blink are the only things in this
+    // strip that move on their own, so their timer runs only while the strip is
+    // on screen with dots to animate.
+    void showEvent(QShowEvent *event) override
+    {
+        QWidget::showEvent(event);
+        updateWebsiteAnimation();
+    }
+
+    void hideEvent(QHideEvent *event) override
+    {
+        if (m_websiteAnimation)
+            m_websiteAnimation->stop();
+        QWidget::hideEvent(event);
     }
 
 private:
@@ -7748,6 +8133,8 @@ private:
             {"PIN", "#79c0ff", "shield-check"},
             {"GIT", "#58a6ff", "git-commit"},
             {"BGTASK", "#8b949e", "gear"},
+            {"BGBLOCK", "#f0883e", "stop"},
+            {"BGNOTE", "#6e7681", "note"},
             {"PUBLISH", "#58a6ff", "upload"},
             {"PULL", "#3fb950", "git-pull-request"},
             {"MERGE", "#a371f7", "git-merge"},
@@ -7765,13 +8152,20 @@ private:
             {"ERROR", "#f85149", "x"},
             {"INFO", "#6e7681", "info"},
         };
+        static_assert(sizeof(values) / sizeof(values[0]) == kCategoryCount,
+                      "kCategoryCount must match the taxonomy above");
         return values;
     }
 
-    static constexpr int categoryCount() { return 30; }
-    static constexpr int stallCategoryIndex() { return 27; }
-    static constexpr int kCompactColumns = 10;
+    // One entry per row of categories() above; the per-lane arrays below and the
+    // compact grid are both sized from it.
+    static constexpr int kCategoryCount = 32;
+    static constexpr int categoryCount() { return kCategoryCount; }
     static constexpr int kCompactRows = 3;
+    // Enough columns to hold the whole taxonomy in those rows, so adding a
+    // category widens the grid instead of dropping the overflow off the bottom.
+    static constexpr int kCompactColumns =
+        (kCategoryCount + kCompactRows - 1) / kCompactRows;
     static constexpr int kCompactCell = 16;
     static constexpr int kCompactPadding = 7;
     static constexpr int kHeaderHeight = 32;
@@ -7779,6 +8173,18 @@ private:
     static constexpr int kDebugPadding = 4;
     static constexpr int kDebugCategorySlot = 25;
     static constexpr int kDebugWebsiteSlot = 36;
+    // The debug row's website dots and the countdown ring drawn around each of
+    // them (adhoc #1602). The ring's outer edge must clear the labels below.
+    static constexpr int kDebugWebsiteDot = 14;
+    static constexpr int kDebugWebsiteRing = 21;
+    static constexpr int kDebugWebsiteTop = 4;
+    // Checks run on the one-minute cadence of MainWindow's relay-latency timer,
+    // which is what the ring counts down.
+    static constexpr int kWebsiteCheckIntervalMs = 60000;
+    // A check usually answers in well under a blink, so a row that starts one
+    // keeps blinking briefly after it lands — otherwise the only feedback for a
+    // healthy fast check would be a frame nobody sees.
+    static constexpr int kWebsiteCheckBlinkTailMs = 900;
 
     static int categoryIndex(const QString &badge)
     {
@@ -7787,6 +8193,15 @@ private:
                 return i;
         }
         return categoryCount() - 1; // unknown future categories pulse INFO
+    }
+
+    // Looked up rather than hard-coded: STALL's lane shifts every time a
+    // category is inserted above it, and a stale index would silently hand the
+    // stall click/tooltip to whatever category took its place.
+    static int stallCategoryIndex()
+    {
+        static const int index = categoryIndex(QStringLiteral("STALL"));
+        return index;
     }
 
     int compactCategoryWidth() const
@@ -7953,8 +8368,9 @@ private:
         if (m_presentation == Debug) {
             const int x = websiteSeparatorX() +
                           index * kDebugWebsiteSlot +
-                          (kDebugWebsiteSlot - 11) / 2;
-            return QRect(x, 7, 11, 11);
+                          (kDebugWebsiteSlot - kDebugWebsiteDot) / 2;
+            return QRect(x, kDebugWebsiteTop, kDebugWebsiteDot,
+                         kDebugWebsiteDot);
         }
         const int col = index / 2;
         const int row = index % 2;
@@ -7966,7 +8382,137 @@ private:
     QRect websiteStatusLabelRect(int index) const
     {
         const int x = websiteSeparatorX() + index * kDebugWebsiteSlot;
-        return QRect(x, 24, kDebugWebsiteSlot, 13);
+        return QRect(x, 27, kDebugWebsiteSlot, 12);
+    }
+
+    // The countdown ring's track, concentric with the dot.
+    QRect websiteCountdownRect(int index) const
+    {
+        const QRect dot = websiteStatusRect(index);
+        const int grow = (kDebugWebsiteRing - dot.width()) / 2;
+        return dot.adjusted(-grow, -grow, grow, grow);
+    }
+
+    // How much of this row's minute is left before the next check, 0 when the
+    // row has never been checked here or the check is already overdue.
+    qreal websiteCountdownFraction(int index) const
+    {
+        const qint64 checked =
+            m_websiteCheckedAt.value(m_websiteStatuses.at(index).id, 0);
+        if (checked <= 0)
+            return 0.0;
+        const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - checked;
+        if (elapsed < 0 || elapsed >= kWebsiteCheckIntervalMs)
+            return 0.0;
+        return 1.0 - qreal(elapsed) / qreal(kWebsiteCheckIntervalMs);
+    }
+
+    void paintWebsiteCountdown(QPainter &painter, int index,
+                               const QColor &verdict, bool dark) const
+    {
+        const QRectF ring(websiteCountdownRect(index));
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 2));
+        painter.drawEllipse(ring);
+        const qreal remaining = websiteCountdownFraction(index);
+        if (remaining > 0.0) {
+            painter.setPen(QPen(verdict, 2, Qt::SolidLine, Qt::FlatCap));
+            // Starts full at twelve o'clock and unwinds clockwise as the
+            // minute runs out, so an empty ring means "a check is due now".
+            painter.drawArc(ring, 90 * 16,
+                            -qRound(remaining * 360.0) * 16);
+        }
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::NoBrush);
+    }
+
+    // Is this row mid-check? The tail keeps a blink visible even when the
+    // answer arrives between two paints.
+    bool websiteChecking(int index) const
+    {
+        if (index < 0 || index >= m_websiteStatuses.size())
+            return false;
+        const WebsiteStatus &status = m_websiteStatuses.at(index);
+        if (status.checking)
+            return true;
+        return m_websiteBlinkUntil.value(status.id, 0) >
+               QDateTime::currentMSecsSinceEpoch();
+    }
+
+    bool anyWebsiteChecking() const
+    {
+        for (int i = 0; i < m_websiteStatuses.size(); ++i) {
+            if (websiteChecking(i))
+                return true;
+        }
+        return false;
+    }
+
+    // Track when each row's check cycle last completed — the ring counts down
+    // from there — and arm the blink tail for the ones checking right now.
+    void noteWebsiteCheckCycles()
+    {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        QSet<QString> present;
+        QSet<QString> checking;
+        for (const WebsiteStatus &status : m_websiteStatuses) {
+            present.insert(status.id);
+            if (status.checking) {
+                checking.insert(status.id);
+                m_websiteBlinkUntil[status.id] = now + kWebsiteCheckBlinkTailMs;
+            } else if (m_websiteChecking.contains(status.id) ||
+                       !m_websiteCheckedAt.contains(status.id)) {
+                // A check just landed, or this row was never seen before and
+                // its first verdict is as fresh as one.
+                m_websiteCheckedAt[status.id] = now;
+            }
+        }
+        m_websiteChecking = checking;
+        // Rows come and go with the relay's system list (mirror nodes join and
+        // leave), so the bookkeeping follows the rows rather than growing.
+        for (auto it = m_websiteCheckedAt.begin();
+             it != m_websiteCheckedAt.end();) {
+            if (present.contains(it.key()))
+                ++it;
+            else
+                it = m_websiteCheckedAt.erase(it);
+        }
+        for (auto it = m_websiteBlinkUntil.begin();
+             it != m_websiteBlinkUntil.end();) {
+            if (present.contains(it.key()))
+                ++it;
+            else
+                it = m_websiteBlinkUntil.erase(it);
+        }
+    }
+
+    void updateWebsiteAnimation()
+    {
+        // Only the debug row draws the rings, so the other two presentations
+        // animate solely while a check is actually running rather than
+        // repainting themselves once a second forever.
+        const bool blinking = anyWebsiteChecking();
+        if (m_websiteStatuses.isEmpty() || !isVisible() ||
+            (m_presentation != Debug && !blinking)) {
+            if (m_websiteAnimation)
+                m_websiteAnimation->stop();
+            return;
+        }
+        if (!m_websiteAnimation) {
+            m_websiteAnimation = new QTimer(this);
+            connect(m_websiteAnimation, &QTimer::timeout, this, [this] {
+                m_websiteBlinkOn = !m_websiteBlinkOn;
+                // The interval follows the state: fast while something is being
+                // checked, once a second otherwise for the rings alone.
+                updateWebsiteAnimation();
+                update();
+            });
+        }
+        const int interval = blinking ? 200 : 1000;
+        if (m_websiteAnimation->interval() != interval)
+            m_websiteAnimation->setInterval(interval);
+        if (!m_websiteAnimation->isActive())
+            m_websiteAnimation->start();
     }
 
     static QString debugWebsiteLabel(const WebsiteStatus &status)
@@ -7975,6 +8521,7 @@ private:
         // bar only has room for the one- or two-word identity requested here.
         static const QHash<QString, QString> labels = {
             {QStringLiteral("website"), QStringLiteral("Web")},
+            {QStringLiteral("status_page"), QStringLiteral("Status page")},
             {QStringLiteral("api"), QStringLiteral("API")},
             {QStringLiteral("errors"), QStringLiteral("Errors")},
             {QStringLiteral("database"), QStringLiteral("DB")},
@@ -7984,6 +8531,11 @@ private:
             {QStringLiteral("git_hosting"), QStringLiteral("Git host")},
             {QStringLiteral("realtime"), QStringLiteral("Realtime")},
             {QStringLiteral("durable_objects"), QStringLiteral("Durables")},
+            // Only seen while the relay's own list is still missing: a desktop
+            // check normally merges into the "Web"/"Status page" row it shares
+            // a subject with (adhoc #1602).
+            {QStringLiteral("desktop_website"), QStringLiteral("Web here")},
+            {QStringLiteral("desktop_status_page"), QStringLiteral("Status here")},
         };
         const auto known = labels.constFind(status.id);
         if (known != labels.cend())
@@ -7994,7 +8546,12 @@ private:
     int websiteStatusAt(const QPoint &point) const
     {
         for (int i = 0; i < m_websiteStatuses.size(); ++i) {
-            if (websiteStatusRect(i).adjusted(-2, -2, 2, 2).contains(point))
+            // The debug row's countdown ring belongs to its dot, so clicking
+            // the ring opens the same page the dot does.
+            const QRect hit = m_presentation == Debug
+                                  ? websiteCountdownRect(i)
+                                  : websiteStatusRect(i);
+            if (hit.adjusted(-2, -2, 2, 2).contains(point))
                 return i;
         }
         return -1;
@@ -8020,8 +8577,9 @@ private:
             return;
         }
         setToolTip(QStringLiteral(
-            "30 live-log categories%1 — hover an icon for its count; click for full "
+            "%1 live-log categories%2 — hover an icon for its count; click for full "
             "Log page filtered to this category")
+                       .arg(categoryCount())
                        .arg(m_websiteStatuses.isEmpty()
                                 ? QString()
                                 : QStringLiteral(" and %1 website status results")
@@ -8029,13 +8587,22 @@ private:
     }
 
     Presentation m_presentation = Compact;
-    quint64 m_counts[30] = {};
-    bool m_blinkVisible[30] = {};
-    bool m_blinking[30] = {};
-    int m_generation[30] = {};
+    quint64 m_counts[kCategoryCount] = {};
+    bool m_blinkVisible[kCategoryCount] = {};
+    bool m_blinking[kCategoryCount] = {};
+    int m_generation[kCategoryCount] = {};
     bool m_expanded = false;
     QList<WebsiteStatus> m_websiteStatuses;
     QString m_stallToolTip;
+    // Website-dot animation state (adhoc #1602): when each row's check cycle
+    // last completed, how long a mid-check row keeps blinking, and the shared
+    // blink phase. Keyed by row id so the relay reordering its systems, or a
+    // mirror node joining, never hands one row another's ring.
+    QHash<QString, qint64> m_websiteCheckedAt;
+    QHash<QString, qint64> m_websiteBlinkUntil;
+    QSet<QString> m_websiteChecking;
+    QTimer *m_websiteAnimation = nullptr;
+    bool m_websiteBlinkOn = true;
 };
 
 // One conflict region in a file carrying git merge markers. Line indices are
@@ -9514,6 +10081,20 @@ public:
         update();
     }
 
+    // Paint this tile in a category colour instead of the rail's neutral grey.
+    // The log's quick-filter row is the log's own legend (adhoc #1633): each
+    // tile has to carry the accent its badge uses in the log body, or the row
+    // reads as an undifferentiated grey wall. An invalid colour — the default —
+    // keeps the plain rail behaviour every other tile in the app has.
+    void setAccentColor(const QColor &accent)
+    {
+        if (m_accent == accent)
+            return;
+        m_accent = accent;
+        update();
+    }
+    QColor accentColor() const { return m_accent; }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -9532,6 +10113,14 @@ protected:
                       : QColor(isChecked() || hovered ? "#1f2328" : "#656d76");
         if (!isEnabled())
             fg = QColor("#6e7681");
+        // An accented tile keeps its category colour at rest (that is what makes
+        // the row a legend); the caption stays in the rail's grey until the tile
+        // is checked or hovered, so the colour reads as "which category" rather
+        // than "which one is selected".
+        const bool accented = m_accent.isValid() && isEnabled();
+        const QColor glyphColor = accented ? m_accent : fg;
+        const QColor captionColor =
+            accented && (isChecked() || hovered) ? m_accent : fg;
 
         if (m_form == Action) {
             // No resting fill or border: the repo header's actions read as
@@ -9545,7 +10134,8 @@ protected:
             }
         } else if (m_form == Tab && isChecked()) {
             p.fillRect(QRect(0, height() - 2, width(), 2),
-                       QColor(dark ? "#2ea043" : "#1f883d"));
+                       accented ? m_accent
+                                : QColor(dark ? "#2ea043" : "#1f883d"));
         }
 
         const QRect iconRect((width() - kIconPx) / 2, 6, kIconPx, kIconPx);
@@ -9554,13 +10144,13 @@ protected:
                          isEnabled() ? QIcon::Normal : QIcon::Disabled);
         else
             p.drawPixmap(iconRect.topLeft(),
-                         tintedOcticonPixmap(m_iconName, fg, kIconPx));
+                         tintedOcticonPixmap(m_iconName, glyphColor, kIconPx));
 
         QFont f = font();
         f.setPixelSize(10);
         f.setWeight(QFont::DemiBold);
         p.setFont(f);
-        p.setPen(fg);
+        p.setPen(captionColor);
         p.drawText(QRect(2, iconRect.bottom() + 2, width() - 4, 14),
                    Qt::AlignHCenter | Qt::AlignTop,
                    QFontMetrics(f).elidedText(text(), Qt::ElideRight,
@@ -9587,11 +10177,15 @@ protected:
             p.setPen(Qt::NoPen);
             p.setBrush(fill);
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
-            p.setPen(QColor("#ffffff"));
+            // The accents a filter tile can carry include pale ambers and
+            // yellows, on which the badge's usual white digits vanish. Pick the
+            // legible ink for whatever fill this badge actually got.
+            p.setPen(fill.lightness() > 155 ? QColor("#0d1117")
+                                            : QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, badgeText);
             rightEdge = badge.left() - 2;
         };
-        paintBadge(m_badge, QColor("#1f6feb"));
+        paintBadge(m_badge, accented ? m_accent : QColor("#1f6feb"));
         paintBadge(m_alertBadge, QColor(dark ? "#da3633" : "#cf222e"));
     }
 
@@ -9623,6 +10217,7 @@ private:
     qint64 m_badge = 0;
     qint64 m_alertBadge = 0;
     QString m_iconName; // empty: paint the QIcon set by setOcticon instead
+    QColor m_accent;    // invalid: the rail's neutral grey/hover colours
 };
 
 // The repository Ratchet toggle at the right end of the mode row (adhoc #421).
@@ -9821,6 +10416,14 @@ public:
             m_spinAngle = (m_spinAngle + 30) % 360;
             update();
         });
+        // Same deal for the activity light: it only ticks while something this
+        // destination owns is actually running and the item is on screen.
+        m_blinkTimer = new QTimer(this);
+        m_blinkTimer->setInterval(550);
+        connect(m_blinkTimer, &QTimer::timeout, this, [this] {
+            m_blinkOn = !m_blinkOn;
+            update();
+        });
     }
 
     // The app-wide rail has more destinations than the old repo-only rail.
@@ -9833,6 +10436,22 @@ public:
         m_compact = compact;
         setFixedSize(railItemWidth(),
                      m_compact ? 30 : (m_label.isEmpty() ? 40 : kRailItemHeight));
+        update();
+    }
+
+    // Re-label an item in place. The agent detail's Transcript/Raw toggle is a
+    // single tile naming the view a click switches to (adhoc #1598), so its
+    // glyph and caption change with the surface on screen. The fixed width its
+    // caller sized for the longest caption is deliberately left alone — a tile
+    // that resized as it toggled would shuffle the whole header row.
+    void setGlyph(const QString &iconName, const QString &label)
+    {
+        if (m_iconName == iconName && m_label == label)
+            return;
+        m_iconName = iconName;
+        m_label = label;
+        setText(label);
+        setAccessibleName(label);
         update();
     }
 
@@ -9903,16 +10522,37 @@ public:
         update();
     }
 
+    // A slowly blinking green light over the icon while a long local job this
+    // destination owns is running — the Control tile during a site deployment
+    // (adhoc #1606), so progress is visible from anywhere in the app. Distinct
+    // from setSyncing()'s rotating glyph, which means "repository traffic".
+    void setActivityBlink(bool on)
+    {
+        if (m_blink == on)
+            return;
+        m_blink = on;
+        m_blinkOn = true;
+        if (m_blink && isVisible())
+            m_blinkTimer->start();
+        else
+            m_blinkTimer->stop();
+        update();
+    }
+    bool activityBlink() const { return m_blink; }
+
 protected:
     void showEvent(QShowEvent *e) override
     {
         if (m_syncing)
             m_spinTimer->start();
+        if (m_blink)
+            m_blinkTimer->start();
         QPushButton::showEvent(e);
     }
     void hideEvent(QHideEvent *e) override
     {
         m_spinTimer->stop();
+        m_blinkTimer->stop();
         QPushButton::hideEvent(e);
     }
     void paintEvent(QPaintEvent *) override
@@ -10028,6 +10668,19 @@ protected:
             p.setPen(QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, text);
         }
+
+        // Activity light: a small green lamp on the icon's lower-right corner,
+        // clear of the badge/spinner corner above it, blinking on its own timer.
+        if (m_blink && m_blinkOn) {
+            const int d = 8;
+            const QRect lamp(iconRect.right() - 2, iconRect.bottom() - d + 1,
+                             d, d);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
+            p.drawEllipse(lamp.adjusted(-2, -2, 2, 2));
+            p.setBrush(QColor("#3fb950"));
+            p.drawEllipse(lamp);
+        }
     }
     void enterEvent(QEnterEvent *e) override
     {
@@ -10050,7 +10703,10 @@ private:
     bool m_accent = false;
     bool m_syncing = false;
     bool m_compact = false;
+    bool m_blink = false;
+    bool m_blinkOn = true;
     QTimer *m_spinTimer = nullptr;
+    QTimer *m_blinkTimer = nullptr;
     int m_spinAngle = 0;
 };
 
@@ -10615,6 +11271,57 @@ inline QString logPromptAnchorLine(const QString &href)
         href.mid(kLogPromptAnchorPrefix.size()).toLatin1());
 }
 
+// "Where did this line come from?" (adhoc #1587): the trailing
+// "qt_client/src/Foo.cpp:42" every entry carries is an anchor, and clicking it
+// opens that file in the Files explorer at that line. Line first, so the path
+// runs to the end of the href and needs no delimiter of its own; it is left
+// unencoded because forkmesh::logSourceSuffix() only ever stores paths made of
+// characters that are safe both here and in the href attribute.
+const QString kLogSourceAnchorPrefix = QStringLiteral("fmlogsrc:");
+
+inline QString logSourceAnchorHref(const QString &relativePath, int line)
+{
+    return kLogSourceAnchorPrefix + QString::number(line) + QLatin1Char(':') +
+           relativePath;
+}
+
+// Decodes such an href. False (leaving the outputs untouched) for any other
+// link, including the http(s) ones inside a message body.
+inline bool logSourceAnchorTarget(const QString &href, QString *relativePath,
+                                  int *line)
+{
+    if (!href.startsWith(kLogSourceAnchorPrefix))
+        return false;
+    const QString rest = href.mid(kLogSourceAnchorPrefix.size());
+    const int colon = rest.indexOf(QLatin1Char(':'));
+    if (colon <= 0)
+        return false;
+    bool numeric = false;
+    const int parsed = rest.left(colon).toInt(&numeric);
+    if (!numeric)
+        return false;
+    if (line)
+        *line = parsed;
+    if (relativePath)
+        *relativePath = rest.mid(colon + 1);
+    return true;
+}
+
+// The dim "Foo.cpp:42" link closing a rendered log entry. Empty when the line
+// carries no location (history written before entries recorded one).
+inline QString logSourceAnchorHtml(const QString &relativePath, int line,
+                                   bool dark)
+{
+    if (relativePath.isEmpty() || line <= 0)
+        return QString();
+    return QStringLiteral(
+               "&nbsp;&nbsp;<a href='%1' style='color:%2; "
+               "text-decoration:none'>%3</a>")
+        .arg(logSourceAnchorHref(relativePath, line),
+             dark ? QStringLiteral("#6e7681") : QStringLiteral("#8c959f"),
+             forkmesh::logSourceLabel(relativePath, line).toHtmlEscaped());
+}
+
 inline QString octiconForBackgroundTaskWord(const QString &word)
 {
     static const QHash<QString, QString> icons{
@@ -10655,6 +11362,29 @@ inline QString backgroundTaskWordFromLogMessage(const QString &storedLine)
     return line.left(split < 0 ? line.size() : split).toLower();
 }
 
+// A blank the exact size of an icon. Every log entry reserves the same icon
+// slots whether or not it fills them (adhoc #1559), so timestamps, badges and
+// message text all start in the same column instead of stepping left and right
+// with whichever glyphs a line happened to earn.
+inline QString logIconSpacerTag(QTextEdit *view, int size)
+{
+    if (!view)
+        return QString();
+    static QHash<int, QPixmap> blanks;
+    if (!blanks.contains(size)) {
+        QPixmap blank(size, size);
+        blank.fill(Qt::transparent);
+        blanks.insert(size, blank);
+    }
+    const QString resource = QStringLiteral("logspacer://%1").arg(size);
+    view->document()->addResource(QTextDocument::ImageResource, QUrl(resource),
+                                  blanks.value(size));
+    return QStringLiteral("<img src='%1' width='%2' height='%2' "
+                          "style='vertical-align:middle'>&nbsp;")
+        .arg(resource)
+        .arg(size);
+}
+
 inline QString logBgtaskIconTag(QTextEdit *view, const QString &storedLine)
 {
     if (!view)
@@ -10664,7 +11394,7 @@ inline QString logBgtaskIconTag(QTextEdit *view, const QString &storedLine)
         message = storedLine.mid(21);
     const QString word = backgroundTaskWordFromLogMessage(message);
     if (word.isEmpty())
-        return QString();
+        return logIconSpacerTag(view, 11);
     const QString icon = octiconForBackgroundTaskWord(word);
     const QString resource = QStringLiteral("logbgtask://") + word + QLatin1String("-")
                              + icon;
@@ -11003,6 +11733,39 @@ inline bool isTransientGitError(const QString &err)
         if (err.contains(QLatin1String(marker), Qt::CaseInsensitive))
             return true;
     return false;
+}
+
+// Key for a working-tree editor tab in MainWindow::m_openFileTabs. The bare
+// absolute path is already taken by the filesystem explorer's read-only tab on
+// the same file, so an editable one has to file itself somewhere else — see the
+// m_openFileTabs declaration for the three key forms (adhoc #1594).
+inline QString worktreeTabKey(const QString &absPath)
+{
+    return QLatin1String("worktree:") + absPath;
+}
+
+// A .gitignore rule that matches exactly one file, for the changes panel's
+// "Add to .gitignore" (adhoc #1594). Anchored at the repository root with a
+// leading "/" so ignoring "docs/notes.txt" doesn't also swallow some other
+// notes.txt elsewhere in the tree, and glob metacharacters in the name are
+// escaped so a literal "[" or "*" can't turn the rule into a pattern.
+inline QString gitignoreRuleForPath(const QString &relPath)
+{
+    QString rule;
+    rule.reserve(relPath.size() + 8);
+    for (const QChar c : relPath) {
+        if (c == QLatin1Char('*') || c == QLatin1Char('?') ||
+            c == QLatin1Char('[') || c == QLatin1Char(']') ||
+            c == QLatin1Char('\\'))
+            rule.append(QLatin1Char('\\'));
+        rule.append(c);
+    }
+    // git strips trailing spaces from a pattern unless they are escaped.
+    if (rule.endsWith(QLatin1Char(' '))) {
+        rule.chop(1);
+        rule.append(QLatin1String("\\ "));
+    }
+    return QLatin1Char('/') + rule;
 }
 
 // The failure pane for a branch range that could not be diffed. Git's own words
@@ -11366,8 +12129,8 @@ inline bool worktreeTrackedClean(const QString &workTree)
 }
 
 // Drop any other worktree currently holding `branch` checked out so this working
-// tree can switch to it. Agent sessions run in a temp worktree under
-// /tmp/forkmesh-worktrees/…; one left behind (an app restart skips its cleanup)
+// tree can switch to it. Agent sessions run in their own worktree under
+// <checkout>/.worktrees/…; one left behind (an app restart skips its cleanup)
 // keeps the branch reserved, so `git checkout <branch>` here fails with "is
 // already used by worktree at …". Removing the worktree frees the branch while
 // keeping its ref intact. Returns true if it released something so the caller

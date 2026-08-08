@@ -6104,7 +6104,7 @@ void MainWindow::fixCurrentPullConflictsWithOriginatingAgent()
         QStringLiteral("Merge `%1` into your branch and resolve all merge conflicts. "
                        "Make sure the build and tests still pass, then commit.")
             .arg(base.isEmpty() ? QStringLiteral("main") : base);
-    m_pendingSteerMessage.insert(sessionId, prompt);
+    queueAgentSteerMessage(sessionId, prompt);
     if (provider == QLatin1String("claude-code"))
         applyTranscriptEvent(
             sessionId,
@@ -8877,8 +8877,9 @@ void MainWindow::scheduleRelaySync()
 // account across every owned repo — pending issue/pull/discussion/commit
 // inbox items and queued agent prompts — and the shared apply* helpers merge
 // each slice exactly as the old per-topic drains did. Runs when a relay event
-// frame arrives (scheduleRelaySync) and on the slow m_inboxPollTimer fallback
-// tick that covers dropped events and reconnect gaps.
+// frame arrives (scheduleRelaySync), once per event-socket (re)connect as the
+// catch-up for anything queued while the channel was down, and once shortly
+// after launch. There is no periodic fallback tick.
 void MainWindow::performRelaySync()
 {
     if (!m_networkAccess)

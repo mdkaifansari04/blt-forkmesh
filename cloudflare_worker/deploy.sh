@@ -441,6 +441,7 @@ verify_public_assets() {
     local world_checks=(
         "/world/world.js|public/world/world.js"
         "/world/world-data.js|public/world/world-data.js"
+        "/world/world-avatar-face.js|public/world/world-avatar-face.js"
         "/world/world-scene.js|public/world/world-scene.js"
         "/world/world-mirror-nodes.js|public/world/world-mirror-nodes.js"
         "/world/world-mastodon.js|public/world/world-mastodon.js"
@@ -620,7 +621,7 @@ deploy_split_site_workers() {
     local config
     for config in wrangler.www.toml wrangler.world.toml; do
         echo "Deploying split site Worker from $config ..."
-        npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.42.1}" -- \
+        npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.120.0}" -- \
             wrangler deploy --config "$config"
     done
     # The API split ships the same Python application as the relay, so it
@@ -630,10 +631,11 @@ deploy_split_site_workers() {
     # have no unconfigured window.
     #
     # UN-PARKED (2026-08-06): forkmesh-api is the canonical API host at
-    # api.forkmesh.com (plus the forkmesh.com/api/* compat routes) and hosts
-    # the traffic-diagnostics landing page. Its 2026-08-06 isolate meltdown
+    # api.forkmesh.com and hosts the traffic-diagnostics landing page. It no
+    # longer claims the forkmesh.com/api/* zone routes — its isolate meltdown
     # ("PyProxy when Python GIL not held" at initPyInstance under cold-start
-    # churn) is a startup-ceiling symptom shared with the relay — set
+    # churn) broke same-origin API traffic, so those paths resolve on the
+    # relay's custom-domain catch-all (see wrangler.api.toml). Set
     # FORKMESH_DEPLOY_API_WORKER=0 to park it again in an emergency
     # (rollback: wrangler delete --name forkmesh-api).
     if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" = "1" ]; then
@@ -688,20 +690,17 @@ verify_split_site_workers() {
     base="${base%/}"
     echo "Verifying the split Workers own their routes on $base ..."
     local failed=0
-    # /api/* is answered by forkmesh-api while that Worker is shipped (the
-    # default; see deploy_split_site_workers); parked, the relay's
-    # custom-domain catch-all owns it and must say so.
-    local api_body expected_api_worker
-    expected_api_worker="api"
-    if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" != "1" ]; then
-        expected_api_worker="relay"
-    fi
+    # Same-origin /api/* always resolves on the relay's custom-domain
+    # catch-all: wrangler.api.toml deliberately leaves the forkmesh.com/api/*
+    # zone routes unclaimed while forkmesh-api melts fresh isolates under
+    # cold-start churn, so forkmesh-api answers only on api.forkmesh.com.
+    local api_body
     api_body="$(curl -sS --max-time 25 "$base/api/version" 2>/dev/null || true)"
-    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"'"$expected_api_worker"'"' <<<"$api_body"; then
-        echo "ERROR: $base/api/version is not served by the $expected_api_worker Worker (got: ${api_body:-<none>})." >&2
+    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"relay"' <<<"$api_body"; then
+        echo "ERROR: $base/api/version is not served by the relay Worker (got: ${api_body:-<none>})." >&2
         failed=1
     fi
-    if [ "$expected_api_worker" = "api" ] && [ "$base" = "https://forkmesh.com" ]; then
+    if [ "${FORKMESH_DEPLOY_API_WORKER:-1}" = "1" ] && [ "$base" = "https://forkmesh.com" ]; then
         # The canonical API host: the diagnostics landing page and the same
         # /api surface must answer on api.forkmesh.com.
         local api_host_body
@@ -717,8 +716,8 @@ verify_split_site_workers() {
             failed=1
         fi
     fi
-    # ... while the relay proves its own build through the relay-routed
-    # /health stamp, which verify_deploy can no longer see via /api/*.
+    # ... and the relay also proves its build through the /health stamp,
+    # which stays relay-routed no matter who owns /api/*.
     local health_body health_rev
     health_body="$(curl -sS --max-time 25 "$base/health" 2>/dev/null || true)"
     if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"relay"' <<<"$health_body"; then
@@ -779,6 +778,27 @@ verify_split_site_workers() {
         return 1
     fi
     echo "Verified: forkmesh-www serves the marketing documents, forkmesh-world serves the World, and the relay keeps /, auth, RSS, dashboard and APIs."
+}
+
+# Cloudflare's Worker script-settings endpoint — the one `secret bulk` PATCHes —
+# intermittently answers HTTP 500 with "[code: 10013] An unknown error has
+# occurred" after ~30 seconds. Seen live: the GET of that same settings object
+# returned 200 milliseconds earlier and the byte-identical payload published
+# fine on the next run, so this is a server-side blip, not a rejected payload.
+# Wrangler never retries a PATCH, so recognise the transient shapes here and let
+# push_secrets re-send the WHOLE atomic update (still one Worker version per
+# successful attempt — never a per-secret `secret put` fan-out).
+_secret_bulk_error_is_transient() {
+    case "$1" in
+        *"code: 10013"*|\
+        *"Internal Server Error"*|*"Bad Gateway"*|*"Service Unavailable"*|\
+        *"Gateway Time-out"*|*"Gateway Timeout"*|\
+        *"fetch failed"*|*"socket hang up"*|*"ECONNRESET"*|*"ETIMEDOUT"*|\
+        *"EAI_AGAIN"*|*"Client network socket disconnected"*)
+            return 0
+            ;;
+    esac
+    return 1
 }
 
 # Push every KEY=VALUE in .env.production to the deployed Worker as a SECRET.
@@ -944,9 +964,48 @@ PYEOF
         # SPLIT_SECRET_WORKER retargets the same bulk update at a split
         # Worker (forkmesh-api) that shares this application and its secret
         # set; unset, it addresses the relay from wrangler.toml as always.
-        pywrangler secret bulk --env "" ${SPLIT_SECRET_WORKER:+--name "$SPLIT_SECRET_WORKER"} "$secret_bulk_file"
+        #
+        # Re-send the identical payload when Cloudflare returns one of the
+        # transient failures above: the update is a single atomic PATCH, so a
+        # retry is idempotent and still publishes exactly one Worker version.
+        # A payload/auth/permission rejection is NOT retried — it would fail
+        # the same way four times and only delay the real error.
+        attempts="${FORKMESH_SECRET_BULK_ATTEMPTS:-4}"
+        backoff="${FORKMESH_SECRET_BULK_BACKOFF:-5}"
+        attempt=1
+        while :; do
+            if bulk_output="$(pywrangler secret bulk --env "" ${SPLIT_SECRET_WORKER:+--name "$SPLIT_SECRET_WORKER"} "$secret_bulk_file" 2>&1)"; then
+                if [ -n "$bulk_output" ]; then
+                    printf '%s\n' "$bulk_output"
+                fi
+                if [ "$attempt" -gt 1 ]; then
+                    echo "Bulk secret update succeeded on attempt $attempt/$attempts."
+                fi
+                exit 0
+            fi
+            if [ -n "$bulk_output" ]; then
+                printf '%s\n' "$bulk_output" >&2
+            fi
+            if ! _secret_bulk_error_is_transient "$bulk_output"; then
+                exit 1
+            fi
+            if [ "$attempt" -ge "$attempts" ]; then
+                echo "  hit a transient Cloudflare API error on all $attempts attempts." >&2
+                exit 1
+            fi
+            echo "  attempt $attempt/$attempts hit a transient Cloudflare API error (the" >&2
+            echo "  Worker settings endpoint 5xx'd); re-sending the same bulk update in ${backoff}s..." >&2
+            sleep "$backoff"
+            attempt=$((attempt + 1))
+            backoff=$((backoff * 3))
+        done
     ); then
         echo "ERROR: bulk secret update failed; no per-secret retry was attempted." >&2
+        echo "       (Per-secret 'secret put' is deliberately never used: it publishes one" >&2
+        echo "       Worker version per secret, restarting Durable Objects mid-deploy.)" >&2
+        echo "       If the error above is Cloudflare's '[code: 10013] An unknown error has" >&2
+        echo "       occurred', the settings endpoint is having a bad minute and every" >&2
+        echo "       secret still holds its previous value — re-run './deploy.sh secrets'." >&2
         return 1
     fi
     echo "Pushed $count secret(s) from $ENV_FILE in one bulk update."

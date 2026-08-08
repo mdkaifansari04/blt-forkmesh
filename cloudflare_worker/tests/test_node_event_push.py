@@ -290,9 +290,13 @@ def test_write_paths_stay_wired_to_the_event_push():
     entry_only = ENTRY.read_text(encoding="utf-8")
     calls = entry_only.count("notify_repo_host(env, owner, repo,")
     assert calls >= 6, "web submission paths no longer notify the owner node"
-    for topic in ("issues", "pulls", "commits", "discussions", "agents",
-                  "about"):
+    for topic in ("issues", "pulls", "discussions", "agents", "about"):
         assert 'notify_repo_host(env, owner, repo, "%s")' % topic in entry_only
+    # Freshly pushed source commits have no per-owner submission handler; they
+    # reach the fleet through the mirror fan-out on the catalog publish path
+    # (a public record whose advertised head moved), which wakes every
+    # integrity-approved mirror's sync.
+    assert 'env, owner, record["name"], "commits")' in entry_only
 
 
 def test_channel_is_advisory_only():

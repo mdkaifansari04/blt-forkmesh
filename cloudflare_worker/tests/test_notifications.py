@@ -229,10 +229,13 @@ def test_heartbeat_reports_credits_refilled_from_the_node_itself():
         'credits_kind in ("5h", "weekly")',
         'await enqueue_notification(\n            env, name, "credits_refilled"',
         'dedupe="credits_refilled:" + credits_kind',
-        "HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS",
-        "asyncio.wait_for(\n                _solana_balance_lamports(env, wallet)",
+        # The balance probe is bounded by _solana_rpc_call's native
+        # AbortSignal.timeout, never by asyncio.wait_for: cancelling a
+        # JS-backed await leaves a Pyodide task pending and wedges the isolate.
+        "balance_lamports = await _solana_balance_lamports(env, wallet)",
     ):
         assert marker in heartbeat_body
+    assert "await asyncio.wait_for(" not in heartbeat_body
 
     qt_src = ROOT.parent / "qt_client" / "src"
     qt_text = "\n".join(

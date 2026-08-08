@@ -51,6 +51,16 @@ TASK_STATES = frozenset({"idle", "active", "done"})
 AGENT_RUN_STATES = frozenset({
     "queued", "running", "waiting", "success", "failed", "stopped",
 })
+# How many runs one batched agent-status write may report. A desktop publishes
+# one entry per local session it owns; the cap keeps a single signed request
+# from turning into an unbounded row scan.
+MAX_AGENT_STATUS_BATCH = 200
+AGENT_STATUS_ERROR_CODES = {
+    "invalid_agent_status": 400,
+    "task_not_found": 404,
+    "forbidden": 403,
+    "agent_run_unavailable": 409,
+}
 TASK_KINDS = frozenset({"task", "bid"})
 CHECKIN_STATES = frozenset({"going_well", "blocked", "needs_help"})
 DESTINATIONS = frozenset({
@@ -306,6 +316,10 @@ def _route(path):
         return ("proofs", "", "proofs")
     if clean == base + "/initiatives":
         return ("initiatives", "", "initiatives")
+    # The whole fleet's live agent state in one write, so a desktop restart
+    # publishes a single request instead of one per session (adhoc #1618).
+    if clean == base + "/agent-status":
+        return ("agent-status-batch", "", "agent-status")
     if not clean.startswith(base + "/"):
         return None
     parts = clean[len(base) + 1:].split("/")
@@ -1485,19 +1499,26 @@ async def _start(
     return await _task_response(runtime, changed, now)
 
 
-async def _update_agent_status(
-        runtime, org_bi, account_bi, actor, task_id, row, data, can_manage,
-        now):
-    """Update only the live state of the desktop run attached to one task.
+async def _apply_agent_status(
+        runtime, org_bi, account_bi, actor, task_id, row, status, can_manage,
+        now, agent_run=None):
+    """Write one task's live agent state, returning "" or an error code.
 
     A desktop may report the task it created without receiving broad task-edit
-    authority.  The opaque task-bound signature is checked by the entrypoint;
-    this second gate still verifies ownership and that the row is agent work.
+    authority.  The signature is checked by the entrypoint; this second gate
+    still verifies ownership and that the row is agent work — and it applies to
+    a batched write exactly as it does to a single-task one.
+
+    ``agent_run`` carries the run's provenance (which bot, model, mode and local
+    session) so that a desktop picking up a task somebody else opened by hand
+    can say what is working it.  It layers onto whatever is already recorded,
+    exactly the way the completion report does.
     """
 
-    status = _text(data.get("status"), 16).lower()
     if status not in AGENT_RUN_STATES:
-        return _response(runtime, {"error": "invalid_agent_status"}, status=400)
+        return "invalid_agent_status"
+    if not row:
+        return "task_not_found"
     if (
         str(row.get("assignee_kind") or "") not in AGENT_ASSIGNEE_KINDS
         or (
@@ -1505,14 +1526,25 @@ async def _update_agent_status(
             and str(row.get("created_by_bi") or "") != account_bi
         )
     ):
-        return _response(runtime, {"error": "forbidden"}, status=403)
+        return "forbidden"
     try:
         current = await runtime.open(row.get("data"))
     except Exception:
         current = None
-    if not isinstance(current, dict) or not isinstance(current.get("agent"), dict):
-        return _response(runtime, {"error": "agent_run_unavailable"}, status=409)
-    agent = dict(current["agent"])
+    if not isinstance(current, dict):
+        return "agent_run_unavailable"
+    # A task opened by hand on the board holds no run provenance until a desktop
+    # starts an agent on it, so the first status write seeds the record instead
+    # of being refused — otherwise a run bound to an existing task could never
+    # report anything. The gates above are unchanged: this is still only
+    # reachable for agent work, by its creator or a manager.
+    agent = dict(current.get("agent") or {})
+    if isinstance(agent_run, dict):
+        agent.update({
+            field: value
+            for field, value in agent_run.items()
+            if value and field != "status"
+        })
     agent["status"] = status
     current["agent"] = _agent_run(agent)
     await runtime.d1_run(
@@ -1527,8 +1559,87 @@ async def _update_agent_status(
         task_id,
         details={"status": status},
     )
+    return ""
+
+
+async def _update_agent_status(
+        runtime, org_bi, account_bi, actor, task_id, row, data, can_manage,
+        now):
+    """Update only the live state of the desktop run attached to one task."""
+
+    error = await _apply_agent_status(
+        runtime, org_bi, account_bi, actor, task_id, row,
+        _text(data.get("status"), 16).lower(), can_manage, now,
+        agent_run=data.get("agent"),
+    )
+    if error:
+        return _response(
+            runtime,
+            {"error": error},
+            status=AGENT_STATUS_ERROR_CODES.get(error, 400),
+        )
     return await _task_response(
         runtime, await _task(runtime, org_bi, task_id), now)
+
+
+async def _update_agent_status_batch(
+        runtime, org_bi, account_bi, actor, data, can_manage, now,
+        marketing_only=False):
+    """Report the live state of every desktop run in one signed write.
+
+    A desktop mirrors each local session's state onto its task, and the first
+    reload after launch has a state to publish for every session at once — one
+    signed POST per session, all in the same millisecond, which is what the
+    relay's rate limiter answered 429 to on a fleet-sized node (adhoc #1618).
+    The batch collapses that startup burst into a single request; afterwards
+    only genuinely changed rows are sent, and the board's own updates reach the
+    desktop over its node socket rather than by polling.
+
+    Per-task authorization is unchanged: each entry runs the same ownership and
+    agent-row gates as the single-task endpoint, so a batch can never reach a
+    task its signer could not have written to one at a time.  Failures are
+    reported per entry instead of failing the whole write — one task whose row
+    was deleted must not strand the states of the other sixteen.
+    """
+
+    entries = data.get("statuses")
+    if not isinstance(entries, list) or not entries:
+        return _response(
+            runtime, {"error": "invalid_agent_status_batch"}, status=400)
+    if len(entries) > MAX_AGENT_STATUS_BATCH:
+        return _response(
+            runtime, {"error": "agent_status_batch_too_large"}, status=400)
+    results = []
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        task_id = _text(entry.get("task"), 64).lower()
+        status = _text(entry.get("status"), 16).lower()
+        if not valid_id(task_id) or task_id in seen:
+            continue
+        seen.add(task_id)
+        row = await _task(runtime, org_bi, task_id)
+        if row and marketing_only and str(
+                row.get("department") or "") != "marketing":
+            row = None
+        error = await _apply_agent_status(
+            runtime, org_bi, account_bi, actor, task_id, row, status,
+            can_manage, now, agent_run=entry.get("agent"),
+        )
+        results.append({
+            "task": task_id,
+            "ok": not error,
+            "error": error,
+        })
+    if not results:
+        return _response(
+            runtime, {"error": "invalid_agent_status_batch"}, status=400)
+    return _response(runtime, {
+        "ok": True,
+        "actor": actor,
+        "results": results,
+    })
 
 
 async def _stop(
@@ -2100,6 +2211,11 @@ async def handle(runtime, path):
     if kind == "stop-active":
         return await _stop_active(
             runtime, org_bi, account_bi, actor, now)
+    if kind == "agent-status-batch":
+        return await _update_agent_status_batch(
+            runtime, org_bi, account_bi, actor, data, can_manage, now,
+            marketing_only=marketing_only,
+        )
     if kind == "collection":
         if method == "GET":
             department = ""

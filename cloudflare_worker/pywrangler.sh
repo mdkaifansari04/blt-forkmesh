@@ -9,8 +9,8 @@ PYWRANGLER_VENV="${PYWRANGLER_VENV:-.pywrangler}"
 PYWRANGLER_BIN="$PYWRANGLER_VENV/bin/pywrangler"
 PYWRANGLER_UVX="$PYWRANGLER_VENV/bin/uvx"
 PYWRANGLER_UV="$PYWRANGLER_VENV/bin/uv"
-WORKERS_PY_SPEC="${WORKERS_PY_SPEC:-workers-py<1.14.0}"
-WRANGLER_NPM_SPEC="${WRANGLER_NPM_SPEC:-wrangler@4.42.1}"
+WORKERS_PY_SPEC="${WORKERS_PY_SPEC:-workers-py<1.17.0}"
+WRANGLER_NPM_SPEC="${WRANGLER_NPM_SPEC:-wrangler@4.120.0}"
 
 _pywrangler_ensure_venv_path() {
     case ":$PATH:" in
@@ -31,7 +31,7 @@ if [ "$#" -ge 2 ] && [ "$1" = "--yes" ] && [ "$2" = "wrangler" ]; then
         echo "error: npm is required because pywrangler delegates deploys to Wrangler." >&2
         exit 1
     fi
-    exec npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.42.1}" -- wrangler "$@"
+    exec npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.120.0}" -- wrangler "$@"
 fi
 
 self_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -79,33 +79,52 @@ pywrangler() {
     fi
 
     if command -v uvx >/dev/null 2>&1; then
-        uvx --from "$WORKERS_PY_SPEC" pywrangler "$@"
-        return
+        uvx --from "$WORKERS_PY_SPEC" pywrangler "$@" && return
     fi
     if [ -x "$PYWRANGLER_UVX" ]; then
-        "$PYWRANGLER_UVX" --from "$WORKERS_PY_SPEC" pywrangler "$@"
-        return
+        "$PYWRANGLER_UVX" --from "$WORKERS_PY_SPEC" pywrangler "$@" && return
     fi
     if command -v uv >/dev/null 2>&1; then
-        uv tool run --from "$WORKERS_PY_SPEC" pywrangler "$@"
-        return
+        uv tool run --from "$WORKERS_PY_SPEC" pywrangler "$@" && return
     fi
     if [ -x "$PYWRANGLER_UV" ]; then
-        "$PYWRANGLER_UV" tool run --from "$WORKERS_PY_SPEC" pywrangler "$@"
-        return
+        "$PYWRANGLER_UV" tool run --from "$WORKERS_PY_SPEC" pywrangler "$@" && return
     fi
     if [ ! -x "$PYWRANGLER_BIN" ]; then
-        install_pywrangler || return
+        if ! install_pywrangler; then
+            if _pywrangler_run_wrangler "$@"; then
+                return
+            fi
+            return 1
+        fi
     fi
     if [ -x "$PYWRANGLER_UVX" ]; then
-        "$PYWRANGLER_UVX" --from "$WORKERS_PY_SPEC" pywrangler "$@"
-        return
+        "$PYWRANGLER_UVX" --from "$WORKERS_PY_SPEC" pywrangler "$@" && return
     fi
     if [ -x "$PYWRANGLER_UV" ]; then
-        "$PYWRANGLER_UV" tool run --from "$WORKERS_PY_SPEC" pywrangler "$@"
+        "$PYWRANGLER_UV" tool run --from "$WORKERS_PY_SPEC" pywrangler "$@" && return
+    fi
+    if [ -x "$PYWRANGLER_BIN" ]; then
+        "$PYWRANGLER_BIN" "$@"
         return
     fi
-    "$PYWRANGLER_BIN" "$@"
+    if _pywrangler_run_wrangler "$@"; then
+        return
+    fi
+    echo "error: workers-py installed, but $PYWRANGLER_BIN was not created." >&2
+    return 1
+}
+
+_pywrangler_run_wrangler() {
+    if command -v wrangler >/dev/null 2>&1; then
+        wrangler "$@"
+        return $?
+    fi
+    if command -v npx >/dev/null 2>&1; then
+        npx --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.120.0}" -- wrangler "$@"
+        return $?
+    fi
+    return 1
 }
 
 install_pywrangler() {
@@ -118,22 +137,25 @@ install_pywrangler() {
 
     echo "pywrangler not found; installing workers-py into $PYWRANGLER_VENV ..." >&2
     python3 -m venv "$PYWRANGLER_VENV"
-    "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade pip >/dev/null
-    "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade "$WORKERS_PY_SPEC"
+    if ! "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade pip >/dev/null; then
+        echo "error: failed to bootstrap pip in $PYWRANGLER_VENV." >&2
+        return 1
+    fi
+    if ! "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade "$WORKERS_PY_SPEC"; then
+        echo "error: failed to install $WORKERS_PY_SPEC into $PYWRANGLER_VENV." >&2
+        return 1
+    fi
     # Newer workers-py binaries can require uv tooling at runtime. Install a
     # project-local uv copy so we can keep the deploy path self-contained when
     # the host only has python3.
     if [ ! -x "$PYWRANGLER_UVX" ] || [ ! -x "$PYWRANGLER_UV" ]; then
-        "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade uv >/dev/null
+        if ! "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade uv >/dev/null; then
+            echo "note: unable to install uv in $PYWRANGLER_VENV; wrangler fallback remains available." >&2
+        fi
     fi
 
     # Keep the venv bin on PATH so any worker-installed entrypoint that shells
     # out to uv/uvx can find the project-local copy.
     _pywrangler_ensure_venv_path
     _pywrangler_install_npx_wrapper
-
-    if [ ! -x "$PYWRANGLER_BIN" ]; then
-        echo "error: workers-py installed, but $PYWRANGLER_BIN was not created." >&2
-        return 1
-    fi
 }

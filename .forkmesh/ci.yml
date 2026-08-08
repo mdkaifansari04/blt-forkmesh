@@ -58,11 +58,30 @@ jobs:
           export CCACHE_DIR="$ci_tmp/ccache"
           rm -rf "$ci_tmp"
           mkdir -p "$CCACHE_DIR"
-          cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON
+
+          # Size -j from the sandbox's memory budget as well as its CPU quota.
+          # The heaviest translation units here (MainWindow*.cpp) peak near
+          # 1.5 GiB each in a Release build, so on a many-core node the CPU
+          # quota alone asks for more parallel compiles than the cgroup can
+          # hold — which is an OOM kill mid-build, not a slow build.
+          cpus="${FORKMESH_ACTIONS_CPUS:-2}"
+          memory_mb="${FORKMESH_ACTIONS_MEMORY_MB:-4096}"
+          jobs=$(( memory_mb / 1536 ))
+          if [ "$jobs" -lt 1 ]; then jobs=1; fi
+          if [ "$jobs" -gt "$cpus" ]; then jobs="$cpus"; fi
+          echo "building with -j$jobs (${cpus} cpus, ${memory_mb} MiB budget)"
+
+          # AUTOGEN_PARALLEL defaults to AUTO, and AUTO means the *host's* core
+          # count: nothing in the sandbox can see the cgroup. Every AUTOMOC
+          # driver make starts then opens a host-sized thread pool, so a -j8
+          # build asked for eight of them at once and pthread_create failed
+          # against TasksMax with "Resource temporarily unavailable" (#1586).
+          # Pin the pools to the same budget the compiles are sized from.
+          cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON -DCMAKE_AUTOGEN_PARALLEL="$jobs"
+
           # `critical-tests` is defined next to the "critical" CTest label, so
           # it always covers exactly the binaries the runner is about to
           # execute. Naming the suites here instead let the two lists drift,
           # and an unbuilt suite only surfaces as a ctest "***Not Run".
-          cmake --build qt_client/build-ci -j "${FORKMESH_ACTIONS_CPUS:-2}" \
-            --target critical-tests
+          cmake --build qt_client/build-ci -j "$jobs" --target critical-tests
           python3 tools/run_critical_tests.py qt --build-dir qt_client/build-ci

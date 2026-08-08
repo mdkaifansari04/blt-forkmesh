@@ -3,6 +3,7 @@
 #include "MainWindow.h"
 #include "CrashHandler.h"
 #include "MainWindowInternal.h"
+#include "NetworkReplyError.h"
 #include "StartupSplash.h"
 #include "WorldSpeechBridge.h"
 
@@ -40,6 +41,7 @@ QString networkRequestEventFor(const QUrl &url)
         {"/mirrors", "mirror sync"},
         {"/api/repo/", "repo fetch"},
         {"/api/version", "version check"},
+        {"/api/metrics", "traffic metrics"},
         {"/api/network", "network stats"},
         {"/api/security", "security report"},
         {"/api/forkbot", "forkbot chat"},
@@ -285,6 +287,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                          .value(kVerboseNetworkLogSetting, false)
                          .toBool())
                     return;
+                // Favicon fetches (adhoc #190/#436) are decorative background
+                // enrichment, not app traffic the user asked about, and plenty of
+                // hosts (e.g. mastodon.social) 404 on /favicon.ico — logging that
+                // dumps the site's full 404 HTML body into the log as a scary
+                // "ERR 404" line for a failure the UI already handles quietly via
+                // m_faviconMissing. /favicon.ico is only ever requested by the
+                // favicon-fetch helpers, so the path alone identifies these.
+                if (reply->url().path() == QStringLiteral("/favicon.ico"))
+                    return;
                 static const char *const verbs[] = {"HEAD",   "GET", "PUT",
                                                      "POST",   "DELETE",
                                                      "CUSTOM"};
@@ -295,29 +306,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                 QString status;
                 if (reply->error() != QNetworkReply::NoError) {
                     // Lead with the HTTP status code when the server answered
-                    // (e.g. "ERR 429 …" for a rate-limit) so the log shows *why*
-                    // a request failed, not just that it did. A pure transport
-                    // failure (offline, DNS) has no code — fall back to the
-                    // Qt error string alone.
-                    const QVariant code = reply->attribute(
-                        QNetworkRequest::HttpStatusCodeAttribute);
-                    status = code.isValid()
-                                 ? QStringLiteral("ERR %1 %2")
-                                       .arg(code.toString(), reply->errorString())
-                                 : QStringLiteral("ERR ") + reply->errorString();
-                    // Qt's errorString() for an HTTP error is generic ("server
-                    // replied: <url>") and omits the payload the server actually
-                    // sent — which for a worker 503 is exactly the explanation a
-                    // user needs. peek() (not read()) the first chunk of the body
-                    // so we surface the server's own words without consuming the
-                    // buffer out from under the real reply consumer (adhoc #68).
-                    const QByteArray body = reply->peek(512);
-                    if (!body.isEmpty()) {
-                        const QString snippet = QString::fromUtf8(body).simplified();
-                        if (!snippet.isEmpty())
-                            status += QStringLiteral(" [body: ") + snippet +
-                                      QStringLiteral("]");
-                    }
+                    // (e.g. "ERR 429 Too Many Requests" for a rate-limit) so the
+                    // log shows *why* a request failed, not just that it did.
+                    // networkFailureText() keeps Qt's URL-repeating boilerplate
+                    // out of the line — see NetworkReplyError.h for what that
+                    // boilerplate did to a relay 503 (adhoc #1613).
+                    status = QStringLiteral("ERR ") +
+                             forkmesh::networkFailureText(reply);
+                    // The status code alone rarely says which of a route's
+                    // failure modes fired — for a worker 503 the body
+                    // ({"error":"mirror_unavailable"}) is exactly the
+                    // explanation a user needs. peek() (not read()) the first
+                    // chunk of it so we surface the server's own words without
+                    // consuming the buffer out from under the real reply
+                    // consumer (adhoc #68).
+                    const QString snippet =
+                        forkmesh::networkResponseSnippet(reply->peek(512), 0);
+                    if (!snippet.isEmpty())
+                        status += QStringLiteral(" [body: ") + snippet +
+                                  QStringLiteral("]");
                 } else {
                     const QVariant code = reply->attribute(
                         QNetworkRequest::HttpStatusCodeAttribute);
@@ -328,15 +335,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                     // this request actually return?" without needing
                     // devtools. peek() (not read()) so the real reply
                     // consumer still gets the full body.
-                    const QByteArray body = reply->peek(512);
-                    if (!body.isEmpty()) {
-                        const QString snippet = QString::fromUtf8(body).simplified();
-                        if (!snippet.isEmpty())
-                            status += QStringLiteral(" [body: ") + snippet +
-                                      QStringLiteral("]");
-                    }
+                    const QString snippet =
+                        forkmesh::networkResponseSnippet(reply->peek(512), 0);
+                    if (!snippet.isEmpty())
+                        status += QStringLiteral(" [body: ") + snippet +
+                                  QStringLiteral("]");
                 }
-                logSystem(QStringLiteral("net %1 %2 %3 \xC2\xB7 %4")
+                // fromUtf8, not QStringLiteral: QStringLiteral concatenates onto
+                // a u"" literal, so each byte of an escaped UTF-8 sequence
+                // becomes its own code point and the separator rendered as the
+                // mojibake "Â·" in the pasted log line (adhoc #1613).
+                logSystem(QString::fromUtf8("net %1 %2 %3 \xC2\xB7 %4")
                               .arg(verb, status, reply->url().toString(),
                                    networkRequestEventFor(reply->url())));
             });
@@ -374,6 +383,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // network_log.txt directly), so no separate crash-file scan is needed.
     traceStep(QStringLiteral("restore persisted network log"),
               [this] { loadNetworkLog(); });
+    // Same reasoning for the Pings journal, and one more besides: the rows that
+    // never reached the cloud (raised offline, or reported and refused) exist
+    // nowhere else, so they have to come back before anything this run raises
+    // pushes them out of the hundred the page keeps (adhoc #1629).
+    traceStep(QStringLiteral("restore filed pings"),
+              [this] { loadNotificationJournal(); });
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logSystem(QStringLiteral("Session started - ForkMesh v" FORKMESH_VERSION "."));
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
@@ -590,16 +605,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // Source-of-truth nodes pick up issues/PRs/comments/agent-prompts filed by
     // other nodes through the relay's event push: a minimal frame on the
     // per-owner node event socket (NodeEventSocket -> ForkMeshNodes DO)
-    // triggers one consolidated GET /api/sync (see performRelaySync). This
-    // timer is only the slow safety net for dropped events and reconnect gaps
-    // — it used to be a 60s poll of four endpoints per owned repo. It relaxes
-    // to 15 minutes while the event socket is connected (startNodeEventSocket)
-    // and returns to 5 minutes when the push channel drops. First pass shortly
-    // after launch covers anything queued while the app was closed.
-    m_inboxPollTimer = new QTimer(this);
-    connect(m_inboxPollTimer, &QTimer::timeout, this, &MainWindow::performRelaySync);
-    m_inboxPollTimer->start(5 * 60 * 1000);
-    logStartup(QStringLiteral("  timer armed: relay inbox safety sync every 300000ms"));
+    // triggers one consolidated GET /api/sync (see performRelaySync). There is
+    // deliberately NO fallback poll behind the socket (the no-polling policy,
+    // docs/operations/polling-elimination.md): the socket reconnects on its
+    // own with bounded backoff, and connectedChanged fires one catch-up sync
+    // per (re)connect that drains anything queued while the channel was down.
+    // The one-shot below covers whatever queued while the app was closed.
 #ifndef FORKMESH_WINDOW_TESTS
     QTimer::singleShot(20000, this, [this] {
         forkmesh::StartupTraceStep step(
@@ -665,6 +676,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // independent of whether the websocket supplied a fresh latency sample.
     connect(m_relayLatencyTimer, &QTimer::timeout, this,
             &MainWindow::refreshFooterWebsiteStatus);
+    // …and on the same tick, the two dots the relay cannot grade for itself:
+    // this desktop loads the site and the /status page over the real public
+    // hostname, so a Cloudflare edge failure in front of the Worker is visible
+    // here rather than hidden behind a green self-report (adhoc #1564).
+    connect(m_relayLatencyTimer, &QTimer::timeout, this,
+            &MainWindow::refreshDesktopWebsiteProbes);
     m_relayLatencyTimer->start(60 * 1000);
     logStartup(QStringLiteral("  timer armed: relay latency and uptime every 60000ms"));
 #ifndef FORKMESH_WINDOW_TESTS
@@ -1149,6 +1166,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // spawning the replacement process so the app never pops back up after the
     // user has already chosen to close it (adhoc #1530).
     m_closingDown = true;
+    // Take the cloud log monitor's Wrangler tail down deliberately (adhoc
+    // #1615), while there is still an event loop to wait on it, rather than
+    // leaving ~QProcess to kill it during teardown.
+    setCloudLogMonitorEnabled(false);
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
     // Where the composer was left — free position, dragged size, or the geometry
     // of its popped-out window (adhoc #1536).
@@ -1162,6 +1183,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
                                  QDateTime::currentMSecsSinceEpoch() -
                                  m_connectedAtMs);
     saveChatHistory();
+    // The debounced journal write may still be pending; a ping raised in the
+    // last second and a half is exactly the kind this page exists to keep.
+    saveNotificationJournal();
     // Record this session's stop time, then flush+trim the persisted log.
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logSystem(QStringLiteral("Session ended."));

@@ -474,6 +474,370 @@ async def _forkbot_run_ai(
         "ForkBot AI returned an unusable %s response (%s)"
         % (type(result).__name__, model))
     return None
+# Cloudflare models as coding agents (adhoc #1634): POST /api/ai/agent runs
+# one tool-use turn for the desktop's bundled Workers AI agent script. Unlike
+# /api/ai/ask (one prompt, one plain-text answer) a turn carries the whole
+# conversation so far plus the tool declarations, and the answer keeps the
+# model's tool_calls so the script can execute them in the session worktree
+# and send the results back as the next turn.
+AI_AGENT_MAX_MESSAGES = 200
+AI_AGENT_MAX_CONTENT = 60000
+AI_AGENT_MAX_TOOLS = 8
+AI_AGENT_MAX_TOKENS = 2048
+AI_AGENT_MAX_REPLY = 16000
+# One Ed25519 ticket covers a whole agent run (the conversation grows every
+# turn, so the signature cannot bind the payload the way /api/ai/ask's does);
+# instead the ticket is time-boxed to the longest plausible run.
+AI_AGENT_TICKET_MAX_AGE_MS = 6 * 60 * 60 * 1000
+# Agent loops make many model calls per task, so they get their own rolling
+# window instead of draining the composer's much smaller ask allowance.
+AI_AGENT_RATE_WINDOW_MS = 60 * 60 * 1000
+AI_AGENT_MAX_PER_WINDOW = 500
+def _ai_agent_tool_arguments(raw):
+    """Tool-call arguments as a dict: Workers AI returns them either parsed
+    (legacy {response, tool_calls} shape) or as the OpenAI JSON string."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+def _ai_agent_clean_tool_calls(raw):
+    """Validate the assistant tool_calls a client echoes back into history,
+    rebuilt in the OpenAI wire shape (arguments as a JSON string)."""
+    calls = []
+    if not isinstance(raw, list):
+        return calls
+    for call in raw[:AI_AGENT_MAX_TOOLS]:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        function = function if isinstance(function, dict) else {}
+        name = clean_string(function.get("name", call.get("name", "")), 64)
+        name = name.strip()
+        if not name:
+            continue
+        arguments = function.get("arguments", call.get("arguments"))
+        if isinstance(arguments, dict):
+            arguments = json.dumps(arguments)
+        if not isinstance(arguments, str):
+            arguments = "{}"
+        calls.append({
+            "id": clean_string(str(call.get("id", "") or ""), 64)
+            or "call_%d" % len(calls),
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": arguments[:AI_AGENT_MAX_CONTENT],
+            },
+        })
+    return calls
+def _ai_agent_clean_messages(raw):
+    """Rebuild the conversation from client JSON: only the four chat roles,
+    string content, and (per role) the tool-call fields the models expect."""
+    messages = []
+    if not isinstance(raw, list):
+        return messages
+    for message in raw[:AI_AGENT_MAX_MESSAGES]:
+        if not isinstance(message, dict):
+            continue
+        role = clean_string(message.get("role", ""), 16).strip()
+        if role not in ("system", "user", "assistant", "tool"):
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            content = ""
+        entry = {"role": role, "content": content[:AI_AGENT_MAX_CONTENT]}
+        if role == "assistant":
+            calls = _ai_agent_clean_tool_calls(message.get("tool_calls"))
+            if calls:
+                entry["tool_calls"] = calls
+        elif role == "tool":
+            call_id = clean_string(message.get("tool_call_id", ""), 64).strip()
+            if call_id:
+                entry["tool_call_id"] = call_id
+            name = clean_string(message.get("name", ""), 64).strip()
+            if name:
+                entry["name"] = name
+        messages.append(entry)
+    return messages
+def _ai_agent_clean_tools(raw):
+    """Validate the client's tool declarations (OpenAI function format)."""
+    tools = []
+    if not isinstance(raw, list):
+        return tools
+    for tool in raw[:AI_AGENT_MAX_TOOLS]:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        function = function if isinstance(function, dict) else {}
+        name = clean_string(function.get("name", ""), 64).strip()
+        if not name:
+            continue
+        cleaned = {"name": name}
+        description = function.get("description")
+        if isinstance(description, str) and description.strip():
+            cleaned["description"] = description[:2000]
+        parameters = function.get("parameters")
+        if isinstance(parameters, dict):
+            cleaned["parameters"] = parameters
+        tools.append({"type": "function", "function": cleaned})
+    return tools
+def _ai_agent_normalized_result(result):
+    """Reduce the two Workers AI response shapes — legacy {response,
+    tool_calls} and OpenAI chat completions — to the one
+    {reply, toolCalls, usage} object the agent script consumes. toolCalls
+    arguments come back parsed so the script never re-parses JSON strings."""
+    reply = ""
+    calls_raw = []
+    usage = {}
+    if isinstance(result, str):
+        reply = result
+    elif isinstance(result, dict):
+        value = result.get("response")
+        if isinstance(value, str):
+            reply = value
+        raw_calls = result.get("tool_calls")
+        if isinstance(raw_calls, list):
+            calls_raw = raw_calls
+        choices = result.get("choices")
+        if isinstance(choices, list) and not (reply or calls_raw):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get("message")
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if isinstance(content, str):
+                    reply = content
+                elif isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if isinstance(part, str):
+                            parts.append(part)
+                        elif isinstance(part, dict):
+                            text = part.get("text")
+                            if isinstance(text, str):
+                                parts.append(text)
+                    reply = "".join(parts)
+                message_calls = message.get("tool_calls")
+                if isinstance(message_calls, list):
+                    calls_raw = message_calls
+                if reply or calls_raw:
+                    break
+        raw_usage = result.get("usage")
+        if isinstance(raw_usage, dict):
+            for source, target in (("prompt_tokens", "inputTokens"),
+                                   ("completion_tokens", "outputTokens")):
+                try:
+                    usage[target] = int(raw_usage.get(source) or 0)
+                except (TypeError, ValueError):
+                    pass
+    calls = []
+    for call in calls_raw[:AI_AGENT_MAX_TOOLS]:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        function = function if isinstance(function, dict) else {}
+        name = clean_string(function.get("name", call.get("name", "")), 64)
+        name = name.strip()
+        if not name:
+            continue
+        calls.append({
+            "id": clean_string(str(call.get("id", "") or ""), 64)
+            or "call_%d" % len(calls),
+            "name": name,
+            "arguments": _ai_agent_tool_arguments(
+                function.get("arguments", call.get("arguments"))),
+        })
+    return {
+        "reply": (reply or "")[:AI_AGENT_MAX_REPLY],
+        "toolCalls": calls,
+        "usage": usage,
+    }
+async def _forkbot_run_ai_agent(
+    env, messages, tools=None, model="", max_tokens=AI_AGENT_MAX_TOKENS,
+    outcome=None,
+):
+    """Run one agent turn against Workers AI and return the normalized
+    {reply, toolCalls, usage} (or None). Shares the model allowlist and
+    fallback chain with _forkbot_run_ai but keeps the raw tool_calls, which
+    the plain-text helper deliberately flattens away."""
+    if outcome is None:
+        outcome = {}
+    ai = getattr(env, "AI", None)
+    if ai is None or js_nullish(ai) or not hasattr(ai, "run"):
+        outcome["failure"] = "missing_binding"
+        await log_error(
+            env, 500, "AI", "forkbot/ai-agent",
+            "AI agent turn unavailable: env.AI binding is missing")
+        return None
+    model = _forkbot_resolve_ai_model(env, model)
+    candidates = _forkbot_ai_fallback_models(env, model)
+    payload = {"messages": messages, "max_tokens": max_tokens}
+    if tools:
+        payload["tools"] = tools
+    result = None
+    ran = False
+    last_error = None
+    all_missing = True
+    for candidate in candidates:
+        try:
+            result = await ai.run(candidate, to_js(payload))
+            model = candidate
+            ran = True
+            break
+        except Exception as error:
+            last_error = error
+            if not _forkbot_ai_model_not_found_error(error):
+                all_missing = False
+    if not ran:
+        outcome["failure"] = ("model_not_found" if all_missing
+                              else "provider_error")
+        await log_error(
+            env, 500, "AI", "forkbot/ai-agent",
+            "AI agent turn failed (%s%s): %s"
+            % (model,
+               ", no listed model exists on this account" if all_missing
+               else "",
+               _safe_error_text(last_error)[:300]))
+        return None
+    outcome["model"] = model
+    try:
+        if hasattr(result, "to_py"):
+            result = result.to_py()
+    except Exception:
+        pass
+    if not isinstance(result, (str, dict)):
+        outcome["failure"] = "unusable_response"
+        await log_error(
+            env, 500, "AI", "forkbot/ai-agent",
+            "AI agent turn returned an unusable %s response (%s)"
+            % (type(result).__name__, model))
+        return None
+    return _ai_agent_normalized_result(result)
+async def _ai_agent_rate_check(env, account_bi):
+    """Throttle agent turns per signed account: at most
+    AI_AGENT_MAX_PER_WINDOW turns per rolling AI_AGENT_RATE_WINDOW_MS.
+    Reuses the ai_ask_rate table with a suffixed key so agent loops and the
+    composer's one-shot asks meter independently; the UPSERT owns
+    reset+increment+readback exactly like _ai_ask_rate_check."""
+    if not account_bi:
+        return None
+    now = int(Date.now())
+    row = await d1_first(
+        env,
+        "INSERT INTO ai_ask_rate (account_bi,count,window_start_ts) "
+        "VALUES (?,1,?) "
+        "ON CONFLICT(account_bi) DO UPDATE SET "
+        "count=CASE WHEN ?-ai_ask_rate.window_start_ts>=? "
+        "THEN 1 ELSE ai_ask_rate.count+1 END,"
+        "window_start_ts=CASE WHEN ?-ai_ask_rate.window_start_ts>=? "
+        "THEN ? ELSE ai_ask_rate.window_start_ts END "
+        "RETURNING count,window_start_ts",
+        account_bi + ":agent",
+        now,
+        now,
+        AI_AGENT_RATE_WINDOW_MS,
+        now,
+        AI_AGENT_RATE_WINDOW_MS,
+        now,
+    )
+    count = int((row or {}).get("count") or 1)
+    window_start = int((row or {}).get("window_start_ts") or now)
+    if count > AI_AGENT_MAX_PER_WINDOW:
+        retry_ms = max(1000, AI_AGENT_RATE_WINDOW_MS - (now - window_start))
+        return json_response(
+            {"error": "rate_limited", "retryAfterMs": retry_ms},
+            status=429,
+            extra_headers={"Retry-After": str(max(1, (retry_ms + 999) // 1000))},
+        )
+    return None
+async def ai_agent_handler(env, request):
+    """One tool-use turn for the desktop's Cloudflare Workers AI coding agent
+    (adhoc #1634).
+
+    The desktop's AgentRunner materializes a bundled Python script into the
+    session worktree's environment; that script drives the agent loop by
+    POSTing the conversation and its bash tool declaration here each turn,
+    executing the returned toolCalls locally, and looping until the model
+    stops calling tools. The relay only ever runs the model — every tool
+    executes on the desktop, in the session's own worktree and branch.
+
+    Authorization is a per-run Ed25519 ticket: the desktop signs
+    "forkmesh-ai-agent-v1\\n<account>\\n<ts>" once at launch and the script
+    replays it for every turn of that run. The conversation grows every turn,
+    so the signature cannot bind the payload the way /api/ai/ask's prompt
+    digest does; the ticket is instead time-boxed
+    (AI_AGENT_TICKET_MAX_AGE_MS) and every turn still passes the per-account
+    agent rate window."""
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(data, dict):
+        return json_response({"error": "invalid_json"}, status=400)
+    account = clean_string(
+        data.get("nodeName", ""), MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(account):
+        return json_response({"error": "node_name_required"}, status=400)
+    ts = clean_string(data.get("ts", ""), 20).strip()
+    sig = clean_string(data.get("sig", ""), 200).strip()
+    if not ts or not sig:
+        return json_response({"error": "signature_required"}, status=401)
+    try:
+        age = int(Date.now()) - int(ts)
+    except (TypeError, ValueError):
+        return json_response({"error": "signature_required"}, status=401)
+    # The ticket lives for a whole agent run: reject it only once it outlives
+    # the run window, or when it claims to come from the future.
+    if age > AI_AGENT_TICKET_MAX_AGE_MS or age < -LOGIN_MAX_SKEW_MS:
+        return json_response({"error": "stale_signature"}, status=401)
+    canonical = ("forkmesh-ai-agent-v1\n" + account + "\n" + ts).encode()
+    if not await _verify_owner_signature(env, account, sig, canonical):
+        return json_response({"error": "unauthorized"}, status=401)
+    messages = _ai_agent_clean_messages(data.get("messages"))
+    if not messages:
+        return json_response({"error": "messages_required"}, status=400)
+    tools = _ai_agent_clean_tools(data.get("tools"))
+    model = clean_string(data.get("model", ""), 120).strip()
+    try:
+        max_tokens = int(data.get("max_tokens") or AI_AGENT_MAX_TOKENS)
+    except (TypeError, ValueError):
+        max_tokens = AI_AGENT_MAX_TOKENS
+    max_tokens = max(256, min(AI_AGENT_MAX_TOKENS, max_tokens))
+    limited = await _ai_agent_rate_check(env, await blind_index(env, account))
+    if limited is not None:
+        return limited
+    outcome = {}
+    result = await _forkbot_run_ai_agent(
+        env, messages, tools=tools, model=model, max_tokens=max_tokens,
+        outcome=outcome)
+    if result is None:
+        # model_not_found is kept separate exactly as in ai_ask_handler: it is
+        # the one failure the person at the composer can fix by re-picking.
+        error = ("model_not_found"
+                 if outcome.get("failure") == "model_not_found"
+                 else "ai_unavailable")
+        return json_response(
+            {"error": error, "model": outcome.get("model") or model},
+            status=502)
+    return json_response({
+        "ok": True,
+        # The model that actually answered (a fallback when the pick was
+        # rejected — see _forkbot_ai_fallback_models).
+        "model": outcome.get("model") or model,
+        "reply": result.get("reply", ""),
+        "toolCalls": result.get("toolCalls", []),
+        "usage": result.get("usage", {}),
+    })
 async def _forkbot_ai_issue_fields(env, description, context_text="", model=""):
     system_prompt = (
         "You turn a chat request into a ForkMesh issue. Use the conversation "
@@ -604,12 +968,15 @@ async def _forkbot_repo_gateway_json(env, owner, repo, action_query):
         return None
     try:
         origin = _public_base_url(env).rstrip("/")
-        response = await asyncio.wait_for(
-            js_fetch(
-                "%s/api/repo/%s/%s/%s"
-                % (origin, quote(owner), quote(repo), action)
-            ),
-            timeout=FORKBOT_GATEWAY_TIMEOUT_MS / 1000,
+        # Native AbortSignal timeout rather than asyncio.wait_for: cancelling
+        # a JS-backed await leaves the Pyodide task pending forever and wedges
+        # the isolate for every later request (see the no-concurrent-tasks
+        # rule at the top of entry.py).
+        response = await js_fetch_with_timeout(
+            "%s/api/repo/%s/%s/%s"
+            % (origin, quote(owner), quote(repo), action),
+            {"method": "GET"},
+            FORKBOT_GATEWAY_TIMEOUT_MS / 1000,
         )
         if int(getattr(response, "status", 0) or 0) != 200:
             return None

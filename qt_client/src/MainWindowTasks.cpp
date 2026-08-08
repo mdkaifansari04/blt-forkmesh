@@ -523,7 +523,34 @@ QJsonObject selectedOrganizationTask(
                                               : QJsonObject();
 }
 
-QString taskDetailHtml(const QJsonObject &task)
+// The task as an agent reads it: the "[task:<id>]" anchor line the run's logs
+// and the org board both key off, the repository it belongs to, and the two
+// free-text blocks that say what to do and how to check it. Shared by the
+// "Add to prompt" button and the one-click "Start agent" launch so a prompt an
+// operator edits by hand and one that goes straight to a run say the same thing.
+QString organizationTaskPromptText(const QJsonObject &task)
+{
+    const QJsonObject qa = task.value(QStringLiteral("qa")).toObject();
+    QStringList lines;
+    lines << QStringLiteral("[task:%1] %2")
+                 .arg(taskText(task, QStringLiteral("id")),
+                      taskText(task, QStringLiteral("title")));
+    const QString repository = taskText(task, QStringLiteral("repository"));
+    if (!repository.isEmpty())
+        lines << QStringLiteral("Repository: %1").arg(repository);
+    const QString details = taskText(task, QStringLiteral("details"));
+    if (!details.isEmpty())
+        lines << QString() << details;
+    const QString howToTest = taskText(qa, QStringLiteral("howToTest"));
+    if (!howToTest.isEmpty())
+        lines << QString() << QStringLiteral("How to test: %1").arg(howToTest);
+    return lines.join(QLatin1Char('\n'));
+}
+
+// localAgentRun names the desktop session bound to this task, so the detail
+// answers "who is working this?" for a run started from the prompt box as well
+// as for one dispatched to a remote agent node.
+QString taskDetailHtml(const QJsonObject &task, const QString &localAgentRun)
 {
     if (task.isEmpty()) {
         return QStringLiteral(
@@ -561,8 +588,16 @@ QString taskDetailHtml(const QJsonObject &task)
                 taskText(task, QStringLiteral("createdBy")));
     html += row(QStringLiteral("Follows task"),
                 taskText(task, QStringLiteral("parentTaskId")));
-    html += row(QStringLiteral("Agent session"),
-                taskText(task, QStringLiteral("agentSessionId")));
+    // A remotely dispatched bot leaves its relay session id here; a run started
+    // from this desktop's prompt box has no relay id at all, so its local
+    // session is named alongside (or instead of) it.
+    QString agentSession = taskText(task, QStringLiteral("agentSessionId"));
+    if (!localAgentRun.isEmpty())
+        agentSession = agentSession.isEmpty()
+                           ? localAgentRun
+                           : agentSession + QString::fromUtf8(" \xC2\xB7 ") +
+                                 localAgentRun;
+    html += row(QStringLiteral("Agent session"), agentSession);
     html += row(QStringLiteral("QA status"),
                 taskText(qa, QStringLiteral("status")));
     html += row(QStringLiteral("QA reviewer"),
@@ -774,6 +809,21 @@ QWidget *MainWindow::buildOrganizationTasksSection()
         QStringLiteral("Add this task's title and details to the prompt box"));
     m_organizationTaskDeleteButton->setObjectName(
         QStringLiteral("dangerButton"));
+    // "Add to prompt" still needs a second trip to the footer to actually send
+    // it. This is the one-click version: attach the task to the prompt and
+    // launch it right away under whatever the prompt box is currently set to,
+    // with the run bound back to this task. Spans the grid because it is the
+    // action an operator reaches for most on an agent task.
+    m_organizationTaskStartAgentButton =
+        new QPushButton(QStringLiteral("Start agent with prompt settings"));
+    m_organizationTaskStartAgentButton->setObjectName(
+        QStringLiteral("primaryButton"));
+    setOcticon(m_organizationTaskStartAgentButton, "rocket", 14);
+    m_organizationTaskStartAgentButton->setToolTip(
+        QStringLiteral("Attach this task to the prompt box and start an agent "
+                       "on it with the repository, provider, model and mode "
+                       "the prompt box is set to"));
+    actions->addWidget(m_organizationTaskStartAgentButton, 3, 0, 1, 3);
     connect(m_organizationTaskEditButton, &QPushButton::clicked, this,
             &MainWindow::editOrganizationTask);
     connect(m_organizationTaskAgentButton, &QPushButton::clicked, this,
@@ -800,6 +850,8 @@ QWidget *MainWindow::buildOrganizationTasksSection()
             &MainWindow::createOrganizationTaskFollowUp);
     connect(m_organizationTaskPromptButton, &QPushButton::clicked, this,
             &MainWindow::addOrganizationTaskToPrompt);
+    connect(m_organizationTaskStartAgentButton, &QPushButton::clicked, this,
+            &MainWindow::startOrganizationTaskAgentFromPrompt);
     detailLayout->addLayout(actions);
     splitter->addWidget(detailHost);
     splitter->setStretchFactor(0, 3);
@@ -1330,9 +1382,32 @@ void MainWindow::renderOrganizationTaskDetail()
 {
     if (!m_organizationTaskDetail)
         return;
+    const QJsonObject task = selectedOrganizationTask(
+        m_organizationTasksTable, m_organizationTasks);
     m_organizationTaskDetail->setHtml(taskDetailHtml(
-        selectedOrganizationTask(
-            m_organizationTasksTable, m_organizationTasks)));
+        task, localAgentRunLabelForTask(taskText(task, QStringLiteral("id")))));
+}
+
+// The reverse of binding a run to a task: which local session (if any) carries
+// this task's id, so the detail can name the run working it and how far it got.
+QString MainWindow::localAgentRunLabelForTask(const QString &taskId) const
+{
+    if (taskId.isEmpty())
+        return QString();
+    for (const AgentSession &session : m_agentSessions) {
+        if (session.orgTaskId != taskId)
+            continue;
+        QStringList parts;
+        parts << QStringLiteral("#%1").arg(session.id);
+        const QString provider = agentProviderName(session.provider);
+        if (!provider.isEmpty())
+            parts << provider;
+        if (!session.status.isEmpty())
+            parts << session.status;
+        return parts.join(QStringLiteral(", ")) +
+               QStringLiteral(" (this desktop)");
+    }
+    return QString();
 }
 
 void MainWindow::updateOrganizationTaskActions()
@@ -1391,6 +1466,11 @@ void MainWindow::updateOrganizationTaskActions()
     // needs no manage right — only a selection.
     if (m_organizationTaskPromptButton)
         m_organizationTaskPromptButton->setEnabled(selected);
+    // Starting an agent runs on this desktop against a local checkout — it is
+    // not a board write either, so a finished task is the only thing that rules
+    // it out.
+    if (m_organizationTaskStartAgentButton)
+        m_organizationTaskStartAgentButton->setEnabled(selected && !done);
 }
 
 // Hands the selected task to the footer's prompt box (adhoc #114's "add to
@@ -1402,24 +1482,123 @@ void MainWindow::addOrganizationTaskToPrompt()
         m_organizationTasksTable, m_organizationTasks);
     if (task.isEmpty())
         return;
-    const QJsonObject qa = task.value(QStringLiteral("qa")).toObject();
-    const QString id = taskText(task, QStringLiteral("id"));
-    const QString title = taskText(task, QStringLiteral("title"));
-    const QString repository = taskText(task, QStringLiteral("repository"));
-    QStringList lines;
-    lines << QStringLiteral("[task:%1] %2").arg(id, title);
-    if (!repository.isEmpty())
-        lines << QStringLiteral("Repository: %1").arg(repository);
-    const QString details = taskText(task, QStringLiteral("details"));
-    if (!details.isEmpty())
-        lines << QString() << details;
-    const QString howToTest = taskText(qa, QStringLiteral("howToTest"));
-    if (!howToTest.isEmpty())
-        lines << QString() << QStringLiteral("How to test: %1").arg(howToTest);
-    appendTextToActivePrompt(lines.join(QLatin1Char('\n')));
+    appendTextToActivePrompt(organizationTaskPromptText(task));
     if (m_organizationTasksStatus)
         m_organizationTasksStatus->setText(
             QStringLiteral("Task added to the prompt box."));
+}
+
+// One click from a task to a running agent. The task is attached to the prompt
+// box first — so what the agent was handed is exactly what the operator can see
+// and could have edited — and the run is launched with that box's live
+// settings: its repository, provider, model, permission mode, effort, PR
+// toggle and any queued attachments. The session is then bound back to this
+// task (orgTaskId), which is what makes the "vice versa" half work: the run's
+// live status and its completion note report against this task rather than
+// opening a second, duplicate one.
+void MainWindow::startOrganizationTaskAgentFromPrompt()
+{
+    const QJsonObject task = selectedOrganizationTask(
+        m_organizationTasksTable, m_organizationTasks);
+    if (task.isEmpty() || !m_organizationTasksStatus)
+        return;
+    const QString id = taskText(task, QStringLiteral("id"));
+    const QString title = taskText(task, QStringLiteral("title"));
+    if (id.isEmpty())
+        return;
+
+    // "Manual (create issue)" files an issue and Cloudflare AI answers on the
+    // relay: neither runs an agent in a checkout, so neither can work a task.
+    const QString provider =
+        m_quickAddAgentProvider
+            ? m_quickAddAgentProvider->currentData().toString()
+            : QStringLiteral("claude-code");
+    if (provider == QLatin1String("manual") ||
+        agentIsCloudflareAiProvider(provider)) {
+        m_organizationTasksStatus->setText(QStringLiteral(
+            "Pick a coding agent in the prompt box before starting one on a "
+            "task."));
+        return;
+    }
+
+    // Work the task in its own repository when this desktop has a checkout of
+    // it; otherwise fall back to whatever the prompt box is pointed at, the
+    // same repository a typed prompt would have run in. A repository this node
+    // knows but has not cloned cannot host a run, so it is not a hit either.
+    const QStringList repository =
+        taskText(task, QStringLiteral("repository"))
+            .split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    int repoIndex = repository.size() == 2
+                        ? repoIndexFor(repository.at(0), repository.at(1))
+                        : -1;
+    if (repoIndex >= 0 && repoIndex < m_repositories.size() &&
+        m_repositories.at(repoIndex).localPath.isEmpty())
+        repoIndex = -1;
+    if (repoIndex < 0)
+        repoIndex = issuesRepoIndex();
+    if (repoIndex < 0) {
+        m_organizationTasksStatus->setText(QStringLiteral(
+            "Open a repository with a local checkout to run this task's "
+            "agent."));
+        return;
+    }
+
+    // Attach the task to the prompt before reading the box back, so anything
+    // already typed there rides along as context and the operator is left
+    // looking at the exact text that was sent.
+    addOrganizationTaskToPrompt();
+    QString prompt = m_issueQuickAdd ? m_issueQuickAdd->toPlainText().trimmed()
+                                     : organizationTaskPromptText(task);
+    if (prompt.isEmpty())
+        return;
+    // Attachments queued in the prompt box reach the agent the way a typed
+    // prompt's do (issue #79): one "Attached image: <path>" line per file.
+    const QStringList images = m_quickAddImages;
+    for (const QString &image : images) {
+        if (!prompt.endsWith(QLatin1Char('\n')))
+            prompt += QLatin1Char('\n');
+        prompt += QStringLiteral("Attached image: %1").arg(image);
+    }
+
+    const QString model = (provider == QLatin1String("claude-code") ||
+                           agentIsCodexProvider(provider))
+                              ? selectedModelComboValue(m_quickAddClaudeModel)
+                              : QString();
+    const bool createPr =
+        m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
+    const int sessionId = startAdHocAgentForRepo(
+        repoIndex, prompt, provider, createPr, model,
+        /*titleOverride=*/title, /*genie=*/false, /*switchToTab=*/true,
+        /*orgTaskId=*/id);
+    if (sessionId <= 0) {
+        // startAdHocAgentForRepo already said why in a toast; leave the prompt
+        // box loaded so the attempt is not lost.
+        m_organizationTasksStatus->setText(
+            QStringLiteral("Could not start an agent on this task."));
+        return;
+    }
+    if (m_issueQuickAdd)
+        m_issueQuickAdd->clear();
+    clearQuickAddImages();
+    QStringList details;
+    const QString modelLabel = agentModelLabel(model);
+    if (!modelLabel.isEmpty())
+        details << modelLabel;
+    if (m_quickAddModeSelector)
+        details << m_quickAddModeSelector->currentText();
+    const QString started =
+        QStringLiteral("Started %1 agent session #%2 on this task%3.")
+            .arg(agentProviderName(provider))
+            .arg(sessionId)
+            .arg(details.isEmpty()
+                     ? QString()
+                     : QStringLiteral(" (%1)")
+                           .arg(details.join(QStringLiteral(", "))));
+    m_organizationTasksStatus->setText(started);
+    logSystem(started);
+    // Repaint the detail so its "Agent session" row names the run that was just
+    // bound to the task, without waiting for the next board refresh.
+    renderOrganizationTaskDetail();
 }
 
 void MainWindow::createOrganizationTask()

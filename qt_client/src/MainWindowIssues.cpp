@@ -1181,6 +1181,10 @@ QWidget *MainWindow::buildIssuesSection()
     // tracked agent session, working until ForkMesh can open a PR from its diff.
     m_issueAgentProvider->addItem(QStringLiteral("Claude Code"),
                                   QStringLiteral("claude-code"));
+    // "Cloudflare AI" runs the bundled Workers AI agent script against the
+    // relay's models (adhoc #1634).
+    m_issueAgentProvider->addItem(QStringLiteral("Cloudflare AI"),
+                                  kCloudflareAiProvider);
     selectDefaultAgentProvider(m_issueAgentProvider);
     m_issueAgentProvider->setToolTip("Which agent to run on this issue");
     // Model picker beneath the provider so a run can target a specific model
@@ -4366,32 +4370,14 @@ void MainWindow::quickAddIssue()
         m_quickAddAgentProvider
             ? m_quickAddAgentProvider->currentData().toString()
             : QStringLiteral("claude-code");
-    // Cloudflare AI is neither an agent nor an issue: the picked Workers AI model
-    // answers the prompt on the relay and the reply is shown (adhoc #1407). It
-    // has no checkout, so it must be handled before the agent hand-off below.
-    if (agentIsCloudflareAiProvider(quickAddProvider)) {
-        if (title.isEmpty())
-            return;
-        const QString model = selectedModelComboValue(m_quickAddClaudeModel);
-        // Workers AI text models take no images here, so say what was dropped
-        // instead of silently discarding the attachments.
-        if (!m_quickAddImages.isEmpty())
-            logSystem(QStringLiteral("Cloudflare AI answers text only; %1 "
-                                     "attached image(s) were not sent.")
-                          .arg(m_quickAddImages.size()));
-        // Keep an unsent prompt in the composer when authentication is missing
-        // or another Workers AI request is still in flight. The old void path
-        // cleared it even though no request had started.
-        if (!sendPromptToCloudflareAi(title, model))
-            return;
-        m_issueQuickAdd->clear();
-        clearQuickAddImages();
-        return;
-    }
     if (quickAddProvider != QLatin1String("manual")) {
+        // Cloudflare AI runs an agent like everything else since adhoc #1634
+        // (it used to answer the prompt via /api/ai/ask and stop); its picked
+        // "@cf/..." model rides along just like a Claude Code or Codex pick.
         const QString provider = quickAddProvider;
         const QString model = (provider == QLatin1String("claude-code") ||
-                               agentIsCodexProvider(provider))
+                               agentIsCodexProvider(provider) ||
+                               agentIsCloudflareAiProvider(provider))
                                   ? selectedModelComboValue(m_quickAddClaudeModel)
                                   : QString();
         const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
@@ -4404,8 +4390,12 @@ void MainWindow::quickAddIssue()
                 prompt += QLatin1Char('\n');
             prompt += QStringLiteral("Attached image: %1").arg(img);
         }
+        // switchToTab=false: this is the quick-add bar's "new" button, docked on
+        // every page — starting a run from it must not jump the user onto the
+        // Agents tab away from whatever they were looking at (adhoc #1573).
         const int agentSessionId = startAdHocAgentForRepo(
-            issuesRepoIndex(), prompt, provider, createPr, model);
+            issuesRepoIndex(), prompt, provider, createPr, model, QString(),
+            /*genie=*/false, /*switchToTab=*/false);
         if (agentSessionId > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
@@ -5337,6 +5327,8 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         obj == m_topMessageContainer || obj == m_topMessage ||
         obj == m_topMessageScroll || obj == m_topMessageActions ||
         obj == m_topMessageMeta || obj == m_topMessageTypeBadge ||
+        obj == m_topMessageAgentRow || obj == m_topMessageAgentIcon ||
+        obj == m_topMessageAgentHeadline ||
         obj == m_topMessageActionOutput ||
         obj == m_topMessageCopy ||
         obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
@@ -5378,14 +5370,33 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                 (box->standardButtons()
                  & ~(QMessageBox::Ok | QMessageBox::Close))
                 == QMessageBox::NoButton;
-            if (informational
-                && (icon == QMessageBox::Warning
-                    || icon == QMessageBox::Critical)) {
+            if (informational) {
                 QString text = box->text();
                 if (!box->informativeText().isEmpty())
                     text += QLatin1Char(' ') + box->informativeText();
-                reportUserVisibleError(QStringLiteral("dialog"),
-                                       box->windowTitle(), text);
+                const bool failure = icon == QMessageBox::Warning
+                                     || icon == QMessageBox::Critical;
+                // Every popup this app shows is filed on the Pings page, so a
+                // dialog that was clicked away is still an event with a record
+                // (adhoc #1629). Quiet: the modal is already in front of the
+                // operator, and a toast repeating it would be noise.
+                AppNotification item;
+                item.title = box->windowTitle().isEmpty()
+                                 ? QStringLiteral("Desktop alert")
+                                 : box->windowTitle();
+                item.body = text.simplified();
+                item.warning = failure;
+                item.kind = QStringLiteral("dialog");
+                item.quiet = true;
+                const qint64 pingId = recordNotification(item);
+                // …and a failure is also reported to the relay, so a modal on a
+                // machine nobody is watching still reaches somebody (#1538).
+                // The ping id rides along: whether that report lands is what the
+                // row's Status column ends up showing.
+                if (failure)
+                    reportUserVisibleError(QStringLiteral("dialog"),
+                                           box->windowTitle(), text, QString(),
+                                           pingId);
             }
         }
     }
@@ -5625,6 +5636,20 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                                    m_footerUpdateLog->viewport());
                 return true;
             }
+            // The trailing origin is likewise its own affordance (adhoc #1587):
+            // the tooltip carries the full path the link abbreviates.
+            QString sourcePath;
+            int sourceLine = 0;
+            if (logSourceAnchorTarget(m_footerUpdateLog->anchorAt(he->pos()),
+                                      &sourcePath, &sourceLine)) {
+                QToolTip::showText(
+                    he->globalPos(),
+                    QStringLiteral("Logged from %1:%2 — click to open it in Files")
+                        .arg(sourcePath)
+                        .arg(sourceLine),
+                    m_footerUpdateLog->viewport());
+                return true;
+            }
             const QString line = lineAt(he->pos());
             if (!line.isEmpty()) {
                 QToolTip::showText(he->globalPos(), line,
@@ -5641,6 +5666,15 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                     logPromptAnchorLine(m_footerUpdateLog->anchorAt(pos));
                 if (!promptLine.isEmpty()) {
                     appendTextToActivePrompt(promptLine);
+                    return true;
+                }
+                // ...and the origin at the far right opens the code that wrote
+                // the entry, rather than the Log view showing it.
+                QString sourcePath;
+                int sourceLine = 0;
+                if (logSourceAnchorTarget(m_footerUpdateLog->anchorAt(pos),
+                                          &sourcePath, &sourceLine)) {
+                    revealLogSourceInExplorer(sourcePath, sourceLine);
                     return true;
                 }
                 const QString line = lineAt(pos);
@@ -5667,14 +5701,37 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                                    m_settingsLog->viewport());
                 return true;
             }
+            QString sourcePath;
+            int sourceLine = 0;
+            if (logSourceAnchorTarget(m_settingsLog->anchorAt(he->pos()),
+                                      &sourcePath, &sourceLine)) {
+                QToolTip::showText(
+                    he->globalPos(),
+                    QStringLiteral("Logged from %1:%2 — click to open it in Files")
+                        .arg(sourcePath)
+                        .arg(sourceLine),
+                    m_settingsLog->viewport());
+                return true;
+            }
         } else {
             auto *me = static_cast<QMouseEvent *>(event);
             if (me->button() == Qt::LeftButton) {
-                const QString promptLine = logPromptAnchorLine(
-                    m_settingsLog->anchorAt(me->position().toPoint()));
+                const QString anchor =
+                    m_settingsLog->anchorAt(me->position().toPoint());
+                const QString promptLine = logPromptAnchorLine(anchor);
                 if (!promptLine.isEmpty()) {
                     if (event->type() == QEvent::MouseButtonRelease)
                         appendTextToActivePrompt(promptLine);
+                    return true;
+                }
+                // The origin link closing the entry (adhoc #1587), swallowed
+                // here for the same reason: QTextBrowser would otherwise try to
+                // navigate to "fmlogsrc:…" on the release.
+                QString sourcePath;
+                int sourceLine = 0;
+                if (logSourceAnchorTarget(anchor, &sourcePath, &sourceLine)) {
+                    if (event->type() == QEvent::MouseButtonRelease)
+                        revealLogSourceInExplorer(sourcePath, sourceLine);
                     return true;
                 }
             }

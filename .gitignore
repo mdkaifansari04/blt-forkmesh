@@ -1,14 +1,23 @@
-qt_client/build-forkmesh/
-qt_client/build-ci/
-qt_client/build-release/
+# CMake writes here when a worktree is configured with the conventional
+# `-B build`, or into a build-<purpose>/ directory beside it (build-forkmesh,
+# build-ci, build-release, build-tests, …). Either way its ~700 generated files
+# otherwise swamp the branch's diff. Matched at any depth, since a worktree may
+# be configured from the repository root or from inside qt_client/.
+build/
+build-*/
 cloudflare_worker/python_modules/
 .wrangler/
+
+# Agent runs get their own worktree inside the project (adhoc #1624), at
+# .worktrees/agent-<session>-<description>. The app also drops a self-ignoring
+# .gitignore in there for projects that carry no rule of their own; this entry
+# is the same promise, written down where a contributor will see it.
+.worktrees/
 
 # Local secrets / env files (the *.example templates stay tracked).
 .env
 .env.*
 !.env.*.example
-build-forkmesh/
 .venv/
 .git-rewrite/
 tools/__pycache__/
@@ -39,3 +48,4 @@ todo2.md
 improvements.md
 todo.md
 marketing/
+/mirror_node/forkmesh-mirror-node

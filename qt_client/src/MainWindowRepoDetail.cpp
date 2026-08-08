@@ -371,16 +371,17 @@ void MainWindow::populateIssueFilesCell(int row, const Issue &issue)
 
 QWidget *MainWindow::buildRepoFilesPanel()
 {
-    // Three modes: a GitHub-style overview, the repository explorer/editor, and
-    // an account-gated Cove Explorer rooted in .forkmesh/coves.
+    // Two modes: a GitHub-style overview and an account-gated Cove Explorer
+    // rooted in .forkmesh/coves. The explorer/editor that used to sit between
+    // them is the rail's Files destination now (adhoc #1590), so this page has
+    // one job — reading the repository — and opening a file leaves it.
     m_filesStack = new CurrentPageStack;
     m_filesStack->addWidget(buildRepoOverviewPage());      // 0 overview
-    m_filesStack->addWidget(buildRepoEditorPage());        // 1 editor
-    m_filesStack->addWidget(buildRepoCoveExplorerPage());  // 2 secure cove
+    m_filesStack->addWidget(buildRepoCoveExplorerPage());  // 1 secure cove
 
-    // The three mode toggles take the same icon-over-caption form as the
-    // activity rail and the repo tabs (adhoc #6), so the whole mode row —
-    // toggles, toolbar counts and trends — reads as one line.
+    // The mode toggles take the same icon-over-caption form as the activity
+    // rail and the repo tabs (adhoc #6), so the whole mode row — toggles,
+    // toolbar counts and trends — reads as one line.
     m_filesModeOverviewButton =
         new VerticalIconButton("Overview", VerticalIconButton::Tab);
     m_filesModeOverviewButton->setObjectName("repoTab");
@@ -392,17 +393,6 @@ QWidget *MainWindow::buildRepoFilesPanel()
     setOcticon(m_filesModeOverviewButton, "code", 16);
     connect(m_filesModeOverviewButton, &QPushButton::clicked, this,
             [this] { showRepoOverview(); });
-
-    m_filesModeExplorerButton =
-        new VerticalIconButton("Explorer", VerticalIconButton::Tab);
-    m_filesModeExplorerButton->setObjectName("repoTab");
-    m_filesModeExplorerButton->setCheckable(true);
-    m_filesModeExplorerButton->setCursor(Qt::PointingHandCursor);
-    m_filesModeExplorerButton->setToolTip(
-        "Open the file explorer and code editor");
-    setOcticon(m_filesModeExplorerButton, "file-directory", 16);
-    connect(m_filesModeExplorerButton, &QPushButton::clicked, this,
-            [this] { showRepoEditor(); });
 
     m_filesModeCoveExplorerButton =
         new VerticalIconButton("Coves", VerticalIconButton::Tab);
@@ -451,7 +441,6 @@ QWidget *MainWindow::buildRepoFilesPanel()
     modeRow->setContentsMargins(8, 0, 16, 0);
     modeRow->setSpacing(10);
     modeRow->addWidget(m_filesModeOverviewButton);
-    modeRow->addWidget(m_filesModeExplorerButton);
     modeRow->addWidget(m_filesModeCoveExplorerButton);
     modeRow->addSpacing(10);
     modeRow->addWidget(m_branchesButton);
@@ -539,7 +528,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
                 if (kind == 1)
                     loadRepoOverview(path); // navigate into the directory (or up)
                 else if (!path.isEmpty())
-                    openRepoFile(path); // open the file (switches to editor view)
+                    openRepoFile(path); // open the file (in the Files section)
             });
 
     m_readmeView = new QTextBrowser;
@@ -551,9 +540,9 @@ QWidget *MainWindow::buildRepoOverviewPage()
     // Toolbar: branch counts + tags + "go to file" search, every button the
     // same icon-over-caption form as the activity rail with its count as a
     // corner badge (adhoc #6). The buttons are created here but placed on the
-    // Code overview's mode row, beside the Code overview / Explorer / Cove
-    // Explorer toggles (see buildRepoFilesPanel). The branch switcher itself
-    // moved to the bottom status bar (see buildStatusBar).
+    // Code overview's mode row, beside the Code overview / Coves toggles (see
+    // buildRepoFilesPanel). The branch switcher itself moved to the bottom
+    // status bar (see buildStatusBar).
     m_branchesButton =
         new VerticalIconButton("Branches", VerticalIconButton::Tab);
     m_branchesButton->setCursor(Qt::PointingHandCursor);
@@ -616,8 +605,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
                     openRepoFile(path);
                 m_fileSearch->clear();
             });
-    // Switching into the explorer + editor view is handled by the persistent
-    // "Explorer" toggle above the stack (see buildRepoFilesPanel).
+    // Picking a file here opens it in the rail's Files section, which is where
+    // every editor tab lives now (see openRepoFile).
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(8);
@@ -687,150 +676,6 @@ QWidget *MainWindow::buildRepoOverviewPage()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(leftColumn);
-    return page;
-}
-
-QWidget *MainWindow::buildRepoEditorPage()
-{
-    auto *page = new QWidget;
-
-    auto *backRow = new QHBoxLayout;
-    backRow->setContentsMargins(8, 4, 8, 0);
-    // Returning to the GitHub-style overview is handled by the persistent
-    // "Code overview" toggle above the stack (see buildRepoFilesPanel).
-    backRow->addStretch();
-    m_repoFileHistoryButton = new QPushButton("Show history");
-    m_repoFileHistoryButton->setObjectName("ghostButton");
-    m_repoFileHistoryButton->setCursor(Qt::PointingHandCursor);
-    m_repoFileHistoryButton->setToolTip(
-        "Show the commit history and changes for this file");
-    setOcticon(m_repoFileHistoryButton, "history", 16);
-    connect(m_repoFileHistoryButton, &QPushButton::clicked, this, [this] {
-        QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
-        const QString path = w ? w->property("previewPath").toString() : QString();
-        if (!path.isEmpty())
-            showRepoFileHistory(path);
-    });
-    // Markdown files get a tiny toggle that flips between the raw source and a
-    // rendered preview (README.md, docs, any *.md / *.markdown).
-    m_repoFilePreviewButton = new QPushButton("Preview");
-    m_repoFilePreviewButton->setObjectName("ghostButton");
-    m_repoFilePreviewButton->setCursor(Qt::PointingHandCursor);
-    m_repoFilePreviewButton->setCheckable(true);
-    m_repoFilePreviewButton->setToolTip("Preview rendered Markdown");
-    setOcticon(m_repoFilePreviewButton, "eye", 16);
-    connect(m_repoFilePreviewButton, &QPushButton::clicked, this,
-            &MainWindow::toggleRepoFileMarkdownPreview);
-    m_repoFileCommitButton = new QPushButton("Commit direct");
-    m_repoFileCommitButton->setObjectName("ghostButton");
-    m_repoFileCommitButton->setCursor(Qt::PointingHandCursor);
-    m_repoFileCommitButton->setToolTip("Save this file and commit it directly to the default branch");
-    setOcticon(m_repoFileCommitButton, "upload", 16);
-    connect(m_repoFileCommitButton, &QPushButton::clicked, this,
-            [this] { saveCurrentRepoFile(false); });
-    m_repoFilePullButton = new QPushButton("Save as PR");
-    m_repoFilePullButton->setObjectName("primaryButton");
-    m_repoFilePullButton->setCursor(Qt::PointingHandCursor);
-    m_repoFilePullButton->setToolTip("Save this file on a new branch and open a pull request");
-    setOcticon(m_repoFilePullButton, "git-pull-request", 16);
-    connect(m_repoFilePullButton, &QPushButton::clicked, this,
-            [this] { saveCurrentRepoFile(true); });
-    backRow->addWidget(m_repoFilePreviewButton);
-    backRow->addWidget(m_repoFileHistoryButton);
-    backRow->addWidget(m_repoFileCommitButton);
-    backRow->addWidget(m_repoFilePullButton);
-
-    m_repoFileTree = new QTreeWidget;
-    m_repoFileTree->setObjectName("fileTree");
-    enableHoverRowHighlight(m_repoFileTree);
-    // Two columns: name (stretch) + a thin, right-aligned size column.
-    m_repoFileTree->setColumnCount(2);
-    m_repoFileTree->setHeaderHidden(true);
-    m_repoFileTree->header()->setStretchLastSection(false);
-    m_repoFileTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_repoFileTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_repoFileTree->setMinimumWidth(200);
-    m_repoFileTree->setIndentation(14);
-    // Right-click a file or folder for IDE-style operations (new/rename/delete,
-    // copy path, reveal) — see showRepoFileTreeMenu.
-    m_repoFileTree->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(m_repoFileTree, &QWidget::customContextMenuRequested, this,
-            &MainWindow::showRepoFileTreeMenu);
-    // Single-click a folder to expand/collapse it; single-click a file to
-    // open it in an editable tab on the right.
-    connect(m_repoFileTree, &QTreeWidget::itemClicked, this,
-            [this](QTreeWidgetItem *item, int) {
-                if (!item)
-                    return;
-                if (item->data(0, Qt::UserRole + 1).toBool())
-                    item->setExpanded(!item->isExpanded());
-                else
-                    openRepoFile(item->data(0, Qt::UserRole).toString());
-            });
-    // Double-click a file to open it in an editable tab on the right.
-    connect(m_repoFileTree, &QTreeWidget::itemDoubleClicked, this,
-            [this](QTreeWidgetItem *item, int) {
-                if (item && !item->data(0, Qt::UserRole + 1).toBool())
-                    openRepoFile(item->data(0, Qt::UserRole).toString());
-            });
-    connect(m_repoFileTree, &QTreeWidget::itemExpanded, this,
-            [this](QTreeWidgetItem *item) {
-                if (item && item->data(0, Qt::UserRole + 1).toBool())
-                    item->setIcon(0, iconForDir(true));
-            });
-    connect(m_repoFileTree, &QTreeWidget::itemCollapsed, this,
-            [this](QTreeWidgetItem *item) {
-                if (item && item->data(0, Qt::UserRole + 1).toBool())
-                    item->setIcon(0, iconForDir(false));
-            });
-
-    m_repoFileTabs = new QTabWidget;
-    m_repoFileTabs->setObjectName("fileTabs");
-    m_repoFileTabs->setDocumentMode(true);
-    m_repoFileTabs->setMovable(true);
-    m_repoFileTabs->setTabsClosable(true);
-    connect(m_repoFileTabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
-        QWidget *w = m_repoFileTabs->widget(index);
-        m_openFileTabs.remove(m_openFileTabs.key(w));
-        m_repoFileTabs->removeTab(index);
-        w->deleteLater();
-        // With no files left open, return to the overview.
-        if (m_repoFileTabs->count() == 0)
-            showRepoOverview();
-        updateRepoFileSaveActions();
-    });
-    connect(m_repoFileTabs, &QTabWidget::currentChanged, this, [this] {
-        updateRepoFileSaveActions();
-        // Each open file is a place on the Back/Forward trail, so opening one
-        // from the file list (or switching tabs) is a step (adhoc #50).
-        scheduleNavRecord();
-    });
-    // Ctrl+S saves the current tab: commit direct when this node owns a working
-    // tree, otherwise fall back to opening a PR (the only save path on a mirror).
-    auto *saveShortcut = new QShortcut(QKeySequence::Save, m_repoFileTabs);
-    saveShortcut->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(saveShortcut, &QShortcut::activated, this, [this] {
-        if (m_repoFileCommitButton && m_repoFileCommitButton->isEnabled())
-            saveCurrentRepoFile(false);
-        else if (m_repoFilePullButton && m_repoFilePullButton->isEnabled())
-            saveCurrentRepoFile(true);
-    });
-
-    auto *splitter = new QSplitter(Qt::Horizontal);
-    splitter->setObjectName("filesSplitter");
-    splitter->setChildrenCollapsible(false);
-    splitter->addWidget(m_repoFileTree);
-    splitter->addWidget(m_repoFileTabs);
-    splitter->setStretchFactor(0, 0);
-    splitter->setStretchFactor(1, 1);
-    splitter->setSizes({240, 700});
-
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-    layout->addLayout(backRow);
-    layout->addWidget(splitter, 1);
-    updateRepoFileSaveActions();
     return page;
 }
 
@@ -967,16 +812,8 @@ QWidget *MainWindow::buildRepoCoveExplorerPage()
                 if (item && !item->data(0, Qt::UserRole + 1).toBool())
                     openCoveExplorerDocument(item->data(0, Qt::UserRole).toString());
             });
-    connect(m_coveExplorerTree, &QTreeWidget::itemExpanded, this,
-            [this](QTreeWidgetItem *item) {
-                if (item && item->data(0, Qt::UserRole + 1).toBool())
-                    item->setIcon(0, iconForDir(true));
-            });
-    connect(m_coveExplorerTree, &QTreeWidget::itemCollapsed, this,
-            [this](QTreeWidgetItem *item) {
-                if (item && item->data(0, Qt::UserRole + 1).toBool())
-                    item->setIcon(0, iconForDir(false));
-            });
+    connectFileTreeFolderIcons(m_coveExplorerTree,
+                               [this](bool opened) { return iconForDir(opened); });
 
     m_coveExplorerTabs = new QTabWidget;
     m_coveExplorerTabs->setObjectName("fileTabs");
@@ -1418,6 +1255,22 @@ void MainWindow::openRepoDetail(int repoIndex)
     if (repoIndex != m_repoDetailIndex)
         clearBranchDiffCache();
     m_repoDetailIndex = repoIndex;
+    {
+        // Opening a repo is the one user action that refetches the cached
+        // /pending badge tallies (fetchMirrorPendingCounts is otherwise
+        // fetch-once and only invalidated by node event pushes — which a
+        // pure viewer of someone else's repo never receives).
+        const RepositoryRecord &opened = m_repositories.at(repoIndex);
+        const QString source =
+            repoSegment(opened.owner, QStringLiteral("owner")) +
+            QLatin1Char('/') +
+            repoSegment(opened.name, QStringLiteral("repository"));
+        QJsonObject cached = m_mirrorPendingCache.value(source);
+        if (!cached.isEmpty()) {
+            cached.insert(QStringLiteral("clientFetchedAt"), 0);
+            m_mirrorPendingCache.insert(source, cached);
+        }
+    }
     // Copy by value: the keep-alive pump services queued slots between git reads,
     // and a roster/network callback could mutate (and reallocate) m_repositories
     // mid-load — a reference into it would dangle.
@@ -1511,10 +1364,7 @@ void MainWindow::openRepoDetail(int repoIndex)
         m_repoDetailTabs->button(kRepoLandingTab)->setChecked(true);
     if (m_repoDetailStack)
         m_repoDetailStack->setCurrentIndex(kRepoLandingTab);
-    if (m_repoFileTabs) {
-        m_repoFileTabs->clear();
-        m_openFileTabs.clear();
-    }
+    clearRepoFileTabs();
     if (m_repoFileTree)
         m_repoFileTree->clear();
     if (m_coveExplorerTabs) {
@@ -1558,8 +1408,8 @@ void MainWindow::openRepoDetail(int repoIndex)
     // Insights (contributor stats, git shortlog) are computed lazily when the
     // Insights tab is opened — see the tab-switch handler — so opening a repo
     // doesn't pay for them up front.
-    // Land on the GitHub-style overview at the repo root by default; the
-    // explorer + editor is one click away via the persistent "Explorer" toggle.
+    // Land on the GitHub-style overview at the repo root by default; opening a
+    // file from it moves to the rail's Files destination (adhoc #1590).
     m_overviewLoadedKey.clear();
     if (m_overviewList)
         m_overviewList->clear();
@@ -1667,23 +1517,8 @@ void MainWindow::loadRepoFileTree()
     // Preserve the user's place across the rebuild: which folders are expanded
     // and the scroll position, keyed by repo-relative path. Without this a change
     // (e.g. deleting a folder) would collapse the whole tree and jump to the top.
-    QSet<QString> expanded;
-    std::function<void(QTreeWidgetItem *)> collectExpanded =
-        [&](QTreeWidgetItem *parent) {
-            for (int i = 0; i < parent->childCount(); ++i) {
-                QTreeWidgetItem *child = parent->child(i);
-                if (child->isExpanded()) {
-                    const QString p = child->data(0, Qt::UserRole).toString();
-                    if (!p.isEmpty())
-                        expanded.insert(p);
-                }
-                collectExpanded(child);
-            }
-        };
-    collectExpanded(m_repoFileTree->invisibleRootItem());
-    const int scrollValue = m_repoFileTree->verticalScrollBar()
-                                ? m_repoFileTree->verticalScrollBar()->value()
-                                : 0;
+    const QSet<QString> expanded = fileTreeExpandedPaths(m_repoFileTree);
+    const int scrollValue = fileTreeScrollOffset(m_repoFileTree);
 
     m_repoFileTree->clear();
 
@@ -1733,9 +1568,7 @@ void MainWindow::loadRepoFileTree()
 
     // Right-aligned, muted size text in column 1 for both files and folders.
     auto setSize = [](QTreeWidgetItem *item, qint64 bytes) {
-        item->setText(1, formatByteSize(bytes));
-        item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-        item->setForeground(1, QBrush(QColor("#8b949e")));
+        setFileTreeSizeCell(item, 1, formatByteSize(bytes));
     };
 
     QHash<QString, QTreeWidgetItem *> dirs; // accumulated path -> directory node
@@ -1794,22 +1627,9 @@ void MainWindow::loadRepoFileTree()
         new QTreeWidgetItem(m_repoFileTree, {"(empty repository)"});
 
     // Re-expand the folders that were open before and restore the scroll offset,
-    // so refreshing in place keeps the view exactly where the user left it.
-    if (!expanded.isEmpty()) {
-        std::function<void(QTreeWidgetItem *)> restoreExpanded =
-            [&](QTreeWidgetItem *parent) {
-                for (int i = 0; i < parent->childCount(); ++i) {
-                    QTreeWidgetItem *child = parent->child(i);
-                    if (child->data(0, Qt::UserRole + 1).toBool() &&
-                        expanded.contains(child->data(0, Qt::UserRole).toString()))
-                        child->setExpanded(true);
-                    restoreExpanded(child);
-                }
-            };
-        restoreExpanded(m_repoFileTree->invisibleRootItem());
-    }
-    if (m_repoFileTree->verticalScrollBar())
-        m_repoFileTree->verticalScrollBar()->setValue(scrollValue);
+    // so refreshing in place keeps the view exactly where the user left it. The
+    // whole tree is built up front here, so no per-folder reload is needed.
+    restoreFileTreeExpandedPaths(m_repoFileTree, expanded, scrollValue);
 }
 
 // Reject a repo-relative path that would escape the repository or touch .git.
@@ -1895,11 +1715,8 @@ void MainWindow::showRepoFileTreeMenu(const QPoint &pos)
         QApplication::clipboard()->setText(path);
     else if (chosen == copyAbs)
         QApplication::clipboard()->setText(QDir(repoGitDir()).filePath(path));
-    else if (chosen == reveal) {
-        const QString full = QDir(repoGitDir()).filePath(path);
-        QDesktopServices::openUrl(QUrl::fromLocalFile(
-            isDir ? full : QFileInfo(full).absolutePath()));
-    }
+    else if (chosen == reveal)
+        revealInDesktopFileManager(QDir(repoGitDir()).filePath(path));
 }
 
 QString MainWindow::prepareRepoFileOp(QString *base)
@@ -1939,12 +1756,13 @@ QString MainWindow::prepareRepoFileOp(QString *base)
 void MainWindow::finishRepoFileOp(const QString &base)
 {
     setRepoBranch(base);
-    // Stay on whichever files-panel page the user was on (the explorer, normally)
-    // across the heavyweight refresh.
+    // Stay on whichever Code page the user was on across the heavyweight
+    // refresh — the file operation itself ran from the Files section, which the
+    // refresh does not navigate away from.
     const int filesPage = m_filesStack ? m_filesStack->currentIndex() : 0;
     refreshOpenRepoDetail();
-    // The explorer is the active view; rebuild it now rather than lazily so the
-    // change is visible immediately.
+    // The tree the operation ran from is on screen; rebuild it now rather than
+    // lazily so the change is visible immediately.
     loadRepoFileTree();
     m_treeLoadedForIndex = m_repoDetailIndex;
     if (m_filesStack)
@@ -2110,13 +1928,12 @@ void MainWindow::closeRepoFileTabsUnder(const QString &path, bool isDir)
         if (w)
             w->deleteLater();
     }
-    if (m_repoFileTabs->count() == 0)
-        showRepoOverview();
+    updateRepoFileSaveActions();
 }
 
 void MainWindow::openRepoFile(const QString &path)
 {
-    if (path.isEmpty() || !m_repoFileTabs)
+    if (path.isEmpty())
         return;
     // A cove is encrypted; open it in the cove viewer (unlocking as needed) rather
     // than dumping ciphertext into the code editor.
@@ -2125,17 +1942,29 @@ void MainWindow::openRepoFile(const QString &path)
         openCove(path);
         return;
     }
-    // Opening a file reveals the explorer + editor view; build the tree lazily.
-    if (m_treeLoadedForIndex != m_repoDetailIndex) {
-        loadRepoFileTree();
-        m_treeLoadedForIndex = m_repoDetailIndex;
+    // An absolute path is a file the filesystem explorer found, not something
+    // `git show <ref>:<path>` could ever read. openLocalFileTab decides whether
+    // the repository tracks it and comes back here when it does.
+    if (QDir::isAbsolutePath(path)) {
+        openLocalFileTab(path);
+        return;
     }
-    if (m_filesStack)
-        m_filesStack->setCurrentIndex(1);
+    // Every editor tab lives on the rail's Files destination (adhoc #1590), and
+    // that section builds lazily — so build it before touching its widgets, and
+    // show the repository's tree, which is the side this path is relative to.
+    // showSection() comes last, once the tab is open: the git reads below pump
+    // the event loop, and a section switch before them would let the debounced
+    // Back/Forward record settle on a fileless Files place and then record the
+    // file as a second step.
+    ensureSectionBuilt(kFilesSectionIndex);
+    if (!m_repoFileTabs)
+        return;
+    showFilesRepoTree();
 
     // Focus an already-open tab for this file.
     if (m_openFileTabs.contains(path)) {
         m_repoFileTabs->setCurrentWidget(m_openFileTabs.value(path));
+        showSection(kFilesSectionIndex);
         return;
     }
     const QString dir = repoGitDir();
@@ -2185,6 +2014,107 @@ void MainWindow::openRepoFile(const QString &path)
                         idx, modified ? QString::fromUtf8("\xE2\x97\x8F ") + name : name);
             });
     updateRepoFileSaveActions();
+    showSection(kFilesSectionIndex);
+}
+
+// Open a file straight from a working tree: the bytes on disk, not the version
+// git has at the current ref. The changes panel needs exactly this — every file
+// it lists differs from the committed content, so openRepoFile() above would
+// show the *old* text and then refuse to save it (saveRepoFileEdit bails on a
+// dirty tree). This tab's Save writes back to the same file (adhoc #1594).
+void MainWindow::openWorkingTreeFile(const QString &dir, const QString &relPath)
+{
+    if (dir.isEmpty() || relPath.isEmpty() || !m_repoFileTabs)
+        return;
+    const QString abs = QDir(dir).absoluteFilePath(relPath);
+    // Every editor tab lives on the rail's Files destination and that section
+    // builds lazily, so build it before touching its widgets; showSection() comes
+    // last, once the tab is open, for the reason openRepoFile() above gives.
+    ensureSectionBuilt(kFilesSectionIndex);
+    if (!m_repoFileTabs)
+        return;
+    showFilesRepoTree();
+
+    // Three key forms share m_openFileTabs (see its declaration). This one is the
+    // absolute path behind a marker: the filesystem explorer already claims the
+    // bare absolute path for a *read-only* tab on the same file, and focusing
+    // that one here would leave the user unable to edit what they asked to edit.
+    const QString tabKey = worktreeTabKey(abs);
+    if (m_openFileTabs.contains(tabKey)) {
+        m_repoFileTabs->setCurrentWidget(m_openFileTabs.value(tabKey));
+        showSection(kFilesSectionIndex);
+        return;
+    }
+
+    QString content;
+    bool editable = false;
+    QFile file(abs);
+    const qint64 size = QFileInfo(abs).size();
+    if (!file.open(QIODevice::ReadOnly)) {
+        content = QStringLiteral("Could not read %1.").arg(abs);
+    } else {
+        const QByteArray bytes = file.readAll();
+        file.close();
+        if (bytes.size() > 1024 * 1024)
+            content = QStringLiteral("File is too large to edit (%1 KB).")
+                          .arg(size / 1024);
+        else if (bytes.contains('\0'))
+            content = QString::fromUtf8("Binary file (%1 bytes) \xE2\x80\x94 not shown.")
+                          .arg(size);
+        else {
+            content = QString::fromUtf8(bytes);
+            editable = true;
+        }
+    }
+
+    auto *editor = new CodePreviewEditor(relPath);
+    // The absolute path both names the save target and marks this as a
+    // working-tree tab (see updateRepoFileSaveActions / saveCurrentRepoFile).
+    // Left empty for an unreadable/binary/oversized file so nothing can write a
+    // placeholder message over it.
+    editor->setProperty("worktreeFile", editable ? abs : QString());
+    editor->setReadOnly(!editable);
+    editor->setPlainText(content);
+    editor->document()->setModified(false);
+    new CodePreviewHighlighter(editor->document(), relPath);
+
+    const QString name = relPath.section('/', -1);
+    const int index = m_repoFileTabs->addTab(editor, iconForFile(name), name);
+    m_repoFileTabs->setTabToolTip(index, abs);
+    m_repoFileTabs->setCurrentIndex(index);
+    m_openFileTabs.insert(tabKey, editor);
+    connect(editor->document(), &QTextDocument::modificationChanged, this,
+            [this, editor, name](bool modified) {
+                const int idx = m_repoFileTabs ? m_repoFileTabs->indexOf(editor) : -1;
+                if (idx >= 0)
+                    m_repoFileTabs->setTabText(
+                        idx, modified ? QString::fromUtf8("\xE2\x97\x8F ") + name : name);
+            });
+    updateRepoFileSaveActions();
+    showSection(kFilesSectionIndex);
+}
+
+bool MainWindow::saveWorkingTreeFileEdit(const QString &absPath,
+                                         const QString &content)
+{
+    QFile file(absPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        setRepoDetailNotice(QStringLiteral("Could not write %1.").arg(absPath), true);
+        return false;
+    }
+    const QByteArray bytes = content.toUtf8();
+    const bool wrote = file.write(bytes) == bytes.size();
+    file.close();
+    if (!wrote) {
+        setRepoDetailNotice(QStringLiteral("Could not write %1.").arg(absPath), true);
+        return false;
+    }
+    setRepoDetailNotice(
+        QStringLiteral("Saved %1.").arg(QFileInfo(absPath).fileName()));
+    // The file's diff just changed, so whichever changes view this was opened
+    // from is now stale.
+    refreshSourceControl(true);
+    return true;
 }
 
 void MainWindow::updateRepoFileSaveActions()
@@ -2192,13 +2122,29 @@ void MainWindow::updateRepoFileSaveActions()
     const QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
     const auto *editor = qobject_cast<const QPlainTextEdit *>(w);
     const QString path = w ? w->property("previewPath").toString() : QString();
-    const bool haveFile = editor && !path.isEmpty();
+    // An absolute path is a tab the filesystem explorer opened on something the
+    // repository does not track, so the git-backed actions do not apply to it —
+    // and the permanent preview tab carries no path at all. Rendering Markdown
+    // needs neither, so it goes by whether a file is open at all.
+    const bool anyFile = editor && !path.isEmpty();
+    const bool haveFile = anyFile && !QDir::isAbsolutePath(path);
     const bool editable = haveFile && !editor->isReadOnly();
+    // A working-tree tab saves to disk, so it swaps the two git-backed buttons
+    // for a plain Save.
+    const bool onDisk = w && !w->property("worktreeFile").toString().isEmpty();
+    if (m_repoFileSaveButton) {
+        m_repoFileSaveButton->setVisible(onDisk);
+        m_repoFileSaveButton->setEnabled(onDisk && editable);
+    }
+    if (m_repoFileCommitButton)
+        m_repoFileCommitButton->setVisible(!onDisk);
+    if (m_repoFilePullButton)
+        m_repoFilePullButton->setVisible(!onDisk);
     // The rendered-markdown toggle only makes sense for Markdown files; it reflects
     // whichever side (source / preview) the current tab is showing.
     if (m_repoFilePreviewButton) {
         const bool isMarkdown =
-            haveFile && previewSyntaxForPath(path) == PreviewSyntax::Markdown;
+            anyFile && previewSyntaxForPath(path) == PreviewSyntax::Markdown;
         const auto *preview = dynamic_cast<const CodePreviewEditor *>(w);
         m_repoFilePreviewButton->setEnabled(isMarkdown);
         m_repoFilePreviewButton->setVisible(isMarkdown);
@@ -2209,12 +2155,14 @@ void MainWindow::updateRepoFileSaveActions()
     if (m_repoFileHistoryButton)
         m_repoFileHistoryButton->setEnabled(haveFile);
     // Direct commits need a working tree we own; a mirrored repo can still open a
-    // pull request, which is sent to the owner's inbox.
+    // pull request, which is sent to the owner's inbox. Both stay disabled (not
+    // just hidden) for a working-tree tab, so the Ctrl+S fallback below can pick
+    // the right save path purely from what is enabled.
     if (m_repoFileCommitButton)
-        m_repoFileCommitButton->setEnabled(editable && repoHasWorkingTree());
+        m_repoFileCommitButton->setEnabled(!onDisk && editable && repoHasWorkingTree());
     if (m_repoFilePullButton)
         m_repoFilePullButton->setEnabled(
-            editable && (repoHasWorkingTree() || repoCanProposePull()));
+            !onDisk && editable && (repoHasWorkingTree() || repoCanProposePull()));
 }
 
 void MainWindow::saveCurrentRepoFile(bool createPull)
@@ -2226,6 +2174,16 @@ void MainWindow::saveCurrentRepoFile(bool createPull)
     const QString path = w->property("previewPath").toString();
     if (path.isEmpty())
         return;
+    // A working-tree tab is the file on disk, so it saves there. The git-backed
+    // paths below would refuse anyway: they all require a clean working tree,
+    // which a file opened from the changes panel by definition isn't.
+    const QString worktreeFile = w->property("worktreeFile").toString();
+    if (!worktreeFile.isEmpty()) {
+        if (saveWorkingTreeFileEdit(worktreeFile, editor->toPlainText()))
+            editor->document()->setModified(false);
+        updateRepoFileSaveActions();
+        return;
+    }
     if (saveRepoFileEdit(path, editor->toPlainText(), createPull))
         editor->document()->setModified(false);
     updateRepoFileSaveActions();
@@ -3243,16 +3201,14 @@ bool MainWindow::proposePullFromMirrorEdit(const QString &cleanPath,
 void MainWindow::showRepoOverview()
 {
     // Default Code view: the GitHub-style overview (branch/tags toolbar, latest
-    // commit, file list and README). The explorer + editor lives one toggle
-    // away — see showRepoEditor().
+    // commit, file list and README). Opening a file from it leaves this page
+    // entirely for the rail's Files destination — see openRepoFile().
     if (!m_filesStack)
         return;
     loadRepoOverview(m_overviewPath);
     m_filesStack->setCurrentIndex(0);
     if (m_filesModeOverviewButton)
         m_filesModeOverviewButton->setChecked(true);
-    if (m_filesModeExplorerButton)
-        m_filesModeExplorerButton->setChecked(false);
     if (m_filesModeCoveExplorerButton)
         m_filesModeCoveExplorerButton->setChecked(false);
     // "Code overview" always means the file list + README: if the Git
@@ -3260,37 +3216,14 @@ void MainWindow::showRepoOverview()
     showOverviewFiles();
 }
 
-void MainWindow::showRepoEditor()
-{
-    // Explorer + editor view. Make sure the file tree is built and a file is
-    // open so the pane is never blank, then show it.
-    if (!m_filesStack)
-        return;
-    if (m_treeLoadedForIndex != m_repoDetailIndex) {
-        loadRepoFileTree();
-        m_treeLoadedForIndex = m_repoDetailIndex;
-    }
-    if (m_repoFileTabs && m_repoFileTabs->count() == 0)
-        openRepoReadme();
-    m_filesStack->setCurrentIndex(1);
-    if (m_filesModeOverviewButton)
-        m_filesModeOverviewButton->setChecked(false);
-    if (m_filesModeExplorerButton)
-        m_filesModeExplorerButton->setChecked(true);
-    if (m_filesModeCoveExplorerButton)
-        m_filesModeCoveExplorerButton->setChecked(false);
-}
-
 void MainWindow::showRepoCoveExplorer()
 {
     if (!m_filesStack)
         return;
     loadCoveExplorer();
-    m_filesStack->setCurrentIndex(2);
+    m_filesStack->setCurrentIndex(1);
     if (m_filesModeOverviewButton)
         m_filesModeOverviewButton->setChecked(false);
-    if (m_filesModeExplorerButton)
-        m_filesModeExplorerButton->setChecked(false);
     if (m_filesModeCoveExplorerButton)
         m_filesModeCoveExplorerButton->setChecked(true);
 }
@@ -3310,8 +3243,6 @@ void MainWindow::showOverviewCommits()
         m_filesStack->setCurrentIndex(0);
     if (m_filesModeOverviewButton)
         m_filesModeOverviewButton->setChecked(true);
-    if (m_filesModeExplorerButton)
-        m_filesModeExplorerButton->setChecked(false);
     if (m_filesModeCoveExplorerButton)
         m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
@@ -3362,8 +3293,6 @@ void MainWindow::showOverviewBranches()
         m_filesStack->setCurrentIndex(0);
     if (m_filesModeOverviewButton)
         m_filesModeOverviewButton->setChecked(true);
-    if (m_filesModeExplorerButton)
-        m_filesModeExplorerButton->setChecked(false);
     if (m_filesModeCoveExplorerButton)
         m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
@@ -3387,8 +3316,6 @@ void MainWindow::showOverviewWorktrees()
         m_filesStack->setCurrentIndex(0);
     if (m_filesModeOverviewButton)
         m_filesModeOverviewButton->setChecked(true);
-    if (m_filesModeExplorerButton)
-        m_filesModeExplorerButton->setChecked(false);
     if (m_filesModeCoveExplorerButton)
         m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
@@ -5267,6 +5194,7 @@ void MainWindow::rebuildGlobalSearchResults()
         {"Relays", "broadcast", 8},
         {"Network", "workflow", kNetworkDiagnosticsSectionIndex},
         {"Users", "people", kUsersSectionIndex},
+        {"Files", "file-directory", kFilesSectionIndex},
         {"Settings", "gear", 1},
     };
     bool header = false;
@@ -5571,7 +5499,9 @@ void MainWindow::activateGlobalSearchItem(QListWidgetItem *item)
         if (repoOpen) { showSection(0); setRepoBranch(s1); }
         break;
     case GsFile:
-        if (repoOpen) { showSection(0); clickRepoTab(0); openRepoFile(s1); }
+        // openRepoFile lands on the Files section itself, so there is no repo
+        // tab to pick first.
+        if (repoOpen) openRepoFile(s1);
         break;
     case GsCommit:
         if (repoOpen) { showSection(0); showOverviewCommits(); showCommit(s1); }
@@ -5726,13 +5656,16 @@ void MainWindow::captureNavSubPlace(NavPlace &place) const
             place.subTab = m_networkTabs->currentIndex();
         return;
     }
+    if (place.section == kFilesSectionIndex) {
+        // Files: the open editor tab is the destination, not "Files" as a whole.
+        place.filePath = openRepoFilePath();
+        return;
+    }
     if (place.repoIndex < 0)
         return;
     switch (place.detailTab) {
     case 0: // Code
-        if (m_filesStack && m_filesStack->currentIndex() == 1)
-            place.filePath = openRepoFilePath();
-        else if (place.overviewPage <= 0)
+        if (place.overviewPage <= 0)
             // Walking into a directory in the file list is a step of its own.
             place.overviewDir = m_overviewPath;
         break;
@@ -5789,15 +5722,17 @@ void MainWindow::applyNavSubPlace(const NavPlace &place)
             showNetworkTab(place.subTab);
         return;
     }
+    if (place.section == kFilesSectionIndex) {
+        if (!place.filePath.isEmpty())
+            openRepoFile(place.filePath);
+        return;
+    }
     if (place.repoIndex < 0 || place.repoIndex != m_repoDetailIndex)
         return;
     switch (place.detailTab) {
     case 0: // Code
-        if (!place.filePath.isEmpty()) {
-            openRepoFile(place.filePath);
-        } else if (place.overviewPage <= 0) {
-            // Leaving the editor behind: back to the file list, at the
-            // directory this place was recorded in.
+        if (place.overviewPage <= 0) {
+            // Back to the file list, at the directory this place was recorded in.
             if (m_filesStack && m_filesStack->currentIndex() != 0)
                 m_filesStack->setCurrentIndex(0);
             if (m_overviewPath != place.overviewDir)
@@ -6055,6 +5990,9 @@ QString MainWindow::navPlaceLabel(const NavPlace &place) const
         case kUsersSectionIndex:
             destination = QStringLiteral("Users");
             break;
+        case kFilesSectionIndex:
+            destination = QStringLiteral("Files");
+            break;
         default:
             destination = QStringLiteral("Home");
             break;
@@ -6100,6 +6038,12 @@ QString MainWindow::testNavForwardToolTip() const
 int MainWindow::testFilesStackPage() const
 {
     return m_filesStack ? m_filesStack->currentIndex() : -1;
+}
+
+bool MainWindow::testFilesSectionShowing() const
+{
+    return m_sectionStack &&
+           m_sectionStack->currentIndex() == kFilesSectionIndex;
 }
 
 QString MainWindow::testOpenCommitHash() const
@@ -6367,8 +6311,7 @@ void MainWindow::onSearchResultActivated(QTreeWidgetItem *item, int)
     showSection(0);
     const QString term = m_searchPageQuery;
     if (kind == SrFile) {
-        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-            m_repoDetailTabs->button(0)->click();
+        // openRepoFile opens the Files section, so no repo tab is picked here.
         openRepoFile(payload);
         const int line = item->data(0, kSrLineRole).toInt();
         // Defer so the editor tab is laid out before we scroll to the line.
@@ -9427,7 +9370,7 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 0) {
             // Code (adhoc #421): no top-bar tab. The activity rail already owns a
             // "Code" destination that runs exactly this click path, and the
-            // Overview / Explorer / Coves row below is the code view's own
+            // Overview / Coves row below is the code view's own
             // navigation — three "Code" affordances stacked on top of each other
             // read as a duplicate. The button stays in m_repoDetailTabs (id 0),
             // parented but hidden, so every switchTo*/idClicked path, the checked
