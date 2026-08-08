@@ -5329,6 +5329,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         obj == m_topMessageMeta || obj == m_topMessageTypeBadge ||
         obj == m_topMessageAgentRow || obj == m_topMessageAgentIcon ||
         obj == m_topMessageAgentHeadline ||
+        obj == m_topMessageContentRow || obj == m_topMessageAvatar ||
         obj == m_topMessageActionOutput ||
         obj == m_topMessageCopy ||
         obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
