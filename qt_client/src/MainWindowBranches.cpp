@@ -1560,16 +1560,6 @@ void MainWindow::updateWorktreeSelection(const QString &branch,
     }
 }
 
-// A merge started from the branch review ends that review (adhoc #119): the
-// branch's work is in the base branch now, so the diff on screen either describes
-// history the user is done with or — after "Merge & delete all" — a branch that no
-// longer exists. Hand the Git view's columns back to the working tree, exactly
-// like the pane's own ✕ does, instead of leaving a finished diff open.
-void MainWindow::closeBranchDiffAfterMerge()
-{
-    closeBranchCompareView();
-}
-
 // Merge a worktree's branch into the repo's default branch. Direct + safe: only
 // when the primary checkout is ON the default branch and clean (otherwise it
 // would clobber concurrent WIP) — else point the user at Create PR.
@@ -3158,9 +3148,12 @@ QWidget *MainWindow::buildBranchRangePane()
     setOcticon(m_branchMergeButton, "check-circle", 14);
     m_branchMergeButton->setEnabled(false);
     connect(m_branchMergeButton, &QPushButton::clicked, this, [this] {
-        if (!m_branchDiffBranch.isEmpty()
-            && mergeWorktreeIntoMain(m_branchDiffBranch, QString()))
-            closeBranchDiffAfterMerge();
+        if (!m_branchDiffBranch.isEmpty()) {
+            // Keep the review in place after a successful merge. Moving back to
+            // the working-tree page made the result feel like a navigation jump
+            // precisely when the user needs the review context to confirm it.
+            mergeWorktreeIntoMain(m_branchDiffBranch, QString());
+        }
     });
 
     // Same merge, but nothing of the source checkout survives it: its worktree,
@@ -3180,10 +3173,12 @@ QWidget *MainWindow::buildBranchRangePane()
         const QString repoPath = repoGitDir();
         // An empty path is fine — it just means the branch has no worktree of its
         // own, so there's nothing to prune beyond the branch and its agent.
-        if (mergeWorktreeIntoMain(m_branchDiffBranch,
-                                  worktreePathForBranch(repoPath, m_branchDiffBranch),
-                                  /*deleteAgent=*/true))
-            closeBranchDiffAfterMerge();
+        // Cleanup can remove the branch being reviewed, but the completed review
+        // remains useful confirmation. Leave the Git range page on screen rather
+        // than abruptly navigating the user back to the working tree.
+        mergeWorktreeIntoMain(m_branchDiffBranch,
+                              worktreePathForBranch(repoPath, m_branchDiffBranch),
+                              /*deleteAgent=*/true);
     });
 
     auto *detailBar = new QHBoxLayout;
