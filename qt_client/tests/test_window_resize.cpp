@@ -3996,9 +3996,10 @@ int main(int argc, char *argv[])
             check(cards.at(6).contains(QStringLiteral("is <b>running</b>")),
                   QStringLiteral("a working agent's current status closes the feed"));
             // The agent cards exist at all only because the decorated head
-            // matched the plain branch the session ran on.
-            check(cards.at(6).contains(
-                      QStringLiteral("fix/stall-filter-test-isolation")) &&
+            // matched the plain branch the session ran on. The header carries a
+            // bounded label (a long branch there would set the window's minimum
+            // width), so match its leading portion.
+            check(cards.at(6).contains(QStringLiteral("fix/stall-filter")) &&
                       !cards.at(6).contains(QStringLiteral("cache-socket-2632")),
                   QStringLiteral("a cross-node head still finds its agent, and the "
                                  "card names the branch not the node label"));
@@ -4010,6 +4011,10 @@ int main(int argc, char *argv[])
               QStringLiteral("the Conversation badge counts the commits and agent "
                              "cards alongside the review items"));
         window.testRemoveAgentSession(working.id);
+        // Leave the conversation empty: these cards would otherwise stay mounted
+        // for the rest of the suite, and the window's minimum width is the
+        // widest page's (issue #369 budgets that at 900px).
+        window.testRenderPullThread(PullRequest());
     }
 
     window.testSwitchToWorktreeGitBranch(QStringLiteral("main"));

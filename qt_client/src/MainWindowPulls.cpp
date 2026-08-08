@@ -3209,6 +3209,18 @@ void MainWindow::renderPullThread(const PullRequest &pr)
     };
     QList<ThreadEntry> entries;
     int entryOrder = 0;
+    // A card header does not wrap, so its width sets a floor on how narrow the
+    // whole window can be drawn (issue #369 budgets that at 900px, and
+    // QStackedWidget hands the widest page's minimum to the window). A branch
+    // name is one unbreakable token and can be arbitrarily long, so bound what
+    // goes on the header line; callers keep the full value in the card body.
+    const auto headerToken = [](const QString &text) {
+        constexpr int limit = 24;
+        const QString trimmed = text.trimmed();
+        return (trimmed.size() <= limit ? trimmed
+                                        : trimmed.left(limit - 1) + QChar(0x2026))
+            .toHtmlEscaped();
+    };
     // Commit and agent cards, counted for the Conversation tab's badge.
     int extraCards = 0;
     m_pullActivityExtraCards = 0;
@@ -3249,7 +3261,7 @@ void MainWindow::renderPullThread(const PullRequest &pr)
                 verb += QStringLiteral(" <code>%1</code>").arg(shortSha.toHtmlEscaped());
             if (!commit.agentTrailer.isEmpty())
                 verb += QStringLiteral(" <span style='color:#a371f7'>as %1</span>")
-                            .arg(commit.agentTrailer.toHtmlEscaped());
+                            .arg(headerToken(commit.agentTrailer));
             const QString when = commit.committedSecs > 0
                                      ? formatIssueRelativeTime(commit.committedSecs * 1000)
                                      : commit.when;
@@ -3367,12 +3379,19 @@ void MainWindow::renderPullThread(const PullRequest &pr)
         const QString on = branch.isEmpty()
                                ? QString()
                                : QStringLiteral(" on <code>%1</code>")
-                                     .arg(branch.toHtmlEscaped());
+                                     .arg(headerToken(branch));
         const auto agentCard = [&](qint64 ts, const QString &verb,
-                                   const QString &accent, const QString &body) {
+                                   const QString &accent, QString body) {
             if (ts <= 0)
                 return;
             ++extraCards;
+            // The header only has room for a bounded branch label, so the card
+            // body carries the name in full.
+            if (!branch.isEmpty())
+                body = QStringLiteral("Branch: %1%2")
+                           .arg(branch, body.isEmpty()
+                                            ? QString()
+                                            : QStringLiteral("\n\n") + body);
             entries.append(
                 {ts, entryOrder++,
                  [this, provider, verb, accent, body, ts, pullLink, agent] {
