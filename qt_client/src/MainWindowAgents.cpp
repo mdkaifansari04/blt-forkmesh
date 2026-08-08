@@ -36,12 +36,15 @@ QString MainWindow::agentProviderName(const QString &provider) const
 {
     // "CC" is Claude Code — the real `claude` CLI — abbreviated (adhoc #38) so
     // the provider fits the composer row and the agents list's narrow columns.
-    // "Codex" runs the local `codex` CLI; legacy "claude" sessions map to Claude
+    // "Codex" runs the local `codex` CLI; "CF AI" runs the bundled Workers AI
+    // agent script against the relay; legacy "claude" sessions map to Claude
     // API and legacy "openai" sessions keep their old OpenAI API label.
     if (provider == QLatin1String("claude-code"))
         return QStringLiteral("CC");
     if (agentIsCodexProvider(provider))
         return QStringLiteral("Codex");
+    if (agentIsCloudflareAiProvider(provider))
+        return QStringLiteral("CF AI");
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
@@ -1027,6 +1030,10 @@ AgentProviderGlyph agentProviderGlyph(const QString &provider)
     if (agentUsesOpenAiKey(provider))
         return {QStringLiteral("cloud"), openai,
                 QStringLiteral("OpenAI API — run against OpenAI's API")};
+    if (agentIsCloudflareAiProvider(provider))
+        return {QStringLiteral("cloud"), QColor("#f6821f"),
+                QStringLiteral(
+                    "Cloudflare AI — run against the relay's Workers AI")};
     return {QString(), QColor(), QString()};
 }
 
@@ -8601,7 +8608,7 @@ void MainWindow::applyAgentNetworkPanel(const AgentLogScan &scan, const QString 
             .arg(bar(outTokens, "#d2a8ff"), fmtTokens(outTokens)));
 }
 
-AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) const
+AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider)
 {
     AgentRunner::Config config;
     config.contextWindow =
@@ -8654,6 +8661,49 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         config.command = codexCommandSetting();
         config.model = codexChatGptModelId(
             QSettings().value(kCodexModelSetting).toString().trimmed());
+    } else if (agentIsCloudflareAiProvider(provider)) {
+        // Cloudflare AI (adhoc #1634): bundled Python script driving the
+        // relay's Workers AI tool-use endpoint. The desktop has no session
+        // token (auth is key-based), so the run carries a per-run Ed25519
+        // ticket the relay verifies on every turn: the account signature over
+        // "forkmesh-ai-agent-v1\n<account>\n<ts>", time-boxed server-side.
+        // It rides Config::apiKey so AgentRunner injects it as an env var and
+        // redacts it from the session log like any other credential.
+        config.command = defaultCloudflareAiCommand();
+        if (forkmesh::vm::active()) {
+            QString stagedScript = cloudflareAgentScriptPath(
+                forkmesh::vm::worktreeRoot() + QStringLiteral("/runtime"));
+            stagedScript.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+            config.command =
+                QStringLiteral("python3 '%1' {promptFile}").arg(stagedScript);
+        }
+        config.model =
+            QSettings().value(kCloudflareAiModelSetting).toString().trimmed();
+        if (config.model.isEmpty())
+            config.model = cloudflareAiFallbackModels().first().first;
+        config.apiKeyName = QStringLiteral("FORKMESH_AI_AGENT_AUTH");
+        const QString signer = accountOwner().trimmed().toLower();
+        if (!signer.isEmpty() && hasOwnerSigningCapability(signer) &&
+            (m_profileIdentity.isValid() || m_profileIdentity.load())) {
+            const QString ts =
+                QString::number(QDateTime::currentMSecsSinceEpoch());
+            const QByteArray canonical =
+                (QStringLiteral("forkmesh-ai-agent-v1\n") + signer +
+                 QStringLiteral("\n") + ts)
+                    .toUtf8();
+            QUrl url = catalogApiUrl();
+            url.setPath(QStringLiteral("/api/ai/agent"));
+            url.setQuery(QString());
+            const QJsonObject ticket{
+                {QStringLiteral("url"), url.toString()},
+                {QStringLiteral("node"), signer},
+                {QStringLiteral("ts"), ts},
+                {QStringLiteral("sig"), m_profileIdentity.signData(canonical)}};
+            config.apiKey = QString::fromUtf8(
+                QJsonDocument(ticket).toJson(QJsonDocument::Compact));
+        }
+        // An empty ticket (signed out, no key) still launches: the script
+        // reports the actionable "sign in" message into the session log.
     } else {
         // OpenAI API: drive the Codex CLI with the saved OpenAI key in an isolated
         // home so it cannot accidentally use the user's logged-in Codex account.

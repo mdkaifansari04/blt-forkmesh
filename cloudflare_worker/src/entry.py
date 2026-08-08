@@ -30791,6 +30791,7 @@ _forkbot_ai_model_not_found_error = _forkbot.export("_forkbot_ai_model_not_found
 _forkbot_ai_fallback_models = _forkbot.export("_forkbot_ai_fallback_models")
 forkbot_models_handler = _forkbot.export("forkbot_models_handler")
 _forkbot_run_ai = _forkbot.export("_forkbot_run_ai")
+ai_agent_handler = _forkbot.export("ai_agent_handler")
 _forkbot_ai_issue_fields = _forkbot.export("_forkbot_ai_issue_fields")
 _forkbot_ai_interpret = _forkbot.export("_forkbot_ai_interpret")
 _forkbot_repo_gateway_json = _forkbot.export("_forkbot_repo_gateway_json")
@@ -42419,6 +42420,10 @@ class Default(WorkerEntrypoint):
         # One prompt answered by a picked Workers AI model (desktop composer).
         if url.path in ("/api/ai/ask", "/api/ai/ask/"):
             return await ai_ask_handler(self.env, request)
+
+        # One tool-use turn for the desktop's Workers AI coding agent.
+        if url.path in ("/api/ai/agent", "/api/ai/agent/"):
+            return await ai_agent_handler(self.env, request)
 
         polar_match = POLAR_INTEGRATION_RE.match(url.path)
         if polar_match:

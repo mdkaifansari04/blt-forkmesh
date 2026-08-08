@@ -2034,17 +2034,17 @@ QWidget *MainWindow::buildNetworkLogDock()
     // tracked agent session, working until ForkMesh can open a PR from its diff.
     m_quickAddAgentProvider->addItem(QStringLiteral("CC"),
                                      QStringLiteral("claude-code"));
-    // "CF AI" answers the prompt with a Cloudflare Workers AI model on the relay
-    // instead of running an agent locally (adhoc #1407) — no repository, no
-    // session, no PR, just the model's reply.
+    // "CF AI" runs the bundled Workers AI agent script (adhoc #1634): a headless
+    // agent session like OpenAI/Claude API, except the model runs on the relay's
+    // Workers AI binding instead of a vendor API key.
     m_quickAddAgentProvider->addItem(QStringLiteral("CF AI"),
                                      kCloudflareAiProvider);
     selectQuickAddAgentProvider(m_quickAddAgentProvider);
     m_quickAddAgentProvider->setToolTip(
         "What picks this prompt up: CC (Claude Code) or Codex run the CLI agents, "
-        "OpenAI/Claude API run the headless API agents, CF AI answers it with a "
-        "Cloudflare Workers AI model, and Manual files an issue instead of "
-        "starting one.");
+        "OpenAI/Claude API run the headless API agents, CF AI runs a headless "
+        "agent on a relay Cloudflare Workers AI model, and Manual files an issue "
+        "instead of starting one.");
     // No fixed width band (adhoc #72): FullPopupComboBox sizes itself to the
     // label it is showing, so the four dropdowns take only the room they need.
     // Show the whole list at once rather than a scrollable popup (adhoc #99).
@@ -2095,7 +2095,7 @@ QWidget *MainWindow::buildNetworkLogDock()
         } else if (agentIsCloudflareAiProvider(provider)) {
             populateCloudflareAiModelCombo(m_quickAddClaudeModel);
             m_quickAddClaudeModel->setToolTip(
-                "Cloudflare Workers AI model the relay sends this prompt to.");
+                "Cloudflare Workers AI model the relay runs this agent on.");
             selectModelComboValue(
                 m_quickAddClaudeModel,
                 QSettings().value(kCloudflareAiModelSetting).toString().trimmed());
@@ -4876,126 +4876,6 @@ void MainWindow::refreshCloudflareAiModels()
     });
 }
 
-// Send one composer prompt to a Cloudflare Workers AI model on the relay and
-// show the answer (adhoc #1407). This deliberately starts no agent session: the
-// model has no checkout, runs no tools and opens no PR, so the reply lands in
-// the log and the prompt bubble instead of the agents list.
-//
-// Authorization is this account's Ed25519 signature over the model and a digest
-// of the prompt (the desktop has no session token, and the relay bills every
-// call), so the reply is only ever produced for a signed, attributable account.
-bool MainWindow::sendPromptToCloudflareAi(const QString &prompt,
-                                          const QString &model)
-{
-    const QString text = prompt.trimmed();
-    if (text.isEmpty() || !m_networkAccess)
-        return false;
-    if (m_cloudflareAiAskInFlight) {
-        logSystem("Cloudflare AI is still answering the previous prompt.");
-        return false;
-    }
-    const QString signer = accountOwner().trimmed().toLower();
-    if (signer.isEmpty() || !hasOwnerSigningCapability(signer)) {
-        setIssueInlineNotice("Sign in to this node's account to send prompts to "
-                             "Cloudflare AI.", true);
-        return false;
-    }
-    if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
-        setIssueInlineNotice("This node has no signing key yet, so Cloudflare AI "
-                             "cannot verify the request.", true);
-        return false;
-    }
-    const QString label = cloudflareAiModelLabel(model);
-    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-    // The digest binds the signature to this exact prompt and model, so a
-    // captured signature cannot be replayed with different text.
-    const QString promptDigest =
-        QString::fromLatin1(QCryptographicHash::hash(text.toUtf8(),
-                                                     QCryptographicHash::Sha256)
-                                .toHex());
-    const QByteArray canonical = ("forkmesh-ai-ask-v1\n" + signer + "\n" + ts +
-                                  "\n" + model + "\n" + promptDigest)
-                                     .toUtf8();
-    const QJsonObject body{{"nodeName", signer},
-                           {"prompt", text},
-                           {"model", model},
-                           {"ts", ts},
-                           {"sig", m_profileIdentity.signData(canonical)}};
-    QUrl url = catalogApiUrl();
-    url.setPath(QStringLiteral("/api/ai/ask"));
-    url.setQuery(QString());
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader,
-                      QStringLiteral("application/json"));
-    m_cloudflareAiAskInFlight = true;
-    QNetworkReply *reply = m_networkAccess->post(
-        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    logSystem(QStringLiteral("Sent the prompt to %1 on Cloudflare AI.")
-                  .arg(label.isEmpty() ? model : label));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, model, label] {
-        reply->deleteLater();
-        m_cloudflareAiAskInFlight = false;
-        const int status =
-            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QJsonObject body =
-            QJsonDocument::fromJson(reply->readAll()).object();
-        const QString responseModel =
-            body.value(QStringLiteral("model")).toString().trimmed();
-        const QString answeringModel =
-            responseModel.isEmpty() ? model : responseModel;
-        const QString answeringLabel = cloudflareAiModelLabel(answeringModel);
-        const QString answer =
-            body.value(QStringLiteral("reply")).toString().trimmed();
-        if (answer.isEmpty()) {
-            // Name the actual failure: a 401 means this node's key is not
-            // trusted for the account, 429 is the relay's per-account window,
-            // and 502 means Workers AI itself did not answer.
-            const QString error =
-                body.value(QStringLiteral("error")).toString().trimmed();
-            QString detail = error.isEmpty() ? QString::number(status) : error;
-            if (status == 401)
-                detail = QStringLiteral("this node is not authorized to sign for "
-                                        "the account");
-            else if (status == 429)
-                detail = QStringLiteral("the hourly prompt limit is reached");
-            else if (error == QLatin1String("model_not_found"))
-                detail = QStringLiteral("the relay's Workers AI account has no "
-                                        "such model");
-            else if (error == QLatin1String("ai_unavailable"))
-                detail = QStringLiteral("the model did not answer");
-            else if (status == 404 || error == QLatin1String("not_found"))
-                // A 404 is the RELAY missing /api/ai/ask, not a missing model:
-                // an unknown model pick is resolved server-side and a rejected
-                // one comes back as model_not_found above. Saying "model not
-                // found" here sent people re-picking models against a relay
-                // that simply predates the endpoint.
-                detail = QStringLiteral("this relay does not answer AI prompts "
-                                        "yet (it needs a newer deployment)");
-            setIssueInlineNotice(
-                QStringLiteral("Cloudflare AI could not answer the prompt (%1).")
-                    .arg(detail), true);
-            return;
-        }
-        const QString name = answeringLabel.isEmpty()
-                                 ? (label.isEmpty() ? QStringLiteral("Cloudflare AI")
-                                                    : label)
-                                 : answeringLabel;
-        if (!responseModel.isEmpty() && responseModel != model) {
-            const QString requestedName =
-                label.isEmpty() ? model : label;
-            logSystem(QStringLiteral("Cloudflare AI fell back from %1 to %2.")
-                          .arg(requestedName, name));
-        }
-        // flashMessage logs the full answer and shows it in the top toast, whose
-        // "Send to prompt" action pushes it into the composer — the toast is
-        // one simplified line, the log keeps the whole reply. A longer countdown
-        // than the default: an answer takes more reading than a status line.
-        flashMessage(QStringLiteral("%1: %2").arg(name, answer), false,
-                     QString(), 30);
-    });
-    return true;
-}
-
 void MainWindow::refreshQuickAddSpeedSelector()
 {
     if (!m_quickAddSpeedSelector)
@@ -5081,21 +4961,21 @@ QList<ComposerModelChoice> MainWindow::composerModelCatalog() const
         QStringLiteral("Claude API"), QStringLiteral("Headless Claude API agent"),
         agentModelFaceIconIndex(QStringLiteral("claude-api"), QString()), false});
 
-    // Cloudflare Workers AI (adhoc #1407). These answer the prompt on the relay
-    // rather than starting an agent, so they are their own group instead of
-    // being ranked among the coding models above — a 70B chat model is not
-    // "stronger" or "weaker" than an agent that can edit the repository.
+    // Cloudflare Workers AI (adhoc #1407; an agent provider since adhoc #1634).
+    // These run the bundled Workers AI agent script against the relay — their
+    // own worktree, branch and PR like every other agent. They stay their own
+    // unranked group like the other headless API agents above.
     QComboBox cloudflareModels;
     populateCloudflareAiModelCombo(&cloudflareModels);
     for (int i = 0; i < cloudflareModels.count(); ++i) {
         const QString label = cloudflareModels.itemText(i);
-        // One mark for the whole group: these are relay chat models, not one of
+        // One mark for the whole group: these are relay models, not one of
         // the top lines the World drew a portrait for.
         choices.append(ComposerModelChoice{
             kCloudflareAiProvider, cloudflareModels.itemData(i).toString(), label,
             QStringLiteral("Cloudflare AI"),
-            QStringLiteral("%1 · Cloudflare AI — answers the prompt, "
-                           "starts no agent").arg(label),
+            QStringLiteral("%1 · Cloudflare AI — headless agent on the relay's "
+                           "Workers AI").arg(label),
             agentModelFaceIconIndex(kCloudflareAiProvider, QString()), false});
     }
     return choices;

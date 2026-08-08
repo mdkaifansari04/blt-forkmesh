@@ -19,6 +19,7 @@
 #include "FileTreeSupport.h"
 #include "GuiPump.h"
 #include "ClaudeAgentScript.h"
+#include "CloudflareAgentScript.h"
 #include "ClaudeIdeBridge.h"
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
@@ -3919,11 +3920,12 @@ inline bool agentUsesOpenAiKey(const QString &provider)
     return provider == QLatin1String("openai");
 }
 
-// Cloudflare Workers AI: picking one of these models in the composer sends the
-// typed prompt to the relay's Workers AI binding (POST /api/ai/ask) and shows
-// the answer. Deliberately NOT an agent provider — it starts no CLI, touches no
-// working tree, and opens no PR — but it shares the one composer model picker,
-// so every "is this an agent?" branch must exclude it explicitly.
+// Cloudflare Workers AI: a real agent provider since adhoc #1634. Picking one
+// of these models runs the bundled Workers AI agent script (see
+// CloudflareAgentScript.h) through AgentRunner — its own worktree and branch,
+// a bash tool, commits, and a PR — with the model itself running on the
+// relay's Workers AI binding (POST /api/ai/agent). It used to be a
+// composer-only chat choice whose prompt went to POST /api/ai/ask.
 const QString kCloudflareAiProvider = QStringLiteral("cloudflare-ai");
 
 inline bool agentIsCloudflareAiProvider(const QString &provider)
@@ -3946,7 +3948,8 @@ inline bool agentProviderIsKnown(const QString &provider)
     return agentIsCodexProvider(provider) ||
            provider == QLatin1String("openai") ||
            provider == QLatin1String("claude-api") ||
-           provider == QLatin1String("claude-code");
+           provider == QLatin1String("claude-code") ||
+           agentIsCloudflareAiProvider(provider);
 }
 
 inline QString defaultAgentProvider()
@@ -3965,10 +3968,9 @@ inline QString quickAddAgentProvider()
         QSettings().value(kQuickAddAgentProviderSetting).toString().trimmed();
     // "Manual (create issue)" is a quick-add-only pseudo-provider (adhoc #29): it
     // files an issue instead of running an agent, so it's not in the known-agent
-    // set but must still be restorable across launches. Cloudflare AI is the
-    // same kind of composer-only choice — it answers the prompt instead of
-    // starting an agent — and must likewise survive a restart.
-    if (value == QLatin1String("manual") || agentIsCloudflareAiProvider(value))
+    // set but must still be restorable across launches. (Cloudflare AI used to
+    // need the same carve-out; it is a known agent provider since adhoc #1634.)
+    if (value == QLatin1String("manual"))
         return value;
     return agentProviderIsKnown(value) ? value : defaultAgentProvider();
 }
@@ -4429,19 +4431,31 @@ inline bool agentModelIsClaudeStyle(const QString &model)
     return false;
 }
 
+// Whether a model id belongs to Cloudflare Workers AI. Every Workers AI model
+// id reads as "@cf/<vendor>/<model>", so the prefix is the whole test. Keeps a
+// "@cf/..." pick bound to the cloudflare-ai provider: it would otherwise pass
+// the "not Claude-style" check below and be handed to the Codex/OpenAI CLIs.
+inline bool agentModelIsCloudflareStyle(const QString &model)
+{
+    return model.trimmed().startsWith(QLatin1String("@cf/"));
+}
+
 // Whether `model` is compatible with `provider`. An empty model always matches
 // (the provider falls back to its own default). Claude providers need a
-// Claude-style model; the Codex/OpenAI CLIs need a non-Claude one. This lets a
-// session be continued by a different provider without the leftover model from
-// the previous provider breaking the run (adhoc #76).
+// Claude-style model, Cloudflare AI a "@cf/..." one; the Codex/OpenAI CLIs
+// need a model from neither family. This lets a session be continued by a
+// different provider without the leftover model from the previous provider
+// breaking the run (adhoc #76).
 inline bool agentModelMatchesProvider(const QString &provider, const QString &model)
 {
     if (model.trimmed().isEmpty())
         return true;
+    if (agentIsCloudflareAiProvider(provider))
+        return agentModelIsCloudflareStyle(model);
     if (provider == QLatin1String("claude-code") ||
         provider.startsWith(QLatin1String("claude")))
         return agentModelIsClaudeStyle(model);
-    return !agentModelIsClaudeStyle(model);
+    return !agentModelIsClaudeStyle(model) && !agentModelIsCloudflareStyle(model);
 }
 
 // Which of the World's seven bot portraits a model is named after, or -1 when
@@ -4966,6 +4980,11 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
     if (!combo)
         return;
     combo->clear();
+    // populateCloudflareAiModelCombo marks the combo non-Claude so the live
+    // /v1/models merge leaves it alone; switching back to a Claude provider
+    // must undo that or the merge skips this combo for the rest of the run.
+    combo->setProperty("claudeModelCombo",
+                       agentIsClaudeProvider(provider));
     if (provider == QLatin1String("claude-code")) {
         combo->addItem(QStringLiteral("Sonnet 5"), QStringLiteral("claude-sonnet-5"));
         combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("claude-opus-4-8"));
@@ -4973,6 +4992,8 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
         combo->addItem(QStringLiteral("Fable 5"), QStringLiteral("claude-fable-5"));
     } else if (agentIsCodexProvider(provider)) {
         populateCodexModelCombo(combo);
+    } else if (agentIsCloudflareAiProvider(provider)) {
+        populateCloudflareAiModelCombo(combo);
     } else if (agentUsesOpenAiKey(provider)) {
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
         combo->addItem(QStringLiteral("GPT-5.5 Codex"),
@@ -5100,6 +5121,43 @@ inline QString claudeAgentScriptPath(const QString &directory = QString())
 inline QString defaultClaudeCommand()
 {
     QString quoted = claudeAgentScriptPath();
+    quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    return QStringLiteral("python3 '%1' {promptFile}").arg(quoted);
+}
+
+// Materialize the bundled Cloudflare Workers AI agent script (adhoc #1634)
+// into the app data dir and return its path. The script drives the tool-use
+// loop against the relay's POST /api/ai/agent using the signed run ticket
+// AgentRunner injects as FORKMESH_AI_AGENT_AUTH, so no CLI or API key is
+// required.
+inline QString cloudflareAgentScriptPath(const QString &directory = QString())
+{
+    const QString dir = directory.isEmpty()
+                            ? QStandardPaths::writableLocation(
+                                  QStandardPaths::AppDataLocation) +
+                                  QStringLiteral("/agents")
+                            : directory;
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/forkmesh_cloudflare_agent.py");
+    const QByteArray wanted = forkmeshCloudflareAgentScript().toUtf8();
+    QFile file(path);
+    bool needsWrite = true;
+    if (file.open(QIODevice::ReadOnly)) {
+        needsWrite = file.readAll() != wanted;
+        file.close();
+    }
+    if (needsWrite && file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(wanted);
+        file.close();
+    }
+    return path;
+}
+
+// Default Cloudflare AI command: run the bundled script with python3, feeding
+// it the prompt file, exactly like defaultClaudeCommand().
+inline QString defaultCloudflareAiCommand()
+{
+    QString quoted = cloudflareAgentScriptPath();
     quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
     return QStringLiteral("python3 '%1' {promptFile}").arg(quoted);
 }

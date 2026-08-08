@@ -328,8 +328,9 @@ struct ComposerModelChoice {
     QString agentName; // which CLI/API runs it, for the tooltip
     QString tooltip;   // fixed tooltip; ranked rows build theirs from counts
     int iconIndex = 0; // agentControlIcon() slot
-    // Does this row take part in the merged-success ranking? False for agents
-    // that never land a branch (the headless APIs, Workers AI chat models).
+    // Does this row take part in the merged-success ranking? False for the
+    // headless API agents (OpenAI/Claude API, the relay's Workers AI models),
+    // which group separately instead of ranking among the CLI models.
     bool ranked = false;
 };
 
@@ -3675,7 +3676,9 @@ private:
     void startIssueInIde(int issueNumber, const QString &title,
                          const QString &provider);
     void updateIssueIdeButtons();
-    AgentRunner::Config agentConfigForProvider(const QString &provider) const;
+    // Not const: the Cloudflare AI branch signs the run's relay ticket, which
+    // may need m_profileIdentity.load().
+    AgentRunner::Config agentConfigForProvider(const QString &provider);
     // Run the Claude Code CLI interactively in the embedded terminal for a
     // session (instead of the headless runner).
     void startClaudeCodeTerminal(AgentSession &session, const Issue &issue,
@@ -5178,11 +5181,10 @@ private:
     void refreshComposerModelVisibilityList();
     // Cloudflare Workers AI in the composer (adhoc #1407). The relay owns which
     // models are allowed, so the picker asks it (GET /api/forkbot/models) and
-    // caches the answer; sendPromptToCloudflareAi posts one prompt to the picked
-    // model (POST /api/ai/ask, signed as this account) and shows its reply. No
-    // agent session, working tree or PR is involved.
+    // caches the answer. Picking one runs the bundled Workers AI agent script
+    // through AgentRunner like any other agent provider (adhoc #1634); the
+    // one-shot /api/ai/ask reply path this once fed is gone.
     void refreshCloudflareAiModels();
-    bool sendPromptToCloudflareAi(const QString &prompt, const QString &model);
     // Probe the installed `claude` CLI for the effort levels it accepts and
     // cache them (kClaudeEffortLevelsCacheSetting). Cheap (`claude --help`),
     // once per app run, and a no-op while a probe is already in flight.
@@ -9089,11 +9091,8 @@ private:
     // model combo built after the fetch still gets the live line-up merged in
     // even while the re-fetch throttle is armed.
     QJsonArray m_liveClaudeModels;
-    // Guards for the Cloudflare AI composer path: the model-list fetch runs once
-    // per app run, and one prompt is in flight at a time so a double Enter
-    // cannot bill two Workers AI calls for the same text.
+    // The Cloudflare AI model-list fetch runs once per app run.
     bool m_cloudflareAiModelsFetched = false;
-    bool m_cloudflareAiAskInFlight = false;
     // Start an issue-less coding agent from the quick-add bar (issue #299) in
     // repoIndex's checkout with `task` as its prompt. Returns the new session id
     // (>0) or 0 if it could not start. titleOverride names the run in the

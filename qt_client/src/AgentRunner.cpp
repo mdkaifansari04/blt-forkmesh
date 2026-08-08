@@ -136,12 +136,15 @@ void releaseBranchWorktree(const QString &repoPath, const QString &branch)
 QString providerTitle(const QString &provider)
 {
     // "claude-code" runs the real CLI; other "claude*" sessions are the Claude
-    // API script; "codex" is the local Codex CLI path, and legacy "openai"
-    // sessions keep their old label.
+    // API script; "codex" is the local Codex CLI path; "cloudflare-ai" is the
+    // bundled Workers AI agent script, and legacy "openai" sessions keep their
+    // old label.
     if (provider == QLatin1String("claude-code"))
         return QStringLiteral("Claude Code");
     if (provider == QLatin1String("codex"))
         return QStringLiteral("Codex");
+    if (provider == QLatin1String("cloudflare-ai"))
+        return QStringLiteral("Cloudflare AI");
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
@@ -159,6 +162,10 @@ struct TokenPrice {
 TokenPrice priceFor(const QString &provider, const QString &model)
 {
     const QString m = model.toLower();
+    // Workers AI runs on the relay's Cloudflare account, so a run costs this
+    // desktop nothing — the relay meters it with its own per-account window.
+    if (provider == QLatin1String("cloudflare-ai"))
+        return {0.0, 0.0};
     if (provider.startsWith(QLatin1String("claude"))) {
         if (m.contains(QLatin1String("haiku")))
             return {1.0, 5.0};
@@ -823,6 +830,8 @@ QString AgentRunner::providerDisplayName(const QString &provider)
         return QStringLiteral("CC");
     if (provider == QLatin1String("codex"))
         return QStringLiteral("Codex");
+    if (provider == QLatin1String("cloudflare-ai"))
+        return QStringLiteral("Cloudflare AI");
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
@@ -961,6 +970,18 @@ QString AgentRunner::detectAuthIssue(const QString &chunk)
         return QStringLiteral(
             "Claude reports the credit balance is too low. Top up the Anthropic "
             "account for this API key, then click Continue.");
+    }
+    if (m_session.provider == QLatin1String("cloudflare-ai")) {
+        // The bundled Workers AI agent script's own failure lines (see
+        // CloudflareAgentScript.h): a rejected run ticket or a missing one.
+        if (has("not authorized to sign for the account") ||
+            has("no signed relay ticket")) {
+            m_attentionRaised = true;
+            return QStringLiteral(
+                "The relay rejected this node's Cloudflare AI run ticket. Sign "
+                "in to this node's account, then restart the session.");
+        }
+        return QString();
     }
     if (!claude && (has("401 unauthorized") || has("invalid api key"))) {
         m_attentionRaised = true;
