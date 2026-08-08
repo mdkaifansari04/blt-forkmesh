@@ -486,9 +486,11 @@ public:
     // adhoc #1444: the alert stack has to hug its own content and stay one
     // evenly spaced column. These raise a real bubble (and a real queued card)
     // so the layout test can measure the geometry the user actually sees.
-    void testFlashMessage(const QString &text, bool error = false)
+    void testFlashMessage(const QString &text, bool error = false,
+                          const QString &clickHref = QString(),
+                          const QString &kind = QString())
     {
-        flashMessage(text, error);
+        flashMessage(text, error, clickHref, 0, kind);
     }
     // Files one event exactly as a feature would, so the ping funnel's "one
     // event, one row" contract can be measured (adhoc #1629).
