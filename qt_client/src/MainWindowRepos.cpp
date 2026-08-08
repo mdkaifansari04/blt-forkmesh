@@ -3700,6 +3700,8 @@ void MainWindow::startNodeEventSocket()
                 scheduleRelaySync();
                 refreshPendingInboxBadges();
             });
+    connect(m_nodeEventSocket, &NodeEventSocket::agentStatusResult, this,
+            &MainWindow::onOrgTaskAgentStatusFrame);
     connect(m_nodeEventSocket, &NodeEventSocket::connectedChanged, this,
             [this](bool connected) {
                 // One catch-up sync per (re)connect drains anything queued
@@ -3708,6 +3710,10 @@ void MainWindow::startNodeEventSocket()
                 // socket (docs/operations/polling-elimination.md).
                 if (connected)
                     scheduleRelaySync();
+                else
+                    // Agent states written up this socket are answered in a
+                    // later frame; a drop means those answers are never coming.
+                    requeueOrgTaskAgentStatusInFlight();
             });
     connect(m_nodeEventSocket, &NodeEventSocket::systemMessage, this,
             [this](const QString &text) { logSystem(text); });
@@ -3716,6 +3722,9 @@ void MainWindow::startNodeEventSocket()
 
 void MainWindow::stopNodeEventSocket()
 {
+    // Whether or not the socket was still up, nothing written on it can be
+    // answered once it is gone.
+    requeueOrgTaskAgentStatusInFlight();
     if (!m_nodeEventSocket)
         return;
     m_nodeEventSocket->stop();
