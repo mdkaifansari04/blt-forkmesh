@@ -2126,13 +2126,31 @@ void MainWindow::flashNotification(const AppNotification &item)
     // one of these calls still resolves to the right owner.
     const qint64 previousPingToast = m_pingToastId;
     m_pingToastId = item.id;
+    // A chat card wears the face of whoever is talking (adhoc #1612). Restored
+    // rather than cleared for the same reason the ping id above is: a toast
+    // raised from inside one of these calls must not inherit this one's sender.
+    const QPixmap previousPendingAvatar = m_pendingToastAvatar;
+    m_pendingToastAvatar = pingActorAvatar(item);
     if (item.warning) {
         flashMessage(text, true, QString(), duration, item.kind, item.runId);
         flashErrorBorder();
     } else {
         flashMessage(text, false, QString(), duration, item.kind, item.runId);
     }
+    m_pendingToastAvatar = previousPendingAvatar;
     m_pingToastId = previousPingToast;
+}
+
+// Only a chat ping is *somebody's*: every other event on this page is the mesh,
+// a build, or this machine talking about itself, and a face on those cards would
+// be an invention rather than information.
+QPixmap MainWindow::pingActorAvatar(const AppNotification &item) const
+{
+    if (item.kind != QLatin1String("chat"))
+        return QPixmap();
+    if (item.actor.trimmed().isEmpty() && item.actorId.trimmed().isEmpty())
+        return QPixmap();
+    return chatActorAvatar(item.actorId, item.actor, kToastAvatarPx);
 }
 
 // Flash a 3px red border (plus a soft inner glow) around the whole window for

@@ -84,6 +84,7 @@ struct MirrorSelfSnapshot {
     qint64 gatheredMs = 0;
 };
 
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFutureWatcher>
@@ -509,39 +510,18 @@ public:
     }
     int testCloudLogMonitorErrors() const { return m_cloudLogMonitorErrors; }
     int testCloudLogMonitorEvents() const { return m_cloudLogMonitorEvents; }
-    QStringList testCloudLogMonitorRecent() const
-    {
-        return m_cloudLogMonitorRecent;
-    }
     // Is a Wrangler tail actually running? The Monitor box being ticked no
     // longer implies one (adhoc #1632): the box is on by default and its tail
     // starts later, only where there is a token to start it with.
     bool testCloudLogMonitorRunning() const { return cloudLogMonitorRunning(); }
-    // adhoc #1626: the viewer is a window of its own now, with an error chart
-    // over the stream and a Pause control. These drive it with no Wrangler tail
-    // behind it — a line arrives exactly as either tail would deliver it.
-    void testOpenCloudflareLogWindow() { buildCloudflareLogWindow(); }
-    void testCloudflareLogLine(const QString &line, bool isError)
+    // adhoc #1613: the Worker's tail has no window of its own any more — it is
+    // the Log page's CLOUD category. These hand back that category's chip and
+    // the tally behind it, so a test can read what the icon reports.
+    QPushButton *testLogFilterChip(const QString &category) const;
+    int testLogFilterChipCount(const QString &category) const
     {
-        recordCloudLogEvent(isError);
-        emit cloudLogLineReceived(line, isError);
+        return logFilterChipCount(category);
     }
-    void testSetCloudflareLogPaused(bool paused)
-    {
-        setCloudLogWindowPaused(paused);
-    }
-    bool testCloudflareLogPaused() const { return m_cloudLogWindowPaused; }
-    void testSetCloudflareLogErrorsOnly(bool on)
-    {
-        m_cloudLogWindowErrorsOnly = on;
-        refreshCloudLogTimeline();
-    }
-    QWidget *testCloudflareLogWindow() const;
-    QString testCloudflareLogText() const;
-    QString testCloudflareLogStatusText() const;
-    QString testCloudflareLogTimelineSummary() const;
-    int testCloudflareLogTimelineCount() const;
-    bool testCloudflareLogAtBottom() const;
     QRect testTopMessageRect() { return topMessageBubbleRect(); }
     int testTopMessageQueueDepth() const { return m_topMessageQueue.size(); }
     void testDismissTopMessage() { dismissTopMessage(); }
@@ -569,6 +549,27 @@ public:
     // Defined in MainWindowSettings.cpp: QLabel is only forward-declared here.
     QString testTopMessageAgentHeadline() const;
     bool testTopMessageAgentIconShown() const;
+    // adhoc #1612: whether the card on screen is wearing a chat sender's face,
+    // and how wide that lane is — the message has to be measured around it.
+    // Same reason as above for living in MainWindowSettings.cpp.
+    bool testTopMessageAvatarShown() const;
+    // Deliver one chat message exactly as the backend would, so the ping it
+    // raises (and the avatar its card wears) can be checked without a relay.
+    void testDeliverChatMessage(const QString &conversation,
+                                const QString &senderId,
+                                const QString &senderName, const QString &text)
+    {
+        static int seq = 0;
+        ChatMessage message;
+        // Unique per call: onMessage drops a message whose id it has seen.
+        message.id = QStringLiteral("test-chat-%1").arg(++seq);
+        message.conversation = conversation;
+        message.senderId = senderId;
+        message.senderName = senderName;
+        message.text = text;
+        message.timestampMs = QDateTime::currentMSecsSinceEpoch();
+        onMessage(message);
+    }
     bool testCelebrationBorderVisible() const
     {
         return m_celebrationBorderOverlay &&
@@ -1451,12 +1452,6 @@ signals:
     // console can attach its live event feed to the new ChatBackend.
     void backendAttached(ChatBackend *backend);
 
-    // One rendered line of the Cloudflare Worker's live tail, as produced by
-    // the debug bar's Monitor toggle. The live-log viewer listens for this so
-    // an already-running monitor feeds it instead of opening a second tail
-    // against the same Worker (adhoc #1615).
-    void cloudLogLineReceived(const QString &line, bool isError);
-
 protected:
     void closeEvent(QCloseEvent *event) override;
     // Rescan the changes panel when the window regains focus (e.g. after a
@@ -1994,19 +1989,18 @@ private:
     void stopHighMemoryAgent(int sessionId, const QString &label);
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
-    void showCloudflareWorkerLogs();
     // Resolve everything a Wrangler tail needs: the Worker bundle directory,
-    // npx, the account, and the API token (from the settings field, the stored
-    // deploy secret, or — only when `allowPrompt` — the user). Returns false
-    // after explaining why in a toast. The token is returned to the caller so
-    // it can be scrubbed from memory once the tail ends.
+    // npx, the account, and the API token (from the settings field or the
+    // stored deploy secret). Returns false after explaining why in a toast. The
+    // token is returned to the caller so it can be scrubbed from memory once
+    // the tail ends.
     bool prepareCloudflareTail(QString *token, QString *workerDirectory,
                                forkmesh::control::CloudflareBootstrapCommand
-                                   *command,
-                               bool *fromStoredSecret, bool allowPrompt);
-    // Debug-bar "Monitor" checkbox: keep a Wrangler tail running in the
-    // background and route every Worker error into the log, where the existing
-    // ERROR alert raises the same card any other failure gets (adhoc #1615).
+                                   *command);
+    // Keep a Wrangler tail running in the background and route the Worker's
+    // events into this app's own log — healthy hits as CLOUD lines, failures as
+    // ERROR ones, which is what raises the same card any other failure gets
+    // (adhoc #1615, merged into the Log page in adhoc #1613).
     void setCloudLogMonitorEnabled(bool enabled);
     // Whether a Cloudflare API token is already on hand. The monitor is on by
     // default (adhoc #1632), so the automatic start has to be able to stay quiet
@@ -2025,29 +2019,7 @@ private:
     void consumeCloudLogMonitorBytes(const QByteArray &chunk);
     void handleCloudLogMonitorLine(const QString &line);
     void updateCloudLogMonitorTooltip();
-    // The Worker log viewer (adhoc #1626): a window of its own, the same shape
-    // as the app's full log screen — an error-activity rail over the stream,
-    // and a Pause control that stops the pane following the tail. Fed by
-    // whichever Wrangler tail is running: the debug bar's monitor, or the one
-    // the window starts and owns itself.
-    void buildCloudflareLogWindow();
-    void startCloudflareLogViewerTail(
-        const QString &token, const QString &workerDirectory,
-        const forkmesh::control::CloudflareBootstrapCommand &command);
-    void stopCloudflareLogViewerTail();
-    void readCloudflareLogViewerOutput();
     bool cloudLogMonitorRunning() const;
-    bool cloudLogViewerRunning() const;
-    void appendCloudLogWindowLine(const QString &line, bool isError);
-    void recordCloudLogEvent(bool isError);
-    void refreshCloudLogTimeline();
-    void setCloudLogTimelineMinutes(int minutes);
-    void updateCloudLogTimelineSummary();
-    void updateCloudLogWindowNotice();
-    void updateCloudLogWindowStatus();
-    void setCloudLogWindowPaused(bool paused);
-    void onCloudLogWindowScrolled(int value);
-    void scrollCloudLogWindowToEnd();
     // The same log in a window of its own: everything retained, unfiltered.
     void showNetworkLogPopout();
 
@@ -3903,6 +3875,15 @@ private:
     // so new events are visible without opening a page. An error ping shows
     // immediately (preempting a routine toast) and flashes the red app border.
     void flashNotification(const AppNotification &item);
+    // The face this ping's card wears, or a null pixmap for the events that are
+    // nobody's in particular (a push landing, a build failing). Today only a
+    // chat ping names a person, so only a chat ping gets one (adhoc #1612).
+    QPixmap pingActorAvatar(const AppNotification &item) const;
+    // One chat participant's avatar at `side` px: the one they broadcast if this
+    // node has it, otherwise the initial-on-a-tile the transcript falls back to,
+    // in the very colour their name is drawn in there.
+    QPixmap chatActorAvatar(const QString &senderId, const QString &senderName,
+                            int side) const;
     // Flash a red border around the whole window for a moment — the desktop
     // twin of the World's world-admin-error-arrival effect (adhoc #77).
     void flashErrorBorder();
@@ -6323,6 +6304,22 @@ private:
     QLabel *m_topMessageAgentHeadline = nullptr;
     QWidget *m_topMessagePromptImages = nullptr; // submitted image thumbnails
     QStringList m_topMessagePromptImagePaths;
+    // The face of whoever the card is about, in its own lane down the left of
+    // the bubble (adhoc #1612). Only a chat ping fills it: a message arriving
+    // while another section is open should say who is talking before a word of
+    // it is read. m_topMessageContentRow is that lane plus the message beside
+    // it, held so the bubble's width/height maths can account for it.
+    QWidget *m_topMessageContentRow = nullptr;
+    QLabel *m_topMessageAvatar = nullptr;
+    // The face the card on screen is wearing; null for the events that are
+    // nobody's. Held rather than read off the label so every render path
+    // (notification, queued replay, prompt confirmation) agrees on it.
+    QPixmap m_topMessageAvatarPixmap;
+    // The avatar the *next* raised card should wear. Set around the flashMessage
+    // call that raises a filed ping (the same trick m_pingToastId uses to say
+    // which row a toast belongs to), because the ping funnel between the two is
+    // shared by every kind of event and carries no widgetry of its own.
+    QPixmap m_pendingToastAvatar;
     // Queued notifications are visible beneath the active bubble. As new ones
     // arrive, this stack grows upward from the prompt rather than hiding
     // messages behind a "+N more" counter.
@@ -6369,6 +6366,10 @@ private:
         int durationSeconds = 0; // its full countdown starts when it reaches the top
         QString kind;
         int actionRunId = -1;
+        // Carried rather than looked up again: by the time a queued chat card
+        // reaches the top, the sender's avatar may have been replaced or the
+        // peer may be gone, and the card would change face while it waited.
+        QPixmap avatar;
     };
     QList<TopMessageQueueEntry> m_topMessageQueue;
     quint64 m_nextTopMessageQueueId = 1;
@@ -6458,19 +6459,17 @@ private:
     QPushButton *m_debugLogTailButton = nullptr;
     int m_debugLogTailHeight = 0; // the strip the window grows by, in pixels
     bool m_debugLogTailShown = false;
-    // The Log page's "Cloud" chip, one of the quick-filter row's tiles rather
-    // than a category (adhoc #1636): it owns the background Wrangler tail
-    // (adhoc #1615), checked exactly while that tail is live. While it runs,
-    // every Worker exception/5xx reaches the log as an ERROR line, which
-    // raises the same toast as any other failure. The token lives in the
-    // child environment only, never in argv or QSettings.
+    // The Log page's CLOUD chip — the Worker tail's own category in the
+    // quick-filter row, filtering the log like every other chip beside it
+    // (adhoc #1613). It also reports the background tail's state: lit while the
+    // monitor is live, grey while it is not. The token lives in the child
+    // environment only, never in argv or QSettings.
     QPointer<VerticalIconButton> m_cloudLogFilterChip;
-    // Settings' mirror of that chip, so the monitor can still be switched off
-    // on a node that never opens the Log page. The two stay in step.
+    // The monitor's on/off switch, in Settings so it is reachable on a node
+    // that never opens the Log page.
     QCheckBox *m_cloudLogMonitorSettingCheck = nullptr;
     QProcess *m_cloudLogMonitorProcess = nullptr;
     QByteArray m_cloudLogMonitorBuffer; // partial tail record across reads
-    QStringList m_cloudLogMonitorRecent; // rendered backlog for the viewer
     int m_cloudLogMonitorErrors = 0;     // errors seen since monitoring began
     int m_cloudLogMonitorEvents = 0;     // Worker events seen since then
     bool m_cloudLogMonitorStopping = false; // a deliberate stop, not a crash
@@ -6478,34 +6477,6 @@ private:
     // automatic start says so in the tooltip rather than unticking the box or
     // writing a line into the log on every launch of a node that never deploys.
     bool m_cloudLogMonitorAwaitingToken = false;
-    // The Worker log window and the tail it owns when the Monitor box is off
-    // (adhoc #1626). Guarded pointers: the window is WA_DeleteOnClose, so these
-    // go null on their own when it is closed.
-    QPointer<QDialog> m_cloudLogWindow;
-    QPointer<QLabel> m_cloudLogWindowNotice;
-    QPointer<QLabel> m_cloudLogWindowStatus;
-    QPointer<QLabel> m_cloudLogWindowSummary;
-    QPointer<QPlainTextEdit> m_cloudLogWindowView;
-    QPointer<QPushButton> m_cloudLogWindowPauseButton;
-    QPointer<QPushButton> m_cloudLogWindowResetZoom;
-    QPointer<LogTimelineChart> m_cloudLogWindowChart;
-    QProcess *m_cloudLogViewerProcess = nullptr; // this window's own tail
-    QByteArray m_cloudLogViewerBuffer;   // partial tail record across reads
-    QString m_cloudLogViewerToken;       // redacts the stream; scrubbed on stop
-    bool m_cloudLogViewerStoredToken = false; // came from the deploy secret
-    int m_cloudLogViewerEvents = 0;
-    int m_cloudLogViewerErrors = 0;
-    QString m_cloudLogWindowState;          // "Monitoring", "Log stream ended"…
-    bool m_cloudLogWindowFromMonitor = false; // which tail last fed the pane
-    bool m_cloudLogWindowPaused = false;    // pane held still by the reader
-    bool m_cloudLogWindowScrolling = false; // our tail-follow, not their scroll
-    int m_cloudLogWindowHeld = 0;           // lines arrived while paused
-    bool m_cloudLogWindowErrorsOnly = true; // the chart's default rail
-    int m_cloudLogWindowRangeMinutes = 60;
-    // (timestamp, isError) per Worker event, for the window's activity chart.
-    // Kept whether or not the window is open: the monitor may have been running
-    // for hours before anyone opens the viewer, and that history is the point.
-    QVector<QPair<qint64, bool>> m_cloudLogTicks;
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
@@ -8368,6 +8339,12 @@ private:
         // the same way (adhoc #77).
         QString kind;   // "issue" | "chat" | "action" | … (defaults from link)
         QString actor;  // who caused it, when known
+        // That person's node id, when the event came from one (a chat message
+        // carries its sender's). Only the avatar lookup uses it — m_avatars is
+        // keyed by node id, and a display name alone cannot find a face
+        // (adhoc #1612). Not shown as a column and not journalled: it exists to
+        // draw the card that is going up right now.
+        QString actorId;
         QString repo;   // "owner/name", when it is about a repository
         qint64 id = 0;  // stable row identity, so one row can be deleted
         // Where this ping stands with the cloud (adhoc #1629). One raised while

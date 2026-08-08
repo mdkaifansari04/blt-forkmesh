@@ -511,6 +511,12 @@ constexpr int kToastEntryMs = 180;
 // Larger than the 16px list icon: this card is the celebration, and the icon is
 // what identifies whose run just landed.
 constexpr int kToastAgentIconPx = 20;
+// The sender's face on a chat card, in its own lane to the left of the message
+// — the same avatar the transcript draws, so a card that arrives while another
+// section is open says who is talking before its text is read.
+constexpr int kToastAvatarPx = 28;
+// Between that lane and the message beside it.
+constexpr int kToastAvatarGap = 8;
 // How long the whole column takes to glide to its new anchor when a card
 // arrives or leaves. Short enough to feel immediate, long enough to read as
 // the stack sliding up rather than jumping.
@@ -7278,14 +7284,15 @@ inline QByteArray forkMeshNodeAvatarPng(const QString &seed)
     return png;
 }
 
-// Clip avatar PNG bytes into a rounded-rect pixmap for the nav button. The
-// corner radius is a fraction of the side, so 0.5 gives a full circle (what the
-// website shows for an account's picture).
-inline QPixmap roundedAvatar(const QByteArray &png, int side,
+// Clip an avatar into a rounded-rect pixmap for the nav button. The corner
+// radius is a fraction of the side, so 0.5 gives a full circle (what the
+// website shows for an account's picture). This overload takes an already
+// decoded pixmap — a chat peer's avatar arrives over the wire and is kept as a
+// QPixmap (m_avatars), never as bytes.
+inline QPixmap roundedAvatar(const QPixmap &src, int side,
                              qreal radiusRatio = 0.28)
 {
-    QPixmap src;
-    if (png.isEmpty() || !src.loadFromData(png))
+    if (src.isNull())
         return QPixmap();
     const qreal dpr = iconDevicePixelRatio();
     QPixmap out = crispIconPixmap(side, dpr);
@@ -7302,6 +7309,15 @@ inline QPixmap roundedAvatar(const QByteArray &png, int side,
     scaled.setDevicePixelRatio(dpr);
     p.drawPixmap(0, 0, scaled);
     return out;
+}
+
+inline QPixmap roundedAvatar(const QByteArray &png, int side,
+                             qreal radiusRatio = 0.28)
+{
+    QPixmap src;
+    if (png.isEmpty() || !src.loadFromData(png))
+        return QPixmap();
+    return roundedAvatar(src, side, radiusRatio);
 }
 
 inline QPixmap nodeMachineFavicon(const QString &seed, int side = 36)
@@ -8224,6 +8240,9 @@ private:
             {"SAVE", "#3fb950", "check-circle"},
             {"CLIP", "#8b949e", "copy"},
             {"NETWORK", "#f2cc60", "broadcast"},
+            // The deployed Cloudflare Worker's live tail, which lands in this
+            // log like any other subsystem's traffic (adhoc #1613).
+            {"CLOUD", "#f6821f", "cloud"},
             {"STALL", "#d29922", "alert"},
             {"ERROR", "#f85149", "x"},
             {"INFO", "#6e7681", "info"},
@@ -8235,7 +8254,7 @@ private:
 
     // One entry per row of categories() above; the per-lane arrays below and the
     // compact grid are both sized from it.
-    static constexpr int kCategoryCount = 32;
+    static constexpr int kCategoryCount = 33;
     static constexpr int categoryCount() { return kCategoryCount; }
     static constexpr int kCompactRows = 3;
     // Enough columns to hold the whole taxonomy in those rows, so adding a

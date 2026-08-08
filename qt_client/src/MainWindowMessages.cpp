@@ -65,6 +65,27 @@ QString MainWindow::senderColor(const QString &sender) const
     return Theme::kSenderPalette[hash % Theme::kSenderPaletteSize];
 }
 
+// The face a chat participant wears wherever they appear outside the transcript
+// (today: the alert card a message raises, adhoc #1612). Same order of
+// preference as a transcript row — the avatar they broadcast if this node has
+// received it, then the initial-on-a-tile fallback in their own name colour —
+// so the person in the toast is visibly the person in the channel.
+QPixmap MainWindow::chatActorAvatar(const QString &senderId,
+                                    const QString &senderName, int side) const
+{
+    const QString name = senderName.trimmed();
+    QPixmap known = m_avatars.value(senderId);
+    // Website accounts are keyed by name rather than by node id (they have no
+    // node of their own), which is also how the Users table finds them.
+    if (known.isNull() && !name.isEmpty())
+        known = m_avatars.value(QStringLiteral("user:") + name.toLower());
+    if (!known.isNull())
+        return roundedAvatar(known, side, 0.25); // the transcript's corner radius
+    if (name.isEmpty() && senderId.trimmed().isEmpty())
+        return QPixmap();
+    return MessageRow::initialsAvatar(name, senderColor(name), side);
+}
+
 int MainWindow::chatThreadReplyCount(const QString &conversation,
                                      const QString &rootMessageId) const
 {
@@ -419,11 +440,18 @@ void MainWindow::onMessage(const ChatMessage &message)
         link.kind = QStringLiteral("chat");
         link.ref = kWelcomeChannel;
         const QString who = message.senderName.trimmed();
-        addNotification(QStringLiteral("New user joined"),
-                        who.isEmpty()
-                            ? QStringLiteral("Someone new said hello in #welcome")
-                            : who + QStringLiteral(" said hello in #welcome"),
-                        false, link);
+        // Filed directly rather than through addNotification: the card carries
+        // the newcomer's face, and only the sender's node id can find it.
+        AppNotification item;
+        item.title = QStringLiteral("New user joined");
+        item.body = who.isEmpty()
+                        ? QStringLiteral("Someone new said hello in #welcome")
+                        : who + QStringLiteral(" said hello in #welcome");
+        item.link = link;
+        item.kind = QStringLiteral("chat");
+        item.actor = who;
+        item.actorId = message.senderId;
+        recordNotification(item);
     }
 
     if (!ownMessage) {
@@ -446,9 +474,16 @@ void MainWindow::onMessage(const ChatMessage &message)
             NotificationLink link;
             link.kind = QStringLiteral("chat");
             link.ref = conversation;
-            addNotification(message.senderName + QLatin1Char(' ') + where,
-                            preview.simplified(), false, link,
-                            QStringLiteral("chat"), message.senderName);
+            AppNotification item;
+            item.title = message.senderName + QLatin1Char(' ') + where;
+            item.body = preview.simplified();
+            item.link = link;
+            item.kind = QStringLiteral("chat");
+            item.actor = message.senderName;
+            // The sender's node id, so the card can wear their avatar: the name
+            // alone cannot find it (m_avatars is keyed by id) — adhoc #1612.
+            item.actorId = message.senderId;
+            recordNotification(item);
         }
         if (textMentionsNodeName(message.text, m_userName)) {
             if (notifyEnabled(kMentionAlertSetting)) {
