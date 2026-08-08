@@ -41,9 +41,25 @@ launch — but until adhoc #1618 it then published each agent session's live run
 state as its own signed `POST /api/tasks/<id>/agent-status`, so a node with a
 fleet of sessions opened seventeen writes in the same millisecond and the relay
 rate-limited (HTTP 429) most of them, its own account lookup included. The
-states now coalesce into one `POST /api/tasks/agent-status` carrying every
-changed run. When auditing a client path, count requests per *event*, not just
-timers per minute.
+states now coalesce into a single write carrying every changed run. When
+auditing a client path, count requests per *event*, not just timers per minute.
+
+That write then stops being a request at all. The desktop is already holding
+the node event socket so the relay can push to it, so the batch rides back up
+that socket as one `{"type":"agent-status"}` frame and the relay answers with
+its per-task verdicts on the same connection. The signed HTTPS
+`POST /api/tasks/agent-status` remains the fallback for a node whose socket is
+down, and for a relay too old to advertise the frame in its hello — the
+desktop only diverts a write off HTTPS once the relay has named it in
+`NODE_FRAME_ACCEPTS`.
+
+The socket is transport, never authority. The frame carries the same
+`forkmesh-org-task-agent-status-batch-v1` node/ts/sig proof the HTTPS route
+demands, and the relay hands it to the same task handler, which re-runs the
+proof check and then the per-task ownership and agent-row gates on every entry.
+Being connected proves nothing on its own — which is what keeps this channel
+safe to widen. Frames a node sends share the socket's existing per-window rate
+budget, so a flooding write path is throttled like a flooding keepalive.
 
 ## Inventory: still polling (relay-facing)
 
