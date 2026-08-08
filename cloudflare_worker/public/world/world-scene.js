@@ -165,6 +165,36 @@ const NODE_DETAIL_EXIT_DISTANCE = 70;
 const NODE_PLAZA_MAX_RADIUS = 28;
 const NODE_LOD_MAX_INSTANCES = 64;
 const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
+// The repository ring is a room, not a billboard. Its portals stay collapsed
+// to a bare disc from anywhere else in the World, and a visitor who walks
+// inside seals a shell around the whole circle: the concentric size rings
+// expand, and every triangle outside the shell stops being drawn. The shell
+// sits between the portal ring and the edge of the ground apron so the portals
+// are enclosed without the wall clipping the concrete.
+const REPOSITORY_ENCLOSURE_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 4;
+const REPOSITORY_ENCLOSURE_HEIGHT = 14;
+const REPOSITORY_ENCLOSURE_DOME_HEIGHT = 10;
+// The only way back out. Wide enough to walk through without hunting for it,
+// narrow enough that the town beyond is a sliver rather than a second scene.
+const REPOSITORY_ENCLOSURE_DOOR_WIDTH = 7;
+const REPOSITORY_ENCLOSURE_DOOR_HEIGHT = 5.4;
+const REPOSITORY_ENCLOSURE_DOOR_HALF_ANGLE = Math.asin(
+  REPOSITORY_ENCLOSURE_DOOR_WIDTH / 2 / REPOSITORY_ENCLOSURE_RADIUS,
+);
+// Three's cylinder sweeps theta from +Z toward +X, so the door facing the town
+// causeway (world -X from the island centre) is centred on -PI/2.
+const REPOSITORY_ENCLOSURE_DOOR_THETA = -Math.PI / 2;
+// Sealing and dissolving are hysteresis boundaries, not one threshold, so a
+// visitor standing in the doorway cannot flicker the shell open and shut.
+const REPOSITORY_ENCLOSURE_SEAL_RADIUS = REPOSITORY_ENCLOSURE_RADIUS - 2.2;
+const REPOSITORY_ENCLOSURE_RELEASE_RADIUS = REPOSITORY_ENCLOSURE_RADIUS + 1.6;
+const REPOSITORY_ENCLOSURE_RAISE_MS = 620;
+const REPOSITORY_ENCLOSURE_DISSOLVE_MS = 900;
+// Folded away, the concentric rings sit exactly on the portal's outline torus
+// (1.08 of the node radius, against the outermost ring's 1.58), so the moment
+// they start to matter they grow out of the disc's own edge.
+const REPOSITORY_RING_COLLAPSED_SCALE = 1.08 / 1.58;
+const REPOSITORY_RING_EXPANSION_RATE = 4.6;
 // Avatar geometry is shared across users, while each person remains complete
 // and visible at every camera distance.
 const OFFICE_EXTERIOR_LOD_DISTANCE = 235;
@@ -10937,6 +10967,139 @@ function repositoryWedgeGeometry(
   return geometry;
 }
 
+// The shell that closes over the repository ring. It is one opaque, seamless
+// surface — wall, transom above the doorway, and a dome cap — because its job
+// is not decoration: while it stands, every root outside it stops being drawn,
+// and the shell is what the visitor sees instead. The single gap is a real
+// doorway with a frame and a lit sign, and the walker's wall collider uses the
+// same door angle, so the only way through the surface is the way it looks.
+function createRepositoryEnclosure(THREE) {
+  const group = new THREE.Group();
+  group.name = "repository-enclosure";
+  group.position.set(REPOSITORY_ISLAND_CENTER_X, 0, 0);
+  const doorHalf = REPOSITORY_ENCLOSURE_DOOR_HALF_ANGLE;
+  const doorTheta = REPOSITORY_ENCLOSURE_DOOR_THETA;
+  const radius = REPOSITORY_ENCLOSURE_RADIUS;
+  const height = REPOSITORY_ENCLOSURE_HEIGHT;
+  // One material for the whole shell: the raise and dissolve effects animate a
+  // single opacity rather than walking a subtree of materials each frame.
+  const shellMaterial = makeMaterial(THREE, "#0d2a35", {
+    metalness: 0.22,
+    roughness: 0.44,
+    emissive: "#12586e",
+    emissiveIntensity: 0.42,
+    transparent: true,
+    opacity: 1,
+    side: THREE.DoubleSide,
+  });
+  const trimMaterial = makeMaterial(THREE, "#8fe6ff", {
+    metalness: 0.3,
+    roughness: 0.26,
+    emissive: "#2ea6cf",
+    emissiveIntensity: 1.05,
+    transparent: true,
+    opacity: 1,
+  });
+  const wall = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      radius,
+      radius,
+      height,
+      // The shell is a triangle budget, not a model. Every segment it spends on
+      // itself comes out of what hiding the World behind it buys back, so the
+      // whole thing is kept under ~1.5k triangles.
+      72,
+      1,
+      true,
+      doorTheta + doorHalf,
+      Math.PI * 2 - doorHalf * 2,
+    ),
+    shellMaterial,
+  );
+  wall.name = "repository-enclosure-wall";
+  wall.position.y = height / 2;
+  group.add(wall);
+  // The doorway is an opening, not a missing wall: the shell closes again above
+  // the lintel so the town beyond stays a doorway-sized sliver.
+  const transomHeight = height - REPOSITORY_ENCLOSURE_DOOR_HEIGHT;
+  const transom = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      radius,
+      radius,
+      transomHeight,
+      12,
+      1,
+      true,
+      doorTheta - doorHalf,
+      doorHalf * 2,
+    ),
+    shellMaterial,
+  );
+  transom.name = "repository-enclosure-door-transom";
+  transom.position.y = REPOSITORY_ENCLOSURE_DOOR_HEIGHT + transomHeight / 2;
+  group.add(transom);
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 48, 7, 0, Math.PI * 2, 0, Math.PI / 2),
+    shellMaterial,
+  );
+  dome.name = "repository-enclosure-dome";
+  dome.position.y = height;
+  dome.scale.y = REPOSITORY_ENCLOSURE_DOME_HEIGHT / radius;
+  group.add(dome);
+  const rim = new THREE.Mesh(
+    new THREE.TorusGeometry(radius, 0.14, 4, 72),
+    trimMaterial,
+  );
+  rim.name = "repository-enclosure-rim";
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = height;
+  group.add(rim);
+  // Door frame. The posts sit on the two cut edges of the wall sweep, so the
+  // frame and the collider's door arc cannot drift apart.
+  [doorTheta - doorHalf, doorTheta + doorHalf].forEach((theta, index) => {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.42, REPOSITORY_ENCLOSURE_DOOR_HEIGHT, 0.62),
+      trimMaterial,
+    );
+    post.name = `repository-enclosure-door-post-${index + 1}`;
+    post.position.set(
+      Math.sin(theta) * radius,
+      REPOSITORY_ENCLOSURE_DOOR_HEIGHT / 2,
+      Math.cos(theta) * radius,
+    );
+    post.rotation.y = theta;
+    group.add(post);
+  });
+  const lintel = new THREE.Mesh(
+    new THREE.BoxGeometry(0.42, 0.36, REPOSITORY_ENCLOSURE_DOOR_WIDTH + 0.6),
+    trimMaterial,
+  );
+  lintel.name = "repository-enclosure-door-lintel";
+  lintel.position.set(
+    -radius,
+    REPOSITORY_ENCLOSURE_DOOR_HEIGHT,
+    0,
+  );
+  group.add(lintel);
+  const sign = repositorySizeLabelSprite(
+    THREE,
+    "EXIT",
+    "WALK THROUGH TO LEAVE",
+    "#9ef7c6",
+  );
+  sign.name = "repository-enclosure-door-sign";
+  // Above the doorway on the inside face, so the way out is readable from
+  // anywhere in the room rather than only once you are standing at the wall.
+  sign.scale.set(6, 1.64, 1);
+  // Clear of the import kiosk, which stands on the centre line to the door.
+  sign.position.set(-radius + 1.6, REPOSITORY_ENCLOSURE_DOOR_HEIGHT + 2.4, 0);
+  group.add(sign);
+  group.userData.repositoryEnclosureShell = shellMaterial;
+  group.userData.repositoryEnclosureTrim = trimMaterial;
+  group.userData.repositoryEnclosureSign = sign;
+  return group;
+}
+
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const content = new THREE.Group();
@@ -10951,8 +11114,9 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
       REPOSITORY_GROUND_RADIUS,
     ),
   );
-  // Repository portals stay open on the east island so their charts remain
-  // readable without an enclosure or doorway transition.
+  // The island itself is always open — no doorway transition, no second scene
+  // to load. The shell in createRepositoryEnclosure only closes over it while a
+  // visitor is actually standing inside the portal ring.
   const ringMaterial = makeMaterial(THREE, "#77d9ff", {
     metalness: 0.2,
     roughness: 0.28,
@@ -19733,6 +19897,17 @@ export function createWorldScene({
         voidWalkSurfaceContains(x, z, radius);
   let activeEnclosureScene = "";
   const enclosureHiddenWorldRoots = new Map();
+  // "" → "raising" → "sealed" → "dissolving" → "". Only "sealed" hides the rest
+  // of the World: the shell has to be opaque and closed before the triangles
+  // behind it are allowed to disappear, and the outside comes back the instant
+  // the visitor steps through the door rather than after the dissolve plays.
+  let repositoryEnclosureState = "";
+  let repositoryEnclosureStateAt = 0;
+  let repositoryEnclosure = null;
+  // 0 = portals are bare discs, 1 = concentric size rings fully expanded.
+  let repositoryRingExpansion = 0;
+  world.userData.repositoryEnclosureState = "";
+  world.userData.repositoryRingExpansion = 0;
 
   // A hidden Object3D stops draw calls, but Three.js deliberately retains
   // every buffer and texture it uploaded for that object. On unified-memory
@@ -19919,9 +20094,33 @@ export function createWorldScene({
     return detailed;
   }
 
+  // What stays drawn while the repository shell is sealed. The catalog ring and
+  // the district apron are the room itself; the city land plate keeps a floor
+  // under the doorway so the town side reads as ground rather than a void; and
+  // anything else whose own origin lands inside the shell — a visitor, ForkBot,
+  // an agent bot standing at a portal — is in the room with you. Everything
+  // else in the World is behind an opaque surface, so it stops being drawn.
+  function repositoryEnclosureKeptRoots() {
+    const kept = [
+      repositoryEnclosure,
+      landmarkObjects.get("repositories"),
+      world.userData.repositoryCatalogLayer,
+      continuousCityLand,
+    ].filter(Boolean);
+    world.children.forEach((root) => {
+      const distance = Math.hypot(
+        root.position.x - REPOSITORY_ISLAND_CENTER_X,
+        root.position.z,
+      );
+      if (distance <= REPOSITORY_ENCLOSURE_RADIUS) kept.push(root);
+    });
+    return kept;
+  }
+
   function enclosureSceneRoots(mode) {
     if (mode === "office") return [officeInterior];
     if (mode === "beach") return [beachScene];
+    if (mode === "repositories") return repositoryEnclosureKeptRoots();
     return [];
   }
 
@@ -19930,7 +20129,9 @@ export function createWorldScene({
       ? "beach"
       : officeSceneMode !== "town"
         ? "office"
-        : "";
+        : repositoryEnclosureState === "sealed"
+          ? "repositories"
+          : "";
     if (force || next !== activeEnclosureScene) {
       enclosureHiddenWorldRoots.forEach((visible, root) => {
         root.visible = visible;
@@ -19943,13 +20144,215 @@ export function createWorldScene({
     if (!next) return next;
     const keep = new Set([player, ...enclosureSceneRoots(next)]);
     world.children.forEach((root) => {
-      if (keep.has(root)) return;
+      if (keep.has(root)) {
+        // The repository keep-set is recomputed per frame because people walk
+        // into and out of the shell. Somebody who was hidden crossing the town
+        // has to come back the moment they step through the doorway.
+        if (enclosureHiddenWorldRoots.has(root)) {
+          root.visible = enclosureHiddenWorldRoots.get(root);
+          enclosureHiddenWorldRoots.delete(root);
+        }
+        return;
+      }
       if (!enclosureHiddenWorldRoots.has(root)) {
         enclosureHiddenWorldRoots.set(root, root.visible);
       }
       root.visible = false;
     });
     return next;
+  }
+
+  // Built the first time somebody reaches the ring, not at load: a visitor who
+  // never walks east never pays for the shell's geometry.
+  function ensureRepositoryEnclosure() {
+    if (repositoryEnclosure) return repositoryEnclosure;
+    repositoryEnclosure = createRepositoryEnclosure(THREE);
+    repositoryEnclosure.visible = false;
+    world.add(repositoryEnclosure);
+    registerWorldElement(
+      "repository-enclosure",
+      "Repository ring enclosure",
+      "Districts",
+      repositoryEnclosure,
+    );
+    return repositoryEnclosure;
+  }
+
+  function setRepositoryEnclosureState(next, time) {
+    if (repositoryEnclosureState === next) return;
+    repositoryEnclosureState = next;
+    repositoryEnclosureStateAt = time;
+    world.userData.repositoryEnclosureState = next;
+  }
+
+  // The shell reads as one surface, so it animates as one: a single opacity and
+  // a vertical scale off the ground plane. Sealed is fully opaque and fully
+  // opaque means opaque — `transparent` is switched off so the closed shell
+  // draws in the opaque pass with the rest of the room.
+  function applyRepositoryEnclosureShell(visible, opacity, lift, spread, flare) {
+    const shell = repositoryEnclosure;
+    if (!shell) return;
+    shell.visible = visible;
+    if (!visible) {
+      // Park the shell back at rest rather than leaving it wearing the last
+      // frame of the dissolve, so a re-entry starts from a known transform.
+      shell.scale.set(1, 1, 1);
+      return;
+    }
+    // The walls sweep up on `lift` alone. `spread` stays at 1 until the cover
+    // comes apart, or a rising shell would pass through the portal ring it is
+    // supposed to enclose, and the collider radius would not match the wall.
+    shell.scale.set(spread, lift, spread);
+    const wantsTransparent = opacity < 1;
+    [
+      shell.userData.repositoryEnclosureShell,
+      shell.userData.repositoryEnclosureTrim,
+    ].forEach((material) => {
+      if (!material) return;
+      // A closed shell is genuinely opaque, not opacity-1 transparent, so it
+      // draws with the rest of the room instead of in the sorted pass.
+      if (material.transparent !== wantsTransparent) {
+        material.transparent = wantsTransparent;
+        material.needsUpdate = true;
+      }
+      material.opacity = opacity;
+    });
+    const trim = shell.userData.repositoryEnclosureTrim;
+    if (trim) trim.emissiveIntensity = 1.05 + flare * 1.75;
+    const sign = shell.userData.repositoryEnclosureSign;
+    if (sign?.material) sign.material.opacity = opacity;
+  }
+
+  // Seal on arrival, release through the doorway. Everything the enclosure
+  // drives — the expanded portal rings, the outside-triangle cull in
+  // syncEnclosureSceneVisibility, and the wall collider — reads this state, so
+  // there is exactly one place where "inside the repository ring" is decided.
+  function updateRepositoryEnclosure(time, delta) {
+    const available =
+      officeSceneMode === "town" &&
+      !beachSceneActive &&
+      worldElementEnabled("repository-enclosure");
+    const distance = Math.hypot(
+      player.position.x - REPOSITORY_ISLAND_CENTER_X,
+      player.position.z,
+    );
+    if (!available) {
+      // An administrator hiding the element, or a warp into the Office, must
+      // not leave a sealed shell holding the rest of the World invisible.
+      setRepositoryEnclosureState("", time);
+    } else if (repositoryEnclosureState === "") {
+      if (distance <= REPOSITORY_ENCLOSURE_SEAL_RADIUS) {
+        const shell = ensureRepositoryEnclosure();
+        if (shell.parent === world) {
+          setRepositoryEnclosureState(reducedMotion ? "sealed" : "raising", time);
+        }
+      }
+    } else if (distance > REPOSITORY_ENCLOSURE_RELEASE_RADIUS) {
+      if (repositoryEnclosureState !== "dissolving") {
+        setRepositoryEnclosureState(reducedMotion ? "" : "dissolving", time);
+      }
+    } else if (
+      repositoryEnclosureState === "dissolving" &&
+      distance <= REPOSITORY_ENCLOSURE_SEAL_RADIUS
+    ) {
+      // Stepped back in before the cover finished coming apart.
+      setRepositoryEnclosureState(reducedMotion ? "sealed" : "raising", time);
+    }
+    const elapsed = time - repositoryEnclosureStateAt;
+    if (repositoryEnclosureState === "raising") {
+      const progress = clamp(elapsed / REPOSITORY_ENCLOSURE_RAISE_MS, 0, 1);
+      // Ease out, so the walls sweep up fast and settle rather than creeping.
+      const eased = 1 - (1 - progress) ** 3;
+      if (progress >= 1) {
+        setRepositoryEnclosureState("sealed", time);
+      } else {
+        applyRepositoryEnclosureShell(
+          true,
+          Math.min(1, eased * 1.35),
+          Math.max(0.02, eased),
+          1,
+          1 - eased,
+        );
+      }
+    }
+    if (repositoryEnclosureState === "sealed") {
+      applyRepositoryEnclosureShell(true, 1, 1, 1, 0);
+    } else if (repositoryEnclosureState === "dissolving") {
+      const progress = clamp(elapsed / REPOSITORY_ENCLOSURE_DISSOLVE_MS, 0, 1);
+      if (progress >= 1) {
+        setRepositoryEnclosureState("", time);
+      } else {
+        // The cover does not simply switch off: it flares along its rim, lifts
+        // and widens off the ring, and thins out into the sky.
+        applyRepositoryEnclosureShell(
+          true,
+          (1 - progress) ** 1.6,
+          1 + progress * 0.34,
+          1 + progress * 0.08,
+          Math.sin(progress * Math.PI),
+        );
+      }
+    }
+    if (repositoryEnclosureState === "") {
+      applyRepositoryEnclosureShell(false, 0, 1, 1, 0);
+    }
+    const target =
+      repositoryEnclosureState === "raising" ||
+      repositoryEnclosureState === "sealed"
+        ? 1
+        : 0;
+    if (repositoryRingExpansion === target) return;
+    const next = reducedMotion
+      ? target
+      : repositoryRingExpansion +
+        (target - repositoryRingExpansion) *
+          clamp(delta * REPOSITORY_RING_EXPANSION_RATE, 0, 1);
+    repositoryRingExpansion = Math.abs(target - next) < 0.004 ? target : next;
+    world.userData.repositoryRingExpansion = repositoryRingExpansion;
+    repositoryPortals.forEach(({ group }) => {
+      applyRepositoryRingExpansion(group.userData.repositoryExpandedProfile);
+    });
+  }
+
+  // A collapsed profile is not merely small, it is not drawn at all — that is
+  // the point of leaving the rings folded away until somebody is in the room.
+  // At the low end of the expansion it sits exactly on the portal's outline
+  // torus, so appearing and disappearing there is seamless.
+  function applyRepositoryRingExpansion(profile) {
+    if (!profile) return;
+    profile.visible = repositoryRingExpansion > 0.002;
+    if (!profile.visible) return;
+    profile.scale.setScalar(
+      REPOSITORY_RING_COLLAPSED_SCALE +
+        repositoryRingExpansion * (1 - REPOSITORY_RING_COLLAPSED_SCALE),
+    );
+  }
+
+  // The town-facing gap in the wall. Only the doorway arc lets the walker
+  // through the surface; everywhere else the visitor slides along the inside of
+  // the shell instead of stepping out of the drawn room into hidden geometry.
+  function constrainRepositoryEnclosureWall() {
+    if (repositoryEnclosureState !== "sealed") return false;
+    const offsetX = player.position.x - REPOSITORY_ISLAND_CENTER_X;
+    const offsetZ = player.position.z;
+    const distance = Math.hypot(offsetX, offsetZ);
+    const limit = REPOSITORY_ENCLOSURE_RADIUS - OFFICE_AVATAR_RADIUS;
+    if (distance <= limit || distance <= 0.001) return false;
+    // Cylinder theta, matching the wall sweep: measured from +Z toward +X.
+    const theta = Math.atan2(offsetX, offsetZ);
+    let doorOffset = theta - REPOSITORY_ENCLOSURE_DOOR_THETA;
+    while (doorOffset > Math.PI) doorOffset -= Math.PI * 2;
+    while (doorOffset < -Math.PI) doorOffset += Math.PI * 2;
+    if (Math.abs(doorOffset) <= REPOSITORY_ENCLOSURE_DOOR_HALF_ANGLE) {
+      return false;
+    }
+    // Clamping the radius alone keeps the tangential component, so pushing into
+    // the wall walks the avatar around it toward the doorway.
+    const scale = limit / distance;
+    player.position.x = REPOSITORY_ISLAND_CENTER_X + offsetX * scale;
+    player.position.z = offsetZ * scale;
+    cancelDash();
+    return true;
   }
 
   function compactDistrictDiagnostics() {
@@ -27901,6 +28304,7 @@ export function createWorldScene({
     }
     if (!superJumping) {
       constrainTownOfficeWalls(previousHorizontalPosition);
+      constrainRepositoryEnclosureWall();
     }
     if (carRide) {
       jumpQueued = false;
@@ -31674,10 +32078,13 @@ export function createWorldScene({
         portalMeshes.push(mesh);
       }
       face.add(disk, outline);
-      // Keep every repository visually expanded, including stubs whose full
-      // size tree has not reached this mirror yet. The concentric profile is
-      // deliberately lightweight; a real sizeTree replaces its centre with
-      // the file wedges below without collapsing the surrounding rings.
+      // Every repository — including a stub whose size tree has not reached
+      // this mirror yet — carries the same concentric profile, but it stays
+      // folded into the portal's own outline until somebody walks inside the
+      // ring. From the town the east island is a circle of plain discs; the
+      // rings only expand for the visitor standing among them, and a real
+      // sizeTree replaces the centre with the file wedges below without
+      // collapsing them again. updateRepositoryEnclosure owns the animation.
       const expandedProfile = new THREE.Group();
       expandedProfile.name =
         `repository-always-expanded-profile:${record.owner}/${record.name}`;
@@ -31692,7 +32099,11 @@ export function createWorldScene({
         ring.scale.setScalar(nodeRadius);
         expandedProfile.add(ring);
       });
+      // A catalog refresh while the shell is already sealed must rebuild the
+      // portals at the expansion the room is currently showing, not snap them.
+      applyRepositoryRingExpansion(expandedProfile);
       face.add(expandedProfile);
+      node.userData.repositoryExpandedProfile = expandedProfile;
       // Still waiting on this repository's size tree. Shimmer while the map is
       // assembled — the wedges below replace the shimmer the moment it lands.
       const sparkleUntil = repositorySparkleUntil.get(record.key) || 0;
@@ -35334,6 +35745,9 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
+    // Resolve the repository shell before the visibility sweep so the frame the
+    // shell closes on is the same frame the World behind it stops drawing.
+    updateRepositoryEnclosure(time, delta);
     syncEnclosureSceneVisibility();
     if (officeSceneMode === "town") {
       const insideInstanceBooth =
