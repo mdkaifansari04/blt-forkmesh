@@ -201,8 +201,11 @@ NODE_EVENT_MSG_WINDOW_MS = 10 * 1000
 NODE_EVENT_MSG_MAX_PER_WINDOW = 20
 # Sized for the one frame a node may send that is not a keepalive: a desktop
 # restart reports the live run state of every session it owns, and the batch
-# cap (MAX_AGENT_STATUS_BATCH) is 200 task-id/status pairs plus a signature.
-NODE_EVENT_MAX_FRAME_BYTES = 16 * 1024
+# cap (MAX_AGENT_STATUS_BATCH) is 200 entries, each a task id, a run state and
+# the run's provenance block, plus one signature for the lot. Kept under 64 KiB
+# so the client's two-byte frame length stays valid; the real bound on the work
+# is MAX_AGENT_STATUS_BATCH, which the task API enforces either way.
+NODE_EVENT_MAX_FRAME_BYTES = 60 * 1024
 # What this relay can accept from a node over the socket, advertised in the
 # hello frame sent on accept. A desktop only diverts a write off HTTPS once it
 # has seen its name here, so an older relay keeps receiving the POST instead of

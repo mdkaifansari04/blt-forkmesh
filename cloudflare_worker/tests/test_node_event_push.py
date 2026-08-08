@@ -642,13 +642,33 @@ def test_rate_limited_keepalives_are_still_just_dropped():
 
 def test_frame_ceiling_fits_a_full_fleet_report():
     # A desktop publishes one entry per live session, up to the task API's
-    # MAX_AGENT_STATUS_BATCH of 200. The socket's frame cap has to hold that
-    # much or a fleet-sized node would be closed for reporting itself.
+    # MAX_AGENT_STATUS_BATCH of 200, and each entry carries the run's
+    # provenance as well as its state. The socket's frame cap has to hold that
+    # much or a fleet-sized node would silently fall back to HTTPS for the one
+    # burst this whole change exists to keep off HTTPS.
     ns = _load(_base_globals())
+    module = (ROOT / "src" / "world_office_tasks.py").read_text(
+        encoding="utf-8")
+    assert "MAX_AGENT_STATUS_BATCH = 200" in module
     full = _status_frame(statuses=[
-        {"task": "%032x" % index, "status": "running"} for index in range(200)
+        {
+            "task": "%032x" % index,
+            "status": "running",
+            "agent": {
+                "provider": "claude-code", "startedBy": "forkbot-longish",
+                "model": "claude-opus-5-20260101", "mode": "agent",
+                "strength": "high", "sessionId": "%d" % index,
+            },
+        }
+        for index in range(200)
     ])
     assert len(full.encode("utf-8")) < ns["NODE_EVENT_MAX_FRAME_BYTES"]
+    # ...and the cap stays inside the two-byte extended frame length the Qt
+    # client writes (NodeEventSocket::sendTextFrame).
+    assert ns["NODE_EVENT_MAX_FRAME_BYTES"] < 65_536
+    assert "constexpr int kMaxOutboundPayload = 60 * 1024;" in (
+        ROOT.parent / "qt_client" / "src" / "NodeEventSocket.cpp"
+    ).read_text(encoding="utf-8")
 
 
 # --- Deployment contract -----------------------------------------------------

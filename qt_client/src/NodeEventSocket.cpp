@@ -14,9 +14,11 @@ namespace {
 // Event frames are a topic plus a repo path; anything bigger is not ours.
 constexpr quint64 kMaxEventPayload = 64 * 1024;
 // Outbound frame ceiling, matching the relay's NODE_EVENT_MAX_FRAME_BYTES: a
-// batched agent-status report is one task id plus a run state per live session
-// (200 at most, the relay's batch cap) alongside the signature.
-constexpr int kMaxOutboundPayload = 16 * 1024;
+// batched agent-status report is a task id, a run state and the run's
+// provenance per live session (200 at most, the relay's batch cap) alongside
+// one signature. Must stay under 64 KiB — sendTextFrame writes the two-byte
+// extended length, which cannot describe a longer payload.
+constexpr int kMaxOutboundPayload = 60 * 1024;
 // A server that accepts TCP/TLS but never answers the upgrade would otherwise
 // hang the attempt forever: no other timer runs before the 101.
 constexpr int kConnectTimeoutMs = 30000;
