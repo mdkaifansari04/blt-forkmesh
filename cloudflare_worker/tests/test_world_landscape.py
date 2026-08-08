@@ -247,6 +247,31 @@ def test_only_office_and_beach_switch_to_isolated_scenes():
     assert "syncEnclosureSceneVisibility();" in scene
 
 
+def test_office_floors_keep_the_campus_visible_through_the_curtain_wall():
+    """Only heavy, distant roots are dropped for the panoramic interior view."""
+
+    scene = source()
+    assert "const ENCLOSURE_EXTERIOR_TRIANGLE_LIMIT = 5000;" in scene
+    assert "const ENCLOSURE_EXTERIOR_KEEP_RADIUS = 200;" in scene
+    costly = scene[
+        scene.index("function enclosureExteriorIsCostly("):
+        scene.index("function syncEnclosureSceneVisibility(")
+    ]
+    assert (
+        "if (triangleWeight(root) <= ENCLOSURE_EXTERIOR_TRIANGLE_LIMIT) return false;"
+    ) in costly
+    assert "enclosureRootBounds.setFromObject(root);" in costly
+    assert "> ENCLOSURE_EXTERIOR_KEEP_RADIUS" in costly
+    isolation = scene.split("function syncEnclosureSceneVisibility", 1)[1].split(
+        "function compactDistrictDiagnostics", 1
+    )[0]
+    # The Beach stays a fully isolated scene; only the glass tower keeps Town.
+    assert 'const panoramic = next === "office";' in isolation
+    assert (
+        "if (panoramic && !enclosureExteriorIsCostly(root, roots[0])) return;"
+    ) in isolation
+
+
 def test_leaderboard_has_no_wall_or_door_collision_constraint():
     scene = source()
     assert "leaderboardDoorCrossingIsClear" not in scene

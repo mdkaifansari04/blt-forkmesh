@@ -100,6 +100,40 @@ const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
 // Avatar geometry is shared across users, while each person remains complete
 // and visible at every camera distance.
 const OFFICE_EXTERIOR_LOD_DISTANCE = 235;
+// Distance detail used to be all-or-nothing: past OFFICE_EXTERIOR_LOD_DISTANCE
+// the entire tower interior disappeared, so from anywhere else in Town the
+// Office read as an empty glass box. Keep the structure, floors, desks and
+// boards drawn at every range and drop only the individual props that are
+// heavy enough to be worth the missing view. Today that is the marine reef
+// (~16k triangles) and the mirrored logo fountain (~5.7k); every floor group
+// stays well below the limit.
+const OFFICE_DISTANT_PROP_TRIANGLE_LIMIT = 2500;
+// Standing on an Office floor you are still physically in Town, so the campus
+// keeps rendering behind the curtain wall instead of the panoramic glass
+// looking out onto an empty void. Only outdoor roots that are both heavy and
+// far enough away to be a few pixels of the view are dropped.
+const ENCLOSURE_EXTERIOR_TRIANGLE_LIMIT = 5000;
+const ENCLOSURE_EXTERIOR_KEEP_RADIUS = 200;
+
+// Triangle weight of a subtree, memoized because the level-of-detail callers
+// run inside the animation loop. Instanced draws count every copy.
+const objectTriangleWeights = new WeakMap();
+function triangleWeight(object) {
+  if (!object) return 0;
+  const cached = objectTriangleWeights.get(object);
+  if (cached !== undefined) return cached;
+  let total = 0;
+  object.traverse((child) => {
+    const geometry = child.isMesh ? child.geometry : null;
+    const position = geometry?.attributes?.position;
+    if (!position) return;
+    const vertices = geometry.index ? geometry.index.count : position.count;
+    total += (vertices / 3) * (child.isInstancedMesh ? child.count : 1);
+  });
+  const weight = Math.round(total);
+  objectTriangleWeights.set(object, weight);
+  return weight;
+}
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
@@ -19454,6 +19488,25 @@ export function createWorldScene({
     return [];
   }
 
+  const enclosureViewCenter = new THREE.Vector3();
+  const enclosureRootBounds = new THREE.Box3();
+  const enclosureRootCenter = new THREE.Vector3();
+  // A world root only earns its way out of the panoramic view by being both
+  // expensive and distant. Anything cheap, and anything close enough to be a
+  // real part of the view through the glass — the campus ground, the bridge,
+  // the tower's own curtain wall, the front garden — keeps rendering.
+  function enclosureExteriorIsCostly(root, sceneRoot) {
+    if (triangleWeight(root) <= ENCLOSURE_EXTERIOR_TRIANGLE_LIMIT) return false;
+    sceneRoot.getWorldPosition(enclosureViewCenter);
+    enclosureRootBounds.setFromObject(root);
+    if (enclosureRootBounds.isEmpty()) return false;
+    return (
+      enclosureRootBounds
+        .getCenter(enclosureRootCenter)
+        .distanceTo(enclosureViewCenter) > ENCLOSURE_EXTERIOR_KEEP_RADIUS
+    );
+  }
+
   function syncEnclosureSceneVisibility(force = false) {
     const next = beachSceneActive
       ? "beach"
@@ -19470,9 +19523,16 @@ export function createWorldScene({
     }
     beachScene.visible = beachSceneActive;
     if (!next) return next;
-    const keep = new Set([player, ...enclosureSceneRoots(next)]);
+    const roots = enclosureSceneRoots(next);
+    const keep = new Set([player, ...roots]);
+    // The Office tower is a glass building standing in Town, not a separate
+    // room: every floor looks out through a full-height curtain wall, so Town
+    // stays drawn around it and only the heavy distant roots are dropped. The
+    // Beach remains a fully isolated scene.
+    const panoramic = next === "office";
     world.children.forEach((root) => {
       if (keep.has(root)) return;
+      if (panoramic && !enclosureExteriorIsCostly(root, roots[0])) return;
       if (!enclosureHiddenWorldRoots.has(root)) {
         enclosureHiddenWorldRoots.set(root, root.visible);
       }
@@ -20430,6 +20490,7 @@ export function createWorldScene({
     // Exterior visibility is camera-LOD controlled so nearby visitors can see
     // furnished floors through the glass without paying for them at distance.
     floorGroup.visible = true;
+    floorGroup.userData.officeFloorGroup = true;
     officeInterior.add(floorGroup);
     officeFloorGroups.set(floor.id, floorGroup);
   });
@@ -23358,6 +23419,7 @@ export function createWorldScene({
   let nextSceneLodAt = 0;
   let nextShadowMapUpdateAt = 0;
   let farSceneDetail = null;
+  let officeDistantPropsCulled = false;
   let nextAvatarHighlightAt = 0;
   let nextProximityUpdateAt = 0;
   let nextScreenLabelUpdateAt = 0;
@@ -23489,15 +23551,48 @@ export function createWorldScene({
     world.userData.officeExteriorDetailLevel = exteriorDetailed
       ? "furnished"
       : "shell";
+    // A desktop GPU keeps every story of the tower populated from anywhere in
+    // Town and pays for it by culling the few heavy props below. Compact
+    // renderers still page the whole interior out beyond their own boundary.
+    const interiorDrawn =
+      officeSceneMode !== "town" || exteriorDetailed || !compactRenderer;
+    world.userData.officeInteriorDrawn = interiorDrawn;
     // Story changes are independent of camera zoom. A doorway warp and an
     // elevator arrival must still expose the selected floor immediately.
-    officeInterior.visible = officeSceneMode !== "town" || exteriorDetailed;
+    officeInterior.visible = interiorDrawn;
     for (const [floorId, floorGroup] of officeFloorGroups) {
       if (floorId === "lobby") continue;
       floorGroup.visible = officeSceneMode === "town"
-        ? exteriorDetailed
+        ? interiorDrawn
         : floorId === officeCurrentFloorId;
     }
+    syncOfficeDistantPropDetail(officeSceneMode === "town" && !exteriorDetailed);
+  }
+
+  // Only the props whose own triangle weight dominates the interior drop out
+  // at distance. Their pre-cull visibility is parked exactly like the mirror
+  // yard's cabinets so a prop that was already hidden — the meeting-mode lobby
+  // avatar, an element an administrator switched off — stays hidden when the
+  // camera comes back.
+  function syncOfficeDistantPropDetail(culled) {
+    if (culled === officeDistantPropsCulled) return;
+    officeDistantPropsCulled = culled;
+    world.userData.officeDistantPropsCulled = culled;
+    officeInterior.children.forEach((prop) => {
+      // Floor groups own their own story visibility; the weight pass must
+      // never race the elevator for them.
+      if (prop.userData?.officeFloorGroup === true) return;
+      if (triangleWeight(prop) <= OFFICE_DISTANT_PROP_TRIANGLE_LIMIT) return;
+      if (culled) {
+        if (Object.hasOwn(prop.userData, "officeLodVisible")) return;
+        prop.userData.officeLodVisible = prop.visible;
+        prop.visible = false;
+        return;
+      }
+      if (!Object.hasOwn(prop.userData, "officeLodVisible")) return;
+      prop.visible = prop.userData.officeLodVisible;
+      delete prop.userData.officeLodVisible;
+    });
   }
 
   function updateSceneLevelOfDetail(force = false) {
