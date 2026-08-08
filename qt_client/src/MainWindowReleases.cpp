@@ -1258,6 +1258,13 @@ QWidget *MainWindow::buildMirrorNodesTab()
                                      Qt::AscendingOrder); // source of truth first
     QHeaderView *mh = m_mirrorNodesTable->horizontalHeader();
     mh->setHighlightSections(false);
+    // Let a content-fitted column shrink to just its 14px header icon or short
+    // cell text: Qt's default minimum section size (~30px, style-derived) floors
+    // every one of these ~29 columns wider than its data, which is what left the
+    // table too wide to see the whole fleet at once. A tight floor keeps the
+    // icon-only / small-count columns compact while ResizeToContents still grows
+    // the ones with real text (commit, message, node id).
+    mh->setMinimumSectionSize(22);
     mh->setSectionResizeMode(MirrorNodeColNode, QHeaderView::Stretch);
     mh->setSectionResizeMode(MirrorNodeColSync, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColOwner, QHeaderView::ResizeToContents);
