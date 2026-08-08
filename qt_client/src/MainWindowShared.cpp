@@ -984,13 +984,37 @@ QString diffStickyStyleSheet(int fontPt)
         .arg(qBound(8, fontPt, 28));
 }
 
+// Every sticky filename bar shares the same one-line contract: rich text never
+// wraps, and the path label may be clipped by the layout instead of widening the
+// bar past the viewport (which pushed the Viewed button out of reach).
+void configureDiffStickyPathLabel(QLabel *label)
+{
+    if (!label)
+        return;
+    label->setWordWrap(false);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+}
+
+// The sticky filename bar is one line and stays one line, so a path too long for
+// it has to be shortened rather than left to wrap the bar open or push the Viewed
+// button off its right edge. Keep the tail — the basename is what identifies the
+// file — behind a leading ellipsis. The label carries the full path as a tooltip.
+QString diffStickyPathText(const QString &path)
+{
+    constexpr int kMaxChars = 72;
+    if (path.size() <= kMaxChars)
+        return path;
+    return QString::fromUtf8("\xE2\x80\xA6") + path.right(kMaxChars - 1);
+}
+
 // Render a path with the directory dimmed and the basename bold, matching the
 // diff's .fdir / .fname spans.
-QString diffStickyPathHtml(const QString &path)
+QString diffStickyPathHtml(const QString &fullPath)
 {
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
     const QString dirFg = dark ? QStringLiteral("#8b949e") : QStringLiteral("#6e7781");
     const QString nameFg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    const QString path = diffStickyPathText(fullPath);
     const int slash = path.lastIndexOf(QLatin1Char('/'));
     if (slash >= 0)
         return QStringLiteral("<span style='color:%1'>%2</span>"
@@ -1379,29 +1403,29 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
                                 "<span class='sdel'>\xE2\x88\x92%2</span> %3</span>")
                   .arg(QString::number(f.adds), QString::number(f.dels), bar);
 
-    // Second header line: what happened to the file in words, plus the totals
-    // the +/- pair alone leaves you to add up. The status used to be a tooltip
-    // on the octicon, which is invisible while scanning a long diff (adhoc #223).
+    // What happened to the file, in words, on the *same* line as the path. It
+    // used to sit on a second line under it (adhoc #223), which made the header
+    // two rows tall — and the one-line sticky bar that replaces it while
+    // scrolling a different height again. The status word still has to be
+    // visible rather than a tooltip on the octicon, so it rides along inline;
+    // the change total is dropped because +adds/−dels already says it.
     QString metaHtml = QStringLiteral("<span class='fkind %1'>%2</span>")
                            .arg(f.status, word.toUpper());
-    if (!f.binary) {
-        metaHtml += QString::fromUtf8("<span class='fmeta'> \xC2\xB7 %1 changed "
-                                      "line%2</span>")
-                        .arg(QString::number(total),
-                             total == 1 ? QString() : QStringLiteral("s"));
-    } else {
+    if (f.binary)
         metaHtml += QString::fromUtf8("<span class='fmeta'> \xC2\xB7 binary</span>");
-    }
     if (viewed)
         metaHtml += QString::fromUtf8("<span class='fmeta'> \xC2\xB7 collapsed</span>");
 
+    // One row, one line: the path cell is nowrap (see .fileheader) so a long
+    // path clips against the right-hand controls instead of folding the header
+    // open to a second line.
     return QString::fromUtf8(
                "<a name=\"%1\"></a><div class='fileblock%6'>"
                "<div class='fileheader'>"
                "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-               "<td>%2<span class='fpath'>%3</span>%4<br>"
-               "<span class='fmetaline'>%8</span></td>"
-               "<td align='right'>%5%7</td></tr></table></div>")
+               "<td class='fpathcell'>%2<span class='fpath'>%3</span>%4"
+               "&nbsp;&nbsp;<span class='fmetaline'>%8</span></td>"
+               "<td align='right' class='fctlcell'>%5%7</td></tr></table></div>")
         .arg(f.anchor, badge, pathHtml, statHtml, commentIcon,
              viewed ? QStringLiteral(" viewed") : QString(), viewedLink, metaHtml);
 }
@@ -1428,16 +1452,17 @@ QString diffStickyLabelHtml(const DiffFileEntry &f)
     const QString fg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
 
     QString pathHtml;
-    const int slash = f.path.lastIndexOf(QLatin1Char('/'));
+    const QString shown = diffStickyPathText(f.path);
+    const int slash = shown.lastIndexOf(QLatin1Char('/'));
     if (slash >= 0)
         pathHtml = QStringLiteral(
                        "<span style='color:%1'>%2</span>"
                        "<span style='color:%3;font-weight:600'>%4</span>")
-                       .arg(muted, f.path.left(slash + 1).toHtmlEscaped(), fg,
-                            f.path.mid(slash + 1).toHtmlEscaped());
+                       .arg(muted, shown.left(slash + 1).toHtmlEscaped(), fg,
+                            shown.mid(slash + 1).toHtmlEscaped());
     else
         pathHtml = QStringLiteral("<span style='color:%1;font-weight:600'>%2</span>")
-                       .arg(fg, f.path.toHtmlEscaped());
+                       .arg(fg, shown.toHtmlEscaped());
 
     const QString statHtml =
         f.binary
@@ -1448,11 +1473,15 @@ QString diffStickyLabelHtml(const DiffFileEntry &f)
                   .arg(QString::number(f.adds), QString::number(f.dels));
 
     const QString badge = octiconMarkup(icon, 14, QColor(tint));
-    return QStringLiteral("<span title='%1' style='font-family:monospace;"
+    // The tooltip is its own placeholder (%6) rather than reusing the status
+    // word: the path shown above may be elided, so hovering has to be able to
+    // give the whole thing back.
+    return QStringLiteral("<span title='%6' style='font-family:monospace;"
                           "font-size:12px'><span style='color:%2'>%3</span> "
                           "<span style='color:%2;font-weight:700'>%1</span> "
                           "&nbsp;%4 &nbsp;%5</span>")
-        .arg(word, tint, badge, pathHtml, statHtml);
+        .arg(word, tint, badge, pathHtml, statHtml,
+             QString::fromUtf8("%1 \xC2\xB7 %2").arg(word, f.path.toHtmlEscaped()));
 }
 
 QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
@@ -1916,10 +1945,15 @@ void setDiffSplitPref(bool split)
 // Defaults off, matching GitHub's same-named setting.
 bool autoMarkViewedOnScrollPref()
 {
-    // On by default (adhoc #56): reaching a file's bottom while scrolling
-    // auto-checks its Viewed box — the behaviour the sticky header's Pac-Man
-    // chart visualises. The eye toggle in the Files header opts out.
-    return QSettings().value(QStringLiteral("view/autoMarkViewedOnScroll"), true).toBool();
+    // Off by default: scrolling no longer checks files off behind the reviewer's
+    // back (it collapsed files that had merely flown past, and the re-render it
+    // triggered moved the diff underneath them). Viewed is a deliberate click on
+    // the sticky header now; the sticky header's Pac-Man chart still shows how
+    // much of the file has gone by. The eye toggle in the working-tree Changes
+    // header opts back in.
+    return QSettings()
+        .value(QStringLiteral("view/autoMarkViewedOnScroll"), false)
+        .toBool();
 }
 void setAutoMarkViewedOnScrollPref(bool on)
 {
@@ -2049,8 +2083,11 @@ QString diffStyleSheet(int fontPt)
                ".fdir { color:%2; }"
                ".fname { font-weight:700; color:%8; font-size:14px; }"
                ".fstat { color:%2; font-size:12px; }"
-               // Second header line: status word + change total (adhoc #223).
+               // Status word, inline after the stats. The header is exactly one
+               // line: both cells are nowrap so nothing folds it open to two.
                ".fmetaline { font-size:11px; line-height:1.35; }"
+               "td.fpathcell { white-space:nowrap; }"
+               "td.fctlcell { white-space:nowrap; }"
                ".fkind { font-weight:700; letter-spacing:1px; color:%2; }"
                ".fkind.added { color:#3fb950; }"
                ".fkind.deleted { color:#f85149; }"

@@ -1815,6 +1815,7 @@ void MainWindow::setupScmDiffPane()
     m_scmStickyPath = new QLabel(m_scmStickyHeader);
     m_scmStickyPath->setTextFormat(Qt::RichText);
     m_scmStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
+    configureDiffStickyPathLabel(m_scmStickyPath);
     sl->addWidget(m_scmStickyPath, 1);
     m_scmStickyPacman = new PacmanProgress(m_scmStickyHeader);
     m_scmStickyPacman->setToolTip(
@@ -1833,7 +1834,18 @@ void MainWindow::setupScmDiffPane()
             return;
         const QString path = m_scmSectionPaths.at(idx);
         const QString ctx = scmViewedContext();
-        setDiffViewed(ctx, path, !loadDiffViewed(ctx).contains(path));
+        const bool nowViewed = !loadDiffViewed(ctx).contains(path);
+        // Checking a file off advances to the next one, so its Viewed button
+        // arrives under the pointer that just clicked this one and the whole
+        // working tree can be walked from a single spot. Un-viewing stays here.
+        // Resolve the landing file now: the re-render below rebuilds the section
+        // lists, so an index kept across it could name a different file.
+        const int landing =
+            nowViewed && idx + 1 < m_scmSectionKeys.size() ? idx + 1 : idx;
+        const QString landingPath = m_scmSectionPaths.at(landing);
+        const bool landingStaged =
+            m_scmSectionKeys.at(landing).startsWith(QLatin1String("s|"));
+        setDiffViewed(ctx, path, nowViewed);
         // Give the completed whole-button checkbox a quick, restrained fade-in
         // so the state change is noticeable without shifting the header.
         auto *effect = new QGraphicsOpacityEffect(m_scmStickyViewed);
@@ -1859,8 +1871,7 @@ void MainWindow::setupScmDiffPane()
                 });
         animation->start(QAbstractAnimation::DeleteWhenStopped);
         renderScmCombinedDiff();
-        scrollScmDiffToFile(path, m_scmSectionKeys.at(idx).startsWith(
-                                      QLatin1String("s|")));
+        scrollScmDiffToFile(landingPath, landingStaged);
     });
     sl->addWidget(m_scmStickyViewed, 0);
     m_scmStickyHeader->hide();
@@ -2261,7 +2272,10 @@ void MainWindow::updateScmDiffScrollState()
     const bool isViewed = loadDiffViewed(scmViewedContext()).contains(path);
     if (key != m_scmStickySection) {
         m_scmStickySection = key;
-        m_scmStickyPath->setText(m_scmStickyLabelHtml.value(key));
+        m_scmStickyPath->setText(m_scmStickyLabelHtml.contains(key)
+                                     ? m_scmStickyLabelHtml.value(key)
+                                     : diffStickyPathHtml(path));
+        m_scmStickyPath->setToolTip(path); // the bar may elide a long path
         selectScmFileInTree(path, key.startsWith(QLatin1String("s|")));
     }
     // The tree's green stroke follows the scroll here (selectScmFileInTree), so
@@ -2338,6 +2352,10 @@ static ScmAutoViewedDelta scmAutoViewedDelta(
 void MainWindow::applyScmAutoMarkViewedOnScroll()
 {
     if (!m_scmDiff || m_scmSectionKeys.isEmpty())
+        return;
+    // Off unless the Changes header's eye toggle opts back in: by default the
+    // viewed set only moves when the reviewer clicks Viewed.
+    if (!autoMarkViewedOnScrollPref())
         return;
     QScrollBar *vbar = m_scmDiff->verticalScrollBar();
     if (!vbar)

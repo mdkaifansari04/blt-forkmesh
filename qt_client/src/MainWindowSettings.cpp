@@ -5659,6 +5659,22 @@ static int topMessageSecondsFor(const QString &kind, bool error)
     return error ? kToastErrorSeconds : kToastSuccessSeconds;
 }
 
+// The agent behind an "agent finished" card, recovered from the card's own
+// click target. Kept as a free function on (kind, href) rather than reading the
+// active toast's members so a card still waiting in the queue can name its
+// agent too — the queue carries nothing else about the run.
+static int agentDoneSessionIdFor(const QString &kind, const QString &href)
+{
+    if (kind != kAgentDoneToastKind)
+        return -1;
+    const QString prefix = QStringLiteral("fm:agent:");
+    if (!href.startsWith(prefix))
+        return -1;
+    bool ok = false;
+    const int id = href.mid(prefix.size()).toInt(&ok);
+    return ok ? id : -1;
+}
+
 void setTopMessageAction(QPushButton *button, int agentSessionId)
 {
     if (!button)
@@ -5796,15 +5812,28 @@ void MainWindow::renderTopMessageQueue()
         });
         actionRow->addWidget(copy);
 
-        auto *sendToPrompt = new QPushButton(QStringLiteral("Send to prompt"), actions);
+        // A finished run's card offers the run itself rather than the prompt
+        // composer, exactly like the active toast does — a celebration waiting
+        // its turn is still the result the user has been waiting on, and the
+        // click should land in the transcript without waiting for the countdown.
+        const int queuedSessionId =
+            agentDoneSessionIdFor(entry.kind, entry.clickHref);
+        auto *sendToPrompt = new QPushButton(actions);
         sendToPrompt->setObjectName("topMessageAction");
         sendToPrompt->setCursor(Qt::PointingHandCursor);
-        sendToPrompt->setToolTip(
-            QStringLiteral("Add this notification to the footer prompt"));
         sendToPrompt->setFocusPolicy(Qt::NoFocus);
-        setOcticon(sendToPrompt, "paper-airplane", 11);
+        setTopMessageAction(sendToPrompt, queuedSessionId);
         connect(sendToPrompt, &QPushButton::clicked, this,
-                [this, text = entry.text] { appendTopMessageToPrompt(text); });
+                [this, text = entry.text, id = entry.id, queuedSessionId] {
+                    if (queuedSessionId > 0) {
+                        // Opening the agent answers the card, so retire it
+                        // instead of leaving it queued behind the transcript.
+                        dismissQueuedTopMessage(id);
+                        switchToAgentsTab(queuedSessionId);
+                        return;
+                    }
+                    appendTopMessageToPrompt(text);
+                });
         actionRow->addWidget(sendToPrompt);
 
         auto *close = new QPushButton(actions);
@@ -5880,14 +5909,7 @@ bool MainWindow::topMessageBusy() const
 // recovers the agent from that alone.
 int MainWindow::topMessageAgentDoneSessionId() const
 {
-    if (m_topMessageKind != kAgentDoneToastKind)
-        return -1;
-    const QString prefix = QStringLiteral("fm:agent:");
-    if (!m_topMessageHref.startsWith(prefix))
-        return -1;
-    bool ok = false;
-    const int id = m_topMessageHref.mid(prefix.size()).toInt(&ok);
-    return ok ? id : -1;
+    return agentDoneSessionIdFor(m_topMessageKind, m_topMessageHref);
 }
 
 // The headline over a finished run's summary: whose run it was, and the figures
