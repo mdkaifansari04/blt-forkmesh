@@ -91,6 +91,33 @@ def test_restart_restores_log_and_resumes_from_each_safe_boundary():
     assert "createVultrMirrorFromForm()" in resume
 
 
+def test_restored_retry_blocks_autoscaling_before_and_after_catalog_reply():
+    restore = _slice(
+        CHAT,
+        "void MainWindow::restoreVultrProvision()",
+        "void MainWindow::resumeVultrProvision()",
+    )
+    assert (
+        'm_vultrProvisionState == QLatin1String("active") || failed'
+        in restore
+    )
+
+    reconcile = _slice(
+        CHAT,
+        "void MainWindow::reconcileDesiredMirrorFleet()",
+        "void MainWindow::destroyDesiredMirrorFleetNode(",
+    )
+    guard = "vultrProvisionBlocksFleetReconciliation("
+    assert reconcile.count(guard) == 2
+    first_guard = reconcile.index(guard)
+    request = reconcile.index("m_networkAccess->get(request)")
+    reply = reconcile.index("QNetworkReply::finished")
+    second_guard = reconcile.index(guard, first_guard + len(guard))
+    create = reconcile.index("createVultrMirrorFromForm()")
+    assert first_guard < request
+    assert reply < second_guard < create
+
+
 def test_restart_cannot_duplicate_a_billable_instance():
     lookup = _slice(
         CHAT,

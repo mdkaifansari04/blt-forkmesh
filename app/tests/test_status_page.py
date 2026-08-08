@@ -563,16 +563,24 @@ def test_room_do_fetch_is_retried_once_on_a_transient_abort():
 
 
 def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
-    # Source contract for the scheduled() handler: the two once-a-minute
+    # Source contract for the alarm runner: the two once-a-minute
     # samples must run unconditionally (and first, so a tick that dies later
     # has already landed its data point), while every other job sits behind a
     # minute-modulo gate. Running everything every minute is what blew the
     # invocation's resource limits and showed as downtime on /status.
-    scheduled = ENTRY_TEXT.split("async def scheduled", 1)[1] \
-        .split("async def fetch", 1)[0]
-    sample_at = scheduled.index("await record_status_sample")
-    online_at = scheduled.index("await record_online_sample")
-    first_gate_at = scheduled.index("if minute % ")
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    default = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Default"
+    )
+    jobs = ast.unparse(next(
+        node for node in default.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_run_scheduled_jobs"
+    ))
+    sample_at = jobs.index("await record_status_sample")
+    online_at = jobs.index("await record_online_sample")
+    first_gate_at = jobs.index("if minute % ")
     assert online_at < first_gate_at
     assert sample_at < first_gate_at
     # The /status sample runs before the heavier online sample, so a tick
@@ -582,11 +590,11 @@ def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
                 "send_notification_digests", "purge_stale_registered_nodes",
                 "purge_blocked_catalog", "_distribute_central_fund",
                 "chat_history_prune_expired"):
-        job_at = scheduled.index(job + "(")
-        gate = scheduled.rindex("if minute % ", 0, job_at)
+        job_at = jobs.index(job + "(")
+        gate = jobs.rindex("if minute % ", 0, job_at)
         # The nearest preceding modulo gate must belong to this job's block —
         # i.e. no other job call sits between the gate and this call.
-        between = scheduled[gate:job_at]
+        between = jobs[gate:job_at]
         assert not any(other + "(" in between for other in (
             "verify_submitted_chain_intents", "_federation_cron",
             "send_notification_digests", "purge_stale_registered_nodes",
@@ -1078,10 +1086,9 @@ def test_record_status_sample_writes_one_minute_row_per_system():
 
 
 def test_one_sampler_records_each_minute_via_the_claim_row():
-    # The platform Cron Trigger and the ForkMeshCronRunner alarm both call
-    # record_status_sample every minute. The claim row must let exactly one
-    # of them record the minute — the daily/hourly rollups are checks-counter
-    # increments, so a second recording would inflate the hour's coverage.
+    # Replayed alarm delivery can call record_status_sample more than once for
+    # a minute. The claim row must let exactly one attempt record it because
+    # the daily/hourly rollups are checks-counter increments.
     extra, inserted, hourly, minutely = _sample_env(_Clock.value, [])
     claims = {}
     base_d1_run = extra["d1_run"]

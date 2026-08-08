@@ -51,9 +51,10 @@ The hosted edge is split by responsibility so a busy 3D scene, documentation
 crawl, or API burst cannot consume the same deployment and isolate budget.
 
 ```text
-forkmesh.com / www.forkmesh.com  →  www    landing, marketing, docs, blog
-app.forkmesh.com                 →  app    Git UI + REST, WebSockets, routing
-world.forkmesh.com               →  world  optional interactive 3D network
+forkmesh.com / www.forkmesh.com  →  www          landing, marketing, docs, blog
+app.forkmesh.com                 →  edge control health, version, mirror identity
+                                      └→ app     Git UI + REST, WebSockets, routing
+world.forkmesh.com               →  world        optional interactive 3D network
                                               │
                                               ▼
                                    independent server mirrors
@@ -66,11 +67,20 @@ preflights, CSRF checks, and WebSocket upgrades use the same origin policy.
 Each Cloudflare unit has its own deploy action and input fingerprint, so a
 change deploys only the workers it can affect.
 
+The App deploy action also publishes its small JavaScript control plane. That
+script handles runtime-independent health and mirror bootstrap routes and owns
+the minute trigger; the existing App-owned Durable Object performs the actual
+maintenance work in the Python/Pyodide Worker. The bootstrapper configures
+both scripts automatically, so a self-host still has one App hostname and one
+App deployment target.
+
 The combined app is also the self-hosting unit. Deploy it at an address such as
 `forkmesh.example.com` to get the complete Git, account, API, realtime, and
 routing surface. A World deployment at `forkmesh-world.example.com` is
 optional; ForkMesh does not require operators to reproduce the public
-marketing site or maintain a second backend domain.
+marketing site or maintain a second backend domain. The Python App requires a
+Cloudflare Workers Paid account: its normal authenticated and repository paths
+exceed the free plan's 10 ms CPU ceiling even after build-time compaction.
 
 The API stores discovery, authorization, collaboration, and health metadata in
 Cloudflare D1, KV, and Durable Objects. It does not retain Git packfiles. Clone
@@ -127,6 +137,9 @@ cd app
 
 Production credentials belong in the ignored, responsibility-scoped
 environment files described by the deployment guide. Never commit them.
+Routine `./deploy.sh secrets` calls preserve the live mirror-router identity;
+an intentional trust-root change uses `./deploy.sh rotate-mirror-router`, which
+validates the local Ed25519 pair and rotates it through a fail-closed edge state.
 
 ## Repository layout
 

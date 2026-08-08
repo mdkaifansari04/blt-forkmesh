@@ -122,6 +122,8 @@ QString completeWorkerBundle(const QString &scriptPath)
         QStringLiteral("pyproject.toml"),
         QStringLiteral("tools/build_dashboard_assets.py"),
         QStringLiteral("src/entry.py"),
+        QStringLiteral("edge-control/worker.js"),
+        QStringLiteral("edge-control/wrangler.toml"),
     };
     const QDir worker(root.absoluteFilePath(QStringLiteral("app")));
     for (const QString &file : files) {
@@ -2814,6 +2816,16 @@ bool mirrorCatalogEntryIsHealthy(const QJsonObject &mirror)
            mirror.value(QStringLiteral("cloneAvailable")).toBool() &&
            mirror.value(QStringLiteral("endpointHealthy")).toBool() &&
            mirror.value(QStringLiteral("endpointFresh")).toBool();
+}
+
+bool vultrProvisionBlocksFleetReconciliation(bool provisionActive,
+                                              bool resumeRequested,
+                                              const QString &checkpointState)
+{
+    const QString state = checkpointState.trimmed().toLower();
+    return provisionActive || resumeRequested ||
+           state == QLatin1String("active") ||
+           state == QLatin1String("failed");
 }
 
 MirrorFleetReconcilePlan planMirrorFleetReconciliation(

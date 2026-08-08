@@ -111,7 +111,7 @@ tick is the same never-spoken-account problem as desktop #4.
 
 | # | Poller | Notes |
 | --- | --- | --- |
-| 19 | Relay cron `* * * * *` (`wrangler.toml`) | scheduled work, not client polling; audit which jobs could be event-triggered from the write path instead |
+| 19 | App control cron `* * * * *` (`app/edge-control/wrangler.toml`) | JavaScript scheduled ingress kicks the App-owned alarm runner; audit which jobs could be event-triggered from the write path instead |
 
 Already event-driven: the SSH post-receive refresh path
 (`server/packaging/systemd/forkmesh-mirror-refresh.path` is an inotify path unit;

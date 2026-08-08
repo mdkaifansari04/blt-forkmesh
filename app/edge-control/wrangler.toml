@@ -1,0 +1,61 @@
+name = "forkmesh-edge-control"
+main = "worker.js"
+compatibility_date = "2026-08-03"
+workers_dev = false
+
+[vars]
+NODE_NAME = "forkmesh-mainnode"
+NODE_SOLANA_ADDRESS = ""
+PUBLIC_BASE_URL = "https://forkmesh.com"
+API_ORIGIN = "https://app.forkmesh.com"
+APP_ORIGIN = "https://app.forkmesh.com"
+WWW_ORIGIN = "https://www.forkmesh.com"
+WORLD_ORIGIN = "https://world.forkmesh.com"
+CORS_ALLOWED_ORIGINS = "https://forkmesh.com,https://www.forkmesh.com,https://app.forkmesh.com,https://api.forkmesh.com,https://world.forkmesh.com"
+WORKER_ROLE = "app"
+SINGLE_WORKER_SITE = "false"
+
+[[services]]
+binding = "APP"
+service = "forkmesh-relay"
+
+[triggers]
+crons = ["* * * * *"]
+
+[[durable_objects.bindings]]
+name = "FORKMESH_CRON_RUNNER"
+class_name = "ForkMeshCronRunner"
+script_name = "forkmesh-relay"
+
+[[routes]]
+pattern = "app.forkmesh.com/api/version*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "app.forkmesh.com/health*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "app.forkmesh.com/api/mirrors/https*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "api.forkmesh.com/health*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "api.forkmesh.com/api/version*"
+zone_name = "forkmesh.com"
+
+[[routes]]
+pattern = "api.forkmesh.com/api/mirrors/https*"
+zone_name = "forkmesh.com"
+
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1.0
+invocation_logs = false

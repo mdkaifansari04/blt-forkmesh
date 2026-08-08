@@ -298,11 +298,19 @@ def test_status_alert_mail_is_off_until_a_repo_admin_enables_it():
 
 
 def test_cron_runtime_and_durable_object_are_wired():
-    scheduled = ENTRY_TEXT.split("async def scheduled", 1)[1] \
-        .split("async def fetch", 1)[0]
-    assert "await _cron_watchdog_completion(self.env)" in scheduled
-    assert scheduled.index("await _cron_watchdog_completion") > \
-        scheduled.index("await _send_feedback_emails")
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    default = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Default"
+    )
+    jobs = ast.unparse(next(
+        node for node in default.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_run_scheduled_jobs"
+    ))
+    assert "await _cron_watchdog_completion(self.env)" in jobs
+    assert jobs.index("await _cron_watchdog_completion") > \
+        jobs.index("await _send_feedback_emails")
     assert 'compatibility_date = "2026-08-03"' in WRANGLER_TEXT
     assert 'name = "FORKMESH_CRON_WATCHDOG"' in WRANGLER_TEXT
     assert 'class_name = "ForkMeshCronWatchdog"' in WRANGLER_TEXT

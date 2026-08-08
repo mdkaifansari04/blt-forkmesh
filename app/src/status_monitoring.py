@@ -1,8 +1,8 @@
 """On-demand /status page sampler and history projection.
 
 Cloudflare validates a Python Worker by compiling and executing its
-entrypoint under the isolate memory limit.  The minute sampler runs from the
-Cron Trigger / ForkMeshCronRunner alarm and the history projection only
+entrypoint under the isolate memory limit. The minute sampler runs from the
+ForkMeshCronRunner alarm and the history projection only
 serves the /status page, so entry.py loads this module on first use instead
 of spending scarce Pyodide startup memory on every isolate.
 """

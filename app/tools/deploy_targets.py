@@ -32,6 +32,7 @@ def _iter_tree(relative):
 def target_inputs(target):
     if target == "app":
         return (
+            "app/edge-control",
             "app/wrangler.toml",
             "app/migrations",
             "app/public",

@@ -658,15 +658,13 @@ SCHEMA_STATEMENTS = [
         ok INTEGER NOT NULL DEFAULT 1, reason TEXT,
         PRIMARY KEY (minute_ts, system))""",
     "CREATE INDEX IF NOT EXISTS idx_system_status_minute_ts ON system_status_minute(minute_ts)",
-    # At-most-once ownership of each minute's status sample. Two independent
-    # schedulers may call record_status_sample for the same minute — the
-    # platform Cron Trigger directly (so /status keeps its samples even while
-    # Durable Objects are failing) and the ForkMeshCronRunner alarm batch.
-    # The daily/hourly rollups are checks-counter increments, so whichever
-    # caller INSERTs this minute's row first owns the sample; the loser skips
-    # it instead of double-counting the hour. `claim` is a random token the
-    # winner reads back to recognize itself (D1's Python client exposes no
-    # reliable changes() count). Pruned alongside system_status_minute.
+    # At-most-once ownership of each minute's status sample. Replayed alarm
+    # delivery may call record_status_sample again for the same minute. The
+    # daily/hourly rollups are checks-counter increments, so whichever attempt
+    # INSERTs this minute's row first owns the sample; later attempts skip it
+    # instead of double-counting the hour. `claim` is a random token the winner
+    # reads back to recognize itself (D1's Python client exposes no reliable
+    # changes() count). Pruned alongside system_status_minute.
     """CREATE TABLE IF NOT EXISTS system_status_sample_claim (
         minute_ts INTEGER PRIMARY KEY, claim TEXT NOT NULL,
         claimed_at INTEGER NOT NULL)""",

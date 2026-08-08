@@ -1662,6 +1662,9 @@ int main(int argc, char *argv[])
         qCritical("FAIL: could not create temporary data directory");
         return 1;
     }
+    qputenv("CLAUDE_CONFIG_DIR",
+            QDir(dataDir.path()).filePath(QStringLiteral("claude-config"))
+                .toUtf8());
     struct AppDataCleanup {
         QString path;
         ~AppDataCleanup()
@@ -2077,6 +2080,22 @@ int main(int argc, char *argv[])
             QString::fromUtf8(
                 QJsonDocument(managedHostFixture).toJson(
                     QJsonDocument::Compact)));
+        const QJsonObject resumableProvision{
+            {QStringLiteral("version"), 1},
+            {QStringLiteral("state"), QStringLiteral("failed")},
+            {QStringLiteral("stage"), 5},
+            {QStringLiteral("node"), QStringLiteral("mirror7")},
+            {QStringLiteral("instanceId"),
+             QStringLiteral("1f2e3d4c-5b6a-4798-8899-aabbccddeeff")},
+            {QStringLiteral("ip"), QStringLiteral("203.0.113.7")},
+            {QStringLiteral("identityFile"),
+             QStringLiteral("/tmp/forkmesh-test-key")},
+        };
+        settings.setValue(
+            QStringLiteral("hosts/vultrProvision/v1"),
+            QString::fromUtf8(
+                QJsonDocument(resumableProvision).toJson(
+                    QJsonDocument::Compact)));
         window.testShowHostsSection();
         QApplication::processEvents();
         QCheckBox *enabled = window.findChild<QCheckBox *>(
@@ -2121,9 +2140,13 @@ int main(int argc, char *argv[])
                   fleetCountdown && fleetCountdown->isActive() &&
                   fleetCountdown->interval() == 1000 && status &&
                   status->text().contains(
+                      QStringLiteral("waiting for the current deployment")) &&
+                  status->text().contains(QStringLiteral("retried")) &&
+                  status->text().contains(
                       QStringLiteral("next healthy-node check in 5:00")),
               QStringLiteral(
-                  "enabling automation arms a five-minute healthy-node check with a visible countdown"));
+                  "a restored failed deployment blocks replacement while the "
+                  "five-minute fleet countdown remains visible"));
         if (enabled)
             enabled->setChecked(false);
         QApplication::processEvents();
@@ -2138,6 +2161,7 @@ int main(int argc, char *argv[])
         settings.remove(QStringLiteral("hosts/list"));
         settings.remove(QStringLiteral("hosts/healthyMirrorFleet/enabled"));
         settings.remove(QStringLiteral("hosts/healthyMirrorFleet/desired"));
+        settings.remove(QStringLiteral("hosts/vultrProvision/v1"));
         stopChildProcesses(window);
         return failures == 0 ? 0 : 1;
     }
@@ -2755,6 +2779,24 @@ int main(int argc, char *argv[])
                   !mirrorCommand.contains(QStringLiteral("install.sh")),
               QStringLiteral(
                   "Vultr uses one native Go mirror package without the desktop installer"));
+        check(mirrorCommand.contains(QStringLiteral(
+                  "router_key=\"$(printf '%s' \"$router_json\"")) &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "printf '%s' \"$router_key\" | grep -Eq")) &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "link_code=\"$((1000000 + link_number % 1000000))\"; "
+                      "link_code=\"${link_code#1}\"")) &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "printf 'FORKMESH LINK CODE: %s\\n' \"$link_code\"")) &&
+                  !mirrorCommand.contains(QStringLiteral("printf '%%s'")) &&
+                  !mirrorCommand.contains(QStringLiteral("printf '%%06d'")) &&
+                  !mirrorCommand.contains(QStringLiteral(
+                      "link_number %% 1000000")) &&
+                  !mirrorCommand.contains(QStringLiteral(
+                      "mirror17.forkmesh.com'd")),
+              QStringLiteral(
+                  "rendered Vultr command preserves router JSON and emits a "
+                  "six-digit link code without QString placeholder leakage"));
         QProcess mirrorSyntax;
         mirrorSyntax.start(QStringLiteral("bash"),
                            {QStringLiteral("-n"), QStringLiteral("-c"),
@@ -7182,14 +7224,8 @@ int main(int argc, char *argv[])
         }
         check(rankedLabels == QStringList({QStringLiteral("Auto"),
                                            QStringLiteral("Fable 5"),
-                                           QStringLiteral("Opus 5"),
-                                           QStringLiteral("Sonnet 5"),
                                            QStringLiteral("Opus 4.8"),
-                                           QStringLiteral("Opus 4.7"),
-                                           QStringLiteral("Opus 4.6"),
-                                           QStringLiteral("Opus 4.5"),
                                            QStringLiteral("Sonnet 4.6"),
-                                           QStringLiteral("Sonnet 4.5"),
                                            QStringLiteral("Haiku 4.5"),
                                            QStringLiteral("GPT-5.5"),
                                            QStringLiteral("GPT-5.4"),

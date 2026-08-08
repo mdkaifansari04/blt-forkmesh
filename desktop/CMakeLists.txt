@@ -535,6 +535,16 @@ else()
         "${CMAKE_INSTALL_DATADIR}/forkmesh")
     install(TARGETS forkmesh RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endif()
+# The installed Cloudflare bootstrap bundle does not include this CMake file,
+# but it must stamp the same exact product version as the desktop release that
+# launched it.  Generate a tiny public metadata file instead of passing release
+# identity (or any secret) through the child process.
+set(FORKMESH_VERSION_METADATA
+    "${CMAKE_CURRENT_BINARY_DIR}/forkmesh-version.txt")
+file(GENERATE OUTPUT "${FORKMESH_VERSION_METADATA}"
+    CONTENT "${FORKMESH_VERSION}\n")
+install(FILES "${FORKMESH_VERSION_METADATA}"
+    DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}")
 install(PROGRAMS
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/cloudflare_bootstrap.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/cloudflare_tunnel_bootstrap.py"
@@ -565,9 +575,13 @@ install(DIRECTORY
     "${CMAKE_CURRENT_SOURCE_DIR}/../app/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/../app/public"
     "${CMAKE_CURRENT_SOURCE_DIR}/../app/migrations"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../app/edge-control"
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/app"
     PATTERN "__pycache__" EXCLUDE
-    PATTERN ".pytest_cache" EXCLUDE)
+    PATTERN ".pytest_cache" EXCLUDE
+    PATTERN ".wrangler" EXCLUDE
+    PATTERN "node_modules" EXCLUDE
+    PATTERN "dist" EXCLUDE)
 install(DIRECTORY
     "${CMAKE_CURRENT_SOURCE_DIR}/../app/tools/"
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/app/tools"

@@ -15,8 +15,11 @@ def config(unit):
     )
 
 
-def test_three_workers_have_disjoint_runtime_roles():
+def test_public_workers_and_app_edge_control_have_disjoint_runtime_roles():
     app = config("app")
+    edge = tomllib.loads(
+        (APP_ROOT / "edge-control/wrangler.toml").read_text(encoding="utf-8")
+    )
     www = config("www")
     world = config("world")
 
@@ -29,8 +32,36 @@ def test_three_workers_have_disjoint_runtime_roles():
         {"pattern": "api.forkmesh.com", "custom_domain": True},
     ]
     assert app["assets"]["directory"] == "./dist"
-    assert app["triggers"]["crons"] == ["* * * * *"]
+    assert "triggers" not in app
     assert "durable_objects" in app and "migrations" in app
+    assert edge["name"] == "forkmesh-edge-control"
+    assert edge["main"] == "worker.js"
+    assert edge["services"] == [
+        {"binding": "APP", "service": "forkmesh-relay"}
+    ]
+    assert edge["triggers"]["crons"] == ["* * * * *"]
+    assert edge["durable_objects"]["bindings"] == [{
+        "name": "FORKMESH_CRON_RUNNER",
+        "class_name": "ForkMeshCronRunner",
+        "script_name": "forkmesh-relay",
+    }]
+    assert [route["pattern"] for route in edge["routes"]] == [
+        "app.forkmesh.com/api/version*",
+        "app.forkmesh.com/health*",
+        "app.forkmesh.com/api/mirrors/https*",
+        "api.forkmesh.com/health*",
+        "api.forkmesh.com/api/version*",
+        "api.forkmesh.com/api/mirrors/https*",
+    ]
+    assert all(route["zone_name"] == "forkmesh.com" for route in edge["routes"])
+    for backend_only in (
+        "ai",
+        "assets",
+        "d1_databases",
+        "kv_namespaces",
+        "migrations",
+    ):
+        assert backend_only not in edge
 
     expected = {
         "www": (www, "forkmesh-www", ["forkmesh.com", "www.forkmesh.com"]),

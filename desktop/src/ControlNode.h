@@ -449,6 +449,10 @@ struct MirrorFleetReconcilePlan {
 
 bool mirrorCatalogEntryIsHealthy(const QJsonObject &mirror);
 
+bool vultrProvisionBlocksFleetReconciliation(bool provisionActive,
+                                              bool resumeRequested,
+                                              const QString &checkpointState);
+
 MirrorFleetReconcilePlan planMirrorFleetReconciliation(
     int desiredHealthy, const QJsonArray &savedHosts,
     const QJsonArray &catalogMirrors);

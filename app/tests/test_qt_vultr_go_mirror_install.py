@@ -48,6 +48,19 @@ def test_native_payload_is_checksummed_linked_and_health_checked():
         assert contract in builder
 
 
+def test_native_command_percent_tokens_survive_qstring_rendering():
+    builder = CHAT.split(
+        "bool MainWindow::buildVultrMirrorNodeInstallCommand(", 1
+    )[1].split("\nbool MainWindow::buildHostInstallCommand(", 1)[0]
+    assert "printf '%s' \\\"$router_json\\\"" in builder
+    assert "printf '%s' \\\"$router_key\\\"" in builder
+    assert "link_number % 1000000" in builder
+    assert "link_code=\\\"${link_code#1}\\\"" in builder
+    assert "FORKMESH LINK CODE: %s" in builder
+    assert "%%s" not in builder
+    assert "%%06d" not in builder
+
+
 def test_update_flows_refresh_the_go_companion():
     # "Click Update to retry" must be able to heal a desktop that is missing
     # forkmesh-mirror-node: the source rebuild builds the companion with the

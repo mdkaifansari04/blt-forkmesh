@@ -221,10 +221,9 @@ SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
 CRON_WATCHDOG_GRACE_MS = 3 * 60 * 1000
 CRON_WATCHDOG_RETRY_MS = 5 * 60 * 1000
 CRON_WATCHDOG_NAME = "scheduled-completion-v1"
-# The Cron Trigger only seeds this singleton. Its Durable Object alarm owns the
-# minute loop and re-arms itself before doing any work, so a killed Python
-# scheduled wrapper cannot leave maintenance stopped until the next deploy.
-CRON_RUNNER_NAME = "scheduled-runner-v1"
+# The JavaScript edge-control Cron Trigger seeds the runner singleton. Its
+# alarm owns the minute loop and re-arms before doing any work, so scheduled
+# ingress never starts the public Python App entrypoint.
 CRON_RUNNER_INTERVAL_MS = 60 * 1000
 CRON_RUNNER_KICK_DELAY_MS = 1000
 CRON_RUNNER_ALARM_OFFSET_MS = 1500
@@ -3807,17 +3806,8 @@ async def _cron_watchdog_completion(env):
         raise RuntimeError("cron watchdog rejected completion heartbeat")
 
 
-def _cron_runner_kick(env):
-    runner_id = env.FORKMESH_CRON_RUNNER.idFromName(CRON_RUNNER_NAME)
-    runner = env.FORKMESH_CRON_RUNNER.get(runner_id)
-    binding = getattr(runner, "_binding", None)
-    if binding is None:
-        raise RuntimeError("cron runner binding is unavailable")
-    return binding.fetch("https://forkmesh.internal/cron-runner/kick")
-
-
 # The /status sampler and its public history projection live in an
-# on-demand module: the sampler runs from the Cron Trigger / cron-runner
+# on-demand module: the sampler runs from the cron-runner Durable Object
 # alarm and the projection only serves the /status page, so compiling them
 # here spent scarce Pyodide startup memory on every isolate (see
 # admin_console for the same pattern).
@@ -38183,6 +38173,8 @@ async def _admin_disburse(env):
 
 HTTPS_MIRROR_ENDPOINT_PATH = "/api/mirrors/https"
 HTTPS_MIRROR_PRIVATE_ROUTE_PATH = "/api/mirrors/private"
+HTTPS_MIRROR_ROUTER_READINESS_CHALLENGE = (
+    b"forkmesh-mirror-router-readiness-v1\nmainnode")
 HTTPS_MIRROR_MANIFEST_MAX_BYTES = 128 * 1024
 # Two oldest endpoints per minute supports twenty mirrors inside the ten-minute
 # routing freshness window while keeping a fully timed-out alarm comfortably
@@ -38236,6 +38228,30 @@ def _https_mirror_router_seed(env):
     value = clean_string(
         getattr(env, "MIRROR_ROUTER_SIGNING_SEED", ""), 120).strip()
     return value if re.fullmatch(r"[A-Za-z0-9_-]{43}", value) else ""
+
+
+async def _https_mirror_router_identity_status(env):
+    public_key = _https_mirror_router_public_key(env)
+    signing_seed = _https_mirror_router_seed(env)
+    if not public_key or not signing_seed:
+        return public_key, False
+    try:
+        signature = await ed25519_sign(
+            public_key,
+            signing_seed,
+            HTTPS_MIRROR_ROUTER_READINESS_CHALLENGE,
+        )
+        ready = bool(
+            signature
+            and await ed25519_verify(
+                public_key,
+                signature,
+                HTTPS_MIRROR_ROUTER_READINESS_CHALLENGE,
+            )
+        )
+    except Exception:
+        ready = False
+    return public_key, ready
 
 
 def _https_mirror_registration_payload(data):
@@ -38461,7 +38477,7 @@ async def https_mirror_endpoint_handler(env, request):
             "nonCustodial": True,
             "repositoryBytesInD1": False,
         }, status=200 if router_key else 503,
-           cache_control="public, max-age=300")
+           cache_control="no-store")
     if method != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
@@ -41315,11 +41331,9 @@ async def _https_mirror_proxy(
 
 
 class Default(WorkerEntrypoint):
-    async def scheduled(self, controller, env, ctx):
-        self.ctx.waitUntil(_cron_runner_kick(self.env))
-
     async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
-        # Cron trigger (every minute, see [triggers] in wrangler.toml).
+        # Alarm-backed maintenance batch, reconciled every minute by the
+        # edge-control Worker's Cron Trigger.
         #
         # Only the two once-a-minute samples run on every tick; everything else
         # is staggered onto its own minute slot. Running all eight jobs plus
@@ -41360,10 +41374,6 @@ class Default(WorkerEntrypoint):
         # downtime, so a tick that dies partway (cold Pyodide isolate blowing
         # the invocation limits — cron runs in its own colo, where user
         # traffic never warms the isolate) has already landed its samples.
-        # The heartbeat below (not the claim, which the trigger usually wins)
-        # is what lets the Cron Trigger's scheduled() skip its own direct
-        # probe run while this batch is provably alive
-        # (_runner_status_sample_is_stale).
         try:
             await record_status_sample(self.env, source="runner")
         except BaseException as error:
@@ -41607,8 +41617,8 @@ class Default(WorkerEntrypoint):
         # handler reached its end. If Pyodide re-enters the event loop, the
         # platform kills the invocation, or a future uncaught exception escapes,
         # no heartbeat lands and the Durable Object can alert without relying on
-        # this broken Cron Trigger to detect its own failure. The next completed
-        # tick sends the one-time recovery message.
+        # the failing runner to detect its own failure. The next completed tick
+        # sends the one-time recovery message.
         try:
             await _cron_watchdog_completion(self.env)
         except BaseException as error:
@@ -42189,7 +42199,9 @@ class Default(WorkerEntrypoint):
         )
 
     async def _route(self, request, url):
-        if url.path.rstrip("/") == HTTPS_MIRROR_ENDPOINT_PATH:
+        if url.path in (
+                HTTPS_MIRROR_ENDPOINT_PATH,
+                HTTPS_MIRROR_ENDPOINT_PATH + "/"):
             return await https_mirror_endpoint_handler(self.env, request)
         if url.path.rstrip("/") == HTTPS_MIRROR_PRIVATE_ROUTE_PATH:
             return await https_mirror_private_route_handler(self.env, request)
@@ -42277,25 +42289,32 @@ class Default(WorkerEntrypoint):
             return await self._serve_not_found_page(url)
 
         if url.path in ("/health", "/api/mainnode"):
-            return json_response(
-                {
-                    "ok": True,
-                    "service": "forkmesh-mainnode",
-                    "rev": _build_rev(self.env),
-                    "worker": str(
-                        getattr(self.env, "WORKER_ROLE", "") or "relay"),
-                    "node": getattr(self.env, "NODE_NAME", "forkmesh"),
-                    "nodeSolanaAddress": getattr(self.env, "NODE_SOLANA_ADDRESS", ""),
-                    "websocket": "/api/repo/{owner}/{repo}/rooms/{room}/ws",
-                    "compatWebsocket": "/api/room/{room}/ws",
-                    "capabilities": [
-                        "encrypted-relay-rooms",
-                        "repo-scoped-rooms",
-                        "ephemeral-ciphertext-broadcast",
-                    ],
-                    "runtime": "python-workers",
-                }
-            )
+            payload = {
+                "ok": True,
+                "service": "forkmesh-mainnode",
+                "rev": _build_rev(self.env),
+                "worker": str(
+                    getattr(self.env, "WORKER_ROLE", "") or "relay"),
+                "deployFingerprint": str(
+                    getattr(self.env, "DEPLOY_FINGERPRINT", "") or ""),
+                "node": getattr(self.env, "NODE_NAME", "forkmesh"),
+                "nodeSolanaAddress": getattr(
+                    self.env, "NODE_SOLANA_ADDRESS", ""),
+                "websocket": "/api/repo/{owner}/{repo}/rooms/{room}/ws",
+                "compatWebsocket": "/api/room/{room}/ws",
+                "capabilities": [
+                    "encrypted-relay-rooms",
+                    "repo-scoped-rooms",
+                    "ephemeral-ciphertext-broadcast",
+                ],
+                "runtime": "python-workers",
+            }
+            if url.path == "/api/mainnode":
+                router_key, router_ready = (
+                    await _https_mirror_router_identity_status(self.env))
+                payload["routerPublicKey"] = router_key
+                payload["routerIdentityReady"] = router_ready
+            return json_response(payload)
 
         # Build/version marker for deploy verification. deploy.sh stamps BUILD_REV
         # (the git rev being shipped) as a Worker var on every production deploy and
@@ -44170,9 +44189,9 @@ class ForkMeshDiscordGate(DurableObject):
 class ForkMeshCronWatchdog(DurableObject):
     """Alarm-backed observer for successful every-minute cron completions.
 
-    A Cron Trigger cannot report that it stopped firing: its own code is no
-    longer running. This singleton Durable Object receives a heartbeat only at
-    the end of a completed tick and moves its alarm three minutes forward.
+    A failed maintenance loop cannot report its own failure. This singleton
+    Durable Object receives a heartbeat only at the end of a completed tick
+    and moves its alarm three minutes forward.
     When that independent alarm expires it sends one outage email; the first
     later completion sends one recovery email. Durable Object event
     serialization also keeps the transition and email deduplication races out
@@ -44245,7 +44264,7 @@ class ForkMeshCronWatchdog(DurableObject):
                 await self.ctx.storage.put("notified_state", "down")
                 return
         # Retry an unavailable email provider/admin-recipient lookup without
-        # depending on the still-missing Cron Trigger.
+        # depending on the still-failing maintenance runner.
         await self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
 
 
@@ -44259,12 +44278,13 @@ class _CronJobEntrypoint:
 class ForkMeshCronRunner(DurableObject):
     """Alarm-backed, self-rearming owner of the scheduled maintenance loop.
 
-    The stateless Cron Trigger is only a seed and liveness reconciliation path.
-    The alarm is persisted for the next minute before the current batch starts.
-    A platform kill therefore loses at most the current idempotent/bounded slot;
-    it cannot erase the next wake-up. Duplicate alarm delivery is suppressed
-    after a slot completes. A catchable failure records bounded diagnostics and
-    advances to the already-armed next minute instead of creating a retry storm.
+    The JavaScript edge-control Cron Trigger is only a seed and liveness
+    reconciliation path. The alarm is persisted for the next minute before the
+    current batch starts. A platform kill therefore loses at most the current
+    idempotent/bounded slot; it cannot erase the next wake-up. Duplicate alarm
+    delivery is suppressed after a slot completes. A catchable failure records
+    bounded diagnostics and advances to the already-armed next minute instead
+    of creating a retry storm.
     """
 
     traffic_binding = "FORKMESH_CRON_RUNNER"

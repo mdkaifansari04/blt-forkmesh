@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import tomllib
 from types import SimpleNamespace
 
 import pytest
@@ -16,9 +17,20 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import cloudflare_bootstrap as bootstrap_module  # noqa: E402
 
+ORIGINAL_POST_DEPLOY_ROUTER_IDENTITY_CHECK = (
+    bootstrap_module._post_deploy_router_identity_check
+)
+ORIGINAL_RELEASE_IDENTITY_CHECK = bootstrap_module._release_identity_check
 
 PUBLIC_KEY = base64.urlsafe_b64encode(b"P" * 32).decode().rstrip("=")
 SIGNATURE = base64.urlsafe_b64encode(b"S" * 64).decode().rstrip("=")
+ROUTER_SIGNING_SEED = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
+ROUTER_PUBLIC_KEY = bootstrap_module.derive_ed25519_public_key(ROUTER_SIGNING_SEED)
+RELEASE_IDENTITY = {
+    "buildRev": "selfhost-0123456789abcdef",
+    "appVersion": "1.2.3",
+    "deployFingerprint": "a" * 64,
+}
 
 
 class FakeAPI:
@@ -27,6 +39,9 @@ class FakeAPI:
         self.calls = []
         self.database_created = True
         self.secret_names = {"DATA_KEY"}
+        self.worker_present = True
+        self.route_records = None
+        self.dns_record_list = None
 
     def verify_token(self):
         self.verified = True
@@ -63,6 +78,38 @@ class FakeAPI:
     def worker_secret_names(self, account_id, worker_name):
         self.calls.append(("secrets", account_id, worker_name))
         return set(self.secret_names)
+
+    def worker_exists(self, account_id, worker_name):
+        self.calls.append(("worker", account_id, worker_name))
+        return self.worker_present
+
+    def worker_routes(self, zone_id):
+        self.calls.append(("routes-read", zone_id))
+        if self.route_records is not None:
+            return list(self.route_records)
+        if not self.worker_present:
+            return []
+        return [
+            {
+                "pattern": f"{hostname}/*",
+                "script": "alice-forkmesh",
+            }
+            for hostname in ("mesh.example.com", "forkmesh.example.com")
+        ] + [
+            {
+                "pattern": f"{hostname}/api/mirrors/https*",
+                "script": "alice-forkmesh-edge",
+            }
+            for hostname in ("mesh.example.com", "forkmesh.example.com")
+        ]
+
+    def dns_records(self, zone_id, hostname):
+        self.calls.append(("dns-read", zone_id, hostname))
+        if self.dns_record_list is not None:
+            return list(self.dns_record_list)
+        if not self.worker_present:
+            return []
+        return [{"name": hostname, "type": "AAAA", "proxied": True}]
 
     def ensure_dns(self, zone_id, hostname, *, replace):
         self.calls.append(("dns", zone_id, hostname, replace))
@@ -114,10 +161,10 @@ class FakeRunner:
         self.configs.append(config_text)
         if arguments[0] == "deploy":
             match = re.search(r'^directory = "([^"]+)"$', config_text, re.MULTILINE)
-            assert match
-            manifest = Path(match.group(1)) / bootstrap_module.MIRROR_MANIFEST_ASSET
-            if manifest.exists():
-                self.manifests.append(json.loads(manifest.read_text(encoding="utf-8")))
+            if match:
+                manifest = Path(match.group(1)) / bootstrap_module.MIRROR_MANIFEST_ASSET
+                if manifest.exists():
+                    self.manifests.append(json.loads(manifest.read_text(encoding="utf-8")))
 
 
 def fake_manifest_signer(*, expect_data_hidden=False):
@@ -135,6 +182,36 @@ def fake_manifest_signer(*, expect_data_hidden=False):
     return bootstrap_module.MirrorManifestSigner(["local-signer"], runner=run)
 
 
+def existing_router_identity(hostname):
+    assert hostname in {"mesh.example.com", "forkmesh.example.com"}
+    return ROUTER_PUBLIC_KEY
+
+
+def router_identity_payload(public_key=ROUTER_PUBLIC_KEY):
+    return {
+        "ok": True,
+        "protocol": "forkmesh-masked-proxy-v1",
+        "registration": "forkmesh-https-endpoint-v1",
+        "routerPublicKey": public_key,
+        "nonCustodial": True,
+        "repositoryBytesInD1": False,
+    }
+
+
+@pytest.fixture(autouse=True)
+def avoid_live_post_deploy_checks(monkeypatch):
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_post_deploy_router_identity_check",
+        lambda _hostname, _public_key: None,
+    )
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_release_identity_check",
+        lambda _hostname, _identity: None,
+    )
+
+
 def test_generated_config_targets_new_d1_without_mutating_template():
     template_path = bootstrap_module.WRANGLER_TEMPLATE
     original = template_path.read_text(encoding="utf-8")
@@ -149,11 +226,15 @@ def test_generated_config_targets_new_d1_without_mutating_template():
         relay_label="Alice relay",
         main_relay_url="https://forkmesh.com",
         world_origin="https://forkmesh-world.example.com",
+        build_rev=RELEASE_IDENTITY["buildRev"],
+        app_version=RELEASE_IDENTITY["appVersion"],
+        deploy_fingerprint=RELEASE_IDENTITY["deployFingerprint"],
         assets_directory="/tmp/forkmesh-assets",
     )
 
     assert template_path.read_text(encoding="utf-8") == original
     assert rendered.startswith('name = "alice-forkmesh"')
+    assert rendered.count("workers_dev = false") == 1
     assert 'database_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"' in rendered
     assert 'database_name = "alice-forkmesh"' in rendered
     assert 'id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' in rendered
@@ -172,6 +253,12 @@ def test_generated_config_targets_new_d1_without_mutating_template():
         '"https://mesh.example.com/api/integrations/discord/callback"'
     ) in rendered
     assert 'MAIN_RELAY_URL = "https://forkmesh.com"' in rendered
+    assert f'BUILD_REV = "{RELEASE_IDENTITY["buildRev"]}"' in rendered
+    assert f'APP_VERSION = "{RELEASE_IDENTITY["appVersion"]}"' in rendered
+    assert (
+        f'DEPLOY_FINGERPRINT = "{RELEASE_IDENTITY["deployFingerprint"]}"'
+        in rendered
+    )
     assert 'directory = "/tmp/forkmesh-assets"' in rendered
     assert "tools/build_worker_python.py" in rendered
     assert "tools/build_site_assets.py app" in rendered
@@ -181,6 +268,882 @@ def test_generated_config_targets_new_d1_without_mutating_template():
     assert "CLOUDFLARE_API_TOKEN" not in rendered
     assert "app.forkmesh.com" not in rendered
     assert "[[routes]]" not in rendered
+
+
+def test_generated_edge_config_binds_the_instance_without_official_routes():
+    source = bootstrap_module.EDGE_WRANGLER_TEMPLATE.read_text(encoding="utf-8")
+    rendered = bootstrap_module.render_edge_wrangler_config(
+        source,
+        worker_name="alice-forkmesh-edge",
+        app_worker_name="alice-forkmesh",
+        app_origin="https://forkmesh.example.com",
+        world_origin="https://forkmesh-world.example.com",
+        node_name="alice-node",
+        router_public_key=PUBLIC_KEY,
+        build_rev=RELEASE_IDENTITY["buildRev"],
+        app_version=RELEASE_IDENTITY["appVersion"],
+        deploy_fingerprint=RELEASE_IDENTITY["deployFingerprint"],
+    )
+
+    assert rendered.startswith('name = "alice-forkmesh-edge"')
+    assert 'main = "edge-control/worker.js"' in rendered
+    assert 'service = "alice-forkmesh"' in rendered
+    assert 'script_name = "alice-forkmesh"' in rendered
+    assert 'name = "FORKMESH_CRON_RUNNER"' in rendered
+    assert 'class_name = "ForkMeshCronRunner"' in rendered
+    assert 'crons = ["* * * * *"]' in rendered
+    assert 'PUBLIC_BASE_URL = "https://forkmesh.example.com"' in rendered
+    assert 'WORLD_ORIGIN = "https://forkmesh-world.example.com"' in rendered
+    assert 'SINGLE_WORKER_SITE = "true"' in rendered
+    assert f'MIRROR_ROUTER_PUBLIC_KEY = "{PUBLIC_KEY}"' in rendered
+    assert f'BUILD_REV = "{RELEASE_IDENTITY["buildRev"]}"' in rendered
+    assert f'APP_VERSION = "{RELEASE_IDENTITY["appVersion"]}"' in rendered
+    assert (
+        f'DEPLOY_FINGERPRINT = "{RELEASE_IDENTITY["deployFingerprint"]}"'
+        in rendered
+    )
+    assert "[[routes]]" not in rendered
+    assert "app.forkmesh.com" not in rendered
+    manifest = tomllib.loads(rendered)
+    assert manifest["name"] == "alice-forkmesh-edge"
+    assert manifest["services"] == [
+        {"binding": "APP", "service": "alice-forkmesh"}
+    ]
+    assert manifest["durable_objects"]["bindings"] == [{
+        "name": "FORKMESH_CRON_RUNNER",
+        "class_name": "ForkMeshCronRunner",
+        "script_name": "alice-forkmesh",
+    }]
+
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="router public key is invalid",
+    ):
+        bootstrap_module.render_edge_wrangler_config(
+            source,
+            worker_name="alice-forkmesh-edge",
+            app_worker_name="alice-forkmesh",
+            app_origin="https://forkmesh.example.com",
+            world_origin="https://forkmesh-world.example.com",
+            node_name="alice-node",
+            router_public_key="invalid",
+            build_rev=RELEASE_IDENTITY["buildRev"],
+            app_version=RELEASE_IDENTITY["appVersion"],
+            deploy_fingerprint=RELEASE_IDENTITY["deployFingerprint"],
+        )
+
+
+def test_router_seed_derivation_matches_rfc8032_and_rejects_mismatched_pair():
+    seed = bytes.fromhex(
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    )
+    public = bytes.fromhex(
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    )
+
+    def encode(value):
+        return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
+    assert bootstrap_module.derive_ed25519_public_key(encode(seed)) == encode(public)
+    assert (
+        bootstrap_module.validate_router_identity_pair(
+            ROUTER_PUBLIC_KEY, ROUTER_SIGNING_SEED
+        )
+        == ROUTER_PUBLIC_KEY
+    )
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="does not match MIRROR_ROUTER_SIGNING_SEED",
+    ):
+        bootstrap_module.validate_router_identity_pair(PUBLIC_KEY, ROUTER_SIGNING_SEED)
+
+
+def test_public_router_identity_reader_requires_exact_https_contract():
+    requested = []
+
+    class Response:
+        status = 200
+        headers = {
+            "x-forkmesh-edge-control": "active",
+            "x-forkmesh-worker": "app",
+        }
+
+        def __init__(self, final_url):
+            self.final_url = final_url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def geturl(self):
+            return self.final_url
+
+        def read(self, limit):
+            assert limit == 8193
+            return json.dumps(router_identity_payload()).encode()
+
+    def opener(request, *, timeout):
+        assert timeout == 30
+        requested.append(request)
+        return Response(request.full_url)
+
+    assert (
+        bootstrap_module._read_router_public_key("ForkMesh.Example.com", opener=opener)
+        == ROUTER_PUBLIC_KEY
+    )
+    assert requested[0].full_url == ("https://forkmesh.example.com/api/mirrors/https")
+    assert requested[0].get_header("Cache-control") == "no-cache"
+    assert (
+        bootstrap_module._read_router_public_key(
+            "forkmesh.example.com",
+            opener=opener,
+            require_edge_control=True,
+        )
+        == ROUTER_PUBLIC_KEY
+    )
+
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="redirected unexpectedly",
+    ):
+        bootstrap_module._read_router_public_key(
+            "forkmesh.example.com",
+            opener=lambda request, **_kwargs: Response(
+                "https://attacker.example/api/mirrors/https"
+            ),
+        )
+
+
+def test_post_deploy_router_identity_requires_backend_pair_and_edge_key():
+    ORIGINAL_POST_DEPLOY_ROUTER_IDENTITY_CHECK(
+        "forkmesh.example.com",
+        ROUTER_PUBLIC_KEY,
+        attempts=1,
+        backend_reader=lambda hostname: (
+            ROUTER_PUBLIC_KEY
+            if hostname == "forkmesh.example.com"
+            else pytest.fail("unexpected hostname")
+        ),
+        edge_reader=lambda hostname: (
+            ROUTER_PUBLIC_KEY
+            if hostname == "forkmesh.example.com"
+            else pytest.fail("unexpected hostname")
+        ),
+    )
+
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="did not expose the selected router identity",
+    ):
+        ORIGINAL_POST_DEPLOY_ROUTER_IDENTITY_CHECK(
+            "forkmesh.example.com",
+            ROUTER_PUBLIC_KEY,
+            attempts=1,
+            backend_reader=lambda _hostname: PUBLIC_KEY,
+            edge_reader=lambda _hostname: ROUTER_PUBLIC_KEY,
+        )
+
+
+def test_backend_router_identity_proof_requires_python_app_and_ready_pair():
+    class Response:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def geturl(self):
+            return "https://forkmesh.example.com/api/mainnode"
+
+        def read(self, limit):
+            assert limit == 8193
+            return json.dumps(self.payload).encode()
+
+    valid = {
+        "ok": True,
+        "runtime": "python-workers",
+        "worker": "app",
+        "routerIdentityReady": True,
+        "routerPublicKey": ROUTER_PUBLIC_KEY,
+    }
+    assert (
+        bootstrap_module._read_backend_router_public_key(
+            "forkmesh.example.com",
+            opener=lambda _request, **_kwargs: Response(valid),
+        )
+        == ROUTER_PUBLIC_KEY
+    )
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="proof is invalid",
+    ):
+        bootstrap_module._read_backend_router_public_key(
+            "forkmesh.example.com",
+            opener=lambda _request, **_kwargs: Response({
+                **valid,
+                "routerIdentityReady": False,
+            }),
+        )
+
+
+def test_release_identity_check_requires_exact_python_and_edge_roles(monkeypatch):
+    expected = dict(RELEASE_IDENTITY)
+    main_payload = {
+        "ok": True,
+        "runtime": "python-workers",
+        "worker": "app",
+        "rev": expected["buildRev"],
+        "deployFingerprint": expected["deployFingerprint"],
+    }
+    edge_payload = {
+        "ok": True,
+        "worker": "app",
+        "rev": expected["buildRev"],
+        "version": expected["appVersion"],
+        "deployFingerprint": expected["deployFingerprint"],
+    }
+
+    class Response:
+        status = 200
+
+        def __init__(self, url, payload, headers=None):
+            self.url = url
+            self.payload = payload
+            self.headers = headers or {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def geturl(self):
+            return self.url
+
+        def read(self, limit):
+            assert limit == 8193
+            return json.dumps(self.payload).encode()
+
+    def opener(request, **_kwargs):
+        if request.full_url.endswith("/api/mainnode"):
+            return Response(request.full_url, main_payload)
+        return Response(
+            request.full_url,
+            edge_payload,
+            {"x-forkmesh-edge-control": "active"},
+        )
+
+    monkeypatch.setattr(bootstrap_module, "urlopen", opener)
+    ORIGINAL_RELEASE_IDENTITY_CHECK(
+        "forkmesh.example.com", expected, attempts=1
+    )
+
+    edge_payload["worker"] = "edge"
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="did not agree on the expected release identity",
+    ):
+        ORIGINAL_RELEASE_IDENTITY_CHECK(
+            "forkmesh.example.com", expected, attempts=1
+        )
+
+
+def test_release_identity_uses_installed_product_version_metadata(
+    monkeypatch, tmp_path
+):
+    installed_root = tmp_path / "forkmesh"
+    installed_worker = installed_root / "app"
+    deploy_targets = installed_worker / "tools" / "deploy_targets.py"
+    deploy_targets.parent.mkdir(parents=True)
+    deploy_targets.write_text(
+        "def fingerprint(target):\n"
+        "    assert target == 'app'\n"
+        f"    return {'b' * 64!r}\n",
+        encoding="utf-8",
+    )
+    (installed_root / "forkmesh-version.txt").write_text(
+        "0.7.19\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(bootstrap_module, "ROOT", installed_root)
+    monkeypatch.setattr(bootstrap_module, "WORKER_DIR", installed_worker)
+
+    assert not (installed_root / "desktop" / "CMakeLists.txt").exists()
+    assert bootstrap_module.self_host_release_identity() == {
+        "buildRev": "selfhost-" + "b" * 16,
+        "appVersion": "0.7.19",
+        "deployFingerprint": "b" * 64,
+    }
+    cmake = (ROOT / "desktop" / "CMakeLists.txt").read_text(encoding="utf-8")
+    assert "forkmesh-version.txt" in cmake
+    assert 'CONTENT "${FORKMESH_VERSION}\\n"' in cmake
+
+
+def test_new_one_click_install_generates_owner_only_router_recovery(tmp_path):
+    api = FakeAPI()
+    api.worker_present = False
+    runner = FakeRunner()
+    output = []
+    router_checks = []
+    router_backup = tmp_path / "secrets" / "forkmesh.router-identity.json"
+
+    result = bootstrap_module.bootstrap(
+        bootstrap_module.BootstrapOptions(
+            hostname="forkmesh.example.com",
+            zone_name="example.com",
+            worker_name="alice-forkmesh",
+            database_name="alice-forkmesh",
+            node_name="alice-node",
+            relay_label="Alice relay",
+            main_relay_url="",
+            publish_mirror_manifest=False,
+            data_key_backup=tmp_path / "forkmesh.data-key",
+            router_identity_backup=router_backup,
+        ),
+        token="not-persisted",
+        api=api,
+        runner=runner,
+        health_check=lambda _hostname: None,
+        readiness_check=lambda _hostname, _key: None,
+        router_identity_reader=lambda _hostname: pytest.fail(
+            "a new install must not read a nonexistent endpoint"
+        ),
+        router_identity_check=lambda hostname, public_key: router_checks.append(
+            (hostname, public_key)
+        ),
+        output=output.append,
+    )
+
+    recovery = json.loads(router_backup.read_text(encoding="utf-8"))
+    generated_public = bootstrap_module.validate_router_identity_pair(
+        recovery["publicKey"], recovery["signingSeed"]
+    )
+    edge_config = next(
+        config for config in runner.configs
+        if 'name = "alice-forkmesh-edge"' in config
+    )
+    seed_call = next(
+        call for call in runner.calls
+        if call["arguments"][0:2] == ["secret", "put"]
+        and call["arguments"][-1] == "MIRROR_ROUTER_SIGNING_SEED"
+    )
+    public_call = next(
+        call for call in runner.calls
+        if call["arguments"][0:2] == ["secret", "put"]
+        and call["arguments"][-1] == "MIRROR_ROUTER_PUBLIC_KEY"
+    )
+    edge_deploy = next(
+        call for index, call in enumerate(runner.calls)
+        if call["arguments"][0] == "deploy"
+        and 'name = "alice-forkmesh-edge"' in runner.configs[index]
+    )
+    assert router_backup.stat().st_mode & 0o777 == 0o600
+    assert result["edgeControl"]["routerIdentitySource"] == "generated-local-pair"
+    assert result["edgeControl"]["routerIdentityBackupCreated"] is True
+    assert router_checks == [("forkmesh.example.com", generated_public)]
+    assert f'MIRROR_ROUTER_PUBLIC_KEY = "{generated_public}"' in edge_config
+    assert seed_call["stdin_text"] == recovery["signingSeed"] + "\n"
+    assert runner.calls.index(seed_call) < runner.calls.index(public_call)
+    assert runner.calls.index(public_call) < runner.calls.index(edge_deploy)
+    assert result["workerSecretsSet"][-2:] == [
+        bootstrap_module.ROUTER_SIGNING_SEED_ENV,
+        bootstrap_module.ROUTER_PUBLIC_KEY_ENV,
+    ]
+    assert recovery["signingSeed"] not in repr(result)
+    assert recovery["signingSeed"] not in "\n".join(output)
+    assert all(recovery["signingSeed"] not in config for config in runner.configs)
+
+
+def test_new_install_validates_and_keeps_router_seed_out_of_output(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("MIRROR_ROUTER_PUBLIC_KEY", ROUTER_PUBLIC_KEY)
+    monkeypatch.setenv("MIRROR_ROUTER_SIGNING_SEED", ROUTER_SIGNING_SEED)
+    api = FakeAPI()
+    api.worker_present = False
+    runner = FakeRunner()
+    output = []
+
+    result = bootstrap_module.bootstrap(
+        bootstrap_module.BootstrapOptions(
+            hostname="forkmesh.example.com",
+            zone_name="example.com",
+            worker_name="alice-forkmesh",
+            database_name="alice-forkmesh",
+            node_name="alice-node",
+            relay_label="Alice relay",
+            main_relay_url="",
+            secret_env=bootstrap_module.ROUTER_IDENTITY_ENV_NAMES,
+            publish_mirror_manifest=False,
+            data_key_backup=tmp_path / "forkmesh.data-key",
+            router_identity_backup=tmp_path / "forkmesh.router-identity.json",
+        ),
+        token="not-persisted",
+        api=api,
+        runner=runner,
+        health_check=lambda _hostname: None,
+        readiness_check=lambda _hostname, _key: None,
+        router_identity_reader=lambda _hostname: pytest.fail(
+            "a new install must use its validated local identity"
+        ),
+        output=output.append,
+    )
+
+    edge_config = next(
+        config for config in runner.configs if 'name = "alice-forkmesh-edge"' in config
+    )
+    seed_call = next(
+        call
+        for call in runner.calls
+        if call["arguments"][0:2] == ["secret", "put"]
+        and call["arguments"][-1] == "MIRROR_ROUTER_SIGNING_SEED"
+    )
+    public_call = next(
+        call for call in runner.calls
+        if call["arguments"][0:2] == ["secret", "put"]
+        and call["arguments"][-1] == "MIRROR_ROUTER_PUBLIC_KEY"
+    )
+    assert f'MIRROR_ROUTER_PUBLIC_KEY = "{ROUTER_PUBLIC_KEY}"' in edge_config
+    assert seed_call["stdin_text"] == ROUTER_SIGNING_SEED + "\n"
+    assert runner.calls.index(seed_call) < runner.calls.index(public_call)
+    assert result["edgeControl"]["routerIdentitySource"] == "local-validated-pair"
+    assert ROUTER_SIGNING_SEED not in repr(result)
+    assert ROUTER_SIGNING_SEED not in "\n".join(output)
+    assert all(ROUTER_SIGNING_SEED not in config for config in runner.configs)
+
+
+def test_rerun_preserves_public_router_key_without_local_seed(tmp_path):
+    api = FakeAPI()
+    api.database_created = False
+    runner = FakeRunner()
+    recovery_file = tmp_path / "forkmesh.data-key"
+    recovery_file.write_text("operator-recovery-value\n", encoding="utf-8")
+    recovery_file.chmod(0o600)
+    reads = []
+
+    result = bootstrap_module.bootstrap(
+        bootstrap_module.BootstrapOptions(
+            hostname="forkmesh.example.com",
+            zone_name="example.com",
+            worker_name="alice-forkmesh",
+            database_name="alice-forkmesh",
+            node_name="alice-node",
+            relay_label="Alice relay",
+            main_relay_url="",
+            publish_mirror_manifest=False,
+            data_key_backup=recovery_file,
+        ),
+        token="not-persisted",
+        api=api,
+        runner=runner,
+        health_check=lambda _hostname: None,
+        readiness_check=lambda _hostname, _key: None,
+        router_identity_reader=lambda hostname: (
+            reads.append(hostname) or ROUTER_PUBLIC_KEY
+        ),
+        output=lambda _message: None,
+    )
+
+    edge_config = next(
+        config for config in runner.configs if 'name = "alice-forkmesh-edge"' in config
+    )
+    assert reads == ["forkmesh.example.com"]
+    assert f'MIRROR_ROUTER_PUBLIC_KEY = "{ROUTER_PUBLIC_KEY}"' in edge_config
+    assert result["edgeControl"]["routerIdentitySource"] == ("existing-public-endpoint")
+    assert not any(
+        call["arguments"][0:2] == ["secret", "put"]
+        and call["arguments"][-1] in bootstrap_module.ROUTER_IDENTITY_ENV_NAMES
+        for call in runner.calls
+    )
+
+
+def test_partial_first_install_resumes_from_router_recovery_without_live_route(
+    tmp_path,
+):
+    api = FakeAPI()
+    api.worker_present = False
+    api.route_records = []
+    router_backup = tmp_path / "forkmesh.router-identity.json"
+    data_backup = tmp_path / "forkmesh.data-key"
+
+    class FailAfterAppDeploy(FakeRunner):
+        def run(self, arguments, **kwargs):
+            super().run(arguments, **kwargs)
+            if list(arguments)[0] == "deploy" and 'name = "alice-forkmesh"' in (
+                self.configs[-1]
+            ):
+                raise bootstrap_module.BootstrapError("injected deploy interruption")
+
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="injected deploy interruption",
+    ):
+        bootstrap_module.bootstrap(
+            bootstrap_module.BootstrapOptions(
+                hostname="forkmesh.example.com",
+                zone_name="example.com",
+                worker_name="alice-forkmesh",
+                database_name="alice-forkmesh",
+                node_name="alice-node",
+                relay_label="Alice relay",
+                main_relay_url="",
+                publish_mirror_manifest=False,
+                data_key_backup=data_backup,
+                router_identity_backup=router_backup,
+            ),
+            token="not-persisted",
+            api=api,
+            runner=FailAfterAppDeploy(),
+            router_identity_reader=lambda _hostname: pytest.fail(
+                "first install has no live identity route"
+            ),
+            output=lambda _message: None,
+        )
+
+    recovery = json.loads(router_backup.read_text(encoding="utf-8"))
+    api.worker_present = True
+    api.database_created = False
+    api.secret_names = set()
+    api.route_records = [{
+        "pattern": "forkmesh.example.com/*",
+        "script": "alice-forkmesh",
+    }]
+    runner = FakeRunner()
+    reads = []
+    result = bootstrap_module.bootstrap(
+        bootstrap_module.BootstrapOptions(
+            hostname="forkmesh.example.com",
+            zone_name="example.com",
+            worker_name="alice-forkmesh",
+            database_name="alice-forkmesh",
+            node_name="alice-node",
+            relay_label="Alice relay",
+            main_relay_url="",
+            publish_mirror_manifest=False,
+            data_key_backup=data_backup,
+            router_identity_backup=router_backup,
+        ),
+        token="not-persisted",
+        api=api,
+        runner=runner,
+        health_check=lambda _hostname: None,
+        readiness_check=lambda _hostname, _key: None,
+        router_identity_reader=lambda hostname: (
+            reads.append(hostname)
+            or (_ for _ in ()).throw(
+                bootstrap_module.RouterIdentityNotConfigured("HTTP 503")
+            )
+        ),
+        output=lambda _message: None,
+    )
+
+    edge_config = next(
+        config for config in runner.configs
+        if 'name = "alice-forkmesh-edge"' in config
+    )
+    seed_call = next(
+        call for call in runner.calls
+        if call["arguments"][0:2] == ["secret", "put"]
+        and call["arguments"][-1] == "MIRROR_ROUTER_SIGNING_SEED"
+    )
+    public_call = next(
+        call for call in runner.calls
+        if call["arguments"][0:2] == ["secret", "put"]
+        and call["arguments"][-1] == "MIRROR_ROUTER_PUBLIC_KEY"
+    )
+    assert reads == ["forkmesh.example.com"]
+    assert result["edgeControl"]["routerIdentitySource"] == (
+        "partial-install-recovery"
+    )
+    assert f'MIRROR_ROUTER_PUBLIC_KEY = "{recovery["publicKey"]}"' in edge_config
+    assert seed_call["stdin_text"] == recovery["signingSeed"] + "\n"
+    assert runner.calls.index(seed_call) < runner.calls.index(public_call)
+    assert recovery["signingSeed"] not in repr(result)
+
+
+def test_route_drift_rejects_public_identity_even_with_replace_route(tmp_path):
+    api = FakeAPI()
+    api.route_records = [
+        {
+            "pattern": "forkmesh.example.com/*",
+            "script": "another-worker",
+        }
+    ]
+    runner = FakeRunner()
+    reads = []
+
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="unexpected Worker route overlaps the selected App hostname",
+    ):
+        bootstrap_module.bootstrap(
+            bootstrap_module.BootstrapOptions(
+                hostname="forkmesh.example.com",
+                zone_name="example.com",
+                worker_name="alice-forkmesh",
+                database_name="alice-forkmesh",
+                node_name="alice-node",
+                relay_label="Alice relay",
+                main_relay_url="",
+                replace_route=True,
+                publish_mirror_manifest=False,
+                data_key_backup=tmp_path / "forkmesh.data-key",
+                router_identity_backup=tmp_path / "forkmesh.router-identity.json",
+            ),
+            token="not-persisted",
+            api=api,
+            runner=runner,
+            router_identity_reader=lambda hostname: (
+                reads.append(hostname) or ROUTER_PUBLIC_KEY
+            ),
+            output=lambda _message: None,
+        )
+
+    assert reads == []
+    assert [call[0] for call in api.calls] == [
+        "account", "zone", "worker", "routes-read", "dns-read"
+    ]
+    assert runner.calls == []
+
+
+def test_same_script_overlapping_api_route_is_rejected_before_identity_read(
+    tmp_path,
+):
+    api = FakeAPI()
+    api.route_records = [
+        {
+            "pattern": "forkmesh.example.com/*",
+            "script": "alice-forkmesh",
+        },
+        {
+            "pattern": "forkmesh.example.com/api/mirrors/https*",
+            "script": "alice-forkmesh-edge",
+        },
+        {
+            "pattern": "forkmesh.example.com/api/*",
+            "script": "alice-forkmesh",
+        },
+    ]
+    reads = []
+    runner = FakeRunner()
+
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="unexpected Worker route overlaps the selected App hostname",
+    ):
+        bootstrap_module.bootstrap(
+            bootstrap_module.BootstrapOptions(
+                hostname="forkmesh.example.com",
+                zone_name="example.com",
+                worker_name="alice-forkmesh",
+                database_name="alice-forkmesh",
+                node_name="alice-node",
+                relay_label="Alice relay",
+                main_relay_url="",
+                replace_route=True,
+                publish_mirror_manifest=False,
+                data_key_backup=tmp_path / "forkmesh.data-key",
+            ),
+            token="not-persisted",
+            api=api,
+            runner=runner,
+            router_identity_reader=lambda hostname: (
+                reads.append(hostname) or ROUTER_PUBLIC_KEY
+            ),
+            output=lambda _message: None,
+        )
+
+    assert reads == []
+    assert runner.calls == []
+
+
+def test_unproxied_dns_never_authorizes_public_router_identity(tmp_path):
+    api = FakeAPI()
+    api.dns_record_list = [{
+        "id": "dns-1",
+        "name": "forkmesh.example.com",
+        "type": "A",
+        "proxied": False,
+    }]
+    reads = []
+    runner = FakeRunner()
+
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="lacks exclusively proxied Cloudflare DNS",
+    ):
+        bootstrap_module.bootstrap(
+            bootstrap_module.BootstrapOptions(
+                hostname="forkmesh.example.com",
+                zone_name="example.com",
+                worker_name="alice-forkmesh",
+                database_name="alice-forkmesh",
+                node_name="alice-node",
+                relay_label="Alice relay",
+                main_relay_url="",
+                replace_dns=True,
+                publish_mirror_manifest=False,
+                data_key_backup=tmp_path / "forkmesh.data-key",
+            ),
+            token="not-persisted",
+            api=api,
+            runner=runner,
+            router_identity_reader=lambda hostname: (
+                reads.append(hostname) or ROUTER_PUBLIC_KEY
+            ),
+            output=lambda _message: None,
+        )
+
+    assert reads == []
+    assert runner.calls == []
+
+
+def test_partial_install_without_proxied_dns_uses_only_pending_recovery(tmp_path):
+    api = FakeAPI()
+    api.database_created = False
+    api.secret_names = {"DATA_KEY"}
+    api.route_records = [{
+        "pattern": "forkmesh.example.com/*",
+        "script": "alice-forkmesh",
+    }]
+    api.dns_record_list = []
+    router_backup = tmp_path / "forkmesh.router-identity.json"
+    bootstrap_module._write_router_identity_backup(
+        router_backup, ROUTER_PUBLIC_KEY, ROUTER_SIGNING_SEED
+    )
+    data_backup = tmp_path / "forkmesh.data-key"
+    data_backup.write_text("operator-recovery-value\n", encoding="utf-8")
+    data_backup.chmod(0o600)
+    runner = FakeRunner()
+
+    result = bootstrap_module.bootstrap(
+        bootstrap_module.BootstrapOptions(
+            hostname="forkmesh.example.com",
+            zone_name="example.com",
+            worker_name="alice-forkmesh",
+            database_name="alice-forkmesh",
+            node_name="alice-node",
+            relay_label="Alice relay",
+            main_relay_url="",
+            publish_mirror_manifest=False,
+            data_key_backup=data_backup,
+            router_identity_backup=router_backup,
+        ),
+        token="not-persisted",
+        api=api,
+        runner=runner,
+        health_check=lambda _hostname: None,
+        readiness_check=lambda _hostname, _key: None,
+        router_identity_reader=lambda _hostname: pytest.fail(
+            "unproxied DNS must never authorize a public identity read"
+        ),
+        output=lambda _message: None,
+    )
+
+    assert result["edgeControl"]["routerIdentitySource"] == (
+        "partial-install-recovery"
+    )
+    secret_names = [
+        call["arguments"][-1] for call in runner.calls
+        if call["arguments"][0:2] == ["secret", "put"]
+    ]
+    assert secret_names[-2:] == [
+        bootstrap_module.ROUTER_SIGNING_SEED_ENV,
+        bootstrap_module.ROUTER_PUBLIC_KEY_ENV,
+    ]
+
+
+def test_unproxied_partial_install_cannot_override_existing_public_secret(
+    tmp_path,
+):
+    api = FakeAPI()
+    api.secret_names = {"DATA_KEY", bootstrap_module.ROUTER_PUBLIC_KEY_ENV}
+    api.route_records = [{
+        "pattern": "forkmesh.example.com/*",
+        "script": "alice-forkmesh",
+    }]
+    api.dns_record_list = []
+    router_backup = tmp_path / "forkmesh.router-identity.json"
+    bootstrap_module._write_router_identity_backup(
+        router_backup, ROUTER_PUBLIC_KEY, ROUTER_SIGNING_SEED
+    )
+    runner = FakeRunner()
+
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="cannot prove the existing public router identity",
+    ):
+        bootstrap_module.bootstrap(
+            bootstrap_module.BootstrapOptions(
+                hostname="forkmesh.example.com",
+                zone_name="example.com",
+                worker_name="alice-forkmesh",
+                database_name="alice-forkmesh",
+                node_name="alice-node",
+                relay_label="Alice relay",
+                main_relay_url="",
+                publish_mirror_manifest=False,
+                data_key_backup=tmp_path / "forkmesh.data-key",
+                router_identity_backup=router_backup,
+            ),
+            token="not-persisted",
+            api=api,
+            runner=runner,
+            router_identity_reader=lambda _hostname: pytest.fail(
+                "unproxied DNS must never authorize a public identity read"
+            ),
+            output=lambda _message: None,
+        )
+
+    assert runner.calls == []
+
+
+def test_unrecoverable_rerun_identity_fails_before_mutation_even_with_local_pair(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("MIRROR_ROUTER_PUBLIC_KEY", ROUTER_PUBLIC_KEY)
+    monkeypatch.setenv("MIRROR_ROUTER_SIGNING_SEED", ROUTER_SIGNING_SEED)
+    api = FakeAPI()
+    runner = FakeRunner()
+
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="existing router identity is unrecoverable",
+    ) as raised:
+        bootstrap_module.bootstrap(
+            bootstrap_module.BootstrapOptions(
+                hostname="forkmesh.example.com",
+                zone_name="example.com",
+                worker_name="alice-forkmesh",
+                database_name="alice-forkmesh",
+                node_name="alice-node",
+                relay_label="Alice relay",
+                main_relay_url="",
+                secret_env=bootstrap_module.ROUTER_IDENTITY_ENV_NAMES,
+                publish_mirror_manifest=False,
+                data_key_backup=tmp_path / "forkmesh.data-key",
+            ),
+            token="not-persisted",
+            api=api,
+            runner=runner,
+            router_identity_reader=lambda _hostname: (_ for _ in ()).throw(
+                bootstrap_module.BootstrapError("HTTP 503")
+            ),
+            output=lambda _message: None,
+        )
+
+    assert ROUTER_SIGNING_SEED not in str(raised.value)
+    assert [call[0] for call in api.calls] == [
+        "account", "zone", "worker", "routes-read", "dns-read"
+    ]
+    assert runner.calls == []
+    assert not (tmp_path / "forkmesh.data-key").exists()
 
 
 def test_self_host_asset_stage_is_operational_and_excludes_official_content():
@@ -254,6 +1217,7 @@ def test_bootstrap_keeps_tokens_out_of_files_and_summary(monkeypatch):
         announce=lambda hostname: (
             output.append(f"announce:{hostname}") or "pending"
         ),
+        router_identity_reader=existing_router_identity,
         output=output.append,
     )
 
@@ -285,7 +1249,12 @@ def test_bootstrap_keeps_tokens_out_of_files_and_summary(monkeypatch):
     assert runner.manifests[0]["endpoint"]["mainProxyMode"] == "masked"
     assert runner.manifests[0]["storage"]["repositoryBytesInD1"] is False
     assert runner.manifests[0]["signature"]["value"] == SIGNATURE
-    assert runner.calls[-1]["stdin_text"] == local_secret + "\n"
+    data_key_call = next(
+        call for call in runner.calls
+        if call["arguments"][0:2] == ["secret", "put"]
+        and call["arguments"][-1] == "DATA_KEY"
+    )
+    assert data_key_call["stdin_text"] == local_secret + "\n"
     assert set(bootstrap_module.WORKER_DIR.glob(".forkmesh-bootstrap-*.toml")) == before
     assert ("dns", "zone-1", "mesh.example.com", False) in api.calls
     assert any(call[0] == "kv" for call in api.calls)
@@ -296,6 +1265,49 @@ def test_bootstrap_keeps_tokens_out_of_files_and_summary(monkeypatch):
         "alice-forkmesh",
         False,
     ) in api.calls
+    assert result["edgeControl"]["workerName"] == "alice-forkmesh-edge"
+    assert [route["pattern"] for route in result["edgeControl"]["routes"]] == [
+        "mesh.example.com/api/version*",
+        "mesh.example.com/api/mirrors/https*",
+        "mesh.example.com/health*",
+    ]
+    for pattern in (
+        "mesh.example.com/api/version*",
+        "mesh.example.com/api/mirrors/https*",
+        "mesh.example.com/health*",
+    ):
+        assert (
+            "route",
+            "zone-1",
+            pattern,
+            "alice-forkmesh-edge",
+            False,
+        ) in api.calls
+    app_deploy, edge_deploy = [
+        call for call in runner.calls if call["arguments"][0] == "deploy"
+    ][:2]
+    assert 'name = "alice-forkmesh"' in runner.configs[
+        runner.calls.index(app_deploy)
+    ]
+    assert 'name = "alice-forkmesh-edge"' in runner.configs[
+        runner.calls.index(edge_deploy)
+    ]
+    app_manifest = tomllib.loads(runner.configs[runner.calls.index(app_deploy)])
+    edge_manifest = tomllib.loads(runner.configs[runner.calls.index(edge_deploy)])
+    for config_key, identity_key in (
+        ("BUILD_REV", "buildRev"),
+        ("APP_VERSION", "appVersion"),
+        ("DEPLOY_FINGERPRINT", "deployFingerprint"),
+    ):
+        assert app_manifest["vars"][config_key] == result["releaseIdentity"][
+            identity_key
+        ]
+        assert edge_manifest["vars"][config_key] == result["releaseIdentity"][
+            identity_key
+        ]
+    assert runner.calls.index(app_deploy) < runner.calls.index(
+        data_key_call
+    ) < runner.calls.index(edge_deploy)
 
 
 def test_dry_run_performs_only_read_only_resolution():
@@ -314,10 +1326,91 @@ def test_dry_run_performs_only_read_only_resolution():
         token="not-persisted",
         api=api,
         runner=FakeRunner(),
+        router_identity_reader=existing_router_identity,
         output=lambda message: None,
     )
     assert result["dryRun"] is True
-    assert [call[0] for call in api.calls] == ["account", "zone"]
+    assert result["edgeControl"]["workerName"] == "alice-forkmesh-edge"
+    assert [call[0] for call in api.calls] == [
+        "account", "zone", "worker", "routes-read", "dns-read"
+    ]
+
+
+def test_proxied_dns_proof_ignores_unproxyable_txt_records():
+    api = FakeAPI()
+    api.dns_record_list = [
+        {
+            "name": "mesh.example.com",
+            "type": "TXT",
+            "proxied": False,
+        },
+        {
+            "name": "mesh.example.com",
+            "type": "A",
+            "proxied": True,
+        },
+    ]
+    reads = []
+
+    result = bootstrap_module.bootstrap(
+        bootstrap_module.BootstrapOptions(
+            hostname="mesh.example.com",
+            zone_name="example.com",
+            worker_name="alice-forkmesh",
+            database_name="alice-forkmesh",
+            node_name="alice-node",
+            relay_label="",
+            main_relay_url="",
+            dry_run=True,
+        ),
+        token="not-persisted",
+        api=api,
+        runner=FakeRunner(),
+        router_identity_reader=lambda hostname: (
+            reads.append(hostname) or ROUTER_PUBLIC_KEY
+        ),
+        output=lambda _message: None,
+    )
+
+    assert result["dryRun"] is True
+    assert reads == ["mesh.example.com"]
+
+
+def test_new_one_click_dry_run_does_not_generate_or_write_router_seed(tmp_path):
+    api = FakeAPI()
+    api.worker_present = False
+    runner = FakeRunner()
+    router_backup = tmp_path / "forkmesh.router-identity.json"
+
+    result = bootstrap_module.bootstrap(
+        bootstrap_module.BootstrapOptions(
+            hostname="forkmesh.example.com",
+            zone_name="example.com",
+            worker_name="alice-forkmesh",
+            database_name="alice-forkmesh",
+            node_name="alice-node",
+            relay_label="",
+            main_relay_url="",
+            dry_run=True,
+            router_identity_backup=router_backup,
+        ),
+        token="not-persisted",
+        api=api,
+        runner=runner,
+        router_identity_reader=lambda _hostname: pytest.fail(
+            "new dry-run must not probe a nonexistent public endpoint"
+        ),
+        output=lambda _message: None,
+    )
+
+    assert result["edgeControl"]["routerIdentitySource"] == "generated-on-apply"
+    assert result["edgeControl"]["routerIdentityBackupCreated"] is False
+    assert result["secrets"] == []
+    assert [call[0] for call in api.calls] == [
+        "account", "zone", "worker", "routes-read", "dns-read"
+    ]
+    assert runner.calls == []
+    assert not router_backup.exists()
 
 
 def test_dry_run_describes_optional_world_without_mutation():
@@ -337,6 +1430,7 @@ def test_dry_run_describes_optional_world_without_mutation():
         token="not-persisted",
         api=api,
         runner=FakeRunner(),
+        router_identity_reader=existing_router_identity,
         output=lambda message: None,
     )
 
@@ -345,7 +1439,9 @@ def test_dry_run_describes_optional_world_without_mutation():
         "hostname": "forkmesh-world.example.com",
         "workerName": "alice-forkmesh-world",
     }
-    assert [call[0] for call in api.calls] == ["account", "zone"]
+    assert [call[0] for call in api.calls] == [
+        "account", "zone", "worker", "routes-read", "dns-read"
+    ]
 
 
 def test_optional_world_deploy_uses_custom_app_origin_and_no_official_routes(
@@ -373,6 +1469,7 @@ def test_optional_world_deploy_uses_custom_app_origin_and_no_official_routes(
         readiness_check=lambda hostname, key: None,
         world_health_check=lambda hostname: None,
         announce=lambda hostname: "",
+        router_identity_reader=existing_router_identity,
         output=lambda message: None,
     )
 
@@ -385,9 +1482,13 @@ def test_optional_world_deploy_uses_custom_app_origin_and_no_official_routes(
         'CORS_ALLOWED_ORIGINS = '
         '"https://forkmesh.example.com,https://forkmesh-world.example.com"'
     ) in app_config
-    world_config = runner.configs[-1]
+    world_config = next(
+        config for config in runner.configs
+        if 'name = "alice-forkmesh-world"' in config
+    )
     assert 'name = "alice-forkmesh-world"' in world_config
     assert 'APP_ORIGIN = "https://forkmesh.example.com"' in world_config
+    assert world_config.count("workers_dev = false") == 1
     assert "world.forkmesh.com" not in world_config
     assert "[[routes]]" not in world_config
     assert (
@@ -399,6 +1500,93 @@ def test_optional_world_deploy_uses_custom_app_origin_and_no_official_routes(
     ) in api.calls
     assert result["world"]["enabled"] is True
     assert result["world"]["healthVerified"] is True
+
+
+def test_app_only_install_does_not_trust_dormant_world_origin(tmp_path):
+    api = FakeAPI()
+    runner = FakeRunner()
+
+    bootstrap_module.bootstrap(
+        bootstrap_module.BootstrapOptions(
+            hostname="forkmesh.example.com",
+            zone_name="example.com",
+            worker_name="alice-forkmesh",
+            database_name="alice-forkmesh",
+            node_name="alice-node",
+            relay_label="",
+            main_relay_url="",
+            publish_mirror_manifest=False,
+            data_key_backup=tmp_path / "forkmesh.data-key",
+        ),
+        token="not-persisted",
+        api=api,
+        runner=runner,
+        health_check=lambda _hostname: None,
+        readiness_check=lambda _hostname, _key: None,
+        router_identity_reader=existing_router_identity,
+        output=lambda _message: None,
+    )
+
+    app_configs = [
+        config for config in runner.configs
+        if tomllib.loads(config).get("name")
+        in {"alice-forkmesh", "alice-forkmesh-edge"}
+    ]
+    assert len(app_configs) >= 2
+    for config in app_configs:
+        assert 'WORLD_ORIGIN = ""' in config
+        assert (
+            'CORS_ALLOWED_ORIGINS = "https://forkmesh.example.com"'
+            in config
+        )
+        assert "forkmesh-world.example.com" not in config
+        assert config.count("workers_dev = false") == 1
+
+
+def test_failed_world_route_never_publishes_world_trust_to_app(tmp_path):
+    class FailWorldRouteAPI(FakeAPI):
+        def ensure_worker_route(
+            self, zone_id, pattern, worker_name, *, replace
+        ):
+            if pattern == "forkmesh-world.example.com/*":
+                raise bootstrap_module.BootstrapError("injected World route failure")
+            return super().ensure_worker_route(
+                zone_id, pattern, worker_name, replace=replace
+            )
+
+    api = FailWorldRouteAPI()
+    runner = FakeRunner()
+
+    with pytest.raises(
+        bootstrap_module.BootstrapError,
+        match="injected World route failure",
+    ):
+        bootstrap_module.bootstrap(
+            bootstrap_module.BootstrapOptions(
+                hostname="forkmesh.example.com",
+                zone_name="example.com",
+                worker_name="alice-forkmesh",
+                database_name="alice-forkmesh",
+                node_name="alice-node",
+                relay_label="",
+                main_relay_url="",
+                publish_mirror_manifest=False,
+                data_key_backup=tmp_path / "forkmesh.data-key",
+                deploy_world=True,
+            ),
+            token="not-persisted",
+            api=api,
+            runner=runner,
+            router_identity_reader=existing_router_identity,
+            output=lambda _message: None,
+        )
+
+    deployed_names = [
+        tomllib.loads(config).get("name")
+        for call, config in zip(runner.calls, runner.configs)
+        if call["arguments"][0] == "deploy"
+    ]
+    assert deployed_names == ["alice-forkmesh-world"]
 
 
 def test_new_instance_generates_recovery_copy_and_verifies_data_key(tmp_path):
@@ -424,6 +1612,7 @@ def test_new_instance_generates_recovery_copy_and_verifies_data_key(tmp_path):
         health_check=lambda hostname: None,
         readiness_check=lambda hostname, key: readiness.append((hostname, key)),
         announce=lambda hostname: "",
+        router_identity_reader=existing_router_identity,
         output=lambda message: None,
     )
 
@@ -466,6 +1655,7 @@ def test_existing_remote_data_key_requires_local_recovery_copy():
             token="not-persisted",
             api=api,
             runner=FakeRunner(),
+            router_identity_reader=existing_router_identity,
             output=lambda message: None,
         )
 
@@ -497,6 +1687,7 @@ def test_existing_remote_data_key_is_proved_without_replacing_it(tmp_path):
         health_check=lambda hostname: None,
         readiness_check=lambda hostname, key: readiness.append((hostname, key)),
         announce=lambda hostname: "",
+        router_identity_reader=existing_router_identity,
         output=lambda message: None,
     )
 
@@ -511,12 +1702,86 @@ def test_existing_remote_data_key_is_proved_without_replacing_it(tmp_path):
     )
 
 
-def test_cli_without_local_mirror_identity_uses_safe_relay_only_mode(monkeypatch):
+def test_cli_without_local_manifest_identity_defaults_to_no_trusted_manifest():
     parser = bootstrap_module.build_parser()
     args = parser.parse_args(["--auto-configure"])
     assert not args.skip_mirror_manifest
     assert args.mirror_public_key == ""
     assert args.manifest_signer_command == ""
+
+
+def test_cli_auto_forwards_router_identity_names_without_storing_seed(monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "session-only-token")
+    monkeypatch.setenv("MIRROR_ROUTER_PUBLIC_KEY", ROUTER_PUBLIC_KEY)
+    monkeypatch.setenv("MIRROR_ROUTER_SIGNING_SEED", ROUTER_SIGNING_SEED)
+    discovered = {
+        "accountId": "account-1",
+        "zoneId": "zone-1",
+        "zoneName": "example.com",
+        "hostname": "forkmesh.example.com",
+        "directMirrorHostname": "mirror.example.com",
+        "nodeName": "alice-node",
+    }
+    captured = {}
+    monkeypatch.setattr(
+        bootstrap_module,
+        "discover_deployment_defaults",
+        lambda **_kwargs: discovered,
+    )
+
+    def fake_bootstrap(options, **_kwargs):
+        captured["options"] = options
+        return {"ok": True}
+
+    monkeypatch.setattr(bootstrap_module, "bootstrap", fake_bootstrap)
+
+    assert bootstrap_module.main(["--auto-configure"]) == 0
+    options = captured["options"]
+    assert options.secret_env == bootstrap_module.ROUTER_IDENTITY_ENV_NAMES
+    assert ROUTER_SIGNING_SEED not in repr(options)
+
+
+def test_cli_one_click_uses_default_router_recovery_without_secret_env(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "session-only-token")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    for name in (
+        *bootstrap_module.ROUTER_IDENTITY_ENV_NAMES,
+        "FORKMESH_ROUTER_IDENTITY_BACKUP",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    discovered = {
+        "accountId": "account-1",
+        "zoneId": "zone-1",
+        "zoneName": "example.com",
+        "hostname": "forkmesh.example.com",
+        "directMirrorHostname": "mirror.example.com",
+        "nodeName": "alice-node",
+    }
+    captured = {}
+    monkeypatch.setattr(
+        bootstrap_module,
+        "discover_deployment_defaults",
+        lambda **_kwargs: discovered,
+    )
+
+    def fake_bootstrap(options, **_kwargs):
+        captured["options"] = options
+        return {"ok": True}
+
+    monkeypatch.setattr(bootstrap_module, "bootstrap", fake_bootstrap)
+
+    assert bootstrap_module.main(["--auto-configure", "--json-stdout"]) == 0
+    options = captured["options"]
+    assert options.secret_env == ()
+    assert options.router_identity_backup == (
+        tmp_path
+        / "forkmesh"
+        / "secrets"
+        / f"{options.worker_name}.router-identity.json"
+    )
+    assert not options.router_identity_backup.exists()
 
 
 def test_token_only_discovery_is_read_only_and_derives_distinct_topology():
@@ -629,3 +1894,12 @@ def test_bootstrap_docs_include_kv_data_key_and_app_origin_requirements():
     assert "mode-`0600` recovery copy" in docs
     assert "authenticated database/encryption probe" in docs
     assert "--main-relay-url https://app.forkmesh.com" in docs
+    assert "MIRROR_ROUTER_PUBLIC_KEY" in docs
+    assert "MIRROR_ROUTER_SIGNING_SEED" in docs
+    assert "one-click installation needs no" in docs
+    assert "router secret in the environment" in docs
+    assert "never put in argv" in docs
+    assert "signing seed" in docs
+    assert "first and the public key last" in docs
+    assert "unoverlaid Python `/api/mainnode`" in docs
+    assert "fails before D1, DNS, routes, secrets" in docs

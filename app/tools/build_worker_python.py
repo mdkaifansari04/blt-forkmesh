@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage the Worker's Python with comments and docstrings removed.
+"""Stage compact, semantics-equivalent Python for the Worker runtime.
 
 Cloudflare validates a Python Worker inside a fixed memory allowance that
 holds entry.py's executed global scope AND the source of every attached
@@ -8,15 +8,12 @@ also why moving code between files in src/ does not help: the bytes are
 still attached. 16% of src/ is comments and docstrings — text the runtime
 never needs but the validator still pays for.
 
-This writes src_build/, a byte-reduced copy that the Worker actually
-ships. src/ stays the source of truth: every comment in this codebase
-survives in git, in review, and in the tests (which read src/).
-
-**Line numbers are preserved exactly.** Comments are blanked in place
-rather than deleted, and a removed docstring leaves the same number of
-lines behind, so a production traceback still points at the right line of
-src/. Getting that wrong would trade a memory win for permanently
-misleading error reports.
+This writes src_build/, a byte-reduced copy that the Worker actually ships.
+src/ stays the source of truth for review and tests. The staged modules are
+round-tripped through Python's AST after docstrings are removed, which drops
+comments and formatting without changing executable structure. Function names
+remain present in production tracebacks; line numbers refer to the compact
+staged module.
 
     tools/build_worker_python.py [--check]
 
@@ -26,35 +23,13 @@ misleading error reports.
 from __future__ import annotations
 
 import ast
-import io
 import shutil
 import sys
-import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "src"
 STAGED = ROOT / "src_build"
-
-
-def _blank_comments(source: str) -> str:
-    """Drop comment text, keeping every line and its code intact."""
-    lines = source.splitlines(keepends=True)
-    cuts: dict[int, int] = {}
-    for token in tokenize.generate_tokens(io.StringIO(source).readline):
-        if token.type == tokenize.COMMENT:
-            row, col = token.start
-            # A line can hold only one comment start; keep the earliest.
-            cuts[row] = min(cuts.get(row, col), col)
-    for row, col in cuts.items():
-        line = lines[row - 1]
-        ending = "\r\n" if line.endswith("\r\n") else (
-            "\n" if line.endswith("\n") else "")
-        head = line[:col].rstrip()
-        # A whole-line comment collapses to an empty line, not to a line of
-        # trailing spaces.
-        lines[row - 1] = (head + ending) if head else ending
-    return "".join(lines)
 
 
 def _strip_docstrings(source: str) -> str:
@@ -87,6 +62,16 @@ def _strip_docstrings(source: str) -> str:
     return "".join(lines)
 
 
+def _compact_python(source: str) -> str:
+    """Return the smallest stdlib-generated source with the same AST."""
+    without_docstrings = _strip_docstrings(source)
+    expected = ast.parse(without_docstrings)
+    compact = ast.unparse(expected) + "\n"
+    if ast.dump(ast.parse(compact)) != ast.dump(expected):
+        raise ValueError("AST round-trip changed executable structure")
+    return compact
+
+
 def main(argv: list[str]) -> int:
     check_only = "--check" in argv[1:]
     before = after = 0
@@ -110,18 +95,11 @@ def main(argv: list[str]) -> int:
             after += len(raw)
             continue
         source = raw.decode("utf-8")
-        reduced = _strip_docstrings(_blank_comments(source))
-        # Refuse to ship anything whose meaning could have shifted: the
-        # stripped copy must parse to the same tree as the original once
-        # docstrings are discarded from both.
-        if ast.dump(ast.parse(reduced)) != ast.dump(
-            ast.parse(_strip_docstrings(source))
-        ):
-            print("ERROR: %s changed meaning when stripped" % relative,
+        try:
+            reduced = _compact_python(source)
+        except (SyntaxError, ValueError) as error:
+            print("ERROR: %s could not be compacted: %s" % (relative, error),
                   file=sys.stderr)
-            return 1
-        if len(reduced.splitlines()) != len(source.splitlines()):
-            print("ERROR: %s changed line count" % relative, file=sys.stderr)
             return 1
         staged_files.append((relative, reduced.encode("utf-8")))
         after += len(reduced.encode("utf-8"))

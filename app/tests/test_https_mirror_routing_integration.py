@@ -356,6 +356,7 @@ def test_registration_is_signed_account_bound_and_manifest_verified():
     assert "_https_mirror_refresh_registered_health" in handler
     assert '"health": "active" if health_active else "pending"' in handler
     assert "repositoryBytesInD1" in handler
+    assert 'cache_control="no-store"' in handler
     assert "private" not in handler.lower()
 
     manifest = _function_source("_https_mirror_manifest_ok")
@@ -368,6 +369,50 @@ def test_registration_is_signed_account_bound_and_manifest_verified():
     activation = handler.index(
         "await _https_mirror_refresh_registered_health")
     assert durable_write < activation
+
+
+def test_mainnode_router_identity_readiness_proves_the_seed_matches_public_key():
+    calls = []
+
+    async def sign(public_key, signing_seed, challenge):
+        calls.append(("sign", public_key, signing_seed, challenge))
+        return signing_seed
+
+    async def verify(public_key, signature, challenge):
+        calls.append(("verify", public_key, signature, challenge))
+        return public_key == signature
+
+    namespace = {
+        "_https_mirror_router_public_key": lambda env: env.public_key,
+        "_https_mirror_router_seed": lambda env: env.signing_seed,
+        "HTTPS_MIRROR_ROUTER_READINESS_CHALLENGE": (
+            b"forkmesh-mirror-router-readiness-v1\nmainnode"
+        ),
+        "ed25519_sign": sign,
+        "ed25519_verify": verify,
+    }
+    exec(_function_source("_https_mirror_router_identity_status"), namespace)
+    status = namespace["_https_mirror_router_identity_status"]
+
+    matching = asyncio.run(status(SimpleNamespace(
+        public_key="matched-pair", signing_seed="matched-pair"
+    )))
+    assert matching == ("matched-pair", True)
+    assert calls[0][3] == calls[1][3] == (
+        b"forkmesh-mirror-router-readiness-v1\nmainnode"
+    )
+
+    mismatched = asyncio.run(status(SimpleNamespace(
+        public_key="public", signing_seed="different-seed"
+    )))
+    assert mismatched == ("public", False)
+
+    calls_before_missing = len(calls)
+    missing = asyncio.run(status(SimpleNamespace(
+        public_key="public", signing_seed=""
+    )))
+    assert missing == ("public", False)
+    assert len(calls) == calls_before_missing
 
 
 def test_dns_over_https_requests_cloudflare_json_media_type(monkeypatch):

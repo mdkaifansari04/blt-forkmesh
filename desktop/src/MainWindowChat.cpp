@@ -13032,10 +13032,12 @@ void MainWindow::reconcileDesiredMirrorFleet()
     }
     armMirrorFleetCountdown();
     const int desired = m_mirrorFleetDesiredSpin->value();
-    if (m_vultrProvisionActive) {
+    if (forkmesh::control::vultrProvisionBlocksFleetReconciliation(
+            m_vultrProvisionActive, m_vultrResumeRequested,
+            m_vultrProvisionState)) {
         setMirrorFleetStatus(QStringLiteral(
             "Target: %1 healthy mirror(s) · waiting for the current "
-            "deployment to become healthy.").arg(desired));
+            "deployment to be retried, completed, or ended.").arg(desired));
         return;
     }
     if (m_mirrorFleetMutationInFlight || m_mirrorFleetReconcileInFlight)
@@ -13067,6 +13069,15 @@ void MainWindow::reconcileDesiredMirrorFleet()
             !m_mirrorFleetEnabledCheck->isChecked()) {
             return;
         }
+        const int desired = m_mirrorFleetDesiredSpin->value();
+        if (forkmesh::control::vultrProvisionBlocksFleetReconciliation(
+                m_vultrProvisionActive, m_vultrResumeRequested,
+                m_vultrProvisionState)) {
+            setMirrorFleetStatus(QStringLiteral(
+                "Target: %1 healthy mirror(s) · waiting for the current "
+                "deployment to be retried, completed, or ended.").arg(desired));
+            return;
+        }
 
         const QJsonObject payload = QJsonDocument::fromJson(body).object();
         if (!networkOk || !payload.value(QStringLiteral("ok")).toBool()) {
@@ -13080,7 +13091,6 @@ void MainWindow::reconcileDesiredMirrorFleet()
         QSettings settings;
         const QJsonArray hosts = forkmesh::control::loadSavedHosts(
             settings, kHostsSetting, &m_hostSessionPasswords);
-        const int desired = m_mirrorFleetDesiredSpin->value();
         const forkmesh::control::MirrorFleetReconcilePlan plan =
             forkmesh::control::planMirrorFleetReconciliation(
                 desired, hosts,
@@ -20886,14 +20896,14 @@ bool MainWindow::buildVultrMirrorNodeInstallCommand(
         "id forkmesh-node >/dev/null 2>&1 || useradd --system --home-dir /var/lib/forkmesh --create-home --shell /usr/sbin/nologin forkmesh-node; "
         "install -d -o forkmesh-node -g forkmesh-node -m 0700 /var/lib/forkmesh /var/lib/forkmesh/tmp /etc/forkmesh; "
         "router_json=\"$(curl -fsS --max-time 20 %2)\"; "
-        "router_key=\"$(printf '%%s' \"$router_json\" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"routerPublicKey\",\"\"))')\"; "
-        "printf '%%s' \"$router_key\" | grep -Eq '^[A-Za-z0-9_-]{43}$' || exit 71; "
+        "router_key=\"$(printf '%s' \"$router_json\" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"routerPublicKey\",\"\"))')\"; "
+        "printf '%s' \"$router_key\" | grep -Eq '^[A-Za-z0-9_-]{43}$' || exit 71; "
         "runuser -u forkmesh-node -- /usr/local/bin/forkmesh-mirror-node --init --config /etc/forkmesh/mirror-node.json --state-dir /var/lib/forkmesh --node %3 --owner forkmesh --repository forkmesh --upstream %4 --catalog-url %5 --public-origin %6 --router-public-key \"$router_key\" --version %7 >/tmp/forkmesh-node-public-key; "
         "node_key=\"$(tr -d '\\r\\n' </tmp/forkmesh-node-public-key)\"; rm -f /tmp/forkmesh-node-public-key; "
         "python3 /usr/local/share/forkmesh/tools/cloudflared_install.py --destination /usr/local/bin/cloudflared --json-stdout >/dev/null; chmod 0755 /usr/local/bin/cloudflared; "
         "CLOUDFLARE_API_TOKEN=\"$fm_cf_token\" HOME=/var/lib/forkmesh XDG_DATA_HOME=/var/lib/forkmesh/.local/share runuser -u forkmesh-node -- python3 /usr/local/share/forkmesh/tools/cloudflare_tunnel_bootstrap.py --hostname %8 --zone %9 --node-name %3 --origin-host 127.0.0.1 --origin-port 8790 --gateway-config /var/lib/forkmesh/mirror-gateway/config.json --mirror-public-key=\"$node_key\" --manifest-signer-command '/usr/local/bin/forkmesh-mirror-node --config /etc/forkmesh/mirror-node.json --sign-mirror-manifest' --manifest-output /var/lib/forkmesh/mirror-gateway/forkmesh-mirror.json --tunnel-token-file /var/lib/forkmesh/mirror-gateway/connector.token; "
-        "unset fm_cf_token; link_number=\"$(od -An -N4 -tu4 /dev/urandom)\"; link_number=\"${link_number// /}\"; link_code=\"$(printf '%%06d' $((link_number %% 1000000)))\"; "
-        "printf 'FORKMESH LINK CODE: %%s\\n' \"$link_code\"; "
+        "unset fm_cf_token; link_number=\"$(od -An -N4 -tu4 /dev/urandom)\"; link_number=\"${link_number// /}\"; link_code=\"$((1000000 + link_number % 1000000))\"; link_code=\"${link_code#1}\"; "
+        "printf 'FORKMESH LINK CODE: %s\\n' \"$link_code\"; "
         "runuser -u forkmesh-node -- /usr/local/bin/forkmesh-mirror-node --config /etc/forkmesh/mirror-node.json --accounts-url %10 --register-link-code \"$link_code\"; "
         "systemctl daemon-reload; systemctl enable --now forkmesh-mirror-node.service; "
         "for n in 1 2 3 4 5 6 7 8 9 10; do curl -fsS http://127.0.0.1:8791/healthz >/dev/null && break; sleep 1; done; "

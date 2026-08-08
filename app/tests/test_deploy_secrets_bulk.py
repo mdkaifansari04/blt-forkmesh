@@ -19,8 +19,8 @@ REQUIRED = {
     "MAILTRAP_WEBHOOK_SECRET": "mail-webhook-secret",
     "DATA_KEY": 'quotes-" slash-\\ tab-\t unicode-☃',
     "TREASURY_SOLANA_ADDRESS": "solana-address",
-    "MIRROR_ROUTER_PUBLIC_KEY": "router-public",
-    "MIRROR_ROUTER_SIGNING_SEED": "router-seed",
+    "MIRROR_ROUTER_PUBLIC_KEY": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+    "MIRROR_ROUTER_SIGNING_SEED": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
     "DISCORD_CLIENT_ID": "1531910102578102322",
     "DISCORD_CLIENT_SECRET": "discord-client-secret",
     "DISCORD_BOT_TOKEN": "discord-bot-token",
@@ -110,6 +110,42 @@ fi
         encoding="utf-8",
     )
     fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    curl = fake_bin / "curl"
+    curl.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+url="${{@: -1}}"
+for arg in "$@"; do
+    if [[ "$arg" == -*I* ]]; then
+        printf 'HTTP/2 200\\nx-forkmesh-edge-control: active\\n\\n'
+        exit 0
+    fi
+done
+case "$url" in
+    */api/mirrors/https)
+        router_key='{REQUIRED['MIRROR_ROUTER_PUBLIC_KEY']}'
+        if [ -n "${{FAKE_LIVE_ROUTER_AFTER_BULK:-}}" ] && \
+           [ -f "$FAKE_WRANGLER_CAPTURE" ]; then
+            router_key="$FAKE_LIVE_ROUTER_AFTER_BULK"
+        fi
+        printf '{{"routerPublicKey":"%s"}}\\n200' "$router_key"
+        ;;
+    */api/bootstrap/readiness)
+        if [ -n "${{FAKE_DATA_KEY_PROBE_LOG:-}}" ]; then
+            printf '<%s>' "$@" >> "$FAKE_DATA_KEY_PROBE_LOG"
+            printf '\\n' >> "$FAKE_DATA_KEY_PROBE_LOG"
+        fi
+        status="${{FAKE_DATA_KEY_PROBE_STATUS:-200}}"
+        if [ "$status" = 200 ]; then body='{{"ok":true}}';
+        else body='{{"error":"not_found"}}'; fi
+        printf '%s\\n%s' "$body" "$status"
+        ;;
+    *) exit 2 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
     return worker, log, captured
 
 
@@ -119,7 +155,8 @@ def _run_secrets(
     fail_bulk: bool = False,
     transient_bulk_failures: int | str = 0,
     attempts: int | None = None,
-    remote_names: tuple[str, ...] = (),
+    remote_names: tuple[str, ...] | None = None,
+    live_router_after_bulk: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     worker, log, captured = _sandbox(tmp_path)
     env = os.environ.copy()
@@ -132,7 +169,17 @@ def _run_secrets(
             "FAKE_WRANGLER_TRANSIENT_BULK_FAILURES": str(transient_bulk_failures),
             # Keep the retry pauses out of the test's wall clock.
             "FORKMESH_SECRET_BULK_BACKOFF": "0",
-            "FAKE_WRANGLER_REMOTE_NAMES": ",".join(remote_names),
+            "FAKE_WRANGLER_REMOTE_NAMES": ",".join(
+                remote_names
+                if remote_names is not None
+                else ("MIRROR_ROUTER_PUBLIC_KEY", "MIRROR_ROUTER_SIGNING_SEED")
+            ),
+            "FAKE_LIVE_ROUTER_AFTER_BULK": live_router_after_bulk,
+            "FORKMESH_ROUTER_VERIFY_ATTEMPTS": "1",
+            "FORKMESH_ROUTER_VERIFY_BACKOFF": "0",
+            "PATH": str(tmp_path / "fake-pywrangler" / "bin")
+            + os.pathsep
+            + os.environ.get("PATH", ""),
         }
     )
     if attempts is not None:
@@ -159,7 +206,11 @@ def test_secrets_command_uses_one_secure_bulk_update_and_verifies_names(tmp_path
 
     payload = json.loads(captured.read_text(encoding="utf-8"))
     assert payload == {
-        **REQUIRED,
+        **{
+            key: value
+            for key, value in REQUIRED.items()
+            if not key.startswith("MIRROR_ROUTER_")
+        },
         "WORKERS_OBSERVABILITY_ACCOUNT_ID": "test-account",
     }
     assert "CLOUDFLARE_ACCOUNT_ID" not in payload
@@ -167,14 +218,19 @@ def test_secrets_command_uses_one_secure_bulk_update_and_verifies_names(tmp_path
     assert "EMPTY_SECRET" not in payload
     assert "OPTIONAL_SECRET" not in payload
     assert "ADMIN_USER" not in payload
+    assert "MIRROR_ROUTER_PUBLIC_KEY" not in payload
+    assert "MIRROR_ROUTER_SIGNING_SEED" not in payload
+    assert "preserving the coordinated remote mirror-router key pair" in result.stdout
     assert "skip (not an App runtime secret): ADMIN_USER" in result.stderr
     # The desktop app keeps its Vultr provisioning key in this file; the Worker
     # has no Vultr code path, so it must never reach the runtime (adhoc #127).
     assert "VULTR_API_KEY" not in payload
-    assert "Pushed 12 secret(s) from .env.production in one bulk update." in result.stdout
+    assert "Pushed 10 secret(s) from .env.production in one bulk update." in result.stdout
     combined_output = result.stdout + result.stderr
     for value in (
         *payload.values(),
+        REQUIRED["MIRROR_ROUTER_PUBLIC_KEY"],
+        REQUIRED["MIRROR_ROUTER_SIGNING_SEED"],
         "cloudflare-token-must-not-be-published",
         "vultr-key-must-not-be-published",
     ):
@@ -184,6 +240,63 @@ def test_secrets_command_uses_one_secure_bulk_update_and_verifies_names(tmp_path
         (captured.with_suffix(captured.suffix + ".path")).read_text()
     )
     assert not temporary_payload.exists()
+
+
+def test_generic_secrets_refuses_to_create_a_missing_router_pair(tmp_path):
+    result, log, captured = _run_secrets(tmp_path, remote_names=())
+
+    assert result.returncode != 0
+    assert "Generic secret updates cannot create or rotate" in result.stderr
+    assert not captured.exists()
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in calls if "<secret><list>" in line]) == 1
+    assert all("<secret><bulk>" not in line for line in calls)
+
+
+def test_generic_secrets_fails_if_live_router_identity_changes(tmp_path):
+    result, log, _captured = _run_secrets(
+        tmp_path,
+        live_router_after_bulk="B" * 43,
+    )
+
+    assert result.returncode != 0
+    assert "did not report the expected mirror-router public key" in result.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in calls if "<secret><bulk>" in line]) == 1
+    assert REQUIRED["MIRROR_ROUTER_SIGNING_SEED"] not in (
+        result.stdout + result.stderr
+    )
+
+
+def test_validate_secrets_rejects_a_mismatched_router_pair_before_cloudflare(
+    tmp_path,
+):
+    worker, log, _captured = _sandbox(tmp_path)
+    env_file = worker / ".env.production"
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8").replace(
+            REQUIRED["MIRROR_ROUTER_SIGNING_SEED"], "B" * 43
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", "deploy.sh", "validate-secrets"],
+        cwd=worker,
+        env={
+            **os.environ,
+            "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
+            "FAKE_WRANGLER_LOG": str(log),
+            "FAKE_WRANGLER_CAPTURE": str(tmp_path / "captured.json"),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "matched" in result.stderr
+    assert not log.exists()
+    assert "B" * 43 not in result.stdout + result.stderr
 
 
 def test_failed_bulk_update_is_not_retried_per_secret_and_cleans_payload(tmp_path):
@@ -263,6 +376,9 @@ def test_missing_required_secret_fails_before_any_bulk_mutation(tmp_path):
             "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
             "FAKE_WRANGLER_LOG": str(log),
             "FAKE_WRANGLER_CAPTURE": str(tmp_path / "captured.json"),
+            "PATH": str(tmp_path / "fake-pywrangler" / "bin")
+            + os.pathsep
+            + env["PATH"],
         }
     )
 
@@ -303,8 +419,14 @@ def test_existing_remote_webhook_secret_is_preserved_when_local_value_is_absent(
             "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
             "FAKE_WRANGLER_LOG": str(log),
             "FAKE_WRANGLER_CAPTURE": str(captured),
-            "FAKE_WRANGLER_REMOTE_NAMES": "MAILTRAP_WEBHOOK_SECRET",
+            "FAKE_WRANGLER_REMOTE_NAMES": (
+                "MAILTRAP_WEBHOOK_SECRET,MIRROR_ROUTER_PUBLIC_KEY,"
+                "MIRROR_ROUTER_SIGNING_SEED"
+            ),
             "FORKMESH_SECRET_BULK_BACKOFF": "0",
+            "PATH": str(tmp_path / "fake-pywrangler" / "bin")
+            + os.pathsep
+            + env["PATH"],
         }
     )
 
@@ -332,20 +454,15 @@ def test_existing_remote_data_key_is_authenticated_and_never_bulk_replaced(
     worker, log, captured = _sandbox(tmp_path)
     probe_log = tmp_path / "probe.log"
     curl = tmp_path / "fake-pywrangler" / "bin" / "curl"
-    curl.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '<%s>' \"$@\" > \"$FAKE_DATA_KEY_PROBE_LOG\"\n"
-        "printf '{\"ok\":true}\\n200'\n",
-        encoding="utf-8",
-    )
-    curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
     env = os.environ.copy()
     env.update(
         {
             "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
             "FAKE_WRANGLER_LOG": str(log),
             "FAKE_WRANGLER_CAPTURE": str(captured),
-            "FAKE_WRANGLER_REMOTE_NAMES": "DATA_KEY",
+            "FAKE_WRANGLER_REMOTE_NAMES": (
+                "DATA_KEY,MIRROR_ROUTER_PUBLIC_KEY,MIRROR_ROUTER_SIGNING_SEED"
+            ),
             "FAKE_DATA_KEY_PROBE_LOG": str(probe_log),
             "FORKMESH_SECRET_BULK_BACKOFF": "0",
             "PATH": str(curl.parent) + os.pathsep + env["PATH"],
@@ -376,25 +493,17 @@ def test_first_cutover_preserves_remote_key_then_requires_postdeploy_proof(
     worker, log, captured = _sandbox(tmp_path)
     probe_log = tmp_path / "probe.log"
     curl = tmp_path / "fake-pywrangler" / "bin" / "curl"
-    curl.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '<%s>' \"$@\" >> \"$FAKE_DATA_KEY_PROBE_LOG\"\n"
-        "printf '\\n' >> \"$FAKE_DATA_KEY_PROBE_LOG\"\n"
-        "status=\"${FAKE_DATA_KEY_PROBE_STATUS:-404}\"\n"
-        "if [ \"$status\" = 200 ]; then body='{\"ok\":true}'; "
-        "else body='{\"error\":\"not_found\"}'; fi\n"
-        "printf '%s\\n%s' \"$body\" \"$status\"\n",
-        encoding="utf-8",
-    )
-    curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
     env = os.environ.copy()
     env.update(
         {
             "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
             "FAKE_WRANGLER_LOG": str(log),
             "FAKE_WRANGLER_CAPTURE": str(captured),
-            "FAKE_WRANGLER_REMOTE_NAMES": "DATA_KEY",
+            "FAKE_WRANGLER_REMOTE_NAMES": (
+                "DATA_KEY,MIRROR_ROUTER_PUBLIC_KEY,MIRROR_ROUTER_SIGNING_SEED"
+            ),
             "FAKE_DATA_KEY_PROBE_LOG": str(probe_log),
+            "FAKE_DATA_KEY_PROBE_STATUS": "404",
             "FORKMESH_SECRET_BULK_BACKOFF": "0",
             "PATH": str(curl.parent) + os.pathsep + env["PATH"],
         }
@@ -451,7 +560,12 @@ def test_remote_data_key_requires_a_local_recovery_value(tmp_path):
             "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
             "FAKE_WRANGLER_LOG": str(log),
             "FAKE_WRANGLER_CAPTURE": str(captured),
-            "FAKE_WRANGLER_REMOTE_NAMES": "DATA_KEY",
+            "FAKE_WRANGLER_REMOTE_NAMES": (
+                "DATA_KEY,MIRROR_ROUTER_PUBLIC_KEY,MIRROR_ROUTER_SIGNING_SEED"
+            ),
+            "PATH": str(tmp_path / "fake-pywrangler" / "bin")
+            + os.pathsep
+            + env["PATH"],
         }
     )
 
@@ -485,6 +599,12 @@ def test_invalid_discord_client_id_fails_before_any_bulk_mutation(tmp_path):
             "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
             "FAKE_WRANGLER_LOG": str(log),
             "FAKE_WRANGLER_CAPTURE": str(tmp_path / "captured.json"),
+            "FAKE_WRANGLER_REMOTE_NAMES": (
+                "MIRROR_ROUTER_PUBLIC_KEY,MIRROR_ROUTER_SIGNING_SEED"
+            ),
+            "PATH": str(tmp_path / "fake-pywrangler" / "bin")
+            + os.pathsep
+            + env["PATH"],
         }
     )
 

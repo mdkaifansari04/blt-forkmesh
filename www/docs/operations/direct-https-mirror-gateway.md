@@ -458,9 +458,11 @@ PY
 
 Move the seed directly into the instance operator's secret manager or
 `.env.production`; do not put it in a repository, D1, a mirror manifest, or a
-gateway command argument. `deploy.sh secrets` uploads it as a Worker secret.
-This is a service capability key, not a user, repository-decryption, Solana, or
-wallet key. Mirrors receive only its public key.
+gateway command argument. On first install the complete App deploy publishes
+the pair. Later `deploy.sh secrets` calls deliberately preserve it; use the
+fail-closed `deploy.sh rotate-mirror-router` path for an intentional change.
+This is a service capability key, not a user, repository-decryption, Solana,
+or wallet key. Mirrors receive only its public key.
 
 ### 1. Endpoint registration
 

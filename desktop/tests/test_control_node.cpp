@@ -436,7 +436,8 @@ int main(int argc, char **argv)
               QDir().mkpath(worker + QStringLiteral("/tools")) &&
               QDir().mkpath(worker + QStringLiteral("/src")) &&
               QDir().mkpath(worker + QStringLiteral("/public")) &&
-              QDir().mkpath(worker + QStringLiteral("/migrations")),
+              QDir().mkpath(worker + QStringLiteral("/migrations")) &&
+              QDir().mkpath(worker + QStringLiteral("/edge-control")),
           "temporary source directories created");
     const auto writeFixture = [](const QString &path,
                                  const QByteArray &contents) {
@@ -454,6 +455,10 @@ int main(int argc, char **argv)
     writeFixture(worker + QStringLiteral("/tools/build_dashboard_assets.py"),
                  "# build\n");
     writeFixture(worker + QStringLiteral("/src/entry.py"), "# worker\n");
+    writeFixture(worker + QStringLiteral("/edge-control/worker.js"),
+                 "export default {};\n");
+    writeFixture(worker + QStringLiteral("/edge-control/wrangler.toml"),
+                 "name = \"edge\"\n");
     QFile script(root.filePath(
         QStringLiteral("tools/cloudflare_bootstrap.py")));
     check(script.open(QIODevice::WriteOnly | QIODevice::Truncate),
@@ -532,7 +537,8 @@ int main(int argc, char **argv)
               QDir().mkpath(installedWorker + QStringLiteral("/tools")) &&
               QDir().mkpath(installedWorker + QStringLiteral("/src")) &&
               QDir().mkpath(installedWorker + QStringLiteral("/public")) &&
-              QDir().mkpath(installedWorker + QStringLiteral("/migrations")),
+              QDir().mkpath(installedWorker + QStringLiteral("/migrations")) &&
+              QDir().mkpath(installedWorker + QStringLiteral("/edge-control")),
           "CMake-style installed resource directories created");
     writeFixture(installedTools + QStringLiteral("/cloudflare_bootstrap.py"),
                  "#!/usr/bin/env python3\n");
@@ -554,6 +560,11 @@ int main(int argc, char **argv)
         "# build\n");
     writeFixture(installedWorker + QStringLiteral("/src/entry.py"),
                  "# worker\n");
+    writeFixture(installedWorker + QStringLiteral("/edge-control/worker.js"),
+                 "export default {};\n");
+    writeFixture(
+        installedWorker + QStringLiteral("/edge-control/wrangler.toml"),
+        "name = \"edge\"\n");
     const QString installedBootstrap =
         forkmesh::control::findCloudflareBootstrapScript(
             QString(), installedBin);
@@ -590,8 +601,13 @@ int main(int argc, char **argv)
                       .canonicalFilePath(),
           "all direct-mirror tools resolve from installed resources");
 
-    QFile::remove(
-        installedWorker + QStringLiteral("/src/entry.py"));
+    QFile::remove(installedWorker + QStringLiteral("/edge-control/worker.js"));
+    check(forkmesh::control::findCloudflareBootstrapScript(
+              QString(), installedBin).isEmpty(),
+          "installed Worker bundle without edge control fails closed");
+    writeFixture(installedWorker + QStringLiteral("/edge-control/worker.js"),
+                 "export default {};\n");
+    QFile::remove(installedWorker + QStringLiteral("/src/entry.py"));
     check(forkmesh::control::findCloudflareBootstrapScript(
               QString(), installedBin).isEmpty(),
           "incomplete installed Worker bundle fails closed");
@@ -1655,6 +1671,20 @@ int main(int argc, char **argv)
               healthyMirror(QStringLiteral("mirror1"))) &&
               !forkmesh::control::mirrorCatalogEntryIsHealthy(staleMirror),
           "fleet health requires the complete public traffic health contract");
+    check(forkmesh::control::vultrProvisionBlocksFleetReconciliation(
+              true, false, QString()) &&
+              forkmesh::control::vultrProvisionBlocksFleetReconciliation(
+                  false, true, QString()) &&
+              forkmesh::control::vultrProvisionBlocksFleetReconciliation(
+                  false, false, QStringLiteral("active")) &&
+              forkmesh::control::vultrProvisionBlocksFleetReconciliation(
+                  false, false, QStringLiteral("FAILED")) &&
+              !forkmesh::control::vultrProvisionBlocksFleetReconciliation(
+                  false, false, QStringLiteral("succeeded")) &&
+              !forkmesh::control::vultrProvisionBlocksFleetReconciliation(
+                  false, false, QString()),
+          "an active or resumable Vultr checkpoint blocks fleet replacement "
+          "until retry succeeds or the checkpoint is ended");
 
     // --- Installing a fresh mirror without a published release (adhoc #408) -
     check(forkmesh::control::localBinaryRunsOnVultrMirror(

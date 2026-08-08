@@ -64,4 +64,5 @@ def test_deploy_coordinator_checks_www_as_an_independent_target():
     assert '"$0" world' in DEPLOY
     assert '"$0" www' in DEPLOY
     assert 'DEPLOY_VERIFY_WWW_URL:-https://forkmesh.com' in DEPLOY
-    assert 'Usage: $0 [deploy|changed|app|world|www|' in DEPLOY
+    usage = next(line for line in DEPLOY.splitlines() if "Usage: $0 [" in line)
+    assert "|world|www|" in usage

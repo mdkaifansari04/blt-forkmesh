@@ -154,7 +154,7 @@ def test_worker_error_log_reports_to_sentry_and_preserves_d1_log():
 def test_sentry_cron_monitor_checkins_are_disabled():
     # The Sentry cron monitor check-ins are commented out for now (adhoc #158).
     # The helper machinery is left intact so the monitor can be re-enabled by
-    # uncommenting the two call sites in scheduled(), but no check-in is
+    # uncommenting the two call sites in the alarm batch, but no check-in is
     # actually sent on a cron tick.
     assert 'SENTRY_CRON_MONITOR_SLUG = "forkmesh-relay"' in ENTRY_TEXT
     assert "async def capture_sentry_cron_check_in" in ENTRY_TEXT
@@ -166,19 +166,19 @@ def test_sentry_cron_monitor_checkins_are_disabled():
     assert '"checkin_margin": _sentry_int_env(' in ENTRY_TEXT
     assert '"max_runtime": _sentry_int_env(' in ENTRY_TEXT
 
-    scheduled = ENTRY_TEXT.split("async def scheduled", 1)[1] \
+    jobs = ENTRY_TEXT.split("async def _run_scheduled_jobs", 1)[1] \
         .split("async def fetch", 1)[0]
-    # No live (uncommented) check-in call remains in the scheduled handler.
-    for line in scheduled.splitlines():
+    # No live (uncommented) check-in call remains in the alarm batch.
+    for line in jobs.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
         assert "capture_sentry_cron_check_in(" not in stripped
     # The commented-out call sites are still present for easy re-enabling.
-    assert "# await capture_sentry_cron_check_in(" in scheduled
+    assert "# await capture_sentry_cron_check_in(" in jobs
     # The failure-logging path (independent of the Sentry monitor) still runs.
-    assert "await log_cron_error(" in scheduled
-    assert "error=error, failures=cron_failures" in scheduled
+    assert "await log_cron_error(" in jobs
+    assert "error=error, failures=cron_failures" in jobs
 
     assert "SENTRY_CRON_MONITOR_SLUG=forkmesh-relay" in ENV_EXAMPLE_TEXT
     assert "SENTRY_CRON_CHECKIN_MARGIN_MINUTES=1" in ENV_EXAMPLE_TEXT

@@ -1,5 +1,7 @@
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -21,6 +23,8 @@ def test_each_worker_has_distinct_inputs():
 
     assert deploy_targets.TARGETS == ("app", "world", "www")
     assert "app/wrangler.toml" in manifests["app"]
+    assert "app/edge-control/wrangler.toml" in manifests["app"]
+    assert "app/edge-control/worker.js" in manifests["app"]
     assert "app/src/entry.py" in manifests["app"]
     assert "app/public/dashboard/repo.html" in manifests["app"]
     assert "www/wrangler.toml" in manifests["www"]
@@ -96,3 +100,71 @@ def test_live_worker_fingerprint_is_the_cross_runner_source_of_truth():
     assert "x-forkmesh-deploy-fingerprint" in www
     assert "x-forkmesh-deploy-fingerprint" in world
     assert '--var "DEPLOY_FINGERPRINT:${DEPLOY_TARGET_FINGERPRINT}"' in deploy
+
+
+def test_static_worker_skip_requires_matching_live_fingerprint(tmp_path):
+    deploy = (REPOSITORY / "app/deploy.sh").read_text(encoding="utf-8")
+    changed = deploy[deploy.index("deploy_target_is_changed() {"):deploy.index(
+        "\n}\n\nmark_deploy_target()"
+    ) + 2]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    curl = fake_bin / "curl"
+    curl.write_text(
+        """#!/usr/bin/env bash
+case "${LIVE_PROBE_MODE:-matching}" in
+  matching) printf 'HTTP/2 200\\nx-forkmesh-deploy-fingerprint: %s\\n\\n' "$LIVE_FINGERPRINT" ;;
+  stale) printf 'HTTP/2 200\\nx-forkmesh-deploy-fingerprint: %064d\\n\\n' 0 ;;
+  missing) printf 'HTTP/2 404\\n\\n' ;;
+  unreachable) exit 28 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    fingerprint = deploy_targets.fingerprint("www")
+    script = changed + "\ndeploy_target_is_changed www; exit $?\n"
+    base_env = {
+        **os.environ,
+        "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+        "LIVE_FINGERPRINT": fingerprint,
+        "DEPLOY_VERIFY_WWW_URL": "https://www.example",
+    }
+
+    matching = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPOSITORY / "app",
+        env=base_env,
+        check=False,
+    )
+    assert matching.returncode == 3
+
+    for mode in ("stale", "missing", "unreachable"):
+        attempted = subprocess.run(
+            ["bash", "-c", script],
+            cwd=REPOSITORY / "app",
+            env={**base_env, "LIVE_PROBE_MODE": mode},
+            check=False,
+        )
+        assert attempted.returncode == 0, mode
+
+
+def test_static_worker_skip_does_not_trust_local_state_without_curl(tmp_path):
+    deploy = (REPOSITORY / "app/deploy.sh").read_text(encoding="utf-8")
+    changed = deploy[deploy.index("deploy_target_is_changed() {"):deploy.index(
+        "\n}\n\nmark_deploy_target()"
+    ) + 2]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "python3").symlink_to(Path(os.environ.get("PYTHON", "/usr/bin/python3")))
+    result = subprocess.run(
+        ["/bin/bash", "-c", changed + "\ndeploy_target_is_changed world; exit $?\n"],
+        cwd=REPOSITORY / "app",
+        env={
+            **os.environ,
+            "PATH": str(fake_bin),
+            "DEPLOY_VERIFY_WORLD_URL": "https://world.example",
+        },
+        check=False,
+    )
+    assert result.returncode == 0

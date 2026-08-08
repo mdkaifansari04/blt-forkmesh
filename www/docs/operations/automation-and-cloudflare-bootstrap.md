@@ -7,9 +7,14 @@ repository.
 ## Cloudflare Worker, D1, DNS, and relay bootstrap
 
 `tools/cloudflare_bootstrap.py` creates or reuses D1 and KV storage, applies all
-ForkMesh migrations, deploys the App and static assets, creates proxied DNS,
-attaches the `hostname/*` Worker route, and verifies both `/health` and an
-authenticated database/encryption probe.
+ForkMesh migrations, deploys the App plus its small JavaScript control plane,
+creates proxied DNS, attaches the broad `hostname/*` App route and the three
+specific control routes, and verifies an authenticated database/encryption probe
+alongside `/health`. The JavaScript control plane owns only scheduled ingress,
+health, version, and mirror identity. Health, version, and mirror identity do
+not wait for Python to start. The minute trigger does: it awaits the App-owned
+durable object, and the `CronRunner` maintenance continues to run in the App's
+Python/Pyodide runtime.
 
 The deployment is a ForkMesh relay and mirror-routing instance. Setting
 `--main-relay-url` lets its mirror operators participate in the existing relay
@@ -28,19 +33,52 @@ Create a scoped Cloudflare API token with only:
 - DNS edit for the selected zone
 - Workers Routes edit for the selected zone
 
-Then run:
+Every App has a dedicated Ed25519 router identity, separate from both the
+node/manifest identity and `DATA_KEY`. A new one-click installation needs no
+router secret in the environment. On apply, the bootstrap uses the operating
+system CSPRNG to create a matched seed/public-key pair without printing it,
+validates the pair with Ed25519 public derivation, and atomically creates this
+owner-only recovery file:
+
+```text
+~/.config/forkmesh/secrets/<worker>.router-identity.json
+```
+
+The file is outside the repository with mode `0600`; its parent directory is
+created with mode `0700`. Back it up in the operator's encrypted secret store.
+Use `--router-identity-backup /secure/path/router-identity.json` or
+`FORKMESH_ROUTER_IDENTITY_BACKUP` to choose another out-of-repository path.
+`--dry-run` reports that generation would happen on apply, but generates no seed
+and creates no file.
+
+Then run the one-click path directly:
 
 ```bash
 export CLOUDFLARE_API_TOKEN="locally-supplied-token"  # forkmesh-secret-scan:ignore-line
 python3 tools/cloudflare_bootstrap.py --auto-configure
 ```
 
+For an encrypted-backup restore, operators may instead provide both
+`MIRROR_ROUTER_SIGNING_SEED` and `MIRROR_ROUTER_PUBLIC_KEY` in the local
+environment. The CLI automatically sends them through Wrangler's secret-stdin
+path and creates or checks the recovery file. Before Cloudflare mutation it
+derives the Ed25519 public key from the 32-byte seed and requires an exact
+match. The seed is never put in argv, a temporary config, the edge Worker,
+summary, log message, or JSON output. Secret staging publishes the signing seed
+first and the public key last, so an interrupted installation continues to fail
+closed instead of advertising a key without its matching signer. The
+edge-control Worker receives only the public key.
+
 Add `--with-world` to provision the optional World at
 `forkmesh-world.<zone>`. The bootstrap stages `world/public`, deploys a
 separate static Worker with `APP_ORIGIN=https://forkmesh.<zone>`, and creates
 only that custom DNS/route pair. It never reuses the official
 `world.forkmesh.com` route. Advanced layouts can set `--world-hostname` and
-`--world-worker-name`; both remain inside the selected zone/account.
+`--world-worker-name`; both remain inside the selected zone/account. The App
+and edge publish that World in `WORLD_ORIGIN` and credentialed CORS only after
+the World Worker, proxied DNS, route, and configured health check succeed. An
+App-only install renders an empty `WORLD_ORIGIN` and trusts only its own origin;
+a dormant `forkmesh-world.<zone>` hostname is not trusted.
 
 On a new database this generates `DATA_KEY` with the operating system CSPRNG,
 writes a mode-`0600` recovery copy under
@@ -58,6 +96,41 @@ has a remote `DATA_KEY` but no recovery copy fails closed: restore the value
 from the operator secret store through `--secret-env DATA_KEY`, and the rerun
 will create the protected recovery file. Cloudflare exposes secret names but
 cannot export secret values.
+
+Router identity has a separate rerun guard. Before mutation, the bootstrap
+confirms the named App Worker exists, reads all routes that can overlap the
+selected hostname, and proves the hostname has only proxied A, AAAA, or CNAME
+records in the requested zone. TXT verification records do not affect that DNS
+proof. Only the canonical broad App route, the three exact edge routes, or an
+App-owned custom domain are accepted; `--replace-route` cannot bypass an
+unexpected overlapping route.
+
+Only after those ownership checks does a rerun read
+`https://<hostname>/api/mirrors/https` with cache bypass over public HTTPS. It
+accepts only the exact ForkMesh identity contract, a canonical 32-byte
+base64url public key, HTTP 200, and no redirect. That key is pinned into the
+replacement edge configuration without requiring Cloudflare to export the
+remote seed. An unavailable, redirected, malformed, or unexpected `503`
+response fails before D1, DNS, routes, secrets, or either Worker changes. A
+local pair or recovery file must match the published key and cannot rotate it.
+
+An interrupted first installation may resume from its validated mode-`0600`
+recovery file only when no live public identity can have been established: for
+example, the App broad route is owned by the requested script, the edge identity
+route and remote public-key secret are absent, and the exact App fail-closed
+identity response is `503` (when proxied DNS exists). The recovery path is also
+used when pending DNS is not yet proxied; the public endpoint is never trusted
+through unproxied DNS. A valid live public identity always wins and can never be
+overridden by the recovery file.
+
+After deployment and route creation, success additionally requires the
+unoverlaid Python `/api/mainnode` response to prove that its selected public key
+has a matching signing seed, and requires the edge identity route to expose that
+exact same key. The App and edge configs also receive one deterministic build
+revision, product version, and bundle fingerprint. `/api/mainnode` and the edge
+`/api/version` must report the exact shared identity and their expected worker
+roles. Self-host App, edge, and optional World Workers all disable their
+alternate `workers.dev` origins.
 
 The token-only path succeeds only when the scoped token can see exactly one
 account and one active zone. It derives `forkmesh.<zone>` for the relay,
@@ -94,6 +167,13 @@ Important security behavior:
 - The token is passed to Wrangler only through the child-process environment.
 - A temporary Wrangler configuration contains public IDs and URLs only. It is
   permission-restricted and removed after deployment.
+- The sibling edge-control Worker has no public hostname of its own. It receives
+  only the App's three specific routes and an external binding to the existing
+  App-owned maintenance Durable Object.
+- New installs generate and persist a cryptographically matched router identity
+  before Cloudflare mutation. Restored local values must match each other;
+  reruns pin the public key already served by the owned App origin and fail
+  before mutation if that identity cannot be recovered safely.
 - The checked-in `wrangler.toml` and local `.env` files are not modified.
 - Existing Worker application secrets can be named explicitly with
   `--secret-env NAME`. Each value is read from the local environment and piped
@@ -146,10 +226,11 @@ unset DATA_KEY
 test "$(stat -c '%a' "$HOME/.config/forkmesh/secrets/example-forkmesh.data-key")" = 600
 ```
 
-Use `--dry-run` for read-only account and zone validation. Existing matching
-D1, DNS, and route resources are reused. A conflicting DNS record or Worker
-route fails closed unless the operator explicitly supplies `--replace-dns` or
-`--replace-route`.
+Use `--dry-run` for read-only account, zone, DNS, Worker-presence, route, and
+router-identity validation. Existing matching D1, DNS, and route resources are
+reused. A single unproxied address record can be replaced only with explicit
+`--replace-dns`; mixed address records and unexpected routes overlapping the
+App hostname fail closed for identity safety even when a replace flag is set.
 
 The bootstrap does not approve itself on another operator’s main relay and does
 not install a repository host on an unrelated computer. Those actions require

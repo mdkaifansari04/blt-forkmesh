@@ -17,6 +17,8 @@ trim() {
 
 VAR_ARGS=()
 CF_ACCOUNT_ID_SET=0
+EDGE_ROUTER_PUBLIC_KEY=""
+EDGE_ROUTER_SIGNING_SEED=""
 if [ -f "$ENV_FILE" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac   # skip blanks/comments
@@ -24,6 +26,11 @@ if [ -f "$ENV_FILE" ]; then
         key="$(trim "${line%%=*}")"
         value="$(trim "${line#*=}")"
         [ -z "$key" ] && continue
+        if [ "$key" = "MIRROR_ROUTER_PUBLIC_KEY" ]; then
+            EDGE_ROUTER_PUBLIC_KEY="$value"
+        elif [ "$key" = "MIRROR_ROUTER_SIGNING_SEED" ]; then
+            EDGE_ROUTER_SIGNING_SEED="$value"
+        fi
         case "$key" in
             CLOUDFLARE_ACCOUNT_ID)
                 if [ -n "$value" ]; then
@@ -180,28 +187,53 @@ PYEOF
 
 verify_deploy() {
     local expected="$1"
-    local base="${DEPLOY_VERIFY_URL:-https://app.forkmesh.com}"
+    local endpoint="${2:-/api/version}"
+    local base="${3:-${DEPLOY_VERIFY_URL:-https://app.forkmesh.com}}"
+    local expected_fingerprint="${4:-}"
+    local expected_router_public_key="${5:-}"
     base="${base%/}"
-    local url="$base/api/version"
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "note: curl not found — skipping post-deploy verification." >&2
-        return 0
-    fi
+    case "$endpoint" in
+        /*) ;;
+        *)
+            echo "ERROR: deploy verification endpoint must be an absolute path." >&2
+            return 2
+            ;;
+    esac
+    local url="$base$endpoint"
     echo "Verifying $url is serving BUILD_REV=$expected ..."
-    local attempts=30 max_time=25 sleep_s=6
-    local attempt body got http_code curl_rc via
+    local attempts="${FORKMESH_DEPLOY_VERIFY_ATTEMPTS:-30}"
+    local max_time="${FORKMESH_DEPLOY_VERIFY_TIMEOUT:-25}"
+    local sleep_s="${FORKMESH_DEPLOY_VERIFY_BACKOFF:-6}"
+    local attempt body got worker fingerprint router_public_key router_ready
+    local http_code curl_rc via
     for attempt in $(seq 1 "$attempts"); do
-        curl_rc=0
-        via=curl
-        body="$(curl -sS --max-time "$max_time" -w $'\n%{http_code}' "$url" 2>/dev/null)" || curl_rc=$?
-        if [ "$curl_rc" != 0 ] && body="$(_py_http_get "$url")"; then
+        if command -v curl >/dev/null 2>&1; then
+            curl_rc=0
+            via=curl
+            body="$(curl -sS --max-time "$max_time" -w $'\n%{http_code}' "$url" 2>/dev/null)" || curl_rc=$?
+            if [ "$curl_rc" != 0 ] && body="$(_py_http_get "$url")"; then
+                curl_rc=0
+                via=python3
+            fi
+        else
             curl_rc=0
             via=python3
+            body="$(_py_http_get "$url")" || curl_rc=$?
         fi
         http_code="${body##*$'\n'}"
         body="${body%$'\n'*}"
         got="$(printf '%s' "$body" | sed -n 's/.*"rev"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-        if [ "$curl_rc" = 0 ] && [ "$http_code" = "200" ] && [ "$got" = "$expected" ]; then
+        worker="$(printf '%s' "$body" | sed -n 's/.*"worker"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+        fingerprint="$(printf '%s' "$body" | sed -n 's/.*"deployFingerprint"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{64\}\)".*/\1/p')"
+        router_public_key="$(printf '%s' "$body" | sed -n 's/.*"routerPublicKey"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_-]\{43\}\)".*/\1/p')"
+        router_ready="$(printf '%s' "$body" | sed -n 's/.*"routerIdentityReady"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')"
+        if [ "$curl_rc" = 0 ] && [ "$http_code" = "200" ] && \
+           [ "$got" = "$expected" ] && [ "$worker" = "app" ] && \
+           { [ -z "$expected_fingerprint" ] || \
+             [ "$fingerprint" = "$expected_fingerprint" ]; } && \
+           { [ -z "$expected_router_public_key" ] || \
+             { [ "$router_public_key" = "$expected_router_public_key" ] && \
+               [ "$router_ready" = "true" ]; }; }; then
             echo "Verified: live origin is serving build $expected (via $via)."
             if [ "$via" = "python3" ]; then
                 echo "note: curl could not reach $url but python3 could — a host" >&2
@@ -213,7 +245,7 @@ verify_deploy() {
         if [ "$curl_rc" != 0 ]; then
             echo "  attempt $attempt/$attempts: curl failed (exit $curl_rc, e.g. timeout/DNS/TLS); retrying in ${sleep_s}s..." >&2
         else
-            echo "  attempt $attempt/$attempts: HTTP $http_code, live rev='${got:-<none>}' (want '$expected', via $via); retrying in ${sleep_s}s..." >&2
+            echo "  attempt $attempt/$attempts: HTTP $http_code, live rev='${got:-<none>}', worker='${worker:-<none>}', fingerprint='${fingerprint:-<none>}', router-ready='${router_ready:-<none>}' (want '$expected' via app with the deployed identity, via $via); retrying in ${sleep_s}s..." >&2
         fi
         sleep "$sleep_s"
     done
@@ -226,13 +258,174 @@ verify_deploy() {
         echo "       server-side/routing error, not a stale-code mismatch — check the Worker's" >&2
         echo "       error log (admin dashboard) for what's failing on that origin." >&2
     else
-        echo "       Last live rev was '${got:-<none>}'. The upload did NOT take effect on" >&2
+        echo "       Last live rev/fingerprint was '${got:-<none>}'/'${fingerprint:-<none>}'. The upload did NOT take effect on" >&2
         echo "       this origin (most likely it hit the wrong Cloudflare account, or the" >&2
         echo "       custom domain still routes to an old Worker). Check that" >&2
         echo "       CLOUDFLARE_ACCOUNT_ID in $ENV_FILE matches the account that owns" >&2
         echo "       app.forkmesh.com, then redeploy." >&2
     fi
     return 1
+}
+
+_json_string_field() {
+    local field="$1"
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$field" 3<&0 <<'PYEOF'
+import json
+import os
+import sys
+
+try:
+    value = json.load(os.fdopen(3)).get(sys.argv[1], "")
+except (AttributeError, json.JSONDecodeError, OSError, TypeError):
+    raise SystemExit(1)
+if not isinstance(value, str):
+    raise SystemExit(1)
+sys.stdout.write(value)
+PYEOF
+}
+
+_json_boolean_field() {
+    local field="$1"
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$field" 3<&0 <<'PYEOF'
+import json
+import os
+import sys
+
+try:
+    value = json.load(os.fdopen(3)).get(sys.argv[1])
+except (AttributeError, json.JSONDecodeError, OSError, TypeError):
+    raise SystemExit(1)
+if value is True:
+    sys.stdout.write("true")
+elif value is False:
+    sys.stdout.write("false")
+else:
+    raise SystemExit(1)
+PYEOF
+}
+
+_router_identity_is_disabled() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - 3<&0 <<'PYEOF'
+import json
+import os
+
+try:
+    value = json.load(os.fdopen(3))
+except (json.JSONDecodeError, OSError, TypeError):
+    raise SystemExit(1)
+valid = (
+    isinstance(value, dict)
+    and value.get("ok") is False
+    and value.get("protocol") == "forkmesh-masked-proxy-v1"
+    and value.get("registration") == "forkmesh-https-endpoint-v1"
+    and value.get("routerPublicKey") == ""
+)
+raise SystemExit(0 if valid else 1)
+PYEOF
+}
+
+_http_json_get() {
+    local url="$1" response status
+    if command -v curl >/dev/null 2>&1; then
+        response="$(curl -sS --max-time 25 -w $'\n%{http_code}' \
+            -H "Accept: application/json" "$url" 2>/dev/null)" || response=""
+    else
+        response="$(_py_http_get "$url")" || response=""
+    fi
+    [ -n "$response" ] || return 1
+    status="${response##*$'\n'}"
+    [ "$status" = "200" ] || return 1
+    printf '%s' "${response%$'\n'*}"
+}
+
+live_router_public_key() {
+    local base="${1:-$(edge_control_verify_url)}" body key
+    body="$(_http_json_get "${base%/}/api/mirrors/https")" || return 1
+    key="$(printf '%s' "$body" | _json_string_field routerPublicKey)" || return 1
+    [[ "$key" =~ ^[A-Za-z0-9_-]{43}$ ]] || return 1
+    printf '%s' "$key"
+}
+
+verify_live_router_public_key() {
+    local expected="$1"
+    local base="${2:-$(edge_control_verify_url)}"
+    local attempts="${FORKMESH_ROUTER_VERIFY_ATTEMPTS:-${3:-10}}"
+    local sleep_s="${FORKMESH_ROUTER_VERIFY_BACKOFF:-${4:-3}}" attempt live=""
+    for attempt in $(seq 1 "$attempts"); do
+        live="$(live_router_public_key "$base")" || live=""
+        if [ "$live" = "$expected" ]; then
+            echo "Verified the live mirror-router public identity."
+            return 0
+        fi
+        if [ "$attempt" -lt "$attempts" ]; then
+            echo "  attempt $attempt/$attempts: mirror-router identity is unavailable or different; retrying in ${sleep_s}s..." >&2
+            sleep "$sleep_s"
+        fi
+    done
+    echo "ERROR: ${base%/}/api/mirrors/https did not report the expected mirror-router public key." >&2
+    return 1
+}
+
+_router_key_pair_matches() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - 3<<<"$EDGE_ROUTER_PUBLIC_KEY" \
+        4<<<"$EDGE_ROUTER_SIGNING_SEED" <<'PYEOF'
+import base64
+import hashlib
+import os
+
+
+def decode(value):
+    if len(value) != 43:
+        raise ValueError
+    raw = base64.b64decode(value + "=", altchars=b"-_", validate=True)
+    if len(raw) != 32:
+        raise ValueError
+    canonical = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    if canonical != value:
+        raise ValueError
+    return raw
+
+
+def add(left, right):
+    prime = 2**255 - 19
+    curve_d = -121665 * pow(121666, prime - 2, prime) % prime
+    x1, y1 = left
+    x2, y2 = right
+    product = x1 * x2 * y1 * y2 % prime
+    x3 = (x1 * y2 + y1 * x2) * pow(1 + curve_d * product, prime - 2, prime)
+    y3 = (y1 * y2 + x1 * x2) * pow(1 - curve_d * product, prime - 2, prime)
+    return x3 % prime, y3 % prime
+
+
+def public_from_seed(seed):
+    digest = hashlib.sha512(seed).digest()
+    scalar = int.from_bytes(digest[:32], "little")
+    scalar = (scalar & ((1 << 254) - 8)) | (1 << 254)
+    point = (0, 1)
+    addend = (
+        15112221349535400772501151409588531511454012693041857206046113283949847762202,
+        46316835694926478169428394003475163141307993866256225615783033603165251855960,
+    )
+    while scalar:
+        if scalar & 1:
+            point = add(point, addend)
+        addend = add(addend, addend)
+        scalar >>= 1
+    x, y = point
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+try:
+    public = decode(os.fdopen(3).read().strip())
+    seed = decode(os.fdopen(4).read().strip())
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if public_from_seed(seed) == public else 1)
+PYEOF
 }
 
 official_multi_host_enabled() {
@@ -316,9 +509,9 @@ PYEOF
 push_secrets() {
     local action="${1:-publish}"
     case "$action" in
-        validate|publish) ;;
+        validate|publish|publish-preserve-router) ;;
         *)
-            echo "ERROR: internal push_secrets action must be validate or publish." >&2
+            echo "ERROR: invalid internal push_secrets action." >&2
             return 2
             ;;
     esac
@@ -332,6 +525,8 @@ push_secrets() {
 
     if [ "$action" = "validate" ]; then
         echo "Validating production secrets in: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+    elif [ "$action" = "publish-preserve-router" ]; then
+        echo "Pushing non-router secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
     else
         echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
     fi
@@ -411,6 +606,38 @@ push_secrets() {
             return 1
         fi
         echo "  preserving existing remote secret(s): ${remote_only[*]}"
+    fi
+    if [ "$action" = "publish-preserve-router" ]; then
+        local router_secret
+        for router_secret in MIRROR_ROUTER_PUBLIC_KEY MIRROR_ROUTER_SIGNING_SEED; do
+            if [[ "$remote_secrets" != *"\"$router_secret\""* ]]; then
+                echo "ERROR: $router_secret is not present on the existing App Worker." >&2
+                echo "       Generic secret updates cannot create or rotate the mirror-router identity." >&2
+                echo "       Use './deploy.sh rotate-mirror-router' with a matched local key pair." >&2
+                return 1
+            fi
+        done
+        local router_filtered_names=() router_filtered_values=()
+        local router_index
+        for router_index in "${!pushed[@]}"; do
+            case "${pushed[$router_index]}" in
+                MIRROR_ROUTER_PUBLIC_KEY|MIRROR_ROUTER_SIGNING_SEED) ;;
+                *)
+                    router_filtered_names+=("${pushed[$router_index]}")
+                    router_filtered_values+=("${secret_values[$router_index]}")
+                    ;;
+            esac
+        done
+        pushed=("${router_filtered_names[@]}")
+        secret_values=("${router_filtered_values[@]}")
+        count="${#pushed[@]}"
+        for router_secret in MIRROR_ROUTER_PUBLIC_KEY MIRROR_ROUTER_SIGNING_SEED; do
+            case " ${remote_only[*]-} " in
+                *" $router_secret "*) ;;
+                *) remote_only+=("$router_secret") ;;
+            esac
+        done
+        echo "  preserving the coordinated remote mirror-router key pair"
     fi
     if [[ "$remote_secrets" == *'"DATA_KEY"'* ]]; then
         local data_key_value="" filtered_names=() filtered_values=()
@@ -786,14 +1013,51 @@ commit_release_metadata() {
 
 deploy_target_is_changed() {
     local target="$1"
-    local current remote="" base headers
+    local current remote="" base headers edge_marker=""
     current="$(python3 tools/deploy_targets.py fingerprint "$target")" || return 1
     if command -v curl >/dev/null 2>&1; then
         case "$target" in
             app)
                 base="${DEPLOY_VERIFY_URL:-https://app.forkmesh.com}"
-                remote="$(curl -fsS --max-time 15 "${base%/}/api/version" 2>/dev/null | \
-                    sed -n 's/.*"deployFingerprint"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{64\}\)".*/\1/p' || true)"
+                local edge_base edge_body="" backend_body="" identity_body=""
+                local edge_fingerprint="" edge_rev="" edge_worker=""
+                local backend_fingerprint="" backend_rev="" backend_worker=""
+                local backend_router_public_key="" backend_router_ready=""
+                local router_public_key=""
+                edge_base="$(edge_control_verify_url)"
+                edge_body="$(_http_json_get "${edge_base%/}/api/version")" || edge_body=""
+                backend_body="$(_http_json_get "${base%/}/api/mainnode")" || backend_body=""
+                identity_body="$(_http_json_get "${edge_base%/}/api/mirrors/https")" || identity_body=""
+                if [ -n "$edge_body" ]; then
+                    edge_fingerprint="$(printf '%s' "$edge_body" | _json_string_field deployFingerprint 2>/dev/null || true)"
+                    edge_rev="$(printf '%s' "$edge_body" | _json_string_field rev 2>/dev/null || true)"
+                    edge_worker="$(printf '%s' "$edge_body" | _json_string_field worker 2>/dev/null || true)"
+                fi
+                if [ -n "$backend_body" ]; then
+                    backend_fingerprint="$(printf '%s' "$backend_body" | _json_string_field deployFingerprint 2>/dev/null || true)"
+                    backend_rev="$(printf '%s' "$backend_body" | _json_string_field rev 2>/dev/null || true)"
+                    backend_worker="$(printf '%s' "$backend_body" | _json_string_field worker 2>/dev/null || true)"
+                    backend_router_public_key="$(printf '%s' "$backend_body" | _json_string_field routerPublicKey 2>/dev/null || true)"
+                    backend_router_ready="$(printf '%s' "$backend_body" | _json_boolean_field routerIdentityReady 2>/dev/null || true)"
+                fi
+                if [ -n "$identity_body" ]; then
+                    router_public_key="$(printf '%s' "$identity_body" | _json_string_field routerPublicKey 2>/dev/null || true)"
+                fi
+                headers="$(curl -sSI --max-time 15 "${edge_base%/}/api/version" 2>/dev/null || true)"
+                edge_marker="$(printf '%s\n' "$headers" | awk -F': *' 'tolower($1) == "x-forkmesh-edge-control" { value=$2 } END { sub(/\r$/, "", value); print value }')"
+                if [ "$edge_fingerprint" = "$current" ] && \
+                   [ "$backend_fingerprint" = "$current" ] && \
+                   [ "$edge_worker" = "app" ] && \
+                   [ "$backend_worker" = "app" ] && \
+                   [ -n "$edge_rev" ] && [ "$edge_rev" != "dev" ] && \
+                   [ "$backend_rev" = "$edge_rev" ] && \
+                   [ "$backend_router_public_key" = "$EDGE_ROUTER_PUBLIC_KEY" ] && \
+                   [ "$backend_router_ready" = "true" ] && \
+                   [ "$edge_marker" = "active" ] && \
+                   [ "$router_public_key" = "$EDGE_ROUTER_PUBLIC_KEY" ]; then
+                    return 3
+                fi
+                return 0
                 ;;
             world)
                 base="${DEPLOY_VERIFY_WORLD_URL:-https://world.forkmesh.com}"
@@ -806,23 +1070,15 @@ deploy_target_is_changed() {
             headers="$(curl -sSI --max-time 15 "${base%/}/" 2>/dev/null || true)"
             remote="$(printf '%s\n' "$headers" | awk -F': *' 'tolower($1) == "x-forkmesh-deploy-fingerprint" { value=$2 } END { sub(/\r$/, "", value); print value }')"
         fi
-        if [ -n "$remote" ] && [ "$remote" = "$current" ]; then
+        if [ -n "$remote" ] && [ "$remote" = "$current" ] && \
+           { [ "$target" != "app" ] || [ "$edge_marker" = "active" ]; }; then
             return 3
         fi
         if [ -n "$remote" ]; then
             return 0
         fi
     fi
-    if python3 tools/deploy_targets.py changed "$target" >/dev/null; then
-        return 0
-    else
-        local status=$?
-    fi
-    if [ "$status" = "3" ]; then
-        return 3
-    fi
-    echo "ERROR: could not calculate the $target Worker deployment state." >&2
-    return "$status"
+    return 0
 }
 
 mark_deploy_target() {
@@ -927,18 +1183,166 @@ deploy_app_version() {
     )
 }
 
+deploy_edge_control_version() {
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "ERROR: npm is required to deploy the App edge-control Worker." >&2
+        return 1
+    fi
+    local router_public_key="${1-$EDGE_ROUTER_PUBLIC_KEY}"
+    local edge_args=(
+        --var "BUILD_REV:${BUILD_REV}"
+        --var "APP_VERSION:${APP_VERSION}"
+        --var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}"
+        --var "DEPLOY_FINGERPRINT:${DEPLOY_TARGET_FINGERPRINT}"
+        --var "MIRROR_ROUTER_PUBLIC_KEY:${router_public_key}"
+    )
+    (
+        cd edge-control
+        npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.120.0}" -- \
+            wrangler deploy --config wrangler.toml "${edge_args[@]}"
+    )
+}
+
+require_edge_router_public_key() {
+    if [[ "$EDGE_ROUTER_PUBLIC_KEY" =~ ^[A-Za-z0-9_-]{43}$ ]] && \
+       [[ "$EDGE_ROUTER_SIGNING_SEED" =~ ^[A-Za-z0-9_-]{43}$ ]] && \
+       _router_key_pair_matches; then
+        return 0
+    fi
+    echo "ERROR: the local mirror-router public key and signing seed must be a matched" >&2
+    echo "       pair of 32-byte base64url Ed25519 values." >&2
+    echo "       Restore both values in $ENV_FILE before deploying; no Worker was changed." >&2
+    return 1
+}
+
+ROUTER_ROTATION_ACTIVE=0
+authorize_router_rotation() {
+    ROUTER_ROTATION_ACTIVE=0
+    local live_key=""
+    if ! live_key="$(live_router_public_key "$(edge_control_verify_url)")"; then
+        if [ "${FORKMESH_FIRST_DEPLOY:-0}" = "1" ]; then
+            ROUTER_ROTATION_ACTIVE=1
+            echo "  first deployment: the edge identity will be established through a fail-closed state"
+            return 0
+        fi
+        if [ "${FORKMESH_ALLOW_ROUTER_KEY_ROTATION:-0}" = "1" ]; then
+            ROUTER_ROTATION_ACTIVE=1
+            echo "Mirror-router recovery authorized; the edge identity will be forced fail-closed before secrets change."
+            return 0
+        fi
+        echo "ERROR: the live mirror-router identity could not be read safely." >&2
+        echo "       Refusing to publish secrets or routes without knowing the active public key." >&2
+        echo "       Use FORKMESH_FIRST_DEPLOY=1 only when no App Worker exists yet." >&2
+        return 1
+    fi
+    if [ "$live_key" = "$EDGE_ROUTER_PUBLIC_KEY" ]; then
+        return 0
+    fi
+    if [ "${FORKMESH_ALLOW_ROUTER_KEY_ROTATION:-0}" != "1" ]; then
+        echo "ERROR: the local mirror-router public key differs from the live identity." >&2
+        echo "       Generic App deploys never rotate this trust root. Review the local pair," >&2
+        echo "       then run './deploy.sh rotate-mirror-router' for the fail-closed rotation." >&2
+        return 1
+    fi
+    ROUTER_ROTATION_ACTIVE=1
+    echo "Mirror-router rotation authorized; the public identity will fail closed during the secret transition."
+}
+
+edge_control_verify_url() {
+    if [ -n "${DEPLOY_VERIFY_EDGE_URL:-}" ]; then
+        printf '%s' "${DEPLOY_VERIFY_EDGE_URL%/}"
+    elif official_multi_host_enabled; then
+        printf '%s' "https://app.forkmesh.com"
+    else
+        printf '%s' "${DEPLOY_VERIFY_URL:-https://app.forkmesh.com}"
+    fi
+}
+
+verify_edge_control() {
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "ERROR: curl is required to verify the App edge-control route marker." >&2
+        return 1
+    fi
+    local base
+    base="$(edge_control_verify_url)"
+    local headers marker
+    headers="$(curl -sSI --max-time 25 "${base%/}/api/version" 2>/dev/null || true)"
+    marker="$(printf '%s\n' "$headers" | awk -F': *' 'tolower($1) == "x-forkmesh-edge-control" { value=$2 } END { sub(/\r$/, "", value); print value }')"
+    if [ "$marker" != "active" ]; then
+        echo "ERROR: ${base%/}/api/version did not traverse the App edge-control Worker." >&2
+        return 1
+    fi
+    verify_live_router_public_key "$EDGE_ROUTER_PUBLIC_KEY" "$base"
+}
+
+verify_router_identity_disabled() (
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "ERROR: curl is required to verify the fail-closed edge identity." >&2
+        return 1
+    fi
+    local base
+    base="$(edge_control_verify_url)"
+    local attempts="${FORKMESH_ROUTER_VERIFY_ATTEMPTS:-10}"
+    local sleep_s="${FORKMESH_ROUTER_VERIFY_BACKOFF:-3}"
+    local attempt response status body marker
+    local header_file
+    umask 077
+    header_file="$(mktemp "${TMPDIR:-/tmp}/forkmesh-router-headers.XXXXXX")" || return 1
+    trap 'rm -f -- "$header_file"' EXIT
+    for attempt in $(seq 1 "$attempts"); do
+        : >"$header_file"
+        response="$(curl -sS --max-time 25 -D "$header_file" \
+            -w $'\n%{http_code}' -H "Accept: application/json" \
+            "${base%/}/api/mirrors/https" 2>/dev/null)" || response=""
+        status="${response##*$'\n'}"
+        body="${response%$'\n'*}"
+        marker="$(awk -F': *' 'tolower($1) == "x-forkmesh-edge-control" { value=$2 } END { sub(/\r$/, "", value); print value }' "$header_file")"
+        if [ "$status" = "503" ] && [ "$marker" = "active" ] && \
+           printf '%s' "$body" | _router_identity_is_disabled; then
+            echo "Verified the mirror-router identity is fail-closed for rotation."
+            return 0
+        fi
+        if [ "$attempt" -lt "$attempts" ]; then
+            echo "  attempt $attempt/$attempts: waiting for the fail-closed router identity; retrying in ${sleep_s}s..." >&2
+            sleep "$sleep_s"
+        fi
+    done
+    echo "ERROR: the edge identity did not fail closed; the router secrets were not changed." >&2
+    return 1
+)
+
 verify_legacy_api_alias() {
     command -v curl >/dev/null 2>&1 || {
         echo "ERROR: curl is required to verify the api.forkmesh.com cutover." >&2
         return 1
     }
     local base="${DEPLOY_VERIFY_LEGACY_API_URL:-https://api.forkmesh.com}"
-    local version headers status location
-    version="$(curl -fsS --max-time 25 "${base%/}/api/version")" || return 1
-    if ! grep -Eq '"worker"[[:space:]]*:[[:space:]]*"app"' <<<"$version"; then
-        echo "ERROR: ${base%/}/api/version is not served by forkmesh-relay App." >&2
+    local expected_rev="${BUILD_REV:-}"
+    local expected_fingerprint="${DEPLOY_TARGET_FINGERPRINT:-}"
+    if [ -z "$expected_rev" ] || [ -z "$expected_fingerprint" ]; then
+        local canonical_version
+        canonical_version="$(_http_json_get "$(edge_control_verify_url)/api/version")" || {
+            echo "ERROR: the canonical App identity is unavailable for alias comparison." >&2
+            return 1
+        }
+        expected_rev="$(printf '%s' "$canonical_version" | _json_string_field rev)" || return 1
+        expected_fingerprint="$(printf '%s' "$canonical_version" | _json_string_field deployFingerprint)" || return 1
+    fi
+    [ -n "$expected_rev" ] && \
+        [[ "$expected_fingerprint" =~ ^[0-9a-f]{64}$ ]] || {
+        echo "ERROR: the canonical App deploy identity is incomplete." >&2
+        return 1
+    }
+    verify_deploy "$expected_rev" "/api/version" "$base" \
+        "$expected_fingerprint"
+    local headers marker status location
+    headers="$(curl -sSI --max-time 25 "${base%/}/api/version" 2>/dev/null || true)"
+    marker="$(printf '%s\n' "$headers" | awk -F': *' 'tolower($1) == "x-forkmesh-edge-control" { value=$2 } END { sub(/\r$/, "", value); print value }')"
+    if [ "$marker" != "active" ]; then
+        echo "ERROR: ${base%/}/api/version did not traverse the App edge-control Worker." >&2
         return 1
     fi
+    verify_live_router_public_key "$EDGE_ROUTER_PUBLIC_KEY" "$base"
     headers="$(curl -sSI --max-time 25 "${base%/}/")" || return 1
     status="$(printf '%s\n' "$headers" | awk 'toupper($1) ~ /^HTTP\// { code=$2 } END { print code }')"
     location="$(printf '%s\n' "$headers" | awk 'tolower($1) == "location:" { value=$0; sub(/^[^:]*:[[:space:]]*/, "", value) } END { sub(/\r$/, "", value); print value }')"
@@ -950,6 +1354,7 @@ verify_legacy_api_alias() {
 }
 
 deploy_app_target() {
+    require_edge_router_public_key
     if [ "${FORKMESH_FORCE_DEPLOY:-0}" != "1" ]; then
         if deploy_target_is_changed app; then
             :
@@ -963,6 +1368,7 @@ deploy_app_target() {
         fi
     fi
     prepare_target_deploy app
+    authorize_router_rotation
     push_secrets validate
     if signal_deploy_status deploying "$BUILD_REV"; then
         DEPLOY_SIGNAL_ACTIVE=1
@@ -981,8 +1387,24 @@ deploy_app_target() {
     fi
     echo "Deploying forkmesh-relay as the App, API, Git, and Durable Object owner (build $BUILD_REV)..."
     deploy_app_version
-    push_secrets
-    verify_deploy "$BUILD_REV"
+    if [ "$ROUTER_ROTATION_ACTIVE" = "1" ]; then
+        echo "Disabling the public mirror-router identity before publishing the new signing pair..."
+        deploy_edge_control_version ""
+        verify_router_identity_disabled
+        push_secrets
+    else
+        verify_live_router_public_key "$EDGE_ROUTER_PUBLIC_KEY" \
+            "$(edge_control_verify_url)"
+        push_secrets publish-preserve-router
+    fi
+    verify_deploy "$BUILD_REV" "/api/mainnode" \
+        "${DEPLOY_VERIFY_URL:-https://app.forkmesh.com}" \
+        "$DEPLOY_TARGET_FINGERPRINT" "$EDGE_ROUTER_PUBLIC_KEY"
+    echo "Deploying the runtime-independent App health and identity edge routes..."
+    deploy_edge_control_version
+    verify_deploy "$BUILD_REV" "/api/version" "$(edge_control_verify_url)" \
+        "$DEPLOY_TARGET_FINGERPRINT"
+    verify_edge_control
     if command -v curl >/dev/null 2>&1; then
         local base="${DEPLOY_VERIFY_URL:-https://app.forkmesh.com}"
         local version landing_status
@@ -1040,6 +1462,28 @@ initial_official_cutover_needed() {
     [ "$marker" != "www" ]
 }
 
+publish_preserving_router_identity() {
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "ERROR: curl is required to preserve and verify the live edge router identity." >&2
+        return 1
+    fi
+    local base headers marker preserved_key
+    base="$(edge_control_verify_url)"
+    headers="$(curl -sSI --max-time 25 "${base%/}/api/version" 2>/dev/null || true)"
+    marker="$(printf '%s\n' "$headers" | awk -F': *' 'tolower($1) == "x-forkmesh-edge-control" { value=$2 } END { sub(/\r$/, "", value); print value }')"
+    if [ "$marker" != "active" ]; then
+        echo "ERROR: the App edge-control route is not active; generic secret publication is unsafe." >&2
+        echo "       Deploy the complete App before updating non-router secrets." >&2
+        return 1
+    fi
+    if ! preserved_key="$(live_router_public_key "$base")"; then
+        echo "ERROR: the live mirror-router public identity could not be preserved safely." >&2
+        return 1
+    fi
+    push_secrets publish-preserve-router
+    verify_live_router_public_key "$preserved_key" "$base"
+}
+
 deploy_changed_workers() {
     if ! official_multi_host_enabled; then
         "$0" app
@@ -1074,6 +1518,9 @@ case "${1:-deploy}" in
     app)
         deploy_app_target
         ;;
+    rotate-mirror-router)
+        FORKMESH_ALLOW_ROUTER_KEY_ROTATION=1 FORKMESH_FORCE_DEPLOY=1 "$0" app
+        ;;
     world|www)
         deploy_static_target "$1"
         ;;
@@ -1097,11 +1544,12 @@ case "${1:-deploy}" in
     secrets)
         require_cloudflare_account
         require_cloudflare_auth
-        push_secrets
+        publish_preserving_router_identity
         ;;
     validate-secrets)
         require_cloudflare_account
         require_cloudflare_auth
+        require_edge_router_public_key
         push_secrets validate
         ;;
     dev)
@@ -1115,6 +1563,11 @@ case "${1:-deploy}" in
                 build_dashboard_assets
                 python3 tools/build_site_assets.py app
                 pywrangler deploy --env "" --dry-run
+                (
+                    cd edge-control
+                    npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.120.0}" -- \
+                        wrangler deploy --config wrangler.toml --dry-run
+                )
                 ;;
             world|www)
                 (
@@ -1130,7 +1583,7 @@ case "${1:-deploy}" in
         esac
         ;;
     *)
-        echo "Usage: $0 [deploy|changed|app|world|www|status|post-deploy-verify|republish-release-binary|secrets|validate-secrets|dev|dry-run [target]]" >&2
+        echo "Usage: $0 [deploy|changed|app|rotate-mirror-router|world|www|status|post-deploy-verify|republish-release-binary|secrets|validate-secrets|dev|dry-run [target]]" >&2
         exit 2
         ;;
 esac
