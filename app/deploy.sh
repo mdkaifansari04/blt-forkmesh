@@ -1049,7 +1049,8 @@ deploy_changed_workers() {
         return
     fi
     if initial_official_cutover_needed; then
-        FORKMESH_FORCE_DEPLOY=1 FORKMESH_PRESERVE_LEGACY_HOSTS=1 "$0" app
+        DEPLOY_VERIFY_URL="${DEPLOY_VERIFY_URL:-https://forkmesh.com}" \
+            FORKMESH_FORCE_DEPLOY=1 FORKMESH_PRESERVE_LEGACY_HOSTS=1 "$0" app
         "$0" world
         "$0" www
         FORKMESH_FORCE_DEPLOY=1 "$0" app

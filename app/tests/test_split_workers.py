@@ -315,6 +315,7 @@ assert.equal(appCalls, 0);
 def test_deploy_script_documents_safe_cutover_order():
     deploy = (APP_ROOT / "deploy.sh").read_text(encoding="utf-8")
     assert "FORKMESH_PRESERVE_LEGACY_HOSTS=1" in deploy
+    assert 'DEPLOY_VERIFY_URL="${DEPLOY_VERIFY_URL:-https://forkmesh.com}"' in deploy
     first_app = deploy.index(
         'FORKMESH_FORCE_DEPLOY=1 FORKMESH_PRESERVE_LEGACY_HOSTS=1 "$0" app'
     )
