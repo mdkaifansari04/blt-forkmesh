@@ -11,6 +11,112 @@ PYWRANGLER_UVX="$PYWRANGLER_VENV/bin/uvx"
 PYWRANGLER_UV="$PYWRANGLER_VENV/bin/uv"
 WORKERS_PY_SPEC="${WORKERS_PY_SPEC:-workers-py<1.17.0}"
 WRANGLER_NPM_SPEC="${WRANGLER_NPM_SPEC:-wrangler@4.120.0}"
+# Wrangler 4.x hard-refuses to start on Node < 22 ("Wrangler requires at least
+# Node.js v22.0.0"), and it makes that check only after pywrangler has already
+# echoed the command it is about to run — so on a host whose /usr/bin/node is
+# older, a deploy dies mid-flight behind a version banner instead of a real
+# error. Distros keep shipping Node 20 long after Cloudflare drops it, so the
+# newer runtime here lives under a version manager whose bin directory is only
+# on PATH inside an interactive login shell. Find it ourselves so deploy.sh
+# works the same from cron, hooks and non-login shells.
+WRANGLER_MIN_NODE_MAJOR="${WRANGLER_MIN_NODE_MAJOR:-22}"
+
+_pywrangler_version_key() {
+    # Collapse a "v22.9.1"-style version into a sortable integer so we can pick
+    # the newest installed runtime without depending on GNU `sort -V`.
+    local version="${1#v}" major minor patch
+    IFS=. read -r major minor patch <<< "$version"
+    major="${major%%[!0-9]*}"
+    minor="${minor%%[!0-9]*}"
+    patch="${patch%%[!0-9]*}"
+    printf '%d%03d%03d\n' "${major:-0}" "${minor:-0}" "${patch:-0}"
+}
+
+_pywrangler_node_version() {
+    local version
+    version="$("$1" --version 2>/dev/null)" || return 1
+    case "$version" in
+        v[0-9]*) printf '%s\n' "$version" ;;
+        *) return 1 ;;
+    esac
+}
+
+_pywrangler_node_is_new_enough() {
+    local version
+    version="$(_pywrangler_node_version "$1")" || return 1
+    [ "$(_pywrangler_version_key "$version")" -ge \
+      "$(_pywrangler_version_key "$WRANGLER_MIN_NODE_MAJOR.0.0")" ]
+}
+
+_pywrangler_find_node() {
+    # Print the newest node >= $WRANGLER_MIN_NODE_MAJOR that a version manager
+    # has installed but left off PATH. FORKMESH_NODE_BIN overrides the search.
+    local candidate best="" best_key=0 key
+    for candidate in \
+        ${FORKMESH_NODE_BIN:+"$FORKMESH_NODE_BIN"} \
+        "${NVM_DIR:-$HOME/.nvm}"/versions/node/*/bin/node \
+        "$HOME"/.local/share/fnm/node-versions/*/installation/bin/node \
+        "$HOME"/.volta/tools/image/node/*/bin/node \
+        /usr/local/n/versions/node/*/bin/node
+    do
+        [ -x "$candidate" ] || continue
+        _pywrangler_node_is_new_enough "$candidate" || continue
+        key="$(_pywrangler_version_key "$(_pywrangler_node_version "$candidate")")"
+        if [ "$key" -gt "$best_key" ]; then
+            best_key="$key"
+            best="$candidate"
+        fi
+    done
+    [ -n "$best" ] || return 1
+    printf '%s\n' "$best"
+}
+
+_pywrangler_prepend_path() {
+    # Move $1 to the FRONT of PATH even if it already appears later on — an
+    # older /usr/bin/node otherwise keeps winning the lookup.
+    local dir="$1" part rebuilt=""
+    local -a parts
+    IFS=':' read -r -a parts <<< "$PATH"
+    for part in ${parts[@]+"${parts[@]}"}; do
+        [ "$part" = "$dir" ] && continue
+        if [ -z "$rebuilt" ]; then rebuilt="$part"; else rebuilt="$rebuilt:$part"; fi
+    done
+    PATH="$dir${rebuilt:+:$rebuilt}"
+    export PATH
+}
+
+_pywrangler_ensure_node() {
+    [ "${_PYWRANGLER_NODE_READY:-0}" = "1" ] && return 0
+    _PYWRANGLER_NODE_READY=1
+
+    local current current_version=""
+    current="$(command -v node 2>/dev/null || true)"
+    if [ -n "$current" ]; then
+        current_version="$(_pywrangler_node_version "$current" || true)"
+        if _pywrangler_node_is_new_enough "$current"; then
+            return 0
+        fi
+    fi
+
+    local found
+    found="$(_pywrangler_find_node)" || found=""
+    if [ -n "$found" ]; then
+        local dir
+        dir="$(cd "$(dirname "$found")" && pwd)"
+        _pywrangler_prepend_path "$dir"
+        echo "note: PATH node was ${current_version:-missing}; using" \
+             "$(_pywrangler_node_version "$found") from $dir for wrangler." >&2
+        return 0
+    fi
+
+    # Not fatal: a FORKMESH_NO_NODE_PACKAGES pipeline never shells out to Node.
+    # Everything else is about to fail, so say why while the output is still
+    # readable rather than 200 lines into the deploy.
+    echo "warning: no Node >= v${WRANGLER_MIN_NODE_MAJOR} found (PATH node is ${current_version:-missing})." >&2
+    echo "         Wrangler 4.x refuses to run on older Node and will abort this deploy." >&2
+    echo "         Install one (e.g. 'nvm install 22') or point FORKMESH_NODE_BIN at a node binary." >&2
+    return 1
+}
 
 _pywrangler_ensure_venv_path() {
     case ":$PATH:" in
@@ -59,6 +165,7 @@ EOF
 }
 
 pywrangler() {
+    _pywrangler_ensure_node || true
     _pywrangler_ensure_venv_path
     _pywrangler_install_npx_wrapper
     local pywrangler_path
@@ -159,3 +266,8 @@ install_pywrangler() {
     _pywrangler_ensure_venv_path
     _pywrangler_install_npx_wrapper
 }
+
+# Fix PATH at source time, not just inside pywrangler(): deploy.sh also shells
+# out to `npm exec ... wrangler deploy` directly for the assets-only split
+# Workers, and that path never goes through the pywrangler wrapper.
+_pywrangler_ensure_node || true
