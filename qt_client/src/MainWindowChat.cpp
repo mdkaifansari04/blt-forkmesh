@@ -7752,7 +7752,9 @@ QWidget *MainWindow::buildBreadcrumb()
         // A bare QWidget ignores a stylesheet background unless it opts in.
         divider->setAttribute(Qt::WA_StyledBackground, true);
         divider->setFixedWidth(1);
-        divider->setFixedHeight(15); // a hairline inside the 21px grids
+        // Full height of a captioned grid: the rule separates whole groups now
+        // that each carries its own label, not just the dots.
+        divider->setFixedHeight(ChromeDotGrid::totalHeight());
         divider->hide();
         return divider;
     };
