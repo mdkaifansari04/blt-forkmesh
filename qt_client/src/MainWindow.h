@@ -217,6 +217,20 @@ class DiffFileNavigator;  // file-list <-> diff-view sync
 struct DiffFileEntry;     // one changed file parsed out of a patch
 }
 
+// One commit of the pull request currently on screen, in the form the
+// Conversation feed needs. renderPullCommits() already walks base..head (or the
+// signed mbox) for the Commits tab, so it records what it found and
+// renderPullThread() reuses it: the conversation must not repeat that walk,
+// which pumps the GUI event loop (adhoc #119/#124).
+struct PullActivityCommit {
+    QString sha;
+    QString subject;
+    QString author;
+    QString when;         // absolute, already formatted for display
+    qint64 committedSecs = 0;
+    QString agentTrailer; // ForkMesh-Agent trailer, when the commit has one
+};
+
 // A configured mainnode the user can connect to. The client connects to one at
 // a time; the favicon rail switches the active one.
 struct ServerConfig {
@@ -1081,6 +1095,18 @@ public:
     {
         return resolvablePullHead(std::move(pr));
     }
+    // Stand in for the base..head walk renderPullCommits() normally does, so a
+    // test can drive the conversation feed without a repository on disk.
+    void testSeedPullActivityCommits(int prNumber,
+                                     const QList<PullActivityCommit> &commits)
+    {
+        m_pullActivityCommitsNumber = prNumber;
+        m_pullActivityCommits = commits;
+    }
+    void testRenderPullThread(const PullRequest &pr) { renderPullThread(pr); }
+    // Header line of every card the conversation currently holds, oldest first.
+    QStringList testPullThreadCardHeaders() const;
+    int testPullActivityExtraCards() const { return m_pullActivityExtraCards; }
     bool testBindAgentSessionsToPull(int prNumber, const QString &headBranch)
     {
         return bindAgentSessionsToPull(prNumber, headBranch);
@@ -3040,6 +3066,29 @@ private:
     void renderPullCommits(PullRequest pr);         // commits that make up the PR
                                                     // (by value: pumps a git read,
                                                     // see adhoc #119/#124)
+    // What renderPullCommits() found for the pull on screen (see
+    // PullActivityCommit), reused by renderPullThread().
+    QList<PullActivityCommit> m_pullActivityCommits;
+    int m_pullActivityCommitsNumber = 0; // PR the list above was collected for
+    // Re-render the open pull's conversation when its agent's state moved. Called
+    // from reloadAgents(), which every agent status transition already reaches, so
+    // a running agent's progress shows on the PR page without a poll of its own.
+    void refreshPullAgentActivity();
+    // Status/timing digest of the agent attached to the pull on screen. Compared
+    // before re-rendering so an unrelated agent reload does not rebuild the
+    // conversation (and scroll it) for nothing.
+    QString pullAgentActivityDigest(const PullRequest &pr) const;
+    QString m_pullAgentActivityDigest;
+    // Commit and agent cards renderPullThread() added on top of the signed review
+    // items, and the review-item count updatePullSubTabCounts() derived. Held so
+    // the Conversation badge can be corrected after a live agent re-render
+    // without repeating that function's git-backed tallies.
+    int m_pullActivityExtraCards = 0;
+    int m_pullActivityCardsNumber = 0; // PR the count above belongs to
+    int m_pullConversationBaseCount = 0;
+    // Set while refreshPullAgentActivity() is rebuilding: its git walk pumps the
+    // GUI event loop, and it is itself reached from reloadAgents().
+    bool m_pullActivityRefreshing = false;
     // The next two and runIdsForPull/updatePullSubTabCounts take the PR by
     // value on purpose: they pump the event loop (git reads), and callers often
     // pass references into m_currentPulls, which a nested reloadPulls() can
