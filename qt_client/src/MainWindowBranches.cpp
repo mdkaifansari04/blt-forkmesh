@@ -3551,6 +3551,22 @@ QWidget *MainWindow::buildBranchRangePane()
             createPullFromBranch(m_branchDiffBranch);
     });
 
+    // Send the branch to the merge queue instead of merging it here and now:
+    // queues its open pull request (opening one when it has none), which the
+    // queue then updates from the base and merges in turn. Only visible when
+    // the open repository has its merge queue switched on.
+    m_branchQueueButton = new StackedIconButton("Queue merge");
+    m_branchQueueButton->setObjectName("ghostButton");
+    m_branchQueueButton->setProperty("buttonSize", "sm");
+    m_branchQueueButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchQueueButton, "list-unordered", 14);
+    m_branchQueueButton->setEnabled(false);
+    m_branchQueueButton->hide();
+    connect(m_branchQueueButton, &QPushButton::clicked, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            queueBranchForMerge(m_branchDiffBranch);
+    });
+
     // Merge the selected branch straight into the default branch (an empty
     // worktree path tells mergeWorktreeIntoMain not to prune any worktree).
     // Ghost, not green: "Merge & clean up" beside it is the finishing move worth
@@ -3616,6 +3632,7 @@ QWidget *MainWindow::buildBranchRangePane()
     detailBar->addWidget(m_branchFixAgentCombo);
     detailBar->addWidget(m_branchFixModelCombo);
     detailBar->addWidget(m_branchPrButton);
+    detailBar->addWidget(m_branchQueueButton);
     detailBar->addWidget(m_branchMergeButton);
     detailBar->addWidget(m_branchMergeDeleteButton);
 
@@ -5203,6 +5220,25 @@ void MainWindow::applyBranchDetailActions(const QString &branch, const QString &
                         : "Read-only mirror \xE2\x80\x94 no working tree to open a pull "
                           "request from"));
 
+    // Send the branch to the merge queue (same availability as Create PR — the
+    // queue merges through the branch's pull request). Hidden, not just
+    // disabled, for repositories without the queue.
+    if (m_branchQueueButton) {
+        const bool queueOn = mergeQueueEnabledForOpenRepo();
+        const bool canQueue = queueOn && writable && !isBase;
+        m_branchQueueButton->setVisible(queueOn);
+        m_branchQueueButton->setEnabled(canQueue);
+        m_branchQueueButton->setToolTip(
+            canQueue
+                ? QStringLiteral("Send %1 to the merge queue — its pull request "
+                                 "(opened now if it has none) is updated from %2 "
+                                 "and merged in turn")
+                      .arg(branch, base)
+                : (isBase ? QStringLiteral("Select a branch other than %1").arg(base)
+                          : QStringLiteral("Read-only mirror \xE2\x80\x94 nothing "
+                                           "to merge into here")));
+    }
+
     // Merge this branch directly into the default branch.
     const bool canMerge = writable && !isBase;
     m_branchMergeButton->setEnabled(canMerge);
@@ -5754,16 +5790,16 @@ void MainWindow::rebuildBranchDiffSpans()
     updateBranchDiffSticky();
 }
 
-void MainWindow::createPullFromBranch(const QString &branch)
+int MainWindow::createPullFromBranch(const QString &branch)
 {
     const QString dir = repoGitDir();
     const QString base = repoDefaultBranch(repoBranches());
     if (branch.isEmpty() || branch == base)
-        return;
+        return -1;
     if (!repoHasWorkingTree()) {
         setRepoDetailNotice(
             "This is a read-only mirror; pull requests can't be opened here.", true);
-        return;
+        return -1;
     }
     QByteArray diff;
     QString err;
@@ -5772,7 +5808,7 @@ void MainWindow::createPullFromBranch(const QString &branch)
         setRepoDetailNotice(
             QStringLiteral("%1 has no changes to open as a pull request.").arg(branch),
             true);
-        return;
+        return -1;
     }
     // Default the PR title to the branch's first commit subject.
     QByteArray subjectOut;
@@ -5789,7 +5825,7 @@ void MainWindow::createPullFromBranch(const QString &branch)
             QLineEdit::Normal, subjects.isEmpty() ? branch : subjects.first(), &ok)
             .trimmed();
     if (!ok || title.isEmpty())
-        return;
+        return -1;
     QString description;
     for (const QString &s : subjects)
         description += "- " + s + "\n";
@@ -5807,7 +5843,7 @@ void MainWindow::createPullFromBranch(const QString &branch)
     if (number < 0) {
         setRepoDetailNotice(
             error.isEmpty() ? "Could not create the pull request." : error, true);
-        return;
+        return -1;
     }
     bindAgentSessionsToPull(number, branch);
     logSystem(QStringLiteral("Opened pull #%1 from %2 into %3.")
@@ -5817,6 +5853,7 @@ void MainWindow::createPullFromBranch(const QString &branch)
         QStringLiteral("Opened pull request #%1 from %2.").arg(number).arg(branch));
     m_currentPullNumber = number;
     switchToPullTab(number);
+    return number;
 }
 
 // Merge `base` into `branch` inside the linked worktree that owns it — the one

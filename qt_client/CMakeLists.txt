@@ -163,6 +163,7 @@ set(FORKMESH_MAIN_WINDOW_SOURCES
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp
     src/MainWindowPulls.cpp
+    src/MainWindowMergeQueue.cpp
     src/MainWindowAgents.cpp
     src/MainWindowRepoDetail.cpp
     src/MainWindowProjects.cpp
@@ -274,6 +275,8 @@ set(FORKMESH_APP_SOURCES
     src/PullReviewModel.cpp
     src/PullAiReview.h
     src/PullAiReview.cpp
+    src/MergeQueue.h
+    src/MergeQueue.cpp
     src/PullBadgeWidget.h
     src/PullBadgeWidget.cpp
     src/PacmanProgress.h
@@ -621,6 +624,8 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
+        src/MergeQueue.h
+        src/MergeQueue.cpp
         src/GlobalSearchMatch.h
         src/GlobalSearchMatch.cpp
         src/AgentStore.h
