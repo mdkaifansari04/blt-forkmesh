@@ -677,7 +677,11 @@ def test_office_restores_clear_glass_and_camera_lods_its_interior():
     assert "transparent: true" in door
     assert "opacity: 0.3" in door
     assert "depthWrite: false" in door
-    assert 'officeInterior.visible = officeSceneMode !== "town" || exteriorDetailed' in scene
+    assert "officeInterior.visible = interiorDrawn;" in scene
+    assert (
+        "const interiorDrawn =\n"
+        '      officeSceneMode !== "town" || exteriorDetailed || !compactRenderer;'
+    ) in scene
     assert 'if (mode === "office") return [officeInterior]' in scene
 
 
@@ -733,8 +737,8 @@ def test_aerial_lod_pages_mobile_districts_and_keeps_navigation_visible():
     assert "camera.position.distanceTo(officeLodWorldPosition)" in scene
     assert 'world.userData.officeExteriorDetailLevel = exteriorDetailed' in scene
     assert 'world.userData.officeExteriorDetailLevel === "furnished"' in scene
-    assert 'officeInterior.visible = officeSceneMode !== "town" || exteriorDetailed' in scene
-    assert 'officeSceneMode === "town"\n        ? exteriorDetailed' in scene
+    assert "officeInterior.visible = interiorDrawn;" in scene
+    assert 'officeSceneMode === "town"\n        ? interiorDrawn' in scene
     assert "const showOfficeInterior" not in scene
     assert "floorGroup.visible = true;" in scene
     assert "group.add(treasurySign);" in scene
@@ -758,8 +762,8 @@ def test_office_floor_visibility_syncs_immediately_on_every_story_change():
     ]
     assert "officeInterior.getWorldPosition(officeLodWorldPosition);" in visibility
     assert "camera.position.distanceTo(officeLodWorldPosition)" in visibility
-    assert 'officeInterior.visible = officeSceneMode !== "town" || exteriorDetailed;' in visibility
-    assert 'officeSceneMode === "town"\n        ? exteriorDetailed' in visibility
+    assert "officeInterior.visible = interiorDrawn;" in visibility
+    assert 'officeSceneMode === "town"\n        ? interiorDrawn' in visibility
     assert ": floorId === officeCurrentFloorId;" in visibility
     warp = scene[
         scene.index("function warpToOfficeFloor(floorId)"):
@@ -775,6 +779,35 @@ def test_office_floor_visibility_syncs_immediately_on_every_story_change():
     assert elevator.index("officeCurrentFloorId = ride.floorId;") < elevator.index(
         "syncOfficeFloorVisibility();"
     )
+
+
+def test_distant_office_keeps_its_floors_and_culls_only_heavy_props():
+    """Town sees a furnished tower; only the heaviest props LOD out."""
+
+    scene = source(SCENE_PATH)
+    assert "const OFFICE_DISTANT_PROP_TRIANGLE_LIMIT = 2500;" in scene
+    assert "const objectTriangleWeights = new WeakMap();" in scene
+    start = scene.index("function triangleWeight(object) {")
+    weight = scene[start:scene.index("\n}\n", start)]
+    assert "child.isInstancedMesh ? child.count : 1" in weight
+    assert "objectTriangleWeights.set(object, weight);" in weight
+    visibility = scene[
+        scene.index("function syncOfficeFloorVisibility()"):
+        scene.index("function updateSceneLevelOfDetail(")
+    ]
+    assert (
+        "syncOfficeDistantPropDetail(officeSceneMode === \"town\" && !exteriorDetailed);"
+    ) in visibility
+    assert "function syncOfficeDistantPropDetail(culled)" in visibility
+    assert "if (culled === officeDistantPropsCulled) return;" in visibility
+    assert 'if (prop.userData?.officeFloorGroup === true) return;' in visibility
+    assert (
+        "if (triangleWeight(prop) <= OFFICE_DISTANT_PROP_TRIANGLE_LIMIT) return;"
+    ) in visibility
+    # The parked flag is what lets an already-hidden prop stay hidden.
+    assert 'prop.userData.officeLodVisible = prop.visible;' in visibility
+    assert 'prop.visible = prop.userData.officeLodVisible;' in visibility
+    assert "floorGroup.userData.officeFloorGroup = true;" in scene
 
 
 def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():
