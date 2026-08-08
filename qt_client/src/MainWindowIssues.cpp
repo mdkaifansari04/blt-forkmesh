@@ -5306,6 +5306,34 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (handleFramelessResizeEvent(obj, event))
         return true;
 
+    // A diff pane's overlays (sticky header, active-file outline) are sized
+    // against its viewport, so a splitter drag has to re-lay them out even
+    // though nothing scrolled.
+    if (event->type() == QEvent::Resize) {
+        if (m_branchDiffView && obj == m_branchDiffView->viewport()) {
+            updateBranchDiffSticky();
+            updateBranchDiffActiveOutline();
+        } else if (m_scmDiff && obj == m_scmDiff->viewport()) {
+            updateScmDiffScrollState();
+        }
+    }
+
+    // Up/Down in the CHANGES tree reviews the diff file by file: each step
+    // selects the next changed file and scrolls its header to the top of the
+    // diff pane. Handled here rather than left to QTreeWidget so the group
+    // headers, which have no diff of their own, are stepped over.
+    if (obj == m_scmTree && event->type() == QEvent::KeyPress) {
+        const auto *key = static_cast<QKeyEvent *>(event);
+        const bool plainArrow =
+            (key->key() == Qt::Key_Up || key->key() == Qt::Key_Down) &&
+            !(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier |
+                                  Qt::MetaModifier | Qt::ShiftModifier));
+        if (plainArrow) {
+            stepScmTreeFile(key->key() == Qt::Key_Down ? 1 : -1);
+            return true; // consumed either way: never land on a group header
+        }
+    }
+
     // The agent detail's status control is both a compact status indicator and
     // the entry point for its full metadata. Hover should expose the same popup
     // as click, while a short deferred leave check lets the pointer travel from

@@ -974,6 +974,17 @@ QString AgentRunner::detectAuthIssue(const QString &chunk)
     if (m_session.provider == QLatin1String("cloudflare-ai")) {
         // The bundled Workers AI agent script's own failure lines (see
         // CloudflareAgentScript.h): a rejected run ticket or a missing one.
+        // A Cloudflare edge block answers 403 before the relay Worker runs, so
+        // check it first — it is not a sign-in problem (adhoc #1619).
+        if (has("cloudflare's edge blocked this request") ||
+            has("error code: 1010")) {
+            m_attentionRaised = true;
+            return QStringLiteral(
+                "Cloudflare's edge blocked this node's AI agent request before "
+                "it reached the relay, so the account sign-in is fine. Update "
+                "ForkMesh to a build that identifies agent turns as ForkMesh, "
+                "then restart the session.");
+        }
         if (has("not authorized to sign for the account") ||
             has("no signed relay ticket")) {
             m_attentionRaised = true;

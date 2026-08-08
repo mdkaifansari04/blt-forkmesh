@@ -1408,13 +1408,21 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
 
 QString diffStickyLabelHtml(const DiffFileEntry &f)
 {
+    QString icon = QStringLiteral("file-diff");
     QString word = QStringLiteral("Modified");
-    if (f.status == QLatin1String("added"))
+    QString tint = QStringLiteral("#d29922");
+    if (f.status == QLatin1String("added")) {
+        icon = QStringLiteral("diff");
         word = QStringLiteral("Added");
-    else if (f.status == QLatin1String("deleted"))
+        tint = QStringLiteral("#3fb950");
+    } else if (f.status == QLatin1String("deleted")) {
+        icon = QStringLiteral("trash");
         word = QStringLiteral("Removed");
-    else if (f.status == QLatin1String("renamed"))
+        tint = QStringLiteral("#f85149");
+    } else if (f.status == QLatin1String("renamed")) {
         word = QStringLiteral("Renamed");
+        tint = QStringLiteral("#58a6ff");
+    }
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
     const QString muted = QStringLiteral("#8b949e");
     const QString fg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
@@ -1439,9 +1447,12 @@ QString diffStickyLabelHtml(const DiffFileEntry &f)
                                 "\xE2\x88\x92%2</span>")
                   .arg(QString::number(f.adds), QString::number(f.dels));
 
+    const QString badge = octiconMarkup(icon, 14, QColor(tint));
     return QStringLiteral("<span title='%1' style='font-family:monospace;"
-                          "font-size:12px'>%2 &nbsp;%3</span>")
-        .arg(word, pathHtml, statHtml);
+                          "font-size:12px'><span style='color:%2'>%3</span> "
+                          "<span style='color:%2;font-weight:700'>%1</span> "
+                          "&nbsp;%4 &nbsp;%5</span>")
+        .arg(word, tint, badge, pathHtml, statHtml);
 }
 
 QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
@@ -1948,6 +1959,12 @@ void applyDiffSearchHighlights(QTextBrowser *diff,
                                         .arg(matches.size()));
 }
 
+// Blank lines of scroll runway between the last diff line and the terminator
+// bar. Roughly a third of a typical pane: enough that the final hunk can be
+// read away from the very bottom edge, not so much that reaching the end feels
+// like a separate scroll.
+constexpr int kDiffEndRunwayLines = 14;
+
 // Dispatch to the split or unified renderer. Neither reads GUI state, so this
 // half is safe to run on a worker thread as long as the split/unified preference
 // (a QSettings read) is resolved by the caller — that is what the *Split
@@ -1959,10 +1976,41 @@ QString renderDiffHtmlSplit(bool split, const QString &patch,
                             const QHash<QString, QString> &lineNotes,
                             const QSet<QString> &viewedFiles)
 {
-    return split ? renderSplitDiffHtml(patch, files, dir, base, head,
-                                       anchorFile, lineNotes, viewedFiles)
-                 : renderUnifiedDiffHtml(patch, files, dir, base, head,
-                                         anchorFile, lineNotes, viewedFiles);
+    QString html =
+        split ? renderSplitDiffHtml(patch, files, dir, base, head,
+                                    anchorFile, lineNotes, viewedFiles)
+              : renderUnifiedDiffHtml(patch, files, dir, base, head,
+                                      anchorFile, lineNotes, viewedFiles);
+    // An empty render is how every caller detects "nothing to show" before
+    // substituting its own notice ("(no changes)", "Reading changes on X…").
+    // Terminating that would both hide the notice and put an END OF DIFF bar
+    // under a diff that never began.
+    if (html.isEmpty())
+        return html;
+    // A deliberate review runway after the final file, so its last lines can be
+    // scrolled clear of the viewport's bottom edge instead of being pinned
+    // there, then an unmistakable terminator.
+    //
+    // Qt's rich-text engine honours neither a CSS height on a block nor a
+    // `height` attribute on an otherwise empty table cell, so a spacer element
+    // collapses to nothing; blank lines do carry their line height, which is
+    // what the runway is made of.
+    //
+    // Both stay <div>s on purpose. splitDiffFileFragments() locates a file
+    // block's table by its *last* `</table>`, so a trailing table here would be
+    // mistaken for the end of the diff table whenever the final file is large
+    // enough to be fragmented. A block-level div already fills the pane's
+    // width, which is all the bar needs.
+    //
+    // Emitted by the shared renderer, so the branch, PR, commit and
+    // working-tree diffs all end the same way.
+    QString runway;
+    for (int i = 0; i < kDiffEndRunwayLines; ++i)
+        runway += QStringLiteral("&nbsp;<br>");
+    html += QStringLiteral("<div class='diffendspacer'>%1</div>"
+                           "<div class='diffend'>END OF DIFF</div>")
+                .arg(runway);
+    return html;
 }
 
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
@@ -1991,9 +2039,10 @@ QString diffStyleSheet(int fontPt)
     const QString gutterBg = dark ? "#0d1117" : "#f6f8fa";
     const QString fg = dark ? "#e6edf3" : "#1f2328";
     return QStringLiteral(
-               ".fileblock { margin:0; }"
-               ".fileheader { background:%1; padding:9px 12px; font-family:"
-               "monospace; font-size:13px; border:1px solid %7; }"
+               ".fileblock { margin:0 0 14px 0; }"
+               ".fileheader { background:%1; padding:10px 14px; font-family:"
+               "monospace; font-size:13px; border:1px solid %7; "
+               "border-radius:6px 6px 0 0; }"
                // Status octicon badge (image) sat next to the path.
                ".stbadge { margin-right:8px; vertical-align:middle; }"
                ".fpath { vertical-align:middle; }"
@@ -2001,7 +2050,7 @@ QString diffStyleSheet(int fontPt)
                ".fname { font-weight:700; color:%8; font-size:14px; }"
                ".fstat { color:%2; font-size:12px; }"
                // Second header line: status word + change total (adhoc #223).
-               ".fmetaline { font-size:11px; }"
+               ".fmetaline { font-size:11px; line-height:1.35; }"
                ".fkind { font-weight:700; letter-spacing:1px; color:%2; }"
                ".fkind.added { color:#3fb950; }"
                ".fkind.deleted { color:#f85149; }"
@@ -2069,7 +2118,12 @@ QString diffStyleSheet(int fontPt)
                "background:%1; font-size:11px; font-style:italic; }"
                ".suggestion { background:%9; border:1px solid %7; color:%8; "
                "padding:8px; margin-top:6px; white-space:pre; }"
-               ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }")
+               ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }"
+               // Scroll runway after the last file, then the terminator bar.
+               ".diffendspacer { background:%9; }"
+               ".diffend { background:#000000; color:#ffffff; "
+               "font-family:sans-serif; font-size:11px; font-weight:700; "
+               "letter-spacing:2px; text-align:center; padding:10px; }")
         .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg, border, fg, gutterBg)
         .arg(qBound(8, fontPt, 28));
 }

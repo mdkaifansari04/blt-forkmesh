@@ -14028,32 +14028,55 @@ void MainWindow::applyAgentDiff(int sessionId, const AgentDiffProbe &probe,
     const QSet<QString> &uncommitted = probe.uncommitted;
 
     if (m_agentFilesList) {
-        QSignalBlocker block(m_agentFilesList);
-        m_agentFilesList->clear();
-        for (const DiffFileEntry &f : files) {
-            const QString name = f.path.section(QLatin1Char('/'), -1);
-            const bool isUncommitted = uncommitted.contains(f.path);
-            auto *item = new QListWidgetItem(
-                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3%4")
-                    .arg(name, QString::number(f.adds), QString::number(f.dels),
-                         isUncommitted ? QString::fromUtf8("  \xE2\x97\x8F")
-                                       : QString()));
-            QColor tint("#d29922");
-            QString icon = "file-diff";
-            if (f.status == QLatin1String("added")) { icon = "diff"; tint = QColor("#3fb950"); }
-            else if (f.status == QLatin1String("deleted")) { icon = "trash"; tint = QColor("#f85149"); }
-            item->setIcon(themedOcticon(icon, tint, 14));
-            const QString abs = dir.isEmpty() ? f.path : QDir(dir).filePath(f.path);
-            item->setData(Qt::UserRole, abs);          // open on activate
-            item->setData(Qt::UserRole + 1, f.anchor); // scroll diff on select
-            item->setToolTip(
-                isUncommitted
-                    ? QString::fromUtf8("%1 \xC2\xB7 %2 \xC2\xB7 uncommitted")
-                          .arg(f.status, f.path)
-                    : QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
-            m_agentFilesList->addItem(item);
+        QString selectedAnchor;
+        if (QListWidgetItem *current = m_agentFilesList->currentItem())
+            selectedAnchor = current->data(Qt::UserRole + 1).toString();
+        int selectedRow = -1;
+        {
+            QSignalBlocker block(m_agentFilesList);
+            m_agentFilesList->clear();
+            for (const DiffFileEntry &f : files) {
+                const QString name = f.path.section(QLatin1Char('/'), -1);
+                const bool isUncommitted = uncommitted.contains(f.path);
+                auto *item = new QListWidgetItem(
+                    QString::fromUtf8("%1   +%2 \xE2\x88\x92%3%4")
+                        .arg(name, QString::number(f.adds), QString::number(f.dels),
+                             isUncommitted ? QString::fromUtf8("  \xE2\x97\x8F")
+                                           : QString()));
+                QColor tint("#d29922");
+                QString icon = "file-diff";
+                if (f.status == QLatin1String("added")) {
+                    icon = "diff";
+                    tint = QColor("#3fb950");
+                } else if (f.status == QLatin1String("deleted")) {
+                    icon = "trash";
+                    tint = QColor("#f85149");
+                }
+                item->setIcon(themedOcticon(icon, tint, 14));
+                const QString abs =
+                    dir.isEmpty() ? f.path : QDir(dir).filePath(f.path);
+                item->setData(Qt::UserRole, abs);          // open on activate
+                item->setData(Qt::UserRole + 1, f.anchor); // scroll diff on select
+                item->setToolTip(
+                    isUncommitted
+                        ? QString::fromUtf8("%1 \xC2\xB7 %2 \xC2\xB7 uncommitted")
+                              .arg(f.status, f.path)
+                        : QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
+                m_agentFilesList->addItem(item);
+            }
+            fitFileListToWidestEntry(m_agentFilesList);
+            for (int row = 0; row < m_agentFilesList->count(); ++row) {
+                if (m_agentFilesList->item(row)->data(Qt::UserRole + 1).toString() ==
+                    selectedAnchor) {
+                    selectedRow = row;
+                    break;
+                }
+            }
         }
-        fitFileListToWidestEntry(m_agentFilesList);
+        if (selectedRow < 0 && m_agentFilesList->count() > 0)
+            selectedRow = 0;
+        if (selectedRow >= 0)
+            m_agentFilesList->setCurrentRow(selectedRow);
     }
     if (!m_agentDiffNav && m_agentFilesList)
         m_agentDiffNav = new DiffFileNavigator(m_agentDiffView, m_agentFilesList,
