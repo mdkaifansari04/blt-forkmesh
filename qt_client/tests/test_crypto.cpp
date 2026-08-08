@@ -7534,6 +7534,26 @@ int main(int argc, char *argv[])
                   .startsWith(QStringLiteral("Background %1 work").arg(no)),
               "declared GUI-thread work logs a red x even when it is fast, and "
               "an unnamed kind still reads as something");
+        // adhoc #1620: a note is free-form, and one call site handing over a
+        // whole git command line (hundreds of pathspecs) turned a log entry into
+        // thousands of characters. The line caps whatever it is given.
+        {
+            QStringList pathspecs;
+            for (int i = 0; i < 300; ++i)
+                pathspecs << QStringLiteral(":(literal)a/b/c%1.py").arg(i);
+            const QString flood = QStringLiteral("git diff main -- ") +
+                                  pathspecs.join(QLatin1Char(' '));
+            const QString capped = forkmesh::backgroundOutcomeLine(
+                QStringLiteral("git"), 2, 224, flood, true);
+            check(capped.size() < 300 &&
+                      capped.endsWith(QString::fromUtf8("\xE2\x80\xA6")),
+                  "an over-long note is elided instead of pasted whole "
+                  "(adhoc #1620)");
+            check(forkmesh::backgroundDetailNote(
+                      QStringLiteral("  git   log\n--numstat ")) ==
+                      QStringLiteral("git log --numstat"),
+                  "a note is flattened to one line before it reaches the log");
+        }
         check(forkmesh::backgroundElapsedText(-5) == QStringLiteral("0ms") &&
                   forkmesh::backgroundElapsedText(999) ==
                       QStringLiteral("999ms") &&

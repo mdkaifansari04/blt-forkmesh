@@ -79,6 +79,7 @@ bool isTransientGitError(const QString &err);
 QString branchDiffErrorHtml(const QString &branch, const QString &err,
                             int attempts);
 QString gitignoreRuleForPath(const QString &relPath);
+QString gitArgsCrumb(const QString &program, const QStringList &args);
 }
 } // namespace forkmesh
 
@@ -5800,6 +5801,44 @@ int main(int argc, char *argv[])
                       QStringLiteral("/odd name\\ "),
                   QStringLiteral("a trailing space is escaped so git doesn't strip "
                                  "it off the pattern (adhoc #1594)"));
+        }
+
+        // adhoc #1620: the background strip and the stall log name the git
+        // command that is running. A diff scoped to the whole changed-file set
+        // passes hundreds of pathspecs, so the pathspec list is summarised
+        // rather than pasted (or blindly chopped two files in).
+        {
+            QStringList many{"-C", "/home/f/projects/forkmesh", "diff", "main",
+                             "--"};
+            for (int i = 0; i < 291; ++i)
+                many << QStringLiteral(":(literal)cloudflare_worker/tests/"
+                                       "test_world_%1.py")
+                            .arg(i);
+            const QString crumb =
+                forkmesh::ui::gitArgsCrumb(QStringLiteral("git"), many);
+            check(crumb == QStringLiteral(
+                               "git diff main -- test_world_0.py, "
+                               "test_world_1.py, test_world_2.py, "
+                               "test_world_3.py, test_world_4.py +286 more "
+                               "(forkmesh)"),
+                  QString("a pathspec flood collapses to a few names and a count "
+                          "(adhoc #1620, crumb = %1)").arg(crumb));
+            check(crumb.size() < 200,
+                  QString("the crumb stays one readable log line (adhoc #1620, "
+                          "%1 chars)").arg(crumb.size()));
+
+            const QString few = forkmesh::ui::gitArgsCrumb(
+                QStringLiteral("git"),
+                {"-C", "/repos/forkmesh", "diff", "main", "--", "docs/a.md"});
+            check(few == QStringLiteral("git diff main -- docs/a.md (forkmesh)"),
+                  QString("a short pathspec list is still shown verbatim "
+                          "(crumb = %1)").arg(few));
+
+            const QString noPaths = forkmesh::ui::gitArgsCrumb(
+                QStringLiteral("git"), {"log", "--numstat", "-n", "5"});
+            check(noPaths == QStringLiteral("git log --numstat -n 5"),
+                  QString("a command with no pathspecs is untouched (crumb = %1)")
+                      .arg(noPaths));
         }
 
         // Leave the fixture as the branch/merge tests below expect it.
