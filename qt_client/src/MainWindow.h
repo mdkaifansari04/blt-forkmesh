@@ -4488,6 +4488,11 @@ private:
     // user selects, or after kBranchMergedFlashMs.
     void flashMergedBranchRow(const QString &branch);
     void clearMergedBranchFlash();
+    // The congratulation the range pane shows in place of the deleted branch's
+    // diff: who landed it, every other branch that reached `base` today and who
+    // was behind each, and the ways on from there.
+    QString mergedBranchCelebrationHtml(const QString &branch, const QString &base,
+                                        const QString &dir);
     // Delete every branch that is fully merged into the default branch (0 behind
     // and 0 ahead of it), skipping the default and the checked-out branch.
     void deleteMergedBranches();
@@ -9248,6 +9253,11 @@ private:
     QString m_branchMergedFlashBranch;
     QString m_branchMergedFlashDir;
     int m_branchMergedFlashRow = -1;
+    // The congratulation the range pane shows in place of that branch's diff,
+    // built on the merge path (mergedBranchCelebrationHtml) rather than during
+    // the rebuild that paints it: its git reads would otherwise pump the event
+    // loop in the middle of renderBranchesPanel.
+    QString m_branchMergedFlashHtml;
     // How long the check outlives the merge. It never moves the selection by
     // itself: expiring only means the next natural rebuild of the panel drops the
     // row, so a long-idle Branches tab eventually returns to normal.

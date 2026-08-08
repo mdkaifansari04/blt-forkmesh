@@ -11876,6 +11876,259 @@ inline QString branchDiffErrorHtml(const QString &branch, const QString &err,
     return html;
 }
 
+// Inline a ready-made pixmap into rich text as a base64 data URI — the same
+// trick octiconMarkup uses, for artwork that is painted rather than named (an
+// agent's portrait, a contributor's identicon). The pixmap is rasterised at
+// size*dpr and drawn at the logical size, so it stays crisp on HiDPI.
+inline QString inlinePixmapMarkup(const QPixmap &pixmap, int size)
+{
+    if (pixmap.isNull())
+        return QString();
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    pixmap.save(&buffer, "PNG");
+    return QStringLiteral("<img src='data:image/png;base64,%1' width='%2' "
+                          "height='%2'>")
+        .arg(QString::fromLatin1(png.toBase64()))
+        .arg(size);
+}
+
+// The branch a merge commit's subject names. ForkMesh writes "Merge X into
+// main" itself, git's own default is "Merge branch 'x'" (optionally "… of
+// <remote>"), and a forge-style merge says "Merge pull request #7 from
+// owner/x". Anything else is left unnamed rather than guessed at — the row
+// then stands on its commit alone.
+inline QString mergedBranchFromMergeSubject(const QString &subject)
+{
+    const QString s = subject.trimmed();
+    if (!s.startsWith(QLatin1String("Merge ")))
+        return QString();
+    if (s.startsWith(QLatin1String("Merge pull request #"))) {
+        const int from = s.indexOf(QLatin1String(" from "));
+        if (from < 0)
+            return QString();
+        const QString head = s.mid(from + 6).trimmed().section(QLatin1Char(' '), 0, 0);
+        // "owner/branch" — the branch is everything after the first slash, so a
+        // ref with slashes of its own (agent/adhoc-1615-…) survives intact.
+        const int slash = head.indexOf(QLatin1Char('/'));
+        return slash < 0 ? head : head.mid(slash + 1);
+    }
+    if (s.startsWith(QLatin1String("Merge branch '"))) {
+        const int end = s.indexOf(QLatin1Char('\''), 14);
+        return end < 0 ? QString() : s.mid(14, end - 14);
+    }
+    // "Merge <branch> into <base>": the branch is everything between, which may
+    // itself contain spaces only if the ref does (it can't), so a plain split
+    // on the last " into " is exact.
+    const int into = s.lastIndexOf(QLatin1String(" into "));
+    if (into <= 6)
+        return QString();
+    return s.mid(6, into - 6).trimmed();
+}
+
+// One landing on the merge celebration screen (below): a branch that reached
+// the base branch, what it carried, and who is credited with it.
+struct MergeCelebrationRow {
+    QString branch;      // empty when the merge subject named no branch
+    QString mergeCommit; // full sha — what the row links to once the branch is gone
+    bool branchStillExists = false;
+    qint64 whenSecs = 0;
+    int files = 0;
+    int insertions = 0;
+    int deletions = 0;
+    QString actor;   // "Opus 5" for an agent, the account/commit name for a person
+    QString detail;  // "Agent #12 · Claude Code · issue #14"
+    QPixmap avatar;  // model portrait or identicon, already sized
+    bool byAgent = false;
+    bool current = false; // the landing being celebrated
+};
+
+// Where one celebration row points: the branch when it is still around (a merge
+// that kept it), otherwise the merge commit it left behind. Both schemes are
+// handled by onBranchDiffAnchorClicked.
+inline QString mergeCelebrationRowHref(const MergeCelebrationRow &row)
+{
+    if (row.branchStillExists && !row.branch.isEmpty())
+        return QLatin1String("fmbranch:") +
+               QString::fromLatin1(QUrl::toPercentEncoding(row.branch));
+    return row.mergeCommit.isEmpty() ? QString()
+                                     : QLatin1String("fmcommit:") + row.mergeCommit;
+}
+
+// The pane a branch's range diff hands over to once that branch has been merged
+// and deleted. It used to be one grey line ("Merged X into main and deleted it.
+// Pick a branch to see its changes.") — a thin reward for the moment work
+// actually lands, and it credited nobody. This is the same information as a
+// congratulation: who landed it, what it carried, every other branch that
+// landed today and who was behind each, and the ways on from here (pick a
+// branch in the list, go back to the base branch, or open the merge commit).
+//
+// `landed` is the branch just merged; `today` is every landing on the base
+// branch since midnight, newest first, with `landed`'s row marked current.
+// `commits` is how many commits the celebrated merge brought (-1 unknown), and
+// `truncated` how many of today's rows were dropped past the display cap — a
+// list that silently stopped short would read as the whole day.
+inline QString mergeCelebrationHtml(const MergeCelebrationRow &landed,
+                                    const QString &base,
+                                    const QList<MergeCelebrationRow> &today,
+                                    int commits, int truncated)
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    const QString fg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    const QString muted = QStringLiteral("#8b949e");
+    const QString heroBg = dark ? QStringLiteral("#0c2318") : QStringLiteral("#eaf6ee");
+    const QString heroBorder =
+        dark ? QStringLiteral("#238636") : QStringLiteral("#8fd0a4");
+    const QString rowBg = dark ? QStringLiteral("#161b22") : QStringLiteral("#f6f8fa");
+    const QString currentBg =
+        dark ? QStringLiteral("#12261c") : QStringLiteral("#e6ffec");
+    const QString link = dark ? QStringLiteral("#58a6ff") : QStringLiteral("#0969da");
+    const QString green = QStringLiteral("#3fb950");
+    const QString escapedBase = base.toHtmlEscaped();
+
+    // Change totals read the same way everywhere in this app: files first, then
+    // the green/red pair.
+    const auto churn = [&](const MergeCelebrationRow &row) {
+        QStringList parts;
+        if (row.files > 0)
+            parts << (row.files == 1 ? QStringLiteral("1 file")
+                                     : QStringLiteral("%1 files").arg(row.files));
+        if (row.insertions > 0)
+            parts << QStringLiteral("<span style='color:#3fb950'>+%1</span>")
+                         .arg(row.insertions);
+        if (row.deletions > 0)
+            parts << QString::fromUtf8("<span style='color:#f85149'>\xE2\x88\x92%1"
+                                       "</span>")
+                         .arg(row.deletions);
+        return parts.join(QStringLiteral(" "));
+    };
+
+    QString html = QStringLiteral("<div style='padding:6px 10px 10px 10px;'>");
+
+    // ---- Hero: who landed what, just now.
+    QStringList credit;
+    if (!landed.actor.isEmpty())
+        credit << QStringLiteral("by <b style='color:%1'>%2</b>")
+                      .arg(fg, landed.actor.toHtmlEscaped());
+    if (!landed.detail.isEmpty())
+        credit << landed.detail.toHtmlEscaped();
+    if (landed.whenSecs > 0)
+        credit << formatIssueRelativeTime(landed.whenSecs * 1000);
+    if (commits > 0)
+        credit << (commits == 1 ? QStringLiteral("1 commit")
+                                : QStringLiteral("%1 commits").arg(commits));
+    const QString landedChurn = churn(landed);
+    if (!landedChurn.isEmpty())
+        credit << landedChurn;
+
+    html += QStringLiteral(
+                "<table width='100%' cellspacing='0' cellpadding='0' "
+                "style='background:%1;border:1px solid %2;'><tr>")
+                .arg(heroBg, heroBorder);
+    if (!landed.avatar.isNull())
+        html += QStringLiteral("<td width='84' align='center' valign='middle' "
+                               "style='padding:16px 0 16px 16px;'>%1</td>")
+                    .arg(inlinePixmapMarkup(landed.avatar, 56));
+    // The check and the separators are written as HTML entities: a QStringLiteral
+    // carries no UTF-8 escape through to the rendered document.
+    html +=
+        QStringLiteral(
+            "<td valign='middle' style='padding:16px;'>"
+            "<div style='font-size:20px;font-weight:700;color:%1;'>"
+            "&#10003; Merged!</div>"
+            "<div style='font-size:15px;color:%2;'>"
+            "<b style='font-family:monospace;'>%3</b> is part of "
+            "<b style='font-family:monospace;'>%4</b> now.</div>"
+            "<div style='font-size:12px;color:%5;'>%6</div></td></tr></table>")
+            .arg(green, fg, landed.branch.toHtmlEscaped(), escapedBase, muted,
+                 credit.join(QString::fromUtf8(" \xC2\xB7 ")));
+
+    // ---- Everything that landed today, and who was behind each one.
+    if (!today.isEmpty()) {
+        html += QStringLiteral(
+                    "<p style='color:%1;font-size:12px;font-weight:700;"
+                    "margin-top:16px;margin-bottom:4px;'>"
+                    "MERGED INTO %2 TODAY &#183; %3</p>")
+                    .arg(muted, escapedBase.toUpper())
+                    .arg(today.size() + truncated);
+        html += QStringLiteral(
+            "<table width='100%' cellspacing='3' cellpadding='0'>");
+        for (const MergeCelebrationRow &row : today) {
+            const QString background = row.current ? currentBg : rowBg;
+            html += QStringLiteral("<tr><td width='38' align='center' "
+                                   "valign='middle' style='background:%1;"
+                                   "padding:7px 0 7px 8px;'>%2</td>")
+                        .arg(background,
+                             row.avatar.isNull()
+                                 ? QString()
+                                 : inlinePixmapMarkup(row.avatar, 22));
+            const QString name = row.branch.isEmpty()
+                                     ? row.mergeCommit.left(8)
+                                     : row.branch;
+            const QString href = mergeCelebrationRowHref(row);
+            const QString title =
+                href.isEmpty()
+                    ? QStringLiteral("<b style='color:%1'>%2</b>")
+                          .arg(fg, name.toHtmlEscaped())
+                    : QStringLiteral("<a href='%1' style='color:%2;"
+                                     "text-decoration:none;font-weight:700;'>%3</a>")
+                          .arg(href, link, name.toHtmlEscaped());
+            QStringList meta;
+            if (!row.actor.isEmpty())
+                meta << row.actor.toHtmlEscaped();
+            if (!row.detail.isEmpty())
+                meta << row.detail.toHtmlEscaped();
+            if (row.whenSecs > 0)
+                meta << QDateTime::fromSecsSinceEpoch(row.whenSecs)
+                            .toString(QStringLiteral("HH:mm"));
+            const QString rowChurn = churn(row);
+            if (!rowChurn.isEmpty())
+                meta << rowChurn;
+            html += QStringLiteral(
+                        "<td valign='middle' style='background:%1;padding:7px 10px;'>"
+                        "%2%3<div style='font-size:11px;color:%4;'>%5</div>"
+                        "</td></tr>")
+                        .arg(background, title,
+                             row.current
+                                 ? QStringLiteral(" <span style='color:%1;"
+                                                  "font-size:11px;'>just now</span>")
+                                       .arg(green)
+                                 : QString(),
+                             muted, meta.join(QString::fromUtf8(" \xC2\xB7 ")));
+        }
+        html += QStringLiteral("</table>");
+        if (truncated > 0)
+            html += QStringLiteral("<p style='color:%1;font-size:11px;'>"
+                                   "%2 earlier %3 today are not listed.</p>")
+                        .arg(muted)
+                        .arg(truncated)
+                        .arg(truncated == 1 ? QStringLiteral("merge")
+                                            : QStringLiteral("merges"));
+    }
+
+    // ---- The ways on from here.
+    QStringList ways;
+    if (!base.isEmpty())
+        ways << QStringLiteral("go back to <a href='fmbranch:%1' "
+                               "style='color:%2'>%3</a>")
+                    .arg(QString::fromLatin1(QUrl::toPercentEncoding(base)), link,
+                         escapedBase);
+    if (!landed.mergeCommit.isEmpty())
+        ways << QStringLiteral("<a href='fmcommit:%1' style='color:%2'>open the "
+                               "merge commit</a>")
+                    .arg(landed.mergeCommit, link);
+    html += QStringLiteral("<p style='color:%1;margin-top:14px;'>Pick a branch in "
+                           "the list to see its changes%2.</p>")
+                .arg(muted,
+                     ways.isEmpty()
+                         ? QString()
+                         : QStringLiteral(", ") +
+                               ways.join(QStringLiteral(", or ")));
+    html += QStringLiteral("</div>");
+    return html;
+}
+
 // Wait up to 8s for a git subprocess. On the GUI thread, poll in short slices
 // and service the GUI between them so the window stays responsive and spinners
 // animate; off-thread there is no window to keep painted (and pumping would
