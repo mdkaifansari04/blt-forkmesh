@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1786178437499,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "Add a comment 'test' to the README file.\n\n---\n_Filed by ForkBot at @jett's request via chat._",
+            "id": "forkbot-1786178437499",
+            "sig": "",
+            "title": "Add comment to README",
+            "ts": 1786178437499,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 580,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Add comment to README",
+    "updatedAt": 1786178437499,
+    "votes": 0
+}
