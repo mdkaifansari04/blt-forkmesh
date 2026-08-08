@@ -2482,7 +2482,7 @@ int main(int argc, char *argv[])
             const QString scmSource =
                 scmOpened ? QString::fromUtf8(scmFile.readAll()) : QString();
             const int fadeStart = scmSource.indexOf(QStringLiteral(
-                "new QGraphicsOpacityEffect(m_scmStickyViewed)"));
+                "new QGraphicsOpacityEffect(m_scmStickyControls)"));
             const int fadeEnd =
                 scmSource.indexOf(QStringLiteral("animation->start("), fadeStart);
             QString fadeHandler;
@@ -2502,7 +2502,7 @@ int main(int argc, char *argv[])
                       fadeHandler.contains(QStringLiteral(
                           "QPointer<QGraphicsEffect>(effect)")) &&
                       fadeHandler.contains(QStringLiteral(
-                          "button->graphicsEffect() == faded")),
+                          "pill->graphicsEffect() == faded")),
                   "sticky Viewed fade deletes its opacity effect once, guarded by QPointer");
 
             // Reviewing a diff: Viewed is a click, never a side effect of
@@ -2550,7 +2550,7 @@ int main(int argc, char *argv[])
             const int headerStart =
                 sharedSource.indexOf(QStringLiteral("QString diffFileHeaderHtml("));
             const int headerEnd =
-                sharedSource.indexOf(QStringLiteral("QString diffStickyLabelHtml("),
+                sharedSource.indexOf(QStringLiteral("QString renderUnifiedDiffHtml("),
                                      headerStart);
             const QString headerBody =
                 headerStart >= 0 && headerEnd > headerStart
