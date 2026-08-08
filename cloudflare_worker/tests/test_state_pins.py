@@ -35,7 +35,9 @@ def _load(*names):
     clone_state_pins,
     repo_mirror_same_group,
     STATE_PIN_HISTORY,
-) = _load("clone_state_pins", "repo_mirror_same_group", "STATE_PIN_HISTORY")
+    admission_override_pins,
+) = _load("clone_state_pins", "repo_mirror_same_group", "STATE_PIN_HISTORY",
+          "admission_override_pins")
 
 
 def _rec(owner, *, source="local-node", state="", root="root1", name="forkmesh"):
@@ -137,6 +139,66 @@ def test_multiple_working_copy_holders_union_their_pins():
     ]
     assert clone_state_pins(mirror, "kM", rows, {"kB": ["b0"]}) == \
         {"a1", "b1", "b0"}
+
+
+def test_admission_override_pins_collects_only_valid_member_states():
+    # The override widens the accepted set to exactly the states registered
+    # group members currently advertise — never arbitrary or malformed input.
+    members = [
+        _row("kA", _rec("alice", state="a" * 64)),
+        _row("kB", _rec("bob", source="remote-clone", state="B" * 64)),
+        _row("kC", _rec("carol", state="not-a-hash")),   # dropped
+        _row("kD", _rec("dave", state="")),               # dropped
+        {"data": None},                                    # dropped
+    ]
+    assert admission_override_pins(members) == {"a" * 64, "b" * 64}
+    assert admission_override_pins([]) == set()
+    assert admission_override_pins(None) == set()
+
+
+def test_override_widens_a_real_source_pin_never_fabricates_one():
+    # A mirror stuck out of the window (state "own") is normally rejected in
+    # favor of the source's "good" pin. The override is applied on TOP of that
+    # real pin set — it admits the mirror's own advertised state, but it can
+    # only ever be reached when a genuine source pin already exists.
+    src_state = "1" * 64
+    mirror_state = "2" * 64
+    mirror = _rec("mirror", source="remote-clone", state=mirror_state)
+    rows = [_row("kS", _rec("source", state=src_state)), _row("kM", mirror)]
+    strict = clone_state_pins(mirror, "kM", rows, {})
+    assert strict == {src_state}                     # mirror excluded by default
+    widened = set(strict) | admission_override_pins(rows)
+    assert widened == {src_state, mirror_state}      # override lets it serve
+
+    # With no source attestation at all, clone_state_pins is None and the
+    # resolver's `if pins and ...override...` guard means the override is never
+    # consulted — an unpinned repo can never be force-opened.
+    bare_mirror = _rec("mirror", source="remote-clone", state="")
+    unpinned_rows = [_row("kS", _rec("source", state=""))]
+    assert clone_state_pins(bare_mirror, "kM", unpinned_rows, {}) is None
+
+
+def test_admission_override_endpoint_is_signed_bounded_and_ttl_healing():
+    # The override is an authenticated, self-expiring lever — not a permanent
+    # relaxation of the integrity gate. Guard the security-critical properties.
+    text = ENTRY.read_text(encoding="utf-8")
+    # Reachable via a POST route.
+    assert '"/api/mirrors/admission-override"' in text
+    assert "_admin_set_admission_override" in text
+    # Authenticated by the node's admin key (same auth as other admin mutations)
+    # over a domain-separated canonical string.
+    assert "forkmesh-admission-override-v1" in text
+    assert "_admin_authorized(env, node, ts, sig, canonical)" in text
+    # Stored with a native KV TTL and a hard ceiling, so it always heals back to
+    # the strict policy on its own.
+    assert "ADMISSION_OVERRIDE_MAX_TTL" in text
+    assert "expirationTtl" in text
+    # Consulted ONLY on the would-be-503 path, guarded so an unpinned repo (pins
+    # is None) is never force-opened.
+    assert "if not (pins and await _admission_override_active(" in text
+    assert "pins = set(pins) | admission_override_pins(members)" in text
+    # And audited like every other privileged mutation.
+    assert '"admin.admission_override"' in text
 
 
 def _entry_text():
