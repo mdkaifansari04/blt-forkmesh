@@ -86,5 +86,5 @@ def test_world_has_entry_points_from_flutter_and_dashboard():
     assert "LaunchMode.externalApplication" in flutter
     assert "worldUriForServerUrl" in settings
     assert "relay.userInfo.isNotEmpty" in settings
-    assert 'title="Open ForkMesh World"' in header
-    assert 'href="https://world.forkmesh.com/"' in header
+    assert 'title="Open ForkMesh World"' not in header
+    assert 'href="https://world.forkmesh.com/"' not in header

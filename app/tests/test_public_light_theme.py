@@ -10,9 +10,6 @@ AUTH_PAGES = (
     APP_PUBLIC / "signup.html",
     APP_PUBLIC / "forgot-password.html",
     APP_PUBLIC / "reset-password.html",
-    APP_PUBLIC / "mirror-payouts.html",
-    WWW_PUBLIC / "outreach.html",
-    WWW_PUBLIC / "security-report.html",
 )
 MESH_PAGES = (
     WWW_PUBLIC / "about.html",
@@ -62,19 +59,19 @@ FAMILY_THEME_CONTRACTS = {
     "auth-page-theme.css": {
         "light": {
             "color-scheme": "light",
-            "--auth-page-bg": "#f6f8fb",
+            "--auth-page-bg": "#ffffff",
             "--auth-glow": (
-                "radial-gradient(circle at top, rgba(31, 136, 61, 0.14), "
+                "radial-gradient(circle at top, rgba(220, 38, 38, 0.12), "
                 "transparent 32rem)"
             ),
             "--auth-card-bg": "#ffffff",
-            "--auth-border": "#d0d7de",
-            "--auth-text": "#1f2328",
-            "--auth-text-secondary": "#424a53",
-            "--auth-text-quiet": "#656d76",
+            "--auth-border": "#e5e7eb",
+            "--auth-text": "#111827",
+            "--auth-text-secondary": "#4b5563",
+            "--auth-text-quiet": "#6b7280",
             "--auth-field-bg": "#ffffff",
-            "--auth-focus": "#1f883d",
-            "--auth-action-bg": "#1f2328",
+            "--auth-focus": "#dc2626",
+            "--auth-action-bg": "#dc2626",
             "--auth-action-text": "#ffffff",
         },
         "rules": {

@@ -26,11 +26,15 @@ def test_public_workers_and_app_edge_control_have_disjoint_runtime_roles():
     assert app["name"] == "forkmesh-relay"
     assert app["main"] == "src_build/entry.py"
     assert app["vars"]["WORKER_ROLE"] == "app"
-    assert app["vars"]["API_ORIGIN"] == "https://app.forkmesh.com"
-    assert app["routes"] == [
-        {"pattern": "app.forkmesh.com", "custom_domain": True},
-        {"pattern": "api.forkmesh.com", "custom_domain": True},
-    ]
+    assert app["vars"]["API_ORIGIN"] == (
+        "https://forkmesh-relay.owaspblt.workers.dev"
+    )
+    assert app["vars"]["PUBLIC_BASE_URL"] == (
+        "https://forkmesh-relay.owaspblt.workers.dev"
+    )
+    assert app["vars"]["SINGLE_WORKER_SITE"] == "true"
+    assert app["workers_dev"] is True
+    assert "routes" not in app
     assert app["assets"]["directory"] == "./dist"
     assert "triggers" not in app
     assert "durable_objects" in app and "migrations" in app
@@ -165,20 +169,20 @@ def test_app_root_and_api_landing_support_official_and_self_host_modes():
     assert 'getattr(self.env, "SINGLE_WORKER_SITE", "")' in entry
     assert "return await self._serve_homepage(url)" in entry
     assert 'url, "dashboard/index.html")' in entry
-    assert manifest["vars"]["SINGLE_WORKER_SITE"] == "false"
+    assert manifest["vars"]["SINGLE_WORKER_SITE"] == "true"
     assert "/api" in manifest["assets"]["run_worker_first"]
     assert "/api/*" in manifest["assets"]["run_worker_first"]
     for clean_page in (
         "/login",
         "/signup",
         "/status",
-        "/network",
-        "/leaderboards",
     ):
         assert clean_page in manifest["assets"]["run_worker_first"]
+    for removed in ("/network", "/leaderboards", "/chat", "/referrals", "/mirror-payouts"):
+        assert removed not in manifest["assets"]["run_worker_first"]
 
 
-def test_app_redirects_external_content_to_its_owning_worker():
+def test_app_keeps_blog_docs_worker_owned_without_forkmesh_marketing_routes():
     entry = (APP_ROOT / "src/entry.py").read_text(encoding="utf-8")
     routes = config("app")["assets"]["run_worker_first"]
     static_routes = (APP_ROOT / "src/static_routes.py").read_text(encoding="utf-8")
@@ -186,11 +190,12 @@ def test_app_redirects_external_content_to_its_owning_worker():
     assert 'origin_name = (' in entry
     assert '"WORLD_ORIGIN" if external_owner == "world" else "WWW_ORIGIN"' in entry
     assert 'return Response("", status=308, headers={"location": destination})' in entry
-    for path in ("/docs", "/docs/*", "/blog", "/blog/*", "/desktop", "/pricing", "/world", "/world/*"):
+    for path in ("/docs", "/docs/*", "/blog", "/blog/*"):
         assert path in routes
+    for path in ("/desktop", "/pricing", "/world", "/world/*"):
+        assert path not in routes
     assert '"docs"' in static_routes
     assert '"blog"' in static_routes
-    assert '"world"' in static_routes
 
 
 def test_world_shell_injects_configured_app_origin_before_api_client():

@@ -7,9 +7,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title><!--#page title--></title>
     <meta name="description" content="<!--#page description-->" />
-    <meta name="application-name" content="ForkMesh" />
-    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
-    <meta name="theme-color" content="#090909" />
+    <meta name="application-name" content="BLT" />
+    <meta name="apple-mobile-web-app-title" content="BLT" />
+    <meta name="theme-color" content="#09090b" />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
@@ -27,7 +27,7 @@
         } catch (_) {}
         document.documentElement.dataset.dashboardTheme = theme;
         document.documentElement.style.colorScheme = theme;
-        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fb" : "#090909");
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#ffffff" : "#09090b");
       })();
     </script>
     <link rel="stylesheet" href="/dashboard/tailwind.css" />
@@ -38,7 +38,7 @@
           extend: {
             fontFamily: {
               sans: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Noto Sans", "Helvetica", "Arial", "sans-serif"],
-              mono: ["ForkMesh Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"],
+              mono: ["BLT Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"],
             },
             colors: {
               background: "rgb(var(--dashboard-background-rgb) / <alpha-value>)",
@@ -67,7 +67,7 @@
     <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
     <style>
       @font-face {
-        font-family: "ForkMesh Dashboard Mono";
+        font-family: "BLT Dashboard Mono";
         src: url("/assets/fonts/DejaVuSansMono.ttf") format("truetype");
         font-weight: 400 500;
         font-style: normal;
@@ -75,7 +75,7 @@
       }
 
       @font-face {
-        font-family: "ForkMesh Dashboard Mono";
+        font-family: "BLT Dashboard Mono";
         src: url("/assets/fonts/DejaVuSansMono-Bold.ttf") format("truetype");
         font-weight: 600 800;
         font-style: normal;
@@ -85,28 +85,28 @@
       :root,
       [data-dashboard-theme="dark"] {
         --font-size: 15px;
-        --dashboard-header-rgb: 1 4 9;
-        --dashboard-sidebar-rgb: 12 17 23;
-        --dashboard-background-rgb: 1 4 9;
-        --dashboard-foreground-rgb: 240 246 252;
-        --dashboard-card-rgb: 13 17 23;
-        --dashboard-card-foreground-rgb: 240 246 252;
-        --dashboard-popover-rgb: 22 27 34;
-        --dashboard-popover-foreground-rgb: 240 246 252;
-        --dashboard-primary-rgb: 35 134 54;
+        --dashboard-header-rgb: 9 9 11;
+        --dashboard-sidebar-rgb: 24 24 27;
+        --dashboard-background-rgb: 9 9 11;
+        --dashboard-foreground-rgb: 244 244 245;
+        --dashboard-card-rgb: 24 24 27;
+        --dashboard-card-foreground-rgb: 244 244 245;
+        --dashboard-popover-rgb: 39 39 42;
+        --dashboard-popover-foreground-rgb: 244 244 245;
+        --dashboard-primary-rgb: 239 68 68;
         --dashboard-primary-foreground-rgb: 255 255 255;
-        --dashboard-secondary-rgb: 33 38 45;
-        --dashboard-secondary-foreground-rgb: 201 209 217;
-        --dashboard-muted-rgb: 22 27 34;
-        --dashboard-muted-foreground-rgb: 139 148 158;
-        --dashboard-accent-rgb: 88 166 255;
+        --dashboard-secondary-rgb: 39 39 42;
+        --dashboard-secondary-foreground-rgb: 228 228 231;
+        --dashboard-muted-rgb: 39 39 42;
+        --dashboard-muted-foreground-rgb: 161 161 170;
+        --dashboard-accent-rgb: 239 68 68;
         --dashboard-accent-foreground-rgb: 255 255 255;
-        --dashboard-destructive-rgb: 248 81 73;
-        --dashboard-border-rgb: 48 54 61;
-        --dashboard-ring-rgb: 88 166 255;
-        --dashboard-scrollbar-rgb: 139 148 158;
-        --dashboard-link: #58a6ff;
-        --dashboard-link-hover: #79c0ff;
+        --dashboard-destructive-rgb: 248 113 113;
+        --dashboard-border-rgb: 39 39 42;
+        --dashboard-ring-rgb: 239 68 68;
+        --dashboard-scrollbar-rgb: 161 161 170;
+        --dashboard-link: #f87171;
+        --dashboard-link-hover: #fca5a5;
         --contribution-commits: #58a6ff;
         --contribution-issues: #3fb950;
         --contribution-pulls: #bc8cff;
@@ -121,40 +121,40 @@
         --contribution-tooltip-bg: #161b22;
         --contribution-tooltip-fg: #f0f6fc;
         --contribution-tooltip-border: #30363d;
-        --background: #010409;
-        --foreground: #f0f6fc;
-        --card: #0d1117;
-        --primary: #238636;
+        --background: #09090b;
+        --foreground: #f4f4f5;
+        --card: #18181b;
+        --primary: #ef4444;
         --primary-foreground: #ffffff;
-        --secondary: #21262d;
-        --muted-foreground: #8b949e;
+        --secondary: #27272a;
+        --muted-foreground: #a1a1aa;
         --border: rgb(var(--dashboard-border-rgb));
         color-scheme: dark;
       }
 
       [data-dashboard-theme="light"] {
         --dashboard-header-rgb: 255 255 255;
-        --dashboard-sidebar-rgb: 255 255 255;
+        --dashboard-sidebar-rgb: 249 250 251;
         --dashboard-background-rgb: 255 255 255;
-        --dashboard-foreground-rgb: 0 0 0;
+        --dashboard-foreground-rgb: 17 24 39;
         --dashboard-card-rgb: 255 255 255;
-        --dashboard-card-foreground-rgb: 0 0 0;
+        --dashboard-card-foreground-rgb: 17 24 39;
         --dashboard-popover-rgb: 255 255 255;
-        --dashboard-popover-foreground-rgb: 0 0 0;
-        --dashboard-primary-rgb: 22 163 74;
+        --dashboard-popover-foreground-rgb: 17 24 39;
+        --dashboard-primary-rgb: 220 38 38;
         --dashboard-primary-foreground-rgb: 255 255 255;
-        --dashboard-secondary-rgb: 255 255 255;
-        --dashboard-secondary-foreground-rgb: 0 0 0;
-        --dashboard-muted-rgb: 255 255 255;
-        --dashboard-muted-foreground-rgb: 0 0 0;
-        --dashboard-accent-rgb: 9 105 218;
+        --dashboard-secondary-rgb: 249 250 251;
+        --dashboard-secondary-foreground-rgb: 17 24 39;
+        --dashboard-muted-rgb: 249 250 251;
+        --dashboard-muted-foreground-rgb: 75 85 99;
+        --dashboard-accent-rgb: 220 38 38;
         --dashboard-accent-foreground-rgb: 255 255 255;
-        --dashboard-destructive-rgb: 220 38 38;
-        --dashboard-border-rgb: 226 232 240;
-        --dashboard-ring-rgb: 15 23 42;
-        --dashboard-scrollbar-rgb: 71 85 105;
-        --dashboard-link: #000000;
-        --dashboard-link-hover: #000000;
+        --dashboard-destructive-rgb: 185 28 28;
+        --dashboard-border-rgb: 229 231 235;
+        --dashboard-ring-rgb: 220 38 38;
+        --dashboard-scrollbar-rgb: 113 113 122;
+        --dashboard-link: #dc2626;
+        --dashboard-link-hover: #b91c1c;
         --contribution-commits: #0969da;
         --contribution-issues: #1a7f37;
         --contribution-pulls: #8250df;
@@ -170,12 +170,12 @@
         --contribution-tooltip-fg: #1f2328;
         --contribution-tooltip-border: #d0d7de;
         --background: #ffffff;
-        --foreground: #000000;
+        --foreground: #111827;
         --card: #ffffff;
-        --primary: #16a34a;
+        --primary: #dc2626;
         --primary-foreground: #ffffff;
-        --secondary: #ffffff;
-        --muted-foreground: #000000;
+        --secondary: #f9fafb;
+        --muted-foreground: #4b5563;
         --border: rgb(var(--dashboard-border-rgb));
         color-scheme: light;
       }

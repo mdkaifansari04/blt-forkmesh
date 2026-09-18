@@ -113,14 +113,12 @@ def test_dashboard_exposes_live_hydration_targets():
         assert placeholder not in dashboard
 
 
-def test_dashboard_get_paid_button_uses_small_sol_logo():
-    # The button lives in the shared header partial, so any composed page has it.
+def test_dashboard_header_drops_mirror_payouts_chrome():
     dashboard = assembled_dashboard_page("home")
 
-    assert 'href="/mirror-payouts"' in dashboard
-    assert 'src="/assets/sol.png"' in dashboard
-    assert 'alt="" aria-hidden="true"' in dashboard
-    assert 'class="h-4 w-4 shrink-0 rounded-full object-contain"' in dashboard
+    assert 'href="/mirror-payouts"' not in dashboard
+    assert 'src="/assets/sol.png"' not in dashboard
+    assert "Open ForkMesh World" not in dashboard
 
 
 def test_dashboard_home_hides_unready_sponsorship_target_list():
@@ -131,17 +129,19 @@ def test_dashboard_home_hides_unready_sponsorship_target_list():
         assert sponsor not in dashboard
 
 
-def test_dashboard_nav_links_to_chat_page():
+def test_dashboard_nav_is_blt_focused():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
 
     drawer_nav = dashboard.split('data-sidebar-main-menu', 1)[1].split(
         "</nav>", 1)[0]
-    assert drawer_nav.index("Repositories") < drawer_nav.index("Network")
-    assert drawer_nav.index("Network") < drawer_nav.index('href="/dashboard/chat"')
-    assert drawer_nav.index('href="/dashboard/chat"') < drawer_nav.index('href="/docs"')
-    assert "Chat" in drawer_nav
-    assert 'data-nav="chat" data-nav-link href="/dashboard/chat"' in drawer_nav
-    assert 'data-lucide="messages-square"' in drawer_nav
+    assert "Repositories" in drawer_nav
+    assert "Tasks" in drawer_nav
+    assert "Notes" in drawer_nav
+    assert "Settings" in drawer_nav
+    assert "Network" not in drawer_nav
+    assert "Chat" not in drawer_nav
+    assert 'href="/dashboard/chat"' not in drawer_nav
+    assert 'href="/docs"' not in drawer_nav
     # Sidebar entries are real page links now - no client-router buttons.
     assert "<button" not in drawer_nav
     assert "data-section=" not in drawer_nav
@@ -764,7 +764,7 @@ def test_dashboard_logo_refreshes_the_dashboard_document():
     for fragment in (header, sidebar):
         assert "data-dashboard-logo" in fragment
         assert 'href="/dashboard"' in fragment
-        assert 'aria-label="Refresh ForkMesh Dashboard"' in fragment
+        assert 'aria-label="Refresh BLT Dashboard"' in fragment
 
 
 def test_dashboard_has_mobile_responsive_navigation_drawers():
@@ -2341,30 +2341,29 @@ def test_clean_marketing_routes_target_static_pages():
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
     for route in ("/dashboard.js",):
         assert route not in run_worker_first
-    assert "/network" in run_worker_first
-    for route in ("/blog", "/docs", "/desktop"):
+    for route in ("/network", "/chat", "/leaderboards", "/referrals", "/mirror-payouts", "/desktop", "/world"):
+        assert route not in run_worker_first
+    for route in ("/blog", "/docs", "/login", "/signup"):
         assert route in run_worker_first
-        assert '"%s",' % route.lstrip("/") in STATIC_ROUTES_TEXT
     assert "/*.html" in run_worker_first
-    assert (PUBLIC / "network.html").is_file()
     for route, asset in (
         ("/dashboard", "dashboard/index.html"),
         ("/dashboard/repos", "dashboard/repos/index.html"),
-        ("/dashboard/network", "dashboard/network/index.html"),
-        ("/dashboard/chat", "dashboard/chat/index.html"),
         ("/dashboard/settings", "dashboard/settings/index.html"),
         ("/dashboard/profile", "dashboard/profile/index.html"),
         ("/dashboard/profile/repositories", "dashboard/profile/repositories/index.html"),
     ):
         assert f'"{route}": "{asset}"' in STATIC_ROUTES_TEXT
-    # App / and /dashboard are Worker-owned; self-hosted SINGLE_WORKER_SITE
-    # serves the staged website homepage, while the official app serves the
-    # dashboard. Per-page dashboard documents remain direct static assets.
+    # App / and /dashboard* HTML are Worker-owned; self-hosted
+    # SINGLE_WORKER_SITE serves the staged website homepage, while the
+    # official app serves the dashboard shell pages through the Worker.
     assert "/" in run_worker_first
     assert "/dashboard" in run_worker_first
     assert "/dashboard/*" in run_worker_first
-    for page in ("repos", "network", "chat", "settings", "profile", "profile/repositories"):
-        assert ("!/dashboard/" + page) in run_worker_first
+    for page in ("repos", "settings", "profile", "profile/repositories", "tasks", "notes"):
+        assert ("!/dashboard/" + page) not in run_worker_first
+        assert ("!/dashboard/" + page + "/") not in run_worker_first
+    assert WRANGLER["assets"]["html_handling"] == "drop-trailing-slash"
     assert "/dashboard.html" not in run_worker_first
 
 

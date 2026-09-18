@@ -60,12 +60,16 @@ def test_worker_owns_root_without_cookie_routing():
 def test_regular_homepage_revalidates_without_varying_on_cookie():
     serve = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _serve_homepage"):
-        ENTRY_TEXT.index("async def _serve_homepage") + 1500
+        ENTRY_TEXT.index("async def _serve_homepage") + 2200
     ]
     assert '"cache-control": "no-cache"' in serve
     assert '"vary": "cookie"' not in serve
-    assert 'base + "index.html"' in serve
+    # Prefer blt-home.html so a blocked /index.html hairpin cannot 503 `/`.
+    assert '"blt-home.html"' in serve
+    assert '"index.html"' in serve
     assert 'base + "world/index.html"' not in serve
+    assert "BLT unavailable" in serve
+    assert "ForkMesh unavailable" not in serve
 
 
 def test_presence_cookie_lifecycle_is_complete():

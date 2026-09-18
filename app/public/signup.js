@@ -6,6 +6,68 @@
   const $ = (sel) => document.querySelector(sel);
   const isLive = location.protocol !== "file:";
 
+  function readSession() {
+    try {
+      const session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
+      if (!session || !session.nodeName) return null;
+      if (session.kind === "node") return null;
+      if (session.kind === "user" || session.email) return session;
+    } catch (_) {}
+    return null;
+  }
+
+  // Organization invite handoff: the emailed link lands on
+  // /signup?invite=<id>&org=<org>&token=<tok>. The token is the whole
+  // authorization (holding it proves holding the mailbox), so the flow is:
+  // signed in -> accept immediately; not signed in -> normal signup, then
+  // accept with the fresh session cookie, then land on the org page.
+  function inviteContext() {
+    try {
+      const params = new URLSearchParams(location.search);
+      const invite = params.get("invite") || "";
+      const org = (params.get("org") || "").toLowerCase();
+      const token = params.get("token") || "";
+      if (invite && token && NAME_RE.test(org)) return { invite, org, token };
+    } catch (_) {}
+    return null;
+  }
+
+  const orgInvite = inviteContext();
+
+  function inviteAcceptPath(ctx) {
+    return "/api/orgs/" + encodeURIComponent(ctx.org) + "/invitations/" +
+      encodeURIComponent(ctx.invite) + "/accept?token=" +
+      encodeURIComponent(ctx.token);
+  }
+
+  async function acceptInviteAndEnterOrg(ctx) {
+    try {
+      const res = await fetch(inviteAcceptPath(ctx), {
+        method: "POST",
+        headers: { accept: "application/json" },
+      });
+      if (res.ok) {
+        location.href = "/" + ctx.org;
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  // Already signed in: signup is not useful - send them into the app (via
+  // the invite accept when one is present, so an existing account clicking
+  // the emailed link still joins the org).
+  if (readSession()) {
+    if (orgInvite) {
+      acceptInviteAndEnterOrg(orgInvite).then((joined) => {
+        if (!joined) location.replace("/dashboard");
+      });
+      return;
+    }
+    location.replace("/dashboard");
+    return;
+  }
+
   // Referral attribution: /r/<name> bounces here with ?ref=<name>. Remember it
   // so the credit survives a detour (pricing, docs) before the form is sent.
   function referralCode() {
@@ -22,6 +84,36 @@
   }
   let nameOk = false;
   let availTimer = null;
+
+  // Invite banner + email prefill: the GET preview mutates nothing (the
+  // Worker's scanner defence) and returns org/role/inviter/email only to a
+  // caller holding the emailed token.
+  function primeInviteView() {
+    if (!orgInvite || !isLive) return;
+    const banner = $("#org-invite-banner");
+    fetch(inviteAcceptPath(orgInvite), {
+      headers: { accept: "application/json" },
+    }).then(async (res) => {
+      const body = await res.json().catch(() => ({}));
+      if (!banner) return;
+      if (res.ok && body.confirmationRequired) {
+        banner.textContent =
+          (body.inviter ? body.inviter + " invited you" : "You've been invited") +
+          " to join the " + body.org + " organization" +
+          (body.role ? " as " + body.role : "") + ". Create your account to accept.";
+        banner.hidden = false;
+        const emailField = $("#acct-email");
+        if (emailField && !emailField.value && body.email) {
+          emailField.value = body.email;
+        }
+      } else {
+        banner.textContent =
+          "This invitation link is no longer valid - you can still create an account.";
+        banner.hidden = false;
+      }
+    }).catch(() => {});
+  }
+  primeInviteView();
 
   const form = $("#signup-form");
   const nameInput = $("#node-name");
@@ -186,6 +278,14 @@
       return;
     }
     storeSession(body);
+    if (orgInvite) {
+      // Signup came from an org invite link: join the org with the fresh
+      // session cookie and land on the org page. The verification email is
+      // already on its way regardless; the dashboard keeps nudging until
+      // the address is confirmed.
+      const joined = await acceptInviteAndEnterOrg(orgInvite);
+      if (joined) return;
+    }
     showVerifyView(nodeName, email);
   }
 
@@ -226,7 +326,7 @@
     }
     if (signupView) signupView.hidden = true;
     verifyView.hidden = false;
-    document.title = "Verify your email · ForkMesh";
+    document.title = "Verify your email · BLT";
     window.scrollTo(0, 0);
   }
 

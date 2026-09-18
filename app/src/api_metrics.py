@@ -305,6 +305,13 @@ def endpoint_catalog():
         template = _template_from_pattern(pattern)
         if template in items:
             continue
+        # A bare single wildcard segment ("/{p1}") is a page-route matcher,
+        # not an endpoint: it matches every one-segment path (/login, /docs,
+        # a public org page) and would render in the catalog as a callable
+        # catch-all with a "try" button. Prefixed page routes like /r/{p1}
+        # stay - they name a real, specific surface.
+        if re.fullmatch(r"/\{[a-z0-9]+\}", template):
+            continue
         method = "POST" if (
             "upload-pack" in template or "receive-pack" in template
         ) else "GET"

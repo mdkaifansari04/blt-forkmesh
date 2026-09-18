@@ -521,6 +521,16 @@
     invalid_expiration: "Bot tokens may expire in 1–365 days.",
     too_many_bot_tokens: "This organization has reached its active bot-token limit.",
     invalid_token_id: "That bot token is invalid.",
+    invalid_email: "Enter a valid email address.",
+    invitation_pending: "An invitation for that address is already pending.",
+    invitation_expired: "That invitation has expired.",
+    invitation_used: "That invitation was already used or revoked.",
+    invalid_invitation_token: "That invitation link is not valid.",
+    too_many_invitations: "This organization has reached its pending-invitation limit.",
+    daily_invitation_limit: "Daily invitation limit reached - try again tomorrow.",
+    invite_signin_required: "Sign in to accept the invitation.",
+    delivery_unconfigured: "Email delivery is not configured, so the invitation was not sent.",
+    id_required: "Choose an invitation to revoke.",
   };
 
   function orgErrorText(code) {
@@ -560,6 +570,166 @@
     showOrgsList();
   }
 
+  // ---- Organizations hub (/dashboard/orgs) ----------------------------------
+  // The standalone page behind the sidebar's Organizations entry. The settings
+  // tab above remains the management surface for one org; this page is the
+  // index: which organizations you belong to, your role, how many repositories
+  // each fronts, and the link to each org's public page.
+
+  // Every org's public page is reachable at /orgs/<name> with no per-org
+  // deploy, so that — not the bare /<name> vanity alias, which needs its own
+  // wrangler run_worker_first entry — is what the app links to.
+  function orgPublicHref(name) {
+    return "/orgs/" + encodeURIComponent(String(name || "").toLowerCase());
+  }
+
+  function orgsPageCard(org) {
+    const name = String(org.name || "");
+    const safeName = escapeHtml(name);
+    const display = escapeHtml(org.displayName || name);
+    const description = org.description
+      ? '<p class="mt-1 text-sm text-muted-foreground">' +
+        escapeHtml(org.description) + "</p>"
+      : "";
+    const facts = [];
+    if (Number(org.repoCount) > 0) {
+      facts.push(org.repoCount + " repositor" +
+        (Number(org.repoCount) === 1 ? "y" : "ies"));
+    }
+    if (Number(org.members) > 0) {
+      facts.push(org.members + " member" +
+        (Number(org.members) === 1 ? "" : "s"));
+    }
+    const meta = facts.length
+      ? '<p class="mt-2 text-xs text-muted-foreground font-mono">' +
+        escapeHtml(facts.join(" · ")) + "</p>"
+      : "";
+    const manage = (org.role === "owner" || org.role === "admin")
+      ? '<a href="/dashboard/settings/organizations" class="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors">' +
+        '<i data-lucide="settings" class="h-3.5 w-3.5"></i> Manage</a>'
+      : "";
+    return '<div class="px-4 sm:px-5 py-4 flex flex-wrap items-start justify-between gap-3">' +
+      '<div class="min-w-0 flex-1">' +
+        '<div class="flex items-center gap-2">' +
+          '<i data-lucide="building-2" class="h-4 w-4 shrink-0 text-muted-foreground"></i>' +
+          '<a href="' + orgPublicHref(name) + '" class="truncate text-sm font-semibold text-foreground hover:underline">' +
+            display + "</a>" +
+          orgRoleBadge(org.role) +
+        "</div>" +
+        '<p class="mt-1 font-mono text-xs text-muted-foreground">' + safeName + "</p>" +
+        description + meta +
+      "</div>" +
+      '<div class="flex shrink-0 items-center gap-2">' +
+        '<a href="' + orgPublicHref(name) + '" class="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors">' +
+          '<i data-lucide="external-link" class="h-3.5 w-3.5"></i> Public page</a>' +
+        manage +
+      "</div>" +
+    "</div>";
+  }
+
+  function orgsPageStatus(message, ok) {
+    const status = $("[data-orgs-page-status]");
+    if (!status) return;
+    status.textContent = message || "";
+    status.className = "min-h-4 text-xs " +
+      (message ? (ok ? "text-emerald-500" : "text-red-500") : "text-muted-foreground");
+  }
+
+  async function renderOrgsPage() {
+    const list = $("[data-orgs-page-list]");
+    const count = $("[data-orgs-page-count]");
+    if (!list) return;
+    if (!orgSignedIn()) {
+      list.innerHTML =
+        '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">' +
+        'Sign in to see the organizations you belong to.</div>';
+      if (count) count.textContent = "0";
+      return;
+    }
+    let orgs = [];
+    try {
+      const data = await orgApiRequest("GET", "/api/orgs");
+      orgs = Array.isArray(data.orgs) ? data.orgs : [];
+    } catch (error) {
+      list.innerHTML =
+        '<div class="px-4 sm:px-5 py-8 text-sm text-red-500">' +
+        escapeHtml(error.message) + "</div>";
+      if (count) count.textContent = "0";
+      return;
+    }
+    // Names and roles come from the list endpoint; the per-org profile adds
+    // the display name and counts. Bounded by MAX_ORGS_PER_ACCOUNT, and a
+    // failed profile degrades that one card rather than the whole page.
+    const detailed = await Promise.all(orgs.map(async (org) => {
+      try {
+        const [profile, repos] = await Promise.all([
+          orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(org.name)),
+          orgApiRequest(
+            "GET", "/api/orgs/" + encodeURIComponent(org.name) + "/repos")
+            .catch(() => ({ repos: [] })),
+        ]);
+        return {
+          ...org,
+          displayName: profile.displayName || "",
+          description: profile.description || "",
+          members: profile.members || 0,
+          repoCount: (repos.repos || []).length,
+        };
+      } catch (_) {
+        return org;
+      }
+    }));
+    if (count) {
+      count.textContent = detailed.length +
+        (detailed.length === 1 ? " organization" : " organizations");
+    }
+    list.innerHTML = detailed.length
+      ? detailed.map(orgsPageCard).join("")
+      : '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">' +
+        "You are not a member of any organization yet. Create one to serve " +
+        "your repositories under a shared namespace.</div>";
+    window.lucide?.createIcons();
+  }
+
+  async function onOrgsPageCreate(event) {
+    event.preventDefault();
+    const name = ($("[data-orgs-page-name]")?.value || "").trim().toLowerCase();
+    if (!name) {
+      orgsPageStatus("Enter an organization name.", false);
+      return;
+    }
+    const body = { name };
+    const display = ($("[data-orgs-page-display]")?.value || "").trim();
+    const description = ($("[data-orgs-page-description]")?.value || "").trim();
+    if (display) body.displayName = display;
+    if (description) body.description = description;
+    orgsPageStatus("Creating…", true);
+    try {
+      await orgApiRequest("POST", "/api/orgs", body);
+      orgsPageStatus("", true);
+      $("[data-orgs-page-create]")?.setAttribute("hidden", "");
+      const form = $("[data-orgs-page-create]");
+      if (form instanceof HTMLFormElement) form.reset();
+      await renderOrgsPage();
+    } catch (error) {
+      orgsPageStatus(error.message, false);
+    }
+  }
+
+  function initOrgsPage() {
+    const form = $("[data-orgs-page-create]");
+    $("[data-orgs-page-new]")?.addEventListener("click", () => {
+      form?.removeAttribute("hidden");
+      $("[data-orgs-page-name]")?.focus();
+    });
+    $("[data-orgs-page-cancel]")?.addEventListener("click", () => {
+      orgsPageStatus("", true);
+      form?.setAttribute("hidden", "");
+    });
+    form?.addEventListener("submit", onOrgsPageCreate);
+    void renderOrgsPage();
+  }
+
   function orgSignedIn() {
     return Boolean(state.session?.nodeName) && state.session?.kind !== "preview";
   }
@@ -597,13 +767,13 @@
       return "<" + tag + controls + ' title="' + escapeHtml(title) + '" aria-label="' +
         escapeHtml(group.label + ": " + state) + '" class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold transition-colors ' +
         (active
-          ? "border-[#238636]/50 bg-[#238636]/10 text-[#238636]"
+          ? "border-primary/50 bg-primary/10 text-primary"
           : "border-border bg-background text-muted-foreground") +
         (canManage
           ? " cursor-pointer hover:border-[#2f81f7]/70 hover:bg-[#2f81f7]/10 hover:text-[#2f81f7] disabled:cursor-wait disabled:opacity-60"
           : "") + '">' +
         '<span aria-hidden="true" class="h-1.5 w-1.5 rounded-full ' +
-        (active ? "bg-[#238636]" : "bg-muted-foreground/40") + '"></span>' +
+        (active ? "bg-primary" : "bg-muted-foreground/40") + '"></span>' +
         escapeHtml(group.label) + "</" + tag + ">";
     }).join("");
     const activeCount = ORG_OFFICE_FLOOR_GROUPS.filter(
@@ -631,8 +801,8 @@
 
   const ORG_INPUT_CLASS = "h-10 rounded-md border border-border bg-card px-3 text-sm font-normal " +
     "text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]";
-  const ORG_BTN_PRIMARY = "inline-flex h-9 items-center justify-center rounded-md bg-[#238636] px-4 " +
-    "text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors";
+  const ORG_BTN_PRIMARY = "inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 " +
+    "text-sm font-semibold text-primary-foreground hover:bg-red-700 transition-colors";
   const ORG_BTN_SECONDARY = "inline-flex h-9 items-center justify-center rounded-md border border-border " +
     "bg-secondary px-4 text-sm font-semibold text-foreground hover:bg-muted transition-colors";
 
@@ -714,6 +884,7 @@
     let repos = [];
     let fediverse = { controls: { enabled: true }, repos: [] };
     let botTokens = { permissions: [], tokens: [], usagePreview: [] };
+    let invitations = [];
     try {
       const [profileData, membersData, teamsData, reposData] = await Promise.all([
         orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name)),
@@ -726,12 +897,17 @@
       teams = teamsData.teams || [];
       repos = reposData.repos || [];
       if (profile.viewerRole === "owner" || profile.viewerRole === "admin") {
-        [fediverse, botTokens] = await Promise.all([
+        let invitesData;
+        [fediverse, botTokens, invitesData] = await Promise.all([
           orgApiRequest(
             "GET", "/api/orgs/" + encodeURIComponent(name) + "/fediverse"),
           orgApiRequest(
             "GET", "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens"),
+          orgApiRequest(
+            "GET", "/api/orgs/" + encodeURIComponent(name) + "/invitations")
+            .catch(() => ({ invitations: [] })),
         ]);
+        invitations = invitesData.invitations || [];
       }
     } catch (error) {
       root.innerHTML =
@@ -743,7 +919,8 @@
       return;
     }
     renderOrgDetail(
-      root, name, profile, members, teams, repos, fediverse, botTokens);
+      root, name, profile, members, teams, repos, fediverse, botTokens,
+      invitations);
   }
 
   function orgRemoteMcpPrompt(name, mode, token) {
@@ -829,6 +1006,7 @@
 
   function renderOrgDetail(
     root, name, profile, members, teams, repos, fediverse, botTokens,
+    invitations,
   ) {
     const canManage = profile.viewerRole === "owner" || profile.viewerRole === "admin";
     const isOwner = profile.viewerRole === "owner";
@@ -922,6 +1100,37 @@
           "</div>" +
           '<select data-member-role class="' + ORG_INPUT_CLASS + '">' + orgOptionTags(ORG_ROLE_OPTIONS, "member") + "</select>" +
           '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add member</button></form>'
+      : "";
+    const inviteRows = canManage
+      ? (invitations || []).map((invite) => {
+          const expires = Number(invite.expiresAt || 0);
+          const expiresLabel = expires
+            ? "expires " + formatDate(expires)
+            : "";
+          return '<div class="flex items-center gap-2 rounded-md border border-dashed border-border bg-card px-3 py-2">' +
+            '<div class="min-w-0 flex-1">' +
+              '<div class="truncate text-sm text-foreground">' + escapeHtml(invite.maskedEmail || "") + "</div>" +
+              '<span class="text-xs text-muted-foreground">invited as ' + escapeHtml(invite.role || "member") +
+                (expiresLabel ? " · " + escapeHtml(expiresLabel) : "") + "</span>" +
+            "</div>" +
+            '<button type="button" data-org-invite-revoke="' + escapeHtml(invite.id || "") + '" title="Revoke invitation" ' +
+              'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
+              '<i data-lucide="mail-x" class="h-4 w-4"></i></button>' +
+          "</div>";
+        }).join("")
+      : "";
+    const inviteAdd = canManage
+      ? '<form data-org-invite-add class="mt-2 flex flex-wrap items-center gap-2">' +
+          '<input data-invite-email type="email" placeholder="email@example.org" autocomplete="off" class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[14rem]" />' +
+          '<select data-invite-role class="' + ORG_INPUT_CLASS + '">' + orgOptionTags(ORG_ROLE_OPTIONS, "member") + "</select>" +
+          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Invite by email</button>' +
+          '<p class="w-full text-[11px] leading-4 text-muted-foreground">Sends a single-use link that expires in 7 days. An address that already has an account is added directly.</p>' +
+        "</form>"
+      : "";
+    const inviteSection = canManage
+      ? '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Email invitations</h4>' +
+          '<div class="mt-2 grid gap-2">' + (inviteRows || '<p class="text-sm text-muted-foreground">No pending invitations.</p>') + "</div>" +
+          inviteAdd + "</section>"
       : "";
     const teamAdd = canManage
       ? '<form data-org-team-add class="mt-2 flex flex-wrap items-center gap-2">' +
@@ -1064,6 +1273,7 @@
         '<div>' +
           '<section><h4 class="text-sm font-semibold text-foreground">Members</h4>' +
             '<div class="mt-2 grid gap-2">' + memberRows + "</div>" + memberAdd + "</section>" +
+          inviteSection +
           '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Teams</h4>' +
             '<div class="mt-2 grid gap-2">' + teamRows + "</div>" + teamAdd + "</section>" +
         "</div>" +
@@ -1134,6 +1344,20 @@
       const role = root.querySelector("[data-member-role]")?.value || "member";
       if (!member) return;
       guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/members", { member, role }));
+    });
+    root.querySelector("[data-org-invite-add]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const email = (root.querySelector("[data-invite-email]")?.value || "").trim();
+      const role = root.querySelector("[data-invite-role]")?.value || "member";
+      if (!email) return;
+      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/invitations", { email, role }));
+    });
+    root.querySelectorAll("[data-org-invite-revoke]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const id = button.dataset.orgInviteRevoke;
+        if (!id) return;
+        guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name) + "/invitations", { id }));
+      });
     });
     wireOrgMemberAutocomplete(root, members);
     root.querySelectorAll("[data-org-member-role]").forEach((select) => {
@@ -1596,6 +1820,109 @@
   // profile-page machinery renders whatever profileSubject() returns, so
   // public mode is: fetch the named account's public payload, park it in
   // state.publicProfile, and strip the owner-only chrome.
+
+  // Public organization page: the Worker serves the built org document for a
+  // routed bare /<org> URL, and this fills it from the same /api/orgs/<name>
+  // payload the settings panel uses. Anonymous visitors get whatever the
+  // org's world-access policy exposes.
+  // Both public org URLs land on this same document: the canonical
+  // /orgs/<name> (works for every org) and the bare /<name> vanity alias
+  // (only for orgs given their own wrangler run_worker_first entry).
+  function orgNameFromPath() {
+    const path = location.pathname.toLowerCase();
+    const canonical = /^\/orgs\/([a-z][a-z0-9-]{0,62})\/?$/.exec(path);
+    if (canonical) return canonical[1];
+    const vanity = /^\/([a-z][a-z0-9-]{0,62})\/?$/.exec(path);
+    return vanity ? vanity[1] : "";
+  }
+
+  async function loadOrgPage(name) {
+    const setText = (sel, text) => {
+      const el = $(sel);
+      if (el) el.textContent = text;
+    };
+    let profile;
+    try {
+      profile = await fetchJson("/api/orgs/" + encodeURIComponent(name));
+    } catch (_) {
+      $("[data-org-page-body]")?.classList.add("hidden");
+      $("[data-org-page-error]")?.classList.remove("hidden");
+      setText("[data-org-page-name]", name);
+      return;
+    }
+    const display = profile.displayName || profile.org || name;
+    document.title = display + " · BLT";
+    setText("[data-org-page-name]", display);
+    setText("[data-org-page-description]", profile.description || "");
+    setText("[data-org-page-handle]", name);
+
+    // The repo list comes from /api/orgs/<name>/repos, not the `repos` field
+    // of the profile above. Both apply the same per-repository privacy check,
+    // but the profile additionally gates its copy behind the org's World
+    // `worldAccess.floors` setting — which defaults to `restricted`, so a new
+    // org's public page showed "No public repositories yet" while the very
+    // same repositories were listed publicly in the catalog. The repos
+    // endpoint is the surface that matches what this page is for.
+    let repos = [];
+    try {
+      const listing = await fetchJson(
+        "/api/orgs/" + encodeURIComponent(name) + "/repos");
+      repos = Array.isArray(listing.repos) ? listing.repos : [];
+    } catch (_) {
+      repos = Array.isArray(profile.repos) ? profile.repos : [];
+    }
+
+    const counts = [];
+    const members = Number(profile.members || profile.memberCount || 0);
+    if (members > 0) {
+      counts.push(members + " member" + (members === 1 ? "" : "s"));
+    }
+    if (Number(profile.teams || 0) > 0) {
+      counts.push(profile.teams + " team" +
+        (Number(profile.teams) === 1 ? "" : "s"));
+    }
+    if (repos.length) {
+      counts.push(repos.length + " repositor" +
+        (repos.length === 1 ? "y" : "ies"));
+    }
+    if (profile.viewerRole) {
+      counts.push("you are " + profile.viewerRole);
+    }
+    setText("[data-org-page-meta]", counts.join(" · "));
+
+    const manage = $("[data-org-page-manage]");
+    if (manage) {
+      manage.classList.toggle(
+        "hidden",
+        !(profile.viewerRole === "owner" || profile.viewerRole === "admin"));
+    }
+
+    const reposRoot = $("[data-org-page-repos]");
+    if (!reposRoot) return;
+    if (!repos.length) {
+      reposRoot.innerHTML =
+        '<p class="text-sm text-muted-foreground">No public repositories yet.</p>';
+      return;
+    }
+    reposRoot.innerHTML = repos.map((repo) => {
+      const rawName = String(repo.repo || repo.name || "");
+      const repoName = escapeHtml(rawName);
+      const href = "/" + encodeURIComponent(name) + "/" +
+        encodeURIComponent(rawName);
+      const node = String(repo.node || "");
+      // The backing node namespace is public catalog data and is what clone
+      // and push verify against, so showing it here keeps the alias honest.
+      const nodeLabel = node
+        ? '<span class="shrink-0 font-mono text-xs text-muted-foreground">' +
+          escapeHtml(node) + "</span>"
+        : "";
+      return '<a href="' + href + '" class="flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2 hover:border-primary/50">' +
+        '<i data-lucide="book-marked" class="h-4 w-4 shrink-0 text-muted-foreground"></i>' +
+        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' +
+          escapeHtml(name) + "/" + repoName + "</span>" + nodeLabel + "</a>";
+    }).join("");
+    window.lucide?.createIcons();
+  }
 
   function publicProfileNameFromPath() {
     const match = /^\/@([a-z][a-z0-9-]{0,62})(?:\/repositories)?\/?$/

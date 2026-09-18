@@ -653,15 +653,18 @@ def test_production_deploy_preflights_discord_secrets_before_mutation():
 
 def test_production_manifest_sets_canonical_discord_public_urls():
     wrangler = (ROOT / "wrangler.toml").read_text(encoding="utf-8")
+    origin = "https://forkmesh-relay.owaspblt.workers.dev"
 
-    assert 'PUBLIC_BASE_URL = "https://forkmesh.com"' in wrangler
-    assert 'API_ORIGIN = "https://app.forkmesh.com"' in wrangler
+    assert f'PUBLIC_BASE_URL = "{origin}"' in wrangler
+    assert f'API_ORIGIN = "{origin}"' in wrangler
     assert (
         'DISCORD_OAUTH_REDIRECT_URI = '
-        '"https://app.forkmesh.com/api/integrations/discord/callback"'
+        f'"{origin}/api/integrations/discord/callback"'
     ) in wrangler
     assert "DISCORD_BOT_TOKEN" not in wrangler
     assert "DISCORD_CLIENT_SECRET" not in wrangler
+    assert "owaspblt-forkmesh.k04.tech" not in wrangler
+    assert "forkmesh.owaspblt.org" not in wrangler
 
 
 def test_forkmesh_deploy_materializes_discord_secrets_from_secure_variables():

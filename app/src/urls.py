@@ -153,8 +153,27 @@ GIT_RECEIVE_RE = re.compile(r"^/([^/]+)/([^/]+)/git-receive-pack$")
 # auth); the per-org members/teams/repos collections manage the roster, the
 # permission teams, and the repo alias map.
 ORGS_RE = re.compile(r"^/api/orgs$")
+# Bare single-segment public org page (/owasp-blt). Only paths listed in
+# wrangler run_worker_first ever reach the Worker, so in practice this fires
+# for the org names deliberately routed there; the handler still resolves
+# through _org_row and falls through to the 404 page for anything else.
+ORG_PAGE_RE = re.compile(r"^/([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$")
+# Canonical public org page, reachable for EVERY org with no per-org deploy.
+# The bare /<org> form above needs its own literal wrangler run_worker_first
+# entry per organization, so it only ever works for names someone remembered
+# to list; /orgs/<name> is two segments and therefore already covered by the
+# existing "/*/*" worker-first rule. "orgs" is in RESERVED_ROUTE_PREFIXES so
+# this can never be mistaken for the /<owner>/<repo> repo route.
+ORG_PUBLIC_PAGE_RE = re.compile(
+    r"^/orgs/([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$")
 ORG_RE = re.compile(r"^/api/orgs/([^/]+)$")
 ORG_MEMBERS_RE = re.compile(r"^/api/orgs/([^/]+)/members$")
+# Email invitations: the collection (POST send / GET list / DELETE revoke)
+# and the emailed-link actions. Actions are a closed verb set so the generic
+# collection regex can never swallow an accept/decline URL.
+ORG_INVITES_RE = re.compile(r"^/api/orgs/([^/]+)/invitations$")
+ORG_INVITE_ACTION_RE = re.compile(
+    r"^/api/orgs/([^/]+)/invitations/([^/]+)/(accept|decline)$")
 ORG_TEAMS_RE = re.compile(r"^/api/orgs/([^/]+)/teams$")
 ORG_TEAM_MEMBERS_RE = re.compile(r"^/api/orgs/([^/]+)/teams/([^/]+)/members$")
 ORG_REPOS_RE = re.compile(r"^/api/orgs/([^/]+)/repos$")

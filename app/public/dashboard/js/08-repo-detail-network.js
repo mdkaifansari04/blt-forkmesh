@@ -231,7 +231,7 @@
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
             <section data-dashboard-repo-tab-panel="sizemap" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-pie" class="h-3.5 w-3.5 text-primary"></i>Size map</span><span class="font-mono text-[10px] text-muted-foreground">directory sizes · default branch</span></div><div data-repo-sizemap class="p-4"></div></div></section>
-            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div data-mirror-request hidden class="py-2"><label class="block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md bg-secondary px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="text-[11px] text-muted-foreground">They get a ping; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></section>
+            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div data-mirror-request hidden class="py-2"><label class="block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md bg-secondary px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="text-[11px] text-muted-foreground">They get a ping; if they accept, their node starts mirroring your repo.</p></div><div data-org-mirror-optin hidden class="py-2"><label class="block text-[11px] font-medium text-foreground">Mirror this organization repo</label><div class="flex items-center gap-2"><button type="button" data-org-mirror-optin-send class="h-8 shrink-0 rounded-md bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Mirror on my node</button></div><p data-org-mirror-optin-hint class="text-[11px] text-muted-foreground">Your node starts keeping a copy, so the repo stays reachable when other hosts are offline.</p></div><div data-repo-mirrors></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-workshop-agent-context hidden></div><div data-repo-agents></div></div></section>` : ""}
             ${settingsPanel}
           </div>
@@ -886,6 +886,7 @@
       account_email_sent: "mail-check",
       organization_task_started: "clipboard-list",
       organization_task_activity: "clipboard-list",
+      org_invite: "users",
     })[kind] || "bell";
   }
 
@@ -1104,8 +1105,72 @@
 
   function renderMirrorRequestForm(repo) {
     const form = $("[data-mirror-request]");
-    if (!form) return;
-    form.hidden = !isRepoOwner(repo);
+    if (form) form.hidden = !isRepoOwner(repo);
+    renderOrgMirrorOptIn(repo);
+  }
+
+  // Org members opt their own node into mirroring a repo the org fronts. The
+  // control only makes sense on an org-aliased URL (/<org>/<repo>) for a
+  // signed-in non-owner; the server re-checks membership either way.
+  function orgAliasFromPath() {
+    const parts = location.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) return "";
+    const org = decodeURIComponent(parts[0]).toLowerCase();
+    return /^[a-z][a-z0-9-]{0,62}$/.test(org) ? org : "";
+  }
+
+  function renderOrgMirrorOptIn(repo) {
+    const panel = $("[data-org-mirror-optin]");
+    if (!panel) return;
+    const org = orgAliasFromPath();
+    const signedIn = Boolean(state.session?.nodeName);
+    const owner = String(repo?.owner || "").trim().toLowerCase();
+    // Hidden when: not an org URL, signed out, this is your own repo, or the
+    // path's first segment is just the owning node rather than an org alias.
+    panel.hidden = !(org && signedIn && !isRepoOwner(repo) && org !== owner);
+  }
+
+  async function orgMirrorOptIn(trigger) {
+    const repo = state.selectedRepo;
+    const org = orgAliasFromPath();
+    const hint = $("[data-org-mirror-optin-hint]");
+    const setHint = (text, tone) => {
+      if (!hint) return;
+      hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      hint.textContent = text;
+    };
+    if (!repo || !org) return;
+    trigger.disabled = true;
+    setHint("Setting up the mirror…");
+    try {
+      const res = await fetch("/api/mirror-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          action: "mirror",
+          org,
+          repo: String(repo.name || "").toLowerCase(),
+          node: state.session?.nodeName || "",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.ok) {
+        setHint("Your node will start mirroring on its next check-in.", "good");
+        return;
+      }
+      setHint({
+        not_a_member: "Only organization members can mirror this repo.",
+        not_your_node: "That node is not linked to your account.",
+        repo_not_found: "That repo is not linked under this organization.",
+        private_repo: "Private repos cannot be mirrored this way.",
+        self_target: "Your node already hosts this repo.",
+        too_many_mirror_requests: "Your node has too many pending mirrors.",
+      }[body.error] || "Could not set up the mirror. Try again.", "bad");
+    } catch (_) {
+      setHint("Could not set up the mirror. Try again.", "bad");
+    } finally {
+      trigger.disabled = false;
+    }
   }
 
   function renderNotificationModal() {
@@ -1569,6 +1634,10 @@
     refreshPublicProfile(state.session);
   }
 
+  function initOrgPage() {
+    loadOrgPage(orgNameFromPath());
+  }
+
   function initSettingsPage() {
     renderProfilePage(state.session);
     refreshPublicProfile(state.session);
@@ -1709,6 +1778,12 @@
     if (mirrorAsk) {
       event.stopPropagation();
       await askNodeToMirror(mirrorAsk);
+      return;
+    }
+    const orgMirrorOptInBtn = event.target.closest("[data-org-mirror-optin-send]");
+    if (orgMirrorOptInBtn) {
+      event.stopPropagation();
+      await orgMirrorOptIn(orgMirrorOptInBtn);
       return;
     }
 

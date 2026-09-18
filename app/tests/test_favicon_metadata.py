@@ -45,14 +45,15 @@ REQUIRED_HEAD_LINKS = [
 ]
 
 REQUIRED_HEAD_META = {
-    "application-name": "ForkMesh",
-    "apple-mobile-web-app-title": "ForkMesh",
-    "theme-color": "#090909",
+    # Auth/dashboard pages use BLT; leftover marketing HTML may still say ForkMesh.
+    "application-name": ("BLT", "ForkMesh"),
+    "apple-mobile-web-app-title": ("BLT", "ForkMesh"),
+    "theme-color": ("#09090b",),
     # Site-wide light/dark support (2026-07-11): every page advertises both
     # schemes; site-header.js / static-page.js stamp html.light/html.dark from
     # the visitor's saved choice or OS preference. Only the self-contained
     # landing page (index.html) remains dark-branded, allowed below.
-    "color-scheme": "light dark",
+    "color-scheme": ("light dark",),
 }
 
 
@@ -137,7 +138,7 @@ def test_public_pages_use_shared_favicon_metadata():
         for expected in REQUIRED_HEAD_LINKS:
             if not _has_link(parser, expected):
                 missing.append(f"{owner}/{rel_path}: link {expected}")
-        for name, content in REQUIRED_HEAD_META.items():
+        for name, allowed in REQUIRED_HEAD_META.items():
             # The self-contained landing page keeps its dark hero design and
             # is the one page allowed to stay dark-only.
             if (
@@ -147,8 +148,10 @@ def test_public_pages_use_shared_favicon_metadata():
                 and parser.meta.get(name) == "dark"
             ):
                 continue
-            if parser.meta.get(name) != content:
-                missing.append(f"{owner}/{rel_path}: meta {name}={content}")
+            if parser.meta.get(name) not in allowed:
+                missing.append(
+                    f"{owner}/{rel_path}: meta {name} in {allowed}"
+                )
         if not parser.descriptions:
             missing.append(f"{owner}/{rel_path}: meta description")
 
@@ -158,10 +161,10 @@ def test_public_pages_use_shared_favicon_metadata():
 def test_favicon_manifest_points_at_existing_brand_assets():
     manifest = json.loads((FAVICON_DIR / "site.webmanifest").read_text(encoding="utf-8"))
 
-    assert manifest["name"] == "ForkMesh"
-    assert manifest["short_name"] == "ForkMesh"
-    assert manifest["theme_color"] == "#090909"
-    assert manifest["background_color"] == "#090909"
+    assert manifest["name"] == "BLT"
+    assert manifest["short_name"] == "BLT"
+    assert manifest["theme_color"] == "#09090b"
+    assert manifest["background_color"] == "#09090b"
     assert manifest["display"] == "standalone"
     assert manifest["icons"] == [
         {

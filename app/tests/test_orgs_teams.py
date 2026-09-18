@@ -597,3 +597,90 @@ def test_public_office_access_never_publishes_member_names_for_guests():
     assert "public-redacted" in source
     assert "'members': []" in source
     assert "memberCount" in source
+
+
+# --- Account rename must carry org state along -------------------------------
+
+
+def _rename_namespace_harness():
+    # Drive the real _rename_account_namespace with every side effect stubbed,
+    # capturing writes, so the assertions below are about behavior (which
+    # UPDATEs run, with which params) rather than source text.
+    writes = []
+    memo = {"owasp-blt/blt": ("old-node", 123)}
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def none_error(*args, **kwargs):
+        return ""
+
+    async def account_row(env, name):
+        return "bi:" + name, None  # target name is free
+
+    async def d1_first(env, sql, *params):
+        assert "FROM users" in sql
+        return {"data": "enc", "email_bi": "", "ip_bi": "", "is_admin": 0}
+
+    async def d1_run(env, sql, *params):
+        writes.append((" ".join(sql.split()), params))
+
+    class Clock:
+        @staticmethod
+        def now():
+            return 999
+
+    ns = _load(
+        "_rename_account_namespace",
+        extra_globals={
+            "clean_string": lambda v, n: str(v or "")[:n],
+            "MAX_NODE_NAME": 63,
+            "valid_node_name": lambda v: bool(v),
+            "username_moderation_error": none_error,
+            "_account_row": account_row,
+            "_donation_in_progress": lambda rec: False,
+            "d1_first": d1_first,
+            "_move_repo_namespace": none_error,
+            "_save_account_full": noop,
+            "_contribution_retarget_linked_nodes": noop,
+            "_move_chat_channel_memberships": noop,
+            "_delete_chat_direct_conversations": noop,
+            "d1_run": d1_run,
+            "Date": Clock,
+            "_ORG_ALIAS_MEMO": memo,
+            "purge_catalog_related_caches": noop,
+        },
+    )
+    return ns, writes, memo
+
+
+def test_rename_carries_org_aliases_membership_and_clears_the_alias_memo():
+    # Regression: a rename used to skip org state entirely — org_repos kept
+    # serving the alias from the dead node name, and org_members /
+    # org_team_members (keyed by blind index of the name) silently dropped
+    # the account from every org, including a sole ownership, stranding the
+    # org with zero owners.
+    ns, writes, memo = _rename_namespace_harness()
+    new_bi, next_rec, err = _run(ns["_rename_account_namespace"](
+        None, "bi:old", {"name": "old-node"}, "new-node"))
+    assert err == ""
+    assert new_bi == "bi:new-node"
+    assert next_rec["name"] == "new-node"
+
+    by_sql = {sql: params for sql, params in writes}
+    assert by_sql[
+        "UPDATE org_repos SET node_owner=? WHERE node_owner=?"
+    ] == ("new-node", "old-node")
+    assert by_sql[
+        "UPDATE org_members SET member_bi=?, name=? WHERE member_bi=?"
+    ] == ("bi:new-node", "new-node", "bi:old")
+    assert by_sql[
+        "UPDATE org_team_members SET member_bi=?, name=? WHERE member_bi=?"
+    ] == ("bi:new-node", "new-node", "bi:old")
+    # Same-isolate alias cache must not keep serving org -> old-node.
+    assert memo == {}
+    # The org writes land before the old identity rows are deleted.
+    sqls = [sql for sql, _ in writes]
+    assert sqls.index(
+        "UPDATE org_repos SET node_owner=? WHERE node_owner=?"
+    ) < sqls.index("DELETE FROM users WHERE user_bi=?")

@@ -66,25 +66,34 @@ def test_shared_simple_header_mounts_on_requested_pages():
         assert "<header" not in body
 
 
-def test_shared_simple_header_renderer_contains_about_header_contract():
+def test_shared_simple_header_renderer_contains_blt_header_contract():
     js = _read(WWW_PUBLIC / "site-header.js")
     css = _read(WWW_PUBLIC / "site-header.css")
 
     for marker in (
         'querySelectorAll("[data-forkmesh-header]")',
-        'aria-label="ForkMesh home"',
-        'src="/assets/logo.png"',
+        'aria-label="BLT home"',
+        'src="/assets/blt-logo.png"',
+        "fm-header-brand-text",
+        ">BLT</strong>",
         'aria-label="Primary"',
-        'href="/docs"',
-        ">Docs</a>",
-        'href="/blog"',
-        ">Blog</a>",
-        'href="https://app.forkmesh.com/"',
-        ">App</a>",
+        'href="/dashboard"',
+        ">Dashboard</a>",
         'href="/login"',
         ">Login</a>",
+        'href="/signup"',
+        ">Sign up</a>",
     ):
         assert marker in js
+    for marker in (
+        'aria-label="ForkMesh home"',
+        'src="/assets/logo.png"',
+        'href="https://app.forkmesh.com/"',
+        'href="/docs"',
+        'href="/chat"',
+        'href="/network"',
+    ):
+        assert marker not in js
 
     for marker in (
         ".forkmesh-simple-header",
@@ -98,15 +107,8 @@ def test_shared_simple_header_renderer_contains_about_header_contract():
 UNIVERSAL_HEADER_PAGES = SIMPLE_HEADER_PAGES + (
     WWW_PUBLIC / "about.html",
     WWW_PUBLIC / "press.html",
-    APP_PUBLIC / "network.html",
-    APP_PUBLIC / "chat.html",
     WWW_PUBLIC / "blog.html",
     WWW_PUBLIC / "pricing.html",
-    APP_PUBLIC / "login.html",
-    APP_PUBLIC / "signup.html",
-    APP_PUBLIC / "forgot-password.html",
-    APP_PUBLIC / "reset-password.html",
-    APP_PUBLIC / "mirror-payouts.html",
     WWW_PUBLIC / "outreach.html",
     WWW_PUBLIC / "security-report.html",
     WWW_PUBLIC / "404.html",
@@ -138,7 +140,7 @@ def test_universal_header_is_session_aware():
     assert 'localStorage.getItem("forkmesh.session"' in js
     assert "function buildAccountArea(" in js
     assert 'localStorage.removeItem("forkmesh.session")' in js
-    assert ">Dashboard<" not in js  # user data is DOM-built, never innerHTML
+    # Nav may include a Dashboard link; the signed-in chip still DOM-builds labels.
     assert 'dash.textContent = "Dashboard"' in js
     assert 'profile.textContent = "Public profile"' in js
     assert 'edit.href = "/dashboard/settings"' in js
@@ -150,29 +152,40 @@ def test_universal_header_is_session_aware():
     assert 'href="/signup">Sign Up</a>' in js
 
 
-def test_universal_header_organizes_all_pages():
+def test_universal_header_organizes_blt_pages():
     js = _read(WWW_PUBLIC / "site-header.js")
 
-    # Every site link lives in the hamburger menu, grouped and fully
-    # expanded — no nested "More" submenu to open.
-    for href in ("/docs", "/chat", "/network", "/pricing", "/blog", "/status",
-                 "/features", "/desktop", "/about", "/changelog", "/careers",
-                 "/press", "/mirror-payouts", "/security-report", "/privacy",
-                 "/terms"):
+    for href in (
+        "/dashboard",
+        "/dashboard/repos",
+        "/dashboard/tasks",
+        "/dashboard/notes",
+        "/login",
+        "/signup",
+        "/dashboard/settings",
+        "/privacy",
+        "/terms",
+    ):
         assert f'href="{href}"' in js
+    for href in (
+        "/chat",
+        "/network",
+        "/pricing",
+        "/desktop",
+        "/mirror-payouts",
+        "/leaderboards",
+        "/referrals",
+    ):
+        assert f'href="{href}"' not in js
     assert "fm-nav-group-title" in js
-    for group in ("Product", "Resources", "Community", "Company",
-                  "Legal &amp; security", "Account"):
+    for group in ("App", "Account", "Legal"):
         assert f">{group}</span>" in js
     assert "More <" not in js
-    # Current page highlight + hamburger menu.
     assert 'aria-current' in js
     assert "fm-header-burger" in js
     assert "fm-header-mobile" in js
-    # Dashboard-chrome parity: version pill, page context, payout shortcut.
-    assert "/api/version" in js
     assert "fm-header-context" in js
-    assert 'src="/assets/sol.png"' in js
+    assert 'src="/assets/sol.png"' not in js
 
 
 def test_universal_header_uses_private_fixed_palette():
@@ -182,13 +195,12 @@ def test_universal_header_uses_private_fixed_palette():
         css,
         ".forkmesh-simple-header",
         {
-            "--fm-header-bg": "#090909",
-            "--fm-header-surface": "#141416",
-            "--fm-header-fg": "#f5f5f5",
-            "--fm-header-muted": "#a3a3a3",
-            "--fm-header-border": "#313134",
-            "--fm-header-accent": "#2ea043",
-            "background": "var(--fm-header-bg)",
+            "--fm-header-bg": "#ffffff",
+            "--fm-header-surface": "#f9fafb",
+            "--fm-header-fg": "#111827",
+            "--fm-header-muted": "#6b7280",
+            "--fm-header-border": "rgba(0, 0, 0, 0.06)",
+            "--fm-header-accent": "#dc2626",
             "color": "var(--fm-header-fg)",
             "border-bottom": "1px solid var(--fm-header-border)",
         },
@@ -247,19 +259,19 @@ def test_universal_header_does_not_reference_host_page_palette():
     )
 
 
-def test_universal_header_uses_canonical_theme_glyphs():
+def test_universal_header_defaults_to_light_theme():
     js = _read(WWW_PUBLIC / "site-header.js")
 
-    assert 'button.textContent = light ? "☾" : "☀";' in js
-    assert '>☀</button>' in js
+    assert 'return "light";' in js
+    assert "fm-header-desktop-nav" in js
+    assert 'href="/" class="forkmesh-simple-brand"' in js
 
 
-def test_universal_header_signup_is_a_white_rounded_rectangle():
+def test_universal_header_signup_uses_blt_red_cta():
     css = _read(WWW_PUBLIC / "site-header.css")
     expected = {
-        "background": "#ffffff",
-        "color": "#090909",
-        "border-radius": "0.375rem",
+        "background": "linear-gradient(to bottom, #ef4444, #dc2626)",
+        "color": "#ffffff",
     }
 
     _assert_declarations(css, ".fm-header-signup", expected)
@@ -267,9 +279,8 @@ def test_universal_header_signup_is_a_white_rounded_rectangle():
         css,
         ".fm-header-mobile-account .fm-header-signup",
         {
-            "background": "#ffffff",
-            "color": "#090909",
-            "border-radius": "0.375rem",
+            "background": "linear-gradient(to bottom, #ef4444, #dc2626)",
+            "color": "#ffffff",
         },
     )
 

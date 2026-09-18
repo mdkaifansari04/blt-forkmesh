@@ -144,3 +144,23 @@ def test_org_admin_floor_group_chips_toggle_team_membership():
         "{ member }",
     ):
         assert contract in DASHBOARD_JS
+
+
+def test_bundle_carries_the_email_invitation_panel():
+    # Send form, pending list with revoke, and both endpoint calls; error
+    # slugs for every invite failure mode map to human copy.
+    assert "data-org-invite-add" in DASHBOARD_JS
+    assert "data-invite-email" in DASHBOARD_JS
+    assert "data-org-invite-revoke" in DASHBOARD_JS
+    assert ('"/api/orgs/" + encodeURIComponent(name) + "/invitations"'
+            in DASHBOARD_JS)
+    for slug in (
+        "invitation_pending",
+        "invitation_expired",
+        "invitation_used",
+        "too_many_invitations",
+        "daily_invitation_limit",
+        "delivery_unconfigured",
+        "invalid_email",
+    ):
+        assert slug in DASHBOARD_JS, slug

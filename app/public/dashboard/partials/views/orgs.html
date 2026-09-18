@@ -1,0 +1,48 @@
+          <section data-view="orgs" class="view active h-full overflow-y-auto">
+            <div class="p-3 sm:p-6 w-full">
+              <div class="w-full rounded-lg border border-border bg-card overflow-hidden">
+                <div class="px-4 sm:px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                  <div class="min-w-0">
+                    <h1 class="text-base font-semibold text-foreground">Organizations</h1>
+                    <p class="mt-1 text-sm text-muted-foreground">Organizations you belong to. An organization serves its repositories at <span class="font-mono">/&lt;org&gt;/&lt;repo&gt;</span> and has its own public page.</p>
+                  </div>
+                  <div class="shrink-0 flex items-center gap-3 self-start">
+                    <span data-orgs-page-count class="text-xs text-muted-foreground font-mono px-2.5 py-1 rounded-full border border-border bg-secondary">Loading</span>
+                    <button
+                      data-orgs-page-new
+                      type="button"
+                      class="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"
+                    >
+                      <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                      New organization
+                    </button>
+                  </div>
+                </div>
+
+                <form data-orgs-page-create hidden class="border-b border-border bg-background/50 px-4 sm:px-5 py-4 grid gap-3 max-w-xl">
+                  <h2 class="text-sm font-semibold text-foreground">New organization</h2>
+                  <label class="grid gap-1 text-xs font-semibold text-foreground">
+                    Name
+                    <input data-orgs-page-name required placeholder="lowercase-with-dashes" autocomplete="off" class="h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-foreground">
+                    Display name <span class="font-normal text-muted-foreground">(optional)</span>
+                    <input data-orgs-page-display placeholder="OWASP BLT" autocomplete="off" class="h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-foreground">
+                    Description <span class="font-normal text-muted-foreground">(optional)</span>
+                    <input data-orgs-page-description placeholder="What this organization builds" autocomplete="off" class="h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                  </label>
+                  <p data-orgs-page-status class="min-h-4 text-xs text-muted-foreground" role="status"></p>
+                  <div class="flex items-center gap-2">
+                    <button type="submit" class="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">Create organization</button>
+                    <button data-orgs-page-cancel type="button" class="inline-flex items-center rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors">Cancel</button>
+                  </div>
+                </form>
+
+                <div data-orgs-page-list class="divide-y divide-border" aria-live="polite">
+                  <div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading organizations...</div>
+                </div>
+              </div>
+            </div>
+          </section>

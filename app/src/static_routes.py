@@ -1,16 +1,20 @@
 """Static URL ownership for the ForkMesh public site.
 
-Clean marketing/auth routes are served by Workers Static Assets from
-``public/_redirects``. Repo shortcuts are Worker-owned so hard-refreshing
-``/owner/repo`` and tab/tree/blob deep links can serve the repo-detail page
-without relying on a client-side 404 bounce. Direct implementation-file URLs
-such as ``/login.html`` are intentionally blocked.
+App clean pages (``/login``, ``/signup``, ``/status``, …) are Worker-owned via
+``run_worker_first`` and mapped through ``APP_PAGE_ASSETS`` to their HTML
+documents in the assets binding. Www marketing routes are served by Workers
+Static Assets from ``www/public/_redirects``. Repo shortcuts are Worker-owned
+so hard-refreshing ``/owner/repo`` and tab/tree/blob deep links can serve the
+repo-detail page without relying on a client-side 404 bounce. Direct
+implementation-file URLs such as ``/login.html`` are intentionally blocked.
 
 The dashboard is true separate pages (one built document per page, see
 ``dashboard_shell.PAGES``): the non-home pages are asset-served via
-``_redirects`` + ``run_worker_first`` exceptions; the Worker owns ``/dashboard``
-itself (it must see the query string to 308 legacy ``?section=`` URLs, which
-``_redirects`` cannot match) plus everything unrecognized under ``/dashboard/``.
+``run_worker_first`` exceptions (both slash and no-slash forms); the Worker
+owns ``/dashboard`` itself (it must see the query string to 308 legacy
+``?section=`` URLs) plus everything unrecognized under ``/dashboard/``. App
+assets use ``drop-trailing-slash`` so clean links like ``/dashboard/profile``
+are the served form.
 """
 
 from urllib.parse import parse_qs, unquote, urlencode
@@ -61,6 +65,11 @@ RESERVED_ROUTE_PREFIXES = frozenset({
     "referrals",
     "leaderboards",
     "notes",
+    # Public organization pages live at /orgs/<name> so every org on the
+    # instance is reachable without its own wrangler run_worker_first entry.
+    # Reserving the prefix keeps /orgs/<name> out of looks_like_repo_route,
+    # which would otherwise read it as owner "orgs" / repo "<name>".
+    "orgs",
     # Referral share links (/r/<name>) are worker-owned counters.
     "r",
 })
@@ -85,10 +94,11 @@ WWW_SITE_ROUTES = frozenset({
 
 # Clean page URL -> the built per-page document that serves it. The Worker
 # only consults this for /dashboard itself and as a fallback for deep links;
-# the non-home pages are normally asset-served straight from _redirects.
+# the non-home pages are normally asset-served via run_worker_first exceptions.
 DASHBOARD_PAGE_ASSETS = {
     "/dashboard": "dashboard/index.html",
     "/dashboard/repos": "dashboard/repos/index.html",
+    "/dashboard/orgs": "dashboard/orgs/index.html",
     "/dashboard/network": "dashboard/network/index.html",
     "/dashboard/chat": "dashboard/chat/index.html",
     "/dashboard/tasks": "dashboard/tasks/index.html",
@@ -97,6 +107,22 @@ DASHBOARD_PAGE_ASSETS = {
     "/dashboard/profile": "dashboard/profile/index.html",
     "/dashboard/profile/repositories": "dashboard/profile/repositories/index.html",
 }
+
+# App-owned clean URLs listed in wrangler run_worker_first. The Worker fetches
+# the HTML asset and returns it; direct *.html paths stay blocked below.
+# BLT-owned clean auth/status pages only. ForkMesh World / chat / network /
+# referrals / leaderboards / mirror-payouts are not part of this surface.
+APP_PAGE_ASSETS = {
+    "/login": "login.html",
+    "/signup": "signup.html",
+    "/forgot-password": "forgot-password.html",
+    "/reset-password": "reset-password.html",
+    "/status": "status.html",
+}
+
+# The public org-page document, fetched by the Worker for routed bare org
+# URLs (/owasp-blt). Deliberately not a navigable asset path of its own.
+DASHBOARD_ORG_ASSET = "dashboard/org/index.html"
 
 # The repo-detail document, fetched by the Worker for every /owner/repo[...]
 # route. Deliberately not a navigable asset path of its own.
@@ -139,6 +165,7 @@ BLOCKED_STATIC_HTML_PATHS = frozenset({
     "/dashboard.html",
     "/dashboard/index.html",
     "/dashboard/repos/index.html",
+    "/dashboard/orgs/index.html",
     "/dashboard/network/index.html",
     "/dashboard/chat/index.html",
     "/dashboard/tasks/index.html",
@@ -146,6 +173,7 @@ BLOCKED_STATIC_HTML_PATHS = frozenset({
     "/dashboard/settings/index.html",
     "/dashboard/profile/index.html",
     "/dashboard/profile/repositories/index.html",
+    "/dashboard/org/index.html",
     "/dashboard/repo.html",
     "/blog.html",
     "/login.html",

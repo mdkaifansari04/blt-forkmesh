@@ -98,7 +98,7 @@
                             Username
                             <input data-profile-rename-input type="text" inputmode="latin" autocomplete="off" placeholder="new-username" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                           </label>
-                          <span class="text-sm font-normal leading-5 text-muted-foreground">Your username is your node name and repository namespace. It appears around ForkMesh where you contribute or are mentioned; renaming moves owned repository URLs to the new namespace.</span>
+                          <span class="text-sm font-normal leading-5 text-muted-foreground">Your username is your node name and repository namespace. It appears around BLT where you contribute or are mentioned; renaming moves owned repository URLs to the new namespace.</span>
                           <input data-profile-rename-password type="password" autocomplete="current-password" placeholder="Current password" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                           <p data-profile-rename-status class="min-h-4 text-xs text-muted-foreground">Enter a new username to check availability.</p>
                           <button data-profile-rename-save type="button" disabled class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground opacity-40 hover:bg-muted transition-colors">
@@ -195,7 +195,7 @@
                         </label>
 
                         <p data-profile-public-hint class="min-h-4 text-xs text-muted-foreground"></p>
-                        <button data-profile-public-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
+                        <button data-profile-public-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-red-700 transition-colors">
                           Save public profile
                         </button>
                       </div>
@@ -238,14 +238,14 @@
                           Solana payout address
                           <input data-profile-page-solana type="text" inputmode="latin" autocomplete="off" placeholder="Your public Solana address" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                           <span class="text-sm font-normal leading-5 text-muted-foreground">Used for optional mirror rewards and direct community donations. Legacy bounty custody is disabled. Leave it empty until you choose to receive a transfer.</span>
-                          <span class="text-xs font-normal leading-5 text-amber-300">Non-custodial: ForkMesh stores only this public address. Wallet keys and recovery phrases remain on your device; never enter them here. User-owned funds, community-pool funds, pending rewards, and completed on-chain transfers are separate states.</span>
+                          <span class="text-xs font-normal leading-5 text-amber-300">Non-custodial: BLT stores only this public address. Wallet keys and recovery phrases remain on your device; never enter them here. User-owned funds, community-pool funds, pending rewards, and completed on-chain transfers are separate states.</span>
                         </label>
                         <label class="grid gap-2 text-sm font-semibold text-foreground">
                           Current password
                           <input data-profile-page-password type="password" autocomplete="current-password" placeholder="Required for payout changes" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                         </label>
                         <p data-profile-page-hint class="min-h-4 text-xs text-muted-foreground"></p>
-                        <button data-profile-page-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
+                        <button data-profile-page-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-red-700 transition-colors">
                           Save payout address
                         </button>
                       </div>
@@ -338,7 +338,7 @@
                         <input data-notification-preferences-password type="password" autocomplete="current-password" placeholder="Required for notification changes" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                       </label>
                       <p data-notification-preferences-hint class="min-h-4 text-xs text-muted-foreground"></p>
-                      <button data-notification-preferences-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
+                      <button data-notification-preferences-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-red-700 transition-colors">
                         Save notifications
                       </button>
                     </div>
@@ -351,12 +351,12 @@
                       <div class="rounded-md border border-border bg-card p-4">
                         <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                           <div>
-                            <h3 class="text-base font-semibold text-foreground">ForkMesh membership</h3>
+                            <h3 class="text-base font-semibold text-foreground">BLT membership</h3>
                             <p data-polar-membership-summary class="mt-1 text-sm leading-6 text-muted-foreground">Loading membership…</p>
                           </div>
                           <div class="flex shrink-0 flex-wrap gap-2">
                             <a data-polar-membership-choose href="/pricing#memberships" class="inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-sm font-semibold text-foreground hover:bg-secondary">Choose membership</a>
-                            <button data-polar-membership-portal type="button" hidden class="inline-flex h-9 items-center justify-center rounded-md bg-[#238636] px-3 text-sm font-semibold text-white hover:bg-[#2ea043]">Manage billing</button>
+                            <button data-polar-membership-portal type="button" hidden class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground hover:bg-red-700">Manage billing</button>
                           </div>
                         </div>
                         <p data-polar-membership-status role="status" class="mt-2 min-h-4 text-xs text-muted-foreground"></p>
@@ -379,10 +379,10 @@
 
                   <section id="settings-ssh-keys" data-settings-section="ssh-keys" class="hidden pb-8">
                     <h2 class="text-2xl font-semibold tracking-normal text-foreground">SSH keys</h2>
-                    <p class="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">Register a public key to clone or push through a configured ForkMesh SSH gateway. Repository owner and organization-team write permissions are checked again for every push.</p>
+                    <p class="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">Register a public key to clone or push through a configured SSH gateway. Repository owner and organization-team write permissions are checked again for every push.</p>
                     <div class="mt-5 grid max-w-3xl gap-5">
                       <div class="rounded-md border border-amber-400/40 bg-amber-400/5 p-4 text-sm leading-6 text-amber-200">
-                        ForkMesh stores encrypted public keys only. Your private key and passphrase stay on your device. Never paste a private key, recovery phrase, or password here. Adding a public key reserves it to this account; possession is proven later by OpenSSH when you connect, not by this form.
+                        BLT stores encrypted public keys only. Your private key and passphrase stay on your device. Never paste a private key, recovery phrase, or password here. Adding a public key reserves it to this account; possession is proven later by OpenSSH when you connect, not by this form.
                       </div>
                       <form data-ssh-key-form class="grid gap-3 rounded-md border border-border bg-card p-4">
                         <label class="grid gap-2 text-sm font-semibold text-foreground">
@@ -394,7 +394,7 @@
                           <textarea data-ssh-public-key rows="4" maxlength="16384" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ssh-ed25519 AAAA… you@example" class="min-h-28 resize-y rounded-md border border-border bg-background px-3 py-2 font-mono text-xs font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]"></textarea>
                         </label>
                         <p data-ssh-key-status class="min-h-4 text-xs text-muted-foreground"></p>
-                        <button data-ssh-key-add type="submit" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
+                        <button data-ssh-key-add type="submit" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-red-700 transition-colors">
                           Add SSH key
                         </button>
                       </form>
@@ -415,7 +415,7 @@
                     <div class="mt-5 grid max-w-2xl gap-4">
                       <div data-link-grant-row class="hidden grid gap-3 rounded-md border border-[#2f81f7]/50 bg-[#2f81f7]/10 p-4">
                         <p data-link-grant-text class="text-sm leading-6 text-foreground"></p>
-                        <button data-link-grant-confirm type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
+                        <button data-link-grant-confirm type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-red-700 transition-colors">
                           Authenticate &amp; link
                         </button>
                       </div>
@@ -442,7 +442,7 @@
                           Confirmation code (shown on the node)
                           <input data-claim-code-input type="text" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="123456" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                         </label>
-                        <button data-claim-code-confirm type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
+                        <button data-claim-code-confirm type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-red-700 transition-colors">
                           Link node
                         </button>
                       </div>

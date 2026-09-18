@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth light">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BLT · See the code. Debug. Fix.</title>
+    <meta name="description" content="A new way to contribute to OWASP BLT — see the code here, debug and fix it. BLT owns the code and hosts it." />
+    <meta name="application-name" content="BLT" />
+    <meta name="apple-mobile-web-app-title" content="BLT" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <!-- Self-hosted Tailwind build (Play CDN is blocked by app CSP). -->
+    <link rel="stylesheet" href="/blt-home.css" />
+    <style>
+        .mobile-menu.open{display:flex}
+        .mobile-toggle.active span:nth-child(1){transform:translateY(6px) rotate(45deg)}
+        .mobile-toggle.active span:nth-child(2){opacity:0}
+        .mobile-toggle.active span:nth-child(3){transform:translateY(-6px) rotate(-45deg)}
+        .dot-field{background-image:radial-gradient(rgba(17,24,39,.18) 1px,transparent 1px);background-size:18px 18px;mask-image:radial-gradient(circle at center,black 0,transparent 74%);-webkit-mask-image:radial-gradient(circle at center,black 0,transparent 74%)}
+        .feature-divider::before,.feature-divider::after{content:"";height:1px;flex:1}.feature-divider::before{background:linear-gradient(to right,transparent,#e5e7eb)}.feature-divider::after{background:linear-gradient(to left,transparent,#e5e7eb)}
+        .wave-dots i{position:absolute;width:.25rem;height:.25rem;border-radius:999px;background:#d1d5db;animation:wave 2s infinite ease-in-out}.wave-dots i:nth-child(1){top:0;left:0}.wave-dots i:nth-child(2){top:0;left:1rem}.wave-dots i:nth-child(3){top:.25rem;left:.5rem;animation-delay:.35s}.wave-dots i:nth-child(4){top:.5rem;left:0;animation-delay:.55s}.wave-dots i:nth-child(5){top:.5rem;left:1rem;animation-delay:.55s}.wave-dots i:nth-child(6){top:.75rem;left:.5rem;animation-delay:.85s}
+        .section-kicker.with-bar::before{content:"";position:absolute;top:.18rem;left:-.55rem;width:3px;height:1.25rem;border-radius:0 2px 2px 0;background:#ef4444}
+        .footer-panel::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.04;background-image:linear-gradient(rgba(255,255,255,1) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,1) 1px,transparent 1px);background-size:40px 40px}
+        .footer-links p{margin:0 0 .35rem;color:#6b7280;font-size:.625rem;letter-spacing:.16em;text-transform:uppercase}.footer-links a{display:block;color:#d1d5db;font-size:.875rem;line-height:1.55;transition:color 180ms ease}.footer-links a:hover{color:white}
+        @keyframes wave{0%,100%{transform:translateY(0);opacity:.5}50%{transform:translateY(-3px);opacity:1}}
+        @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+        .rise{animation:rise .7s ease both}
+        .rise-delay-1{animation-delay:.08s}
+        .rise-delay-2{animation-delay:.16s}
+        .rise-delay-3{animation-delay:.24s}
+    </style>
+</head>
+<body class="min-h-screen overflow-x-hidden bg-gray-50 font-sans text-gray-900 antialiased selection:bg-red-100 selection:text-red-700">
+    <header class="fixed inset-x-0 top-0 z-50 border-b border-black/5 bg-white/90 backdrop-blur-[18px]" id="site-header">
+        <div class="mx-auto flex max-w-7xl items-center justify-between gap-6 px-6 py-4 max-md:px-4">
+            <a href="/" class="inline-flex items-center" aria-label="BLT home">
+                <img src="/assets/blt-full-logo.svg" alt="BLT" class="h-7 w-auto max-w-[min(11.5rem,46vw)] md:h-8" />
+            </a>
+
+            <nav class="hidden items-center gap-7 md:flex" aria-label="Primary navigation">
+                <a class="text-sm leading-none text-gray-500 transition-colors duration-150 hover:text-gray-900" href="#contribute">Contribute</a>
+                <a class="text-sm leading-none text-gray-500 transition-colors duration-150 hover:text-gray-900" href="#workflow">How it works</a>
+                <a class="text-sm leading-none text-gray-500 transition-colors duration-150 hover:text-gray-900" href="#hosting">Code hosting</a>
+                <a class="text-sm leading-none text-gray-500 transition-colors duration-150 hover:text-gray-900" href="/dashboard">Dashboard</a>
+            </nav>
+
+            <div class="hidden items-center gap-3 md:flex" data-auth-actions>
+                <a class="rounded-md px-3 py-2 text-sm text-gray-600 transition-colors duration-150 hover:bg-gray-100 hover:text-gray-900" href="/login">Log in</a>
+                <a class="inline-flex items-center justify-center rounded-md border-b-[1.5px] border-red-700 bg-gradient-to-b from-red-500 to-red-600 px-4 py-2 text-sm font-medium text-white shadow-[0_10px_24px_-18px_rgba(220,38,38,.8)] transition duration-200 hover:-translate-y-px" href="/signup">Get started</a>
+            </div>
+
+            <button class="mobile-toggle hidden h-8 w-8 cursor-pointer flex-col items-center justify-center gap-[5px] border-0 bg-transparent max-md:flex" id="mobile-toggle" type="button" aria-label="Toggle menu" aria-expanded="false" aria-controls="mobile-menu">
+                <span class="block h-px w-5 bg-gray-600 transition duration-200"></span>
+                <span class="block h-px w-5 bg-gray-600 transition duration-200"></span>
+                <span class="block h-px w-5 bg-gray-600 transition duration-200"></span>
+            </button>
+        </div>
+
+        <nav class="mobile-menu hidden flex-col gap-4 border-t border-gray-100 bg-white/95 px-6 py-4 backdrop-blur-md" id="mobile-menu" aria-label="Mobile navigation">
+            <a class="text-sm text-gray-600 transition-colors hover:text-gray-900" href="#contribute">Contribute</a>
+            <a class="text-sm text-gray-600 transition-colors hover:text-gray-900" href="#workflow">How it works</a>
+            <a class="text-sm text-gray-600 transition-colors hover:text-gray-900" href="#hosting">Code hosting</a>
+            <a class="text-sm text-gray-600 transition-colors hover:text-gray-900" href="/dashboard">Dashboard</a>
+            <div class="flex flex-col gap-3" data-auth-actions-mobile>
+                <a class="inline-flex items-center justify-center rounded-md border border-gray-200 bg-white px-5 py-3 text-sm font-medium text-gray-700 transition duration-200 hover:border-gray-300 hover:bg-gray-50" href="/login">Log in</a>
+                <a class="inline-flex items-center justify-center rounded-md border-b-[1.5px] border-red-700 bg-gradient-to-b from-red-500 to-red-600 px-5 py-3 text-sm font-medium text-white transition duration-200 hover:-translate-y-px" href="/signup">Get started</a>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <section class="relative flex min-h-[43rem] items-start justify-center px-4 pb-14 pt-52 max-md:min-h-[38rem] max-md:pt-36" aria-label="Hero">
+            <div class="dot-field pointer-events-none absolute inset-x-0 top-24 z-[1] mx-auto h-[36rem] w-[min(94rem,180vw)] opacity-70" aria-hidden="true"></div>
+            <div class="relative z-[2] flex w-full flex-col items-center text-center">
+                <a class="rise inline-flex max-w-[min(40rem,calc(100vw_-_2rem))] items-center gap-3 rounded-full bg-white/40 py-[.15rem] pl-[.15rem] pr-3 text-sm font-medium text-gray-900 shadow-[0_10px_30px_-16px_rgba(220,38,38,.45),0_0_0_1px_rgba(0,0,0,.1)] backdrop-blur-[1px] max-md:text-[.72rem]" href="/dashboard/repos" aria-label="Browse BLT code">
+                    <span class="flex-none rounded-full border border-gray-200 bg-gray-50 px-[.65rem] py-1 text-xs text-gray-600">New</span>
+                    <span class="truncate">A new way of contributing to OWASP BLT.</span>
+                </a>
+                <h1 class="rise rise-delay-1 mt-7 text-[clamp(3.2rem,9vw,6.4rem)] font-bold leading-[.92] tracking-[-.055em] text-gray-900">
+                    See the code.<br />Debug. <span class="text-red-600">Fix.</span>
+                </h1>
+                <p class="rise rise-delay-2 mt-6 max-w-[42rem] text-[clamp(1rem,1.55vw,1.22rem)] leading-[1.6] text-gray-700 text-balance">
+                    Browse OWASP BLT code right here, debug issues, and ship fixes — BLT owns the code and hosts it too.
+                </p>
+                <div class="rise rise-delay-3 mt-7 flex items-center justify-center gap-3 max-md:w-full max-md:flex-col max-md:px-4">
+                    <a class="inline-flex items-center justify-center rounded-md border-b-[1.5px] border-red-700 bg-gradient-to-b from-red-500 to-red-600 px-5 py-3 text-base font-medium text-white shadow-[0_0_0_2px_rgba(0,0,0,.04),0_10px_24px_-14px_rgba(220,38,38,.8)] transition duration-200 hover:-translate-y-px" href="/dashboard/repos">Browse the code</a>
+                    <a class="inline-flex items-center justify-center rounded-md border border-gray-200 bg-white px-5 py-3 text-base font-medium text-gray-700 transition duration-200 hover:border-gray-300 hover:bg-gray-50" href="/signup">Start contributing</a>
+                </div>
+            </div>
+        </section>
+
+        <div class="feature-divider mx-auto my-10 flex w-[min(72rem,calc(100%_-_2rem))] items-center gap-3 text-gray-500" aria-hidden="true">
+            <span class="wave-dots relative h-4 w-5 flex-none"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        </div>
+
+        <section id="contribute" class="w-full px-4 pb-24 pt-10 max-md:pb-20" aria-labelledby="contribute-heading">
+            <div class="mx-auto w-[min(64rem,calc(100%_-_1rem))]">
+                <div class="mx-auto mb-10 max-w-[42rem] text-center">
+                    <span class="inline-flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-3 py-1 font-mono text-xs font-medium uppercase tracking-[.16em] text-red-600">Contribute</span>
+                    <h2 id="contribute-heading" class="mt-4 text-[clamp(2.25rem,4vw,3.1rem)] font-semibold leading-[1.05] tracking-[-.04em] text-balance">A new way to contribute to BLT</h2>
+                    <p class="mx-auto mt-4 max-w-[40rem] text-base leading-[1.6] text-gray-600">No detours. See the OWASP BLT code here, debug what is broken, and land the fix where the project lives.</p>
+                </div>
+
+                <div class="grid grid-cols-3 gap-3 max-lg:grid-cols-2 max-md:grid-cols-1">
+                    <article class="rounded-xl bg-white p-6 shadow-[inset_0_0_0_1px_rgba(17,24,39,.1)]">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-full border border-gray-200 bg-gray-50 font-mono text-sm font-semibold text-red-600">01</div>
+                        <h3 class="mt-6 text-lg font-semibold">See the code</h3>
+                        <p class="mt-3 text-sm leading-6 text-gray-600">Open OWASP BLT repositories right here — the same code the project owns and serves.</p>
+                    </article>
+                    <article class="rounded-xl bg-white p-6 shadow-[inset_0_0_0_1px_rgba(17,24,39,.1)]">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-full border border-gray-200 bg-gray-50 font-mono text-sm font-semibold text-red-600">02</div>
+                        <h3 class="mt-6 text-lg font-semibold">Debug &amp; make a fix</h3>
+                        <p class="mt-3 text-sm leading-6 text-gray-600">Reproduce the issue, track the work, and ship a clear fix without leaving the BLT workspace.</p>
+                    </article>
+                    <article class="rounded-xl bg-white p-6 shadow-[inset_0_0_0_1px_rgba(17,24,39,.1)]">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-full border border-gray-200 bg-gray-50 font-mono text-sm font-semibold text-red-600">03</div>
+                        <h3 class="mt-6 text-lg font-semibold">Contribute upstream</h3>
+                        <p class="mt-3 text-sm leading-6 text-gray-600">BLT owns the code and hosts it — your contribution lands where the project itself lives.</p>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section id="workflow" class="w-full px-4 pb-24 pt-6 max-md:pb-20" aria-labelledby="workflow-heading">
+            <div class="mx-auto grid w-[min(72rem,calc(100%_-_1rem))] items-center gap-10 lg:grid-cols-[0.88fr_1.12fr]">
+                <div>
+                    <h2 id="workflow-heading" class="section-kicker with-bar relative m-0 text-lg font-semibold leading-tight tracking-[-.01em] text-red-500">How it works</h2>
+                    <p class="mt-2 text-[clamp(2rem,3vw,2.55rem)] font-semibold leading-[1.05] tracking-[-.04em] text-balance">From code to fix in one place.</p>
+                    <p class="mt-4 max-w-[36rem] text-base leading-[1.65] text-gray-600">Browse repositories, open tasks, leave notes, and keep contribution flow inside BLT — the project that owns and hosts its own code.</p>
+                    <div class="mt-6 flex flex-wrap gap-3">
+                        <a class="inline-flex items-center justify-center rounded-md border-b-[1.5px] border-red-700 bg-gradient-to-b from-red-500 to-red-600 px-4 py-2.5 text-sm font-medium text-white transition duration-200 hover:-translate-y-px" href="/dashboard/repos">Open repositories</a>
+                        <a class="inline-flex items-center justify-center rounded-md border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 transition duration-200 hover:border-gray-300 hover:bg-gray-50" href="/signup">Create account</a>
+                    </div>
+                </div>
+
+                <a href="/dashboard/repos" class="group block rounded-3xl border border-gray-200 bg-white p-4 shadow-[0_22px_60px_-45px_rgba(15,23,42,.75)]" aria-label="Open BLT repositories">
+                    <div class="rounded-2xl border border-gray-100 bg-gray-50 p-4 font-mono text-xs text-gray-600">
+                        <div class="mb-4 flex items-center justify-between">
+                            <span class="font-sans text-sm font-semibold text-gray-900">blt / owasp-blt</span>
+                            <span class="rounded-full bg-emerald-50 px-2 py-1 text-[.65rem] font-semibold text-emerald-700">hosted</span>
+                        </div>
+                        <div class="grid gap-2">
+                            <div class="rounded-xl bg-white p-3 shadow-sm"><span class="text-red-600">SEE</span> Source on BLT <span class="float-right text-gray-400">browse</span></div>
+                            <div class="rounded-xl bg-white p-3 shadow-sm"><span class="text-red-600">DEBUG</span> Reproduce the bug <span class="float-right text-emerald-700">open</span></div>
+                            <div class="rounded-xl bg-white p-3 shadow-sm"><span class="text-red-600">FIX</span> Ship the patch <span class="float-right text-gray-400">contribute</span></div>
+                        </div>
+                        <pre class="mt-4 overflow-hidden rounded-xl bg-[#111827] p-4 text-left text-[.68rem] leading-5 text-gray-200"><code>{
+  "owner": "blt",
+  "hostsCode": true,
+  "contribution": "welcome"
+}</code></pre>
+                    </div>
+                </a>
+            </div>
+        </section>
+
+        <div class="feature-divider mx-auto my-10 flex w-[min(72rem,calc(100%_-_2rem))] items-center gap-3 text-gray-500" aria-hidden="true">
+            <span class="wave-dots relative h-4 w-5 flex-none"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        </div>
+
+        <section id="hosting" class="w-full px-4 pb-24 pt-10 max-md:pb-20" aria-labelledby="hosting-heading">
+            <div class="mx-auto w-[min(72rem,calc(100%_-_1rem))]">
+                <div class="max-w-[40rem]">
+                    <h2 id="hosting-heading" class="section-kicker with-bar relative m-0 text-lg font-semibold leading-tight tracking-[-.01em] text-red-500">Code ownership</h2>
+                    <p class="mt-2 text-[clamp(2rem,3vw,2.55rem)] font-semibold leading-[1.05] tracking-[-.04em] text-balance">BLT owns the code — and hosts it.</p>
+                    <p class="mt-4 max-w-[42rem] text-base leading-[1.6] text-gray-600">The OWASP Bug Logging Tool is no longer just where bugs are logged. It is where BLT code lives, where you inspect it, and where contributions return.</p>
+                </div>
+
+                <div class="mt-8 grid grid-cols-3 gap-3 max-lg:grid-cols-2 max-md:grid-cols-1">
+                    <a class="rounded-2xl border border-gray-200 bg-white p-5 transition hover:-translate-y-0.5 hover:border-red-200" href="/dashboard/repos"><span class="font-mono text-sm text-red-600">/dashboard/repos</span><p class="mt-2 text-sm text-gray-600">Browse BLT-owned repositories hosted here.</p></a>
+                    <a class="rounded-2xl border border-gray-200 bg-white p-5 transition hover:-translate-y-0.5 hover:border-red-200" href="/dashboard/tasks"><span class="font-mono text-sm text-red-600">/dashboard/tasks</span><p class="mt-2 text-sm text-gray-600">Track bugs and fix work while you contribute.</p></a>
+                    <a class="rounded-2xl border border-gray-200 bg-white p-5 transition hover:-translate-y-0.5 hover:border-red-200" href="/dashboard/notes"><span class="font-mono text-sm text-red-600">/dashboard/notes</span><p class="mt-2 text-sm text-gray-600">Keep debug notes next to the code path.</p></a>
+                    <a class="rounded-2xl border border-gray-200 bg-white p-5 transition hover:-translate-y-0.5 hover:border-red-200" href="/dashboard"><span class="font-mono text-sm text-red-600">/dashboard</span><p class="mt-2 text-sm text-gray-600">Your contribution home base.</p></a>
+                    <a class="rounded-2xl border border-gray-200 bg-white p-5 transition hover:-translate-y-0.5 hover:border-red-200" href="/signup"><span class="font-mono text-sm text-red-600">/signup</span><p class="mt-2 text-sm text-gray-600">Create an account and start contributing.</p></a>
+                    <a class="rounded-2xl border border-gray-200 bg-white p-5 transition hover:-translate-y-0.5 hover:border-red-200" href="/login"><span class="font-mono text-sm text-red-600">/login</span><p class="mt-2 text-sm text-gray-600">Return to your workspace and pick up a fix.</p></a>
+                </div>
+            </div>
+        </section>
+
+        <section class="w-full px-4 pb-20" aria-labelledby="trust-heading">
+            <div class="mx-auto grid w-[min(64rem,calc(100%_-_1rem))] gap-3 md:grid-cols-3">
+                <article class="rounded-2xl border border-gray-200 bg-white p-6">
+                    <h3 id="trust-heading" class="text-base font-semibold text-gray-900">See it here</h3>
+                    <p class="mt-2 text-sm leading-6 text-gray-600">OWASP BLT source is available in this app — not buried on another forge.</p>
+                </article>
+                <article class="rounded-2xl border border-gray-200 bg-white p-6">
+                    <h3 class="text-base font-semibold text-gray-900">Debug &amp; fix</h3>
+                    <p class="mt-2 text-sm leading-6 text-gray-600">Reproduce, patch, and track contribution work in the same place you browse code.</p>
+                </article>
+                <article class="rounded-2xl border border-gray-200 bg-white p-6">
+                    <h3 class="text-base font-semibold text-gray-900">Owned &amp; hosted by BLT</h3>
+                    <p class="mt-2 text-sm leading-6 text-gray-600">BLT owns the code and hosts it — contribution stays with the project.</p>
+                </article>
+            </div>
+        </section>
+
+        <section class="ml-[calc(50%_-_50vw)] w-screen overflow-hidden px-4 pt-4" id="cta" aria-labelledby="cta-heading">
+            <div class="relative mx-auto flex w-[min(42rem,100%)] flex-col items-center gap-3 text-center">
+                <span class="inline-flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-3 py-1 font-mono text-xs font-medium uppercase tracking-[.16em] text-red-600">OWASP BLT</span>
+                <h2 id="cta-heading" class="mt-1 text-[clamp(1.5rem,7vw,4rem)] font-medium leading-[1.05] tracking-[-.045em] text-gray-900">Contribute to<br />BLT today.</h2>
+                <p class="m-0 max-w-[31rem] text-sm leading-[1.6] text-gray-500">Open the code, debug an issue, and land a fix where BLT owns and hosts the project.</p>
+                <div class="mb-2 flex items-center justify-center gap-3 max-md:w-full max-md:flex-col max-md:px-4">
+                    <a class="inline-flex items-center justify-center rounded-md border-b-[1.5px] border-red-700 bg-gradient-to-b from-red-500 to-red-600 px-5 py-3 text-sm font-medium text-white shadow-[0_10px_24px_-14px_rgba(220,38,38,.8)] transition duration-200 hover:-translate-y-px" href="/dashboard/repos">Browse the code</a>
+                    <a class="inline-flex items-center justify-center rounded-md border border-gray-200 bg-white px-5 py-3 text-sm font-medium text-gray-700 transition duration-200 hover:border-gray-300 hover:bg-gray-50" href="/signup">Start contributing</a>
+                </div>
+            </div>
+
+            <footer class="footer-panel relative mt-14 w-full overflow-hidden rounded-t-3xl border border-white/5 bg-[#0e0d0c] py-6 pb-8 text-white max-md:rounded-t-[.8rem]">
+                <h2 class="relative m-0 px-2 text-center text-[clamp(2.4rem,10vw,7rem)] font-light leading-[.9] text-white">owaspblt.org</h2>
+                <div class="relative mx-auto mt-3 h-[3px] w-16 rounded-full bg-red-600" aria-hidden="true"></div>
+                <div class="footer-links relative mx-auto mt-8 grid max-w-6xl grid-cols-4 gap-8 px-6 font-mono max-md:grid-cols-2 max-md:gap-6">
+                    <div>
+                        <p>Contribute</p>
+                        <a href="/dashboard/repos">Repositories</a>
+                        <a href="/dashboard/tasks">Tasks</a>
+                        <a href="/dashboard">Dashboard</a>
+                    </div>
+                    <div>
+                        <p>Account</p>
+                        <a href="/login">Log in</a>
+                        <a href="/signup">Sign up</a>
+                        <a href="/dashboard/settings">Settings</a>
+                    </div>
+                    <div>
+                        <p>Legal</p>
+                        <a href="/privacy">Privacy</a>
+                        <a href="/terms">Terms</a>
+                        <a href="/status">Status</a>
+                    </div>
+                    <div>
+                        <p>OWASP</p>
+                        <a href="https://owaspblt.org" target="_blank" rel="noopener noreferrer">owaspblt.org</a>
+                        <a href="https://owasp.org/www-project-bug-logging-tool/" target="_blank" rel="noopener noreferrer">Foundation page</a>
+                        <a href="https://owasp.org" target="_blank" rel="noopener noreferrer">owasp.org</a>
+                    </div>
+                </div>
+                <div class="relative mx-auto mt-8 flex max-w-6xl flex-col items-center gap-3 px-6">
+                    <a
+                        href="https://forkmesh.com"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium tracking-wide text-gray-400 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-gray-200"
+                        aria-label="Built and maintained by ForkMesh — opens forkmesh.com"
+                    >
+                        <span class="h-1.5 w-1.5 rounded-full bg-red-500" aria-hidden="true"></span>
+                        Built &amp; maintained by ForkMesh
+                    </a>
+                </div>
+            </footer>
+        </section>
+    </main>
+
+    <script>
+        (function () {
+            var mobileToggle = document.getElementById("mobile-toggle");
+            var mobileMenu = document.getElementById("mobile-menu");
+
+            if (mobileToggle && mobileMenu) {
+                mobileToggle.addEventListener("click", function () {
+                    var open = !mobileMenu.classList.contains("open");
+                    mobileMenu.classList.toggle("open", open);
+                    mobileToggle.classList.toggle("active", open);
+                    mobileToggle.setAttribute("aria-expanded", String(open));
+                });
+
+                mobileMenu.querySelectorAll("a").forEach(function (link) {
+                    link.addEventListener("click", function () {
+                        mobileMenu.classList.remove("open");
+                        mobileToggle.classList.remove("active");
+                        mobileToggle.setAttribute("aria-expanded", "false");
+                    });
+                });
+            }
+
+            function readSession() {
+                try {
+                    var session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
+                    if (!session || !session.nodeName) return null;
+                    if (session.kind === "node") return null;
+                    if (session.kind === "user" || session.email) return session;
+                } catch (_) {}
+                return null;
+            }
+
+            function renderSignedInActions(root, mobile) {
+                if (!root) return;
+                root.textContent = "";
+                var dash = document.createElement("a");
+                dash.href = "/dashboard";
+                dash.textContent = mobile ? "Open dashboard" : "Dashboard";
+                dash.className = mobile
+                    ? "inline-flex items-center justify-center rounded-md border-b-[1.5px] border-red-700 bg-gradient-to-b from-red-500 to-red-600 px-5 py-3 text-sm font-medium text-white transition duration-200 hover:-translate-y-px"
+                    : "inline-flex items-center justify-center rounded-md border-b-[1.5px] border-red-700 bg-gradient-to-b from-red-500 to-red-600 px-4 py-2 text-sm font-medium text-white shadow-[0_10px_24px_-18px_rgba(220,38,38,.8)] transition duration-200 hover:-translate-y-px";
+                var label = document.createElement(mobile ? "a" : "span");
+                if (mobile) {
+                    label.href = "/dashboard/settings";
+                    label.className = "inline-flex items-center justify-center rounded-md border border-gray-200 bg-white px-5 py-3 text-sm font-medium text-gray-700 transition duration-200 hover:border-gray-300 hover:bg-gray-50";
+                } else {
+                    label.className = "rounded-md px-3 py-2 text-sm text-gray-600";
+                }
+                label.textContent = String(readSession().nodeName || "Account");
+                if (mobile) {
+                    root.appendChild(label);
+                    root.appendChild(dash);
+                } else {
+                    root.appendChild(label);
+                    root.appendChild(dash);
+                }
+            }
+
+            if (readSession()) {
+                renderSignedInActions(document.querySelector("[data-auth-actions]"), false);
+                renderSignedInActions(document.querySelector("[data-auth-actions-mobile]"), true);
+            }
+        })();
+    </script>
+</body>
+</html>

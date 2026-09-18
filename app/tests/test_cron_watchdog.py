@@ -22,6 +22,8 @@ def _load_watchdog():
         "CRON_WATCHDOG_RETRY_MS",
         "STATUS_DEPLOY_GRACE_MS",
         "STATUS_DEPLOY_MAX_MS",
+        "CRON_RUNNER_KICK_DELAY_MS",
+        "_ALARM_TRANSIENT_MARKERS",
     }
     wanted_functions = {
         "_status_alert_manage_url",
@@ -29,6 +31,9 @@ def _load_watchdog():
         "_cron_watchdog_email_content",
         "_send_cron_watchdog_email",
         "_status_deploy_semaphore_active",
+        "_is_transient_alarm_error",
+        "_durable_set_alarm",
+        "_safe_error_text",
     }
     selected = []
     for node in ast.parse(ENTRY_TEXT, filename=str(ENTRY)).body:
@@ -140,6 +145,9 @@ class _Storage:
 
     async def put(self, key, value):
         self.data[key] = value
+
+    async def deleteAlarm(self):
+        self.alarm_at = None
 
     async def setAlarm(self, timestamp):
         self.alarm_at = int(timestamp)

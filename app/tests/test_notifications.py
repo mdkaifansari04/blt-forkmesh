@@ -345,6 +345,91 @@ def test_digest_html_escapes_untrusted_notification_text():
     assert ns["_html_escape"]("<script>&\"x") == "&lt;script&gt;&amp;&quot;x"
 
 
+def _load_enqueue_notification():
+    # AST-extract enqueue_notification plus the REAL notification-kind
+    # constants, so these tests exercise the actual guard against the actual
+    # registry rather than a copy that could drift.
+    want_funcs = {"enqueue_notification"}
+    want_assigns = {
+        "NOTIFICATION_KINDS",
+        "NOTIFICATION_EMAIL_KINDS",
+        "NOTIFICATION_EMAIL_DEFAULTS",
+    }
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    body = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if targets & want_assigns:
+                body.append(node)
+        elif isinstance(node, ast.AsyncFunctionDef) and node.name in want_funcs:
+            body.append(node)
+    mod = ast.Module(body=body, type_ignores=[])
+    ast.fix_missing_locations(mod)
+
+    inserts = []
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def d1_run(env, sql, *params):
+        inserts.append((sql, params))
+
+    async def blind_index(env, value):
+        return "bi:" + value
+
+    async def encrypt_row(env, payload):
+        return "enc"
+
+    class _Date:
+        @staticmethod
+        def now():
+            return 1000000
+
+    ns = {
+        "ensure_schema": _noop,
+        "clean_string": lambda v, n: str(v or "")[:n],
+        "MAX_NODE_NAME": 63,
+        "valid_node_name": lambda v: bool(v),
+        "notification_payload": lambda kind, title, **kw: {
+            "kind": kind, "title": title},
+        "blind_index": blind_index,
+        "d1_run": d1_run,
+        "encrypt_row": encrypt_row,
+        "notify_account_event": _noop,
+        "Date": _Date,
+        "NOTIFICATION_RETAIN_MS": 90 * 24 * 60 * 60 * 1000,
+        "MAX_NOTIFICATIONS_PER_RECIPIENT": 200,
+    }
+    exec(compile(mod, str(ENTRY), "exec"), ns)
+    return ns, inserts
+
+
+def test_org_invite_notification_kind_is_enqueueable():
+    # Regression: org_members_handler pings new members with kind
+    # "org_invite", but the kind was missing from NOTIFICATION_KINDS so the
+    # enqueue guard silently dropped every such ping (returned False, wrote
+    # no row) and adding a member notified nobody.
+    import asyncio
+
+    ns, inserts = _load_enqueue_notification()
+    ok = asyncio.new_event_loop().run_until_complete(
+        ns["enqueue_notification"](
+            None, "alice", "org_invite", "kaif added you to owasp-blt",
+            actor="kaif", source="org", dedupe="org-member:owasp-blt:alice"))
+    assert ok is True
+    assert any("INSERT INTO notifications" in sql for sql, _ in inserts)
+
+
+def test_org_invite_rides_the_email_digest_bridge():
+    # The in-app ping alone is easy to miss for someone not living in the
+    # dashboard; org membership changes are exactly the low-volume,
+    # high-signal event the hourly digest exists for (like org_succession).
+    ns, _ = _load_enqueue_notification()
+    assert "org_invite" in ns["NOTIFICATION_EMAIL_KINDS"]
+    assert ns["NOTIFICATION_EMAIL_DEFAULTS"]["org_invite"] is True
+
+
 if __name__ == "__main__":
     for test in (
         test_worker_exposes_first_class_notifications_route_and_schema,
@@ -361,6 +446,8 @@ if __name__ == "__main__":
         test_qt_node_syncs_email_notification_preferences_over_heartbeat,
         test_thread_key_is_stable_and_scoped,
         test_digest_html_escapes_untrusted_notification_text,
+        test_org_invite_notification_kind_is_enqueueable,
+        test_org_invite_rides_the_email_digest_bridge,
     ):
         test()
         print("PASS", test.__name__)

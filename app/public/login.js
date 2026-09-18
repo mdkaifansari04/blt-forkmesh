@@ -96,6 +96,26 @@
     } catch (_) {}
   }
 
+  function readSession() {
+    try {
+      const session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
+      if (!session || !session.nodeName) return null;
+      if (session.kind === "node") return null;
+      if (session.kind === "user" || session.email) return session;
+    } catch (_) {}
+    return null;
+  }
+
+  function postLoginPath() {
+    return nextPath() || referrerPath() || "/dashboard";
+  }
+
+  // Already signed in: skip the form and resume the destination.
+  if (readSession()) {
+    location.replace(postLoginPath());
+    return;
+  }
+
   async function login() {
     const email = $("#email").value.trim();
     const password = $("#password").value;
@@ -114,6 +134,7 @@
     try {
       res = await fetch("/api/accounts/login", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({ email, password, totp }),
       });
@@ -130,7 +151,7 @@
       setHint("Logged in as “" + (body.nodeName || email) + "”.", "good");
       // Persist a minimal, non-secret session marker for the static site.
       storeSession(body);
-      setTimeout(() => (location.href = nextPath() || referrerPath() || "/"), 700);
+      location.replace(postLoginPath());
       return;
     }
     if (body.error === "bad_totp") {

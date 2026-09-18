@@ -25,6 +25,7 @@ from __future__ import annotations
 import ast
 import shutil
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -110,8 +111,22 @@ def main(argv: list[str]) -> int:
     if check_only:
         return 0
 
+    # Wrangler may run this custom build concurrently while a previous
+    # src_build tree is still being read; ignore_errors + a short retry avoids
+    # fatal "Directory not empty" races that abort the whole build and leave
+    # local ASSETS in a broken 500/503 state.
     if STAGED.exists():
-        shutil.rmtree(STAGED)
+        for _attempt in range(5):
+            try:
+                shutil.rmtree(STAGED, ignore_errors=False)
+                break
+            except OSError:
+                shutil.rmtree(STAGED, ignore_errors=True)
+                if not STAGED.exists():
+                    break
+                time.sleep(0.05)
+        if STAGED.exists():
+            shutil.rmtree(STAGED, ignore_errors=True)
     for relative, payload in staged_files:
         target = STAGED / relative
         target.parent.mkdir(parents=True, exist_ok=True)

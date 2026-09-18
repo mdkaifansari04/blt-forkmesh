@@ -14,7 +14,7 @@
     <meta name="description" content="Join ForkMesh authenticated shared-key chat rooms. Default keys are relay-derived and relay-readable." />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
-    <meta name="theme-color" content="#090909" />
+    <meta name="theme-color" content="#09090b" />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
@@ -22,7 +22,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
     <link rel="manifest" href="/favicon/site.webmanifest" />
     <link rel="stylesheet" href="/site-header.css" />
-    <script src="/site-header.js?v=cbeeac1890f1" defer></script>
+    <script src="/site-header.js?v=2451d5d35a23" defer></script>
     <script>
       (() => {
         const keys = ["forkmesh.dashboard.theme", "forkmesh.theme"];
@@ -32,7 +32,7 @@
         } catch (_) {}
         document.documentElement.classList.toggle("dark", theme !== "light");
         document.documentElement.style.colorScheme = theme;
-        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fa" : "#090909");
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fa" : "#09090b");
       })();
     </script>
     <style>
@@ -40,28 +40,28 @@
       [hidden] { display: none !important; }
 
       :root {
-        --bg: #090909;
+        --bg: #09090b;
         --surface: #111111;
         --surface2: #1a1a1a;
         --border: #2a2a2a;
         --fg: #f0f0f0;
         --muted: #888;
-        --accent: oklch(0.72 0.17 152);
-        --accent-dim: rgba(63, 185, 80, 0.12);
+        --accent: #ef4444;
+        --accent-dim: rgba(239, 68, 68, 0.12);
         --danger: #f85149;
         --radius: 10px;
         --nav-h: 52px;
       }
 
       html:not(.dark) {
-        --bg: #f6f8fb;
+        --bg: #ffffff;
         --surface: #ffffff;
         --surface2: #eef2f7;
         --border: #d0d7de;
         --fg: #1f2328;
         --muted: #656d76;
-        --accent: #1f883d;
-        --accent-dim: rgba(31, 136, 61, 0.11);
+        --accent: #dc2626;
+        --accent-dim: rgba(220, 38, 38, 0.11);
         --danger: #d1242f;
       }
 
@@ -243,7 +243,7 @@
         border: 1px solid var(--border);
         border-radius: 8px;
         background: var(--accent);
-        color: #06120a;
+        color: #ffffff;
         font-weight: 700;
         cursor: pointer;
       }
@@ -428,7 +428,7 @@
         padding: 1px 6px;
         border-radius: 999px;
         background: var(--accent);
-        color: #06120a;
+        color: #ffffff;
         font-size: 11px;
         font-weight: 700;
         text-align: center;
@@ -909,7 +909,7 @@
         border-radius: 10px;
         border: none;
         background: var(--accent);
-        color: #06120a;
+        color: #ffffff;
         font-size: 14px;
         font-weight: 600;
         cursor: pointer;

@@ -5,11 +5,11 @@
     <script src="/api-client.js?v=583e3a3d9d7b"></script>
     <script src="/posthog.js" defer></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Repository - ForkMesh</title>
-    <meta name="description" content="Inspect a repository mirrored by ForkMesh desktop nodes: files, issues, pulls, and mirrors." />
-    <meta name="application-name" content="ForkMesh" />
-    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
-    <meta name="theme-color" content="#090909" />
+    <title>Repository - BLT</title>
+    <meta name="description" content="Inspect a BLT-hosted repository: files, issues, pulls, and mirrors." />
+    <meta name="application-name" content="BLT" />
+    <meta name="apple-mobile-web-app-title" content="BLT" />
+    <meta name="theme-color" content="#09090b" />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
@@ -27,7 +27,7 @@
         } catch (_) {}
         document.documentElement.dataset.dashboardTheme = theme;
         document.documentElement.style.colorScheme = theme;
-        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fb" : "#090909");
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#ffffff" : "#09090b");
       })();
     </script>
     <link rel="stylesheet" href="/dashboard/tailwind.css" />
@@ -38,7 +38,7 @@
           extend: {
             fontFamily: {
               sans: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Noto Sans", "Helvetica", "Arial", "sans-serif"],
-              mono: ["ForkMesh Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"],
+              mono: ["BLT Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"],
             },
             colors: {
               background: "rgb(var(--dashboard-background-rgb) / <alpha-value>)",
@@ -67,7 +67,7 @@
     <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
     <style>
       @font-face {
-        font-family: "ForkMesh Dashboard Mono";
+        font-family: "BLT Dashboard Mono";
         src: url("/assets/fonts/DejaVuSansMono.ttf") format("truetype");
         font-weight: 400 500;
         font-style: normal;
@@ -75,7 +75,7 @@
       }
 
       @font-face {
-        font-family: "ForkMesh Dashboard Mono";
+        font-family: "BLT Dashboard Mono";
         src: url("/assets/fonts/DejaVuSansMono-Bold.ttf") format("truetype");
         font-weight: 600 800;
         font-style: normal;
@@ -85,28 +85,28 @@
       :root,
       [data-dashboard-theme="dark"] {
         --font-size: 15px;
-        --dashboard-header-rgb: 1 4 9;
-        --dashboard-sidebar-rgb: 12 17 23;
-        --dashboard-background-rgb: 1 4 9;
-        --dashboard-foreground-rgb: 240 246 252;
-        --dashboard-card-rgb: 13 17 23;
-        --dashboard-card-foreground-rgb: 240 246 252;
-        --dashboard-popover-rgb: 22 27 34;
-        --dashboard-popover-foreground-rgb: 240 246 252;
-        --dashboard-primary-rgb: 35 134 54;
+        --dashboard-header-rgb: 9 9 11;
+        --dashboard-sidebar-rgb: 24 24 27;
+        --dashboard-background-rgb: 9 9 11;
+        --dashboard-foreground-rgb: 244 244 245;
+        --dashboard-card-rgb: 24 24 27;
+        --dashboard-card-foreground-rgb: 244 244 245;
+        --dashboard-popover-rgb: 39 39 42;
+        --dashboard-popover-foreground-rgb: 244 244 245;
+        --dashboard-primary-rgb: 239 68 68;
         --dashboard-primary-foreground-rgb: 255 255 255;
-        --dashboard-secondary-rgb: 33 38 45;
-        --dashboard-secondary-foreground-rgb: 201 209 217;
-        --dashboard-muted-rgb: 22 27 34;
-        --dashboard-muted-foreground-rgb: 139 148 158;
-        --dashboard-accent-rgb: 88 166 255;
+        --dashboard-secondary-rgb: 39 39 42;
+        --dashboard-secondary-foreground-rgb: 228 228 231;
+        --dashboard-muted-rgb: 39 39 42;
+        --dashboard-muted-foreground-rgb: 161 161 170;
+        --dashboard-accent-rgb: 239 68 68;
         --dashboard-accent-foreground-rgb: 255 255 255;
-        --dashboard-destructive-rgb: 248 81 73;
-        --dashboard-border-rgb: 48 54 61;
-        --dashboard-ring-rgb: 88 166 255;
-        --dashboard-scrollbar-rgb: 139 148 158;
-        --dashboard-link: #58a6ff;
-        --dashboard-link-hover: #79c0ff;
+        --dashboard-destructive-rgb: 248 113 113;
+        --dashboard-border-rgb: 39 39 42;
+        --dashboard-ring-rgb: 239 68 68;
+        --dashboard-scrollbar-rgb: 161 161 170;
+        --dashboard-link: #f87171;
+        --dashboard-link-hover: #fca5a5;
         --contribution-commits: #58a6ff;
         --contribution-issues: #3fb950;
         --contribution-pulls: #bc8cff;
@@ -121,40 +121,40 @@
         --contribution-tooltip-bg: #161b22;
         --contribution-tooltip-fg: #f0f6fc;
         --contribution-tooltip-border: #30363d;
-        --background: #010409;
-        --foreground: #f0f6fc;
-        --card: #0d1117;
-        --primary: #238636;
+        --background: #09090b;
+        --foreground: #f4f4f5;
+        --card: #18181b;
+        --primary: #ef4444;
         --primary-foreground: #ffffff;
-        --secondary: #21262d;
-        --muted-foreground: #8b949e;
+        --secondary: #27272a;
+        --muted-foreground: #a1a1aa;
         --border: rgb(var(--dashboard-border-rgb));
         color-scheme: dark;
       }
 
       [data-dashboard-theme="light"] {
         --dashboard-header-rgb: 255 255 255;
-        --dashboard-sidebar-rgb: 255 255 255;
+        --dashboard-sidebar-rgb: 249 250 251;
         --dashboard-background-rgb: 255 255 255;
-        --dashboard-foreground-rgb: 0 0 0;
+        --dashboard-foreground-rgb: 17 24 39;
         --dashboard-card-rgb: 255 255 255;
-        --dashboard-card-foreground-rgb: 0 0 0;
+        --dashboard-card-foreground-rgb: 17 24 39;
         --dashboard-popover-rgb: 255 255 255;
-        --dashboard-popover-foreground-rgb: 0 0 0;
-        --dashboard-primary-rgb: 22 163 74;
+        --dashboard-popover-foreground-rgb: 17 24 39;
+        --dashboard-primary-rgb: 220 38 38;
         --dashboard-primary-foreground-rgb: 255 255 255;
-        --dashboard-secondary-rgb: 255 255 255;
-        --dashboard-secondary-foreground-rgb: 0 0 0;
-        --dashboard-muted-rgb: 255 255 255;
-        --dashboard-muted-foreground-rgb: 0 0 0;
-        --dashboard-accent-rgb: 9 105 218;
+        --dashboard-secondary-rgb: 249 250 251;
+        --dashboard-secondary-foreground-rgb: 17 24 39;
+        --dashboard-muted-rgb: 249 250 251;
+        --dashboard-muted-foreground-rgb: 75 85 99;
+        --dashboard-accent-rgb: 220 38 38;
         --dashboard-accent-foreground-rgb: 255 255 255;
-        --dashboard-destructive-rgb: 220 38 38;
-        --dashboard-border-rgb: 226 232 240;
-        --dashboard-ring-rgb: 15 23 42;
-        --dashboard-scrollbar-rgb: 71 85 105;
-        --dashboard-link: #000000;
-        --dashboard-link-hover: #000000;
+        --dashboard-destructive-rgb: 185 28 28;
+        --dashboard-border-rgb: 229 231 235;
+        --dashboard-ring-rgb: 220 38 38;
+        --dashboard-scrollbar-rgb: 113 113 122;
+        --dashboard-link: #dc2626;
+        --dashboard-link-hover: #b91c1c;
         --contribution-commits: #0969da;
         --contribution-issues: #1a7f37;
         --contribution-pulls: #8250df;
@@ -170,12 +170,12 @@
         --contribution-tooltip-fg: #1f2328;
         --contribution-tooltip-border: #d0d7de;
         --background: #ffffff;
-        --foreground: #000000;
+        --foreground: #111827;
         --card: #ffffff;
-        --primary: #16a34a;
+        --primary: #dc2626;
         --primary-foreground: #ffffff;
-        --secondary: #ffffff;
-        --muted-foreground: #000000;
+        --secondary: #f9fafb;
+        --muted-foreground: #4b5563;
         --border: rgb(var(--dashboard-border-rgb));
         color-scheme: light;
       }
@@ -783,7 +783,7 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=6e105e01a070" defer></script>
+    <script src="/dashboard.js?v=aa5e8e8f9077" defer></script>
 
   </head>
   <body class="bg-background text-foreground" data-page="repo">
@@ -800,12 +800,12 @@
           <i data-lucide="menu" class="h-4 w-4"></i>
         </button>
 
-        <a data-dashboard-logo class="brand flex items-center gap-2 shrink-0" href="/dashboard" aria-label="Refresh ForkMesh Dashboard">
-          <img class="brand-mark h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+        <a data-dashboard-logo class="brand flex items-center gap-2 shrink-0" href="/dashboard" aria-label="Refresh BLT Dashboard">
+          <img class="brand-mark h-8 w-8 object-contain" src="/assets/blt-logo.png" alt="" aria-hidden="true" />
           <span
             data-app-version
             class="hidden rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground"
-            title="ForkMesh version"
+            title="BLT version"
           ></span>
         </a>
 
@@ -852,24 +852,6 @@
         </div>
 
         <div class="flex items-center gap-1.5">
-          <a
-            href="https://world.forkmesh.com/"
-            class="hidden h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
-            title="Open ForkMesh World"
-            aria-label="Open ForkMesh World"
-          >
-            <i data-lucide="globe-2" class="h-4 w-4"></i>
-          </a>
-
-          <a
-            href="/mirror-payouts"
-            class="hidden h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
-            title="Mirror reward settings"
-            aria-label="Mirror reward settings"
-          >
-            <img src="/assets/sol.png" alt="" aria-hidden="true" class="h-4 w-4 shrink-0 rounded-full object-contain" />
-          </a>
-
           <div class="relative">
             <button
               id="notificationToggle"
@@ -924,13 +906,8 @@
                 </button>
               </div>
               <div class="grid gap-3 p-4 text-xs leading-5 text-muted-foreground">
-                <p>The browser deliberately has no owner private key, so the relay and its administrators cannot read agent sessions or turn a browser form into a plaintext prompt channel.</p>
-                <p>Start, inspect, and steer agents from the ForkMesh desktop app on the owner device.</p>
-                <a href="/desktop" class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 font-semibold text-primary-foreground hover:bg-primary/90">
-                  <i data-lucide="monitor-down" class="h-4 w-4"></i>
-                  Open desktop downloads
-                </a>
-                <p class="text-[11px]">Agent privacy boundary: agent-recipient private keys stay on your device and are never sent to the ForkMesh relay.</p>
+                <p>Browser sessions do not hold owner private keys. Agent prompts and transcripts stay encrypted to keys held on the owner device.</p>
+                <p class="text-[11px]">Use your owner device to start and steer agents. Private keys are never sent to the BLT relay.</p>
               </div>
             </div>
           </div>
@@ -1022,9 +999,9 @@
       <div data-dashboard-shell class="flex flex-1 min-h-0 overflow-hidden">
       <aside id="dashboardSidebar" data-dashboard-sidebar aria-label="Dashboard navigation" class="flex h-full flex-col overflow-y-auto border-r border-border bg-[rgb(var(--dashboard-sidebar-rgb))]">
         <div class="flex items-center justify-between border-b border-border px-4 py-4">
-          <a data-dashboard-logo class="flex items-center gap-2 text-sm font-semibold text-foreground" href="/dashboard" aria-label="Refresh ForkMesh Dashboard">
-            <img class="h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
-            <span data-sidebar-user-name>ForkMesh</span>
+          <a data-dashboard-logo class="flex items-center gap-2 text-sm font-semibold text-foreground" href="/dashboard" aria-label="Refresh BLT Dashboard">
+            <img class="brand-mark h-7 w-7 object-contain" src="/assets/blt-logo.png" alt="" aria-hidden="true" />
+            <span data-sidebar-user-name class="text-muted-foreground">Dashboard</span>
           </a>
           <button data-mobile-drawer-close type="button" aria-label="Close dashboard menu" class="inline-flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="x" class="h-4 w-4"></i>
@@ -1044,6 +1021,10 @@
             <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
             Repositories
           </a>
+          <a data-nav="orgs" data-nav-link href="/dashboard/orgs" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="building-2" class="h-4 w-4 text-muted-foreground"></i>
+            Organizations
+          </a>
           <a data-nav="tasks" data-nav-link href="/dashboard/tasks" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="list-checks" class="h-4 w-4 text-muted-foreground"></i>
             Tasks
@@ -1052,21 +1033,9 @@
             <i data-lucide="notebook-pen" class="h-4 w-4 text-muted-foreground"></i>
             Notes
           </a>
-          <a data-nav="network" data-nav-link href="/dashboard/network" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
-            <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>
-            Network
-          </a>
-          <a data-nav="chat" data-nav-link href="/dashboard/chat" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
-            <i data-lucide="messages-square" class="h-4 w-4 text-muted-foreground"></i>
-            Chat
-          </a>
-          <a href="/docs" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
-            <i data-lucide="book-open" class="h-4 w-4 text-muted-foreground"></i>
-            Docs
-          </a>
-          <a href="/blog" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
-            <i data-lucide="newspaper" class="h-4 w-4 text-muted-foreground"></i>
-            Blog
+          <a data-nav="settings" data-nav-link href="/dashboard/settings" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="settings" class="h-4 w-4 text-muted-foreground"></i>
+            Settings
           </a>
         </nav>
 
@@ -1243,7 +1212,7 @@
         <div class="flex items-center justify-between border-b border-border px-4 py-3">
           <div class="min-w-0">
             <h2 id="profileAboutModalTitle" class="text-sm font-semibold text-foreground">Edit about yourself</h2>
-            <p class="mt-0.5 text-xs text-muted-foreground">Markdown shown on your ForkMesh profile overview.</p>
+            <p class="mt-0.5 text-xs text-muted-foreground">Markdown shown on your BLT profile overview.</p>
           </div>
           <button data-profile-about-modal-close type="button" aria-label="Close about editor" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="x" class="h-4 w-4"></i>
@@ -1301,7 +1270,7 @@
         <div class="flex items-center justify-between border-b border-border px-4 py-3">
           <div class="min-w-0">
             <h2 id="newRepoModalTitle" class="text-sm font-semibold text-foreground">Create &amp; mirror a repository</h2>
-            <p class="mt-0.5 text-xs text-muted-foreground">Describe the repo, then finish creating and mirroring it from your ForkMesh desktop node.</p>
+            <p class="mt-0.5 text-xs text-muted-foreground">Describe the repo, then finish creating it from your linked desktop node.</p>
           </div>
           <button data-new-repo-close type="button" aria-label="Close new repository" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="x" class="h-4 w-4"></i>
@@ -1322,7 +1291,7 @@
               <button data-new-repo-source="provider" type="button" aria-pressed="false" class="flex-1 text-muted-foreground hover:text-foreground px-3 py-2 border-l border-border transition-colors">GitHub / GitLab / Codeberg</button>
             </div>
             <input data-new-repo-source-value type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/repo.git" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-            <span data-new-repo-source-hint class="text-[11px] leading-4 text-muted-foreground">ForkMesh clones this URL into a bare mirror. Local paths never leave your machine.</span>
+            <span data-new-repo-source-hint class="text-[11px] leading-4 text-muted-foreground">This URL is cloned into a bare mirror. Local paths never leave your machine.</span>
           </div>
 
           <div data-new-repo-provider-options class="hidden grid gap-3 rounded-lg border border-border bg-background p-3">
@@ -1337,7 +1306,7 @@
               Provider access token <span class="text-[11px] font-normal">(required for private repositories; optional for public)</span>
               <input data-new-repo-provider-token type="password" autocomplete="off" spellcheck="false" placeholder="One-request GitHub, GitLab, or Codeberg token" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
             </label>
-            <p class="text-[11px] leading-4 text-muted-foreground">The token passes through ForkMesh’s Worker only for this request and is forwarded to the provider; it is not persisted. Only metadata endpoints are read; source files are not fetched or sent to an external model.</p>
+            <p class="text-[11px] leading-4 text-muted-foreground">The token passes through the Worker only for this request and is forwarded to the provider; it is not persisted. Only metadata endpoints are read; source files are not fetched or sent to an external model.</p>
           </div>
 
           <label data-new-repo-visibility-wrap class="grid gap-1.5 text-xs text-muted-foreground">
@@ -1356,13 +1325,9 @@
           <p data-new-repo-hint class="min-h-4 text-xs text-muted-foreground"></p>
 
           <div data-new-repo-steps class="hidden rounded-lg border border-border bg-background p-3">
-            <p class="text-xs font-semibold text-foreground">Finish in the ForkMesh desktop node</p>
-            <p class="mt-1 text-[11px] leading-4 text-muted-foreground">Publishing and mirroring run on your node so filesystem paths and private contents never touch the relay. Follow these steps with the details above:</p>
+            <p class="text-xs font-semibold text-foreground">Finish on your connected node</p>
+            <p class="mt-1 text-[11px] leading-4 text-muted-foreground">Publishing and mirroring run on your node so filesystem paths and private contents never touch the BLT relay. Follow these steps with the details above:</p>
             <ol data-new-repo-steps-list class="mt-2 grid gap-1.5 text-xs text-muted-foreground"></ol>
-            <a href="/desktop" class="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline">
-              <i data-lucide="download" class="h-3.5 w-3.5"></i>
-              Download the desktop app
-            </a>
           </div>
 
           <div class="flex flex-wrap items-center justify-end gap-2">

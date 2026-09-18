@@ -45,7 +45,7 @@
     document.documentElement.style.colorScheme = nextTheme;
     document.querySelector('meta[name="theme-color"]')?.setAttribute(
       "content",
-      nextTheme === "light" ? "#f6f8fb" : "#090909",
+      nextTheme === "light" ? "#ffffff" : "#09090b",
     );
     renderAppearanceTheme(nextTheme);
     return nextTheme;

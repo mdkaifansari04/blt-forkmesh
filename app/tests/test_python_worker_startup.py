@@ -16,7 +16,8 @@ def test_runtime_sdk_is_not_uploaded_as_an_external_python_package():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert config["compatibility_flags"] == ["python_workers"]
-    assert config["limits"]["cpu_ms"] == 30_000
+    # Free Workers rejects deploy when [limits].cpu_ms is set (API code 100328).
+    assert "limits" not in config
     assert project["project"]["dependencies"] == []
     assert not (ROOT / "pylock.toml").exists()
 

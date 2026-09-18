@@ -260,7 +260,7 @@ def test_live_repository_reads_bypass_cache_for_round_robin_accounting():
 def test_repository_metadata_cache_round_trips_through_global_kv():
     config = WRANGLER.read_text(encoding="utf-8")
     assert 'binding = "REPOSITORY_METADATA"' in config
-    assert 'id = "ee8854d698c14e93a9950ec0f3e6538f"' in config
+    assert 'id = "d2f81b0d92674c6591d68477ef13ab3a"' in config
 
     class FakeHeaders(dict):
         pass

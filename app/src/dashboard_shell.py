@@ -58,8 +58,8 @@ PAGES = {
         "nav": "home",
         "route": "/dashboard",
         "asset": "dashboard/index.html",
-        "title": "ForkMesh Dashboard",
-        "description": "Manage ForkMesh repositories, mirrors, signed collaboration, and account activity from your dashboard.",
+        "title": "BLT Dashboard",
+        "description": "Manage BLT repositories, collaboration, and account activity from your dashboard.",
     },
     "repos": {
         "view": "repos",
@@ -67,8 +67,8 @@ PAGES = {
         "nav": "repos",
         "route": "/dashboard/repos",
         "asset": "dashboard/repos/index.html",
-        "title": "Repositories - ForkMesh",
-        "description": "Browse repositories mirrored by ForkMesh desktop nodes and open them live from their hosts.",
+        "title": "Repositories - BLT",
+        "description": "Browse repositories hosted for OWASP BLT and open them from the dashboard.",
     },
     "network": {
         "view": "network",
@@ -76,8 +76,8 @@ PAGES = {
         "nav": "network",
         "route": "/dashboard/network",
         "asset": "dashboard/network/index.html",
-        "title": "Network - ForkMesh",
-        "description": "Relay health, connected nodes, and live network activity on ForkMesh.",
+        "title": "Network - BLT",
+        "description": "Relay health, connected nodes, and live network activity.",
     },
     "chat": {
         "view": "chat",
@@ -85,8 +85,8 @@ PAGES = {
         "nav": "chat",
         "route": "/dashboard/chat",
         "asset": "dashboard/chat/index.html",
-        "title": "Chat - ForkMesh",
-        "description": "ForkMesh #general chat uses a relay-derived authenticated shared key; the relay can decrypt messages.",
+        "title": "Chat - BLT",
+        "description": "Team chat for BLT collaboration.",
     },
     "tasks": {
         "view": "tasks",
@@ -94,8 +94,8 @@ PAGES = {
         "nav": "tasks",
         "route": "/dashboard/tasks",
         "asset": "dashboard/tasks/index.html",
-        "title": "Tasks - ForkMesh",
-        "description": "The organization-private ForkMesh task catalog: status, routing, and assignment for every task the desktop app and the World office board share.",
+        "title": "Tasks - BLT",
+        "description": "Organization-private task catalog: status, routing, and assignment.",
     },
     "notes": {
         "view": "notes",
@@ -103,7 +103,7 @@ PAGES = {
         "nav": "notes",
         "route": "/dashboard/notes",
         "asset": "dashboard/notes/index.html",
-        "title": "Notes - ForkMesh",
+        "title": "Notes - BLT",
         "description": "Collaborative Markdown notes with sharing, publishing, snapshots, and repository conversation links.",
     },
     "settings": {
@@ -112,8 +112,8 @@ PAGES = {
         "nav": None,
         "route": "/dashboard/settings",
         "asset": "dashboard/settings/index.html",
-        "title": "Settings - ForkMesh",
-        "description": "Manage your ForkMesh account: public profile, appearance, notifications, payout, and linked nodes.",
+        "title": "Settings - BLT",
+        "description": "Manage your BLT account: public profile, appearance, notifications, and linked nodes.",
     },
     "profile": {
         "view": "profile-overview",
@@ -121,8 +121,8 @@ PAGES = {
         "nav": "profile",
         "route": "/dashboard/profile",
         "asset": "dashboard/profile/index.html",
-        "title": "Profile - ForkMesh",
-        "description": "Your public ForkMesh profile overview and contribution activity.",
+        "title": "Profile - BLT",
+        "description": "Your public BLT profile overview and contribution activity.",
     },
     "profile-repositories": {
         "view": "profile-repositories",
@@ -130,8 +130,8 @@ PAGES = {
         "nav": "profile",
         "route": "/dashboard/profile/repositories",
         "asset": "dashboard/profile/repositories/index.html",
-        "title": "Your repositories - ForkMesh",
-        "description": "Repositories on your public ForkMesh profile.",
+        "title": "Your repositories - BLT",
+        "description": "Repositories on your public BLT profile.",
     },
     "repo": {
         "view": "repo",
@@ -139,8 +139,33 @@ PAGES = {
         "nav": "repos",
         "route": None,
         "asset": "dashboard/repo.html",
-        "title": "Repository - ForkMesh",
-        "description": "Inspect a repository mirrored by ForkMesh desktop nodes: files, issues, pulls, and mirrors.",
+        "title": "Repository - BLT",
+        "description": "Inspect a BLT-hosted repository: files, issues, pulls, and mirrors.",
+    },
+    # Signed-in organization hub: the orgs you belong to, your role in each,
+    # and the create form. Its own page (and sidebar entry) because an
+    # organization is a primary object here, not an account preference — it
+    # was previously reachable only as a tab inside Settings.
+    "orgs": {
+        "view": "orgs",
+        "section": "orgs",
+        "nav": "orgs",
+        "route": "/dashboard/orgs",
+        "asset": "dashboard/orgs/index.html",
+        "title": "Organizations - BLT",
+        "description": "Organizations you belong to on BLT, their repositories, and their members.",
+    },
+    # Public organization landing page. Worker-only like the repo document:
+    # the Worker fetches it for /orgs/<name> (and the bare /owasp-blt alias)
+    # and the client renders the org from GET /api/orgs/<name>.
+    "org": {
+        "view": "org",
+        "section": "org",
+        "nav": None,
+        "route": None,
+        "asset": "dashboard/org/index.html",
+        "title": "Organization - BLT",
+        "description": "An organization on BLT: its repositories, members, and teams.",
     },
 }
 

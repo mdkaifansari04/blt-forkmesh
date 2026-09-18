@@ -14,6 +14,8 @@
     "profile": initProfileOverviewPage,
     "profile-repositories": initProfileOverviewPage,
     "repo": initRepoPage,
+    "orgs": initOrgsPage,
+    "org": initOrgPage,
   };
 
   applyDashboardTheme(readDashboardTheme());

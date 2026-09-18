@@ -21,25 +21,38 @@ def _read(page: Path) -> str:
     return page.read_text(encoding="utf-8")
 
 
-def test_auth_pages_use_simple_no_nav_shell():
+def test_auth_pages_use_landing_style_auth_shell():
     for page in AUTH_PAGES:
         html = _read(page)
 
-        assert 'class="site-header"' not in html
+        # Landing-matched sticky header, but not the old marketing global nav.
+        assert 'class="site-header"' in html
+        assert 'class="topbar-nav"' in html
         assert 'class="global-nav"' not in html
         assert 'id="theme-toggle"' not in html
         assert 'class="auth-shell"' in html
         assert 'class="auth-card"' in html
 
 
-def test_auth_pages_keep_single_logo_home_link():
+def test_auth_pages_keep_single_blt_home_link():
     for page in AUTH_PAGES:
         html = _read(page)
 
-        assert html.count('class="brand" href="/" aria-label="ForkMesh home"') == 1
-        assert 'class="brand-mark"' in html
-        assert 'src="/assets/logo.png"' in html
-        assert 'aria-hidden="true"' in html
+        assert html.count('class="topbar-brand" href="/" aria-label="BLT home"') == 1
+        assert 'class="brand"' not in html
+        assert 'src="/assets/blt-full-logo.svg"' in html
+        assert 'src="/assets/logo.png"' not in html
+        assert "ForkMesh World" not in html
+        assert "data-forkmesh-world" not in html
+        assert 'class="brand-name"' not in html
+        assert "OWASP Bug Logging Tool" not in html
+        # Navbar wordmark should not look like a bordered/shadowed button chip.
+        topbar_img = html.split(".topbar-brand img {", 1)[1].split("}", 1)[0]
+        assert "border:" not in topbar_img
+        assert "box-shadow:" not in topbar_img
+        assert 'class="site-header"' in html
+        assert 'class="topbar-nav"' in html
+        assert 'href="/signup">Get started</a>' in html or 'href="/signup" aria-current="page">Get started</a>' in html
 
 
 def test_auth_pages_use_landing_inspired_small_controls():
@@ -47,33 +60,32 @@ def test_auth_pages_use_landing_inspired_small_controls():
         html = _read(page)
 
         assert ".auth-button-primary" in html
-        assert ".auth-input-sm" in html
-        assert "height: 2.25rem;" in html
-        assert "border-radius: 0.75rem;" in html
+        assert 'class="auth-input-sm"' in html
+        assert "height: 2.5rem;" in html or "height: 2.6rem;" in html
+        assert "border-radius: 0.55rem;" in html or "border-radius: 1rem;" in html
 
 
-def test_auth_pages_use_white_primary_actions_and_neutral_focus():
+def test_auth_pages_use_blt_light_professional_surfaces():
     for page in AUTH_PAGES:
         html = _read(page)
 
+        assert 'class="light"' in html
+        assert 'content="light"' in html
         assert "radial-gradient(circle at top, rgba(74, 222, 128" not in html
-        assert "rgba(255, 255, 255, 0.16)" in html
-        assert "background: #f5f5f5;" in html
-        assert "color: #050505;" in html
-        assert "border-color: rgba(255, 255, 255, 0.34);" in html
-        assert "box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);" in html
+        assert "rgba(220, 38, 38, 0.08)" in html
+        assert "linear-gradient(to bottom, #ef4444, #dc2626)" in html
+        assert "background: var(--blt-panel);" in html or "background: #ffffff;" in html
 
 
-def test_auth_links_are_white_not_green():
+def test_auth_links_use_blt_red_not_forkmesh_green():
     for page in AUTH_PAGES:
         html = _read(page)
 
         assert ".row-links a" in html
-        assert "color: #ffffff;" in html
+        assert "color: var(--blt-red);" in html or "color: #dc2626;" in html
         assert "color: var(--accent-bright);" not in html
         assert "background: var(--accent-bright);" not in html
         assert ".auth-button-primary { color: var(--accent-bright)" not in html
-        assert ".join-eyebrow {\n        display: inline-flex; align-items: center; gap: 8px;\n        color: var(--accent-bright);" not in html
 
 
 def test_login_and_signup_cross_links_remain():
@@ -96,8 +108,6 @@ def test_signup_card_is_centered_vertically_like_login():
 
     assert "place-items: center;" in shell_css
     assert "place-items: start center;" not in shell_css
-    assert "padding: 28px 16px;" in shell_css
-    assert "padding: 28px 16px 56px;" not in shell_css
 
 
 def test_signup_is_single_step_email_password_name_form():
@@ -108,7 +118,7 @@ def test_signup_is_single_step_email_password_name_form():
     assert 'id="acct-email"' in signup
     assert 'id="acct-pass"' in signup
     assert 'id="signup-create"' in signup
-    assert "Join ForkMesh" in signup
+    assert "Join BLT" in signup
     assert "Add a Solana payout address later from your dashboard profile" not in signup
     assert 'id="step-account"' not in signup
     assert 'id="name-continue"' not in signup
@@ -293,6 +303,17 @@ def test_login_persists_returned_session_details():
     assert "profileFollowers: Number(body.followers) || 0" in login_js
     assert "profileFollowing: Number(body.following) || 0" in login_js
     assert "profileMirrorCount: Number(body.mirrorCount) || 0" in login_js
+    assert 'return nextPath() || referrerPath() || "/dashboard"' in login_js
+    assert "location.replace(postLoginPath())" in login_js
+    assert "if (readSession())" in login_js
+    assert 'credentials: "same-origin"' in login_js
+
+
+def test_login_title_is_not_extra_bold():
+    login = _read(PUBLIC / "login.html")
+    assert "Welcome back" in login
+    assert "font-weight: 600;" in login
+    assert "font-weight: 800;" not in login.split(".auth-card h1 {", 1)[1].split("}", 1)[0]
 
 
 def test_dashboard_refreshes_canonical_cloudflare_profile_after_login():

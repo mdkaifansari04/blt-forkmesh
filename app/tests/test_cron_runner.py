@@ -18,9 +18,12 @@ WRANGLER_TEXT = WRANGLER.read_text(encoding="utf-8")
 
 
 class _Storage:
-    def __init__(self):
+    def __init__(self, *, fail_set_alarm_times=0):
         self.data = {}
         self.alarm_at = None
+        self.fail_set_alarm_times = int(fail_set_alarm_times)
+        self.set_alarm_calls = 0
+        self.delete_alarm_calls = 0
 
     async def get(self, key):
         return self.data.get(key)
@@ -28,7 +31,16 @@ class _Storage:
     async def put(self, key, value):
         self.data[key] = value
 
+    async def deleteAlarm(self):
+        self.delete_alarm_calls += 1
+        self.alarm_at = None
+
     async def setAlarm(self, timestamp):
+        self.set_alarm_calls += 1
+        if self.fail_set_alarm_times > 0:
+            self.fail_set_alarm_times -= 1
+            raise RuntimeError(
+                "Error: internal error; reference = local-dev-alarm-blip")
         self.alarm_at = int(timestamp)
 
 
@@ -37,6 +49,12 @@ def _load_runner(run_jobs):
         "CRON_RUNNER_INTERVAL_MS",
         "CRON_RUNNER_KICK_DELAY_MS",
         "CRON_RUNNER_ALARM_OFFSET_MS",
+        "_ALARM_TRANSIENT_MARKERS",
+    }
+    wanted_helpers = {
+        "_is_transient_alarm_error",
+        "_durable_set_alarm",
+        "_safe_error_text",
     }
     selected = []
     for node in ast.parse(ENTRY_TEXT, filename=str(ENTRY)).body:
@@ -46,6 +64,9 @@ def _load_runner(run_jobs):
                 if isinstance(target, ast.Name)
             }
             if names & wanted_constants:
+                selected.append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in wanted_helpers:
                 selected.append(node)
         elif isinstance(node, ast.ClassDef) and node.name in (
                 "_CronJobEntrypoint", "ForkMeshCronRunner"):
@@ -175,6 +196,48 @@ def test_runner_keeps_successor_alarm_when_a_batch_fails():
     assert any(
         "batch failed" in message
         for _status, _method, _path, message in ns["sentry_events"])
+
+
+def test_runner_alarm_survives_local_setalarm_internal_error():
+    """wrangler/workerd local blips must not escape alarm() (retry storm)."""
+    observed = []
+
+    async def run_jobs(_receiver):
+        observed.append("ran")
+
+    ns = _load_runner(run_jobs)
+    # First setAlarm fails (active-alarm local SQLite blip); deleteAlarm +
+    # retry succeeds so the successor is still armed and work still runs.
+    storage = _Storage(fail_set_alarm_times=1)
+    runner = ns["ForkMeshCronRunner"](
+        SimpleNamespace(storage=storage), object())
+
+    asyncio.run(runner.alarm())
+    assert observed == ["ran"]
+    assert storage.delete_alarm_calls == 1
+    assert storage.set_alarm_calls == 2
+    minute = ns["Date"].value // ns["CRON_RUNNER_INTERVAL_MS"]
+    assert storage.alarm_at == (
+        (minute + 1) * ns["CRON_RUNNER_INTERVAL_MS"]
+        + ns["CRON_RUNNER_ALARM_OFFSET_MS"])
+
+
+def test_runner_alarm_swallows_persistent_setalarm_platform_blip():
+    observed = []
+
+    async def run_jobs(_receiver):
+        observed.append("ran")
+
+    ns = _load_runner(run_jobs)
+    storage = _Storage(fail_set_alarm_times=99)
+    runner = ns["ForkMeshCronRunner"](
+        SimpleNamespace(storage=storage), object())
+
+    # Must return cleanly — raising would make workerd retry the alarm.
+    asyncio.run(runner.alarm())
+    assert observed == ["ran"]
+    assert storage.alarm_at is None
+    assert "internal error" in storage.data["last_alarm_arm_failure"]
 
 
 def test_mid_minute_trigger_kick_reconciles_without_losing_next_slot():

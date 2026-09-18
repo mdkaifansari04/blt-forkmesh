@@ -1,17 +1,14 @@
-"""Blog share drafts, aggregate reach, and shared World entry contracts."""
+"""Blog share drafts, aggregate reach, and BLT shared-header contracts."""
 
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT.parent / "www" / "public"
-WORLD_PUBLIC = ROOT.parent / "world" / "public" / "world"
 ENTRY = (ROOT / "src/entry.py").read_text(encoding="utf-8")
 SCHEMA = (ROOT / "src/schema.py").read_text(encoding="utf-8")
 SOCIAL = (PUBLIC / "blog-social.js").read_text(encoding="utf-8")
 HEADER = (PUBLIC / "site-header.js").read_text(encoding="utf-8")
-WORLD = (WORLD_PUBLIC / "world.js").read_text(encoding="utf-8")
-WORLD_CSS = (WORLD_PUBLIC / "world.css").read_text(encoding="utf-8")
 
 
 def test_every_blog_social_mount_builds_bounded_prefilled_drafts():
@@ -56,24 +53,10 @@ def test_blog_reach_is_aggregate_only_and_referrers_are_host_only():
     assert "if (board.length)" in SOCIAL
 
 
-def test_shared_header_has_prominent_world_link_and_live_member_count():
+def test_shared_header_is_blt_focused_without_world_chrome():
     assert 'class="fm-header-app"' in HEADER
-    assert 'href="https://app.forkmesh.com/"' in HEADER
-    assert 'class="fm-header-world"' in HEADER
-    assert 'href="https://world.forkmesh.com/"' in HEADER
-    assert "fm-header-world-count" in HEADER
-    assert "activity.userCount" in HEADER
-
-
-def test_world_logo_refreshes_and_live_scene_stays_visible_behind_loader():
-    assert "data-world-logo-refresh" in WORLD
-    assert "location.reload()" in WORLD
-    assert "data-world-loading-progress" in WORLD
-    assert "setLoadingProgress(100" in WORLD
-    assert "backdrop-filter: blur(9px)" in WORLD_CSS
-    assert "world-loader-dash" in WORLD_CSS
-    loading_rule = WORLD_CSS.split(".world-loading-curtain {", 1)[1].split(
-        "}", 1
-    )[0]
-    assert "inset: 0" not in loading_rule
-    assert "width: min(360px" in loading_rule
+    assert 'href="/dashboard"' in HEADER
+    assert "fm-header-brand-text" in HEADER
+    assert 'class="fm-header-world"' not in HEADER
+    assert 'href="https://world.forkmesh.com/"' not in HEADER
+    assert 'href="https://app.forkmesh.com/"' not in HEADER

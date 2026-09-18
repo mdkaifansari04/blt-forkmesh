@@ -95,8 +95,8 @@ def test_website_has_a_searchable_filterable_leaderboard_hub():
         assert f'data-category="{category}"' in PAGE
     assert 'fetch("/api/leaderboards"' in CLIENT
     assert "formatValue(board, row)" in CLIENT
-    assert "/leaderboards" in WRANGLER["assets"]["run_worker_first"]
-    assert '"/leaderboards.html"' in STATIC_ROUTES
+    assert "/leaderboards" not in WRANGLER["assets"]["run_worker_first"]
+    assert '"/leaderboards.html"' not in STATIC_ROUTES
     assert not (PUBLIC / "_redirects").exists()
 
 

@@ -2182,6 +2182,24 @@ async def handle(runtime, path):
         return _response(runtime, {"error": "invalid_session"}, status=401)
     org_bi, organization = await runtime.organization()
     if not org_bi or not organization:
+        # Local/dev and freshly branded deployments may not have the office
+        # org seeded yet. Degrade GET collection to an empty catalog instead
+        # of failing the dashboard tasks page with a hard 503.
+        if method == "GET" and route[0] == "collection":
+            return _response(runtime, {
+                "ok": True,
+                "authorized": True,
+                "privacyBoundary": "organization-private-encrypted-at-rest",
+                "actor": actor,
+                "canManage": False,
+                "serverNow": int(runtime.now()),
+                "tasks": [],
+                "marketingMembers": [],
+                "attendanceDays": [],
+                "proofs": [],
+                "initiatives": [],
+                "degraded": True,
+            })
         return _response(
             runtime, {"error": "office_organization_unavailable"}, status=503)
     role, permission = await runtime.membership(org_bi, actor)

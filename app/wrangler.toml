@@ -2,18 +2,23 @@ name = "forkmesh-relay"
 main = "src_build/entry.py"
 compatibility_flags = [ "python_workers" ]
 compatibility_date = "2026-08-03"
+workers_dev = true
+preview_urls = true
 
-[limits]
-cpu_ms = 30_000
+# [limits] cpu_ms requires a paid Workers plan. Free accounts reject deploy with
+# code 100328 if this block is present.
 
 [build]
-command = "python3 tools/build_dashboard_assets.py && python3 tools/build_worker_footprint.py && python3 tools/build_worker_python.py && python3 tools/build_site_assets.py app"
+command = "python3 tools/build_blt_home_css.py && python3 tools/build_dashboard_assets.py && python3 tools/build_worker_footprint.py && python3 tools/build_worker_python.py && python3 tools/build_site_assets.py app"
 
 
 [assets]
 directory = "./dist"
 binding = "ASSETS"
-html_handling = "auto-trailing-slash"
+# Dashboard clean URLs are no-trailing-slash (/dashboard/profile). The previous
+# auto-trailing-slash setting 307'd those to /dashboard/profile/, then the
+# Worker 308'd back — an infinite loop that made Profile unreachable.
+html_handling = "drop-trailing-slash"
 not_found_handling = "404-page"
 run_worker_first = [
   "/",
@@ -21,13 +26,13 @@ run_worker_first = [
   "/api/*",
   "/developers",
   "/health",
-  "/chat",
+  "/favicon.ico",
   "/forgot-password",
-  "/leaderboards",
   "/login",
-  "/mirror-payouts",
-  "/network",
-  "/referrals",
+  # Public organization pages (bare org URL). Each org that gets a landing
+  # page needs its own literal entry here - a /* wildcard would drag every
+  # static asset through the Worker.
+  "/owasp-blt",
   "/reset-password",
   "/signup",
   "/status",
@@ -46,58 +51,42 @@ run_worker_first = [
   "/blog/*",
   "/docs",
   "/docs/*",
-  "/world",
-  "/world/*",
-  "/about",
-  "/careers",
-  "/changelog",
-  "/desktop",
-  "/features",
-  "/homev2",
-  "/new-home",
-  "/outreach",
-  "/press",
-  "/pricing",
   "/privacy",
-  "/security-report",
   "/terms",
   "/*.html",
   "/dashboard",
   "/dashboard/*",
-  "!/dashboard/repos",
-  "!/dashboard/network",
-  "!/dashboard/chat",
-  "!/dashboard/tasks",
-  "!/dashboard/notes",
-  "!/dashboard/settings",
-  "!/dashboard/profile",
-  "!/dashboard/profile/repositories",
+  # Keep fragment/static dashboard machinery on the ASSETS binding. Page HTML
+  # stays Worker-owned via /dashboard/* so a wedged direct-asset response
+  # cannot blank notes/tasks/repos while /dashboard still works.
   "!/dashboard/partials/*",
   "!/dashboard/js/*",
   "!/dashboard/tailwind.css",
+  "/notes",
   "/notes/*",
   "/*/*",
   "!/assets/*",
   "!/favicon/*",
+  # Landing document must stay on the ASSETS binding. Worker-first `/*.html`
+  # would hairpin ASSETS.fetch(/blt-home.html) back into the Worker as 404 →
+  # the `/` handler would then return 503 "unavailable".
+  "!/blt-home.html",
+  "!/blt-home.css",
 ]
 
-[[routes]]
-pattern = "app.forkmesh.com"
-custom_domain = true
-
-[[routes]]
-pattern = "api.forkmesh.com"
-custom_domain = true
+# BLT relay is served only on workers.dev until a custom hostname is ready.
+# Do not attach unresolved custom domains here — APP/WWW_ORIGIN redirects would
+# bounce browsers off this host to a DNS black hole.
 
 [vars]
 NODE_NAME = "forkmesh-mainnode"
-PUBLIC_BASE_URL = "https://forkmesh.com"
-API_ORIGIN = "https://app.forkmesh.com"
-APP_ORIGIN = "https://app.forkmesh.com"
-WWW_ORIGIN = "https://www.forkmesh.com"
-WORLD_ORIGIN = "https://world.forkmesh.com"
-CORS_ALLOWED_ORIGINS = "https://forkmesh.com,https://www.forkmesh.com,https://app.forkmesh.com,https://api.forkmesh.com,https://world.forkmesh.com"
-DISCORD_OAUTH_REDIRECT_URI = "https://app.forkmesh.com/api/integrations/discord/callback"
+PUBLIC_BASE_URL = "https://forkmesh-relay.owaspblt.workers.dev"
+API_ORIGIN = "https://forkmesh-relay.owaspblt.workers.dev"
+APP_ORIGIN = "https://forkmesh-relay.owaspblt.workers.dev"
+WWW_ORIGIN = "https://forkmesh-relay.owaspblt.workers.dev"
+WORLD_ORIGIN = "https://forkmesh-relay.owaspblt.workers.dev"
+CORS_ALLOWED_ORIGINS = "https://forkmesh-relay.owaspblt.workers.dev"
+DISCORD_OAUTH_REDIRECT_URI = "https://forkmesh-relay.owaspblt.workers.dev/api/integrations/discord/callback"
 NODE_SOLANA_ADDRESS = ""
 COMMUNITY_REWARD_NETWORK = "mainnet-beta"
 COMMUNITY_REWARD_RPC_URL = "https://api.mainnet-beta.solana.com"
@@ -108,16 +97,15 @@ REWARD_MIN_UPTIME_MS = "1800000"
 REWARD_MIN_CONTRIBUTION_UNITS = "0"
 REWARD_HEALTH_FRESH_MS = "600000"
 FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
-USERNAME_MODERATION_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
 WORKER_ROLE = "app"
-SINGLE_WORKER_SITE = "false"
+SINGLE_WORKER_SITE = "true"
 
 [ai]
 binding = "AI"
 
 [[kv_namespaces]]
 binding = "REPOSITORY_METADATA"
-id = "ee8854d698c14e93a9950ec0f3e6538f"
+id = "d2f81b0d92674c6591d68477ef13ab3a"
 
 [[durable_objects.bindings]]
 name = "FORKMESH_MAINNODE_ROOM"
@@ -154,7 +142,7 @@ class_name = "ForkMeshDiscordGate"
 [[d1_databases]]
 binding = "DB"
 database_name = "forkmesh"
-database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
+database_id = "bf90dd5d-338a-421f-9867-5252d2193c2d"
 migrations_dir = "migrations"
 
 [[env.dev.d1_databases]]

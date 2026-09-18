@@ -17,8 +17,8 @@
         --accent-strong: #1f6feb;
         --accent-fg: #ffffff;
         --accent-dim: rgba(56, 139, 253, 0.15);
-        --primary: #2ea043;
-        --primary-strong: #238636;
+        --primary: #ef4444;
+        --primary-strong: #dc2626;
         --primary-fg: #ffffff;
         --link: #58a6ff;
         --focus: #58a6ff;
@@ -43,8 +43,8 @@
         --accent-strong: #0550ae;
         --accent-fg: #ffffff;
         --accent-dim: rgba(9, 105, 218, 0.1);
-        --primary: #1a7f37;
-        --primary-strong: #1f883d;
+        --primary: #dc2626;
+        --primary-strong: #b91c1c;
         --primary-fg: #ffffff;
         --link: #0969da;
         --focus: #0969da;
@@ -72,7 +72,7 @@
         max-width: none;
       }
 
-      html:not(.dark) .chat-shell { background: #f6f8fb; }
+      html:not(.dark) .chat-shell { background: #ffffff; }
 
       .chat-workbench {
         flex: 1;
@@ -138,11 +138,11 @@
 
       html:not(.dark) .chat-site-header {
         border-bottom-color: #d0d7de;
-        background: #f6f8fb;
+        background: #ffffff;
       }
 
       html.dark .chat-site-header .forkmesh-simple-header { --fm-header-bg: #03060a; }
-      html.light .chat-site-header .forkmesh-simple-header { --fm-header-bg: #f6f8fb; }
+      html.light .chat-site-header .forkmesh-simple-header { --fm-header-bg: #ffffff; }
 
       /* ── left pane: rooms ── */
       .chat-rooms-pane {

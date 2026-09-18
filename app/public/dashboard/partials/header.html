@@ -10,12 +10,12 @@
           <i data-lucide="menu" class="h-4 w-4"></i>
         </button>
 
-        <a data-dashboard-logo class="brand flex items-center gap-2 shrink-0" href="/dashboard" aria-label="Refresh ForkMesh Dashboard">
-          <img class="brand-mark h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+        <a data-dashboard-logo class="brand flex items-center gap-2 shrink-0" href="/dashboard" aria-label="Refresh BLT Dashboard">
+          <img class="brand-mark h-8 w-8 object-contain" src="/assets/blt-logo.png" alt="" aria-hidden="true" />
           <span
             data-app-version
             class="hidden rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground"
-            title="ForkMesh version"
+            title="BLT version"
           ></span>
         </a>
 
@@ -62,24 +62,6 @@
         </div>
 
         <div class="flex items-center gap-1.5">
-          <a
-            href="https://world.forkmesh.com/"
-            class="hidden h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
-            title="Open ForkMesh World"
-            aria-label="Open ForkMesh World"
-          >
-            <i data-lucide="globe-2" class="h-4 w-4"></i>
-          </a>
-
-          <a
-            href="/mirror-payouts"
-            class="hidden h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
-            title="Mirror reward settings"
-            aria-label="Mirror reward settings"
-          >
-            <img src="/assets/sol.png" alt="" aria-hidden="true" class="h-4 w-4 shrink-0 rounded-full object-contain" />
-          </a>
-
           <div class="relative">
             <button
               id="notificationToggle"
@@ -134,13 +116,8 @@
                 </button>
               </div>
               <div class="grid gap-3 p-4 text-xs leading-5 text-muted-foreground">
-                <p>The browser deliberately has no owner private key, so the relay and its administrators cannot read agent sessions or turn a browser form into a plaintext prompt channel.</p>
-                <p>Start, inspect, and steer agents from the ForkMesh desktop app on the owner device.</p>
-                <a href="/desktop" class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 font-semibold text-primary-foreground hover:bg-primary/90">
-                  <i data-lucide="monitor-down" class="h-4 w-4"></i>
-                  Open desktop downloads
-                </a>
-                <p class="text-[11px]">Agent privacy boundary: agent-recipient private keys stay on your device and are never sent to the ForkMesh relay.</p>
+                <p>Browser sessions do not hold owner private keys. Agent prompts and transcripts stay encrypted to keys held on the owner device.</p>
+                <p class="text-[11px]">Use your owner device to start and steer agents. Private keys are never sent to the BLT relay.</p>
               </div>
             </div>
           </div>

@@ -92,12 +92,15 @@ def test_mirror_request_notification_kind_is_registered():
 
 
 def test_create_requires_owner_session_and_public_repo():
-    # Only the repo owner (proven by the session, not a body field) may ask,
-    # and only for a public, existing repo.
+    # The asker must speak for the repo - proven by the session, never a body
+    # field: its owner, an account whose fleet holds that node, or an
+    # owner/admin of an org the repo is linked under. Public repos only.
     handler = ENTRY_TEXT.split("async def mirror_requests_handler", 1)[1]
     handler = handler.split("async def subscribe_handler", 1)[0]
     assert "_authed_account_name(env, request, data)" in handler
-    assert "if owner != actor:" in handler
+    assert "if (owner != actor" in handler
+    assert "_account_owns_node(env, actor, owner)" in handler
+    assert "_org_repo_mirror_allowed(" in handler
     assert "_repo_is_private(env, owner, repo)" in handler
     assert 'enqueue_notification(\n            env, target, "mirror_request"' in handler
     assert "add_mirror_request(" in handler
@@ -159,3 +162,120 @@ if __name__ == "__main__":
     ):
         test()
         print("PASS", test.__name__)
+
+
+# --- Organization mirror rights ---------------------------------------------
+
+import ast  # noqa: E402
+import asyncio  # noqa: E402
+
+
+def _load_entry(*names, extra_globals=None):
+    # entry.py alone; ENTRY_TEXT above concatenates schema.py for the
+    # source-contract assertions and is not independently parseable.
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in names
+    ]
+    found = {n.name for n in selected}
+    assert not set(names) - found, "missing: %s" % sorted(set(names) - found)
+    module = ast.fix_missing_locations(
+        ast.Module(body=selected, type_ignores=[]))
+    ns = dict(extra_globals or {})
+    exec(compile(module, str(ENTRY), "exec"), ns)
+    return ns
+
+
+def _run_coro(coro):
+    return asyncio.new_event_loop().run_until_complete(coro)
+
+
+def _mirror_allowed_ns(linked_orgs, roles):
+    async def noop(*args, **kwargs):
+        return None
+
+    async def d1_all(env, sql, *params):
+        assert "FROM org_repos" in sql
+        return [{"org_bi": org} for org in linked_orgs]
+
+    async def org_role(env, org_bi, actor):
+        return roles.get((org_bi, actor), "")
+
+    return _load_entry(
+        "_org_repo_mirror_allowed",
+        extra_globals={
+            "ensure_schema": noop,
+            "d1_all": d1_all,
+            "_org_role": org_role,
+        },
+    )["_org_repo_mirror_allowed"]
+
+
+def test_org_admins_may_mirror_org_linked_repos_they_do_not_own():
+    # An org owner/admin acts for repos the org fronts, even though the repo
+    # lives in another account's node namespace.
+    allowed = _mirror_allowed_ns(
+        ["org-a"], {("org-a", "admin-user"): "admin"})
+    assert _run_coro(allowed(None, "admin-user", "kaif-blt-04", "blt")) is True
+
+    owner_ok = _mirror_allowed_ns(
+        ["org-a"], {("org-a", "boss"): "owner"})
+    assert _run_coro(owner_ok(None, "boss", "kaif-blt-04", "blt")) is True
+
+
+def test_plain_members_and_outsiders_may_not_act_for_the_org():
+    member = _mirror_allowed_ns(["org-a"], {("org-a", "alice"): "member"})
+    assert _run_coro(member(None, "alice", "kaif-blt-04", "blt")) is False
+
+    outsider = _mirror_allowed_ns(["org-a"], {})
+    assert _run_coro(outsider(None, "mallory", "kaif-blt-04", "blt")) is False
+
+    unlinked = _mirror_allowed_ns([], {("org-a", "boss"): "owner"})
+    assert _run_coro(unlinked(None, "boss", "kaif-blt-04", "blt")) is False
+
+
+def test_org_mirror_authorization_fails_closed_and_rejects_blanks():
+    async def boom(env, sql, *params):
+        raise RuntimeError("d1 down")
+
+    async def noop(*args, **kwargs):
+        return None
+
+    ns = _load_entry(
+        "_org_repo_mirror_allowed",
+        extra_globals={
+            "ensure_schema": noop,
+            "d1_all": boom,
+            "_org_role": noop,
+        },
+    )["_org_repo_mirror_allowed"]
+    assert _run_coro(ns(None, "boss", "kaif-blt-04", "blt")) is False
+    assert _run_coro(ns(None, "", "kaif-blt-04", "blt")) is False
+    assert _run_coro(ns(None, "boss", "", "blt")) is False
+    assert _run_coro(ns(None, "boss", "kaif-blt-04", "")) is False
+
+
+def test_member_self_serve_mirror_targets_the_canonical_node_namespace():
+    # A member mirroring an org repo must park an entry whose `owner` is the
+    # hosting NODE, never the org alias: the desktop clones /<owner>/<repo>
+    # and catalog publishes verify against that account's key.
+    handler = ENTRY_TEXT.split("async def mirror_requests_handler", 1)[1]
+    handler = handler.split("async def subscribe_handler", 1)[0]
+    mirror_branch = handler.split('action == "mirror"', 1)[1]
+    assert "_org_repo_node_strict(" in mirror_branch
+    assert "_org_repo_node(" not in mirror_branch.split(
+        "_org_repo_node_strict(")[0]
+    assert "MAX_MIRROR_REQUESTS" in mirror_branch
+
+
+def test_dashboard_wires_the_org_member_mirror_optin():
+    # Members get a one-click opt-in on an org-aliased repo URL; it posts the
+    # mirror action with the org from the path and the member's own node.
+    js = assembled_dashboard_js()
+    assert "data-org-mirror-optin-send" in js
+    assert "orgAliasFromPath(" in js
+    assert 'action: "mirror"' in js
+    # Hidden for the repo's own owner and for signed-out visitors.
+    assert "!isRepoOwner(repo)" in js

@@ -106,13 +106,12 @@ def test_routing_config_covers_every_page():
     assert "/dashboard/*" in run_worker_first
     for route, asset in static_routes.DASHBOARD_PAGE_ASSETS.items():
         assert (PUBLIC / asset).is_file(), asset
-        if route == "/dashboard":
-            continue
-        # Non-home pages are served directly by App Static Assets. Cloudflare's
-        # auto-trailing-slash HTML handling maps each clean route to index.html;
-        # the marketing Worker's redirect file must not own App routes.
-        assert ("!" + route) in run_worker_first, route
+        # Dashboard HTML is Worker-owned via /dashboard/* so a wedged direct
+        # ASSETS response cannot blank notes/tasks while /dashboard still works.
+        assert ("!" + route) not in run_worker_first, route
+        assert ("!" + route + "/") not in run_worker_first, route
         assert not any(line.startswith(route + " ") for line in REDIRECT_LINES), route
+    assert WRANGLER["assets"]["html_handling"] == "drop-trailing-slash"
     # Direct .html hits 404 — clean URLs are canonical.
     for asset in static_routes.DASHBOARD_PAGE_ASSETS.values():
         assert ("/" + asset) in static_routes.BLOCKED_STATIC_HTML_PATHS, asset

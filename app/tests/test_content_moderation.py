@@ -24,7 +24,6 @@ def _entry_namespace(*names):
     wanted = set(names) | {
         "BLOCKED_TERM_HASHES",
         "BLOCKED_TERM_LENGTHS",
-        "USERNAME_MODERATION_AI_DEFAULT_MODEL",
     }
     tree = ast.parse(ENTRY_TEXT)
     selected = []
@@ -62,38 +61,23 @@ def test_username_digest_filter_catches_exact_and_obfuscated_forms():
     assert not blocked("helpful-builder")
 
 
-def test_username_workers_ai_classifier_uses_structured_native_binding():
-    namespace = _entry_namespace("_username_ai_blocked")
-    calls = []
-    logs = []
+def test_username_moderation_hard_gate_is_deterministic_only():
+    """Signup must not hard-block on a flaky Workers AI classifier."""
+    namespace = _entry_namespace(
+        "_moderation_forms",
+        "username_has_blocked_term",
+        "username_moderation_error",
+    )
+    first = _decoded("6675636b")
 
-    class AI:
-        async def run(self, model, payload):
-            calls.append((model, payload))
-            return {"response": {"allowed": False}}
-
-    class Env:
-        USERNAME_MODERATION_AI_MODEL = "test-model"
-
-    env = Env()
-    env.AI = AI()
-
-    namespace.update({
-        "clean_string": lambda value, limit: str(value or "")[:limit],
-        "js_nullish": lambda _value: False,
-        "to_js": lambda value: value,
-        "_safe_error_text": str,
-        "log_error": lambda *args: logs.append(args),
-    })
-    result = asyncio.run(namespace["_username_ai_blocked"](env, "safe-shape"))
-
-    assert result is True
-    assert len(calls) == 1
-    model, payload = calls[0]
-    assert model == "test-model"
-    assert payload["response_format"]["type"] == "json_schema"
-    assert payload["response_format"]["json_schema"]["required"] == ["allowed"]
-    assert logs == []
+    assert asyncio.run(
+        namespace["username_moderation_error"](object(), first)
+    ) == "inappropriate_node_name"
+    assert asyncio.run(
+        namespace["username_moderation_error"](object(), "helpful-builder")
+    ) == ""
+    assert "_username_ai_blocked" not in ENTRY_TEXT
+    assert "USERNAME_MODERATION_AI_MODEL" not in ENTRY_TEXT
 
 
 def test_every_account_name_write_path_runs_moderation():

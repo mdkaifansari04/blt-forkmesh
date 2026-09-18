@@ -69,10 +69,7 @@ def test_www_redirects_only_rewrite_www_owned_pages():
         "/dashboard",
         "/login",
         "/signup",
-        "/chat",
-        "/network",
         "/status",
-        "/world",
     ):
         assert app_route not in rewrites
 
@@ -96,9 +93,6 @@ def test_source_html_is_physically_partitioned():
     assert (APP_PUBLIC / "login.html").is_file()
     assert not (WWW_PUBLIC / "dashboard/index.html").exists()
     assert not (WWW_PUBLIC / "login.html").exists()
-
-    assert (WORLD_PUBLIC / "world/index.html").is_file()
-    assert not (WWW_PUBLIC / "world").exists()
     assert not (APP_PUBLIC / "world").exists()
 
 
@@ -131,22 +125,27 @@ def test_app_dynamic_routes_run_before_static_assets():
     for worker_owned in (
         "/blog/*",
         "/docs/*",
-        "/world/*",
         "/dashboard/*",
+        "/notes",
         "/notes/*",
     ):
         assert worker_owned in run_worker_first
+    for removed in ("/world/*", "/desktop", "/chat", "/network"):
+        assert removed not in run_worker_first
     for asset_page in (
         "/dashboard/repos",
-        "/dashboard/network",
-        "/dashboard/chat",
         "/dashboard/tasks",
         "/dashboard/notes",
         "/dashboard/settings",
         "/dashboard/profile",
         "/dashboard/profile/repositories",
     ):
-        assert "!" + asset_page in run_worker_first
+        # Page HTML is Worker-owned; only js/partials/css stay on ASSETS.
+        assert "!" + asset_page not in run_worker_first
+        assert "!" + asset_page + "/" not in run_worker_first
+    assert "!/dashboard/js/*" in run_worker_first
+    assert "!/dashboard/partials/*" in run_worker_first
+    assert APP_WRANGLER["assets"]["html_handling"] == "drop-trailing-slash"
 
 
 def test_repo_shortcut_detection_does_not_hijack_assets():
