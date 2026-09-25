@@ -6,36 +6,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT.parent
 APP_PUBLIC = ROOT / "public"
-PUBLIC = PROJECT / "www" / "public"
 
 
 def _public_corpus():
     paths = [PROJECT / "README.md"]
-    for public in (APP_PUBLIC, PUBLIC):
-        paths.extend(public.rglob("*.html"))
-        paths.extend(public.rglob("*.js"))
+    paths.extend(APP_PUBLIC.rglob("*.html"))
+    paths.extend(APP_PUBLIC.rglob("*.js"))
     return "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in paths
     )
-
-
-def test_protocol_states_actual_shared_key_derivation_and_retention():
-    protocol = (
-        PUBLIC / "docs" / "protocol" / "index.html"
-    ).read_text(encoding="utf-8")
-    normalized = " ".join(protocol.split())
-    for claim in (
-        'SHA-256(DATA_KEY + ":room-chat-passphrase-v1")',
-        'SHA-256(DATA_KEY + ":room-chat-passphrase-v2:" + lower(owner + "/" + repo))',
-        "authorized for that repository",
-        "PBKDF2-HMAC-SHA256",
-        "210,000 rounds",
-        "7 days",
-        "500 frames",
-        "relay operator can derive the default room key",
-    ):
-        assert claim in normalized
 
 
 def test_public_room_copy_does_not_claim_blind_or_end_to_end_default_rooms():
@@ -52,7 +32,6 @@ def test_public_room_copy_does_not_claim_blind_or_end_to_end_default_rooms():
     )
     for claim in forbidden:
         assert claim not in corpus
-    assert "relay-readable authenticated shared-key" in corpus
     assert "500 persisted frames" in corpus
 
 
@@ -71,17 +50,6 @@ def test_public_durability_and_private_metadata_claims_are_bounded():
     )
     for claim in forbidden:
         assert claim not in corpus
-    assert "code beyond a single host" in corpus
-    assert "protect the code that matters from a single-host failure" in corpus
-    assert "stores that metadata encrypted" in corpus
-    assert "chat is a separate relay-readable encrypted service with bounded message retention" in corpus
-    assert "private repository names reach the worker on authenticated control-plane requests" in corpus
-    assert "private repository content and new private-agent payloads use separate client-side owner-sealed boundaries" in corpus
-    assert "signed by default" in corpus
-    assert "eligible, healthy, integrity-matching mirror" in corpus
-    assert "their owner and explicitly authorized collaborators" in corpus
-    assert "bounded signed catalog metadata" in corpus
-    assert "opaque replica locator" in corpus
 
 
 def test_provider_import_token_copy_discloses_worker_transit():
@@ -110,11 +78,6 @@ def test_marketing_copy_matches_guest_registration_and_bounded_availability():
         "zero-custody relay",
     ):
         assert stale_claim not in corpus
-    guest_post = (
-        PUBLIC / "blog" / "anonymous-accounts" / "index.html"
-    ).read_text(encoding="utf-8").lower()
-    assert "enter the forkmesh world immediately as a guest" in guest_post
-    assert "email, password, and email verification" in guest_post
     readme = (PROJECT / "README.md").read_text(encoding="utf-8").lower()
     normalized_readme = " ".join(readme.split())
     assert "public mirror eligibility requires a fresh account-bound signature" in normalized_readme
@@ -124,12 +87,9 @@ def test_marketing_copy_matches_guest_registration_and_bounded_availability():
 
 def test_retired_bounty_and_flutter_mirror_advertising_stays_removed():
     readme = (PROJECT / "README.md").read_text(encoding="utf-8").lower()
-    changelog = (PUBLIC / "changelog.html").read_text(encoding="utf-8").lower()
     assert "fund any issue with one click" not in readme
     assert "pays out to the contributor when their pr is merged" not in readme
     assert "on-chain bounties" not in readme
     assert "mirror on your phone" not in readme
-    assert "mirror on your phone" not in changelog
     assert "a flutter mobile client" in " ".join(readme.split())
-    assert "access client; git mirroring remains a desktop/headless-node job" in changelog
     assert "legacy worker-custodied bounty deposits and automatic payouts are frozen" in readme

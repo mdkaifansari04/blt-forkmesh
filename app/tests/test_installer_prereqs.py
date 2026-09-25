@@ -7,7 +7,7 @@ import shutil
 import subprocess
 
 
-INSTALLER = Path(__file__).resolve().parents[2] / "www" / "public" / "install.sh"
+INSTALLER = Path(__file__).resolve().parents[2] / "app" / "public" / "install.sh"
 
 # The hard-coded prefix list inside have_qt6_cmake_package. Tests swap it for a
 # fixture root so a Qt 6 install on the machine running the suite cannot mask a

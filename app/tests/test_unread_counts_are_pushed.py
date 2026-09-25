@@ -10,8 +10,7 @@ opens, and after that the relay says so: notify_account_event fans a
 payload-free {"type":"event","topic"} frame to the account's ForkMeshNodes
 Durable Object the moment the write that moved a count lands.
 
-These checks pin that contract on all three surfaces. See
-docs/operations/polling-elimination.md.
+These checks pin that contract on all three surfaces.
 """
 
 import ast
@@ -37,8 +36,6 @@ QT_SETUP = (REPO / "desktop" / "src" / "MainWindowSetup.cpp").read_text(
 QT_CHAT = (REPO / "desktop" / "src" / "MainWindowChat.cpp").read_text(
     encoding="utf-8")
 QT_INTERNAL = (REPO / "desktop" / "src" / "MainWindowInternal.h").read_text(
-    encoding="utf-8")
-DOC = (REPO / "www" / "docs" / "operations" / "polling-elimination.md").read_text(
     encoding="utf-8")
 
 
@@ -309,7 +306,7 @@ def test_shared_channel_module_revalidates_with_the_world_module_graph():
     # its own rule it would fall to the default and could be served stale
     # against a freshly deployed world.js — the same trap /chat-moderation.js
     # already has a rule for.
-    headers = (REPO / "www" / "public" / "_headers").read_text(encoding="utf-8")
+    headers = (ROOT / "public" / "_headers").read_text(encoding="utf-8")
     rule = headers[headers.index("/account-events.js"):]
     rule = rule[:rule.index("\n\n")]
     assert "Cache-Control: no-store" in rule
@@ -365,28 +362,6 @@ def test_world_stops_polling_personal_pings():
     assert "const WORLD_NOTIFICATION_DIGEST_MAX_AGE_MS = 2000;" in WORLD
     # Signing in or out elsewhere re-opens the channel under the new identity.
     assert "this.startNotificationChannel();" in WORLD
-
-
-def test_the_polling_inventory_records_all_four():
-    # The four pollers by their old names, so a reader can find what went away.
-    for eliminated in (
-        "refreshWebAlerts",
-        "startNotificationPolling",
-        "refreshDirectMessages",
-        "markChatActivitySeen",
-    ):
-        assert eliminated in DOC
-    # And the mechanism that replaced them.
-    for replacement in (
-        "notify_account_event",
-        "account-events.js",
-        "/api/accounts/event-ticket",
-        "noteSeenChatActivity",
-    ):
-        assert replacement in DOC
-    # And the survivors are still named as survivors, not quietly dropped.
-    assert "m_chatDirectoryTimer" in DOC
-    assert "USERS_DIRECTORY_REFRESH_MS" in DOC
 
 
 def test_no_surface_reads_a_count_it_was_not_pushed():

@@ -390,9 +390,6 @@ def test_schema_migration_routes_and_browser_surfaces_are_wired():
         "/api/integrations/polar/checkout/extra")
 
     entry = (SRC / "entry.py").read_text()
-    pricing = (ROOT.parent / "www" / "public" / "pricing.html").read_text()
     dashboard = (ROOT / "public" / "dashboard" / "js" / "04-account.js").read_text()
     assert "polar_integration_handler" in entry
-    assert 'data-polar-checkout="supporter"' in pricing
-    assert 'data-polar-checkout="pro"' in pricing
     assert "/api/integrations/polar/" in dashboard

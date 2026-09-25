@@ -16,7 +16,6 @@ ENTRY = WORKER_ROOT / "src" / "entry.py"
 SOLANA = WORKER_ROOT / "src" / "solana.py"
 SCHEMA = WORKER_ROOT / "src" / "schema.py"
 TOOL_PATH = ROOT / "tools" / "legacy_solana_custody.py"
-DOC = ROOT / "www" / "docs" / "operations" / "legacy-solana-custody-migration.md"
 
 SPEC = importlib.util.spec_from_file_location("legacy_solana_custody", TOOL_PATH)
 custody = importlib.util.module_from_spec(SPEC)
@@ -322,12 +321,9 @@ def test_schema_and_runbook_keep_legacy_fields_explicitly_compatibility_only():
     migration = (
         WORKER_ROOT / "migrations" / "0049_legacy_custody_audit.sql"
     ).read_text(encoding="utf-8")
-    docs = DOC.read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS legacy_custody_migration_audit" in schema
     assert "CREATE TABLE IF NOT EXISTS legacy_custody_migration_audit" in migration
     assert "never stores a key" in migration
-    assert "The tool intentionally has no “sweep” command." in docs
-    assert custody.SCRUB_CONFIRMATION in docs
 
 
 def test_every_historical_wallet_shape_scrubs_idempotently_to_public_evidence(

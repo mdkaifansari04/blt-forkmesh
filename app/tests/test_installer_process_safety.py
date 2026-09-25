@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 
 
-INSTALLER = Path(__file__).resolve().parents[2] / "www" / "public" / "install.sh"
+INSTALLER = Path(__file__).resolve().parents[2] / "app" / "public" / "install.sh"
 
 
 def _function(name):

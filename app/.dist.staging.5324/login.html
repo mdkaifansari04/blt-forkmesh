@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en" class="light">
+  <head>
+    <meta charset="utf-8" />
+    <script src="/api-client.js?v=583e3a3d9d7b"></script>
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Log in · BLT</title>
+    <meta name="description" content="Log in to OWASP BLT to manage programs, issues, and collaboration." />
+    <meta name="application-name" content="BLT" />
+    <meta name="apple-mobile-web-app-title" content="BLT" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <script src="/login.js?v=e39bf8a46891" defer></script>
+    <style>
+      :root {
+        color-scheme: light;
+        --blt-red: #dc2626;
+        --blt-red-hover: #b91c1c;
+        --blt-ink: #111827;
+        --blt-muted: #6b7280;
+        --blt-line: #e5e7eb;
+        --blt-panel: #ffffff;
+        --blt-soft: #f9fafb;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        color: var(--blt-ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top, rgba(220, 38, 38, 0.08), transparent 28rem),
+          #f9fafb;
+      }
+
+      .dot-field {
+        pointer-events: none;
+        position: fixed;
+        inset: 5rem 0 auto;
+        z-index: 0;
+        height: 28rem;
+        margin: 0 auto;
+        width: min(90rem, 100%);
+        opacity: 0.55;
+        background-image: radial-gradient(rgba(17, 24, 39, 0.14) 1px, transparent 1px);
+        background-size: 18px 18px;
+        mask-image: radial-gradient(circle at center, black 0, transparent 74%);
+      }
+
+      .site-header {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+        background: rgba(255, 255, 255, 0.9);
+        backdrop-filter: blur(18px);
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.5rem;
+        max-width: 80rem;
+        margin: 0 auto;
+        padding: 1rem 1.5rem;
+      }
+
+      .topbar-brand {
+        display: inline-flex;
+        align-items: center;
+        text-decoration: none;
+      }
+
+      .topbar-brand img {
+        display: block;
+        height: 1.75rem;
+        width: auto;
+        max-width: min(11.5rem, 46vw);
+        object-fit: contain;
+      }
+
+      @media (min-width: 768px) {
+        .topbar-brand img { height: 2rem; }
+      }
+
+      .topbar-nav {
+        display: none;
+        align-items: center;
+        gap: 1.75rem;
+      }
+
+      .topbar-nav a {
+        text-decoration: none;
+        font-size: 0.875rem;
+        line-height: 1;
+        color: #6b7280;
+        transition: color 150ms ease;
+      }
+
+      .topbar-nav a:hover { color: #111827; }
+
+      .topbar-links {
+        display: none;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .topbar-links .ghost {
+        text-decoration: none;
+        border-radius: 0.375rem;
+        padding: 0.5rem 0.75rem;
+        font-size: 0.875rem;
+        color: #4b5563;
+        transition: background-color 150ms ease, color 150ms ease;
+      }
+
+      .topbar-links .ghost:hover {
+        background: #f3f4f6;
+        color: #111827;
+      }
+
+      .topbar-links .cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none;
+        border-radius: 0.375rem;
+        border: 0;
+        border-bottom: 1.5px solid #b91c1c;
+        background: linear-gradient(to bottom, #ef4444, #dc2626);
+        color: #fff;
+        font-size: 0.875rem;
+        font-weight: 500;
+        padding: 0.5rem 1rem;
+        box-shadow: 0 10px 24px -18px rgba(220, 38, 38, 0.8);
+        transition: transform 200ms ease;
+      }
+
+      .topbar-links .cta:hover {
+        transform: translateY(-1px);
+        color: #fff;
+      }
+
+      @media (min-width: 768px) {
+        .topbar-nav,
+        .topbar-links { display: flex; }
+      }
+
+      .auth-shell {
+        position: relative;
+        z-index: 1;
+        min-height: calc(100vh - 4.5rem);
+        display: grid;
+        place-items: center;
+        padding: 1.5rem 1rem 3rem;
+      }
+
+      .auth-card {
+        width: min(100%, 420px);
+        border: 1px solid rgba(17, 24, 39, 0.1);
+        border-radius: 1rem;
+        background: var(--blt-panel);
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.8) inset,
+          0 24px 60px -40px rgba(15, 23, 42, 0.45);
+        padding: 2rem 1.6rem 1.6rem;
+      }
+
+      .auth-card h1 {
+        font-size: 1.45rem;
+        font-weight: 600;
+        line-height: 1.2;
+        letter-spacing: -0.025em;
+        text-align: center;
+        margin: 0 0 0.45rem;
+        color: var(--blt-ink);
+      }
+
+      .auth-sub {
+        color: var(--blt-muted);
+        text-align: center;
+        margin: 0 0 1.4rem;
+        font-size: 0.92rem;
+        line-height: 1.5;
+      }
+
+      .field { margin: 0 0 0.85rem; }
+      .field label {
+        display: block;
+        font-weight: 650;
+        font-size: 0.78rem;
+        margin-bottom: 0.4rem;
+        color: #374151;
+      }
+
+      .field input,
+      .auth-input-sm {
+        width: 100%;
+        height: 2.5rem;
+        padding: 0 0.8rem;
+        border-radius: 0.55rem;
+        border: 1px solid var(--blt-line);
+        background: var(--blt-soft);
+        color: var(--blt-ink);
+        font: inherit;
+        font-size: 0.92rem;
+        transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
+      }
+
+      .field input:focus,
+      .auth-input-sm:focus {
+        outline: 0;
+        background: #fff;
+        border-color: #f87171;
+        box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.14);
+      }
+
+      .auth-button-primary,
+      .btn-primary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 2.6rem;
+        border-radius: 0.55rem;
+        border: 0;
+        border-bottom: 1.5px solid #b91c1c;
+        background: linear-gradient(to bottom, #ef4444, #dc2626);
+        color: #ffffff;
+        font-size: 0.95rem;
+        font-weight: 700;
+        cursor: pointer;
+        box-shadow: 0 10px 24px -14px rgba(220, 38, 38, 0.8);
+        transition: transform 150ms ease, filter 150ms ease;
+      }
+
+      .auth-button-primary:hover { filter: brightness(1.03); }
+      .auth-button-primary:active { transform: translateY(1px); }
+      .auth-button-primary:focus-visible {
+        outline: 0;
+        box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2);
+      }
+      .auth-button-primary:disabled {
+        filter: grayscale(0.2);
+        opacity: 0.65;
+        cursor: not-allowed;
+      }
+
+      .hint {
+        font-size: 0.8rem;
+        color: var(--blt-muted);
+        margin: 0.4rem 0 1rem;
+        min-height: 1.15rem;
+      }
+      .hint.bad { color: #dc2626; }
+      .hint.good { color: #047857; }
+
+      .row-links {
+        text-align: center;
+        margin-top: 1rem;
+        color: #9ca3af;
+        font-size: 0.875rem;
+      }
+      .row-links a {
+        color: var(--blt-red);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .row-links a:hover { text-decoration: underline; }
+
+      .demo-credentials {
+        display: none;
+        margin: 0 0 0.9rem;
+        padding: 0.8rem 0.9rem;
+        border: 1px solid #fecaca;
+        border-radius: 0.7rem;
+        background: #fef2f2;
+        color: #7f1d1d;
+        font-size: 0.8rem;
+        line-height: 1.5;
+      }
+      .demo-credentials strong,
+      .demo-credentials code { color: #991b1b; }
+      .demo-credentials button {
+        margin-top: 0.55rem;
+        width: 100%;
+        height: 2rem;
+        border: 1px solid #fecaca;
+        border-radius: 0.5rem;
+        background: #fff;
+        color: #991b1b;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 700;
+      }
+
+      #totp-field { display: none; }
+
+    </style>
+  </head>
+  <body>
+    <div class="dot-field" aria-hidden="true"></div>
+    <header class="site-header" id="site-header">
+      <div class="topbar">
+        <a class="topbar-brand" href="/" aria-label="BLT home">
+          <img src="/assets/blt-full-logo.svg" alt="BLT" />
+        </a>
+        <nav class="topbar-nav" aria-label="Primary navigation">
+          <a href="/">Home</a>
+          <a href="/dashboard">Dashboard</a>
+          <a href="/dashboard/repos">Repositories</a>
+        </nav>
+        <div class="topbar-links">
+          <a class="ghost" href="/login" aria-current="page">Log in</a>
+          <a class="cta" href="/signup">Get started</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="auth-shell">
+      <section class="auth-card" aria-labelledby="login-title">
+        <h1 id="login-title">Welcome back</h1>
+        <p class="auth-sub">Sign in to manage programs, issues, and reports.</p>
+        <div class="field">
+          <label for="email">Email</label>
+          <input class="auth-input-sm" id="email" type="email" autocomplete="email" inputmode="email" placeholder="you@example.com" />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input class="auth-input-sm" id="password" type="password" autocomplete="current-password" placeholder="Your password" />
+        </div>
+        <div class="field" id="totp-field">
+          <label for="totp">Authenticator code</label>
+          <input class="auth-input-sm" id="totp" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" />
+        </div>
+        <div class="demo-credentials" id="demo-credentials">
+          <strong>Local demo login</strong><br />
+          Email: <code>demo@forkmesh.local</code><br />
+          Password: <code>forkmesh-demo</code>
+          <button type="button" id="demo-fill-btn">Use demo credentials</button>
+        </div>
+        <div class="hint" id="login-hint"></div>
+        <button class="auth-button-primary btn-primary" id="login-btn">Log in</button>
+        <p class="row-links"><a href="/forgot-password">Forgot your password?</a></p>
+        <p class="row-links">New to BLT? <a href="/signup">Create an account</a></p>
+      </section>
+    </main>
+  </body>
+</html>

@@ -6,12 +6,11 @@ from pathlib import Path
 
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-WWW_PUBLIC = PUBLIC.parents[1] / "www" / "public"
 NETWORK_PAGES = (
     PUBLIC / "network.html",
 )
-STYLES = (WWW_PUBLIC / "styles.css").read_text(encoding="utf-8")
-STATIC_PAGE = (WWW_PUBLIC / "static-page.js").read_text(encoding="utf-8")
+STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
+STATIC_PAGE = (PUBLIC / "static-page.js").read_text(encoding="utf-8")
 
 
 def _read(page: Path) -> str:

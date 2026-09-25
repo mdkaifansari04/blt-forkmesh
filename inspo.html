@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BLT-API Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            'slate-950': '#09090b',
+            'slate-900': '#18181b',
+            'slate-800': '#27272a',
+            'slate-700': '#3f3f46',
+            'slate-600': '#52525b',
+            'slate-400': '#a1a1aa',
+            'slate-200': '#e4e4e7',
+            'slate-100': '#f4f4f5',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .fade-enter { opacity: 0; }
+    .fade-enter-active { opacity: 1; transition: opacity 200ms; }
+    .sidebar-nav { max-height: 800px; overflow-y: auto; }
+    .endpoint-code { font-family: 'Monaco', 'Menlo', monospace; font-size: 12px; }
+    .dark .bg-white { background-color: #1e293b; }
+    .dark .text-gray-900 { color: #f1f5f9; }
+    .dark .border-gray-200 { border-color: #334155; }
+    .tab-active::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px; background: #3b82f6; }
+  </style>
+</head>
+<body class="bg-white dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors">
+  <div class="flex h-screen overflow-hidden">
+    <!-- Sidebar -->
+    <aside class="w-64 bg-gray-50 dark:bg-slate-900 border-r border-gray-200 dark:border-slate-800 overflow-hidden flex flex-col">
+      <!-- Header -->
+      <div class="p-4 border-b border-gray-200 dark:border-slate-800">
+        <h1 class="text-xl font-bold text-red-600 dark:text-red-500">BLT-API</h1>
+        <p class="text-xs text-gray-600 dark:text-slate-400 mt-1">Interactive API Explorer</p>
+      </div>
+
+      <!-- Search -->
+      <div class="p-4 border-b border-gray-200 dark:border-slate-800">
+        <input type="text" id="searchInput" placeholder="Search endpoints..." 
+          class="w-full px-3 py-2 text-sm rounded border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-red-600 dark:focus:ring-red-500">
+      </div>
+
+      <!-- Navigation -->
+      <nav class="flex-1 sidebar-nav">
+        <div id="navContainer"></div>
+      </nav>
+
+      <!-- Footer -->
+      <div class="p-4 border-t border-gray-200 dark:border-slate-800 text-xs text-gray-600 dark:text-slate-400">
+        <p>v1.0.0</p>
+        <p class="mt-2">© 2024 BLT Corp</p>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="flex-1 flex flex-col overflow-hidden">
+      <!-- Top Bar -->
+      <header class="bg-white dark:bg-slate-900 border-b border-gray-200 dark:border-slate-800 px-8 py-4 flex items-center justify-between">
+        <h2 id="pageTitle" class="text-2xl font-bold">Welcome</h2>
+        <div class="flex items-center gap-4">
+          <input type="password" id="apiKeyInput" placeholder="Enter API Key" 
+            class="px-3 py-2 text-sm rounded border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-red-600 dark:focus:ring-red-500">
+          <button id="darkModeToggle" class="p-2 rounded hover:bg-gray-100 dark:hover:bg-slate-700">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Content Area -->
+      <main class="flex-1 overflow-hidden flex gap-6 p-8">
+        <!-- Endpoint Details / Overview -->
+        <div class="flex-1 overflow-y-auto">
+          <div id="contentPanel">
+            <div class="max-w-4xl">
+              <h3 class="text-3xl font-bold mb-4">API Documentation</h3>
+              <p class="text-gray-600 dark:text-slate-400 mb-6">Welcome to BLT-API. Select an endpoint from the sidebar to view details and test it in the console.</p>
+              <div class="bg-gray-50 dark:bg-slate-900 rounded-lg p-6 space-y-4">
+                <div>
+                  <h4 class="font-semibold mb-2">Getting Started</h4>
+                  <ul class="text-sm space-y-2 text-gray-600 dark:text-slate-400">
+                    <li>• Select an endpoint from the left sidebar</li>
+                    <li>• Enter your API key in the top-right field</li>
+                    <li>• View request/response formats in the console</li>
+                    <li>• Click "Send" to execute live requests</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Console / Try It -->
+        <div class="w-96 bg-gray-50 dark:bg-slate-900 rounded-lg border border-gray-200 dark:border-slate-800 p-6 flex flex-col overflow-hidden">
+          <h3 class="text-lg font-bold mb-4">Try It</h3>
+          
+          <!-- Request Builder -->
+          <div class="space-y-4 flex-1 overflow-y-auto">
+            <div>
+              <label class="text-xs font-semibold text-gray-700 dark:text-slate-300">Method</label>
+              <select id="methodSelect" class="w-full mt-1 px-3 py-2 text-sm rounded border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-red-600 dark:focus:ring-red-500">
+                <option>GET</option>
+                <option>POST</option>
+                <option>PATCH</option>
+                <option>DELETE</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="text-xs font-semibold text-gray-700 dark:text-slate-300">Endpoint</label>
+              <input type="text" id="endpointInput" placeholder="/v2/bugs" 
+                class="w-full mt-1 px-3 py-2 text-sm rounded border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 dark:text-slate-100 endpoint-code focus:outline-none focus:ring-2 focus:ring-red-600 dark:focus:ring-red-500">
+            </div>
+
+            <div>
+              <label class="text-xs font-semibold text-gray-700 dark:text-slate-300">Request Body (JSON)</label>
+              <textarea id="bodyInput" placeholder='{"title": "..."}'
+                class="w-full mt-1 px-3 py-2 text-sm rounded border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 dark:text-slate-100 endpoint-code font-mono focus:outline-none focus:ring-2 focus:ring-red-600 dark:focus:ring-red-500 h-20 resize-none"></textarea>
+            </div>
+
+            <button id="sendBtn" class="w-full bg-red-600 hover:bg-red-700 dark:hover:bg-red-700 text-white font-semibold py-2 rounded transition">
+              Send Request
+            </button>
+          </div>
+
+          <!-- Response Viewer -->
+          <div class="mt-6 border-t border-gray-200 dark:border-slate-800 pt-4">
+            <label class="text-xs font-semibold text-gray-700 dark:text-slate-300">Response</label>
+            <div id="responseContainer" class="mt-2 bg-white dark:bg-slate-950 rounded border border-gray-300 dark:border-slate-800 p-3 max-h-48 overflow-y-auto">
+              <p class="text-xs text-gray-500 dark:text-slate-400">Response will appear here</p>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    // Endpoint Catalog
+    const catalog = {
+      groups: [
+        {
+          name: "Bugs",
+          color: "bg-red-100 dark:bg-red-900",
+          colorText: "text-red-800 dark:text-red-100",
+          routes: [
+            { id: "bugs-list", method: "GET", path: "/v2/bugs", name: "List Bugs", desc: "Get all bugs, optionally filtered by severity or status" },
+            { id: "bugs-get", method: "GET", path: "/v2/bugs/{id}", name: "Get Bug", desc: "Retrieve a single bug by ID" },
+            { id: "bugs-create", method: "POST", path: "/v2/bugs", name: "Create Bug", desc: "Create a new bug report; requiresAuth=true; body: title (req), description (req), severity (opt), labels (opt), screenshots (opt)" },
+            { id: "bugs-update", method: "PATCH", path: "/v2/bugs/{id}", name: "Update Bug", desc: "Update an existing bug; requiresAuth=true; body: title (opt), description (opt), severity (opt), labels (opt)" },
+            { id: "bugs-delete", method: "DELETE", path: "/v2/bugs/{id}", name: "Delete Bug", desc: "Delete a bug report; requiresAuth=true; pathParams: id (required)" }
+          ]
+        },
+        {
+          name: "Domains",
+          color: "bg-blue-100 dark:bg-blue-900",
+          colorText: "text-blue-800 dark:text-blue-100",
+          routes: [
+            { id: "domains-list", method: "GET", path: "/v2/domains", name: "List Domains", desc: "Retrieve all registered domains" },
+            { id: "domains-get", method: "GET", path: "/v2/domains/{id}", name: "Get Domain", desc: "Get details for a specific domain" },
+            { id: "domains-issues", method: "GET", path: "/v2/domains/{id}/issues", name: "Domain Issues", desc: "Get issues associated with a domain" },
+            { id: "domains-create", method: "POST", path: "/v2/domains", name: "Create Domain", desc: "Register a new domain; requiresAuth=true" },
+            { id: "domains-update", method: "PATCH", path: "/v2/domains/{id}", name: "Update Domain", desc: "Update domain configuration; requiresAuth=true" },
+            { id: "domains-delete", method: "DELETE", path: "/v2/domains/{id}", name: "Delete Domain", desc: "Remove a domain; requiresAuth=true" }
+          ]
+        },
+        {
+          name: "Organizations",
+          color: "bg-green-100 dark:bg-green-900",
+          colorText: "text-green-800 dark:text-green-100",
+          routes: [
+            { id: "orgs-list", method: "GET", path: "/v2/organizations", name: "List Organizations", desc: "Get all organizations" },
+            { id: "orgs-get", method: "GET", path: "/v2/organizations/{id}", name: "Get Organization", desc: "Retrieve a specific organization" },
+            { id: "orgs-members", method: "GET", path: "/v2/organizations/{id}/members", name: "List Members", desc: "Get members of an organization" },
+            { id: "orgs-create", method: "POST", path: "/v2/organizations", name: "Create Organization", desc: "Create a new organization; requiresAuth=true" },
+            { id: "orgs-update", method: "PATCH", path: "/v2/organizations/{id}", name: "Update Organization", desc: "Update organization details; requiresAuth=true" },
+            { id: "orgs-delete", method: "DELETE", path: "/v2/organizations/{id}", name: "Delete Organization", desc: "Remove an organization; requiresAuth=true" }
+          ]
+        },
+        {
+          name: "Users",
+          color: "bg-purple-100 dark:bg-purple-900",
+          colorText: "text-purple-800 dark:text-purple-100",
+          routes: [
+            { id: "users-list", method: "GET", path: "/v2/users", name: "List Users", desc: "Retrieve all users; requiresApiKey=true" },
+            { id: "users-get", method: "GET", path: "/v2/users/{id}", name: "Get User", desc: "Get a specific user; requiresApiKey=true" },
+            { id: "users-create", method: "POST", path: "/v2/users", name: "Create User", desc: "Register a new user; requiresAuth=true" },
+            { id: "users-update", method: "PATCH", path: "/v2/users/{id}", name: "Update User", desc: "Update user profile; requiresAuth=true" }
+          ]
+        },
+        {
+          name: "Admin",
+          color: "bg-yellow-100 dark:bg-yellow-900",
+          colorText: "text-yellow-800 dark:text-yellow-100",
+          routes: [
+            { id: "admin-stats", method: "GET", path: "/v2/admin/stats", name: "System Stats", desc: "Get API usage statistics; requiresApiKey=true" },
+            { id: "admin-logs", method: "GET", path: "/v2/admin/logs", name: "Activity Logs", desc: "Access system activity logs; requiresApiKey=true" },
+            { id: "admin-config", method: "PATCH", path: "/v2/admin/config", name: "Update Config", desc: "Modify API configuration; requiresAuth=true, requiresApiKey=true" }
+          ]
+        }
+      ]
+    };
+
+    // Dark Mode
+    const darkModeToggle = document.getElementById('darkModeToggle');
+    darkModeToggle.addEventListener('click', () => {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('darkMode', document.documentElement.classList.contains('dark'));
+    });
+
+    if (localStorage.getItem('darkMode') === 'true') {
+      document.documentElement.classList.add('dark');
+    }
+
+    // Render Navigation
+    function renderNav() {
+      const navContainer = document.getElementById('navContainer');
+      const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+
+      navContainer.innerHTML = catalog.groups.map(group => {
+        const filteredRoutes = group.routes.filter(r => 
+          r.name.toLowerCase().includes(searchTerm) || 
+          r.path.toLowerCase().includes(searchTerm)
+        );
+
+        if (filteredRoutes.length === 0) return '';
+
+        return `
+          <details class="border-b border-gray-200 dark:border-slate-800 py-3 px-4 group" open>
+            <summary class="cursor-pointer font-semibold text-sm flex items-center gap-2">
+              <span class="w-3 h-3 ${group.color} rounded-full"></span>
+              ${group.name}
+              <span class="ml-auto text-xs text-gray-500 dark:text-slate-400">${filteredRoutes.length}</span>
+            </summary>
+            <div class="mt-3 space-y-2 ml-5">
+              ${filteredRoutes.map(route => `
+                <button onclick="selectEndpoint('${route.id}', '${route.method}', '${route.path}', '${route.name}')" 
+                  class="w-full text-left py-2 px-3 rounded hover:bg-gray-200 dark:hover:bg-slate-800 transition text-xs group"
+                  data-id="${route.id}">
+                  <span class="inline-block w-10 font-mono text-xs font-bold ${route.method === 'GET' ? 'text-blue-600' : route.method === 'POST' ? 'text-green-600' : route.method === 'PATCH' ? 'text-yellow-600' : 'text-red-600'}">${route.method}</span>
+                  <span class="font-mono text-xs">${route.path}</span>
+                </button>
+              `).join('')}
+            </div>
+          </details>
+        `;
+      }).join('');
+    }
+
+    // Search Filter
+    document.getElementById('searchInput').addEventListener('input', renderNav);
+
+    // Endpoint Selection
+    function selectEndpoint(id, method, path, name) {
+      document.getElementById('methodSelect').value = method;
+      document.getElementById('endpointInput').value = path;
+      document.getElementById('pageTitle').textContent = name;
+
+      const route = catalog.groups.flatMap(g => g.routes).find(r => r.id === id);
+      
+      const detailsHTML = `
+        <div class="max-w-4xl">
+          <div class="mb-6">
+            <div class="flex items-center gap-3 mb-4">
+              <span class="px-3 py-1 rounded text-xs font-bold text-white ${method === 'GET' ? 'bg-blue-600' : method === 'POST' ? 'bg-emerald-600' : method === 'PATCH' ? 'bg-orange-600' : 'bg-red-600'}">${method}</span>
+              <code class="text-lg endpoint-code font-bold">${path}</code>
+            </div>
+            <p class="text-gray-600 dark:text-slate-400 mb-4">${route.desc}</p>
+          </div>
+
+          <div class="space-y-6">
+            ${method !== 'GET' && method !== 'DELETE' ? `
+              <div class="bg-gray-50 dark:bg-slate-900 rounded-lg p-4">
+                <h4 class="font-semibold mb-3">Request Body</h4>
+                <div class="text-sm text-gray-600 dark:text-slate-400">
+                  <p class="mb-2"><strong>Example:</strong></p>
+                  <pre class="endpoint-code bg-white dark:bg-slate-950 p-3 rounded overflow-x-auto text-xs">${JSON.stringify({ title: "Example Title", description: "Example description" }, null, 2)}</pre>
+                </div>
+              </div>
+            ` : ''}
+
+            <div class="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4">
+              <h4 class="font-semibold text-red-900 dark:text-red-100 mb-2">Requirements</h4>
+              <ul class="text-sm text-red-800 dark:text-red-200 space-y-1">
+                ${route.desc.includes('requiresAuth') ? '<li>✓ Requires Authentication</li>' : ''}
+                ${route.desc.includes('requiresApiKey') ? '<li>✓ Requires API Key</li>' : ''}
+                ${route.path.includes('{') ? `<li>✓ Path Parameters: ${route.path.match(/\{[^}]+\}/g)?.join(', ')}</li>` : ''}
+              </ul>
+            </div>
+
+            <div class="bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-900 rounded-lg p-4">
+              <h4 class="font-semibold text-emerald-900 dark:text-emerald-100 mb-2">Sample Response</h4>
+              <pre class="endpoint-code bg-white dark:bg-slate-950 p-3 rounded overflow-x-auto text-xs">${JSON.stringify({ id: "abc123", status: "success", data: {} }, null, 2)}</pre>
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.getElementById('contentPanel').innerHTML = detailsHTML;
+    }
+
+    // Send Request
+    document.getElementById('sendBtn').addEventListener('click', () => {
+      const method = document.getElementById('methodSelect').value;
+      const endpoint = document.getElementById('endpointInput').value;
+      const body = document.getElementById('bodyInput').value;
+      const apiKey = document.getElementById('apiKeyInput').value;
+
+      const responseContainer = document.getElementById('responseContainer');
+      responseContainer.innerHTML = '<p class="text-xs text-gray-500 dark:text-slate-400">Sending...</p>';
+
+      // Simulate API call
+      setTimeout(() => {
+        const mockResponse = {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+          body: { success: true, data: { id: "demo-" + Date.now() }, message: "Request processed successfully" },
+          timestamp: new Date().toISOString()
+        };
+
+        responseContainer.innerHTML = `
+          <div class="space-y-2">
+            <div class="text-xs font-semibold text-green-600 dark:text-green-400">Status: ${mockResponse.status}</div>
+            <pre class="endpoint-code bg-white dark:bg-slate-950 p-2 rounded overflow-x-auto text-xs">${JSON.stringify(mockResponse, null, 2)}</pre>
+          </div>
+        `;
+      }, 500);
+    });
+
+    // Initialize
+    renderNav();
+  </script>
+</body>
+</html>

@@ -267,13 +267,13 @@ async def record_status_sample(env, source="runner"):
     reason = {}
 
     try:
-        website_ok, website_reason = await _homepage_status_probe(env)
+        website_ok, website_reason = await _dashboard_status_probe(env)
         ok["website"] = website_ok
         if not website_ok:
             reason["website"] = website_reason
     except Exception as exc:
         ok["website"] = False
-        reason["website"] = "Homepage probe failed: " + str(exc)[:160]
+        reason["website"] = "Dashboard probe failed: " + str(exc)[:160]
 
     try:
         status_page_ok, status_page_reason = await _status_page_api_probe(env)
@@ -652,16 +652,35 @@ async def status_history(env, view="full"):
     now = int(Date.now())
     cur_day = (now // 86400000) * 86400000
     start = cur_day - (STATUS_HISTORY_DAYS - 1) * 86400000
-    # Day cells, uptime and coverage all come from the hourly buckets (which
-    # sum to the same recorded counts the daily table holds, with per-hour
-    # granularity the 24h window needs); the daily table remains as the
-    # cron's cheap long-term aggregate.
+    # Only the last two calendar days are read at hourly granularity. Pulling
+    # all 30 days of hourly buckets meant ~4,400 D1 rows PER call, and with a
+    # 60s edge cache across colos this one query alone was reading ~4.3M rows
+    # a day - 87% of D1's free-plan daily row budget. Blowing that budget
+    # takes the whole site down, signup included (2026-09-18), because every
+    # D1 statement then fails. Older day cells only ever need their per-day
+    # totals, which system_status_daily already holds: the cron writes both
+    # tables from the same sample, so the daily row is the exact sum of that
+    # day's hourly rows, and the rendered detail (the `hours` array and the
+    # 24h uptime numbers) still comes from real hourly buckets.
+    hour_start = cur_day - 86400000
     hour_rows = await d1_all(
         env,
         "SELECT hour_ts, system, checks, failures, reason FROM system_status_hourly "
         "WHERE hour_ts >= ?",
-        start,
+        hour_start,
     )
+    day_rows = await d1_all(
+        env,
+        "SELECT day_ts, system, checks, failures FROM system_status_daily "
+        "WHERE day_ts >= ? AND day_ts < ?",
+        start, hour_start,
+    )
+    by_system_day = {}
+    for row in day_rows:
+        system_id = str(row.get("system") or "")
+        by_system_day.setdefault(system_id, {})[int(row["day_ts"])] = (
+            int(row.get("checks") or 0), int(row.get("failures") or 0),
+        )
     by_system_hour = {}
     for row in hour_rows:
         system_id = str(row.get("system") or "")
@@ -709,7 +728,8 @@ async def status_history(env, view="full"):
     # Start with recorded mirror history, then union current registered
     # mirror* names so a newly registered but broken node appears immediately
     # as down instead of disappearing until its first successful proof.
-    recorded_system_ids = set(by_system_hour) | set(by_system_minute)
+    recorded_system_ids = (
+        set(by_system_day) | set(by_system_hour) | set(by_system_minute))
     try:
         registered_mirrors = await d1_all(
             env,
@@ -774,6 +794,43 @@ async def status_history(env, view="full"):
             day_checks = day_failures = day_expected = 0
             hours = []
             elapsed_hours = 0
+            if this_day < hour_start:
+                # Older than the hourly read window: the day's totals come
+                # from the pre-aggregated daily row instead of 24 hourly ones.
+                # Every hour of a fully elapsed day expects a full 60 samples
+                # (_status_expected_checks_for_hour), and no hour can record
+                # more than that, so the per-hour sum this replaces is exactly
+                # 24 * 60 - clamped by the recorded count so coverage can
+                # never exceed 100%.
+                elapsed_hours = 24
+                day_checks, day_failures = (
+                    by_system_day.get(system_id, {}).get(this_day) or (0, 0))
+                day_failures = min(day_failures, day_checks)
+                day_expected = max(
+                    elapsed_hours * (STATUS_HOUR_MS // STATUS_SAMPLE_WINDOW_MS),
+                    day_checks)
+                total_expected += day_expected
+                total_checks += day_checks
+                total_failures += day_failures
+                days.append({
+                    "dayTs": this_day, "checks": day_checks,
+                    "failures": day_failures,
+                    "expectedChecks": day_expected,
+                    "missingChecks": max(0, day_expected - day_checks),
+                    "uptimePct": (
+                        round(((day_checks - day_failures) / day_checks) * 100,
+                              2)
+                        if day_checks else None
+                    ),
+                    "coveragePct": (
+                        round((min(day_checks, day_expected) / day_expected)
+                              * 100, 2)
+                        if day_expected else None
+                    ),
+                    "hours": [], "hoursElapsed": elapsed_hours,
+                    "hoursCompacted": True,
+                })
+                continue
             for h in range(24):
                 hour_ts = this_day + h * STATUS_HOUR_MS
                 if hour_ts > now:

@@ -17,7 +17,6 @@ MIGRATIONS = ROOT / "migrations"
 ENTRY = SRC / "entry.py"
 URLS = SRC / "urls.py"
 SCHEMA = SRC / "schema.py"
-DOC = ROOT.parent / "www" / "docs" / "operations" / "organization-succession.md"
 
 sys.path.insert(0, str(SRC))
 import organization_succession as policy  # noqa: E402
@@ -579,23 +578,3 @@ def test_status_is_member_only_no_store_and_exposes_bounded_history():
     assert len(status["data"]["history"]) <= policy.MAX_HISTORY
     outsider = runtime.request("platform-admin", "GET")
     assert outsider["status"] == 403
-
-
-def test_operations_document_states_exact_non_custodial_boundary():
-    text = DOC.read_text(encoding="utf-8").lower()
-    for phrase in (
-        "exactly two scoped changes",
-        "wallets, wallet addresses, funds",
-        "private keys",
-        "user accounts",
-        "agent credentials",
-        "devices, or device ownership",
-        "repository ownership",
-        "private-repository",
-        "platform-administrator authorization",
-        "append-only",
-        "30–730 days",
-        "7–90 days",
-        "2–20",
-    ):
-        assert phrase in text

@@ -499,12 +499,6 @@ def test_actions_status_operation_renders_only_fixed_adjacent_summary_path(
         "actions-status" in repository["operations"]
         for repository in rendered["repositories"]
     )
-    schema = json.loads(
-        (ROOT / "www" / "docs" / "headless-mirror-refresh.schema.json")
-        .read_text(encoding="utf-8"))
-    operations = schema["properties"]["operations"]
-    assert operations["maxItems"] == len(refresh_tool.PUBLIC_OPERATIONS)
-    assert "actions-status" in operations["items"]["enum"]
 
 
 def test_check_never_creates_a_missing_refresh_lock(installation):

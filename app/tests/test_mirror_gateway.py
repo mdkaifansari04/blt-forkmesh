@@ -1590,16 +1590,10 @@ def test_archive_materializer_rejects_plaintext_before_external_helper(tmp_path)
 
 def test_source_never_enables_push_or_default_request_logging():
     source = (ROOT / "tools" / "mirror_gateway.py").read_text(encoding="utf-8")
-    schema = json.loads(
-        (ROOT / "www" / "docs" / "mirror-gateway-config.schema.json").read_text(
-            encoding="utf-8"))
     assert "receive-pack" not in source
     assert "def log_message" in source
     assert "BaseHTTPRequestHandler logs client IP and raw path" in source
     assert "gateway must listen on loopback" in source
-    enabled = schema["$defs"]["publicRepository"]["allOf"][1]
-    assert "gitDir" in enabled["required"]
-    assert "encryptedArchive" not in json.dumps(enabled)
     assert "enabled public repository requires plaintext gitDir storage" in source
     assert "operator-envelope-v1" not in source
 

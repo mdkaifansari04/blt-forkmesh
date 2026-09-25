@@ -25,11 +25,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WWW_PUBLIC = ROOT.parent / "www" / "public"
 ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 CHAT = (ROOT / "public" / "chat.js").read_text(encoding="utf-8")
-HEADER_JS = (WWW_PUBLIC / "site-header.js").read_text(encoding="utf-8")
-HEADER_CSS = (WWW_PUBLIC / "site-header.css").read_text(encoding="utf-8")
+HEADER_JS = (ROOT / "public" / "site-header.js").read_text(encoding="utf-8")
+HEADER_CSS = (ROOT / "public" / "site-header.css").read_text(encoding="utf-8")
 DASHBOARD_CHAT = (ROOT / "public" / "dashboard-chat.js").read_text(
     encoding="utf-8")
 

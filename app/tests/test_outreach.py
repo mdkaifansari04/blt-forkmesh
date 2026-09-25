@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Contract tests for the founders-outreach email console (/outreach).
 
-Static AST/text checks over src/entry.py + the public page, in the same style
-as test_admin_page.py: no Workers JS runtime is required.
+Static AST/text checks over src/entry.py, in the same style as
+test_admin_page.py: no Workers JS runtime is required.
 """
 
 import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-WWW_PUBLIC = ROOT.parent / "www" / "public"
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 SCHEMA_TEXT = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
@@ -124,20 +123,3 @@ def test_outreach_templates_cover_sponsorship():
     assert "blank" in keys
     for template in ns["OUTREACH_TEMPLATES"]:
         assert set(template) == {"key", "label", "subject", "body"}
-
-
-def test_outreach_page_exists_and_is_routed():
-    html = (WWW_PUBLIC / "outreach.html").read_text(encoding="utf-8")
-    assert "/outreach.js" in html
-    assert 'id="or-compose"' in html
-    assert 'id="or-team"' in html
-    # Outreach tracker: a list of sent emails on the left, a status pipeline
-    # keyed by template type on the right.
-    assert 'id="or-log-list"' in html
-    assert 'id="or-pipeline"' in html
-    js = (WWW_PUBLIC / "outreach.js").read_text(encoding="utf-8")
-    assert "/api/outreach" in js
-    assert "forkmesh.session" in js
-    assert "renderPipeline" in js
-    redirects = (WWW_PUBLIC / "_redirects").read_text(encoding="utf-8")
-    assert "/outreach /outreach.html 200" in redirects

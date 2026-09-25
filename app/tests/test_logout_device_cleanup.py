@@ -7,7 +7,7 @@ from _dashboard_bundle import assembled_dashboard_js
 
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD = assembled_dashboard_js()
-HEADER = (ROOT.parent / "www/public/site-header.js").read_text(encoding="utf-8")
+HEADER = (ROOT / "public/site-header.js").read_text(encoding="utf-8")
 WORLD = (ROOT.parent / "world/public/world/world.js").read_text(encoding="utf-8")
 ENTRY = (ROOT / "src/entry.py").read_text(encoding="utf-8")
 

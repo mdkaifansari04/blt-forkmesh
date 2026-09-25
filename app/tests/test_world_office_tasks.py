@@ -90,6 +90,18 @@ class FakeRuntime:
             (ROOT / "migrations" /
              "0113_task_images_mailtrap_webhook.sql")
             .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0125_organization_task_replies.sql")
+            .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0126_organization_task_events.sql")
+            .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0127_organization_tasks_list_order.sql")
+            .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
         self.query_data = {}

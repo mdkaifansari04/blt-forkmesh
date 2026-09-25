@@ -326,18 +326,6 @@ def test_blog_feed_is_bounded_to_the_banner_post_limit():
     assert len(posts) == feeds.SOCIAL_POSTS_LIMIT
 
 
-def test_blog_feed_parses_the_shipped_blog_page():
-    blog_html = _source(ROOT.parent / "www" / "public" / "blog.html")
-    posts = feeds.normalize_blog_feed(blog_feed.build_feed(blog_html))
-    assert len(posts) == feeds.SOCIAL_POSTS_LIMIT
-    assert all(post["text"] and post["meta"] for post in posts)
-    assert all(post["url"].startswith("https://forkmesh.com/blog/")
-               for post in posts)
-    # Every shipped card has artwork, so every board card gets an image.
-    assert all(post["image"].startswith("https://forkmesh.com/assets/")
-               for post in posts)
-
-
 def test_scene_places_the_blog_banner_on_the_social_row():
     scene = _source(SCENE_PATH)
     assert "BLOG_BANNER_OPTIONS" in scene

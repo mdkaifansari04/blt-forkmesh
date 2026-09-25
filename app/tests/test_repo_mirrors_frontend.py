@@ -8,12 +8,11 @@ from _dashboard_shell import assembled_dashboard
 from _dashboard_bundle import assembled_dashboard_js
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-WWW_PUBLIC = PUBLIC.parents[1] / "www" / "public"
 # The dashboard shell is split into HTML partials and prebuilt before deploy;
 # assert against the assembled document a browser actually receives.
 DASHBOARD = assembled_dashboard()
 DASHBOARD_JS = assembled_dashboard_js()
-STYLES = (WWW_PUBLIC / "styles.css").read_text(encoding="utf-8")
+STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 
 
 def test_repo_tab_is_named_mirrors_and_has_table_shell():

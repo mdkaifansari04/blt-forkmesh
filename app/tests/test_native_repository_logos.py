@@ -331,3 +331,54 @@ def test_private_collaborator_can_suggest_but_cannot_replace_or_review():
         "ownerMayReview": True,
         "moderatorMayReview": True,
     }
+
+
+# --- logo cacheability (Worker CPU budget) ----------------------------------
+
+def _load_logo_cache_control():
+    """Load the cache-control helper straight out of repository_imports.py."""
+    module_source = (SRC / "repository_imports.py").read_text(encoding="utf-8")
+    tree = ast.parse(module_source)
+    wanted = {"_repository_logo_cache_control"}
+    nodes = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in wanted
+    ]
+    assert {node.name for node in nodes} == wanted
+    consts = [
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(getattr(target, "id", "") == "REPOSITORY_LOGO_CACHE_SECONDS"
+                for target in node.targets)
+    ]
+    assert len(consts) == 1
+    namespace = {}
+    module = ast.fix_missing_locations(
+        ast.Module(body=consts + nodes, type_ignores=[]))
+    exec(compile(module, "repository_imports.py", "exec"), namespace)
+    return namespace["_repository_logo_cache_control"]
+
+
+def test_public_repository_logos_are_browser_cacheable():
+    # Each repo card on a dashboard page fetches its own logo, and every
+    # dashboard page is a separate document, so "no-store" meant N fresh
+    # Worker invocations on every navigation. On Python Workers a cold isolate
+    # burns ~0.5-2s of CPU before the handler starts, which is what tripped
+    # "Worker exceeded CPU time limit" on /api/repo/<owner>/<repo>/logo.
+    cache_control = _load_logo_cache_control()
+    public = cache_control({"isPrivate": False})
+    assert "max-age=300" in public
+    # Never a shared cache: the payload can carry an owner-authorized
+    # committed logo URL.
+    assert public.startswith("private")
+    assert "public" not in public
+
+
+def test_private_repository_logos_are_never_cached():
+    cache_control = _load_logo_cache_control()
+    assert cache_control({"isPrivate": True}) == "no-store"
+    # Fail closed: an absent or malformed record is treated as private, the
+    # same way _native_repository_logo_record derives visibility.
+    assert cache_control({}) == "no-store"
+    assert cache_control(None) == "no-store"
+    assert cache_control("not-a-record") == "no-store"

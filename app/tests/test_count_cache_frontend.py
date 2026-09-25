@@ -11,8 +11,7 @@ from pathlib import Path
 
 
 APP_PUBLIC = Path(__file__).resolve().parents[1] / "public"
-WWW_PUBLIC = APP_PUBLIC.parents[1] / "www" / "public"
-STATIC = (WWW_PUBLIC / "static-page.js").read_text(encoding="utf-8")
+STATIC = (APP_PUBLIC / "static-page.js").read_text(encoding="utf-8")
 MIRROR_PAYOUTS = (APP_PUBLIC / "mirror-payouts.js").read_text(encoding="utf-8")
 
 

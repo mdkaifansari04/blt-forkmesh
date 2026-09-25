@@ -14,9 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = ROOT.parent
 SRC = ROOT / "src"
 APP_PUBLIC = REPOSITORY / "app" / "public"
-WWW_PUBLIC = REPOSITORY / "www" / "public"
 WORLD_PUBLIC = REPOSITORY / "world" / "public"
-PUBLIC_ROOTS = (APP_PUBLIC, WWW_PUBLIC, WORLD_PUBLIC)
+PUBLIC_ROOTS = (APP_PUBLIC, WORLD_PUBLIC)
 VENDORED = ROOT / "python_modules"
 OUTPUT = WORLD_PUBLIC / "world" / "worker-footprint.js"
 # Python Workers parse and execute global scope during deployment validation.
@@ -25,6 +24,7 @@ OUTPUT = WORLD_PUBLIC / "world" / "worker-footprint.js"
 # module only after the route which needs them runs.
 LAZY_MODULES = {
     "admin_console.py",
+    "admin_shell.py",
     "api_metrics.py",
     "activitypub.py",
     "activitypub_threads.py",
@@ -32,6 +32,7 @@ LAZY_MODULES = {
     "blog_feed.py",
     "forkbot.py",
     "fediverse_routes.py",
+    "calendar_api.py",
     "catalog.py",
     "chat_channels_api.py",
     "chat_direct_messages_api.py",

@@ -3,27 +3,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "public"
-HOME = (ROOT.parent / "www" / "public" / "index.html").read_text(encoding="utf-8")
 SCENE = (ROOT.parent / "world" / "public" / "world" / "world-scene.js").read_text(encoding="utf-8")
 ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
-
-
-def test_mobile_home_header_has_live_world_count_between_brand_and_menu():
-    brand = HOME.index('class="brand flex items-center space-x-2"')
-    live = HOME.index('class="mobile-world-join"')
-    menu = HOME.index('id="mobile-menu-toggle"')
-    assert brand < live < menu
-    assert 'data-home-world-count' in HOME
-    assert 'href="https://world.forkmesh.com/">Join World</a>' in HOME
-    assert HOME.count('href="https://app.forkmesh.com/"') >= 2
-    desktop_world = HOME.index(
-        'href="https://world.forkmesh.com/"',
-        HOME.index('class="absolute inset-0 m-auto hidden size-fit lg:block"'),
-    )
-    desktop_app = HOME.index('href="https://app.forkmesh.com/"', desktop_world)
-    assert desktop_world < desktop_app
-    assert 'fetch("/api/world/online"' in HOME
-    assert "@media (max-width: 1023px)" in HOME
 
 
 def test_live_world_count_comes_from_current_durable_object_sockets():

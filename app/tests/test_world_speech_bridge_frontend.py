@@ -23,9 +23,6 @@ QT_CHAT = (
 QT_SETTINGS = (
     ROOT.parent / "desktop" / "src" / "MainWindowSettings.cpp"
 ).read_text(encoding="utf-8")
-DOC = (
-    ROOT.parent / "www" / "docs" / "security" / "world-local-speech-bridge.md"
-).read_text(encoding="utf-8")
 
 
 def test_world_does_not_load_or_expose_local_speech_controls():
@@ -40,7 +37,6 @@ def test_qt_bridge_never_relays_microphone_audio():
     assert "none-local-capture-only" in QT_SOURCE
     assert '"audioRelayed"), false' in QT_SOURCE
     assert "/v1/audio" not in QT_SOURCE
-    assert "no audio upload or download endpoint" in DOC
 
 
 def test_capabilities_are_memory_only_and_revocable():
@@ -75,9 +71,6 @@ def test_qt_bridge_api_is_capture_implementation_agnostic_and_audited():
         "revokeAll",
     ):
         assert marker in QT_HEADER
-    normalized_doc = " ".join(DOC.split())
-    assert "transcript contents" in normalized_doc
-    assert "without capability values" in normalized_doc
 
 
 def test_qt_ui_wires_local_capture_status_and_never_puts_secret_in_world_url():

@@ -3833,9 +3833,9 @@ void MainWindow::startRepoHosts()
 // Durable Object. The relay pushes a payload-free {"type":"event","topic"}
 // frame the instant a web submission lands for any owned repo; the node
 // answers with its usual debounced signed GET /api/sync. This channel IS the
-// sync trigger — there is no fallback poll (the no-polling policy,
-// www/docs/operations/polling-elimination.md); dropped connections are covered by
-// the socket's own reconnect plus the catch-up sync in connectedChanged.
+// sync trigger — there is no fallback poll (the no-polling policy); dropped
+// connections are covered by the socket's own reconnect plus the catch-up sync
+// in connectedChanged.
 void MainWindow::startNodeEventSocket()
 {
     if (m_nodeOffline) {

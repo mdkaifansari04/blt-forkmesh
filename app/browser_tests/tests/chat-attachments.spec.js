@@ -3,14 +3,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const HEADER_RULES = fs.readFileSync(
-  path.resolve(__dirname, "..", "..", "..", "www", "public", "_headers"),
+  path.resolve(__dirname, "..", "..", "public", "_headers"),
   "utf8",
 );
 
 function headerValueForRule(rule, headerName) {
   const lines = HEADER_RULES.split(/\r?\n/);
   const start = lines.findIndex((line) => line.trim() === rule);
-  if (start < 0) throw new Error(`Missing ${rule} in www/public/_headers`);
+  if (start < 0) throw new Error(`Missing ${rule} in app/public/_headers`);
   const prefix = `${headerName.toLowerCase()}:`;
   for (let index = start + 1; index < lines.length; index += 1) {
     const line = lines[index];

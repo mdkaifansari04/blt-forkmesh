@@ -20,7 +20,6 @@ def test_public_workers_and_app_edge_control_have_disjoint_runtime_roles():
     edge = tomllib.loads(
         (APP_ROOT / "edge-control/wrangler.toml").read_text(encoding="utf-8")
     )
-    www = config("www")
     world = config("world")
 
     assert app["name"] == "forkmesh-relay"
@@ -68,7 +67,6 @@ def test_public_workers_and_app_edge_control_have_disjoint_runtime_roles():
         assert backend_only not in edge
 
     expected = {
-        "www": (www, "forkmesh-www", ["forkmesh.com", "www.forkmesh.com"]),
         "world": (world, "forkmesh-world", ["world.forkmesh.com"]),
     }
     for unit, (manifest, name, hosts) in expected.items():
@@ -88,9 +86,6 @@ def test_public_workers_and_app_edge_control_have_disjoint_runtime_roles():
         ):
             assert backend_only not in manifest, (unit, backend_only)
 
-    assert www["services"] == [
-        {"binding": "APP", "service": "forkmesh-relay"}
-    ]
     assert "services" not in world
 
 
@@ -102,10 +97,11 @@ def test_obsolete_api_unit_and_duplicate_manifests_are_gone():
 
 
 def test_source_assets_are_physically_owned_by_their_worker():
-    assert (REPOSITORY / "www/public/index.html").is_file()
-    assert (REPOSITORY / "www/public/blog/one-app-one-mesh/index.html").is_file()
-    assert (REPOSITORY / "www/public/docs/index.html").is_file()
-    assert (REPOSITORY / "www/docs/operations/worker-split.md").is_file()
+    # The marketing site is gone; the app owns the site chrome it serves.
+    assert not (REPOSITORY / "www").exists()
+    assert (REPOSITORY / "app/public/api-client.js").is_file()
+    assert (REPOSITORY / "app/public/site-header.js").is_file()
+    assert (REPOSITORY / "app/public/_headers").is_file()
     assert (REPOSITORY / "app/public/dashboard/repo.html").is_file()
     assert (REPOSITORY / "app/public/login.html").is_file()
     assert (REPOSITORY / "app/public/assets/file-icons/file_type_git.svg").is_file()
@@ -125,8 +121,8 @@ def test_staging_is_self_host_complete_without_shipping_official_blog():
         capture_output=True,
     )
     try:
-        source = (REPOSITORY / "www/public/api-client.js").read_bytes()
-        for unit in ("app", "www", "world"):
+        source = (REPOSITORY / "app/public/api-client.js").read_bytes()
+        for unit in ("app", "world"):
             assert (REPOSITORY / unit / "dist/api-client.js").read_bytes() == source
             assert (REPOSITORY / unit / "dist/auth-page-theme.css").is_file()
             assert (REPOSITORY / unit / "dist/mesh-page-theme.css").is_file()
@@ -138,7 +134,6 @@ def test_staging_is_self_host_complete_without_shipping_official_blog():
         }
         assert {
             "api-client.js",
-            "blog.html",
             "dashboard/index.html",
             "dashboard/repo.html",
             "index.html",
@@ -146,39 +141,39 @@ def test_staging_is_self_host_complete_without_shipping_official_blog():
             "uninstall.sh",
             "login.html",
             "signup.html",
-            "status.html",
         } <= app_files
+        assert "status.html" not in app_files
+        assert "blog.html" not in app_files
         assert not any(path.startswith("blog/") for path in app_files)
         assert not any(path.startswith("assets/blog/") for path in app_files)
         assert "docs/index.html" not in app_files
     finally:
         for path in (
             REPOSITORY / "app/dist",
-            REPOSITORY / "www/dist",
             REPOSITORY / "world/dist",
         ):
             shutil.rmtree(path, ignore_errors=True)
 
 
-def test_app_root_and_api_landing_support_official_and_self_host_modes():
+def test_app_root_opens_dashboard_and_api_landing_stays_worker_owned():
     entry = (APP_ROOT / "src/entry.py").read_text(encoding="utf-8")
     manifest = config("app")
 
     assert 'url.path in ("/api", "/api/", "/developers", "/developers/")' in entry
     assert "_api_metrics.landing_page_response" in entry
-    assert 'getattr(self.env, "SINGLE_WORKER_SITE", "")' in entry
-    assert "return await self._serve_homepage(url)" in entry
-    assert 'url, "dashboard/index.html")' in entry
+    # No landing page in any mode: `/` always redirects to the dashboard.
+    assert 'location = "/dashboard"' in entry
+    assert "_serve_homepage" not in entry
+    # Still set: CORS reads it to drop ForkMesh's canonical frontend origins.
     assert manifest["vars"]["SINGLE_WORKER_SITE"] == "true"
     assert "/api" in manifest["assets"]["run_worker_first"]
     assert "/api/*" in manifest["assets"]["run_worker_first"]
     for clean_page in (
         "/login",
         "/signup",
-        "/status",
     ):
         assert clean_page in manifest["assets"]["run_worker_first"]
-    for removed in ("/network", "/leaderboards", "/chat", "/referrals", "/mirror-payouts"):
+    for removed in ("/status", "/network", "/leaderboards", "/chat", "/referrals", "/mirror-payouts"):
         assert removed not in manifest["assets"]["run_worker_first"]
 
 
@@ -203,7 +198,7 @@ def test_world_shell_injects_configured_app_origin_before_api_client():
     shell = (REPOSITORY / "world/public/world/index.html").read_text(
         encoding="utf-8"
     )
-    client = (REPOSITORY / "www/public/api-client.js").read_text(encoding="utf-8")
+    client = (REPOSITORY / "app/public/api-client.js").read_text(encoding="utf-8")
 
     assert 'element.prepend(`<meta name="forkmesh-api-origin"' in worker
     assert "env.APP_ORIGIN" in worker
@@ -213,153 +208,26 @@ def test_world_shell_injects_configured_app_origin_before_api_client():
     assert 'path === "/api" || path.startsWith("/api/")' in worker
 
 
-def test_www_proxies_legacy_api_posts_and_websocket_upgrades_to_app():
-    harness = r'''
-import fs from "node:fs";
-import assert from "node:assert";
-const source = fs.readFileSync(process.argv[1], "utf8");
-const worker = (await import(
-  "data:text/javascript;base64," + Buffer.from(source).toString("base64")
-)).default;
-const captured = [];
-const env = {
-  APP_ORIGIN: "https://app.forkmesh.com",
-  WORLD_ORIGIN: "https://world.forkmesh.com",
-  APP: {
-    async fetch(request) {
-      captured.push(request);
-      return new Response("proxied", { status: 200 });
-    },
-  },
-};
-const webhook = new Request("https://forkmesh.com/api/webhooks/polar?event=1", {
-  method: "POST",
-  headers: { "content-type": "application/json", "x-signature": "signed" },
-  body: '{"ok":true}',
-});
-assert.equal((await worker.fetch(webhook, env)).status, 200);
-assert.equal(captured[0].url, "https://app.forkmesh.com/api/webhooks/polar?event=1");
-assert.equal(captured[0].method, "POST");
-assert.equal(captured[0].headers.get("x-signature"), "signed");
-assert.equal(await captured[0].text(), '{"ok":true}');
-const upgrade = new Request("https://forkmesh.com/api/world/ws", {
-  headers: { upgrade: "websocket", connection: "Upgrade" },
-});
-await worker.fetch(upgrade, env);
-assert.equal(captured[1].url, "https://app.forkmesh.com/api/world/ws");
-assert.equal(captured[1].headers.get("upgrade"), "websocket");
-const landing = await worker.fetch(new Request("https://forkmesh.com/api"), env);
-assert.equal(landing.status, 308);
-assert.equal(landing.headers.get("location"), "https://app.forkmesh.com/api");
-'''
-    completed = subprocess.run(
-        ["node", "--input-type=module", "-e", harness, str(REPOSITORY / "www/worker.js")],
-        cwd=REPOSITORY,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_www_feed_proxy_terminates_at_app_feed_handler_without_redirect_loop():
+def test_feed_routes_dispatch_before_the_marketing_redirect():
     entry = (APP_ROOT / "src/entry.py").read_text(encoding="utf-8")
     route_start = entry.index('if url.path in ("/api", "/api/"')
     feed_dispatch = entry.index("return await blog_rss_handler(self.env, request)", route_start)
     marketing_redirect = entry.index("external_owner = external_site_route", route_start)
     assert feed_dispatch < marketing_redirect
 
-    harness = r'''
-import fs from "node:fs";
-import assert from "node:assert";
-const source = fs.readFileSync(process.argv[1], "utf8");
-const worker = (await import(
-  "data:text/javascript;base64," + Buffer.from(source).toString("base64")
-)).default;
-const captured = [];
-const env = {
-  APP_ORIGIN: "https://app.forkmesh.com",
-  WORLD_ORIGIN: "https://world.forkmesh.com",
-  APP: {
-    async fetch(request) {
-      captured.push(request.url);
-      return new Response("<rss/>", {
-        status: 200,
-        headers: { "content-type": "application/rss+xml" },
-      });
-    },
-  },
-};
-for (const path of ["/blog/rss.xml", "/blog/feed.xml"]) {
-  const response = await worker.fetch(new Request("https://forkmesh.com" + path), env);
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("location"), null);
-  assert.equal(response.headers.get("content-type"), "application/rss+xml");
-}
-assert.deepEqual(captured, [
-  "https://app.forkmesh.com/blog/rss.xml",
-  "https://app.forkmesh.com/blog/feed.xml",
-]);
-'''
-    completed = subprocess.run(
-        ["node", "--input-type=module", "-e", harness, str(REPOSITORY / "www/worker.js")],
-        cwd=REPOSITORY,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
 
-
-def test_www_static_prefixes_are_never_treated_as_repository_routes():
-    harness = r'''
-import fs from "node:fs";
-import assert from "node:assert";
-const source = fs.readFileSync(process.argv[1], "utf8");
-const worker = (await import(
-  "data:text/javascript;base64," + Buffer.from(source).toString("base64")
-)).default;
-let appCalls = 0;
-const env = {
-  APP_ORIGIN: "https://app.forkmesh.com",
-  WORLD_ORIGIN: "https://world.forkmesh.com",
-  APP: { async fetch() { appCalls += 1; return new Response("app"); } },
-  ASSETS: { async fetch(request) { return new Response(new URL(request.url).pathname); } },
-};
-for (const path of [
-  "/assets/logo.png",
-  "/assets/blog/features/one-app-one-mesh.webp",
-  "/favicon/favicon.ico",
-  "/blog/one-app-one-mesh/",
-  "/docs/protocol/",
-]) {
-  const response = await worker.fetch(new Request("https://forkmesh.com" + path), env);
-  assert.equal(await response.text(), path);
-}
-assert.equal(appCalls, 0);
-'''
-    completed = subprocess.run(
-        ["node", "--input-type=module", "-e", harness, str(REPOSITORY / "www/worker.js")],
-        cwd=REPOSITORY,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_deploy_script_documents_safe_cutover_order():
+def test_deploy_script_documents_safe_deploy_order():
     deploy = (APP_ROOT / "deploy.sh").read_text(encoding="utf-8")
-    assert "FORKMESH_PRESERVE_LEGACY_HOSTS=1" in deploy
-    assert 'DEPLOY_VERIFY_URL="${DEPLOY_VERIFY_URL:-https://forkmesh.com}"' in deploy
-    first_app = deploy.index(
-        'FORKMESH_FORCE_DEPLOY=1 FORKMESH_PRESERVE_LEGACY_HOSTS=1 "$0" app'
+    # No www Worker means no forkmesh.com hand-off: the App never re-attaches
+    # the marketing hosts or stages a cutover bundle.
+    assert "FORKMESH_PRESERVE_LEGACY_HOSTS" not in deploy
+    assert "build_site_assets.py cutover" not in deploy
+    assert '"$0" www' not in deploy
+    changed = deploy[deploy.index("deploy_changed_workers() {"):]
+    changed = changed[:changed.index("\n}\n")]
+    assert changed.endswith(
+        '    "$0" app\n    "$0" world\n    retire_legacy_api_worker'
     )
-    world = deploy.index('"$0" world', first_app)
-    www = deploy.index('"$0" www', world)
-    final_app = deploy.index('FORKMESH_FORCE_DEPLOY=1 "$0" app', www)
-    retire = deploy.index("retire_legacy_api_worker", final_app)
-    assert first_app < world < www < final_app < retire
     assert "deploy_api_target" not in deploy
     assert "deploy_static_target app" not in deploy
     assert "verify_legacy_api_alias" in deploy

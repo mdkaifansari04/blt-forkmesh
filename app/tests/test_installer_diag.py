@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 
 
-INSTALLER = Path(__file__).resolve().parents[2] / "www" / "public" / "install.sh"
+INSTALLER = Path(__file__).resolve().parents[2] / "app" / "public" / "install.sh"
 
 
 def _diag_block():

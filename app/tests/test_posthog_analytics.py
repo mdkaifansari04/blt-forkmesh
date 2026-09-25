@@ -7,8 +7,7 @@ import re
 
 PROJECT = Path(__file__).resolve().parents[2]
 APP_PUBLIC = PROJECT / "app" / "public"
-WWW_PUBLIC = PROJECT / "www" / "public"
-PUBLIC_DIRS = (("app", APP_PUBLIC), ("www", WWW_PUBLIC))
+PUBLIC_DIRS = (("app", APP_PUBLIC),)
 ENTRY = PROJECT / "app" / "src" / "entry.py"
 ADMIN_CONSOLE = ENTRY.with_name("admin_console.py")
 
@@ -18,7 +17,7 @@ def _loads_posthog(html):
 
 
 def test_posthog_snippet_is_consent_gated_and_privacy_minimized():
-    js = (WWW_PUBLIC / "posthog.js").read_text(encoding="utf-8")
+    js = (APP_PUBLIC / "posthog.js").read_text(encoding="utf-8")
     assert "posthog.init(" in js
     assert 'storedConsent() === "granted"' in js
     assert 'if (storedConsent() === "granted" && !privacySignalEnabled()) start();' in js
@@ -38,16 +37,6 @@ def test_posthog_snippet_is_consent_gated_and_privacy_minimized():
     assert 'event.event !== "forkmesh_surface_view"' in js
     assert "location.search" not in js
     assert "document.referrer" not in js
-
-
-def test_privacy_page_discloses_and_controls_optional_analytics():
-    html = (WWW_PUBLIC / "privacy.html").read_text(encoding="utf-8")
-    assert "PostHog product analytics is disabled by default" in html
-    assert 'id="analytics-consent-status"' in html
-    assert 'id="analytics-consent-deny"' in html
-    assert 'id="analytics-consent-grant"' in html
-    assert "ForkMeshAnalytics?.setConsent?.(true)" in html
-    assert "ForkMeshAnalytics?.setConsent?.(false)" in html
 
 
 def test_all_public_html_pages_load_posthog():

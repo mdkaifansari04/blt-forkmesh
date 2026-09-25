@@ -17,9 +17,9 @@ jobs:
           else
             changed_files="$(git diff-tree --no-commit-id --name-only -r --root HEAD)"
           fi
-          worker_changes="$(printf '%s\n' "$changed_files" | sed -n -E '/^(app|www|world)\//p')"
+          worker_changes="$(printf '%s\n' "$changed_files" | sed -n -E '/^(app|world)\//p')"
           if [ -z "$worker_changes" ]; then
-            echo "Skipping deploy; no App, World, or www changes in this commit."
+            echo "Skipping deploy; no App or World changes in this commit."
             touch .forkmesh-skip-deploy
           else
             echo "Deploying changed Worker inputs:"

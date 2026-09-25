@@ -48,7 +48,7 @@ jobs:
         run: |
           set -eu
           python3 -c "import ast; ast.parse(open('app/src/entry.py').read()); print('entry.py OK')"
-          python3 -c "import tomllib; [tomllib.load(open(f'{unit}/wrangler.toml','rb')) for unit in ('app','www','world')]; print('Worker manifests OK')"
+          python3 -c "import tomllib; [tomllib.load(open(f'{unit}/wrangler.toml','rb')) for unit in ('app','world')]; print('Worker manifests OK')"
 
       - name: Critical Qt client contracts
         run: |

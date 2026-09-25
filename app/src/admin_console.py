@@ -16,27 +16,30 @@ def _bind_runtime(runtime):
 
 
 ADMIN_STYLE = """
- /* Palette: GitHub-dark by default, GitHub-light when the site theme engine
-    (site-header.js, shared localStorage keys + OS preference) stamps
-    html.light. All rules below use only these variables.
-    Every element rule is scoped under .ab-root: the universal site header
-    (site-header.js) injects its own bare <header>/<nav>/<button> markup, and
-    unscoped admin rules used to clobber it (and styles.css's centered
-    max-width `main` clobbered the admin layout right back). */
- :root{color-scheme:dark;
+ /* Palette for the markup the section renderers still emit: tables, forms,
+    the record detail list and the install diagnostics grid. Follows the
+    theme class admin_shell stamps (html.theme-light / html.theme-dark, with
+    the OS preference as the fallback), so the two stylesheets agree.
+    Every rule is scoped under .ab-root, which wraps a section's content and
+    nothing else — the shell's own chrome sits outside it and is styled only
+    by admin_shell.STYLE. */
+ :root{
    --ab-bg:#0d1117;--ab-fg:#c9d1d9;--ab-muted:#8b949e;--ab-border:#21262d;
    --ab-border-2:#30363d;--ab-card:#161b22;--ab-link:#58a6ff;
    --ab-danger:#f85149;--ab-btn:#238636;--ab-btn-hover:#2ea043;
    --ab-btn-fg:#ffffff;--ab-ok-bg:#11251a;--ab-ok-fg:#aff5c2}
- html.light{color-scheme:light;
+ html.theme-light{
    --ab-bg:#ffffff;--ab-fg:#1f2328;--ab-muted:#59636e;--ab-border:#d1d9e0;
    --ab-border-2:#d1d9e0;--ab-card:#f6f8fa;--ab-link:#0969da;
    --ab-danger:#cf222e;--ab-btn:#1f883d;--ab-btn-hover:#1a7f37;
    --ab-btn-fg:#ffffff;--ab-ok-bg:#dafbe1;--ab-ok-fg:#116329}
- *{box-sizing:border-box}
- body{font:14px/1.5 system-ui,sans-serif;margin:0;background:var(--ab-bg);color:var(--ab-fg)}
- .ab-root header{padding:12px 24px;border-bottom:1px solid var(--ab-border)}
- .ab-root h1{font-size:18px;margin:0}
+ .ab-root .layout-single{padding:0}
+ @media (prefers-color-scheme:light){html:not(.theme-dark){
+   --ab-bg:#ffffff;--ab-fg:#1f2328;--ab-muted:#59636e;--ab-border:#d1d9e0;
+   --ab-border-2:#d1d9e0;--ab-card:#f6f8fa;--ab-link:#0969da;
+   --ab-danger:#cf222e;--ab-btn:#1f883d;--ab-btn-hover:#1a7f37;
+   --ab-btn-fg:#ffffff;--ab-ok-bg:#dafbe1;--ab-ok-fg:#116329}}
+ .ab-root{color:var(--ab-fg)}
  .ab-root .meta{color:var(--ab-muted);font-size:13px;margin-top:4px}
  .ab-root a{color:var(--ab-link);text-decoration:none}
  .ab-root a:hover{text-decoration:underline}
@@ -62,13 +65,15 @@ ADMIN_STYLE = """
  .ab-root .admin-setting p{color:var(--ab-muted);font-size:12px;margin:0;max-width:760px}
  .ab-root .admin-setting form{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
  .ab-root .admin-setting label{white-space:nowrap;font-size:13px}
- .ab-root .layout{display:flex;align-items:flex-start;width:100%}
- .ab-root nav{width:210px;flex:none;border-right:1px solid var(--ab-border);min-height:60vh;padding:8px 0}
- .ab-root nav a{display:block;padding:5px 20px;color:var(--ab-fg);font-size:13px}
- .ab-root nav a.active{background:var(--ab-card);border-left:3px solid var(--ab-link);font-weight:600}
- .ab-root nav .sec{padding:10px 20px 4px;color:var(--ab-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+ .ab-root .layout{display:flex;align-items:flex-start;gap:16px;width:100%}
+ .ab-root nav{width:210px;flex:none;border:1px solid var(--ab-border);
+        border-radius:8px;background:var(--ab-card);padding:8px 0}
+ .ab-root nav a{display:flex;align-items:baseline;justify-content:space-between;
+        gap:8px;padding:5px 16px;color:var(--ab-fg);font-size:13px}
+ .ab-root nav a.active{background:var(--ab-bg);box-shadow:inset 3px 0 0 var(--ab-link);font-weight:600}
+ .ab-root nav .sec{padding:10px 16px 4px;color:var(--ab-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
  .ab-root nav .navsort{float:right;text-transform:none;letter-spacing:normal;font-size:11px}
- .ab-root main{flex:1;min-width:0;max-width:none;margin:0;overflow-x:auto;padding:4px 0 40px}
+ .ab-root main{flex:1;min-width:0;max-width:none;margin:0;overflow-x:auto;padding:0}
  .ab-root table{border-collapse:collapse;width:100%}
  .ab-root th,.ab-root td{text-align:left;padding:5px 10px;border-bottom:1px solid var(--ab-border);vertical-align:top}
  .ab-root th{position:sticky;top:0;background:var(--ab-card);color:var(--ab-muted);font-weight:600;
@@ -88,7 +93,7 @@ ADMIN_STYLE = """
  .ab-root .title{padding:12px 24px 4px;font-weight:600}
  .ab-root .navcount{color:var(--ab-muted);font-size:11px;font-weight:400}
  .ab-root .navlink{color:var(--ab-link)}
- .ab-root nav a .navcount{float:right}
+ .ab-root nav a .navcount{flex:none}
  .ab-root .rowform{padding:8px 24px;max-width:760px}
  .ab-root .rowfield{display:block;margin:10px 0}
  .ab-root .rowfield span{display:block;color:var(--ab-muted);font-size:12px;margin-bottom:4px}
@@ -1186,28 +1191,31 @@ async def _render_table_view(
     )
 
 
+# (key, label, icon, red-when-nonzero). Order is the read order: what the
+# platform is carrying right now, then what has gone wrong on it.
+ADMIN_STAT_CARDS = (
+    ("hosts", "Live hosts", "chart", False),
+    ("clients", "Chat clients", "users", False),
+    ("repos", "Catalog repos", "database", False),
+    ("installs_24h", "Installs (24h)", "download", False),
+    ("errors_total", "Errors (all time)", "alert", True),
+    ("errors_24h", "Errors (24h)", "alert", True),
+)
+
+
 def _render_admin_stats(stats):
     if not stats:
         return ""
-    cards = [
-        ("hosts", "live hosts", False),
-        ("clients", "chat clients", False),
-        ("repos", "catalog repos", False),
-        ("installs_24h", "installs (24h)", False),
-        ("errors_total", "errors (all time)", True),
-        ("errors_24h", "errors (24h)", True),
-    ]
-    out = []
-    for key, label, warn in cards:
-        value = stats.get(key, 0)
-        cls = "card warn" if warn and value else "card"
-        out.append('<div class="%s"><div class="n">%s</div><div class="l">%s</div></div>'
-                    % (cls, _html_escape(value), label))
-    return '<div class="cards">' + "".join(out) + "</div>"
+    tiles = []
+    for key, label, icon_name, warn in ADMIN_STAT_CARDS:
+        value = stats.get(key, 0) or 0
+        tiles.append(admin_shell.kpi(
+            label, admin_shell.format_int(value), icon_name=icon_name,
+            tone="bad" if warn and value else ""))
+    return '<div class="grid cols-3">' + "".join(tiles) + "</div>"
 
 
-def _render_admin_operational_alerts(
-        settings, csrf_field="", admin_query="", standalone=False):
+def _render_admin_operational_alerts(settings, csrf_field="", admin_query=""):
     settings = settings if isinstance(settings, dict) else {}
     rows = []
     for system_id, label in STATUS_ALERT_ADMIN_SYSTEMS:
@@ -1231,11 +1239,6 @@ def _render_admin_operational_alerts(
             'Continual ping</label></td></tr>' % (
                 _html_escape(label), field_id, ping_checked,
                 field_id, email_checked, field_id, continual_checked))
-    page_link = (
-        '<a class="button" href="%s">Open alert settings page</a>' %
-        _admin_href(admin_query, view="alerts")
-        if not standalone else
-        '<a href="%s">Back to admin data</a>' % _admin_href(admin_query))
     return (
         '<section id="operational-alerts" class="admin-setting" '
         'tabindex="-1"><div><h2>Operational alerts</h2>'
@@ -1243,36 +1246,16 @@ def _render_admin_operational_alerts(
         'ping repeats a still-down alert every five minutes; the homepage is '
         'selected by default. Optional attention emails include a redacted '
         'two-minute Cloudflare log excerpt when credentials are configured.</p>'
-        + page_link + '</div>'
+        '</div>'
         '<form method="post" action="%s">' %
         _admin_href(admin_query, action="set_operational_alerts",
-                    view=("alerts" if standalone else "")) +
+                    view="alerts") +
         csrf_field +
         '<div class="table-wrap"><table><thead><tr><th>Monitor</th>'
         '<th>Qt / Pings</th><th>Email</th><th>Persistent outage</th>'
         '</tr></thead><tbody>' + "".join(rows) + '</tbody></table></div>'
         '<button type="submit">Save alert settings</button></form></section>'
     )
-
-
-def render_admin_alerts_html(settings, csrf_field="", admin_query="", banner=""):
-    banner_html = (
-        '<div class="banner">%s</div>' % _html_escape(banner) if banner else "")
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        '<meta name="color-scheme" content="light dark">'
-        '<title>forkmesh · alert settings</title>'
-        '<link rel="stylesheet" href="/styles.css">'
-        '<link rel="stylesheet" href="/site-header.css">'
-        '<script src="/site-header.js" defer></script>'
-        '<style>' + ADMIN_STYLE + '</style></head><body>'
-        '<div data-forkmesh-header="simple"></div><div class="ab-root">'
-        '<header><h1>Monitoring alert settings</h1>'
-        '<div class="meta">Granular, administrator-only outage delivery.</div>'
-        '</header>' + banner_html + _render_admin_operational_alerts(
-            settings, csrf_field, admin_query, standalone=True) +
-        '</div></body></html>')
 
 
 def _render_admin_repo_terms_flags(csrf_field="", admin_query=""):
@@ -1282,7 +1265,8 @@ def _render_admin_repo_terms_flags(csrf_field="", admin_query=""):
         '<p>Apply or clear the public policy-warning badge for a repository. '
         'The operator note is encrypted and remains admin-only.</p></div>'
         '<form method="post" action="%s">' %
-        _admin_href(admin_query, action="set_repo_terms_flag") +
+        _admin_href(admin_query, action="set_repo_terms_flag",
+                    view="controls") +
         csrf_field +
         '<input type="text" name="owner" placeholder="owner" '
         'pattern="[A-Za-z0-9._-]{1,100}" required>'
@@ -1299,6 +1283,82 @@ def _render_admin_repo_terms_flags(csrf_field="", admin_query=""):
         '<label><input type="checkbox" name="clear" value="1"> Clear</label>'
         '<button type="submit">Save flag</button></form></section>'
     )
+
+
+def _render_admin_operator_tools(csrf_field="", admin_query=""):
+    """The two console actions that are neither a setting nor a table read."""
+    return (
+        '<section class="admin-setting"><div><h2>Legacy custody status</h2>'
+        '<p>Worker signing and automated sweeps are disabled. Historical '
+        'encrypted deposit rows require an offline, balance-reconciled '
+        'migration; this console cannot access or use wallet seeds.</p></div>'
+        '<form method="post" action="%s" '
+        'onsubmit="return confirm(\'Show legacy custody migration status?\')">'
+        % _admin_href(admin_query, action="disburse", view="controls")
+        + csrf_field
+        + '<button type="submit">Legacy custody status</button></form>'
+          '</section>'
+        '<section class="admin-setting"><div><h2>Ownership transfer</h2>'
+        '<p>Parks a pending transfer on the node\'s own account record — it '
+        'only completes once that node\'s current owner approves the '
+        'confirmation prompt on its own client.</p></div>'
+        '<form method="post" action="%s" '
+        'onsubmit="return confirm(\'Request ownership transfer for this node?\')">'
+        % _admin_href(admin_query, action="request_ownership", view="controls")
+        + csrf_field
+        + '<input type="text" name="target" placeholder="node to take (name)" '
+          'autocomplete="off" required>'
+          '<input type="text" name="owner" '
+          'placeholder="new owner (account name)" autocomplete="off" required>'
+          '<button type="submit">Request ownership transfer</button></form>'
+          '</section>')
+
+
+# Behaviour the section renderers depend on, unchanged from the single-page
+# console: absolute timestamps rendered in the viewer's own locale with a
+# live relative suffix, and copy-to-clipboard on error messages. The shell
+# itself stays script-free; this rides along as the page's body_extra.
+ADMIN_SCRIPT = (
+    "<script>const adminTimes=[];"
+    "for(const el of document.querySelectorAll('[data-ts]')){"
+    "let ms=Number(el.getAttribute('data-ts'));if(ms&&ms<1e11)ms*=1000;"
+    "if(!ms)continue;el.textContent=new Date(ms).toLocaleString();"
+    "const rel=document.createElement('span');rel.className='relative-time';"
+    "el.append(' · ',rel);adminTimes.push([rel,ms]);}"
+    "function updateAdminRelativeTimes(){const now=Date.now();"
+    "for(const pair of adminTimes){const rel=pair[0],ms=pair[1];"
+    "const future=ms>now,seconds=Math.max(0,Math.floor(Math.abs(now-ms)/1000));"
+    "let value,unit;if(seconds<60){value=seconds;unit='second';}"
+    "else if(seconds<3600){value=Math.floor(seconds/60);unit='minute';}"
+    "else if(seconds<86400){value=Math.floor(seconds/3600);unit='hour';}"
+    "else{value=Math.floor(seconds/86400);unit='day';}"
+    "rel.textContent=future?'in '+value+' '+unit+(value===1?'':'s'):"
+    "value+' '+unit+(value===1?'':'s')+' ago';}}"
+    "updateAdminRelativeTimes();setInterval(updateAdminRelativeTimes,30000);"
+    # Copy-to-clipboard for error messages. Delegated so the analytics and
+    # raw tables share one handler, and written to survive the non-secure
+    # contexts / older browsers where navigator.clipboard is absent.
+    "document.addEventListener('click',function(ev){"
+    "const btn=ev.target.closest&&ev.target.closest('[data-copy]');"
+    "if(!btn)return;ev.preventDefault();ev.stopPropagation();"
+    "const text=btn.getAttribute('data-copy')||'';"
+    "const label=btn.dataset.copyLabel||btn.textContent;"
+    "btn.dataset.copyLabel=label;"
+    "function done(ok){btn.textContent=ok?'Copied':'Copy failed';"
+    "setTimeout(function(){btn.textContent=label;},1200);}"
+    "function fallback(){try{const ta=document.createElement('textarea');"
+    "ta.value=text;ta.setAttribute('readonly','');"
+    "ta.style.position='fixed';ta.style.opacity='0';"
+    "document.body.appendChild(ta);ta.select();"
+    "const ok=document.execCommand('copy');ta.remove();done(ok);}"
+    "catch(e){done(false);}}"
+    "if(navigator.clipboard&&navigator.clipboard.writeText){"
+    "navigator.clipboard.writeText(text).then(function(){done(true);},"
+    "fallback);}else{fallback();}});"
+    "if(location.hash==='#operational-alerts'){"
+    "var a=document.getElementById('operational-alerts');"
+    "if(a){a.scrollIntoView({block:'center'});a.focus({preventScroll:true});}"
+    "}</script>")
 
 
 def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=False):
@@ -1325,117 +1385,114 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
     return "<nav>" + "".join(links) + "</nav>"
 
 
+# The console's sections, in sidebar order. Every one of them existed before
+# as a band on a single very long document; the split is what lets the shell's
+# grouped navigation mean anything, and it is the only thing "view" changes —
+# every form still posts to the same URL with the same action.
+ADMIN_VIEWS = ("overview", "errors", "installs", "alerts", "controls",
+               "database")
+
+
+def normalize_admin_view(value):
+    """The requested section, or the default ``overview``."""
+    value = str(value or "").strip().lower()
+    return value if value in ADMIN_VIEWS else "overview"
+
+
+def _admin_view_content(view, env_stats, tables, active_table, table_html,
+                        counts=None, csrf_field="", admin_query="",
+                        sort_records=False, operational_alert_settings=None):
+    """The one section body the shell wraps. Never the whole console."""
+    if view == "alerts":
+        return (
+            admin_shell.page_head(
+                "Alert delivery",
+                "Administrator-only delivery controls for every /status "
+                "monitor.")
+            + _render_admin_operational_alerts(
+                operational_alert_settings, csrf_field, admin_query))
+    if view == "controls":
+        return (
+            admin_shell.page_head(
+                "Controls",
+                "Operator actions that change what the public site shows or "
+                "who owns a node.")
+            + _render_admin_repo_terms_flags(csrf_field, admin_query)
+            + _render_admin_operator_tools(csrf_field, admin_query))
+    if view in ("errors", "installs", "database"):
+        # All three are the same generic browser pointed at a different table;
+        # only Database offers the table list, because the other two are one
+        # named table each and a picker there would just be a way to leave.
+        body = admin_shell.page_head(*{
+            "errors": ("Errors",
+                       "Every logged Worker error, newest first, grouped by "
+                       "message."),
+            "installs": ("Install diagnostics",
+                         "Anonymous desktop install funnel: per-run steps, "
+                         "platforms and package managers."),
+            "database": ("Database",
+                         "Every D1 table this deployment has, with encrypted "
+                         "row payloads decrypted in place."),
+        }[view])
+        if view == "database":
+            return (body + '<div class="layout">'
+                    + _render_admin_nav(tables, active_table, counts,
+                                        admin_query, sort_records)
+                    + "<main>" + table_html + "</main></div>")
+        return body + '<div class="layout-single">' + table_html + "</div>"
+    return (
+        admin_shell.page_head(
+            "Overview",
+            "Live Durable Object load, catalog size, and recent error volume.")
+        + _render_admin_stats(env_stats))
+
+
 def render_admin_html(env_stats, tables, active_table, table_html, banner="",
                       counts=None, csrf_field="", admin_query="",
-                      sort_records=False, operational_alert_settings=None):
-    banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
-    return (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<meta name=\"color-scheme\" content=\"light dark\">"
-        "<title>forkmesh · admin</title>"
-        # site-header.js is deferred (it also injects the header markup), so on
-        # its own it would only stamp html.light/html.dark AFTER first paint —
-        # a visible dark→light flash. This blocking pre-paint snippet mirrors
-        # its resolveTheme() (same localStorage keys, then OS preference) and
-        # stamps the class before any CSS paints, killing the flash. The
-        # deferred script re-applies the same value and owns the toggle.
-        "<script>(function(){try{"
-        "var k=['forkmesh.dashboard.theme','forkmesh.theme'],t='';"
-        "for(var i=0;i<k.length;i++){var v=localStorage.getItem(k[i]);"
-        "if(v==='light'||v==='dark'){t=v;break;}}"
-        "if(!t)t=(window.matchMedia&&window.matchMedia("
-        "'(prefers-color-scheme: light)').matches)?'light':'dark';"
-        "var r=document.documentElement,l=t==='light';"
-        "r.classList.toggle('light',l);r.classList.toggle('dark',!l);"
-        "r.style.colorScheme=l?'light':'dark';"
-        "}catch(e){}})();</script>"
-        # The universal site header (brand, nav, account chip) + the theme
-        # engine it carries: site-header.js stamps html.light/html.dark from
-        # the visitor's saved choice or OS preference, which ADMIN_STYLE's
-        # variable palette keys off. styles.css supplies the header's own
-        # tokens; ADMIN_STYLE loads after it so the admin rules win.
-        "<link rel=\"stylesheet\" href=\"/styles.css\">"
-        "<link rel=\"stylesheet\" href=\"/site-header.css\">"
-        "<script src=\"/posthog.js\"></script>"
-        "<script src=\"/site-header.js\" defer></script>"
-        "<style>" + ADMIN_STYLE + "</style></head><body>"
-        "<div data-forkmesh-header=\"simple\"></div>"
-        # .ab-root scopes every admin style rule so they cannot leak into the
-        # injected site header above (and vice versa).
-        "<div class=\"ab-root\">"
-        "<header><h1>forkmesh · admin</h1>"
-        "<div class=\"meta\">Live Durable Object load, every D1 table, and "
-        "Solana payment-reference status.</div></header>"
-        + _render_admin_stats(env_stats)
-        + _render_admin_operational_alerts(
-            operational_alert_settings, csrf_field, admin_query)
-        + _render_admin_repo_terms_flags(csrf_field, admin_query)
-        + '<div class="tools"><form method="post" action="%s" '
-          'onsubmit="return confirm(\'Show legacy custody migration status?\')">'
-          % _admin_href(admin_query, action="disburse")
-          + csrf_field +
-          '<button type="submit">Legacy custody status</button></form>'
-          '<span class="meta">Worker signing and automated sweeps are disabled. '
-          'Historical encrypted deposit rows require an offline, balance-'
-          'reconciled migration; this console cannot access or use wallet '
-          'seeds.</span></div>'
-        + '<div class="tools"><form method="post" action="%s" '
-          'onsubmit="return confirm(\'Request ownership transfer for this node?\')">'
-          % _admin_href(admin_query, action="request_ownership")
-          + csrf_field +
-          '<input type="text" name="target" placeholder="node to take (name)" '
-          'autocomplete="off" required>'
-          '<input type="text" name="owner" placeholder="new owner (account name)" '
-          'autocomplete="off" required>'
-          '<button type="submit">Request ownership transfer</button></form>'
-          '<span class="meta">Parks a pending transfer on the node\'s own '
-          'account record — it only completes once that node\'s current '
-          'owner approves the confirmation prompt on its own client.</span></div>'
-        + banner_html
-        + '<div class="layout">'
-        + _render_admin_nav(tables, active_table, counts, admin_query, sort_records)
-        + "<main>" + table_html + "</main>"
-        + "</div></div>"
-        "<script>const adminTimes=[];"
-        "for(const el of document.querySelectorAll('[data-ts]')){"
-        "let ms=Number(el.getAttribute('data-ts'));if(ms&&ms<1e11)ms*=1000;"
-        "if(!ms)continue;el.textContent=new Date(ms).toLocaleString();"
-        "const rel=document.createElement('span');rel.className='relative-time';"
-        "el.append(' · ',rel);adminTimes.push([rel,ms]);}"
-        "function updateAdminRelativeTimes(){const now=Date.now();"
-        "for(const pair of adminTimes){const rel=pair[0],ms=pair[1];"
-        "const future=ms>now,seconds=Math.max(0,Math.floor(Math.abs(now-ms)/1000));"
-        "let value,unit;if(seconds<60){value=seconds;unit='second';}"
-        "else if(seconds<3600){value=Math.floor(seconds/60);unit='minute';}"
-        "else if(seconds<86400){value=Math.floor(seconds/3600);unit='hour';}"
-        "else{value=Math.floor(seconds/86400);unit='day';}"
-        "rel.textContent=future?'in '+value+' '+unit+(value===1?'':'s'):"
-        "value+' '+unit+(value===1?'':'s')+' ago';}}"
-        "updateAdminRelativeTimes();setInterval(updateAdminRelativeTimes,30000);"
-        # Copy-to-clipboard for error messages. Delegated so the analytics and
-        # raw tables share one handler, and written to survive the non-secure
-        # contexts / older browsers where navigator.clipboard is absent.
-        "document.addEventListener('click',function(ev){"
-        "const btn=ev.target.closest&&ev.target.closest('[data-copy]');"
-        "if(!btn)return;ev.preventDefault();ev.stopPropagation();"
-        "const text=btn.getAttribute('data-copy')||'';"
-        "const label=btn.dataset.copyLabel||btn.textContent;"
-        "btn.dataset.copyLabel=label;"
-        "function done(ok){btn.textContent=ok?'Copied':'Copy failed';"
-        "setTimeout(function(){btn.textContent=label;},1200);}"
-        "function fallback(){try{const ta=document.createElement('textarea');"
-        "ta.value=text;ta.setAttribute('readonly','');"
-        "ta.style.position='fixed';ta.style.opacity='0';"
-        "document.body.appendChild(ta);ta.select();"
-        "const ok=document.execCommand('copy');ta.remove();done(ok);}"
-        "catch(e){done(false);}}"
-        "if(navigator.clipboard&&navigator.clipboard.writeText){"
-        "navigator.clipboard.writeText(text).then(function(){done(true);},"
-        "fallback);}else{fallback();}});"
-        "if(location.hash==='#operational-alerts'){"
-        "var a=document.getElementById('operational-alerts');"
-        "if(a){a.scrollIntoView({block:'center'});a.focus({preventScroll:true});}"
-        "}</script>"
-        "</body></html>"
+                      sort_records=False, operational_alert_settings=None,
+                      view="overview", console="", theme="system",
+                      badges=None, account="", theme_action="",
+                      theme_fields="", search_value=""):
+    """One admin page: the shared chrome plus exactly one section."""
+    view = normalize_admin_view(view)
+    content = (
+        (admin_shell.banner(banner, admin_shell.banner_tone(banner))
+         if banner else "")
+        + _admin_view_content(
+            view, env_stats, tables, active_table, table_html, counts,
+            csrf_field, admin_query, sort_records,
+            operational_alert_settings))
+    return admin_shell.render_page(
+        ADMIN_VIEW_TITLES[view],
+        # The legacy rules are all scoped under .ab-root; the shell draws its
+        # own chrome outside it, so the two stylesheets cannot reach each
+        # other's markup.
+        '<div class="ab-root">' + content + "</div>",
+        active=view,
+        console=console,
+        theme=theme,
+        badges=badges,
+        account=account,
+        theme_action=theme_action,
+        theme_fields=theme_fields,
+        search_value=search_value,
+        # The legacy rules are scoped under .ab-root and the shell draws its
+        # own chrome, so the old stylesheet rides along only for the table,
+        # form and diagnostics markup the section renderers still emit.
+        # Analytics rides along too: every Worker-generated page loads it, and
+        # this one losing it when it moved into the shell would be a silent
+        # hole rather than a decision.
+        head_extra=('<script src="/posthog.js"></script>'
+                    "<style>" + ADMIN_STYLE + "</style>"),
+        body_extra=ADMIN_SCRIPT,
     )
+
+
+ADMIN_VIEW_TITLES = {
+    "overview": "Overview",
+    "errors": "Errors",
+    "installs": "Install diagnostics",
+    "alerts": "Alert delivery",
+    "controls": "Controls",
+    "database": "Database",
+}

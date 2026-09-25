@@ -1287,6 +1287,21 @@ def deterministic_logo(record):
     }
 
 
+REPOSITORY_LOGO_CACHE_SECONDS = 300
+
+
+def _repository_logo_cache_control(record):
+    """Cache-Control for one repository logo payload.
+
+    Visibility is read fail-closed by _native_repository_logo_record, so an
+    unreadable or malformed record is treated as private and never cached.
+    """
+    source = record if isinstance(record, dict) else {}
+    if bool(source.get("isPrivate", True)):
+        return "no-store"
+    return "private, max-age=%d" % REPOSITORY_LOGO_CACHE_SECONDS
+
+
 def validate_uploaded_logo(value):
     if not isinstance(value, str) or not value.startswith("data:image/"):
         raise ValueError("logo_data_url_required")
@@ -2616,11 +2631,23 @@ class RepositoryImportService:
     async def logo_for_record(self, env, repository_id, record):
         """Render a generated or approved logo for any repository namespace."""
         logo = await self._official_logo(env, repository_id)
+        # A public repository's logo is identical for every viewer and only
+        # changes when an owner approves a new one, but this answered
+        # "no-store", so every repo card on a page re-hit the Worker on every
+        # navigation between dashboard pages (each is a separate document, so
+        # the client-side Map cache does not survive the hop). On Python
+        # Workers a cold isolate spends ~0.5-2s of CPU restoring its snapshot
+        # before the handler runs a single line, and at low traffic roughly
+        # half of all requests are cold - so these avoidable invocations are
+        # what push the route into "Worker exceeded CPU time limit".
+        # "private" keeps the payload out of shared caches (it can carry an
+        # owner-authorized committed URL); the browser cache is what a
+        # navigation actually needs. Private repos keep revalidating.
         return self._json({
             "ok": True,
             "repositoryId": repository_id,
             "logo": logo or deterministic_logo(record),
-        }, cache_control="no-store")
+        }, cache_control=_repository_logo_cache_control(record))
 
     async def _logo_suggestions(self, env, request, import_id):
         method = str(getattr(request, "method", "GET")).upper()

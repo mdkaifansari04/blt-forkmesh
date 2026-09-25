@@ -7,9 +7,6 @@ ROOT = Path(__file__).resolve().parents[1]
 CHAT = (ROOT / "public" / "chat.js").read_text(encoding="utf-8")
 HTML = (ROOT / "public" / "chat.html").read_text(encoding="utf-8")
 CSS = (ROOT / "public" / "chat.css").read_text(encoding="utf-8")
-PROTOCOL = (
-    ROOT.parent / "www" / "public" / "docs" / "protocol" / "index.html"
-).read_text(encoding="utf-8")
 
 
 def _function_source(name):
@@ -112,18 +109,3 @@ def test_only_opaque_private_channel_id_is_persisted_as_preference():
     assert "ACTIVE_CHANNEL_KEY" in source
     assert "passphrase" not in source
     assert "webSocketUrl" not in source
-
-
-def test_protocol_documents_private_access_rotation_and_attachments():
-    for marker in (
-        'id="private-chat-channels"',
-        "/api/chat/channels/&lt;channel-id&gt;/room-access",
-        "60-second signed WebSocket ticket",
-        "Removing a private member\n          atomically increments the key",
-        "fileName",
-        "fileMime",
-        "1 MiB",
-        "CHAT_HISTORY_MAX_BYTES_PER_ROOM",
-        "16 MiB",
-    ):
-        assert marker in PROTOCOL

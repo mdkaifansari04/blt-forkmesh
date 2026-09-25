@@ -22,14 +22,10 @@ import dashboard_bundle  # noqa: E402
 import dashboard_shell  # noqa: E402
 
 PUBLIC = _ROOT / "public"
-WWW_PUBLIC = _ROOT.parent / "www" / "public"
 
 
 def _read(rel: str) -> str:
-    source = PUBLIC / rel
-    if not source.is_file():
-        source = WWW_PUBLIC / rel
-    return source.read_text(encoding="utf-8")
+    return (PUBLIC / rel).read_text(encoding="utf-8")
 
 
 def _asset_versions() -> dict:

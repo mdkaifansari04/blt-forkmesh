@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORLD = (ROOT.parent / "world/public/world/world.js").read_text(encoding="utf-8")
 SCENE = (ROOT.parent / "world/public/world/world-scene.js").read_text(encoding="utf-8")
 STYLE = (ROOT.parent / "world/public/world/world.css").read_text(encoding="utf-8")
-HEADERS = (ROOT.parent / "www/public/_headers").read_text(encoding="utf-8")
+HEADERS = (ROOT / "public/_headers").read_text(encoding="utf-8")
 
 
 def _function_body(source, name):

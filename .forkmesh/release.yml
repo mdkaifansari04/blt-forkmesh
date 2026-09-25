@@ -3,7 +3,7 @@ name: Attach desktop build to release
 # published (a tag drafted from the Releases panel). Each node it runs on builds
 # its own platform's binary and publishes it to the release, so to cover
 # Linux + macOS + Windows, the workflow runs on a node of each OS. The installer
-# (www/public/install.sh) then autodetects the visitor's platform
+# (app/public/install.sh) then autodetects the visitor's platform
 # and downloads the matching prebuilt binary instead of compiling.
 #
 # Release binaries are NOT committed into git (issue #304). The binary bytes are
@@ -223,7 +223,6 @@ jobs:
           # CI-secret env vars; a packager with no cert/toolchain emits an
           # UNSIGNED artifact and warns rather than failing the release, and the
           # bare binary is always published too (headless/SSH installs use it).
-          # See www/docs/design/signed-installers.md.
           publish_assets=("$staged")
           package_input="$built"
           if [ "$os" = "macos" ]; then

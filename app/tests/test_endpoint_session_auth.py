@@ -44,6 +44,8 @@ FUNCS = {
     "_owner_pubkey", "_catalog_record_matches_identity",
     "_repo_identity_from_clone_url", "safe_segment", "method_name",
     "_account_owns_node", "_owned_nodes",
+    # The notifications endpoint reads and writes the pause deadline.
+    "ping_pause_until", "_apply_ping_pause",
 }
 
 
@@ -244,6 +246,11 @@ def _harness(accounts, notifications=None, repositories=None):
             return
         raise AssertionError("unexpected d1_run: " + sql)
 
+    async def _save_account(_env, _bi, _rec):
+        # The pause write is not what these contracts exercise; they check the
+        # gate in front of it, so persisting is a no-op here.
+        return None
+
     ns = _load_functions({
         "Date": _DateStub,
         "json_response": json_response,
@@ -271,6 +278,8 @@ def _harness(accounts, notifications=None, repositories=None):
         "MAX_NODE_NAME": 63,
         "NODE_NAME_RE": re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"),
         "MAX_NOTIFICATIONS_FETCH": 200,
+        "PING_PAUSE_MAX_MS": 30 * 24 * 60 * 60 * 1000,
+        "_save_account": _save_account,
         "ADMIN_SESSION_TTL_MS": 12 * 60 * 60 * 1000,
         "MAX_REPO_SEGMENT": 80,
         # Repo branding (fediverse actor images) rides through repo_about;

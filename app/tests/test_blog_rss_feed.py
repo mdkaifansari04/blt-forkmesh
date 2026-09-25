@@ -12,10 +12,8 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REPOSITORY = ROOT.parent
 SRC = ROOT / "src"
 ENTRY_PATH = SRC / "entry.py"
-BLOG_PATH = REPOSITORY / "www" / "public" / "blog.html"
 
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -120,29 +118,8 @@ def test_feed_document_is_well_formed_rss_with_preview_text_and_image():
     assert "Read the post" in body
 
 
-def test_feed_renders_every_shipped_blog_post():
-    entries = blog_feed.parse_blog_index(_source(BLOG_PATH))
-    # The shipped index carries one card per feature post, all with artwork.
-    assert len(entries) > 40
-    assert all(entry["title"] and entry["summary"] for entry in entries)
-    assert all(entry["url"].startswith("https://forkmesh.com/blog/")
-               for entry in entries)
-    assert all(entry["image"].startswith("https://forkmesh.com/assets/blog/")
-               for entry in entries)
-    # Every shipped card is dated, so the feed always has a last-post stamp.
-    assert all(entry["publishedMs"] > 0 for entry in entries)
-    channel = ElementTree.fromstring(
-        blog_feed.render_rss(entries)).find("channel")
-    assert len(channel.findall("item")) == len(entries)
-    newest = channel.find("item")
-    assert newest.findtext("title") == "One app, one mesh"
-    assert newest.findtext("link") == (
-        "https://forkmesh.com/blog/one-app-one-mesh/")
-    assert newest.findtext("pubDate") == "Sat, 08 Aug 2026 00:00:00 GMT"
-
-
 def test_feed_parses_back_into_the_entries_it_rendered():
-    entries = blog_feed.parse_blog_index(_source(BLOG_PATH))
+    entries = blog_feed.parse_blog_index(_CARD_HTML)
     round_trip = blog_feed.parse_rss(blog_feed.render_rss(entries))
     assert len(round_trip) == len(entries)
     for before, after in zip(entries, round_trip):
@@ -187,19 +164,6 @@ def test_worker_owns_the_feed_route_and_serves_it_as_rss():
 
 def test_feed_paths_are_worker_first_and_never_fall_into_post_rewrites():
     wrangler = _source(ROOT / "wrangler.toml")
-    redirects = _source(REPOSITORY / "www" / "public" / "_redirects")
     assert '"/blog/*",' in wrangler
     for path in ("/rss.xml", "/feed.xml"):
         assert '"%s",' % path in wrangler
-    # The assets router must not turn rss.xml into a /blog/<slug>/ rewrite;
-    # the safety-net rules have to precede the post rules to win.
-    assert redirects.index("/blog/rss.xml /rss.xml 308") < redirects.index(
-        "/blog/:slug /blog/:slug/ 308")
-
-
-def test_blog_page_advertises_the_feed():
-    blog = _source(BLOG_PATH)
-    assert ('<link rel="alternate" type="application/rss+xml"'
-            ' title="ForkMesh Blog" href="/blog/rss.xml">') in blog
-    # And a visible link for readers who do not autodiscover.
-    assert '<a class="blog1-feed-link" href="/blog/rss.xml">' in blog

@@ -37,7 +37,7 @@ def test_both_operational_monitor_paths_enqueue_pings():
     assert (
         "await _enqueue_operational_alert_pings(env, ping_pending, now)"
         in transitions)
-    assert 'href="/status"' in ENTRY_TEXT
+    assert 'href="/admin", source="operational-status"' in ENTRY_TEXT
     assert 'source="operational-status"' in ENTRY_TEXT
 
 

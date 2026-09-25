@@ -10,8 +10,7 @@ from _dashboard_shell import assembled_dashboard
 
 PROJECT = Path(__file__).resolve().parents[2]
 APP_PUBLIC = PROJECT / "app" / "public"
-WWW_PUBLIC = PROJECT / "www" / "public"
-PUBLIC_DIRS = (("app", APP_PUBLIC), ("www", WWW_PUBLIC))
+PUBLIC_DIRS = (("app", APP_PUBLIC),)
 LOGO_SRC = "/assets/logo.png"
 DASHBOARD_LOGO_SRC = "/assets/forkmesh-mark.svg"
 
@@ -66,7 +65,7 @@ class LogoImageParser(HTMLParser):
 
 
 def test_all_public_html_pages_use_logo_in_brand_link():
-    assert (WWW_PUBLIC / "assets" / "logo.png").is_file()
+    assert (APP_PUBLIC / "assets" / "logo.png").is_file()
 
     # dashboard/partials/*.html are shell fragments (no <head>/brand link); they
     # are composed into generated dashboard assets before deploy, so they are not
@@ -89,7 +88,7 @@ def test_all_public_html_pages_use_logo_in_brand_link():
             continue
         html = page.read_text(encoding="utf-8")
         if '<div data-forkmesh-header="simple"></div>' in html:
-            header_js = (WWW_PUBLIC / "site-header.js").read_text(encoding="utf-8")
+            header_js = (APP_PUBLIC / "site-header.js").read_text(encoding="utf-8")
             if (
                 'href="/"' in header_js
                 and 'src="/assets/logo.png"' in header_js
@@ -113,7 +112,7 @@ def test_all_public_html_pages_use_logo_in_brand_link():
 
 
 def test_brand_logo_size_comes_from_shared_stylesheet():
-    css = (WWW_PUBLIC / "styles.css").read_text(encoding="utf-8")
+    css = (APP_PUBLIC / "styles.css").read_text(encoding="utf-8")
     match = re.search(r"\.brand-mark\s*\{(?P<body>[^}]*)\}", css)
 
     assert match is not None

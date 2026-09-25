@@ -101,7 +101,7 @@ def test_username_rejection_has_actionable_first_party_ui_copy():
 
 
 def test_moderation_module_is_never_held_as_an_immutable_stale_dependency():
-    headers = (ROOT.parent / "www" / "public" / "_headers").read_text(
+    headers = (ROOT / "public" / "_headers").read_text(
         encoding="utf-8")
     rule = headers[headers.index("/chat-moderation.js"):]
     rule = rule[:rule.index("\n\n")]

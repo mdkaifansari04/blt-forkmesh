@@ -7,7 +7,6 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WWW_PUBLIC = ROOT.parent / "www" / "public"
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -16,13 +15,6 @@ import static_routes  # noqa: E402
 
 ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
-INDEX_HTML = (WWW_PUBLIC / "index.html").read_text(encoding="utf-8")
-
-
-def test_features_content_lives_on_homepage():
-    assert '<section\n        id="features"' in INDEX_HTML
-    assert "Open source should not depend on one company staying online forever" in INDEX_HTML
-    assert not (WWW_PUBLIC / "feature.html").is_file()
 
 
 def test_features_path_uses_spa_fallback_instead_of_deleted_feature_page():

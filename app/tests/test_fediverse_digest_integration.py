@@ -318,5 +318,3 @@ def test_dashboard_exposes_repo_and_org_controls_with_exact_preview():
         "No meaningful public updates are queued.",
     ):
         assert marker in assembled
-    assert (Path(__file__).resolve().parents[2]
-            / "www" / "docs" / "fediverse-digests.md").is_file()

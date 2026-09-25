@@ -106,6 +106,15 @@ PAGES = {
         "title": "Notes - BLT",
         "description": "Collaborative Markdown notes with sharing, publishing, snapshots, and repository conversation links.",
     },
+    "calendar": {
+        "view": "calendar",
+        "section": "calendar",
+        "nav": "calendar",
+        "route": "/dashboard/calendar",
+        "asset": "dashboard/calendar/index.html",
+        "title": "Calendar - BLT",
+        "description": "Private personal and organization calendars with invitations, agenda views, time zones, recurrence, and reminders.",
+    },
     "settings": {
         "view": "settings",
         "section": "profile",
@@ -244,22 +253,17 @@ CACHE_BUSTED_BUNDLES = (
     # Dashboard.
     "dashboard.js",
     "dashboard-chat.js",
-    # Shared site chrome, on nearly every marketing/auth page.
+    # Shared site chrome, on nearly every auth/site page.
     "site-header.js",
     "site-footer.js",
-    "home-header-auth.js",
     "static-page.js",
-    "blog-social.js",
     # Per-page site bundles.
     "login.js",
     "signup.js",
     "forgot-password.js",
     "reset-password.js",
-    "security-report.js",
     "mirror-payouts.js",
-    "polar-memberships.js",
     "referrals.js",
-    "outreach.js",
     "leaderboards.js",
 )
 

@@ -10,7 +10,7 @@ MIRROR = (ROOT / "desktop/src/MainWindowMirrorNode.cpp").read_text(
     encoding="utf-8"
 )
 DEPLOY = (ROOT / "app/deploy.sh").read_text(encoding="utf-8")
-INSTALLER = (ROOT / "www/public/install.sh").read_text(
+INSTALLER = (ROOT / "app/public/install.sh").read_text(
     encoding="utf-8"
 )
 

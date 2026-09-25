@@ -17,7 +17,6 @@ from urllib.parse import quote
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WWW_PUBLIC = ROOT.parent / "www" / "public"
 ENTRY = ROOT / "src" / "entry.py"
 # SCHEMA_STATEMENTS (D1 DDL) was extracted from entry.py into schema.py;
 # concatenate it so the schema source-contract assertions below still resolve.
@@ -51,6 +50,7 @@ def _load(*names, extra_globals=None):
         "STATUS_MIRROR_ROSTER_FRESH_MS",
         "STATUS_RETIRED_MIRRORS",
         "STATUS_DEPLOY_GRACE_MS", "STATUS_DEPLOY_MAX_MS",
+        "STATUS_PAGE_PROBE_INTERVAL_MS", "STATUS_PAGE_MONITOR_ID",
         "EMAIL_STATUS_LOOKBACK_MS", "EMAIL_DELIVERY_GRACE_MS",
         "EMAIL_DELIVERY_FAILURE_STATES",
         "EMAIL_DELIVERY_CONFIRMED_STATES",
@@ -147,7 +147,7 @@ def _sample_env(
         return True, ""
     async def installer_status(_env, _now):
         return True, ""
-    async def homepage_status(_env):
+    async def dashboard_status(_env):
         return True, ""
 
     class StatusResponse:
@@ -165,7 +165,7 @@ def _sample_env(
         "_flagship_repository_probe": repository_probe,
         "_record_status_monitor_transitions": noop,
         "_installer_delivery_status": installer_status,
-        "_homepage_status_probe": homepage_status,
+        "_dashboard_status_probe": dashboard_status,
         "cached_status_history": cached_status_history,
         "clean_string": lambda value, limit: str(value or "")[:limit],
     }
@@ -216,6 +216,76 @@ def test_status_page_api_failure_is_a_dedicated_red_monitor():
     assert reasons["status_page"] == "Status API returned HTTP 500"
     assert minutes["status_page"] == (
         0, "Status API returned HTTP 500")
+
+
+def _run_status_page_probe(last_row=None):
+    """Drive _status_page_api_probe with a scripted monitor-state row."""
+    rebuilds = []
+    writes = []
+
+    class _Response:
+        status = 200
+
+    async def cached_status_history(_env, view):
+        rebuilds.append(view)
+        return _Response()
+
+    async def d1_first(_env, sql, *args):
+        assert "repository_monitor_state" in sql
+        assert args == ("status-page-api",)
+        return dict(last_row) if last_row else None
+
+    async def d1_run(_env, sql, *args):
+        writes.append((sql, args))
+
+    g = _load("_status_page_api_probe", extra_globals={
+        "Date": _Clock,
+        "cached_status_history": cached_status_history,
+        "d1_first": d1_first,
+        "d1_run": d1_run,
+    })
+    verdict = asyncio.run(g["_status_page_api_probe"](object()))
+    return verdict, rebuilds, writes
+
+
+def test_status_probe_rebuilds_on_a_slow_cadence_not_once_a_minute():
+    # The cron tick runs in its own colo, so the Cache API entry it writes is
+    # never read by anyone — every miss rebuilt the full 30-day projection
+    # from D1 for nothing. At ~1,000 rebuilds a day (~4,400 hourly + ~640
+    # minute rows each) the status page alone spent the account's entire
+    # free-plan D1 row budget, which 5xx'd every D1-backed route, signup
+    # included. A stale verdict must be reused instead.
+    minute_ago = _Clock.value - 60 * 1000
+    verdict, rebuilds, writes = _run_status_page_probe(
+        {"is_up": 1, "reason": "", "checked_at": minute_ago})
+    assert verdict == (True, "")
+    assert rebuilds == [], "a fresh verdict must not touch status_history"
+    assert writes == [], "and must not re-write the monitor row"
+
+    # A failing verdict is reused just as faithfully as a passing one.
+    verdict, rebuilds, _writes = _run_status_page_probe(
+        {"is_up": 0, "reason": "Status API returned HTTP 500",
+         "checked_at": minute_ago})
+    assert verdict == (False, "Status API returned HTTP 500")
+    assert rebuilds == []
+
+
+def test_status_probe_re_derives_once_the_cached_verdict_goes_stale():
+    stale = _Clock.value - 11 * 60 * 1000
+    verdict, rebuilds, writes = _run_status_page_probe(
+        {"is_up": 0, "reason": "Status API returned HTTP 500",
+         "checked_at": stale})
+    assert verdict == (True, "")
+    # Exactly one rebuild of the full projection, recorded for the next ticks.
+    assert rebuilds == ["full"]
+    assert len(writes) == 1
+    assert "repository_monitor_state" in writes[0][0]
+    assert writes[0][1][0] == "status-page-api"
+
+    # No row at all (first ever tick) also re-derives.
+    _verdict, rebuilds, writes = _run_status_page_probe(None)
+    assert rebuilds == ["full"]
+    assert len(writes) == 1
 
 
 def test_status_page_monitor_pages_continually_by_default():
@@ -747,6 +817,86 @@ def _run_history(rows, hour_rows=(), minute_rows=(), mirror_rows=()):
     return captured
 
 
+def _run_history_capturing_queries(hour_rows=(), day_rows=()):
+    """status_history against a stub that records every SQL + bound args."""
+    queries = []
+
+    async def noop(*_a, **_k):
+        return None
+
+    async def d1_all(_env, sql, *args):
+        queries.append((" ".join(sql.split()), args))
+        if "system_status_minute" in sql:
+            return []
+        if "system_status_hourly" in sql:
+            return [row for row in hour_rows if row["hour_ts"] >= args[0]]
+        if "system_status_daily" in sql:
+            return [row for row in day_rows
+                    if args[0] <= row["day_ts"] < args[1]]
+        return []
+
+    captured = {}
+
+    def json_response(payload, cache_seconds=None):
+        captured.update(payload)
+        return payload
+
+    g = _load("status_history", extra_globals={
+        "Date": _Clock, "ensure_schema": noop, "d1_all": d1_all,
+        "json_response": json_response,
+    })
+    asyncio.run(g["status_history"](object()))
+    return captured, queries
+
+
+def test_history_reads_two_days_of_hours_and_older_cells_from_the_daily_roll_up():
+    # D1 bills rows READ. Scanning all 30 days of hourly buckets on every
+    # /status build was ~4,400 rows a call and, across colos with only a 60s
+    # edge cache, ~87% of the whole free-plan daily row budget — the budget
+    # whose exhaustion 500s every D1-backed route, signup included.
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    old_day = cur_day - 10 * DAY_MS
+    day_rows = [
+        {"day_ts": old_day, "system": "website", "checks": 1440,
+         "failures": 144},
+        # Inside the hourly window: must NOT be double counted from here.
+        {"day_ts": cur_day, "system": "website", "checks": 999,
+         "failures": 999},
+    ]
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "website", "checks": 60,
+         "failures": 0, "reason": None},
+        # 10 days old: never returned now that the window is two days wide.
+        {"hour_ts": old_day, "system": "website", "checks": 60,
+         "failures": 60, "reason": "old outage"},
+    ]
+    out, queries = _run_history_capturing_queries(hour_rows, day_rows)
+
+    hourly = next(q for q in queries if "system_status_hourly" in q[0])
+    daily = next(q for q in queries if "system_status_daily" in q[0])
+    # The hourly scan starts one day before today, not 30.
+    assert hourly[1] == (cur_day - DAY_MS,)
+    # The daily roll-up covers exactly the remainder of the 30-day window.
+    assert daily[1] == (cur_day - 29 * DAY_MS, cur_day - DAY_MS)
+
+    website = {s["id"]: s for s in out["systems"]}["website"]
+    by_day = {d["dayTs"]: d for d in website["days"]}
+    assert len(website["days"]) == 30
+    # The old cell is rendered from the daily aggregate, with no hourly rows.
+    assert by_day[old_day]["checks"] == 1440
+    assert by_day[old_day]["failures"] == 144
+    assert by_day[old_day]["uptimePct"] == 90.0
+    assert by_day[old_day]["coveragePct"] == 100.0
+    assert by_day[old_day]["hours"] == []
+    assert by_day[old_day]["hoursCompacted"] is True
+    # Today still comes from the hourly buckets, so the daily row that overlaps
+    # the hourly window is ignored rather than counted twice.
+    assert by_day[cur_day]["checks"] == 60
+    assert by_day[cur_day]["failures"] == 0
+    assert website["checks24h"] == 60
+
+
 def test_no_data_is_a_red_monitoring_failure_without_fabricated_uptime():
     # Missing expected samples mean the monitoring system failed. Render that
     # state red/down, while keeping the uptime value unset because no service
@@ -1039,17 +1189,8 @@ def test_each_system_describes_exactly_what_its_check_tests():
     assert "error log" in descriptions["errors"]
     assert "Expected degraded" in descriptions["errors"]
     assert "Exceeded allowed duration" in descriptions["durable_objects"]
-    assert "Loads the production homepage" in descriptions["website"]
+    assert "Loads the dashboard document the home page opens" in descriptions["website"]
     assert "HTTP 200" in descriptions["website"]
-
-
-def test_status_page_wires_the_click_to_expand_check_details():
-    status_html = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
-    assert "checkDescription" in status_html
-    assert "status-row-detail-panel" in status_html
-    assert "What this check tests" in status_html
-    assert 'head.setAttribute("aria-expanded"' in status_html
-    assert "coverage24hPct" in status_html
 
 
 def test_operational_hour_does_not_carry_a_stale_reason():
@@ -1683,20 +1824,6 @@ def test_installer_delivery_is_checked_every_ten_minutes_and_public():
     assert "source-build fallback" in ENTRY_TEXT
 
 
-def test_status_page_renders_current_state_grid():
-    status_html = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
-    assert 'id="status-current"' in status_html
-    assert "stat-mainnode" in status_html
-    assert "stat-nodes" in status_html
-    assert "stat-repos" in status_html
-    assert "stat-errors" in status_html
-    assert "stat-do-aborts" in status_html
-    assert "doDurationAborts24h" in status_html
-    assert "data.current" in status_html
-
-
-# --- static wiring -----------------------------------------------------------
-
 def test_worker_exposes_status_route_and_schema():
     assert 'url.path in ("/api/status", "/api/status/")' in ENTRY_TEXT
     assert "async def status_history" in ENTRY_TEXT
@@ -1709,58 +1836,6 @@ def test_worker_exposes_status_route_and_schema():
 
 def test_cron_samples_status_every_tick():
     assert 'await record_status_sample(self.env, source="runner")' in ENTRY_TEXT
-
-
-def test_status_page_asset_and_redirect_exist():
-    status_html = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
-    assert 'fetch("/api/status"' in status_html
-    assert "status-day" in status_html
-    assert "status-day-hour" in status_html
-    assert "status-day-stack" in status_html
-    assert "status-hour-bar" in status_html
-    assert "status-hour-detail" in status_html
-    assert "hourTooltip" in status_html
-    assert "uptime24hPct" in status_html
-    assert "status-row-metrics" in status_html
-    assert "last 24 hourly checks" in status_html
-    assert "currentHour - 23 * 3600000" in status_html
-    # Missing samples are monitoring gaps, never fabricated downtime — the
-    # copy must say so, and the old "counts as downtime" claim must be gone.
-    assert "monitoring gap" in status_html
-    assert "count as downtime" not in status_html
-    assert "optimizing traffic usage for bots" in status_html
-    assert "marker.classList.add(\"is-hovered\")" in status_html
-    assert "status-day-hour is-" in status_html
-    assert "status-hour-slice is-" in status_html
-
-    redirects = (WWW_PUBLIC / "_redirects").read_text(encoding="utf-8")
-    assert "/status /status.html 200" not in redirects
-    assert (ROOT / "public" / "status.html").is_file()
-
-
-def test_status_page_names_cloudflare_rate_limiting_on_429():
-    # When the free-plan daily quota runs out Cloudflare answers every route —
-    # even /api/status — with an HTML 429. The status page must say exactly
-    # that (a plan limit that resets on its own, not an outage) instead of the
-    # generic "unavailable" message (adhoc #80).
-    status_html = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
-    render = status_html[
-        status_html.index("async function render()"):
-        status_html.index("render();")
-    ]
-    assert "if (res.status === 429) rateLimited = true;" in render
-    assert "Rate limited by Cloudflare" in render
-    assert "not an outage" in render
-    assert "resets automatically" in render
-    # The 429 banner uses the outage styling, and other fetch failures show
-    # their actual HTTP/content/body details instead of a generic message.
-    assert 'banner.classList.add("is-down");' in render
-    assert "Status unavailable right now." not in render
-    assert "failedStatusDetail" in render
-    assert "Status API unavailable" in render
-    assert "Content-Type:" in status_html
-    assert "Body:" in status_html
-    assert "escapeHtml(issue.detail)" in render
 
 
 def test_migration_file_matches_worker_schema():
@@ -1786,9 +1861,9 @@ if __name__ == "__main__":
     print("ok")
 
 
-def test_status_reports_cron_liveness_for_the_banner():
-    # current.lastCronSampleTs = newest minute with a recorded sample, so the
-    # page can say "the sampling cron is behind" instead of letting missing
+def test_status_reports_cron_liveness():
+    # current.lastCronSampleTs = newest minute with a recorded sample, so a
+    # consumer can say "the sampling cron is behind" instead of letting missing
     # samples read as a confirmed outage.
     cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
     minute_rows = [
@@ -1799,10 +1874,6 @@ def test_status_reports_cron_liveness_for_the_banner():
     ]
     out = _run_history([], minute_rows=minute_rows)
     assert out["current"]["lastCronSampleTs"] == cur_minute - 5 * MINUTE_MS
-    # No samples at all -> null, not 0 (the page treats it as "unknown").
+    # No samples at all -> null, not 0 (consumers treat it as "unknown").
     out = _run_history([])
     assert out["current"]["lastCronSampleTs"] is None
-
-    page = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
-    assert "lastCronSampleTs" in page
-    assert "sampling cron is behind" in page

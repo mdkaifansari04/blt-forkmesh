@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ENTRY = ROOT / "app" / "src" / "entry.py"
 QT_SETUP = ROOT / "desktop" / "src" / "MainWindowSetup.cpp"
 QT_CHAT = ROOT / "desktop" / "src" / "MainWindowChat.cpp"
-INSTALL_SH = ROOT / "www" / "public" / "install.sh"
+INSTALL_SH = ROOT / "app" / "public" / "install.sh"
 
 FUNCS = {
     "_account_kind", "_owned_nodes", "_generate_confirm_code", "_claim_pending",
@@ -33,6 +33,8 @@ FUNCS = {
     "_resolve_claimable_node", "_account_row_by_pubkey", "valid_node_pubkey",
     "_transfer_pending", "_admin_authorized", "_admin_request_ownership",
     "_account_ownership_transfer_confirm", "_park_ownership_transfer",
+    # The heartbeat carries the notification pause deadline both ways.
+    "ping_pause_until", "_apply_ping_pause",
 }
 
 
@@ -195,6 +197,7 @@ def _harness(accounts):
         "_ts_ok": _ts_ok,
         "_safe_error_text": _safe_error_text,
         "MAX_NODE_NAME": 63,
+        "PING_PAUSE_MAX_MS": 30 * 24 * 60 * 60 * 1000,
         "CLAIM_CODE_TTL_MS": 10 * 60 * 1000,
         "CLAIM_CODE_MAX_ATTEMPTS": 5,
         "OWNERSHIP_TRANSFER_TTL_MS": 24 * 60 * 60 * 1000,

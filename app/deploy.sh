@@ -1062,9 +1062,6 @@ deploy_target_is_changed() {
             world)
                 base="${DEPLOY_VERIFY_WORLD_URL:-https://world.forkmesh.com}"
                 ;;
-            www)
-                base="${DEPLOY_VERIFY_WWW_URL:-https://forkmesh.com}"
-                ;;
         esac
         if [ "$target" != "app" ]; then
             headers="$(curl -sSI --max-time 15 "${base%/}/" 2>/dev/null || true)"
@@ -1133,13 +1130,6 @@ deploy_static_target() {
                 _split_check "${base%/}/" world 200
                 _split_check "${base%/}/world/world.js" world 200
                 ;;
-            www)
-                local base="${DEPLOY_VERIFY_WWW_URL:-https://forkmesh.com}"
-                _split_check "${base%/}/" www 200
-                _split_check "${base%/}/pricing" www 200
-                _split_check "${base%/}/blog" www 200
-                _split_check "${base%/}/docs/" www 200
-                ;;
         esac
         local fingerprint_headers fingerprint_live
         fingerprint_headers="$(curl -sSI --max-time 20 "${base%/}/" 2>/dev/null || true)"
@@ -1159,28 +1149,11 @@ deploy_static_target() {
 }
 
 deploy_app_version() {
-    if [ "${FORKMESH_PRESERVE_LEGACY_HOSTS:-0}" != "1" ]; then
-        pywrangler deploy --env "" \
-            --var "BUILD_REV:${BUILD_REV}" \
-            --var "APP_VERSION:${APP_VERSION}" \
-            --var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}" \
-            --var "DEPLOY_FINGERPRINT:${DEPLOY_TARGET_FINGERPRINT}"
-        return
-    fi
-    local cutover_config
-    cutover_config="$(mktemp "./wrangler.cutover.XXXXXX.toml")"
-    (
-        trap 'rm -f -- "$cutover_config"' EXIT
-        cp wrangler.toml "$cutover_config"
-        sed -i 's/build_site_assets.py app/build_site_assets.py cutover/' "$cutover_config"
-        printf '\n[[routes]]\npattern = "forkmesh.com"\ncustom_domain = true\n' >>"$cutover_config"
-        printf '\n[[routes]]\npattern = "www.forkmesh.com"\ncustom_domain = true\n' >>"$cutover_config"
-        pywrangler deploy --config "$cutover_config" --env "" \
-            --var "BUILD_REV:${BUILD_REV}" \
-            --var "APP_VERSION:${APP_VERSION}" \
-            --var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}" \
-            --var "DEPLOY_FINGERPRINT:${DEPLOY_TARGET_FINGERPRINT}"
-    )
+    pywrangler deploy --env "" \
+        --var "BUILD_REV:${BUILD_REV}" \
+        --var "APP_VERSION:${APP_VERSION}" \
+        --var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}" \
+        --var "DEPLOY_FINGERPRINT:${DEPLOY_TARGET_FINGERPRINT}"
 }
 
 deploy_edge_control_version() {
@@ -1453,15 +1426,6 @@ retire_legacy_api_worker() {
     return "$status"
 }
 
-initial_official_cutover_needed() {
-    official_multi_host_enabled || return 1
-    command -v curl >/dev/null 2>&1 || return 0
-    local marker
-    marker="$(curl -sSI --max-time 20 https://forkmesh.com/ 2>/dev/null | \
-        awk -F': *' 'tolower($1) == "x-forkmesh-worker" { value=$2 } END { sub(/\r$/, "", value); print value }')"
-    [ "$marker" != "www" ]
-}
-
 publish_preserving_router_identity() {
     if ! command -v curl >/dev/null 2>&1; then
         echo "ERROR: curl is required to preserve and verify the live edge router identity." >&2
@@ -1492,24 +1456,15 @@ deploy_changed_workers() {
         fi
         return
     fi
-    if initial_official_cutover_needed; then
-        DEPLOY_VERIFY_URL="${DEPLOY_VERIFY_URL:-https://forkmesh.com}" \
-            FORKMESH_FORCE_DEPLOY=1 FORKMESH_PRESERVE_LEGACY_HOSTS=1 "$0" app
-        "$0" world
-        "$0" www
-        FORKMESH_FORCE_DEPLOY=1 "$0" app
-    else
-        "$0" app
-        "$0" world
-        "$0" www
-    fi
+    "$0" app
+    "$0" world
     retire_legacy_api_worker
 }
 
 case "${1:-deploy}" in
     deploy)
         deploy_changed_workers
-        echo "Done: app, world, and www were checked in migration-safe cutover order."
+        echo "Done: app and world were checked in migration-safe order."
         ;;
     changed)
         deploy_changed_workers
@@ -1521,7 +1476,7 @@ case "${1:-deploy}" in
     rotate-mirror-router)
         FORKMESH_ALLOW_ROUTER_KEY_ROTATION=1 FORKMESH_FORCE_DEPLOY=1 "$0" app
         ;;
-    world|www)
+    world)
         deploy_static_target "$1"
         ;;
     status)
@@ -1569,7 +1524,7 @@ case "${1:-deploy}" in
                         wrangler deploy --config wrangler.toml --dry-run
                 )
                 ;;
-            world|www)
+            world)
                 (
                     cd "../$target"
                     npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.120.0}" -- \
@@ -1583,7 +1538,7 @@ case "${1:-deploy}" in
         esac
         ;;
     *)
-        echo "Usage: $0 [deploy|changed|app|rotate-mirror-router|world|www|status|post-deploy-verify|republish-release-binary|secrets|validate-secrets|dev|dry-run [target]]" >&2
+        echo "Usage: $0 [deploy|changed|app|rotate-mirror-router|world|status|post-deploy-verify|republish-release-binary|secrets|validate-secrets|dev|dry-run [target]]" >&2
         exit 2
         ;;
 esac

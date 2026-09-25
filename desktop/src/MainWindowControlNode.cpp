@@ -2983,7 +2983,6 @@ QWidget *MainWindow::buildSiteDeployCard()
         {QStringLiteral("changed"), QStringLiteral("Deploy changed workers")},
         {QStringLiteral("app"), QStringLiteral("Deploy app")},
         {QStringLiteral("world"), QStringLiteral("Deploy World")},
-        {QStringLiteral("www"), QStringLiteral("Deploy www")},
     };
     for (const auto &target : targets) {
         auto *button = new QPushButton(target.second);
@@ -2997,7 +2996,7 @@ QWidget *MainWindow::buildSiteDeployCard()
         button->setToolTip(
             target.first == QLatin1String("changed")
                 ? QStringLiteral(
-                      "Deploy only app, World, or www workers whose "
+                      "Deploy only app or World workers whose "
                       "input fingerprint changed")
                 : QStringLiteral(
                       "Deploy %1 only if its inputs changed since its last "
@@ -3054,7 +3053,7 @@ void MainWindow::runSiteDeploy(const QString &target)
     }
     static const QSet<QString> allowedTargets = {
         QStringLiteral("changed"), QStringLiteral("app"),
-        QStringLiteral("world"), QStringLiteral("www")};
+        QStringLiteral("world")};
     const QString deployTarget = target.trimmed().toLower();
     if (!allowedTargets.contains(deployTarget)) {
         flashMessage(QStringLiteral("Unknown Worker deployment target."), true);

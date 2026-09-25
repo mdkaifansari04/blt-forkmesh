@@ -373,14 +373,8 @@ def test_governance_api_denies_unverified_vote_and_records_external_revenue():
 def test_worker_route_schema_docs_and_cleanup_are_wired():
     entry = (SRC / "entry.py").read_text(encoding="utf-8")
     schema = (SRC / "schema.py").read_text(encoding="utf-8")
-    docs = (
-            ROOT.parent / "www" / "docs" / "community-ad-governance.md"
-    ).read_text(encoding="utf-8")
     assert 'community_ads_api = _LazyModule("community_ads_api")' in entry
     assert 'url.path == "/api/world/community-ads"' in entry
     assert "world_community_ads_handler" in entry
     assert "await community_ads_api.cleanup(runtime)" in entry
     assert "CREATE TABLE IF NOT EXISTS community_ad_proposals" in schema
-    assert "one eligible verified account" in docs
-    assert "does not use profiles" in " ".join(docs.split())
-    assert "not user funds" in docs

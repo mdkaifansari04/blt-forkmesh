@@ -934,14 +934,8 @@ def test_refresh_health_timeout_default_and_example_allow_tunnel_startup():
             PACKAGING / "ssh" / "ssh-refresh.json.example"
         ).read_text(encoding="utf-8")
     )
-    schema = json.loads(
-        (
-            PROJECT_ROOT / "www" / "docs" / "ssh-post-receive-refresh.schema.json"
-        ).read_text(encoding="utf-8")
-    )
     assert bridge.DEFAULT_HEALTH_TIMEOUT_SECONDS == 180
     assert example["healthTimeoutSeconds"] == 180
-    assert schema["properties"]["healthTimeoutSeconds"]["default"] == 180
 
 
 def test_tunnel_restarts_with_the_mirror_gateway():

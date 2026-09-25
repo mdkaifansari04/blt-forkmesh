@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script src="/api-client.js?v=583e3a3d9d7b"></script>
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Community mirror rewards - ForkMesh</title>
+    <meta
+      name="description"
+      content="See ForkMesh’s transparent, non-custodial mainnet reward pool, mirror eligibility policy, pending allocations, and finalized transfers."
+    />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#09090b" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="/mirror-payouts.js?v=6b994b11b7ab" defer></script>
+    <style>
+      body {
+        min-height: 100vh;
+        color: #f5f5f5;
+        background:
+          radial-gradient(circle at top, rgba(255, 255, 255, 0.16), transparent 32rem),
+          #050505;
+      }
+
+      .auth-shell {
+        min-height: calc(100vh - 3.5rem);
+        display: grid;
+        place-items: center;
+        padding: 28px 16px;
+      }
+
+      .auth-card {
+        width: min(100%, 560px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 18px;
+        background: rgba(8, 8, 8, 0.88);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+        padding: 22px;
+      }
+
+      .auth-card .brand {
+        width: fit-content;
+        margin: 0 auto 18px;
+      }
+
+      .join-eyebrow {
+        display: inline-flex; align-items: center; gap: 8px;
+        color: rgba(255, 255, 255, 0.7); font-weight: 650; font-size: 12px;
+        justify-content: center; width: 100%;
+      }
+      .join-title {
+        font-size: clamp(26px, 6vw, 38px); font-weight: 800; line-height: 1.04;
+        text-align: center; margin: 8px 0 10px; color: #ffffff;
+      }
+      .join-sub { color: rgba(255, 255, 255, 0.62); text-align: center; max-width: 460px;
+        margin: 0 auto 16px; line-height: 1.5; font-size: 13px; }
+      #mp-node { color: rgba(255, 255, 255, 0.62); }
+      #mp-node a { color: #ffffff; }
+      .calc {
+        border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.035);
+        border-radius: 14px; padding: 14px; margin-bottom: 16px;
+      }
+      .calc h3 { color: #ffffff; margin: 0 0 12px; font-size: 14px; }
+      .calc-row {
+        display: grid; grid-template-columns: 1fr auto 1fr auto 1fr;
+        align-items: center; gap: 10px;
+      }
+      .calc-row .op { font-size: 18px; color: rgba(255, 255, 255, 0.52); text-align: center; }
+      .calc-cell { text-align: center; }
+      .calc-cell .cap { color: rgba(255, 255, 255, 0.52); font-size: 12px; margin-bottom: 6px; }
+      .calc-cell .big { font-size: 18px; font-weight: 700; }
+      .calc-cell .small { color: rgba(255, 255, 255, 0.52); font-size: 12px; margin-top: 4px; }
+      .calc-note { color: rgba(255, 255, 255, 0.52); font-size: 12px; text-align: center;
+        margin-top: 14px; }
+      .flow {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+        color: rgba(255, 255, 255, 0.62); margin-bottom: 12px;
+      }
+      .flow div {
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        padding: 10px;
+        font-size: 12px;
+      }
+      .flow strong { color: #ffffff; display: block; margin-bottom: 4px; }
+      .custody-notice {
+        border: 1px solid rgba(158, 247, 198, 0.38);
+        border-left: 3px solid #9ef7c6;
+        border-radius: 12px;
+        background: rgba(158, 247, 198, 0.07);
+        padding: 12px 14px;
+        margin-bottom: 16px;
+        color: rgba(255, 255, 255, 0.72);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .custody-notice strong {
+        display: block;
+        margin-bottom: 4px;
+        color: #ffffff;
+        font-size: 13px;
+      }
+      .row-links { text-align: center; margin-top: 14px; color: rgba(255, 255, 255, 0.58); font-size: 13px; }
+      .row-links a { color: #ffffff; }
+
+      @media (max-width: 620px) {
+        .auth-card { padding: 18px; }
+        .calc-row { grid-template-columns: 1fr; }
+        .calc-row .op { display: none; }
+        .flow { grid-template-columns: 1fr; }
+      }
+    </style>
+    <link rel="stylesheet" href="/auth-page-theme.css" />
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js?v=2451d5d35a23" defer></script>
+  </head>
+  <body>
+    <div data-forkmesh-header="simple"></div>
+    <main class="auth-shell">
+      <section class="auth-card" aria-labelledby="mp-title">
+      <a class="brand" href="/" aria-label="ForkMesh home">
+        <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
+      </a>
+      <span class="join-eyebrow">⬡ Community mirror incentives</span>
+      <h1 id="mp-title" class="join-title">Transparent mirror rewards</h1>
+      <p class="join-sub">
+        Healthy, integrity-verified nodes that actively mirror ForkMesh may be
+        selected for configurable community incentives. Selection is auditable;
+        a reward is never promised.
+      </p>
+      <p class="join-sub" id="mp-node"><span class="fm-spinner" aria-hidden="true"></span>Loading your node…</p>
+
+      <div class="custody-notice" role="note" aria-label="Non-custodial wallet notice">
+        <strong>Non-custodial payout wallet</strong>
+        Your payout address belongs to you. Wallet keys and recovery phrases stay
+        on your device; ForkMesh never asks you to upload them. User-owned funds,
+        community-pool funds, pending rewards, and completed on-chain transfers
+        are separate states. The public community pool is signed only by the
+        first instance owner’s local Qt client; the Worker stores unsigned plans
+        and finalized public signatures, never the pool private key. Rewards are
+        community incentives, not investments or guaranteed returns.
+      </div>
+
+      <div class="calc">
+        <h3>Current randomized policy</h3>
+        <div class="calc-row">
+          <div class="calc-cell">
+            <div class="cap">Nodes online</div>
+            <div class="big" id="calc-nodes">...</div>
+          </div>
+          <div class="op">×</div>
+          <div class="calc-cell">
+            <div class="cap">Configured reward</div>
+            <div class="big" id="calc-reward">...</div>
+            <div class="small">per selected round</div>
+          </div>
+          <div class="op">=</div>
+          <div class="calc-cell">
+            <div class="cap">Recipients</div>
+            <div class="big">1 eligible node</div>
+            <div class="small">public entropy + snapshot</div>
+          </div>
+        </div>
+        <p class="calc-note">
+          Eligibility requires fresh signed presence, a healthy HTTPS endpoint,
+          a verified forkmesh/forkmesh refs proof, no abuse flag, minimum
+          server-observed uptime, and a valid public payout address. An approved
+          federated relay must forward the original node-signed registration and
+          fresh repository-health message; a wallet-only relay claim is never
+          eligible.
+        </p>
+      </div>
+
+      <div class="calc" id="split-card">
+        <h3>Public pool state</h3>
+        <div class="calc-row">
+          <div class="calc-cell">
+            <div class="cap">Network</div>
+            <div class="big" id="pool-network">mainnet-beta</div>
+            <div class="small">production; test networks require explicit development configuration</div>
+          </div>
+          <div class="op">+</div>
+          <div class="calc-cell">
+            <div class="cap">Public balance</div>
+            <div class="big" id="pool-balance">...</div>
+            <div class="small">on-chain, not an estimate</div>
+          </div>
+          <div class="op">=</div>
+          <div class="calc-cell">
+            <div class="cap">Recent transfers</div>
+            <div class="big" id="pool-transfers">...</div>
+            <div class="small">finalized signatures only</div>
+          </div>
+        </div>
+        <p class="calc-note">
+          Contributors transfer directly from their own wallet to the public
+          pool and choose either the randomized trickle pool or an externally
+          signed all-eligible-node intent. Visual coins never prove a transfer.
+        </p>
+      </div>
+
+      <div class="flow">
+        <div><strong>You mirror code</strong>Your node stores and serves Git repositories, keeping the network decentralized.</div>
+        <div><strong>You may receive rewards</strong>Eligible, healthy nodes may receive configurable community incentives after the local signer and on-chain finality checks. No reward is promised.</div>
+      </div>
+
+      <p class="row-links">
+        Use a compatible external self-custodial Solana wallet you independently
+        trust. ForkMesh only needs its public payout address—never its private key
+        or recovery phrase.
+      </p>
+      <p class="row-links">
+        <a href="/world?landmark=fountain">Join or fund the community reward program →</a>
+        Contributions are voluntary direct wallet transfers and do not purchase
+        ownership, governance control, guaranteed rewards, or returns.
+      </p>
+      <p class="row-links"><a href="/dashboard">← Back to dashboard</a></p>
+      </section>
+    </main>
+  </body>
+</html>

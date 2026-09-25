@@ -6,7 +6,7 @@ import re
 
 
 HEADERS = (
-    Path(__file__).resolve().parents[2] / "www" / "public" / "_headers"
+    Path(__file__).resolve().parents[1] / "public" / "_headers"
 ).read_text(encoding="utf-8")
 ENTRY_PATH = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 ENTRY = ENTRY_PATH.read_text(encoding="utf-8")

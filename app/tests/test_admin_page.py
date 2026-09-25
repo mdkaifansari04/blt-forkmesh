@@ -73,7 +73,7 @@ def test_every_web_logout_calls_the_logout_endpoint():
     # open the admin page (adhoc #184).
     repository = ENTRY_PATH.parents[2]
     surfaces = (
-        repository / "www" / "public" / "site-header.js",
+        repository / "app" / "public" / "site-header.js",
         repository / "app" / "public" / "dashboard" / "js" / "02-helpers.js",
         repository / "app" / "public" / "dashboard.js",
     )

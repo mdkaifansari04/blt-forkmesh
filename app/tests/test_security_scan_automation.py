@@ -204,22 +204,6 @@ def test_osv_findings_include_advisory_ids_without_exploit_text():
     assert findings[0]["evidence"]["redacted"] is True
 
 
-def test_published_schema_requires_redaction_and_scan_limitations():
-    schema = json.loads(
-        (ROOT / "www" / "docs" / "security-scan.schema.json").read_text(encoding="utf-8")
-    )
-    required = set(schema["required"])
-    assert {"visibility", "scanner", "policy", "scan", "findings", "notices"} <= required
-    visibility = schema["properties"]["visibility"]["properties"]
-    assert visibility["containsSourceExcerpts"]["const"] is False
-    assert visibility["containsSecretValues"]["const"] is False
-    finding_evidence = (
-        schema["properties"]["findings"]["items"]["properties"]["evidence"]
-    )
-    assert finding_evidence["additionalProperties"] is False
-    assert finding_evidence["properties"]["redacted"]["const"] is True
-
-
 def test_fatal_scanner_error_still_has_a_public_redacted_status_artifact(tmp_path):
     report = scan_module.failed_report(
         tmp_path,
@@ -239,13 +223,7 @@ def test_rich_report_converts_to_compact_world_clipboard(tmp_path):
         tmp_path, repository_name="test/repository", offline=True
     )
     compact = scan_module.clipboard_report(rich)
-    schema = json.loads(
-        (ROOT / "www" / "docs" / "security-clipboard.schema.json").read_text(
-            encoding="utf-8"
-        )
-    )
 
-    assert set(schema["required"]) <= set(compact)
     assert compact["status"] == rich["status"]
     assert compact["commitHash"] == rich["repository"]["commit"]
     assert compact["findings"]["critical"] == rich["summary"]["bySeverity"]["critical"]
@@ -424,7 +402,6 @@ def test_scanner_bounds_findings_and_marks_truncation(monkeypatch, tmp_path):
     report = scan_module.build_report(
         tmp_path,
         repository_name="test/repository",
-        policy_path=ROOT / "www" / "docs" / "security-scan-policy.json",
         offline=True,
     )
     assert len(report["findings"]) == scan_module.MAX_PUBLIC_FINDINGS

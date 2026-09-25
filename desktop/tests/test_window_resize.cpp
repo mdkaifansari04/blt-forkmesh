@@ -2903,11 +2903,11 @@ int main(int argc, char *argv[])
               window.findChild<QPushButton *>(
                   QStringLiteral("siteDeployWorldButton")) != nullptr &&
               window.findChild<QPushButton *>(
-                  QStringLiteral("siteDeployWwwButton")) != nullptr &&
+                  QStringLiteral("siteDeployWwwButton")) == nullptr &&
               window.findChild<QPushButton *>(
                   QStringLiteral("siteDeployApiButton")) == nullptr,
           QStringLiteral(
-              "site deployment offers changed-only, app, World and www actions"));
+              "site deployment offers changed-only, app and World actions"));
     QLineEdit *controlTokenValue =
         window.findChild<QLineEdit *>(QStringLiteral("controlTokenValue"));
     QTableWidget *controlTokenTable = window.findChild<QTableWidget *>(

@@ -7,16 +7,6 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[2]
 APP_PUBLIC = PROJECT / "app" / "public"
-WWW_PUBLIC = PROJECT / "www" / "public"
-SIMPLE_HEADER_PAGES = (
-    WWW_PUBLIC / "features.html",
-    WWW_PUBLIC / "terms.html",
-    WWW_PUBLIC / "careers.html",
-    WWW_PUBLIC / "changelog.html",
-    WWW_PUBLIC / "privacy.html",
-    APP_PUBLIC / "status.html",
-    WWW_PUBLIC / "desktop.html",
-)
 
 
 def _read(path: Path) -> str:
@@ -51,24 +41,9 @@ def _assert_declarations(
         )
 
 
-def test_shared_simple_header_mounts_on_requested_pages():
-    for page in SIMPLE_HEADER_PAGES:
-        html = _read(page)
-        body = html[html.index("<body") :]
-
-        assert 'href="/site-header.css"' in html, f"{page.name} missing header CSS"
-        assert 'src="/site-header.js?v=' in html, f"{page.name} missing header JS"
-        assert '<div data-forkmesh-header="simple"></div>' in body
-
-        assert 'class="site-header"' not in body
-        assert 'class="global-nav"' not in body
-        assert 'aria-label="Primary"' not in body
-        assert "<header" not in body
-
-
 def test_shared_simple_header_renderer_contains_blt_header_contract():
-    js = _read(WWW_PUBLIC / "site-header.js")
-    css = _read(WWW_PUBLIC / "site-header.css")
+    js = _read(APP_PUBLIC / "site-header.js")
+    css = _read(APP_PUBLIC / "site-header.css")
 
     for marker in (
         'querySelectorAll("[data-forkmesh-header]")',
@@ -104,38 +79,26 @@ def test_shared_simple_header_renderer_contains_blt_header_contract():
         assert marker in css
 
 
-UNIVERSAL_HEADER_PAGES = SIMPLE_HEADER_PAGES + (
-    WWW_PUBLIC / "about.html",
-    WWW_PUBLIC / "press.html",
-    WWW_PUBLIC / "blog.html",
-    WWW_PUBLIC / "pricing.html",
-    WWW_PUBLIC / "outreach.html",
-    WWW_PUBLIC / "security-report.html",
-    WWW_PUBLIC / "404.html",
-    WWW_PUBLIC / "docs.html",
-    WWW_PUBLIC / "docs" / "index.html",
+UNIVERSAL_HEADER_PAGES = (
+    APP_PUBLIC / "404.html",
 )
 
 
-def test_universal_header_mounts_on_every_page_except_home():
-    # One shared, session-aware header across the site. The home page keeps
-    # its own hero header; the dashboard SPA keeps its in-app chrome. Docs
-    # mounts it too, with its own search toolbar below.
+def test_universal_header_mounts_on_every_site_page():
+    # One shared, session-aware header across the site. The dashboard (which
+    # is also the home page: `/` redirects to it) keeps its in-app chrome.
     for page in UNIVERSAL_HEADER_PAGES:
         html = _read(page)
         assert 'href="/site-header.css"' in html, f"{page.name} missing header CSS"
         assert 'src="/site-header.js?v=' in html, f"{page.name} missing header JS"
         assert '<div data-forkmesh-header="simple"></div>' in html, page.name
 
-    home = _read(WWW_PUBLIC / "index.html")
-    assert "data-forkmesh-header" not in home
-
 
 def test_universal_header_is_session_aware():
     # A logged-in visitor sees their account chip (Dashboard / Profile / Log
     # out) instead of the old hardcoded Sign Up / Log In links — the reported
     # bug was /chat showing "Sign Up / Log In" to a logged-in user.
-    js = _read(WWW_PUBLIC / "site-header.js")
+    js = _read(APP_PUBLIC / "site-header.js")
 
     assert 'localStorage.getItem("forkmesh.session"' in js
     assert "function buildAccountArea(" in js
@@ -153,7 +116,7 @@ def test_universal_header_is_session_aware():
 
 
 def test_universal_header_organizes_blt_pages():
-    js = _read(WWW_PUBLIC / "site-header.js")
+    js = _read(APP_PUBLIC / "site-header.js")
 
     for href in (
         "/dashboard",
@@ -189,7 +152,7 @@ def test_universal_header_organizes_blt_pages():
 
 
 def test_universal_header_uses_private_fixed_palette():
-    css = _read(WWW_PUBLIC / "site-header.css")
+    css = _read(APP_PUBLIC / "site-header.css")
 
     _assert_declarations(
         css,
@@ -232,7 +195,7 @@ def test_universal_header_uses_private_fixed_palette():
 
 
 def test_universal_header_does_not_reference_host_page_palette():
-    css = _read(WWW_PUBLIC / "site-header.css")
+    css = _read(APP_PUBLIC / "site-header.css")
     host_tokens = (
         "--background",
         "--bg",
@@ -260,7 +223,7 @@ def test_universal_header_does_not_reference_host_page_palette():
 
 
 def test_universal_header_defaults_to_light_theme():
-    js = _read(WWW_PUBLIC / "site-header.js")
+    js = _read(APP_PUBLIC / "site-header.js")
 
     assert 'return "light";' in js
     assert "fm-header-desktop-nav" in js
@@ -268,7 +231,7 @@ def test_universal_header_defaults_to_light_theme():
 
 
 def test_universal_header_signup_uses_blt_red_cta():
-    css = _read(WWW_PUBLIC / "site-header.css")
+    css = _read(APP_PUBLIC / "site-header.css")
     expected = {
         "background": "linear-gradient(to bottom, #ef4444, #dc2626)",
         "color": "#ffffff",
@@ -283,17 +246,3 @@ def test_universal_header_signup_uses_blt_red_cta():
             "color": "#ffffff",
         },
     )
-
-
-def test_blog_posts_mount_universal_header():
-    # Blog posts used to carry their own mini header; they now mount the same
-    # universal header as the rest of the site.
-    posts = sorted((WWW_PUBLIC / "blog").glob("*/index.html"))
-    assert posts
-    for page in posts:
-        html = _read(page)
-        assert 'href="/site-header.css"' in html, f"{page} missing header CSS"
-        assert 'src="/site-header.js?v=' in html, f"{page} missing header JS"
-        assert '<div data-forkmesh-header="simple"></div>' in html, page
-        assert '<header class="top">' not in html, page
-        assert 'class="global-nav"' not in html, page

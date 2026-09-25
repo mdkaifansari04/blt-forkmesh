@@ -13,15 +13,13 @@ from _dashboard_bundle import assembled_dashboard_js
 
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-WWW_PUBLIC = PUBLIC.parents[1] / "www" / "public"
 # The dashboard shell is split into HTML partials and prebuilt before deploy;
 # assert against the assembled document a browser actually receives.
 DASHBOARD = assembled_dashboard()
 # dashboard.js is likewise built from ordered public/dashboard/js/*.js fragments
 # before deploy (see src/dashboard_bundle.py).
 DASHBOARD_JS = assembled_dashboard_js()
-STYLES = (WWW_PUBLIC / "styles.css").read_text(encoding="utf-8")
-INDEX = (WWW_PUBLIC / "index.html").read_text(encoding="utf-8")
+STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 
 
 def test_dashboard_has_open_closed_all_filter_defaulting_to_open():
@@ -278,12 +276,6 @@ def test_dashboard_js_issue_panel_warns_with_a_retry_button_on_gaps():
         : DASHBOARD_JS.index("[data-repo-issues-reload]") + 400
     ]
     assert "loadRepoIssues(state.selectedRepo);" in reload
-
-
-def test_homepage_links_to_active_nodes():
-    # The homepage surfaces a link to the live network/active-nodes page.
-    assert 'href="/network"' in INDEX
-    assert "View active nodes" in INDEX
 
 
 def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():

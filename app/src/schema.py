@@ -1921,6 +1921,14 @@ SCHEMA_STATEMENTS = [
     "ON organization_tasks(org_bi, qa_requested_at, qa_reviewed_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_organization_tasks_global_priority "
     "ON organization_tasks(org_bi, priority, completed_at, updated_at DESC)",
+    # The task list orders by (completed_at>0, priority, updated_at DESC,
+    # task_id DESC) with LIMIT/OFFSET. No index above matches that order, so
+    # every page sorted the organization's whole task set. This expression
+    # index lets SQLite walk the rows in list order and stop at the page
+    # boundary.
+    "CREATE INDEX IF NOT EXISTS idx_organization_tasks_list_order "
+    "ON organization_tasks(org_bi, (completed_at>0), priority, "
+    "updated_at DESC, task_id DESC)",
     "UPDATE organization_tasks SET priority=99 WHERE priority>99",
     """CREATE UNIQUE INDEX IF NOT EXISTS
         idx_organization_tasks_one_active_assignee
@@ -1982,6 +1990,66 @@ SCHEMA_STATEMENTS = [
         created_at INTEGER NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_organization_task_checkins_task "
     "ON organization_task_checkins(org_bi, task_id, created_at DESC)",
+    # Replies are encrypted response records, never task columns: the copy and
+    # the author name live sealed in `data`, exactly like task copy. The
+    # trigger evicts the oldest reply before admitting the next one, so a busy
+    # task keeps bounded context without an admission gate on new tasks.
+    """CREATE TABLE IF NOT EXISTS organization_task_responses (
+        response_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        org_bi TEXT NOT NULL,
+        author_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_task_responses_task "
+    "ON organization_task_responses(org_bi, task_id, created_at DESC)",
+    """CREATE TRIGGER IF NOT EXISTS trg_organization_task_response_limit
+        BEFORE INSERT ON organization_task_responses
+        WHEN (
+            SELECT COUNT(*) FROM organization_task_responses
+            WHERE org_bi=NEW.org_bi AND task_id=NEW.task_id
+        ) >= 50
+        BEGIN
+            DELETE FROM organization_task_responses
+            WHERE response_id = (
+                SELECT response_id FROM organization_task_responses
+                WHERE org_bi=NEW.org_bi AND task_id=NEW.task_id
+                ORDER BY created_at ASC, response_id ASC LIMIT 1
+            );
+        END""",
+    # Every recorded thing that has happened to one task, in one append-only
+    # timeline. The plaintext columns carry only the bounded event kind, the
+    # blind index of the account that acted, and the timestamp; the actor
+    # name, the human summary, and the @mentions it named stay sealed.
+    """CREATE TABLE IF NOT EXISTS organization_task_events (
+        event_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        org_bi TEXT NOT NULL,
+        actor_bi TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN (
+            'created','updated','started','stopped','checkin','replied',
+            'completed','reopened','returned','qa_requested','qa_reviewed',
+            'deleted')),
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_task_events_task "
+    "ON organization_task_events(org_bi, task_id, created_at DESC)",
+    # The writer trims before inserting, so this trigger is the race-safe
+    # backstop rather than the primary bound.
+    """CREATE TRIGGER IF NOT EXISTS trg_organization_task_event_limit
+        BEFORE INSERT ON organization_task_events
+        WHEN (
+            SELECT COUNT(*) FROM organization_task_events
+            WHERE org_bi=NEW.org_bi AND task_id=NEW.task_id
+        ) >= 250
+        BEGIN
+            DELETE FROM organization_task_events
+            WHERE event_id = (
+                SELECT event_id FROM organization_task_events
+                WHERE org_bi=NEW.org_bi AND task_id=NEW.task_id
+                ORDER BY created_at ASC, event_id ASC LIMIT 1
+            );
+        END""",
     """CREATE TABLE IF NOT EXISTS organization_task_qa_reviews (
         task_id TEXT NOT NULL,
         org_bi TEXT NOT NULL,
@@ -2717,6 +2785,54 @@ SCHEMA_STATEMENTS = [
         dur_ms_sum INTEGER NOT NULL DEFAULT 0,
         dur_ms_max INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(minute_ts, route_group, status_class))""",
+    # Private personal calendars and organization calendars. Event copy,
+    # description, location, attendee names and reminder settings live
+    # encrypted in `data`; the plaintext columns are only the bounded indexes
+    # an authorized date-range read and the reminder scan need.
+    """CREATE TABLE IF NOT EXISTS calendar_events (
+        event_id TEXT PRIMARY KEY,
+        owner_bi TEXT NOT NULL,
+        owner_name TEXT NOT NULL,
+        org_bi TEXT NOT NULL DEFAULT '',
+        org_name TEXT NOT NULL DEFAULT '',
+        start_at INTEGER NOT NULL,
+        end_at INTEGER NOT NULL,
+        all_day INTEGER NOT NULL DEFAULT 0 CHECK (all_day IN (0,1)),
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        recurring INTEGER NOT NULL DEFAULT 0 CHECK (recurring IN (0,1)),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        data TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_calendar_events_owner_range "
+    "ON calendar_events(owner_bi, start_at, end_at)",
+    "CREATE INDEX IF NOT EXISTS idx_calendar_events_org_range "
+    "ON calendar_events(org_bi, start_at, end_at)",
+    "CREATE INDEX IF NOT EXISTS idx_calendar_events_reminders "
+    "ON calendar_events(recurring, start_at)",
+    """CREATE TABLE IF NOT EXISTS calendar_attendees (
+        event_id TEXT NOT NULL
+            REFERENCES calendar_events(event_id) ON DELETE CASCADE,
+        attendee_bi TEXT NOT NULL,
+        attendee_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+            CHECK (status IN (
+                'pending','accepted','declined','tentative')),
+        created_at INTEGER NOT NULL,
+        responded_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (event_id, attendee_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_calendar_attendees_account "
+    "ON calendar_attendees(attendee_bi, event_id)",
+    # One row per reminder actually delivered, so a re-scan of the same window
+    # never pings the same person twice for the same occurrence.
+    """CREATE TABLE IF NOT EXISTS calendar_reminder_deliveries (
+        event_id TEXT NOT NULL
+            REFERENCES calendar_events(event_id) ON DELETE CASCADE,
+        occurrence_at INTEGER NOT NULL,
+        recipient_bi TEXT NOT NULL,
+        offset_minutes INTEGER NOT NULL,
+        delivered_at INTEGER NOT NULL,
+        PRIMARY KEY (
+            event_id, occurrence_at, recipient_bi, offset_minutes))""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

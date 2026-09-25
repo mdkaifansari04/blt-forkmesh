@@ -1,0 +1,125 @@
+(() => {
+  const state = {
+    repositories: [],
+    externalRepositories: [],
+    externalRepositoriesLoading: false,
+    externalRepositorySelection: new Set(),
+    filteredRepositories: [],
+    filteredGroups: [],
+    repositoriesLoading: true,
+    page: 1,
+    pageSize: 5,
+    selectedRepo: null,
+    fetchJsonInflight: {},
+    fetchJsonCache: {},
+    selectedBranches: {},
+    repoBranches: {},
+    repoBranchQueries: {},
+    repoPullMetadataCommits: {},
+    repoPullMetadataInflight: {},
+    repoCollectionPages: {},
+    session: null,
+    // Public-profile mode (/@name): the FOREIGN account whose profile the
+    // page is showing, or null when the profile pages show the session user.
+    publicProfile: null,
+    repoFileFinder: {
+      repoKey: "",
+      files: [],
+      indexed: false,
+      indexing: false,
+      partial: false,
+      error: "",
+      selectedIndex: 0,
+    },
+    nodeNameAvailability: {
+      candidate: "",
+      available: false,
+      checking: false,
+      seq: 0,
+    },
+    notifications: [],
+    notificationUnread: 0,
+    selectedNotificationId: "",
+    issuesView: { filter: "open", items: [], query: "" },
+    // Projects tab (issue #384): projects link issues + a milestone and carry
+    // start/end dates; "gantt" is the default sub-view, "list" the fallback.
+    projectsView: { filter: "open", mode: "gantt", items: [] },
+    claimNode: { pendingNodeId: "" },
+    linkGrant: null,
+    repoMirrors: [],
+    repoLatestCommit: null,
+    repoServedBy: null,
+    // Owner-only "Agents" tab (adhoc #225): owner verification by node account,
+    // no password required. selectedAgentId (adhoc #259) is the id of the agent
+    // whose detail page - live transcript + prompt - is currently open, or null
+    // for the session list.
+    agentsView: { agents: [], selectedAgentId: null, selectedAgentComposerMode: "" },
+    // Home left-rail "Active agent sessions" list (adhoc #81): aggregated,
+    // non-terminal agent runs across the repos the session can assign agents
+    // to. null until the first cross-repo fetch resolves so the panel can tell
+    // "loading" apart from "no active sessions".
+    homeAgentSessions: null,
+    // Home right-rail "Latest from the blog" (adhoc #381): the newest posts
+    // parsed from /blog/rss.xml. null until the feed read resolves so the card
+    // can tell "loading" apart from "feed unavailable".
+    homeBlogPosts: null,
+    // Organization aliases are not duplicate catalog publications: load the
+    // signed-in viewer's linked aliases separately so Top repositories can
+    // show the stable organization path with a clear owner label.
+    homeOrganizationRepositories: [],
+    repoCommitDetail: null,
+    repoRecordDetail: null,
+    // A pull page can have a running organization agent attached to its head
+    // branch. Keep the one short-lived timer here so navigating to another
+    // record always supersedes the previous live poll.
+    repoPullActivityRefreshTimer: 0,
+    // Last rendered pull/discussion list per kind, and the last rendered code
+    // tree listing. Both are held so the header search box can re-filter what
+    // is already on screen (adhoc #37) without a second mirror read.
+    repoCollectionItems: {},
+    repoTreeView: null,
+    profileContributions: {
+      range: null,
+      data: null,
+      loading: false,
+      error: "",
+      requestKey: "",
+      selectedDay: "",
+      cache: {},
+    },
+    settingsView: {
+      section: "public-profile",
+    },
+    // /dashboard/tasks (adhoc #24): the organization-private task catalog, read
+    // whole and then filtered and paged in the browser. `actor` is the relay's
+    // name for the signed-in member, used by the "Assigned to me" filter.
+    tasksView: {
+      items: [],
+      filter: "open",
+      query: "",
+      page: 1,
+      loading: true,
+      error: "",
+      actor: "",
+    },
+    notesView: {
+      items: [], selected: null, dirty: false, loading: true,
+      error: "", socket: null, clientId: "", draftTimer: 0,
+    },
+    globalSearch: {
+      open: false,
+      selectedIndex: 0,
+      results: [],
+      // The header search box also filters the page you are on, live, on top of
+      // whatever that page's own filter box holds (adhoc #37). Kept here rather
+      // than read off the input so a re-render after navigation still sees it.
+      pageQuery: "",
+    },
+  };
+
+  const $ = (selector) => document.querySelector(selector);
+  const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+  const MAX_REPO_FILE_FINDER_RESULTS = 500;
+  const MAX_REPO_FILE_FINDER_SECONDS = 6;
+  const REPO_COLLECTION_PAGE_SIZE = 25;
+  const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";

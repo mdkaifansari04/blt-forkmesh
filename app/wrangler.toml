@@ -9,7 +9,7 @@ preview_urls = true
 # code 100328 if this block is present.
 
 [build]
-command = "python3 tools/build_blt_home_css.py && python3 tools/build_dashboard_assets.py && python3 tools/build_worker_footprint.py && python3 tools/build_worker_python.py && python3 tools/build_site_assets.py app"
+command = "python3 tools/build_dashboard_assets.py && python3 tools/build_worker_footprint.py && python3 tools/build_worker_python.py && python3 tools/build_site_assets.py app"
 
 
 [assets]
@@ -29,13 +29,17 @@ run_worker_first = [
   "/favicon.ico",
   "/forgot-password",
   "/login",
-  # Public organization pages (bare org URL). Each org that gets a landing
-  # page needs its own literal entry here - a /* wildcard would drag every
-  # static asset through the Worker.
+  # Vanity bare-org URL. Every organization already has a working public page
+  # at /orgs/<name>, which needs no entry here: it is two segments, so the
+  # "/*/*" rule below already routes it, and "orgs" is a RESERVED_ROUTE_PREFIX
+  # so it is never read as /<owner>/<repo>. Only add a literal entry like the
+  # one below when an org should ALSO answer on its bare name - and note that
+  # doing so costs a deploy per org, which is why it is not the canonical
+  # form. A /* wildcard is still not an option: it would drag every static
+  # asset through the Worker.
   "/owasp-blt",
   "/reset-password",
   "/signup",
-  "/status",
   "/simulate-sentry-error",
   "/rss.xml",
   "/feed.xml",
@@ -67,11 +71,6 @@ run_worker_first = [
   "/*/*",
   "!/assets/*",
   "!/favicon/*",
-  # Landing document must stay on the ASSETS binding. Worker-first `/*.html`
-  # would hairpin ASSETS.fetch(/blt-home.html) back into the Worker as 404 →
-  # the `/` handler would then return 503 "unavailable".
-  "!/blt-home.html",
-  "!/blt-home.css",
 ]
 
 # BLT relay is served only on workers.dev until a custom hostname is ready.
@@ -99,6 +98,16 @@ REWARD_HEALTH_FRESH_MS = "600000"
 FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 WORKER_ROLE = "app"
 SINGLE_WORKER_SITE = "true"
+
+# This Worker has no `scheduled` handler: the once-a-minute maintenance batch
+# is kicked by forkmesh-edge-control's Cron Trigger into the ForkMeshCronRunner
+# Durable Object, which then keeps itself alive on alarms (a cold Pyodide
+# isolate cannot reliably finish a cron tick inside the invocation limits).
+# An empty list is REQUIRED to clear a trigger a previous deploy left attached
+# to this script - omitting or commenting out `crons` preserves it, and a
+# leftover trigger fires every minute into "Method scheduled does not exist".
+[triggers]
+crons = []
 
 [ai]
 binding = "AI"

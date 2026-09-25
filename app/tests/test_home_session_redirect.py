@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The root keeps the regular site and embeds ForkMesh World."""
+"""The root opens the dashboard: BLT has no landing page."""
 
 import sys
 import tomllib
@@ -7,8 +7,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "public"
-WWW_PUBLIC = ROOT.parent / "www" / "public"
-WORLD_PUBLIC = ROOT.parent / "world" / "public"
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -17,59 +15,40 @@ from static_routes import dashboard_section_redirect  # noqa: E402
 
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 ENTRY_TEXT = (SRC / "entry.py").read_text(encoding="utf-8")
-INDEX_HTML = (WWW_PUBLIC / "index.html").read_text(encoding="utf-8")
-WORLD_HTML = (WORLD_PUBLIC / "world" / "index.html").read_text(encoding="utf-8")
 
 COOKIE_SET = 'forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax'
 COOKIE_CLEAR = 'forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax'
 
 
 def _read(rel):
-    source = PUBLIC / rel
-    if not source.is_file():
-        source = WWW_PUBLIC / rel
-    return source.read_text(encoding="utf-8")
+    return (PUBLIC / rel).read_text(encoding="utf-8")
 
 
-def test_homepage_no_longer_client_redirects():
-    assert 'location.replace("/dashboard")' not in INDEX_HTML
-    assert "forkmesh.session" not in INDEX_HTML
-    assert 'data-world-mode="public"' in WORLD_HTML
-    # The World embed moved from a mid-page index.html section to a
-    # site-footer.js band pinned to the bottom of every page (adhoc #280).
-    footer_js = _read("site-footer.js")
-    assert 'src="/world/"' not in INDEX_HTML
-    assert 'src="/world/"' in footer_js
-    assert 'title="Interactive ForkMesh World"' in footer_js
-    assert "Open World full screen" in footer_js
-    assert "repositories, source code, documentation" in footer_js
-    assert 'src="/site-footer.js?v=' in INDEX_HTML
+def test_landing_page_is_gone():
+    # The home route is the dashboard; nothing stages or serves a landing
+    # document any more, so a port from ForkMesh cannot quietly bring one back.
+    for landing in ("index.html", "blt-home.html", "blt-home.css"):
+        assert not (PUBLIC / landing).exists(), landing
+    assert not (ROOT / "tools" / "build_blt_home_css.py").exists()
+    assert "build_blt_home_css" not in WRANGLER["build"]["command"]
+    assert "!/blt-home.html" not in WRANGLER["assets"]["run_worker_first"]
+    assert "_serve_homepage" not in ENTRY_TEXT
 
 
-def test_worker_owns_root_without_cookie_routing():
+def test_worker_redirects_root_to_dashboard_without_cookie_routing():
     assert "/" in WRANGLER["assets"]["run_worker_first"]
     root_branch = ENTRY_TEXT[
         ENTRY_TEXT.index('if url.path == "/" and method_name(request)'):
-        ENTRY_TEXT.index("if url.path in BLOCKED_STATIC_HTML_PATHS")
+        ENTRY_TEXT.index("# Browsers always request /favicon.ico")
     ]
+    # Every visitor gets the same answer, signed in or not: the dashboard
+    # shows guests a Sign Up / Log In link instead of bouncing them.
     assert '_cookie_value(request, "forkmesh_session")' not in root_branch
-    assert '"location": "/dashboard"' not in root_branch
-    assert "return await self._serve_homepage(url)" in root_branch
-
-
-def test_regular_homepage_revalidates_without_varying_on_cookie():
-    serve = ENTRY_TEXT[
-        ENTRY_TEXT.index("async def _serve_homepage"):
-        ENTRY_TEXT.index("async def _serve_homepage") + 2200
-    ]
-    assert '"cache-control": "no-cache"' in serve
-    assert '"vary": "cookie"' not in serve
-    # Prefer blt-home.html so a blocked /index.html hairpin cannot 503 `/`.
-    assert '"blt-home.html"' in serve
-    assert '"index.html"' in serve
-    assert 'base + "world/index.html"' not in serve
-    assert "BLT unavailable" in serve
-    assert "ForkMesh unavailable" not in serve
+    assert 'location = "/dashboard"' in root_branch
+    assert 'location += "?" + url.query' in root_branch
+    assert "status=308" in root_branch
+    assert '"cache-control": "no-store"' in root_branch
+    assert "_serve_dashboard_asset" not in root_branch
 
 
 def test_presence_cookie_lifecycle_is_complete():

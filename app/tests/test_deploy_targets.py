@@ -21,36 +21,34 @@ def manifest(target):
 def test_each_worker_has_distinct_inputs():
     manifests = {target: manifest(target) for target in deploy_targets.TARGETS}
 
-    assert deploy_targets.TARGETS == ("app", "world", "www")
+    assert deploy_targets.TARGETS == ("app", "world")
     assert "app/wrangler.toml" in manifests["app"]
     assert "app/edge-control/wrangler.toml" in manifests["app"]
     assert "app/edge-control/worker.js" in manifests["app"]
     assert "app/src/entry.py" in manifests["app"]
     assert "app/public/dashboard/repo.html" in manifests["app"]
-    assert "www/wrangler.toml" in manifests["www"]
-    assert "www/public/blog.html" in manifests["www"]
     assert "world/wrangler.toml" in manifests["world"]
     assert "world/public/world/world.js" in manifests["world"]
     assert "app/src/entry.py" not in manifests["world"]
-    assert "app/src/entry.py" not in manifests["www"]
     assert "world/public/world/world.js" not in manifests["app"]
     assert "app/.env.production" not in deploy_targets.target_inputs("app")
     assert "app/pylock.toml" not in deploy_targets.target_inputs("app")
 
 
 def test_shared_input_only_invalidates_consumers():
-    assert "www/public/api-client.js" in manifest("app")
-    assert "www/public/api-client.js" in manifest("www")
-    assert "www/public/api-client.js" in manifest("world")
-    assert "www/public/home-header-auth.js" in manifest("world")
-    assert "www/public/blog/one-app-one-mesh/index.html" not in manifest("app")
-    assert "www/public/blog/one-app-one-mesh/index.html" in manifest("www")
+    assert "app/public/api-client.js" in manifest("app")
+    assert "app/public/api-client.js" in manifest("world")
+    assert "app/public/site-header.js" in manifest("world")
+    assert "app/public/dashboard/repo.html" in manifest("app")
+    assert "app/public/dashboard/repo.html" not in manifest("world")
 
 
 def test_app_fingerprint_covers_staged_homepage_dependencies():
+    # `/` redirects to the dashboard, so its document is the homepage.
     app = manifest("app")
-    assert "www/public/home-header-auth.js" in app
-    assert "www/public/assets/video/network.mp4" in app
+    assert "app/public/dashboard/index.html" in app
+    assert "app/public/_headers" in app
+    assert "app/public/install.sh" in app
 
 
 def test_deploy_state_marks_only_successful_target(tmp_path, monkeypatch):
@@ -61,7 +59,7 @@ def test_deploy_state_marks_only_successful_target(tmp_path, monkeypatch):
     marked = deploy_targets.mark_deployed("world", "abc123", state_path)
     assert marked["revision"] == "abc123"
     assert deploy_targets.target_status("world")["changed"] is False
-    assert deploy_targets.target_status("www")["changed"] is True
+    assert deploy_targets.target_status("app")["changed"] is True
 
 
 def test_fingerprint_changes_with_input(tmp_path, monkeypatch):
@@ -92,12 +90,10 @@ def test_app_fingerprint_excludes_local_environment_secrets(tmp_path, monkeypatc
 def test_live_worker_fingerprint_is_the_cross_runner_source_of_truth():
     deploy = (REPOSITORY / "app/deploy.sh").read_text(encoding="utf-8")
     entry = (REPOSITORY / "app/src/entry.py").read_text(encoding="utf-8")
-    www = (REPOSITORY / "www/worker.js").read_text(encoding="utf-8")
     world = (REPOSITORY / "world/worker.js").read_text(encoding="utf-8")
 
     assert 'tools/deploy_targets.py fingerprint "$target"' in deploy
     assert '"deployFingerprint"' in entry
-    assert "x-forkmesh-deploy-fingerprint" in www
     assert "x-forkmesh-deploy-fingerprint" in world
     assert '--var "DEPLOY_FINGERPRINT:${DEPLOY_TARGET_FINGERPRINT}"' in deploy
 
@@ -122,13 +118,13 @@ esac
         encoding="utf-8",
     )
     curl.chmod(0o755)
-    fingerprint = deploy_targets.fingerprint("www")
-    script = changed + "\ndeploy_target_is_changed www; exit $?\n"
+    fingerprint = deploy_targets.fingerprint("world")
+    script = changed + "\ndeploy_target_is_changed world; exit $?\n"
     base_env = {
         **os.environ,
         "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
         "LIVE_FINGERPRINT": fingerprint,
-        "DEPLOY_VERIFY_WWW_URL": "https://www.example",
+        "DEPLOY_VERIFY_WORLD_URL": "https://world.example",
     }
 
     matching = subprocess.run(

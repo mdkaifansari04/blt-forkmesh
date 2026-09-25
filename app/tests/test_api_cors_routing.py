@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = ROOT.parent
 ENTRY = ROOT / "src" / "entry.py"
-CLIENT = REPOSITORY / "www" / "public" / "api-client.js"
+CLIENT = ROOT / "public" / "api-client.js"
 
 
 FUNCTIONS = {
@@ -288,7 +288,7 @@ def test_websocket_accepts_trusted_frontends_only_when_environment_is_bound():
 
 def test_every_standalone_page_installs_api_routing_before_other_scripts():
     pages = []
-    for unit in ("app", "www", "world"):
+    for unit in ("app", "world"):
         pages.extend((REPOSITORY / unit / "public").rglob("*.html"))
     for path in sorted(pages):
         if "/dashboard/partials/" in path.as_posix():

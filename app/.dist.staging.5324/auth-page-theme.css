@@ -1,0 +1,273 @@
+:root {
+  color-scheme: dark;
+  --auth-page-bg: #09090b;
+  --auth-glow: radial-gradient(
+    circle at top,
+    rgba(239, 68, 68, 0.14),
+    transparent 32rem
+  );
+  --auth-card-bg: rgba(24, 24, 27, 0.92);
+  --auth-border: #27272a;
+  --auth-text: #f4f4f5;
+  --auth-text-secondary: #a1a1aa;
+  --auth-text-quiet: #71717a;
+  --auth-field-bg: rgba(255, 255, 255, 0.055);
+  --auth-focus: #ef4444;
+  --auth-focus-ring: rgba(239, 68, 68, 0.22);
+  --auth-action-bg: #ef4444;
+  --auth-action-text: #ffffff;
+  --auth-action-hover: #b91c1c;
+  --auth-action-disabled: #7f1d1d;
+  --auth-link: #f87171;
+  --auth-link-hover: #fca5a5;
+  --auth-placeholder: #71717a;
+  --auth-surface: rgba(255, 255, 255, 0.035);
+  --auth-surface-strong: rgba(255, 255, 255, 0.06);
+  --auth-good: #22c55e;
+  --auth-danger: #ef4444;
+  --auth-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
+}
+
+html.light {
+  color-scheme: light;
+  --auth-page-bg: #ffffff;
+  --auth-glow: radial-gradient(circle at top, rgba(220, 38, 38, 0.12), transparent 32rem);
+  --auth-card-bg: #ffffff;
+  --auth-border: #e5e7eb;
+  --auth-text: #111827;
+  --auth-text-secondary: #4b5563;
+  --auth-text-quiet: #6b7280;
+  --auth-field-bg: #ffffff;
+  --auth-focus: #dc2626;
+  --auth-action-bg: #dc2626;
+  --auth-action-text: #ffffff;
+  --auth-focus-ring: rgba(220, 38, 38, 0.18);
+  --auth-action-hover: #b91c1c;
+  --auth-action-disabled: #fca5a5;
+  --auth-link: #dc2626;
+  --auth-link-hover: #b91c1c;
+  --auth-placeholder: #9ca3af;
+  --auth-surface: #f9fafb;
+  --auth-surface-strong: #f3f4f6;
+  --auth-good: #16a34a;
+  --auth-danger: #b91c1c;
+  --auth-shadow: 0 18px 50px rgba(17, 24, 39, 0.12);
+}
+
+/*
+ * Keep the semantic mappings reusable without displacing the existing
+ * unlayered dark page styles. The scoped light rules below intentionally win
+ * when the shared theme controller applies html.light.
+ */
+@layer auth-page-theme {
+  body {
+    background: var(--auth-page-bg);
+    color: var(--auth-text);
+  }
+
+  .auth-shell {
+    background-image: var(--auth-glow);
+  }
+
+  .auth-card {
+    background: var(--auth-card-bg);
+    border-color: var(--auth-border);
+  }
+
+  .auth-sub {
+    color: var(--auth-text-secondary);
+  }
+
+  .hint {
+    color: var(--auth-text-quiet);
+  }
+
+  input, textarea, select {
+    background: var(--auth-field-bg);
+    border-color: var(--auth-border);
+    color: var(--auth-text);
+  }
+
+  input:focus, textarea:focus, select:focus {
+    border-color: var(--auth-focus);
+  }
+
+  .auth-button-primary {
+    background: var(--auth-action-bg);
+    color: var(--auth-action-text);
+  }
+}
+
+html.light body {
+  background: var(--auth-page-bg);
+  color: var(--auth-text);
+}
+
+html.light .auth-shell {
+  background-color: var(--auth-page-bg);
+  background-image: var(--auth-glow);
+}
+
+html.light .auth-card {
+  background: var(--auth-card-bg);
+  border-color: var(--auth-border);
+  box-shadow: var(--auth-shadow);
+}
+
+html.light .auth-card h1,
+html.light .join-title,
+html.light .calc h3,
+html.light .panel h3 {
+  color: var(--auth-text);
+}
+
+html.light .auth-sub,
+html.light .join-sub,
+html.light #mp-node,
+html.light .terms-check,
+html.light .flow,
+html.light .custody-notice {
+  color: var(--auth-text-secondary);
+}
+
+html.light .join-eyebrow,
+html.light .hint,
+html.light .row-links,
+html.light .calc-row .op,
+html.light .calc-cell .cap,
+html.light .calc-cell .small,
+html.light .calc-note,
+html.light .panel .meta,
+html.light .team-row .sub,
+html.light .log-row .sub,
+html.light .private-badge {
+  color: var(--auth-text-quiet);
+}
+
+html.light .field label {
+  color: var(--auth-text-secondary);
+}
+
+html.light .calc,
+html.light .flow div,
+html.light .panel,
+html.light .join-banner,
+html.light .demo-credentials,
+html.light .custody-notice {
+  background: var(--auth-surface);
+  border-color: var(--auth-border);
+}
+
+html.light .join-banner strong,
+html.light .calc-cell .big,
+html.light .flow strong,
+html.light .custody-notice strong,
+html.light .team-row .who,
+html.light .log-row .what .to,
+html.light .demo-credentials strong,
+html.light .demo-credentials code {
+  color: var(--auth-text);
+}
+
+html.light .join-banner span {
+  color: var(--auth-text-secondary);
+}
+
+html.light .team-row,
+html.light .log-row,
+html.light .private-badge {
+  border-color: var(--auth-border);
+}
+
+html.light input,
+html.light textarea,
+html.light select {
+  background: var(--auth-field-bg);
+  border-color: var(--auth-border);
+  color: var(--auth-text);
+}
+
+html.light input::placeholder,
+html.light textarea::placeholder {
+  color: var(--auth-placeholder);
+  opacity: 1;
+}
+
+html.light .field select option {
+  background: var(--auth-card-bg);
+  color: var(--auth-text);
+}
+
+html.light input:focus,
+html.light textarea:focus,
+html.light select:focus {
+  outline: 0;
+  border-color: var(--auth-focus);
+  box-shadow: 0 0 0 3px var(--auth-focus-ring);
+}
+
+html.light input[type="checkbox"] {
+  accent-color: var(--auth-focus);
+}
+
+html.light .auth-button-primary,
+html.light .btn-primary {
+  background: var(--auth-action-bg);
+  color: var(--auth-action-text);
+}
+
+html.light .auth-button-primary:hover,
+html.light .btn-primary:hover {
+  background: var(--auth-action-hover);
+  color: var(--auth-action-text);
+}
+
+html.light .auth-button-primary:focus-visible,
+html.light .btn-primary:focus-visible,
+html.light .btn-sm:focus-visible,
+html.light .demo-credentials button:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 3px var(--auth-focus-ring);
+}
+
+html.light .auth-button-primary:disabled,
+html.light .btn-primary:disabled {
+  background: var(--auth-action-disabled);
+  color: var(--auth-action-text);
+}
+
+html.light .btn-sm,
+html.light .demo-credentials button {
+  background: var(--auth-field-bg);
+  border-color: var(--auth-border);
+  color: var(--auth-text);
+}
+
+html.light .btn-sm:hover,
+html.light .demo-credentials button:hover {
+  background: var(--auth-surface-strong);
+}
+
+html.light .auth-shell a {
+  color: var(--auth-link);
+  text-decoration-color: color-mix(in srgb, var(--auth-link), transparent 55%);
+}
+
+html.light .auth-shell a:hover {
+  color: var(--auth-link-hover);
+  text-decoration-color: currentColor;
+}
+
+html.light .auth-shell .brand {
+  color: inherit;
+}
+
+html.light .hint.bad,
+html.light .log-fail {
+  color: var(--auth-danger);
+}
+
+html.light .hint.good,
+html.light .log-ok {
+  color: var(--auth-good);
+}

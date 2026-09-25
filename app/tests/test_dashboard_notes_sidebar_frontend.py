@@ -27,13 +27,19 @@ def _region(text, start, end):
 
 
 def test_every_row_states_publish_status_shares_and_reads():
-    row = _region(NOTES_JS, "function renderNoteList(", "function renderNoteEditor(")
-    # The status line leads with publish state and carries the read count.
-    assert "noteStatusLabel(note), noteViewsLabel(note)" in row
-    # The sharing line is its own line, so it is never truncated away.
-    assert "noteSharedWithLabel(note)" in row
-    # A published note is visually distinct, not just differently worded.
-    assert 'note.visibility === "public" ? "border-primary text-primary"' in row
+    row = _region(NOTES_JS, "function renderNoteRow(", "function renderNoteList(")
+    # The row leads with publish state and carries the read count.
+    assert "const status = noteStatusLabel(note);" in row
+    assert "noteViewsLabel(note)" in row
+    # Owners read who else can see the note; a collaborator reads what the
+    # share lets them do with it, which is the same question from their side.
+    assert "? noteSharedWithLabel(note)" in row
+    assert '`You can ${note.role === "editor" ? "edit" : "view"}`' in row
+    # A published note is visually distinct, not just differently worded: the
+    # row carries a visibility state the stylesheet keys off, plus its own
+    # lock/users/globe icon.
+    assert 'data-visibility="${note.visibility === "public" ? "public" : "private"}"' in row
+    assert "noteIcon(noteVisibilityIcon(note))" in row
 
     status = _region(NOTES_JS, "function noteStatusLabel(", "// \"12 views\"")
     assert 'if (note.visibility === "public") return "Public";' in status
@@ -44,13 +50,13 @@ def test_every_row_states_publish_status_shares_and_reads():
     assert "if (views <= 0) return \"\";" in views
     assert "readers > 1 ? `${counted} from ${readers} readers` : counted" in views
 
-    shared = _region(NOTES_JS, "function noteSharedWithLabel(", "function renderNoteList(")
+    shared = _region(NOTES_JS, "function noteSharedWithLabel(", "function noteVisibilityIcon(")
     assert '`${share.name} (${share.role || "viewer"})`' in shared
     assert '"Not shared with anyone"' in shared
 
     # The shipped bundle is the built artifact the dashboard actually loads.
     for fragment in ("function noteStatusLabel(", "function noteViewsLabel(",
-                     "function noteSharedWithLabel("):
+                     "function noteSharedWithLabel(", "function noteVisibilityIcon("):
         assert fragment in BUNDLE
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-INSTALLER = ROOT / "www" / "public" / "install.sh"
+INSTALLER = ROOT / "app" / "public" / "install.sh"
 SETUP = ROOT / "desktop" / "src" / "MainWindowSetup.cpp"
 MAIN_WINDOW = ROOT / "desktop" / "src" / "MainWindow.cpp"
 CONTROL_NODE = ROOT / "desktop" / "src" / "MainWindowControlNode.cpp"

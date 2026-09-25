@@ -10,7 +10,7 @@ ENTRY = (
     (ROOT / "src" / "entry.py").read_text(encoding="utf-8") + "\n"
     + (ROOT / "src" / "admin_console.py").read_text(encoding="utf-8")
 )
-REPORTER = (ROOT.parent / "www" / "public" / "posthog.js").read_text(encoding="utf-8")
+REPORTER = (ROOT / "public" / "posthog.js").read_text(encoding="utf-8")
 WORLD = (ROOT.parent / "world" / "public" / "world" / "world.js").read_text(encoding="utf-8")
 WORLD_CSS = (ROOT.parent / "world" / "public" / "world" / "world.css").read_text(
     encoding="utf-8")

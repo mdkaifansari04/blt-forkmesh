@@ -12,14 +12,11 @@ from dashboard_shell import PAGES
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "public"
-WWW_PUBLIC = ROOT.parent / "www" / "public"
-WORLD_PUBLIC = ROOT.parent / "world" / "public"
 VIEWS = PUBLIC / "dashboard" / "partials" / "views"
 ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 URLS_TEXT = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
 STATIC_ROUTES_TEXT = (ROOT / "src" / "static_routes.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
-REDIRECTS = (WWW_PUBLIC / "_redirects").read_text(encoding="utf-8")
 REPO_HOST_ROUTE_RE = (
     'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|compare|branches|search|stats|sizes)$"'
 )
@@ -54,32 +51,6 @@ def test_dashboard_shell_is_split_into_composable_partials():
     assert "self.env.ASSETS.fetch(" in ENTRY_TEXT
     assert "assemble_shell(" not in ENTRY_TEXT
     assert "tools/build_dashboard_assets.py" in ENTRY_TEXT
-
-
-def test_www_root_keeps_regular_site_and_links_to_the_world():
-    index = _read(WWW_PUBLIC / "index.html")
-    world = _read(WORLD_PUBLIC / "world" / "index.html")
-
-    assert "Protect the code that matters from a single-host failure" in index
-    assert "Code hosting that lives on the network." not in index
-    # The World drops visitors straight into the interactive city: the old
-    # "A living city for code." marketing hero is gone, and the shell stays
-    # blank while it boots — only a watchdog-revealed load error remains.
-    assert "A living city for code." not in world
-    assert "ENTERING THE WORLD" not in world
-    assert "data-world-load-error" in world
-    assert 'data-world-mode="public"' in world
-    # The marketing worker answers / with the regular site. The combined app
-    # serves its dashboard at /, while self-hosted single-worker installs can
-    # opt into the staged marketing homepage.
-    assert "forkmesh.session" not in index
-    assert 'location.replace("/dashboard")' not in index
-    assert 'location.replace("/dashboard.html")' not in index
-    assert "/" in WRANGLER["assets"]["run_worker_first"]
-    assert 'if url.path == "/" and method_name(request) in ("GET", "HEAD"):' in ENTRY_TEXT
-    assert 'return await self._serve_dashboard_asset(\n                url, "dashboard/index.html")' in ENTRY_TEXT
-    assert 'base + "index.html"' in ENTRY_TEXT
-    assert 'href="https://world.forkmesh.com/' in index
 
 
 def test_dashboard_exposes_live_hydration_targets():
@@ -138,10 +109,19 @@ def test_dashboard_nav_is_blt_focused():
     assert "Tasks" in drawer_nav
     assert "Notes" in drawer_nav
     assert "Settings" in drawer_nav
-    assert "Network" not in drawer_nav
-    assert "Chat" not in drawer_nav
-    assert 'href="/dashboard/chat"' not in drawer_nav
+    # Chat and Network are dashboard sections of their own (they always had
+    # their own pages and their own dashboard_shell.PAGES entries; only the
+    # sidebar link was missing, so the pages were unreachable without typing
+    # the URL). test_dashboard_pages pins the same two links from the other
+    # side. What stays out is the marketing site: the standalone /chat page,
+    # /docs and /blog are ForkMesh destinations, not BLT surfaces.
+    assert 'href="/dashboard/chat"' in drawer_nav
+    assert 'href="/dashboard/network"' in drawer_nav
     assert 'href="/docs"' not in drawer_nav
+    assert 'href="/blog"' not in drawer_nav
+    # /status is a public operations page reachable from the site chrome and
+    # the footer; in this nav it would read as a peer of Tasks.
+    assert 'href="/status"' not in drawer_nav
     # Sidebar entries are real page links now - no client-router buttons.
     assert "<button" not in drawer_nav
     assert "data-section=" not in drawer_nav
@@ -151,7 +131,7 @@ def test_dashboard_nav_is_blt_focused():
 def test_dashboard_uses_github_system_font_without_affecting_code_or_site_fonts():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    site_css = _read(WWW_PUBLIC / "styles.css")
+    site_css = _read(PUBLIC / "styles.css")
 
     assert 'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif' in dashboard
     assert 'src: url("/assets/fonts/HelveticaNeueRoman.otf") format("opentype")' not in dashboard
@@ -752,7 +732,11 @@ def test_dashboard_top_repositories_include_linked_organization_aliases():
         'await fetchJson("/api/orgs")',
         'source: "organization-alias"',
         "organizationOwned: true",
-        ">organization</span>",
+        # The org marker is the building-2 icon plus screen-reader text. It
+        # used to be a visible "ORGANIZATION" label, which in the 270px home
+        # rail was wide enough to truncate the repository name beside it.
+        '<span class="sr-only">organization repository</span>',
+        'data-lucide="${entry.organization ? "building-2" : "book-marked"}"',
         "void loadHomeOrganizationRepositories();",
     ):
         assert marker in dashboard_js
@@ -900,7 +884,6 @@ def test_dashboard_global_header_search_also_filters_the_visible_page():
 def test_dashboard_has_scoped_light_dark_appearance_controls():
     dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    landing = _read(WWW_PUBLIC / "index.html")
     login = _read(PUBLIC / "login.html")
 
     for marker in (
@@ -931,32 +914,20 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
     assert 'localStorage.setItem("forkmesh.theme", nextTheme)' in dashboard_js
     assert 'localStorage.getItem("forkmesh.theme")' in dashboard_js
 
-    static_js = _read(WWW_PUBLIC / "static-page.js")
+    static_js = _read(PUBLIC / "static-page.js")
     assert 'localStorage.getItem("forkmesh.dashboard.theme")' in static_js
     assert 'localStorage.setItem("forkmesh.dashboard.theme", chosen)' in static_js
-    site_header_js = _read(WWW_PUBLIC / "site-header.js")
+    site_header_js = _read(PUBLIC / "site-header.js")
     for theme_key in ("forkmesh.dashboard.theme", "forkmesh.theme"):
         assert theme_key in site_header_js
-    for docs_page in (
-        WWW_PUBLIC / "docs.html",
-        WWW_PUBLIC / "docs" / "index.html",
-    ):
-        docs = _read(docs_page)
-        assert 'src="/site-header.js?v=' in docs
-        assert 'id="theme-toggle"' not in docs
-        assert "function applyTheme" not in docs
-        assert "localStorage" not in docs
-        assert 'localStorage.getItem("forkmesh.dashboard.theme")' not in docs
-        assert 'localStorage.setItem("forkmesh.dashboard.theme", chosen)' not in docs
 
     assert "function setAppearanceModalOpen(open)" not in dashboard_js
     assert "data-appearance-settings-button" not in dashboard_js
     assert "data-appearance-modal" not in dashboard
 
-    for page in (landing, login):
-        assert "data-profile-appearance-panel" not in page
-        assert "data-appearance-theme" not in page
-        assert "forkmesh.dashboard.theme" not in page
+    assert "data-profile-appearance-panel" not in login
+    assert "data-appearance-theme" not in login
+    assert "forkmesh.dashboard.theme" not in login
 
 
 def test_dashboard_light_theme_overrides_every_dark_theme_color_variable():
@@ -2328,16 +2299,6 @@ def test_dashboard_deep_link_assets_binding_is_wired_up():
 
 
 def test_clean_marketing_routes_target_static_pages():
-    for redirect in (
-        "/desktop /desktop.html 200",
-        "/docs /docs/index.html 200",
-        "/docs/ /docs 308",
-        "/blog /blog.html 200",
-        "/blog/ /blog 308",
-        "/blogs /blog 308",
-    ):
-        assert redirect in REDIRECTS
-
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
     for route in ("/dashboard.js",):
         assert route not in run_worker_first
@@ -2367,29 +2328,8 @@ def test_clean_marketing_routes_target_static_pages():
     assert "/dashboard.html" not in run_worker_first
 
 
-def test_repo_shortcut_is_not_a_redirects_rule_so_assets_are_not_hijacked():
-    # A /:owner/:repo rule in _redirects matches real two-segment static assets
-    # (e.g. /assets/logo.png, /favicon/site.webmanifest) because Cloudflare always
-    # applies _redirects before serving a matching static file - that 308'd those
-    # assets and broke the deploy's public-asset check. The shortcut must be
-    # Worker-owned with explicit asset-prefix exceptions, so guard against the
-    # redirect rule's return.
-    rules = [
-        line for line in REDIRECTS.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    for rule in rules:
-        assert ":owner" not in rule
-        assert ":repo" not in rule
-        assert "/dashboard?repo=" not in rule
-        # Self-referential 200 rewrites for asset dirs are no-ops (a rewrite to the
-        # same path); real files serve directly once nothing else hijacks them.
-        assert not rule.startswith("/assets/*")
-        assert not rule.startswith("/favicon/*")
-
-
 def test_repo_shortcut_urls_are_worker_owned_not_404_page_scripted():
-    html = _read(WWW_PUBLIC / "404.html")
+    html = _read(PUBLIC / "404.html")
 
     assert "window.location.replace" not in html
     assert "window.location.pathname.split" not in html
@@ -2442,44 +2382,3 @@ def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():
     assert "navigateHistory(detailPath);" in render_body
     # The old bare-collapse call must be gone.
     assert "const detailPath = repoPathUrl(repo);" not in render_body
-
-
-def test_desktop_client_install_page_exists():
-    html = _read(WWW_PUBLIC / "desktop.html")
-
-    assert "<title>Install ForkMesh Desktop" in html
-    # The install page owns the platform-specific sections; homepage CTAs point
-    # to the page rather than duplicating per-OS buttons.
-    for anchor in ('id="macos"', 'id="windows"', 'id="linux"'):
-        assert anchor in html
-    assert "curl -fsSL https://forkmesh.com/install.sh | bash" in html
-
-
-def test_homepage_hero_links_to_desktop_install_page():
-    index = _read(WWW_PUBLIC / "index.html")
-
-    assert 'href="/desktop"' in index
-    assert 'id="install-os-buttons"' not in index
-    for href in ("/desktop#macos", "/desktop#windows", "/desktop#linux"):
-        assert href not in index
-
-
-def test_homepage_network_selector_hides_mobile_beam_and_bars():
-    index = _read(WWW_PUBLIC / "index.html")
-    network = index[
-        index.index('<section\n        id="network"')
-        : index.index('<section\n        id="solution"')
-    ]
-
-    assert "hidden lg:block" in network
-    assert "ForkMesh interactive node selector" in network
-    assert "top-[-0.5px] h-px" in network
-
-
-def test_homepage_mobile_mockups_do_not_overflow_by_default():
-    index = _read(WWW_PUBLIC / "index.html")
-
-    assert "-mr-56" not in index
-    assert "relative top-6 w-full" in index
-    assert "relative -right-8 top-11" not in index
-    assert ".fm-tabs .fm-tab:nth-child(n + 6)" in index

@@ -9,7 +9,7 @@ HEADER = (ROOT / "desktop/src/MainWindow.h").read_text(encoding="utf-8")
 # The remote installer script itself lives in the pure control-node helper, so
 # the Hosts button and the one-click Vultr flow cannot drift apart (adhoc #418).
 CONTROL = (ROOT / "desktop/src/ControlNode.cpp").read_text(encoding="utf-8")
-INSTALLER = (ROOT / "www/public/install.sh").read_text(
+INSTALLER = (ROOT / "app/public/install.sh").read_text(
     encoding="utf-8"
 )
 

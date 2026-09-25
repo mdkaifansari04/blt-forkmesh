@@ -11,7 +11,7 @@ from pathlib import Path
 REPOSITORY = Path(__file__).resolve().parents[2]
 APP = REPOSITORY / "app"
 STATE_PATH = APP / ".wrangler" / "deploy-targets.json"
-TARGETS = ("app", "world", "www")
+TARGETS = ("app", "world")
 
 
 def _iter_tree(relative):
@@ -46,37 +46,6 @@ def target_inputs(target):
             "app/tailwind.dashboard.config.js",
             "app/tailwind.input.css",
             "app/uv.lock",
-            "www/public/404.html",
-            "www/public/_headers",
-            "www/public/api-client.js",
-            "www/public/auth-page-theme.css",
-            "www/public/home-header-auth.js",
-            "www/public/mesh-page-theme.css",
-            "www/public/blog.html",
-            "www/public/favicon",
-            "www/public/assets/fediverse-avatar.png",
-            "www/public/assets/fediverse-banner.png",
-            "www/public/assets/fonts",
-            "www/public/assets/video",
-            "www/public/assets/forkmesh-mark.svg",
-            "www/public/assets/hero.mp4",
-            "www/public/assets/jett.webp",
-            "www/public/assets/kaif.webp",
-            "www/public/assets/logo.png",
-            "www/public/assets/repo-network.svg",
-            "www/public/assets/sol.png",
-            "www/public/noisy-background.avif",
-            "www/public/index.html",
-            "www/public/install.sh",
-            "www/public/posthog.js",
-            "www/public/site-footer.css",
-            "www/public/site-footer.js",
-            "www/public/site-header.css",
-            "www/public/site-header.js",
-            "www/public/static-page.js",
-            "www/public/styles.css",
-            "www/public/tailwind.css",
-            "www/public/uninstall.sh",
         )
     if target == "world":
         return (
@@ -89,40 +58,21 @@ def target_inputs(target):
             "app/public/chat-crypto.js",
             "app/public/chat-moderation.js",
             "app/public/chat-room-transport.js",
-            "www/public/404.html",
-            "www/public/api-client.js",
-            "www/public/auth-page-theme.css",
-            "www/public/home-header-auth.js",
-            "www/public/mesh-page-theme.css",
-            "www/public/_headers",
-            "www/public/favicon",
-            "www/public/assets/fediverse-avatar.png",
-            "www/public/assets/fediverse-banner.png",
-            "www/public/assets/fonts",
-            "www/public/assets/video",
-            "www/public/assets/forkmesh-mark.svg",
-            "www/public/assets/hero.mp4",
-            "www/public/assets/jett.webp",
-            "www/public/assets/kaif.webp",
-            "www/public/assets/logo.png",
-            "www/public/assets/repo-network.svg",
-            "www/public/assets/sol.png",
-            "www/public/noisy-background.avif",
-            "www/public/posthog.js",
-            "www/public/site-footer.css",
-            "www/public/site-footer.js",
-            "www/public/site-header.css",
-            "www/public/site-header.js",
-            "www/public/static-page.js",
-            "www/public/styles.css",
-            "www/public/tailwind.css",
-        )
-    if target == "www":
-        return (
-            "www/wrangler.toml",
-            "www/worker.js",
-            "www/public",
-            "app/tools/build_site_assets.py",
+            "app/public/404.html",
+            "app/public/_headers",
+            "app/public/api-client.js",
+            "app/public/assets",
+            "app/public/auth-page-theme.css",
+            "app/public/favicon",
+            "app/public/mesh-page-theme.css",
+            "app/public/posthog.js",
+            "app/public/site-footer.css",
+            "app/public/site-footer.js",
+            "app/public/site-header.css",
+            "app/public/site-header.js",
+            "app/public/static-page.js",
+            "app/public/styles.css",
+            "app/public/tailwind.css",
         )
     raise ValueError(f"unknown deploy target: {target}")
 

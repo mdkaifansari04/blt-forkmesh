@@ -14,7 +14,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 PUBLIC = ROOT.parent / "app" / "public"
-WWW_PUBLIC = ROOT.parent / "www" / "public"
 
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -24,10 +23,7 @@ import dashboard_shell  # noqa: E402
 
 
 def _read(rel):
-    source = PUBLIC / rel
-    if not source.is_file():
-        source = WWW_PUBLIC / rel
-    return source.read_text(encoding="utf-8")
+    return (PUBLIC / rel).read_text(encoding="utf-8")
 
 
 def _write_if_changed(root, rel, text):
@@ -71,15 +67,10 @@ def main():
     # its ?v= everywhere it is referenced instead of per-page hand bumps.
     app_outputs.update(_stamped_site_outputs(PUBLIC, versions))
     app_outputs["dashboard.js"] = dashboard_js
-    www_outputs = _stamped_site_outputs(WWW_PUBLIC, versions)
     changed = [
-        root.relative_to(ROOT.parent).as_posix() + "/" + rel
-        for root, outputs in (
-            (PUBLIC, app_outputs),
-            (WWW_PUBLIC, www_outputs),
-        )
-        for rel, text in sorted(outputs.items())
-        if _write_if_changed(root, rel, text)
+        "app/public/" + rel
+        for rel, text in sorted(app_outputs.items())
+        if _write_if_changed(PUBLIC, rel, text)
     ]
     # The pre-split SPA duplicate: /dashboard.html routes are gone, the per-page
     # documents replace it. Drop a stale copy left by older builds.

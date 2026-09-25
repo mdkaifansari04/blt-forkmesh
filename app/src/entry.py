@@ -158,6 +158,7 @@ urlparse = _urllib_parse.export("urlparse")
 urlunparse = _urllib_parse.export("urlunparse")
 organization_discord = _LazyModule("organization_discord")
 notes = _LazyModule("notes")
+calendar_api = _LazyModule("calendar_api")
 polar_integration = _LazyModule("polar_integration")
 
 # Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
@@ -546,6 +547,10 @@ NOTIFICATION_EMAIL_KINDS = (
     "org_succession",
     "org_invite",
 )
+# Ceiling on a "pause notifications" snooze. Stored as an absent key at its
+# default, the same shape as email_notifications.
+PING_PAUSE_MAX_MS = 30 * 24 * 60 * 60 * 1000
+
 NOTIFICATION_EMAIL_DEFAULTS = {
     "mention": True,
     "subscribed": True,
@@ -1099,6 +1104,52 @@ def organization_task_ping_copy(org, actor, action, task):
     }
 
 
+# An @mention is addressed at one person, so its ping says what they were
+# named in and quotes enough of the copy to answer "do I need to open this?".
+ORGANIZATION_TASK_MENTION_CONTEXT_COPY = {
+    "comment": "a comment on",
+    "check-in": "a check-in on",
+    "task": "the task",
+}
+
+
+def organization_task_mention_copy(org, actor, context, task, excerpt):
+    """Title/body/meta for one "you were @mentioned on a task" ping."""
+    base = organization_task_ping_copy(org, actor, "mentioned", task)
+    org_name = clean_string(org, MAX_NODE_NAME).strip().lower()
+    actor_name = clean_string(actor or "", MAX_NODE_NAME).strip().lower()
+    who = ("@" + actor_name) if actor_name else "A team member"
+    where = ORGANIZATION_TASK_MENTION_CONTEXT_COPY.get(
+        clean_string(context or "", 32).strip().lower(), "the task")
+    task_title = base["meta"]["taskTitle"]
+    room = 160 - len("%s mentioned you in %s \"\"%s" % (
+        who, where, (" in " + org_name) if org_name else ""))
+    short_title = (
+        task_title if len(task_title) <= max(8, room)
+        else task_title[:max(8, room) - 1].rstrip() + "\u2026")
+    title = "%s mentioned you in %s \"%s\"%s" % (
+        who, where, short_title, (" in " + org_name) if org_name else "")
+    quote = clean_string(excerpt or "", 240).strip()
+    details = [
+        "%s mentioned you in %s \"%s\"%s" % (
+            who, where, task_title,
+            (" in the %s organization" % org_name) if org_name else ""),
+    ]
+    if quote:
+        details.append("\u201c%s\u201d" % quote)
+    meta = dict(base["meta"])
+    # notification_payload() clamps the body anyway; clamping here keeps the
+    # quote from being what silently disappears when a task title runs long.
+    body = clean_string(" \u00b7 ".join(details), 500)
+    meta["action"] = "mentioned"
+    meta["context"] = clean_string(context or "", 32).strip().lower()
+    return {
+        "title": title,
+        "body": body,
+        "meta": meta,
+    }
+
+
 def notification_email_preferences(rec):
     prefs = dict(NOTIFICATION_EMAIL_DEFAULTS)
     raw = rec.get("notification_preferences") if isinstance(rec, dict) else {}
@@ -1124,6 +1175,50 @@ def _clean_notification_preferences(raw, rec=None):
         if key in raw:
             prefs[key] = bool(raw.get(key))
     return prefs
+
+
+def ping_pause_until(rec):
+    """Millisecond deadline this account's pings are paused to, else 0.
+
+    "Pause notifications" is a snooze, not an opt-out: while the deadline is
+    in the future the relay still files every ping, so the inbox and bell badge
+    carry them, but no email or desktop notification card is raised. An absent
+    key is the untouched default, the same shape as email_notifications.
+    """
+    try:
+        until = int((rec or {}).get("notification_pause_until") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return until if until > 0 else 0
+
+
+def pings_paused(rec, now=0):
+    """True while this account is inside its pause window."""
+    return ping_pause_until(rec) > int(now or Date.now())
+
+
+def _apply_ping_pause(rec, raw):
+    """Store a requested pause deadline; True when the record actually changed.
+
+    A deadline at or before now is how every client says "resume" — there is no
+    separate verb — so it stores absence rather than a stale timestamp. The cap
+    keeps a mistyped or hostile deadline from muting an account's email
+    indefinitely; a pause is meant to be waited out, and the longest offered
+    preset is a week.
+    """
+    try:
+        until = int(raw or 0)
+    except (TypeError, ValueError):
+        return False
+    now = int(Date.now())
+    until = 0 if until <= now else min(until, now + PING_PAUSE_MAX_MS)
+    if ping_pause_until(rec) == until:
+        return False
+    if until:
+        rec["notification_pause_until"] = until
+    else:
+        rec.pop("notification_pause_until", None)
+    return True
 
 
 def repo_web_href(owner, repo):
@@ -2583,15 +2678,15 @@ STATUS_SYSTEMS = [
 # its own signal, and the page must never imply a probe that doesn't exist.
 STATUS_SYSTEM_CHECKS = {
     "website": (
-        "Loads the production homepage once a minute and verifies that the "
-        "real index document returns HTTP 200 with the ForkMesh homepage "
-        "marker. Worker page-route errors are also included, so either a "
-        "failed request or a server-side rendering failure turns this row red."),
+        "Loads the dashboard document the home page opens once a minute and "
+        "verifies that it returns HTTP 200 with the BLT page marker. Worker "
+        "page-route errors are also included, so either a failed request or "
+        "a server-side rendering failure turns this row red."),
     "status_page": (
-        "Runs the same cached status-history response used by /api/status "
-        "once a minute. Passes only when that response returns HTTP 200, so "
-        "a broken status page is visible and paged even if the other service "
-        "checks remain green."),
+        "Rebuilds the same status-history response used by /api/status every "
+        "ten minutes, reusing that verdict on the ticks in between. Passes "
+        "only when the response returns HTTP 200, so a broken status page is "
+        "visible and paged even if the other service checks remain green."),
     "api": (
         "Scans the last minute of the worker error log for unhandled "
         "exceptions or 5xx responses on /api/* routes. 502/503/504 on "
@@ -2676,6 +2771,12 @@ FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
 FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
 INSTALLER_MONITOR_ID = "installer-delivery"
 INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000
+# How often the /api/status build is actually re-derived for its own monitor
+# row, and where that verdict is parked between checks. Rebuilding it on every
+# cron tick is what spent the account's whole daily D1 row budget - see
+# _status_page_api_probe.
+STATUS_PAGE_PROBE_INTERVAL_MS = 10 * 60 * 1000
+STATUS_PAGE_MONITOR_ID = "status-page-api"
 # Worker/static activation can briefly interrupt the flagship's mirror-routed
 # tree and blob reads. Do not turn that expected handoff into an outage.
 STATUS_DEPLOY_GRACE_MS = 5 * 60 * 1000
@@ -3380,9 +3481,8 @@ async def _enqueue_operational_alert_pings(env, alerts, now):
                     env, admin, "operational_alert",
                     label + " needs attention",
                     body=(clean_string(alert.get("prior_reason", ""), 240)
-                          or "The /status health check for this system "
-                             "failed."),
-                    href="/status", source="operational-status",
+                          or "The health check for this system failed."),
+                    href="/admin", source="operational-status",
                     dedupe="operational-status:%s:down:%s" % (
                         system_id, missed),
                     ts=missed,
@@ -3394,10 +3494,10 @@ async def _enqueue_operational_alert_pings(env, alerts, now):
             body = (
                 _status_recovery_ping_body(alert, now) if recovered else
                 clean_string(alert.get("reason", ""), 240)
-                or "The current /status health check failed.")
+                or "The current health check failed.")
             await enqueue_notification(
                 env, admin, "operational_alert", title, body=body,
-                href="/status", source="operational-status",
+                href="/admin", source="operational-status",
                 dedupe="operational-status:%s:%s:%s" % (
                     system_id, "up" if recovered else "down", stamp),
                 ts=now,
@@ -4024,58 +4124,97 @@ async def _email_delivery_status(env, now):
     return True, ""
 
 
-async def _homepage_status_probe(env):
-    """Load the exact static document streamed by ``_serve_homepage``.
+async def _dashboard_status_probe(env):
+    """Load the dashboard document that ``/`` redirects every visitor to.
 
-    A scheduled Worker cannot reliably hairpin through its own public hostname,
-    so the bound asset service is the authoritative no-cache origin probe. This
-    is materially stronger than the old error-log inference: missing/broken
-    homepage assets now fail even when no visitor happened to request ``/``.
+    BLT has no landing page, so this document is the site's front door. A
+    scheduled Worker cannot reliably hairpin through its own public hostname,
+    so the bound asset service is the authoritative no-cache origin probe: a
+    missing or broken dashboard build fails even when no visitor happened to
+    request ``/``.
     """
     response = await env.ASSETS.fetch(JsRequest.new(
-        "https://forkmesh.internal/blt-home.html",
+        "https://forkmesh.internal/" + DASHBOARD_PAGE_ASSETS["/dashboard"],
         to_js({"headers": {"cache-control": "no-cache"}}),
     ))
     status = int(getattr(response, "status", 0) or 0)
     if status != 200:
-        # Fallback for older staged trees that only ship index.html.
-        response = await env.ASSETS.fetch(JsRequest.new(
-            "https://forkmesh.internal/index.html",
-            to_js({"headers": {"cache-control": "no-cache"}}),
-        ))
-        status = int(getattr(response, "status", 0) or 0)
-    if status != 200:
-        return False, "Homepage returned HTTP %d" % status
+        return False, "Dashboard returned HTTP %d" % status
     try:
         announced = int(response.headers.get("content-length") or 0)
     except Exception:
         announced = 0
     if announced > 1024 * 1024:
-        return False, "Homepage document exceeded the 1 MiB safety limit"
+        return False, "Dashboard document exceeded the 1 MiB safety limit"
     body = str(await response.text())
     if len(body.encode("utf-8")) > 1024 * 1024:
-        return False, "Homepage document exceeded the 1 MiB safety limit"
+        return False, "Dashboard document exceeded the 1 MiB safety limit"
     lowered = body.lower()
-    if "<!doctype html" not in lowered or (
-            "blt" not in lowered and "forkmesh" not in lowered):
-        return False, "Homepage returned an invalid index document"
+    if "<!doctype html" not in lowered or "blt" not in lowered:
+        return False, "Dashboard returned an invalid document"
     return True, ""
 
 
 async def _status_page_api_probe(env):
-    """Exercise the same cached response path served by ``/api/status``.
+    """Verify /api/status still builds, on its own slow cadence.
 
     The status document is the operator's view of every other monitor, so it
     needs an independent health row rather than relying on the generic API
     error bucket.  Calling the cached handler directly avoids an unreliable
     scheduled-worker hairpin through the public hostname while still covering
     the cache lookup and the status-history work that the route performs.
+
+    It must NOT do that once a minute. The cron tick runs in its own colo,
+    where no visitor traffic warms the Cache API entry, so most ticks missed
+    and rebuilt the whole 30-day projection straight from D1 - and nothing
+    ever read that cron-colo cache entry afterwards, so the rebuild was pure
+    waste. At roughly a thousand rebuilds a day it was the single largest
+    consumer of D1 rows on the account (the status history and minute scans
+    together were ~4.9M rows/day, the entire free-plan budget), which is what
+    exhausted the daily limit and turned every D1-backed route - signup
+    included - into a 5xx on 2026-09-18. No human traffic was involved: the
+    status page was monitoring itself to death.
+
+    The verdict is therefore cached in the same monitor-state row the
+    installer check uses, and re-derived at most once per
+    STATUS_PAGE_PROBE_INTERVAL_MS. A genuinely broken status build is still
+    caught, just within ten minutes instead of one.
     """
+    now = int(Date.now())
+    last = await d1_first(
+        env,
+        "SELECT is_up,reason,checked_at FROM repository_monitor_state "
+        "WHERE monitor_id=?",
+        STATUS_PAGE_MONITOR_ID,
+    )
+    if (
+        last
+        and int(last.get("checked_at") or 0) > 0
+        and now - int(last.get("checked_at") or 0) < STATUS_PAGE_PROBE_INTERVAL_MS
+    ):
+        return bool(last.get("is_up")), str(last.get("reason") or "")
     response = await cached_status_history(env, "full")
     status = int(getattr(response, "status", 0) or 0)
-    if status != 200:
-        return False, "Status API returned HTTP %d" % status
-    return True, ""
+    is_up = status == 200
+    reason = "" if is_up else "Status API returned HTTP %d" % status
+    await d1_run(
+        env,
+        """INSERT INTO repository_monitor_state
+             (monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,
+              notified_state)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(monitor_id) DO UPDATE SET
+             is_up=excluded.is_up,
+             changed_at=CASE
+               WHEN repository_monitor_state.is_up!=excluded.is_up
+               THEN excluded.checked_at
+               ELSE repository_monitor_state.changed_at END,
+             checked_at=excluded.checked_at,
+             reason=excluded.reason""",
+        STATUS_PAGE_MONITOR_ID, 1 if is_up else 0, now,
+        0 if is_up else now, now, reason, "",
+    )
+    return is_up, reason
 
 
 
@@ -9075,6 +9214,58 @@ class _OfficeMarketingTasksRuntime:
         return await self.notify_organization_task_activity(
             org_bi, actor, task_id, task, "started")
 
+    async def notify_organization_task_mentions(
+            self, org_bi, actor, task_id, task, names, context, excerpt,
+            ts=0):
+        """Ping exactly the members an @mention named, and nobody else.
+
+        The activity fan-out above reaches the Engineering floor; a mention
+        reaches the person addressed even when they are on no team the task
+        routes through. Membership is still required, so a comment cannot be
+        used to ping someone outside the organization.
+        """
+        safe_actor = clean_string(
+            actor or "", MAX_NODE_NAME).strip().lower()
+        org_row = await d1_first(
+            self.env, "SELECT name FROM orgs WHERE org_bi=?",
+            str(org_bi or ""))
+        record = dict(task if isinstance(task, dict) else {})
+        record.setdefault("id", str(task_id or ""))
+        copy = organization_task_mention_copy(
+            (org_row or {}).get("name") or "",
+            safe_actor,
+            context,
+            record,
+            excerpt,
+        )
+        pinged = set()
+        for name in list(names or [])[:10]:
+            recipient = clean_string(
+                name or "", MAX_NODE_NAME).strip().lower()
+            if not valid_node_name(recipient) or recipient in pinged:
+                continue
+            if recipient == safe_actor:
+                continue
+            if not await self.organization_member(org_bi, recipient):
+                continue
+            pinged.add(recipient)
+            await enqueue_notification(
+                self.env,
+                recipient,
+                "mention",
+                copy["title"],
+                body=copy["body"],
+                actor=safe_actor if valid_node_name(safe_actor) else "",
+                href="/dashboard/tasks",
+                source=str(task_id or ""),
+                dedupe="organization-task-mention:%s:%s:%s" % (
+                    str(task_id or ""),
+                    clean_string(context or "", 32).strip().lower(),
+                    str(int(ts or 0)),
+                ),
+                meta=copy["meta"],
+            )
+
     async def marketing_members(self, org_bi):
         """Return active users on an authoritative Marketing floor team."""
         rows = await d1_all(
@@ -9534,6 +9725,183 @@ class _NotesRuntime(_WorldCommunityRuntime):
 
 async def notes_handler(env, request, path):
     return await notes.handle(_NotesRuntime(env, request), path)
+
+
+# The desktop's silent login proves its durable account key but intentionally
+# creates no password session, so each calendar operation carries its own
+# short-lived proof. Event operations name the exact event and mutations bind
+# the exact request body, so a signature collected for one request can never
+# be replayed as another.
+CALENDAR_LIST_PROOF = "forkmesh-calendar-list-v1"
+CALENDAR_CREATE_PROOF = "forkmesh-calendar-create-v1"
+CALENDAR_READ_PROOF = "forkmesh-calendar-read-v1"
+CALENDAR_UPDATE_PROOF = "forkmesh-calendar-update-v1"
+CALENDAR_DELETE_PROOF = "forkmesh-calendar-delete-v1"
+CALENDAR_RSVP_PROOF = "forkmesh-calendar-rsvp-v1"
+CALENDAR_COLLECTION_RE = re.compile(r"^/api/calendar/?$")
+CALENDAR_ITEM_RE = re.compile(r"^/api/calendar/([a-f0-9]{32})/?$")
+CALENDAR_RSVP_RE = re.compile(r"^/api/calendar/([a-f0-9]{32})/rsvp/?$")
+
+
+async def _calendar_signed_session(env, request, body_digest=""):
+    """Resolve a normal key-authenticated desktop calendar request.
+
+    Same shape as _org_task_signed_session: the signature is verified against
+    every key the account may sign as, and the calendar API still applies all
+    owner, attendee, and organization gates to a signed caller exactly as to a
+    session-token one.
+    """
+    method = method_name(request)
+    if method not in ("GET", "POST", "PATCH", "DELETE"):
+        return "", None
+    url = urlparse(request.url)
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return "", None
+    collection = CALENDAR_COLLECTION_RE.match(url.path)
+    item = CALENDAR_ITEM_RE.match(url.path)
+    rsvp = CALENDAR_RSVP_RE.match(url.path)
+    proof = ""
+    resource = ""
+    if collection and method == "GET":
+        proof = CALENDAR_LIST_PROOF
+    elif collection and method == "POST":
+        proof, resource = CALENDAR_CREATE_PROOF, body_digest
+    elif item and method == "GET":
+        proof, resource = CALENDAR_READ_PROOF, item.group(1)
+    elif item and method == "PATCH":
+        proof, resource = (
+            CALENDAR_UPDATE_PROOF, item.group(1) + "\n" + body_digest)
+    elif item and method == "DELETE":
+        proof, resource = CALENDAR_DELETE_PROOF, item.group(1)
+    elif rsvp and method == "POST":
+        proof, resource = (
+            CALENDAR_RSVP_PROOF, rsvp.group(1) + "\n" + body_digest)
+    else:
+        return "", None
+    if method in ("POST", "PATCH") and not re.fullmatch(
+            r"[0-9a-f]{64}", str(body_digest or "")):
+        return "", None
+    canonical = proof + "\n" + node + "\n"
+    if resource:
+        canonical += resource + "\n"
+    canonical = (canonical + str(ts)).encode()
+    if not await _verify_owner_signature(env, node, sig, canonical):
+        return "", None
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return "", None
+    return account_bi, record
+
+
+class _CalendarRuntime(_WorldCommunityRuntime):
+    """Runtime boundary for encrypted personal and organization calendars."""
+
+    async def session(self, data=None):
+        account_bi, record = await _account_session_record(
+            self.env, self.request, data if isinstance(data, dict) else {})
+        if account_bi and record:
+            return account_bi, record
+        return await _calendar_signed_session(
+            self.env, self.request,
+            getattr(self, "_calendar_body_digest", ""))
+
+    async def json(self):
+        limit = _json_request_limit(self.request)
+        announced = int(self.request.headers.get("content-length") or 0)
+        if announced < 0 or announced > limit:
+            raise RequestBodyTooLarge()
+        raw = str(await self.request.text())
+        if len(raw.encode("utf-8")) > limit:
+            raise RequestBodyTooLarge()
+        # Held for _calendar_signed_session: a mutation's proof binds the exact
+        # body, so the digest has to be taken from the bytes actually read.
+        self._calendar_body_digest = await sha256_hex(raw)
+        return json.loads(raw or "{}")
+
+    def query(self, name):
+        if self.request is None:
+            return ""
+        try:
+            return URL(self.request.url).searchParams.get(str(name)) or ""
+        except Exception:
+            return ""
+
+    async def d1_all(self, sql, *args):
+        return await d1_all(self.env, sql, *args)
+
+    async def d1_first(self, sql, *args):
+        return await d1_first(self.env, sql, *args)
+
+    async def d1_run(self, sql, *args):
+        return await d1_run(self.env, sql, *args)
+
+    @staticmethod
+    def changes(result):
+        try:
+            return int(result.meta.changes)
+        except Exception:
+            try:
+                converted = (
+                    result.to_py() if hasattr(result, "to_py") else result)
+                return int((converted.get("meta") or {}).get("changes") or 0)
+            except Exception:
+                return 0
+
+    async def seal(self, value):
+        return await encrypt_row(self.env, value)
+
+    async def open(self, value):
+        return await decrypt_row(self.env, value)
+
+    async def account(self, name):
+        name = clean_string(name or "", MAX_NODE_NAME).strip().lower()
+        if not valid_node_name(name):
+            return ""
+        account_bi, record = await _account_row(self.env, name)
+        if (
+            not record
+            or record.get("status") != "active"
+            or _account_kind(record) != "user"
+        ):
+            return ""
+        return str(account_bi or "")
+
+    async def org(self, name, actor):
+        org_bi, record = await _org_row(self.env, name)
+        if not record:
+            return "", ""
+        return await _org_role(self.env, org_bi, actor), str(org_bi)
+
+    async def org_role(self, name, actor):
+        org_bi, record = await _org_row(self.env, name)
+        return await _org_role(self.env, org_bi, actor) if record else ""
+
+    async def notify(self, recipient, kind, title, **kwargs):
+        return await enqueue_notification(
+            self.env, recipient, kind, title, **kwargs)
+
+    async def audit(self, actor, action, target_type="", target=""):
+        await _audit_sensitive_action(
+            self.env, actor, action, target_type, target)
+
+
+async def calendar_handler(env, request, path):
+    await ensure_schema(env)
+    return await calendar_api.handle(_CalendarRuntime(env, request), path)
+
+
+async def deliver_calendar_reminders(env):
+    await ensure_schema(env)
+    return await calendar_api.deliver_reminders(_CalendarRuntime(env))
 
 
 REMOTE_MCP_PROTOCOL_VERSION = "2025-06-18"
@@ -10838,13 +11206,48 @@ def d1_row_to_dict(row):
 # fail fast, and the router below turns them into a backpressure 503.
 _D1_TRANSIENT_MARKERS = ("internal error", "network connection lost")
 _D1_SUSTAINED_MARKERS = ("overload", "too many")
+# A blown D1 plan quota - "Your account has exceeded D1's free tier daily row
+# read limit" - arrives as ordinary D1_ERROR text with none of the markers
+# above, so it used to fall through _is_d1_platform_error as though the QUERY
+# were at fault and got re-raised. Every D1-backed route then answered with a
+# Cloudflare 1101 crash page instead of a status code: on 2026-09-18 that was
+# the whole signup flow, which fails on ensure_schema's fingerprint SELECT
+# before it ever validates the form. The ceiling is an account-level budget
+# that resets at midnight UTC (or when the plan is upgraded), so this is a
+# sustained dependency outage: never replay into it, and answer 503 with a
+# Retry-After the client can actually wait out.
+_D1_QUOTA_MARKERS = (
+    "free tier",
+    "free plan",
+    "daily row read limit",
+    "daily row write limit",
+    "upgrade to a paid plan",
+    "database is full",
+    "storage limit",
+)
+
+
+def _is_d1_quota_error(error):
+    """Is D1 refusing because the account's plan budget is spent?"""
+    text = _safe_error_text(error).lower()
+    if "d1_error" not in text:
+        return False
+    return any(marker in text for marker in _D1_QUOTA_MARKERS)
 
 
 def _is_transient_d1_error(error):
     text = _safe_error_text(error).lower()
-    if any(marker in text for marker in _D1_SUSTAINED_MARKERS):
+    if any(marker in text
+           for marker in _D1_SUSTAINED_MARKERS + _D1_QUOTA_MARKERS):
         return False
     return any(marker in text for marker in _D1_TRANSIENT_MARKERS)
+
+
+def _d1_quota_retry_after_seconds(now_ms=None):
+    """Seconds until D1's daily row budget rolls over at midnight UTC."""
+    now_ms = int(Date.now() if now_ms is None else now_ms)
+    remaining_ms = 86400000 - (now_ms % 86400000)
+    return max(60, min(86400, remaining_ms // 1000))
 
 
 async def _d1_read(env, sql, args, first):
@@ -13675,7 +14078,8 @@ async def native_repository_logo_handler(
                     "fallbackDataUrl": str(
                         (fallback or {}).get("dataUrl") or ""),
                 },
-            }, cache_control="no-store")
+            }, cache_control=_repository_import_module()
+                ._repository_logo_cache_control(record))
         response = await service.logo_for_record(env, repository_id, record)
         return response
 
@@ -15730,6 +16134,19 @@ def _profile_links_public(rec):
     return out
 
 
+def _account_public_email(rec):
+    """The address this account chose to publish on its profile, or "".
+
+    Publishing is opt-in (``profile_email_public``) and can only ever surface
+    the one address the account has confirmed: a record whose address is not
+    verified — or was changed and is verifying again — stays private no matter
+    what the stored flag says.
+    """
+    if not rec.get("profile_email_public") or not rec.get("email_verified"):
+        return ""
+    return clean_string(rec.get("email", ""), 254).strip()
+
+
 def _account_profile_fields(rec):
     bio = clean_string(rec.get("profile_bio", ""), MAX_PROFILE_BIO).strip()
     about = clean_string(
@@ -15749,6 +16166,7 @@ def _account_profile_fields(rec):
         "profileTimezone": timezone,
         "profilePrivate": bool(rec.get("profile_private")),
         "followersPublic": bool(rec.get("profile_followers_public")),
+        "publicEmail": _account_public_email(rec),
         "mastodon": mastodon,
         "mastodonUrl": _mastodon_url(mastodon),
         "profileLinks": _profile_links_public(rec),
@@ -15863,6 +16281,7 @@ async def _account_public_payload(
         "nodes": _owned_nodes(rec),
         "emailNotifications": rec.get("email_notifications") is not False,
         "notificationPreferences": notification_email_preferences(rec),
+        "notificationPauseUntil": ping_pause_until(rec),
         "social": social,
     }
     payload.update(social)
@@ -17880,7 +18299,7 @@ async def _account_profile(env, request):
     public_profile_fields = {
         "avatarPng", "profileBio", "profileAbout", "profileReadme",
         "profileLocation", "profileTimezone", "profilePrivate",
-        "followersPublic", "mastodon",
+        "followersPublic", "publicEmail", "mastodon",
         "profileLinks", "nodeName", "email", "identifier", "sessionToken",
         # The dashboard always sends a (usually empty) `password` field even on
         # pages with no password input. Whitelist it so a session-authed
@@ -18034,6 +18453,24 @@ async def _account_profile(env, request):
                 rec.pop("profile_followers_public", None)
             changed = True
 
+    if "publicEmail" in data:
+        # The Public email dropdown offers exactly the addresses this account
+        # has confirmed (today: the single account address) plus "don't show".
+        # Anything else — somebody else's address, or this account's own
+        # unconfirmed one — is refused rather than quietly published, so the
+        # stored flag can only ever mean "publish the verified address".
+        wanted = clean_string(data.get("publicEmail", ""), 254).strip().lower()
+        account_email = clean_string(rec.get("email", ""), 254).strip().lower()
+        if wanted and (
+                wanted != account_email or not rec.get("email_verified")):
+            return json_response({"error": "bad_public_email"}, status=400)
+        if bool(rec.get("profile_email_public")) != bool(wanted):
+            if wanted:
+                rec["profile_email_public"] = True
+            else:
+                rec.pop("profile_email_public", None)
+            changed = True
+
     if "mastodon" in data:
         raw_mastodon = clean_string(data.get("mastodon", ""), 120).strip()
         mastodon = _clean_mastodon_handle(raw_mastodon)
@@ -18072,6 +18509,10 @@ async def _account_profile(env, request):
             data.get("notificationPreferences"), rec)
         if rec.get("notification_preferences", {}) != prefs:
             rec["notification_preferences"] = prefs
+            changed = True
+
+    if "notificationPauseUntil" in data:
+        if _apply_ping_pause(rec, data.get("notificationPauseUntil")):
             changed = True
 
     verification_sent = False
@@ -19451,6 +19892,14 @@ async def _account_heartbeat(env, request):
         if prefs_rec.get("notification_preferences", {}) != prefs:
             prefs_rec["notification_preferences"] = prefs
             prefs_changed = True
+    # The desktop pushes a pause only on the beat after the user set one — it
+    # is not restated every minute like the two settings above — so a pause
+    # started in the browser is not overwritten by the next heartbeat.
+    if "notificationPauseUntil" in data:
+        pause_applier = globals().get("_apply_ping_pause")
+        if callable(pause_applier) and pause_applier(
+                prefs_rec, data.get("notificationPauseUntil")):
+            prefs_changed = True
     if prefs_changed:
         await _save_account(env, prefs_bi, prefs_rec)
         if prefs_bi == name_bi:
@@ -19539,7 +19988,10 @@ async def _account_heartbeat(env, request):
                 ),
                 "isAdmin": is_admin,
                 "emailNotifications": prefs_rec.get("email_notifications") is not False,
-                "notificationPreferences": notification_preferences}
+                "notificationPreferences": notification_preferences,
+                # Authoritative, so a pause set on any other surface reaches
+                # this node on its next beat.
+                "notificationPauseUntil": ping_pause_until(prefs_rec)}
     if balance_lamports is not None:
         response["balanceLamports"] = balance_lamports
         response["balanceFundsState"] = "user-owned-external-wallet"
@@ -27286,6 +27738,145 @@ async def outreach_handler(env, request):
     return json_response({"error": "not_found"}, status=404)
 
 
+# Settings had no signed-IN password change: every "Current password"
+# box on that screen only CONFIRMS some other action (rename, payout,
+# notifications, claim, delete), so before this the only route to a new
+# password was the signed-OUT recovery flow below — log out and wait for a
+# reset email. A live session alone is still not enough here: the current
+# password is verified again, so a borrowed tab cannot take the account over.
+PASSWORD_CHANGE_MIN_LENGTH = 8
+
+
+async def _password_change_attempt_key(env, account_bi):
+    """Brute-force budget for one account's current-password checks.
+
+    Deliberately its own namespace: a signed-in user fumbling their current
+    password must not spend the shared login budget for their address (and so
+    lock themselves out of the login form), while a stolen session still gets
+    only a bounded number of guesses at the password it cannot read.
+    """
+    return await blind_index(
+        env, "password-change-v1\n" + str(account_bi or ""))
+
+
+async def _send_password_changed_notice(env, request, name, email):
+    """Tell the account's address that its password just changed.
+
+    This is how somebody learns their account was taken over, so the send is
+    best effort: the password is already replaced by the time it runs, and a
+    mail outage must not surface as a failed change the user then repeats.
+    """
+    if not email:
+        return False
+    reset_url = _public_base_url(env, request) + "/forgot-password"
+    subject = "Your BLT password was changed"
+    text = ("The password for your BLT account \"" + (name or "") +
+            "\" was just changed from a signed-in session. Every other "
+            "signed-in device was signed out.\n\nIf this wasn't you, reset "
+            "your password now:\n" + reset_url)
+    safe_name = _html_escape(name or "")
+    safe_reset = _html_escape(reset_url)
+    intro = ("The password for your BLT account "
+             "<strong class=\"fm-strong\" style=\"color:#f5f5f5\">" + safe_name +
+             "</strong> was just changed from a signed-in session.")
+    body_html = (
+        "<p style=\"margin:0 0 22px\">Every other signed-in device was signed "
+        "out.</p>")
+    footer_html = (
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;"
+        "font-size:12px\">If this wasn't you, reset your password now: "
+        "<a href=\"" + safe_reset + "\">" + safe_reset + "</a></p>")
+    html = _forkmesh_email_card_html(
+        "Your password was changed", intro, body_html, footer_html)
+    try:
+        return await _send_email(
+            env, email, subject, text, html, email_kind="password_change")
+    except Exception:
+        return False
+
+
+async def _account_change_password(env, request):
+    """Replace this session's own account password."""
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, rec = await _account_session_record(env, request, data)
+    if not account_bi or not rec or rec.get("status") != "active":
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store, max-age=0, must-revalidate")
+    if not rec.get("pass_hash"):
+        # A key-bound node record has no password to replace; setting a first
+        # one belongs to the account flows that index the address (finalize).
+        return json_response({"error": "password_not_set"}, status=400)
+    current = (data.get("currentPassword", "") or
+               data.get("password", "") or "")[:256]
+    new_password = (data.get("newPassword", "") or "")[:256]
+    if len(new_password) < PASSWORD_CHANGE_MIN_LENGTH:
+        return json_response({"error": "password_too_short"}, status=400)
+
+    actor = clean_string(rec.get("name", ""), MAX_NODE_NAME).strip().lower()
+    attempt_key = await _password_change_attempt_key(env, account_bi)
+    locked_until = await _login_locked_until(env, attempt_key)
+    if locked_until:
+        # Unlike the login form there is nothing to enumerate here, so a locked
+        # budget refuses the guess outright instead of still spending PBKDF2 on
+        # it.
+        retry_ms = max(1000, locked_until - int(Date.now()))
+        return json_response(
+            {"error": "too_many_attempts", "retryAfterMs": retry_ms},
+            status=429,
+            extra_headers={
+                "Retry-After": str(max(1, (retry_ms + 999) // 1000))
+            },
+            cache_control="no-store, max-age=0, must-revalidate")
+    if not await verify_password(
+            current, rec.get("pass_salt", ""), rec.get("pass_hash", "")):
+        await _audit_sensitive_action(
+            env, actor, "account.password_change", "account", actor, "denied",
+            {"reason": "invalid_credentials"})
+        return await _login_failure_response(
+            env, [attempt_key], "invalid_credentials")
+    if new_password == current:
+        return json_response({"error": "password_unchanged"}, status=400)
+
+    salt, phash = await hash_password(new_password)
+    rec["pass_salt"] = salt
+    rec["pass_hash"] = phash
+    rec["password_changed_at"] = int(Date.now())
+    await _save_account(env, account_bi, rec)
+    await _login_clear(env, attempt_key)
+    # Any reset link still in a mailbox is bound to the OLD hash and stops
+    # verifying the moment it is replaced, so only sessions need clearing here:
+    # every other device is signed out, and the device that made the change
+    # keeps its session so the settings screen it was typed on stays usable.
+    keep_session_id = _request_account_session_id(request, data)
+    if keep_session_id:
+        await d1_run(
+            env,
+            "UPDATE account_sessions SET revoked_at=? "
+            "WHERE account_bi=? AND session_id<>? AND revoked_at=0",
+            int(Date.now()), account_bi, keep_session_id)
+    else:
+        await _account_revoke_sessions(env, account_bi)
+    await _audit_sensitive_action(
+        env, actor, "account.password_change", "account", actor, "success",
+        {"currentRevoked": not keep_session_id})
+    if rec.get("email"):
+        sent = await _send_password_changed_notice(
+            env, request, actor, rec.get("email", ""))
+        # Stamp the record already in hand rather than re-reading the account:
+        # a D1 replica still serving the pre-change row would write the OLD
+        # password hash straight back over the one just saved.
+        await _save_account(
+            env, account_bi,
+            _stamp_account_email(rec, "password_change", sent))
+    return json_response(
+        {"ok": True, "currentRevoked": not keep_session_id},
+        cache_control="no-store, max-age=0, must-revalidate")
+
+
 # Step 1 of a password reset: a user who forgot their password gives their email
 # (or node name); if it matches an active account with an email on file we send a
 # time-bound reset link. Always returns {ok:true} — never revealing whether the
@@ -29013,6 +29604,8 @@ async def accounts_handler(env, request):
         return await _account_rotate(env, request)
     if url.path == "/api/accounts/forgot-password" and method == "POST":
         return await _account_forgot_password(env, request)
+    if url.path == "/api/accounts/change-password" and method == "POST":
+        return await _account_change_password(env, request)
     if url.path == "/api/accounts/reset-password" and method == "POST":
         return await _account_reset_password(env, request)
     if url.path == "/api/accounts/claim-node" and method == "POST":
@@ -30849,7 +31442,13 @@ async def notifications_handler(env, request):
             if not read_at:
                 unread += 1
             items.append(rec)
-        return json_response({"ok": True, "notifications": items, "unread": unread})
+        _, pause_rec = await _account_row(env, node)
+        return json_response({
+            "ok": True,
+            "notifications": items,
+            "unread": unread,
+            "pauseUntil": ping_pause_until(pause_rec),
+        })
 
     if method == "POST":
         try:
@@ -30864,6 +31463,22 @@ async def notifications_handler(env, request):
         # the account-key read proof signed onto the URL).
         if await _alert_inbox_account_name(env, request, data) != node:
             return json_response({"error": "unauthorized"}, status=401)
+        if "pauseUntil" in data:
+            # Pausing is a different capability from marking read, and the gate
+            # above accepts either a session token or an account-key signature.
+            # The read proof binds nothing but the node, so honouring a pause
+            # on the signed path would let a captured mark-read POST be
+            # replayed as a mute. Browsers hold a session; the desktop has its
+            # own signed rail for this (the heartbeat).
+            if await _authed_account_name(env, request, data) != node:
+                return json_response({"error": "unauthorized"}, status=401)
+            name_bi, account = await _account_row(env, node)
+            if not name_bi or not account:
+                return json_response({"error": "unauthorized"}, status=401)
+            if _apply_ping_pause(account, data.get("pauseUntil")):
+                await _save_account(env, name_bi, account)
+            return json_response({"ok": True,
+                                  "pauseUntil": ping_pause_until(account)})
         recipient_bi = await blind_index(env, node)
         now = int(Date.now())
         if data.get("all"):
@@ -31216,6 +31831,13 @@ async def send_notification_digests(env):
             continue
         if email_rec.get("email_notifications") is False:
             continue  # explicit opt-out
+        if pings_paused(email_rec, now):
+            # Snoozed: still filed to the inbox and the bell badge, just not
+            # mailed. Stamped rather than skipped, so the quiet period is time
+            # this digest covered and not a backlog waiting at the deadline.
+            rec["last_digest_ts"] = now
+            await _save_account(env, recipient_bi, rec)
+            continue
         last = int(rec.get("last_digest_ts", 0) or 0)
         if last and now - last < NOTIFICATION_DIGEST_INTERVAL_MS:
             continue
@@ -31291,6 +31913,12 @@ async def send_general_chat_digests(env):
         if not email or not rec.get("email_verified"):
             continue
         if rec.get("email_notifications") is False:
+            continue
+        if pings_paused(rec, now):
+            # Stamped rather than skipped, so the day spent paused is a day
+            # this rollup covered and not a backlog waiting at the deadline.
+            rec["last_general_chat_digest_ts"] = now
+            await _save_account(env, name_bi, rec)
             continue
         if not notification_email_enabled(rec, "general_chat"):
             continue
@@ -37015,6 +37643,7 @@ def _is_d1_platform_error(error):
         return False
     return bool(
         _is_transient_d1_error(error)
+        or _is_d1_quota_error(error)
         or any(marker in text for marker in _D1_SUSTAINED_MARKERS))
 
 
@@ -38426,6 +39055,10 @@ def _admin_href(admin_query, **params):
 # Durable Objects, so compiling it in entry.py spent scarce Pyodide startup
 # memory on every isolate. Keep compatible bindings while loading the
 # implementation only when one of these administrator helpers is first used.
+# The shared chrome every administrator page renders inside. Its own lazy
+# module so admin_console resolves it through _bind_runtime (and so the shell's
+# Response/D1 bindings are supplied) rather than importing it directly.
+admin_shell = _LazyModule("admin_shell")
 _admin_console = _LazyModule("admin_console")
 _ADMIN_CONSOLE_EXPORT_NAMES = (
     "_admin_purge_allowed", "_admin_list_tables",
@@ -38443,8 +39076,7 @@ _ADMIN_CONSOLE_EXPORT_NAMES = (
     "_admin_selected_rows_digest", "_render_diag_breakdown",
     "_render_install_diag_overview", "_render_table_view",
     "_render_admin_stats", "_render_admin_operational_alerts",
-    "render_admin_alerts_html", "_render_admin_repo_terms_flags",
-    "_render_admin_nav", "render_admin_html",
+    "_render_admin_nav", "render_admin_html", "normalize_admin_view",
 )
 for _admin_console_export_name in _ADMIN_CONSOLE_EXPORT_NAMES:
     globals()[_admin_console_export_name] = _admin_console.export(
@@ -41874,6 +42506,19 @@ class Default(WorkerEntrypoint):
                 self.env, "/cron/record-status-sample",
                 "record_status_sample failed: " + _safe_error_text(error),
                 error=error, failures=cron_failures)
+        # Calendar reminders are the one notification scan that has to run on
+        # every tick: a "10 minutes before" ping is worthless a slot later. The
+        # scan itself is bounded (one indexed window read, deduped against
+        # calendar_reminder_deliveries), so it costs about what a digest job
+        # does on a minute where nothing is due.
+        try:
+            await deliver_calendar_reminders(self.env)
+        except BaseException as error:
+            await log_cron_error(
+                self.env, "/cron/deliver-calendar-reminders",
+                "deliver_calendar_reminders failed: "
+                + _safe_error_text(error),
+                error=error, failures=cron_failures)
         # Online-node sample for the /network/ activity graph (heavier: joins
         # + AES-GCM row decrypts per live host).
         try:
@@ -42174,12 +42819,29 @@ class Default(WorkerEntrypoint):
                         self.env, request, getattr(url, "path", ""), error)
                 except BaseException:
                     pass
+                # A spent plan quota is not a blip: retrying in two seconds
+                # only burns more of a budget that refills at midnight UTC, so
+                # it gets its own error code and an honest Retry-After.
+                quota_exhausted = _is_d1_quota_error(error)
+                payload = {"error": "database_unavailable"}
+                if quota_exhausted:
+                    payload = {
+                        "error": "database_quota_exceeded",
+                        "detail": (
+                            "The database has reached its daily plan limit. "
+                            "Service resumes when the quota resets."
+                        ),
+                    }
                 response = json_response(
-                    {"error": "database_unavailable"}, status=503,
+                    payload,
+                    status=503,
                     cache_control="no-store",
                     extra_headers={
                         **EXPECTED_DEGRADED_HEADERS,
-                        "Retry-After": "2",
+                        "Retry-After": (
+                            str(_d1_quota_retry_after_seconds())
+                            if quota_exhausted else "2"
+                        ),
                     })
             else:
                 try:
@@ -42277,6 +42939,10 @@ class Default(WorkerEntrypoint):
         audit_details = {}
         csrf_field = ('<input type="hidden" name="csrf" value="%s">'
                       % _html_escape(_admin_csrf_token(self.env)))
+        # Set when this request asked for a different admin theme: the switch
+        # posts back here rather than to a second public endpoint, so the
+        # cookie rides out on the page it re-renders.
+        theme_cookie_header = ""
         if method_name(request) == "POST":
             try:
                 form = parse_qs(await request.text(), keep_blank_values=True)
@@ -42285,6 +42951,10 @@ class Default(WorkerEntrypoint):
             if not _admin_csrf_ok(self.env, form):
                 banner = ("Action blocked: invalid or missing CSRF token. "
                           "Reload the admin page and try again.")
+            elif action == "theme":
+                choice = admin_shell.theme_choice(form)
+                if choice:
+                    theme_cookie_header = admin_shell.theme_cookie(choice)
             elif action == "disburse":
                 try:
                     banner = await _admin_disburse(self.env)
@@ -42658,26 +43328,28 @@ class Default(WorkerEntrypoint):
                           if active
                           else '<div class="empty">No tables found.</div>')
 
-        # Row counts for the left nav.
+        view = normalize_admin_view(params.get("view", [""])[0])
+        # The switch posts to this exact URL, so the section it was used on is
+        # the section that comes back.
+        theme_action = _admin_href(admin_query, action="theme", view=view)
+        theme_fields = csrf_field
+        # Row counts for the Database section's table list. Only that section
+        # draws the list, so the per-table COUNT(*) sweep is skipped entirely
+        # on every other view rather than paid for on each page load.
         counts = {}
-        for t in tables:
-            try:
-                row = await d1_first(self.env, "SELECT COUNT(*) AS n FROM " + t)
-                counts[t] = int((row or {}).get("n", 0) or 0)
-            except Exception:
-                counts[t] = 0
-        stats = await admin_stats(self.env)
-        operational_alert_settings = await _repo_alert_settings_get(
-            self.env, *FLAGSHIP_MONITOR_ID.split("/", 1))
-        if params.get("view", [""])[0] == "alerts":
-            return Response(
-                render_admin_alerts_html(
-                    operational_alert_settings, csrf_field, admin_query,
-                    banner),
-                status=200,
-                headers={"content-type": "text/html; charset=utf-8",
-                         "cache-control": "no-store"},
-            )
+        if view == "database":
+            for t in tables:
+                try:
+                    row = await d1_first(
+                        self.env, "SELECT COUNT(*) AS n FROM " + t)
+                    counts[t] = int((row or {}).get("n", 0) or 0)
+                except Exception:
+                    counts[t] = 0
+        stats = await admin_stats(self.env) if view == "overview" else {}
+        operational_alert_settings = (
+            await _repo_alert_settings_get(
+                self.env, *FLAGSHIP_MONITOR_ID.split("/", 1))
+            if view == "alerts" else {})
         # Default the table browser to most-records-first; ?sort=name opts back
         # into the A–Z ordering.
         sort_records = params.get("sort", [""])[0] != "name"
@@ -42686,9 +43358,30 @@ class Default(WorkerEntrypoint):
                               csrf_field=csrf_field, admin_query=admin_query,
                               sort_records=sort_records,
                               operational_alert_settings=(
-                                  operational_alert_settings)),
+                                  operational_alert_settings),
+                              view=view,
+                              console=admin_shell.console_base(self.env),
+                              theme=(
+                                  admin_shell.theme_from_cookie_header(
+                                      theme_cookie_header)
+                                  or admin_shell.theme_from_request(request)),
+                              theme_action=theme_action,
+                              theme_fields=theme_fields,
+                              badges=await admin_shell.nav_badges(self.env),
+                              # Same derivation the audit trail uses: the
+                              # session cookie's name, falling back to the
+                              # ?admin= the nav links carry.
+                              account=(account_cookie_name
+                                       or params.get("admin", [""])[0]),
+                              search_value=params.get("user", [""])[0],
+                              ),
             status=200,
-            headers={"content-type": "text/html; charset=utf-8"},
+            headers={
+                "content-type": "text/html; charset=utf-8",
+                "cache-control": "no-store",
+                **({"set-cookie": theme_cookie_header}
+                   if theme_cookie_header else {}),
+            },
         )
 
     async def _route(self, request, url):
@@ -42747,14 +43440,18 @@ class Default(WorkerEntrypoint):
         if git_recv and method_name(request) == "POST":
             return await self._git_push(request, git_recv.group(1), git_recv.group(2))
 
+        # BLT has no landing page: the home route opens the dashboard. Redirect
+        # (as ForkMesh's app origin does) instead of serving the document here,
+        # so the dashboard keeps the one /dashboard URL its sidebar links use.
+        # no-store keeps browsers from caching the 308 as a one-way door.
         if url.path == "/" and method_name(request) in ("GET", "HEAD"):
-            single_site = str(
-                getattr(self.env, "SINGLE_WORKER_SITE", "") or ""
-            ).strip().lower() in ("1", "true", "yes", "on")
-            if single_site:
-                return await self._serve_homepage(url)
-            return await self._serve_dashboard_asset(
-                url, "dashboard/index.html")
+            location = "/dashboard"
+            if url.query:
+                location += "?" + url.query
+            return Response("", status=308, headers={
+                "cache-control": "no-store",
+                "location": location,
+            })
 
         # Browsers always request /favicon.ico; assets live under /favicon/.
         if url.path == "/favicon.ico" and method_name(request) in ("GET", "HEAD"):
@@ -43286,6 +43983,10 @@ class Default(WorkerEntrypoint):
         if (url.path == "/api/notes" or url.path == "/api/notes/"
                 or url.path.startswith("/api/notes/")):
             return await notes_handler(self.env, request, url.path)
+
+        if (url.path == "/api/calendar" or url.path == "/api/calendar/"
+                or url.path.startswith("/api/calendar/")):
+            return await calendar_handler(self.env, request, url.path)
 
         # Peer mirror requests (issue #385): create/accept/reject a request
         # asking another node to mirror a repo. Session-gated like the inbox.
@@ -44441,7 +45142,7 @@ class Default(WorkerEntrypoint):
         # The per-page dashboard documents are generated by
         # tools/build_dashboard_assets.py. Prefer the internal ASSETS origin so
         # a public-URL hairpin cannot re-enter this Worker via run_worker_first
-        # (same failure mode as _serve_homepage) and leave notes/tasks blank.
+        # and leave notes/tasks blank.
         bases = (
             "https://forkmesh.internal/",
             url.scheme + "://" + url.netloc + "/",
@@ -44474,54 +45175,6 @@ class Default(WorkerEntrypoint):
             "content-type": "text/html; charset=utf-8",
             "cache-control": "public, max-age=300",
         })
-
-    async def _serve_homepage(self, url):
-        # Serve the BLT landing page from the ASSETS binding. Prefer the
-        # internal asset origin first — a public-URL hairpin can re-enter this
-        # Worker via run_worker_first and return 404. Fall back to the request
-        # origin with non-navigate headers so not_found_handling stays off.
-        bases = (
-            "https://forkmesh.internal/",
-            url.scheme + "://" + url.netloc + "/",
-        )
-        for base in bases:
-            for asset in ("blt-home.html", "index.html"):
-                try:
-                    resp = await self.env.ASSETS.fetch(JsRequest.new(
-                        base + asset,
-                        to_js({
-                            "method": "GET",
-                            "headers": {
-                                "cache-control": "no-cache",
-                                "sec-fetch-mode": "cors",
-                                "sec-fetch-dest": "empty",
-                            },
-                        }),
-                    ))
-                    status = int(getattr(resp, "status", 0) or 0)
-                    if status != 200:
-                        continue
-                    body = await resp.text()
-                    lowered = (body or "").lower()
-                    if "<!doctype html" not in lowered or "blt" not in lowered:
-                        continue
-                    return Response(body, status=200, headers={
-                        "content-type": "text/html; charset=utf-8",
-                        "cache-control": "no-cache",
-                    })
-                except Exception:
-                    continue
-        return Response(
-            "<!doctype html><title>BLT unavailable</title>"
-            "<body style=\"font-family:system-ui,sans-serif;padding:2rem\">"
-            "<h1>BLT is temporarily unavailable</h1>"
-            "<p>Please refresh in a moment.</p></body>",
-            status=503,
-            headers={
-                "content-type": "text/html; charset=utf-8",
-                "cache-control": "no-store, max-age=0, must-revalidate",
-            },
-        )
 
     async def _git_host(self, request, owner_raw, repo_raw):
         # Legacy compatibility boundary. Public clone traffic never reaches

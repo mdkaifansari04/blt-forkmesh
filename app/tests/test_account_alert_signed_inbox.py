@@ -342,11 +342,26 @@ def test_the_inbox_handler_uses_the_shared_gate_for_every_verb():
     handler = ENTRY_TEXT[start:ENTRY_TEXT.index(
         "async def mirror_requests_handler(", start)]
     assert handler.count("_alert_inbox_account_name(") == 3
-    assert "_authed_account_name(" not in handler
     # The DELETE branch hands either the row id or explicit all-inbox resource
     # to the gate, so a single-row proof cannot be replayed as a bulk clear.
     delete_branch = handler[handler.index('if method == "DELETE":'):]
     assert 'resource=("all" if clear_all else item_id)' in delete_branch
+
+
+def test_pausing_notifications_needs_a_session_not_just_the_inbox_proof():
+    start = ENTRY_TEXT.index("async def notifications_handler(env, request):")
+    handler = ENTRY_TEXT[start:ENTRY_TEXT.index(
+        "async def mirror_requests_handler(", start)]
+    pause_branch = handler[handler.index('if "pauseUntil" in data:'):]
+    # Muting an account is a different capability from marking its inbox read,
+    # and the shared gate accepts an account-key signature whose proof binds
+    # nothing but the node — so a captured mark-read POST must not be
+    # replayable as a mute. The pause branch layers a session check on top;
+    # the desktop reaches the same field over its own signed heartbeat rail.
+    assert "_authed_account_name(env, request, data) != node" in pause_branch
+    assert handler.count("_authed_account_name(") == 1
+    assert pause_branch.index("_authed_account_name(") < pause_branch.index(
+        "_apply_ping_pause(")
 
 
 def test_desktop_and_worker_agree_on_the_canonical_proof_strings():

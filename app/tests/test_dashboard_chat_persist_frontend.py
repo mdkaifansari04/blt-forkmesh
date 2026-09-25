@@ -14,7 +14,6 @@ from pathlib import Path
 
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-WWW_PUBLIC = PUBLIC.parents[1] / "www" / "public"
 CHAT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
 PUBLIC_CHAT = (PUBLIC / "chat.js").read_text(encoding="utf-8")
 DASHBOARD_HTML = (PUBLIC / "dashboard" / "chat" / "index.html").read_text(encoding="utf-8")
@@ -23,7 +22,7 @@ PUBLIC_CHAT_CSS = (PUBLIC / "chat.css").read_text(encoding="utf-8")
 CHAT_VIEW = (
     PUBLIC / "dashboard" / "partials" / "views" / "chat.html"
 ).read_text(encoding="utf-8")
-STYLES = (WWW_PUBLIC / "styles.css").read_text(encoding="utf-8")
+STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 
 
 def test_send_marks_durable_frames_for_relay_retention():

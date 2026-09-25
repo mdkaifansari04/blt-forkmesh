@@ -2,8 +2,9 @@
 
 App clean pages (``/login``, ``/signup``, ``/status``, …) are Worker-owned via
 ``run_worker_first`` and mapped through ``APP_PAGE_ASSETS`` to their HTML
-documents in the assets binding. Www marketing routes are served by Workers
-Static Assets from ``www/public/_redirects``. Repo shortcuts are Worker-owned
+documents in the assets binding. Marketing-site routes (``WWW_SITE_ROUTES``)
+belong to ``WWW_ORIGIN``: the Worker 308s them there, or serves the 404 page
+when that origin is this Worker. Repo shortcuts are Worker-owned
 so hard-refreshing ``/owner/repo`` and tab/tree/blob deep links can serve the
 repo-detail page without relying on a client-side 404 bounce. Direct
 implementation-file URLs such as ``/login.html`` are intentionally blocked.
@@ -103,6 +104,7 @@ DASHBOARD_PAGE_ASSETS = {
     "/dashboard/chat": "dashboard/chat/index.html",
     "/dashboard/tasks": "dashboard/tasks/index.html",
     "/dashboard/notes": "dashboard/notes/index.html",
+    "/dashboard/calendar": "dashboard/calendar/index.html",
     "/dashboard/settings": "dashboard/settings/index.html",
     "/dashboard/profile": "dashboard/profile/index.html",
     "/dashboard/profile/repositories": "dashboard/profile/repositories/index.html",
@@ -110,14 +112,13 @@ DASHBOARD_PAGE_ASSETS = {
 
 # App-owned clean URLs listed in wrangler run_worker_first. The Worker fetches
 # the HTML asset and returns it; direct *.html paths stay blocked below.
-# BLT-owned clean auth/status pages only. ForkMesh World / chat / network /
+# BLT-owned clean auth pages only. ForkMesh World / chat / network /
 # referrals / leaderboards / mirror-payouts are not part of this surface.
 APP_PAGE_ASSETS = {
     "/login": "login.html",
     "/signup": "signup.html",
     "/forgot-password": "forgot-password.html",
     "/reset-password": "reset-password.html",
-    "/status": "status.html",
 }
 
 # The public org-page document, fetched by the Worker for routed bare org
@@ -170,6 +171,7 @@ BLOCKED_STATIC_HTML_PATHS = frozenset({
     "/dashboard/chat/index.html",
     "/dashboard/tasks/index.html",
     "/dashboard/notes/index.html",
+    "/dashboard/calendar/index.html",
     "/dashboard/settings/index.html",
     "/dashboard/profile/index.html",
     "/dashboard/profile/repositories/index.html",
@@ -199,7 +201,6 @@ BLOCKED_STATIC_HTML_PATHS = frozenset({
     "/changelog.html",
     "/privacy.html",
     "/terms.html",
-    "/status.html",
 })
 
 

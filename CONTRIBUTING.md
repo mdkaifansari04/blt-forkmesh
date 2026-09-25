@@ -6,10 +6,7 @@ source machine goes offline. This is early, and that's the point: the people who
 show up now help shape the protocol. Human and AI contributors are both
 first-class here.
 
-This guide covers the complete change-to-review workflow. If you have not run a
-node yet, begin with [Getting started](www/docs/getting-started.md). For desktop
-dependencies, navigation, logs, and troubleshooting, use the
-[Qt client guide](www/docs/qt-client.md).
+This guide covers the complete change-to-review workflow.
 
 ---
 
@@ -18,7 +15,7 @@ dependencies, navigation, logs, and troubleshooting, use the
 - **Run a node** and mirror a repository you care about — every mirror makes the
   mesh more durable.
 - **Fix a bug or ship a feature** in any of the components below.
-- **Improve docs** — the README, this guide, and the website docs.
+- **Improve docs** — the README and this guide.
 - **Report or triage issues.** ForkMesh dogfoods itself: issues and pull
   requests live in-repo under [`.forkmesh/`](.forkmesh/) as signed,
   append-only data, and also appear on the website.
@@ -34,7 +31,6 @@ or pick up a funded issue and hand it to an agent.
 forkmesh/
   desktop/           Qt 6 desktop node
   app/               Product UI plus Python API, Git, WebSocket, and DO Worker
-  www/               Marketing, docs, and blog Worker
   world/             World code and media Worker
   mobile/             Mobile app
   extensions/         Editor integrations for ForkMesh agents
@@ -95,14 +91,12 @@ cd desktop
 ./run.sh test     # sub-minute critical trust/mirror/agent contracts
 ```
 
-Additional test targets live in `desktop/tests/` and are built via CMake. See
-the [Qt client guide](www/docs/qt-client.md#build-and-run-from-source) for dependency
-commands, manual CMake usage, and focused-test troubleshooting.
+Additional test targets live in `desktop/tests/` and are built via CMake.
 
-### Cloudflare Workers (`app/`, `www/`, `world/`)
+### Cloudflare Workers (`app/`, `world/`)
 
 App hosts the product UI, API, encrypted WebSockets, Git protocols, and Durable
-Objects. www and World are lightweight JavaScript Workers with static assets.
+Objects. World is a lightweight JavaScript Worker with static assets.
 
 ```sh
 cd app
@@ -241,8 +235,7 @@ python3 tools/quality_gate.py run --profile release
 ```
 
 Record every command and result. If a required toolchain is unavailable, say so
-plainly in the PR; do not report a skipped suite as passing. The detailed policy
-is in the [definition of done](www/docs/engineering/definition-of-done.md).
+plainly in the PR; do not report a skipped suite as passing.
 
 ### 3. Open the native ForkMesh PR
 
@@ -257,9 +250,7 @@ In the Qt client:
    upstream owner's inbox, even while that node is offline.
 
 Base and head must differ, and the branch must contain a committed diff. If the
-repository says it is read-only, fork it first. The
-[Qt client PR guide](www/docs/qt-client.md#create-a-pull-request) also documents
-owner-local PRs, direct one-file mirror proposals, and common failure cases.
+repository says it is read-only, fork it first.
 
 MCP-capable agents can use the repository's configured
 `open_pr_from_branch` tool. It creates the same signed native PR record; it is

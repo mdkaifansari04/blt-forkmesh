@@ -11,12 +11,10 @@ to bump.
 
 import re
 import sys
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "public"
-WWW_PUBLIC = ROOT.parent / "www" / "public"
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -40,10 +38,7 @@ SCRIPT_SRC_RE = re.compile(r'<script[^>]*\ssrc="/([\w.-]+\.js)(\?v=([^"]*))?"')
 
 
 def _read(rel):
-    source = PUBLIC / rel
-    if not source.is_file():
-        source = WWW_PUBLIC / rel
-    return source.read_text(encoding="utf-8")
+    return (PUBLIC / rel).read_text(encoding="utf-8")
 
 
 def _versions():
@@ -53,11 +48,9 @@ def _versions():
 
 def _stamped_documents():
     """Every built/authored document the build stamps, with its owning root."""
-    documents = []
-    for root in (PUBLIC, WWW_PUBLIC):
-        authored = dashboard_shell.stamped_site_pages(
-            p.relative_to(root).as_posix() for p in root.rglob("*.html"))
-        documents.extend((root, rel) for rel in authored)
+    authored = dashboard_shell.stamped_site_pages(
+        p.relative_to(PUBLIC).as_posix() for p in PUBLIC.rglob("*.html"))
+    documents = [(PUBLIC, rel) for rel in authored]
     documents.extend(
         (PUBLIC, meta["asset"])
         for meta in dashboard_shell.PAGES.values()
@@ -86,11 +79,10 @@ def test_every_first_party_script_carries_the_shared_content_hash():
 
 def test_no_document_hand_writes_a_version_query():
     versions = set(_versions().values())
-    for root in (PUBLIC, WWW_PUBLIC):
-        for path in sorted(root.rglob("*.html")):
-            for _, query, version in SCRIPT_SRC_RE.findall(
-                    path.read_text(encoding="utf-8")):
-                assert not query or version in versions, (path, version)
+    for path in sorted(PUBLIC.rglob("*.html")):
+        for _, query, version in SCRIPT_SRC_RE.findall(
+                path.read_text(encoding="utf-8")):
+            assert not query or version in versions, (path, version)
 
 
 def test_stamping_is_idempotent_and_the_pages_are_current():
@@ -99,22 +91,14 @@ def test_stamping_is_idempotent_and_the_pages_are_current():
         html = (root / rel).read_text(encoding="utf-8")
         assert dashboard_shell.stamp_asset_versions(html, versions) == html, (
             "%s is stale — run tools/build_dashboard_assets.py" % (root / rel))
-    www_build = tomllib.loads(
-        (WWW_PUBLIC.parent / "wrangler.toml").read_text(encoding="utf-8")
-    )["build"]["command"]
-    assert www_build.startswith("python3 ../app/tools/build_dashboard_assets.py && ")
 
 
 def test_dashboard_sources_are_excluded_from_in_place_stamping():
     app_authored = dashboard_shell.stamped_site_pages(
         p.relative_to(PUBLIC).as_posix() for p in PUBLIC.rglob("*.html"))
-    www_authored = dashboard_shell.stamped_site_pages(
-        p.relative_to(WWW_PUBLIC).as_posix()
-        for p in WWW_PUBLIC.rglob("*.html"))
     assert "dashboard/shell.html" not in app_authored
     assert "dashboard/partials/header.html" not in app_authored
     for meta in dashboard_shell.PAGES.values():
         assert meta["asset"] not in app_authored, meta["asset"]
     assert "login.html" in app_authored
     assert "docs/index.html" not in app_authored
-    assert "docs/index.html" in www_authored

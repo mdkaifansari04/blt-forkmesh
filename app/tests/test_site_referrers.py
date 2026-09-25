@@ -11,7 +11,6 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WWW_PUBLIC = ROOT.parent / "www" / "public"
 ENTRY_PATH = ROOT / "src" / "entry.py"
 ENTRY = ENTRY_PATH.read_text(encoding="utf-8")
 SCHEMA = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
@@ -21,7 +20,6 @@ REFERRALS_JS = (ROOT / "public" / "referrals.js").read_text(encoding="utf-8")
 REFERRALS_HTML = (
     ROOT / "public" / "referrals.html"
 ).read_text(encoding="utf-8")
-PRIVACY = (WWW_PUBLIC / "privacy.html").read_text(encoding="utf-8")
 WORLD = (ROOT.parent / "world" / "public" / "world" / "world.js").read_text(encoding="utf-8")
 SCENE = (
     ROOT.parent / "world" / "public" / "world" / "world-scene.js"
@@ -336,7 +334,6 @@ def test_surfaces_expose_the_board_and_the_privacy_contract():
     # The host is rendered as text, never as a link the board hands out.
     assert "createElement(\"a\")" not in REFERRALS_JS.split(
         "function renderSiteBoard")[1].split("function renderSiteSummary")[0]
-    assert "Referring websites" in PRIVACY
     assert '"/api/referrals/sites"' in ENTRY
     assert "await record_site_referral(self.env, request, url, status)" in ENTRY
 

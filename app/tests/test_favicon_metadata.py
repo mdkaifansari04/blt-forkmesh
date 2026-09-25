@@ -7,13 +7,11 @@ from pathlib import Path
 
 
 PROJECT = Path(__file__).resolve().parents[2]
+APP_PUBLIC = PROJECT / "app" / "public"
 PUBLIC_DIRS = (
-    ("app", PROJECT / "app" / "public"),
-    ("www", PROJECT / "www" / "public"),
+    ("app", APP_PUBLIC),
 )
-WWW_PUBLIC = PROJECT / "www" / "public"
-FAVICON_DIR = WWW_PUBLIC / "favicon"
-SELF_CONTAINED_DARK_PAGES = {"index.html", "homev2.html", "new-home.html"}
+FAVICON_DIR = APP_PUBLIC / "favicon"
 
 REQUIRED_HEAD_LINKS = [
     {
@@ -51,8 +49,7 @@ REQUIRED_HEAD_META = {
     "theme-color": ("#09090b",),
     # Site-wide light/dark support (2026-07-11): every page advertises both
     # schemes; site-header.js / static-page.js stamp html.light/html.dark from
-    # the visitor's saved choice or OS preference. Only the self-contained
-    # landing page (index.html) remains dark-branded, allowed below.
+    # the visitor's saved choice or OS preference.
     "color-scheme": ("light dark",),
 }
 
@@ -100,14 +97,6 @@ def _has_link(parser, expected):
     return False
 
 
-def _is_generated_feature_blog_page(rel_path, html):
-    return (
-        rel_path.startswith("blog/")
-        and rel_path.endswith("/index.html")
-        and "generated from the live ForkMesh feature catalog" in html
-    )
-
-
 def test_public_pages_use_shared_favicon_metadata():
     missing = []
     pages = (
@@ -126,28 +115,10 @@ def test_public_pages_use_shared_favicon_metadata():
         parser = HeadMetadataParser()
         parser.feed(html)
 
-        if _is_generated_feature_blog_page(rel_path, html):
-            if not parser.descriptions:
-                missing.append(f"{owner}/{rel_path}: meta description")
-            if not _has_link(
-                    parser, {"rel": "icon", "href": "/favicon/favicon.ico",
-                             "sizes": "any"}):
-                missing.append(f"{owner}/{rel_path}: link favicon.ico")
-            continue
-
         for expected in REQUIRED_HEAD_LINKS:
             if not _has_link(parser, expected):
                 missing.append(f"{owner}/{rel_path}: link {expected}")
         for name, allowed in REQUIRED_HEAD_META.items():
-            # The self-contained landing page keeps its dark hero design and
-            # is the one page allowed to stay dark-only.
-            if (
-                name == "color-scheme"
-                and owner == "www"
-                and rel_path in SELF_CONTAINED_DARK_PAGES
-                and parser.meta.get(name) == "dark"
-            ):
-                continue
             if parser.meta.get(name) not in allowed:
                 missing.append(
                     f"{owner}/{rel_path}: meta {name} in {allowed}"
@@ -180,7 +151,7 @@ def test_favicon_manifest_points_at_existing_brand_assets():
     ]
 
     for icon in manifest["icons"]:
-        assert (WWW_PUBLIC / icon["src"].lstrip("/")).is_file()
+        assert (APP_PUBLIC / icon["src"].lstrip("/")).is_file()
 
 
 if __name__ == "__main__":

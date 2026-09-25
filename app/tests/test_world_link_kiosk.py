@@ -117,21 +117,3 @@ def test_kiosk_is_migrated_routed_audited_and_reachable_from_the_lobby():
     assert "paymentStatus" in (
         ROOT / "src/world_link_kiosk.py"
     ).read_text(encoding="utf-8")
-
-
-def test_team_onboarding_documents_roles_review_gate_and_link_lab():
-    docs = (
-        ROOT.parent / "www/public/docs/onboarding/index.html"
-    ).read_text(encoding="utf-8")
-    home = (ROOT.parent / "www/public/docs/index.html").read_text(
-        encoding="utf-8")
-
-    for phrase in (
-        "QA onboarding",
-        "Developer onboarding",
-        "Marketing onboarding",
-        "Peer-review and merge policy",
-        "Lobby Link Lab",
-    ):
-        assert phrase in docs
-    assert "/docs/onboarding" in home

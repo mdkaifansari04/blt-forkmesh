@@ -2,15 +2,11 @@
 """Static contract tests for the public 404 page."""
 
 from pathlib import Path
-import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PUBLIC = ROOT.parent / "www" / "public"
+PUBLIC = ROOT / "public"
 NOT_FOUND_PAGE = PUBLIC / "404.html"
-WRANGLER = tomllib.loads(
-    (ROOT.parent / "www" / "wrangler.toml").read_text(encoding="utf-8")
-)
 
 
 def _read(path: Path) -> str:
@@ -50,16 +46,6 @@ def test_404_page_keeps_homepage_brand_and_navigation_escape_routes():
         assert marker in html
 
 
-def test_cloudflare_assets_use_404_page_for_unknown_paths():
-    redirects = _read(PUBLIC / "_redirects")
-
-    assert WRANGLER["assets"]["html_handling"] == "auto-trailing-slash"
-    assert WRANGLER["assets"]["not_found_handling"] == "404-page"
-    assert "/ /index.html 200" not in redirects
-    assert (PUBLIC / "index.html").is_file()
-
-
 if __name__ == "__main__":
     test_404_page_exists_and_uses_homepage_inspired_shell()
     test_404_page_keeps_homepage_brand_and_navigation_escape_routes()
-    test_cloudflare_assets_use_404_page_for_unknown_paths()

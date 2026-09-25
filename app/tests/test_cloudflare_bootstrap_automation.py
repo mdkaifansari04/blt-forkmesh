@@ -1871,35 +1871,3 @@ def test_mirror_manifest_signer_covers_public_key_urls_and_storage_claim():
     assert signed["signature"]["payloadSha256"] == __import__(
         "hashlib"
     ).sha256(payload).hexdigest()
-
-
-def test_published_mirror_manifest_schema_is_strict_about_d1_and_https():
-    schema = json.loads(
-        (ROOT / "www" / "docs" / "mirror-endpoint.schema.json").read_text(encoding="utf-8")
-    )
-    storage = schema["properties"]["storage"]["properties"]
-    endpoint = schema["properties"]["endpoint"]["properties"]
-    assert storage["repositoryBytesInD1"]["const"] is False
-    assert endpoint["transport"]["const"] == "direct-https"
-    assert endpoint["mainProxyMode"]["const"] == "masked"
-
-
-def test_bootstrap_docs_include_kv_data_key_and_app_origin_requirements():
-    docs = (
-        ROOT / "www/docs/operations/automation-and-cloudflare-bootstrap.md"
-    ).read_text(encoding="utf-8")
-    assert "Workers KV Storage edit" in docs
-    assert "generates `DATA_KEY`" in docs
-    assert "--data-key-backup" in docs
-    assert "mode-`0600` recovery copy" in docs
-    assert "authenticated database/encryption probe" in docs
-    assert "--main-relay-url https://app.forkmesh.com" in docs
-    assert "MIRROR_ROUTER_PUBLIC_KEY" in docs
-    assert "MIRROR_ROUTER_SIGNING_SEED" in docs
-    assert "one-click installation needs no" in docs
-    assert "router secret in the environment" in docs
-    assert "never put in argv" in docs
-    assert "signing seed" in docs
-    assert "first and the public key last" in docs
-    assert "unoverlaid Python `/api/mainnode`" in docs
-    assert "fails before D1, DNS, routes, secrets" in docs

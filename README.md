@@ -103,9 +103,8 @@ cd forkmesh
 ./desktop/run.sh
 ```
 
-Continue with [Getting started](www/docs/getting-started.md) for first-run
-setup, or the [desktop guide](www/docs/qt-client.md) for dependencies,
-troubleshooting, and development workflows.
+Continue with the [desktop README](desktop/README.md) for build and test
+commands.
 
 ### Run a mirror server
 
@@ -120,14 +119,11 @@ go test ./...
 go build ./cmd/forkmesh-mirror-node
 ```
 
-Deployment and recovery details are in the
-[mirror-node operations guide](www/docs/operations/mirror-node.md).
-
 ### Develop the Cloudflare services
 
 The Python Worker source, app assets, D1 migrations, deployment coordinator,
 and edge test suite live together in `app/`. The deploy coordinator can target
-`app`, `www`, or `world`, or calculate the changed targets from Git:
+`app` or `world`, or calculate the changed targets from Git:
 
 ```sh
 cd app
@@ -153,7 +149,6 @@ mobile/      Flutter client and owned mobile Git engine work
 server/      Go mirror daemon and server packaging
 tools/       reviewed standalone maintenance, MCP, and security helpers
 world/       ForkMesh World worker and 3D client assets
-www/         landing site, marketing pages, authored docs, and blog
 ```
 
 Issues, pull requests, discussions, commits, workflows, and releases are
@@ -195,15 +190,13 @@ and revocable.
   Current rewards use reviewed, non-custodial signing and externally owned
   wallets.
 
-See [SECURITY.md](SECURITY.md) for reporting and the security documentation in
-[www/docs/security](www/docs/security) for protocol-specific boundaries.
+See [SECURITY.md](SECURITY.md) for reporting.
 
 ## Contributing
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md). Keep changes scoped, add the
 closest contract or integration test, and run the affected component suite
-before opening a pull request. The complete engineering and operations index is
-[www/docs/README.md](www/docs/README.md).
+before opening a pull request.
 
 ForkMesh measures progress by shipped evidence: an implementation is not called
 complete until its compatibility, security, documentation, observability, and

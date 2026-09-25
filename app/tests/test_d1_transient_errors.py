@@ -20,15 +20,21 @@ from pathlib import Path
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 
 READ_FUNCS = {
-    "_is_transient_d1_error", "_d1_read", "d1_all", "d1_first",
-    "d1_bind_args", "d1_row_to_dict", "js_nullish", "_safe_error_text",
+    "_is_transient_d1_error", "_is_d1_quota_error", "_d1_read", "d1_all",
+    "d1_first", "d1_bind_args", "d1_row_to_dict", "js_nullish",
+    "_safe_error_text",
 }
 ROUTER_FUNCS = {
-    "_is_transient_d1_error", "_is_d1_platform_error", "_safe_error_text",
+    "_is_transient_d1_error", "_is_d1_quota_error", "_is_d1_platform_error",
+    "_safe_error_text",
 }
 
 D1_INTERNAL = "D1_ERROR: internal error; reference = gajm603ikm069q0eol2gc9j2"
 D1_OVERLOADED = "D1_ERROR: D1 DB is overloaded."
+D1_READ_QUOTA = (
+    "D1_ERROR: Your account has exceeded D1's free tier daily row read limit. "
+    "Upgrade to a paid plan or wait until tomorrow (midnight UTC) to continue."
+)
 
 
 def _load(names, extra=None):
@@ -41,9 +47,10 @@ def _load(names, extra=None):
     consts = [n for n in tree.body
               if isinstance(n, ast.Assign)
               and any(getattr(t, "id", "") in
-                      ("_D1_TRANSIENT_MARKERS", "_D1_SUSTAINED_MARKERS")
+                      ("_D1_TRANSIENT_MARKERS", "_D1_SUSTAINED_MARKERS",
+                       "_D1_QUOTA_MARKERS")
                       for t in n.targets)]
-    assert len(consts) == 2, "missing D1 marker tuples"
+    assert len(consts) == 3, "missing D1 marker tuples"
     mod = ast.fix_missing_locations(
         ast.Module(body=consts + selected, type_ignores=[]))
     ns = dict(extra or {})
@@ -148,6 +155,19 @@ def test_overloaded_d1_is_never_replayed():
     assert len(db.attempts) == 1
 
 
+def test_a_spent_plan_quota_is_never_replayed():
+    """The daily row budget is account-level and refills at midnight UTC."""
+    ns = _load(READ_FUNCS)
+    db = _DB(errors=[D1_READ_QUOTA, D1_READ_QUOTA])
+    try:
+        asyncio.run(ns["d1_first"](_Env(db), "SELECT 1"))
+        raise AssertionError("an exhausted D1 quota must fail fast")
+    except RuntimeError as exc:
+        assert "daily row read limit" in str(exc)
+    # Replaying spends more of the very budget that is already gone.
+    assert len(db.attempts) == 1
+
+
 def test_our_own_bad_query_is_not_replayed():
     ns = _load(READ_FUNCS)
     db = _DB(errors=["D1_ERROR: no such table: nodes", "unreachable"])
@@ -184,6 +204,43 @@ def test_platform_faults_are_classified_but_our_bugs_are_not():
     assert not is_platform(RuntimeError("internal error; reference = x"))
 
 
+def test_an_exhausted_d1_quota_is_a_platform_fault_not_a_worker_bug():
+    """Production 2026-09-18: every signup answered Cloudflare 1101.
+
+    ``ensure_schema`` runs a fingerprint SELECT before any route body, so once
+    the account's daily D1 row budget was spent that read raised on every
+    request. The quota message carries none of the transient/overload markers,
+    so the router classified D1's own refusal as our broken SQL and re-raised
+    it into an unhandled exception instead of a status code.
+    """
+    ns = _load(ROUTER_FUNCS)
+    is_platform = ns["_is_d1_platform_error"]
+    is_quota = ns["_is_d1_quota_error"]
+    assert is_quota(RuntimeError(D1_READ_QUOTA))
+    assert is_platform(RuntimeError(D1_READ_QUOTA))
+    assert is_quota(RuntimeError(
+        "D1_ERROR: Your account has exceeded D1's free tier daily row write "
+        "limit."))
+    # Still not a quota problem: our own SQL, and an overload (which has its
+    # own fail-fast path and its own 2s Retry-After).
+    assert not is_quota(RuntimeError("D1_ERROR: no such column: bogus"))
+    assert not is_quota(RuntimeError(D1_OVERLOADED))
+    assert not is_quota(RuntimeError(D1_INTERNAL))
+    # A non-D1 exception that merely mentions a limit is not D1 quota.
+    assert not is_quota(RuntimeError("upgrade to a paid plan"))
+
+
+def test_quota_retry_after_waits_for_the_midnight_utc_reset():
+    ns = _load({"_d1_quota_retry_after_seconds"}, extra={"Date": None})
+    retry_after = ns["_d1_quota_retry_after_seconds"]
+    day_ms = 86400000
+    # One hour past midnight UTC -> 23 hours left on the budget window.
+    assert retry_after(day_ms * 20000 + 3600000) == 23 * 3600
+    # Never a hot-loop retry, even in the last seconds before the reset.
+    assert retry_after(day_ms * 20001 - 1000) == 60
+    assert retry_after(day_ms * 20000) == 86400
+
+
 def test_router_answers_503_degraded_instead_of_re_raising():
     source = ENTRY.read_text(encoding="utf-8")
     handler = source.split("            if str(error) == "
@@ -193,7 +250,12 @@ def test_router_answers_503_degraded_instead_of_re_raising():
     # 503 + Retry-After so clients back off, and the degraded marker keeps the
     # outer 5xx logger from double-logging what log_d1_unavailable recorded.
     assert "status=503" in handler
-    assert "\"Retry-After\": \"2\"" in handler
+    assert "\"Retry-After\": (" in handler
+    assert "else \"2\"" in handler
+    # A spent daily quota waits out the reset instead of hammering D1 every
+    # two seconds with a budget that only refills at midnight UTC.
+    assert "_d1_quota_retry_after_seconds()" in handler
+    assert "database_quota_exceeded" in handler
     assert "EXPECTED_DEGRADED_HEADERS" in handler
     assert "log_d1_unavailable(" in handler
     # The generic 1101 capture stays reachable for every other exception.

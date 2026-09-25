@@ -4,7 +4,6 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[2]
 APP_PUBLIC = PROJECT / "app" / "public"
-WWW_PUBLIC = PROJECT / "www" / "public"
 AUTH_PAGES = (
     APP_PUBLIC / "login.html",
     APP_PUBLIC / "signup.html",
@@ -12,31 +11,16 @@ AUTH_PAGES = (
     APP_PUBLIC / "reset-password.html",
 )
 MESH_PAGES = (
-    WWW_PUBLIC / "about.html",
-    WWW_PUBLIC / "terms.html",
-    WWW_PUBLIC / "privacy.html",
-    WWW_PUBLIC / "404.html",
-)
-FEATURE_POSTS = tuple(
-    page
-    for page in sorted((WWW_PUBLIC / "blog").glob("*/index.html"))
-    if page.parent.name != "introducing-forkmesh"
-)
-LANDING_PAGES = (
-    WWW_PUBLIC / "index.html",
-    WWW_PUBLIC / "homev2.html",
-    WWW_PUBLIC / "new-home.html",
+    APP_PUBLIC / "404.html",
 )
 PUBLIC_THEME_PAGES = tuple(
     page
-    for public in (APP_PUBLIC, WWW_PUBLIC)
-    for page in sorted(public.rglob("*.html"))
-    # The legacy landing page, dashboard, and immersive 3D world own their
-    # chrome. World lighting is controlled by its Day/Sunset/Night/weather
-    # palette without mounting a second site header over the game HUD.
+    for page in sorted(APP_PUBLIC.rglob("*.html"))
+    # The dashboard and immersive 3D world own their chrome. World lighting
+    # is controlled by its Day/Sunset/Night/weather palette without mounting
+    # a second site header over the game HUD.
     if (
-        page not in LANDING_PAGES
-        and "dashboard" not in page.parts
+        "dashboard" not in page.parts
         and "world" not in page.parts
     )
 )
@@ -44,15 +28,11 @@ PUBLIC_THEME_PAGES = tuple(
 FAMILY_THEME_STYLESHEETS = (
     "/auth-page-theme.css",
     "/mesh-page-theme.css",
-    "/pricing-theme.css",
-    "/feature-post.css",
 )
 
 FAMILY_THEME_FILES = {
-    "auth-page-theme.css": WWW_PUBLIC / "auth-page-theme.css",
-    "mesh-page-theme.css": WWW_PUBLIC / "mesh-page-theme.css",
-    "pricing-theme.css": WWW_PUBLIC / "pricing-theme.css",
-    "feature-post.css": WWW_PUBLIC / "feature-post.css",
+    "auth-page-theme.css": APP_PUBLIC / "auth-page-theme.css",
+    "mesh-page-theme.css": APP_PUBLIC / "mesh-page-theme.css",
 }
 
 FAMILY_THEME_CONTRACTS = {
@@ -148,96 +128,6 @@ FAMILY_THEME_CONTRACTS = {
             },
         },
     },
-    "pricing-theme.css": {
-        "light": {
-            "color-scheme": "light",
-            "--pricing-page-bg": "#f6f8fb",
-            "--pricing-text": "#1f2328",
-            "--pricing-muted": "#656d76",
-            "--pricing-border": "#d0d7de",
-            "--pricing-spotlight": (
-                "radial-gradient(ellipse at center, rgba(9, 105, 218, 0.14), "
-                "transparent 64%)"
-            ),
-            "--pricing-card-bg": "#ffffff",
-            "--pricing-card-featured": "#f0f6fc",
-            "--pricing-divider": "#d8dee4",
-            "--pricing-icon-bg": "#24292f",
-            "--pricing-button-bg": "#24292f",
-            "--pricing-button-text": "#ffffff",
-            "--pricing-check": "#1f883d",
-            "--pricing-cta-bg": "#1f2328",
-            "--pricing-cta-text": "#ffffff",
-        },
-        "rules": {
-            "body": {
-                "background": "var(--pricing-page-bg)",
-                "color": "var(--pricing-text)",
-            },
-            ".pricing-shell": {"background": "var(--pricing-page-bg)"},
-            ".pricing-spotlight": {"background": "var(--pricing-spotlight)"},
-            ".plan-card": {
-                "background": "var(--pricing-card-bg)",
-                "border-color": "var(--pricing-border)",
-            },
-            '.plan-card[data-featured-plan="true"]': {
-                "background": "var(--pricing-card-featured)"
-            },
-            ".plan-card p": {"color": "var(--pricing-muted)"},
-            ".plan-divider": {"background": "var(--pricing-divider)"},
-            ".plan-icon": {"background": "var(--pricing-icon-bg)"},
-            ".plan-button": {
-                "background": "var(--pricing-button-bg)",
-                "color": "var(--pricing-button-text)",
-            },
-            ".feature-check": {"border-color": "var(--pricing-check)"},
-            ".button-primary": {
-                "background": "var(--pricing-cta-bg)",
-                "color": "var(--pricing-cta-text)",
-            },
-        },
-    },
-    "feature-post.css": {
-        "light": {
-            "color-scheme": "light",
-            "--bg": "#f6f8fb",
-            "--paper": "#ffffff",
-            "--line": "#d0d7de",
-            "--soft": "#eef2f7",
-            "--text": "#1f2328",
-            "--muted": "#656d76",
-            "--green": "#1a7f37",
-            "--cyan": "#0969da",
-            "--paragraph": "#24292f",
-            "--note": "#f6f8fa",
-            "--image-placeholder": "#eaeef2",
-        },
-        "rules": {
-            "body": {
-                "background": "var(--bg)",
-                "color": "var(--text)",
-            },
-            ".shell": {
-                "background": "var(--paper)",
-                "border-color": "var(--line)",
-            },
-            ".pill": {
-                "background": "var(--soft)",
-                "border-color": "var(--line)",
-            },
-            ".hero-img": {
-                "background": "var(--image-placeholder)",
-                "border-color": "var(--line)",
-            },
-            ".body p": {"color": "var(--paragraph)"},
-            ".body .note": {
-                "background": "var(--note)",
-                "color": "var(--muted)",
-            },
-            ".body a": {"color": "var(--green)"},
-            ".back:hover": {"color": "var(--cyan)"},
-        },
-    },
 }
 
 
@@ -327,27 +217,6 @@ def recognized_light_theme_strategies(page: Path, html: str) -> tuple[str, ...]:
     if styles_link and not unhandled_dark_style:
         strategies.append("styles.css")
 
-    docs_light = re.search(
-        r":root\s*\{(?P<body>[^{}]*)\}",
-        inline_css,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    docs_dark = re.search(
-        r"html\.dark\s*\{(?P<body>[^{}]*)\}",
-        inline_css,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if (
-        page in (WWW_PUBLIC / "docs.html", WWW_PUBLIC / "docs" / "index.html")
-        and docs_light
-        and "--docs-bg:" in docs_light.group("body")
-        and re.search(r"color-scheme\s*:\s*light\b", docs_light.group("body"))
-        and docs_dark
-        and "--docs-bg:" in docs_dark.group("body")
-        and re.search(r"color-scheme\s*:\s*dark\b", docs_dark.group("body"))
-    ):
-        strategies.append("docs-inline-palette")
-
     chat_light = re.search(
         r"html:not\(\.dark\)\s*\{(?P<body>[^{}]*)\}",
         chat_css,
@@ -390,8 +259,7 @@ def test_every_public_page_has_a_recognized_light_theme_strategy():
         strategies = recognized_light_theme_strategies(page, read(page))
         assert strategies, (
             f"{page} must use tokenized styles.css without an unhandled dark "
-            "inline style, a family theme stylesheet, the Docs palette, or the "
-            "Chat light palette"
+            "inline style, a family theme stylesheet, or the Chat light palette"
         )
 
 
@@ -404,7 +272,7 @@ def test_hardcoded_dark_page_is_not_a_recognized_light_theme_strategy():
       </style>
     """
 
-    assert not recognized_light_theme_strategies(WWW_PUBLIC / "new-page.html", html)
+    assert not recognized_light_theme_strategies(APP_PUBLIC / "new-page.html", html)
 
 
 def test_page_families_load_complete_light_theme_styles():
@@ -412,27 +280,6 @@ def test_page_families_load_complete_light_theme_styles():
         assert_stylesheet_after_inline_styles(page, "/auth-page-theme.css")
     for page in MESH_PAGES:
         assert_stylesheet_after_inline_styles(page, "/mesh-page-theme.css")
-    assert_stylesheet_after_inline_styles(
-        WWW_PUBLIC / "pricing.html",
-        "/pricing-theme.css",
-    )
-    # New feature posts are additive; keep the coverage floor without making
-    # every published blog post require a brittle count update here.
-    assert len(FEATURE_POSTS) >= 72
-    for page in FEATURE_POSTS:
-        html = assert_stylesheet_after_inline_styles(page, "/feature-post.css")
-        legacy_root = re.search(
-            r":root\s*\{[^{}]*color-scheme\s*:\s*dark\b",
-            html,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        legacy_background = re.search(
-            r"--bg\s*:\s*#030303\b",
-            html,
-            flags=re.IGNORECASE,
-        )
-        assert legacy_root is None, page
-        assert legacy_background is None, page
 
 
 def test_shared_family_styles_define_light_palettes():
@@ -446,7 +293,7 @@ def test_shared_family_styles_define_light_palettes():
 
 
 def test_shared_footer_defines_dark_and_light_semantic_palettes():
-    footer_css = read(WWW_PUBLIC / "site-footer.css")
+    footer_css = read(APP_PUBLIC / "site-footer.css")
 
     for token in (
         "--fm-footer-panel",
@@ -573,10 +420,3 @@ def test_shared_footer_defines_dark_and_light_semantic_palettes():
         {"background": "var(--green, var(--accent-bright, #28c878))"},
         "site-footer.css",
     )
-
-
-def test_landing_pages_remain_explicitly_dark():
-    for page in LANDING_PAGES:
-        html = read(page)
-        assert re.search(r'<html\b[^>]*\bclass="[^"]*\bdark\b', html), page
-        assert '<meta name="color-scheme" content="dark"' in html, page

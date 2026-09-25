@@ -14,7 +14,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "public"
-WWW_PUBLIC = ROOT.parent / "www" / "public"
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -26,7 +25,6 @@ from _dashboard_shell import assembled_dashboard_page  # noqa: E402
 from _dashboard_bundle import assembled_dashboard_js  # noqa: E402
 
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
-REDIRECT_LINES = (WWW_PUBLIC / "_redirects").read_text(encoding="utf-8").splitlines()
 ENTRY_TEXT = (SRC / "entry.py").read_text(encoding="utf-8")
 
 
@@ -41,9 +39,7 @@ def test_client_bundles_carry_content_hash_cache_busters():
     # Every page gets the core bundle. The substantial chat bundle is loaded
     # only by the page that renders chat; both use content-hash cache busters.
     versions = dashboard_shell.asset_versions(
-        lambda rel: (
-            (PUBLIC / rel) if (PUBLIC / rel).is_file() else (WWW_PUBLIC / rel)
-        ).read_text(encoding="utf-8"),
+        lambda rel: (PUBLIC / rel).read_text(encoding="utf-8"),
         {"dashboard.js": assembled_dashboard_js()})
     assert versions["dashboard.js"] != versions["dashboard-chat.js"]
     for meta in dashboard_shell.PAGES.values():
@@ -110,7 +106,6 @@ def test_routing_config_covers_every_page():
         # ASSETS response cannot blank notes/tasks while /dashboard still works.
         assert ("!" + route) not in run_worker_first, route
         assert ("!" + route + "/") not in run_worker_first, route
-        assert not any(line.startswith(route + " ") for line in REDIRECT_LINES), route
     assert WRANGLER["assets"]["html_handling"] == "drop-trailing-slash"
     # Direct .html hits 404 — clean URLs are canonical.
     for asset in static_routes.DASHBOARD_PAGE_ASSETS.values():

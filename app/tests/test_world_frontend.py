@@ -11,7 +11,6 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = ROOT.parent
 PUBLIC = ROOT / "public"
-WWW_PUBLIC = REPOSITORY / "www" / "public"
 WORLD_PUBLIC = REPOSITORY / "world" / "public"
 WORLD = WORLD_PUBLIC / "world"
 INDEX = (WORLD / "index.html").read_text(encoding="utf-8")
@@ -39,15 +38,9 @@ QT_ISSUES = (
 ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 WORLD_PROTOCOL = (ROOT / "src" / "world.py").read_text(encoding="utf-8")
 SCHEMA = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
-FEDIVERSE_REVIEW_DOC = (
-    REPOSITORY / "www" / "docs" / "fediverse-mention-review.md"
-).read_text(encoding="utf-8")
 QT_SINGLE_INSTANCE = (
     ROOT.parent / "desktop" / "src" / "SingleInstance.cpp"
 ).read_text(encoding="utf-8")
-QT_DOCS = (WWW_PUBLIC / "docs" / "qt-client" / "index.html").read_text(
-    encoding="utf-8"
-)
 LINUX_DESKTOP_INSTALLER = (
     ROOT.parent / "desktop" / "install.sh"
 ).read_text(encoding="utf-8")
@@ -61,7 +54,6 @@ WINDOWS_PACKAGER = (
     ROOT.parent / "tools" / "package" / "forkmesh.nsi"
 ).read_text(encoding="utf-8")
 PAYOUTS = (PUBLIC / "mirror-payouts.html").read_text(encoding="utf-8")
-PRIVACY = (WWW_PUBLIC / "privacy.html").read_text(encoding="utf-8")
 SECURITY_LATEST = json.loads(
     (PUBLIC / "security" / "latest.json").read_text(encoding="utf-8")
 )
@@ -1996,11 +1988,6 @@ def test_financial_and_security_metaphors_disclose_current_limitations():
     assert "Development instances may explicitly select a test network" in DATA
     assert "Visual coins are not guaranteed rewards or investments" in DATA
     assert "a clean scan is not a guarantee" in APP
-    assert (
-        "platform administrators do not automatically receive those recipient "
-        "private keys"
-    ) in PRIVACY
-    assert "Raw IP addresses, full User-Agent strings, and precise location are never public" in PRIVACY
     assert "Every metaphor has a technical panel" in DATA
     assert "availability, not automatic trust" in DATA
     assert "Normal repository traffic stays on HTTPS" in DATA
@@ -2502,9 +2489,6 @@ def test_cloudflare_setup_deep_link_carries_no_cloudflare_secret():
     assert "m_cloudflareTokenEdit->setFocus" in QT_CONTROL
     assert 'query.queryItemValue(name, QUrl::FullyDecoded)' in QT_CONTROL
     assert "activationTarget.toUtf8()" in QT_SINGLE_INSTANCE
-    assert '<h2 id="cloudflare">Cloudflare setup stays local</h2>' in QT_DOCS
-    assert "bounded public topology only" in QT_DOCS
-    assert "token-, password-, key-, and" in QT_DOCS
     assert 'Exec="$CLIENT_BIN" %u' in LINUX_DESKTOP_INSTALLER
     assert "MimeType=x-scheme-handler/forkmesh;" in LINUX_DESKTOP_INSTALLER
     assert "Exec=forkmesh %u" in APPIMAGE_PACKAGER
@@ -2579,8 +2563,6 @@ def test_verified_fediverse_feedback_is_manual_pending_and_owner_confirmed():
     assert "FediverseMaterialization{mentionId, ev.id, inboxId}" in QT_ISSUES
     assert 'ackQuery.addQueryItem(\n                QStringLiteral("materialized")' in QT_ISSUES
     assert "world_fediverse_mentions" in SCHEMA
-    assert "owner node confirms" in FEDIVERSE_REVIEW_DOC
-    assert "Follow-up consent is off by default" in FEDIVERSE_REVIEW_DOC
 
 
 

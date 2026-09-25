@@ -8,7 +8,6 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 APP = os.environ.get("DEPLOY_VERIFY_URL", "https://app.forkmesh.com").rstrip("/")
-WWW = os.environ.get("DEPLOY_VERIFY_WWW_URL", "https://forkmesh.com").rstrip("/")
 WORLD = os.environ.get("DEPLOY_VERIFY_WORLD_URL", "https://world.forkmesh.com").rstrip("/")
 LEGACY = os.environ.get(
     "DEPLOY_VERIFY_LEGACY_API_URL", "https://api.forkmesh.com"
@@ -54,28 +53,15 @@ def main():
     version = json.loads(body.decode("utf-8"))
     require(status == 200 and version.get("worker") == "app", "App version probe failed")
 
-    for origin, role in ((WWW, "www"), (WORLD, "world")):
-        status, headers, _ = request(origin + "/", method="HEAD")
-        require(status == 200, f"{role} root returned {status}")
-        require(header(headers, "x-forkmesh-worker") == role, f"{role} ownership marker missing")
+    status, headers, _ = request(WORLD + "/", method="HEAD")
+    require(status == 200, f"world root returned {status}")
+    require(header(headers, "x-forkmesh-worker") == "world", "world ownership marker missing")
 
     status, _, body = request(LEGACY + "/api/version")
     legacy_version = json.loads(body.decode("utf-8"))
     require(status == 200 and legacy_version.get("worker") == "app", "legacy API alias is not App")
     status, headers, _ = request(LEGACY + "/", method="HEAD")
     require(status == 308 and header(headers, "location") == APP + "/", "legacy canonical redirect failed")
-
-    status, headers, body = request(
-        WWW + "/api/version",
-        method="POST",
-        headers={"content-type": "application/json"},
-        body=b"{}",
-    )
-    require(status in (200, 400, 405), "www POST did not reach the App service binding")
-    if status == 200:
-        marker = json.loads(body.decode("utf-8"))
-        require(marker.get("worker") == "app", "www POST reached the wrong Worker")
-    require(not header(headers, "location"), "www POST was redirected instead of proxied")
 
     status, headers, _ = request(
         APP + "/api/version",
@@ -99,15 +85,14 @@ def main():
     )
     require(not header(headers, "access-control-allow-origin"), "untrusted CORS origin was allowed")
 
-    for origin in (APP, WWW):
-        status, headers, _ = request(
-            origin + "/api/world/ws",
-            headers={"connection": "Upgrade", "upgrade": "websocket"},
-        )
-        require(status in (400, 401, 403, 426), f"WebSocket boundary returned unexpected {status} via {origin}")
-        require(not header(headers, "location"), f"WebSocket boundary redirected via {origin}")
+    status, headers, _ = request(
+        APP + "/api/world/ws",
+        headers={"connection": "Upgrade", "upgrade": "websocket"},
+    )
+    require(status in (400, 401, 403, 426), f"WebSocket boundary returned unexpected {status} via {APP}")
+    require(not header(headers, "location"), f"WebSocket boundary redirected via {APP}")
 
-    print("Split deployment verification passed: App/API alias, www service binding, World, CORS, and WebSocket boundaries.")
+    print("Split deployment verification passed: App/API alias, World, CORS, and WebSocket boundaries.")
     return 0
 
 
